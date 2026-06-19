@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output (the BFF serves this in production; build it as part of release)
+dist/
+dist-ssr/
+
+# Local env overrides (e.g. VITE_BFF_TARGET); never commit real values
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Vite / TS caches
+.vite/
+*.tsbuildinfo
+
+# Logs & editor noise
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/

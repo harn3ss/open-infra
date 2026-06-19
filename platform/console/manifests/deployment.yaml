@@ -1,0 +1,74 @@
+# Console Deployment — single replica Go BFF + React SPA.
+# Image is built and pushed to GHCR by the open-infra CI pipeline.
+# For prod, pin to a digest or a semver tag instead of "latest".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console
+  namespace: open-infra-console
+  labels:
+    app: console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: console
+  template:
+    metadata:
+      labels:
+        app: console
+    spec:
+      serviceAccountName: console
+
+      # Run as a non-privileged, non-root UID (distroless "nonroot" uid).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+
+      containers:
+        - name: console
+          image: ghcr.io/elemenopyunome/open-infra-console:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          env:
+            - name: CLUSTER_NAME
+              value: "open-infra"
+            # Set GRAFANA_BASE_URL to the in-cluster Grafana service URL or its
+            # ingress hostname so the console can embed/link Grafana dashboards.
+            # Example (in-cluster): http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local
+            # Example (ingress):    https://grafana.192-0-2-1.sslip.io
+            - name: GRAFANA_BASE_URL
+              value: ""
+
+          # Lightweight probes on the /healthz endpoint exposed by the Go BFF.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

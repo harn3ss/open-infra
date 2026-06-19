@@ -1,0 +1,189 @@
+/**
+ * Minimal Kubernetes API typings — only the fields the console reads.
+ * These intentionally avoid the full @kubernetes/client-node surface to keep
+ * the bundle small and the types honest about what the BFF returns.
+ */
+
+export interface ObjectMeta {
+  name: string;
+  namespace?: string;
+  uid?: string;
+  resourceVersion?: string;
+  creationTimestamp?: string;
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+  deletionTimestamp?: string;
+  ownerReferences?: { kind: string; name: string; uid: string }[];
+}
+
+export interface K8sObject<TSpec = unknown, TStatus = unknown> {
+  apiVersion?: string;
+  kind?: string;
+  metadata: ObjectMeta;
+  spec?: TSpec;
+  status?: TStatus;
+}
+
+export interface ListMeta {
+  resourceVersion?: string;
+  continue?: string;
+}
+
+export interface K8sList<T extends K8sObject = K8sObject> {
+  apiVersion?: string;
+  kind?: string;
+  metadata: ListMeta;
+  items: T[];
+}
+
+/** A k8s watch event as delivered over the BFF's SSE channel. */
+export type WatchEventType = "ADDED" | "MODIFIED" | "DELETED";
+
+export interface WatchEvent<T extends K8sObject = K8sObject> {
+  type: WatchEventType;
+  object: T;
+}
+
+export interface Condition {
+  type: string;
+  status: "True" | "False" | "Unknown";
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+}
+
+/* ----------------------------- Core workloads ----------------------------- */
+
+export interface PodSpec {
+  nodeName?: string;
+  containers?: { name: string; image?: string }[];
+}
+
+export interface ContainerStatus {
+  name: string;
+  ready: boolean;
+  restartCount: number;
+  image?: string;
+  state?: Record<string, unknown>;
+}
+
+export interface PodStatus {
+  phase?: string;
+  podIP?: string;
+  hostIP?: string;
+  startTime?: string;
+  reason?: string;
+  conditions?: Condition[];
+  containerStatuses?: ContainerStatus[];
+}
+
+export type Pod = K8sObject<PodSpec, PodStatus>;
+
+export interface DeploymentSpec {
+  replicas?: number;
+  selector?: { matchLabels?: Record<string, string> };
+  template?: { spec?: PodSpec };
+}
+
+export interface DeploymentStatus {
+  replicas?: number;
+  readyReplicas?: number;
+  availableReplicas?: number;
+  updatedReplicas?: number;
+  unavailableReplicas?: number;
+  conditions?: Condition[];
+}
+
+export type Deployment = K8sObject<DeploymentSpec, DeploymentStatus>;
+
+export interface ServicePort {
+  name?: string;
+  port: number;
+  targetPort?: number | string;
+  protocol?: string;
+  nodePort?: number;
+}
+
+export interface ServiceSpec {
+  type?: string;
+  clusterIP?: string;
+  clusterIPs?: string[];
+  ports?: ServicePort[];
+  selector?: Record<string, string>;
+}
+
+export interface ServiceStatus {
+  loadBalancer?: { ingress?: { ip?: string; hostname?: string }[] };
+}
+
+export type Service = K8sObject<ServiceSpec, ServiceStatus>;
+
+export interface NodeSpec {
+  podCIDR?: string;
+  taints?: { key: string; value?: string; effect: string }[];
+  unschedulable?: boolean;
+}
+
+export interface NodeStatus {
+  capacity?: Record<string, string>;
+  allocatable?: Record<string, string>;
+  conditions?: Condition[];
+  nodeInfo?: {
+    kubeletVersion?: string;
+    osImage?: string;
+    architecture?: string;
+    containerRuntimeVersion?: string;
+    kernelVersion?: string;
+  };
+  addresses?: { type: string; address: string }[];
+}
+
+export type Node = K8sObject<NodeSpec, NodeStatus>;
+
+export interface EventObj extends K8sObject {
+  reason?: string;
+  message?: string;
+  type?: string; // Normal | Warning
+  count?: number;
+  lastTimestamp?: string;
+  eventTime?: string;
+  firstTimestamp?: string;
+  involvedObject?: {
+    kind?: string;
+    name?: string;
+    namespace?: string;
+  };
+  source?: { component?: string; host?: string };
+  reportingComponent?: string;
+}
+
+/* ----------------------- open-infra Application CRD ------------------------ */
+
+export interface ApplicationSpec {
+  image: string;
+  port: number;
+  domain?: string;
+  scaling?: {
+    min?: number;
+    max?: number;
+    targetCPUPercent?: number;
+  };
+  database?: { engine?: string; name?: string };
+  storage?: { buckets?: string[] };
+  queues?: string[];
+  env?: { name: string; value: string }[];
+  secrets?: string[];
+}
+
+export interface ApplicationStatus {
+  url?: string;
+  conditions?: Condition[];
+}
+
+export type Application = K8sObject<ApplicationSpec, ApplicationStatus>;
+
+/** open-infra Application group/version/resource constants. */
+export const OPENINFRA_GROUP = "openinfra.dev";
+export const OPENINFRA_VERSION = "v1";
+export const APPLICATIONS_PLURAL = "applications";
+export const APPLICATIONS_CRD_NAME = "applications.openinfra.dev";

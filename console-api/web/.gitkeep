@@ -1,0 +1,3 @@
+# Keeps the web/ directory in version control so `//go:embed all:web` always has
+# a target. The real SPA build (ui/dist) is copied here at image-build time and
+# is gitignored; only this file and index.html are tracked.
