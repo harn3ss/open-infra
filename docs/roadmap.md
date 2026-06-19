@@ -17,10 +17,27 @@ test* — the bar for calling it done.
 
 ## Current state
 
-This repo ships the **scaffold for Phases 0–3 + 6**: installer, app-of-apps,
-component manifests, the `Application` schema + a v0 Composition, the CLI, the
-reusable Action, and an example app. Components are **wired but not yet validated
-on a live cluster** — that's the immediate next step.
+**Phases 0–2 are validated on a live single-node cluster.** `install.sh` stands
+up k3s + MetalLB + Argo CD, and the app-of-apps reconciles the platform from this
+repo: cert-manager, MinIO, CloudNativePG, NATS, Redis, and kube-prometheus-stack
++ Loki all reach Healthy. The Phase 0 exit test (nginx over HTTPS via
+Traefik/MetalLB) passes.
+
+Phase 3's `Application` abstraction (XRD + Crossplane Composition) is shipped but
+its live end-to-end demo is still pending.
+
+Issues surfaced and fixed during the first live bring-up (kept here so they don't
+resurface):
+
+- **Argo CD install** must use `--server-side` — the ApplicationSet CRD exceeds
+  the 256 KB client-side `last-applied-configuration` annotation limit.
+- **CloudNativePG** needs `ServerSideApply` for the same reason (its large
+  `Pooler` CRD was silently dropped otherwise).
+- **Redis** — Bitnami purged `docker.io/bitnami/*` versioned tags (Aug 2025); the
+  chart now pins the `bitnamilegacy` mirror as a stopgap. *Migrate off Bitnami.*
+- **NATS** config-reloader needs adequate host `fs.inotify.max_user_instances`
+  (default 128 is too low on busy nodes — bump to 512).
+- The installer's config reader strips inline `# comments` and quotes.
 
 ## Key decisions (don't re-litigate)
 

@@ -104,21 +104,27 @@ public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
 
 ## Status
 
-**Early — building the spine.** Phases (see [`docs/roadmap.md`](docs/roadmap.md)):
+**Working spine — validated on a live single-node cluster.** Phases (see [`docs/roadmap.md`](docs/roadmap.md)):
 
-- [ ] Phase 0 — Cluster foundation (k3s, MetalLB, Traefik, cert-manager, storage)
-- [ ] Phase 1 — GitOps engine (Argo CD app-of-apps)
-- [ ] Phase 2 — Platform services (MinIO, CloudNativePG, NATS, Redis)
-- [ ] Phase 3 — The `Application` abstraction (the product)
-- [ ] Phase 4 — Observability
+- [x] Phase 0 — Cluster foundation (k3s, MetalLB, Traefik, cert-manager) — nginx reachable over HTTPS ✓
+- [x] Phase 1 — GitOps engine (Argo CD app-of-apps reconciling from this repo) ✓
+- [x] Phase 2 — Platform services (MinIO, CloudNativePG, NATS, Redis) — all Healthy ✓
+- [~] Phase 3 — The `Application` abstraction (schema + Composition shipped; live end-to-end demo pending)
+- [~] Phase 4 — Observability (kube-prometheus-stack + Loki installed; default per-app dashboards pending)
 - [ ] Phase 5 — Serverless *(optional)*
-- [ ] Phase 6 — DX & packaging (installer, CLI, GitHub Action, docs)
+- [~] Phase 6 — DX & packaging (installer, CLI, GitHub Action shipped; docs site pending)
 - [ ] Phase 7 — Hardening & multi-tenancy
 
-This repository currently ships the **scaffold**: directory layout, the
-`Application` schema (XRD), starter platform manifests, the installer skeleton,
-the reusable GitHub Action, and an example app. Components are wired but not yet
-all battle-tested on a live cluster.
+The substrate (Phases 0–2) has been brought up and reconciled end-to-end via
+Argo CD: a one-command `install.sh` stands up k3s + MetalLB + Argo CD, and the
+app-of-apps installs cert-manager, MinIO, CloudNativePG, NATS, Redis, and the
+kube-prometheus-stack/Loki observability stack. The `Application` abstraction
+(XRD + Crossplane Composition) is shipped; wiring its live end-to-end demo is the
+current focus.
+
+> **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap
+> (Bitnami purged its public versioned tags in Aug 2025); migrating off Bitnami
+> is tracked for v1.
 
 ---
 
