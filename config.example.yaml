@@ -69,7 +69,7 @@ storage:
     server: ""                  # e.g. 192.0.2.50
     share: ""                   # e.g. /nas
     # Reuse an existing MinIO data dir if you already have one.
-    minioDataPath: ""           # e.g. /mnt/nas/minio-data
+    minioDataPath: ""           # e.g. /mnt/<your-nas>/minio-data
 
 registry:
   # "ghcr" = zero infra (recommended). "harbor" = fully self-hosted/offline.
