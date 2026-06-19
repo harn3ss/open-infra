@@ -1,0 +1,18 @@
+# Default TLS issuer referenced by the Application Composition's Ingress
+# (cert-manager.io/cluster-issuer: openinfra-issuer).
+#
+# dev: a self-signed issuer — real cert-manager-issued TLS for LAN/dev (browsers
+# won't trust it, but the path is end-to-end). For public certs, swap this for a
+# Let's Encrypt ACME ClusterIssuer (HTTP-01, or DNS-01 via Cloudflare).
+#
+# Applied after cert-manager installs (sync-wave 1); SkipDryRun so it applies
+# even before the ClusterIssuer CRD is registered.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-issuer
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selfSigned: {}

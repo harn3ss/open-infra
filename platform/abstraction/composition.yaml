@@ -59,6 +59,9 @@ spec:
                           - name: app
                             image: {{ $spec.image }}
                             ports: [ { containerPort: {{ $spec.port }} } ]
+                            # Requests are required for the HPA to compute CPU%.
+                            resources:
+                              requests: { cpu: 50m, memory: 64Mi }
                             # Health checks auto-injected — k8s self-heals.
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
