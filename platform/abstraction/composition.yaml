@@ -65,10 +65,29 @@ spec:
                             # Health checks auto-injected — k8s self-heals.
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
-                            {{- with $spec.env }}
+                            {{- if or $spec.env $spec.database $spec.queues }}
                             env:
-                            {{- range . }}
+                            {{- range $spec.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
+                            {{- end }}
+                            {{- if $spec.database }}
+                              # Injected Postgres connection (CloudNativePG app secret).
+                              - name: DATABASE_URL
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $name }}-db-app, key: uri }
+                            {{- end }}
+                            {{- if $spec.queues }}
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
+                            {{- end }}
+                            {{- end }}
+                            {{- $envFrom := list }}
+                            {{- if and $spec.storage $spec.storage.buckets }}{{- $envFrom = append $envFrom (printf "%s-minio" $name) }}{{- end }}
+                            {{- range $spec.secrets }}{{- $envFrom = append $envFrom . }}{{- end }}
+                            {{- if $envFrom }}
+                            envFrom:
+                            {{- range $envFrom }}
+                              - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
             ---
@@ -161,9 +180,74 @@ spec:
                     bootstrap:
                       initdb: { database: {{ $spec.database.name | default $name }}, owner: app }
             {{- end }}
-            # TODO(buckets):  emit a MinIO bucket + injected creds per spec.storage.buckets
-            # TODO(queues):   emit a NATS stream + injected creds per spec.queues
-            # TODO(secrets):  mount Sealed Secrets named in spec.secrets
+            {{- if and $spec.storage $spec.storage.buckets }}
+            ---
+            # --- Object storage ("S3"): per-app creds secret. The MinIO root
+            #     creds are copied in via provider-kubernetes references, so no
+            #     plaintext credential ever sits in this Composition. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-creds
+            spec:
+              references:
+                - patchesFrom:
+                    apiVersion: v1
+                    kind: Secret
+                    namespace: minio
+                    name: minio
+                    fieldPath: data.rootUser
+                  toFieldPath: spec.forProvider.manifest.data.MINIO_ACCESS_KEY
+                - patchesFrom:
+                    apiVersion: v1
+                    kind: Secret
+                    namespace: minio
+                    name: minio
+                    fieldPath: data.rootPassword
+                  toFieldPath: spec.forProvider.manifest.data.MINIO_SECRET_KEY
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $name }}-minio, namespace: {{ $ns }} }
+                  data: {}
+                  stringData:
+                    MINIO_ENDPOINT: "http://minio.minio.svc.cluster.local:9000"
+                    MINIO_BUCKETS: "{{ join "," $spec.storage.buckets }}"
+            ---
+            # --- Object storage: create the bucket(s) (idempotent mc Job) ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-bucket-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 10
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: mc
+                            image: minio/mc:latest
+                            env:
+                              - name: RU
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: RP
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'mc alias set m http://minio.minio.svc.cluster.local:9000 "$RU" "$RP" && for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do mc mb --ignore-existing m/$b; done'
+            {{- end }}
+            # NOTE: queues (NATS_URL/OPENINFRA_QUEUES) and secrets (envFrom) are
+            # injected into the Deployment above; NATS streams are app-declared.
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready   # marks the XR ready when composed resources are
