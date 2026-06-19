@@ -23,11 +23,19 @@ repo: cert-manager, MinIO, CloudNativePG, NATS, Redis, and kube-prometheus-stack
 + Loki all reach Healthy. The Phase 0 exit test (nginx over HTTPS via
 Traefik/MetalLB) passes.
 
-Phase 3's `Application` abstraction (XRD + Crossplane Composition) is shipped but
-its live end-to-end demo is still pending.
+Phase 3 (the `Application` abstraction) is done and demoed end-to-end. Phase 4 is
+done: Prometheus/Grafana/Alertmanager + Loki/Promtail, with metrics **and** logs
+queryable in Grafana (and the console) with no per-app config. A deployed web
+console (Phase 6) surfaces it all.
 
-Issues surfaced and fixed during the first live bring-up (kept here so they don't
-resurface):
+Issues surfaced and fixed during live bring-up (kept here so they don't resurface):
+
+- **Loki** — the original SingleBinary values failed `helm template` (scalable
+  targets had replicas too), so Loki never deployed and the app sat `Unknown`.
+  Fixed: zero read/write/backend, add `schemaConfig`, disable caches/gateway.
+  Lesson: an Argo app stuck `Unknown` (ComparisonError) is *broken*, not cosmetic.
+- **sealed-secrets** — same `Unknown` symptom: its Helm repo URL 404s, so it never
+  deployed. *Fix in Phase 7 (security).*
 
 - **Argo CD install** must use `--server-side` — the ApplicationSet CRD exceeds
   the 256 KB client-side `last-applied-configuration` annotation limit.
