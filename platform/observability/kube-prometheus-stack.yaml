@@ -18,6 +18,15 @@ spec:
         grafana:
           defaultDashboardsEnabled: true
           # admin password via Sealed Secret in prod
+          # Allow the open-infra console to embed dashboards (iframe, kiosk mode)
+          # and serve them read-only without a login. Tighten auth.anonymous for
+          # internet-exposed clusters (or front Grafana via the console BFF).
+          grafana.ini:
+            security:
+              allow_embedding: true
+            auth.anonymous:
+              enabled: true
+              org_role: Viewer
         prometheus:
           prometheusSpec:
             retention: 7d
