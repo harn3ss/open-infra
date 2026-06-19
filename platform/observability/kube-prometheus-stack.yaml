@@ -18,6 +18,16 @@ spec:
         grafana:
           defaultDashboardsEnabled: true
           # admin password via Sealed Secret in prod
+          # Loki datasource so logs are queryable in Grafana (Explore) and the
+          # console — Prometheus/Alertmanager are auto-provisioned by the chart.
+          additionalDataSources:
+            - name: Loki
+              type: loki
+              uid: loki
+              access: proxy
+              url: http://loki.monitoring.svc.cluster.local:3100
+              jsonData:
+                maxLines: 1000
           # Allow the open-infra console to embed dashboards (iframe, kiosk mode)
           # and serve them read-only without a login. Tighten auth.anonymous for
           # internet-exposed clusters (or front Grafana via the console BFF).

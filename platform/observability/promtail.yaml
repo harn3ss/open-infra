@@ -1,0 +1,28 @@
+# Promtail — ships pod logs into Loki. DaemonSet on every node; auto-discovers
+# /var/log/pods and labels each stream by namespace/pod/container, so logs are
+# queryable per app with zero per-app config. (Promtail is being succeeded by
+# Grafana Alloy upstream; revisit for v1 GA.)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: promtail
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"   # after Loki's service exists
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: promtail
+    targetRevision: 6.16.6
+    helm:
+      values: |
+        config:
+          clients:
+            - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
