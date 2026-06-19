@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -136,6 +137,11 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		// ConfigMap change is picked up without rebuilding the SPA.
 		api.Get("/config", handleConfig)
 
+		// Grafana dashboard list (server-side proxy to Grafana's /api/search) so
+		// the SPA can populate a dashboard picker without hitting CORS. Read-only.
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/grafana/dashboards", handleGrafanaDashboards(logger))
+
 		// CRD schema (short-lived): wrap with a request timeout.
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/crd-schema", handleCRDSchema(crd.New(client.Host, client.Transport), logger))
@@ -179,6 +185,37 @@ func handleConfig(w http.ResponseWriter, _ *http.Request) {
 		Version:        version,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleGrafanaDashboards proxies Grafana's dashboard search to the SPA. The
+// browser can't call Grafana directly (CORS), so the BFF fetches it server-side.
+// Returns an empty list when GRAFANA_BASE_URL is unset or Grafana is unreachable,
+// so the Monitoring page degrades gracefully rather than erroring.
+func handleGrafanaDashboards(logger *slog.Logger) http.HandlerFunc {
+	cl := &http.Client{Timeout: 10 * time.Second}
+	return func(w http.ResponseWriter, r *http.Request) {
+		base := strings.TrimRight(os.Getenv("GRAFANA_BASE_URL"), "/")
+		if base == "" {
+			writeJSON(w, http.StatusOK, []any{})
+			return
+		}
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
+			base+"/api/search?type=dash-db&limit=500", nil)
+		if err != nil {
+			writeJSON(w, http.StatusOK, []any{})
+			return
+		}
+		resp, err := cl.Do(req)
+		if err != nil {
+			logger.Warn("grafana dashboard search failed", slog.String("error", err.Error()))
+			writeJSON(w, http.StatusOK, []any{})
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}
 }
 
 // handleCRDSchema serves a CRD's storage-version schema, normalized for
