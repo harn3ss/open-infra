@@ -1,4 +1,7 @@
-# Loki — log aggregation. Single-binary mode for dev; scalable mode for prod.
+# Loki — log aggregation. SingleBinary (monolithic) mode for a small cluster.
+# The chart validates that ONLY one topology has replicas, so the scalable
+# targets (read/write/backend) are pinned to 0 and the memcached caches/canary/
+# gateway are disabled. Logs are shipped in by Promtail (promtail.yaml).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -17,13 +20,41 @@ spec:
         deploymentMode: SingleBinary
         loki:
           auth_enabled: false
-          commonConfig: { replication_factor: 1 }
-          storage: { type: filesystem }
-        singleBinary: { replicas: 1 }
-        # promtail/alloy ships logs; add as a sibling app for full pipeline.
+          commonConfig:
+            replication_factor: 1
+          storage:
+            type: filesystem
+          # Required by the chart (6.x): a TSDB schema on local filesystem.
+          schemaConfig:
+            configs:
+              - from: "2024-04-01"
+                store: tsdb
+                object_store: filesystem
+                schema: v13
+                index:
+                  prefix: loki_index_
+                  period: 24h
+          limits_config:
+            retention_period: 168h   # 7 days
+        singleBinary:
+          replicas: 1
+          persistence:
+            enabled: true
+            size: 10Gi
+        # SingleBinary requires the scalable targets at zero.
+        read: { replicas: 0 }
+        write: { replicas: 0 }
+        backend: { replicas: 0 }
+        # Single-node: skip memcached, canary, tests, and the nginx gateway.
+        # Push/query Loki directly at the `loki` service on :3100.
+        chunksCache: { enabled: false }
+        resultsCache: { enabled: false }
+        lokiCanary: { enabled: false }
+        test: { enabled: false }
+        gateway: { enabled: false }
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
   syncPolicy:
     automated: { prune: true, selfHeal: true }
-    syncOptions: [CreateNamespace=true]
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
