@@ -41,6 +41,10 @@ rules:
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Jobs: the Composition runs an idempotent `mc` job to create MinIO buckets.
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
