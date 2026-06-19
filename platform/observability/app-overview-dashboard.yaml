@@ -1,0 +1,96 @@
+# A default per-app dashboard: CPU + memory + a live log panel, parameterized by
+# namespace. Provisioned as a ConfigMap that the kube-prometheus-stack Grafana
+# sidecar (label grafana_dashboard=1) auto-imports — so every app gets metrics +
+# logs in one view with no per-app config. Importantly, it's a *dashboard* (not
+# Explore), so anonymous Viewers can see the logs in the embedded console.
+#
+# Note: in the console's full-kiosk embed the variable bar is hidden, so the
+# embed shows the default namespace; use "Open in Grafana" for the namespace
+# picker. (A console-side namespace selector can pass &var-namespace= later.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-app-overview-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  app-overview.json: |
+    {
+      "uid": "openinfra-app-overview",
+      "title": "open-infra / Application Overview",
+      "tags": ["open-infra"],
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "query": "label_values(namespace)",
+            "refresh": 2,
+            "sort": 1,
+            "includeAll": false
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "CPU (cores) by pod",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container!=\"\", pod!=\"\"}[5m])) by (pod)",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Memory (working set) by pod",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"$namespace\", container!=\"\", pod!=\"\"}) by (pod)",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "logs",
+          "title": "Logs — $namespace",
+          "gridPos": { "h": 12, "w": 24, "x": 0, "y": 8 },
+          "datasource": { "type": "loki", "uid": "loki" },
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "enableLogDetails": true,
+            "dedupStrategy": "none",
+            "sortOrder": "Descending"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "loki", "uid": "loki" },
+              "expr": "{namespace=\"$namespace\"}",
+              "queryType": "range"
+            }
+          ]
+        }
+      ]
+    }
