@@ -60,3 +60,44 @@ subjects:
   - kind: Group
     name: system:serviceaccounts:crossplane-system
     apiGroup: rbac.authorization.k8s.io
+---
+# Identity used by the Application Composition's bucket-setup Job to write the
+# per-app MinIO credentials secret into application namespaces. Pre-defined here
+# (not created per-app) so the provider never needs RBAC-creation power. The Job
+# runs in the minio namespace (to read the MinIO root secret via env).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-bucket-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-bucket-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+rules:
+  # Write the per-app MinIO creds secret into any application namespace.
+  # (v2: scope to managed app namespaces rather than cluster-wide.)
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-bucket-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-bucket-setup
+subjects:
+  - kind: ServiceAccount
+    name: openinfra-bucket-setup
+    namespace: minio

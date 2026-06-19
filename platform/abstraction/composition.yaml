@@ -182,41 +182,12 @@ spec:
             {{- end }}
             {{- if and $spec.storage $spec.storage.buckets }}
             ---
-            # --- Object storage ("S3"): per-app creds secret. The MinIO root
-            #     creds are copied in via provider-kubernetes references, so no
-            #     plaintext credential ever sits in this Composition. ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: bucket-creds
-            spec:
-              references:
-                - patchesFrom:
-                    apiVersion: v1
-                    kind: Secret
-                    namespace: minio
-                    name: minio
-                    fieldPath: data.rootUser
-                  toFieldPath: spec.forProvider.manifest.data.MINIO_ACCESS_KEY
-                - patchesFrom:
-                    apiVersion: v1
-                    kind: Secret
-                    namespace: minio
-                    name: minio
-                    fieldPath: data.rootPassword
-                  toFieldPath: spec.forProvider.manifest.data.MINIO_SECRET_KEY
-              forProvider:
-                manifest:
-                  apiVersion: v1
-                  kind: Secret
-                  metadata: { name: {{ $name }}-minio, namespace: {{ $ns }} }
-                  data: {}
-                  stringData:
-                    MINIO_ENDPOINT: "http://minio.minio.svc.cluster.local:9000"
-                    MINIO_BUCKETS: "{{ join "," $spec.storage.buckets }}"
-            ---
-            # --- Object storage: create the bucket(s) (idempotent mc Job) ---
+            # --- Object storage ("S3"): one Job (aws-cli + kubectl in alpine/k8s)
+            #     creates the bucket(s) AND writes the per-app creds secret
+            #     (<name>-minio) into the app namespace. Runs in the minio namespace
+            #     so MinIO root creds come from the minio secret via env — never from
+            #     this Composition — and uses the pre-defined openinfra-bucket-setup
+            #     SA (so the provider needs no RBAC-creation power). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -229,22 +200,25 @@ spec:
                   kind: Job
                   metadata: { name: {{ $name }}-bucket-setup, namespace: minio }
                   spec:
-                    backoffLimit: 10
+                    backoffLimit: 20
                     ttlSecondsAfterFinished: 600
                     template:
                       spec:
+                        serviceAccountName: openinfra-bucket-setup
                         restartPolicy: OnFailure
                         containers:
-                          - name: mc
-                            image: minio/mc:latest
+                          - name: setup
+                            image: alpine/k8s:1.30.0
                             env:
-                              - name: RU
+                              - name: AWS_ACCESS_KEY_ID
                                 valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
-                              - name: RP
+                              - name: AWS_SECRET_ACCESS_KEY
                                 valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
                             command: ["/bin/sh", "-c"]
                             args:
-                              - 'mc alias set m http://minio.minio.svc.cluster.local:9000 "$RU" "$RP" && for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do mc mb --ignore-existing m/$b; done'
+                              - 'for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ join "," $spec.storage.buckets }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
             {{- end }}
             # NOTE: queues (NATS_URL/OPENINFRA_QUEUES) and secrets (envFrom) are
             # injected into the Deployment above; NATS streams are app-declared.
