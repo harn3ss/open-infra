@@ -1,0 +1,62 @@
+# Build the open-infra console image and push it to GHCR.
+#
+# Uses the repo's built-in GITHUB_TOKEN with `packages: write`, so this works on
+# a PRIVATE repo with no PAT. The image package's visibility is set separately in
+# GitHub (Packages settings) — make it public for credential-free cluster pulls,
+# or keep it private and add an imagePullSecret.
+name: build-console
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ui/**"
+      - "console-api/**"
+      - ".github/workflows/build-console.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-console-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercase owner is required by GHCR; repository_owner is already lc here.
+          images: ghcr.io/${{ github.repository_owner }}/open-infra-console
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          # Build context is the repo root so the Dockerfile can pull in both
+          # ui/ (SPA build) and console-api/ (Go build that embeds the SPA).
+          context: .
+          file: console-api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
