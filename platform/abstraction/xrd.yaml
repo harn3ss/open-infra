@@ -10,6 +10,9 @@ metadata:
   name: xapplications.openinfra.dev
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    # Crossplane's CRDs are installed by the crossplane child app (wave -1);
+    # skip dry-run validation so this applies even before the CRD is registered.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
   group: openinfra.dev
   names:

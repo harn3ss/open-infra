@@ -14,6 +14,22 @@ spec:
     targetRevision: 20.1.0
     helm:
       values: |
+        # Bitnami purged docker.io/bitnami/* versioned tags (Aug 2025), so the
+        # chart's pinned images 404. Use the legacy mirror as a stopgap.
+        # TODO(v1): migrate off Bitnami (Valkey or a plain redis:7-alpine manifest).
+        global:
+          security:
+            allowInsecureImages: true
+        image:
+          repository: bitnamilegacy/redis
+        metrics:
+          image: { repository: bitnamilegacy/redis-exporter }
+        volumePermissions:
+          image: { repository: bitnamilegacy/os-shell }
+        sysctl:
+          image: { repository: bitnamilegacy/os-shell }
+        kubectl:
+          image: { repository: bitnamilegacy/kubectl }
         architecture: standalone     # replication for prod
         auth:
           enabled: true              # password delivered via Sealed Secret in prod

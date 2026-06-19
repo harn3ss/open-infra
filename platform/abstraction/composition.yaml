@@ -13,6 +13,7 @@ metadata:
   name: application
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
   compositeTypeRef:
     apiVersion: openinfra.dev/v1

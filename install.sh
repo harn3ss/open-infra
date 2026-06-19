@@ -40,7 +40,12 @@ yget() { # yget some.nested.key  -> value (or empty)
     { lvl=indent($0); key=$0; sub(/^ +/,"",key); sub(/:.*/,"",key)
       stack[lvl]=key; full=""
       for(i=0;i<=lvl;i+=2){ full=full (full?".":"") stack[i] }
-      if(full==path){ v=$0; sub(/^[^:]*:[ ]*/,"",v); gsub(/^"|"$/,"",v); print v; exit } }
+      if(full==path){ v=$0
+        sub(/^[^:]*:[ \t]*/,"",v)   # strip "key:"
+        sub(/[ \t]+#.*$/,"",v)       # strip trailing inline comment
+        sub(/[ \t]+$/,"",v)          # trim trailing whitespace
+        gsub(/^"|"$/,"",v)           # strip surrounding quotes
+        print v; exit } }
   ' "$CONFIG"
 }
 
@@ -95,7 +100,7 @@ fi
 # ── 3. Argo CD ───────────────────────────────────────────────
 LOG "installing Argo CD…"
 RUN "$KUBECTL create namespace argocd --dry-run=client -o yaml | $KUBECTL apply -f -"
-RUN "$KUBECTL -n argocd apply -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
+RUN "$KUBECTL -n argocd apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
 RUN "$KUBECTL -n argocd rollout status deploy/argocd-server --timeout=300s || true"
 
 # ── 4. App-of-apps ───────────────────────────────────────────

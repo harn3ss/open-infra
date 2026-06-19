@@ -26,4 +26,6 @@ spec:
     namespace: cnpg-system
   syncPolicy:
     automated: { prune: true, selfHeal: true }
-    syncOptions: [CreateNamespace=true]
+    # ServerSideApply so the large Pooler CRD isn't dropped by the 256KB
+    # last-applied-configuration annotation limit on client-side apply.
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
