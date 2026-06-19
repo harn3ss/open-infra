@@ -1,0 +1,31 @@
+# app-of-apps root: one Argo Application that installs every platform component.
+# install.sh patches __REPO_URL__ / __PATH__ at apply time (no private values here).
+# Each child component lives as its own Argo Application under platform/<area>/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: open-infra-platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: __REPO_URL__
+    targetRevision: HEAD
+    path: __PATH__
+    directory:
+      recurse: true
+      # Pick up only the component Application manifests (one level per area).
+      # Raw CRs (e.g. abstraction/config/*) are synced by their own child app.
+      include: '{networking,storage,data,observability,security,abstraction}/*.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

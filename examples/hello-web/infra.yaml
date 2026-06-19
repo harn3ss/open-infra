@@ -1,0 +1,14 @@
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: hello-web
+spec:
+  image: ghcr.io/harn3ss/hello-web   # CI replaces the tag on each push
+  port: 8080
+  scaling: { min: 1, max: 5, targetCPUPercent: 70 }
+  domain: hello-web.example                  # dev mode rewrites to sslip.io
+  env:
+    - { name: GREETING, value: "hello from open-infra" }
+  # Uncomment to get a managed Postgres + an object-storage bucket:
+  # database: { engine: postgres, name: hellodb }
+  # storage:  { buckets: [uploads] }

@@ -1,0 +1,18 @@
+# Copy this into your own app repo. ~10 lines of glue; the action does the rest.
+name: deploy
+on:
+  push: { branches: [main] }
+permissions:
+  contents: read
+  packages: write           # push to GHCR
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: harn3ss/open-infra/action@v1
+        with:
+          manifest: infra.yaml
+          registry: ghcr.io
+          gitops-repo: ${{ secrets.OPENINFRA_GITOPS_REPO }}
+          gitops-token: ${{ secrets.OPENINFRA_TOKEN }}

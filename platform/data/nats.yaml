@@ -1,0 +1,29 @@
+# NATS JetStream — queues + pub/sub ("SQS/SNS" in one component).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nats
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://nats-io.github.io/k8s/helm/charts/
+    chart: nats
+    targetRevision: 1.2.2
+    helm:
+      values: |
+        config:
+          jetstream:
+            enabled: true
+            fileStore:
+              pvc: { size: 10Gi }
+        cluster:
+          enabled: false            # enable + size 3 for prod HA
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: nats
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

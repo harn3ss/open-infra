@@ -1,0 +1,27 @@
+# Redis — cache ("ElastiCache"). Bitnami chart, standalone for dev.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redis
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: redis
+    targetRevision: 20.1.0
+    helm:
+      values: |
+        architecture: standalone     # replication for prod
+        auth:
+          enabled: true              # password delivered via Sealed Secret in prod
+        master:
+          persistence: { size: 8Gi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redis
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

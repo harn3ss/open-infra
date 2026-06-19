@@ -1,0 +1,93 @@
+# ─────────────────────────────────────────────────────────────
+# open-infra site config — copy to config.yaml and edit.
+#
+#   cp config.example.yaml config.yaml
+#
+# config.yaml is GITIGNORED. It is the ONLY place your real LAN,
+# domain, and secret references should live. Never commit it.
+# All values below are EXAMPLES/placeholders — replace them.
+# ─────────────────────────────────────────────────────────────
+
+# "dev"  = single-node, non-HA, sslip.io magic DNS, self-signed TLS. Try-it mode.
+# "prod" = multi-node HA (3 servers + N agents), real DNS, real TLS.
+mode: dev
+
+cluster:
+  # Name shown in Argo/Grafana. Cosmetic.
+  name: open-infra
+
+  # k3s version channel. "stable" is fine for most.
+  k3sChannel: stable
+
+  # HA control plane needs 3 servers with embedded etcd. In dev, leave as-is.
+  # Real hostnames/IPs belong here ONLY (this file is ignored by git).
+  servers: []          # e.g. ["10.0.0.11", "10.0.0.12", "10.0.0.13"]
+  agents:  []          # e.g. ["10.0.0.21"]
+
+networking:
+  # MetalLB needs a small pool of spare LAN IPs OUTSIDE your DHCP range.
+  # Reserve these on your router first. EXAMPLE ONLY — set your own:
+  metallbPool: "192.0.2.240-192.0.2.250"
+
+  # Ingress controller bundled with k3s. Keep traefik for v1.
+  ingress: traefik
+
+dns:
+  # "sslip"     -> zero-config magic DNS: <app>.<lb-ip>.sslip.io  (great for dev)
+  # "cloudflare"-> real public DNS via Cloudflare (see edge: below)
+  # "external"  -> ExternalDNS against your own provider
+  provider: sslip
+
+tls:
+  # "selfsigned" -> internal CA for LAN (dev)
+  # "letsencrypt"-> public certs (needs a real domain + reachable HTTP-01, or DNS-01)
+  issuer: selfsigned
+  letsencryptEmail: ""   # required if issuer: letsencrypt
+
+# Public edge — only needed to serve the internet (see docs/architecture.md §edge).
+edge:
+  enabled: false
+  # Cloudflare Tunnel is the recommended public path (no port-forward, no static IP).
+  cloudflare:
+    domain: ""                  # e.g. example.com
+    # Provide these via Sealed Secrets / env at install time — do NOT inline real
+    # tokens here even though this file is ignored. Names reference k8s secrets.
+    tunnelTokenSecret: "cloudflare-tunnel-token"
+    apiTokenSecret: "cloudflare-api-token"   # scoped for DNS-01 + Tunnel
+  # Lightsail + WireGuard is the "I need raw TCP/UDP" advanced tier.
+  wireguard:
+    enabled: false
+    endpoint: ""                # public IP:port of the Lightsail edge
+
+storage:
+  # Fast local NVMe (RWO) for databases. k3s local-path. NEVER put DBs on CIFS/NFS.
+  databaseStorageClass: local-path
+  # NAS-backed shared/bulk volumes (RWX). Point at an SMB/NFS export.
+  shared:
+    enabled: false
+    type: smb                   # smb | nfs
+    server: ""                  # e.g. 192.0.2.50
+    share: ""                   # e.g. /nas
+    # Reuse an existing MinIO data dir if you already have one.
+    minioDataPath: ""           # e.g. /mnt/nas/minio-data
+
+registry:
+  # "ghcr" = zero infra (recommended). "harbor" = fully self-hosted/offline.
+  provider: ghcr
+
+gitops:
+  # The state repo Argo watches (can be this repo's /deploy dir in monorepo mode).
+  repoUrl: ""                   # e.g. https://github.com/me/open-infra-gitops
+  branch: main
+  path: deploy
+
+components:
+  # Toggle platform services. Defaults are batteries-included.
+  minio: true
+  cloudnativePG: true
+  nats: true
+  redis: true
+  observability: true          # kube-prometheus-stack + Loki
+  sealedSecrets: true
+  velero: false                # backups; enable once storage.shared is set
+  serverless: false            # Knative (Phase 5, optional)

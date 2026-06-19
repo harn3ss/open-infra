@@ -1,0 +1,164 @@
+# The compiler: one Application claim -> Deployment + Service + Ingress + HPA,
+# plus an optional CloudNativePG database. Uses pipeline mode with the
+# go-templating function so the fan-out is readable and easy to grow.
+#
+# This is the smallest-useful Composition (Phase 3, v0). Buckets/queues/secrets
+# are stubbed with TODOs and grow next; the user-facing schema (xrd.yaml) already
+# covers them so adding them here needs no API change.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: application
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XApplication
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $name := .observed.composite.resource.metadata.labels "crossplane.io/claim-name" | default .observed.composite.resource.metadata.name }}
+            {{- $ns := .observed.composite.resource.metadata.labels "crossplane.io/claim-namespace" | default "default" }}
+            {{- $scaling := $spec.scaling | default dict }}
+            ---
+            # --- Deployment ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: deployment
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                  spec:
+                    selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+                    template:
+                      metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
+                      spec:
+                        containers:
+                          - name: app
+                            image: {{ $spec.image }}
+                            ports: [ { containerPort: {{ $spec.port }} } ]
+                            # Health checks auto-injected — k8s self-heals.
+                            readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
+                            livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
+                            {{- with $spec.env }}
+                            env:
+                            {{- range . }}
+                              - { name: {{ .name }}, value: "{{ .value }}" }
+                            {{- end }}
+                            {{- end }}
+            ---
+            # --- Service ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata: { name: {{ $name }}, namespace: {{ $ns }} }
+                  spec:
+                    selector: { app.kubernetes.io/name: {{ $name }} }
+                    ports: [ { port: 80, targetPort: {{ $spec.port }} } ]
+            {{- if $spec.domain }}
+            ---
+            # --- Ingress (Traefik) + TLS via cert-manager ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ingress
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    annotations:
+                      cert-manager.io/cluster-issuer: openinfra-issuer
+                  spec:
+                    rules:
+                      - host: {{ $spec.domain }}
+                        http:
+                          paths:
+                            - path: /
+                              pathType: Prefix
+                              backend: { service: { name: {{ $name }}, port: { number: 80 } } }
+                    tls:
+                      - hosts: [ {{ $spec.domain }} ]
+                        secretName: {{ $name }}-tls
+            {{- end }}
+            ---
+            # --- HPA ("ASG") ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: hpa
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: autoscaling/v2
+                  kind: HorizontalPodAutoscaler
+                  metadata: { name: {{ $name }}, namespace: {{ $ns }} }
+                  spec:
+                    scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
+                    minReplicas: {{ $scaling.min | default 1 }}
+                    maxReplicas: {{ $scaling.max | default 5 }}
+                    metrics:
+                      - type: Resource
+                        resource:
+                          name: cpu
+                          target: { type: Utilization, averageUtilization: {{ $scaling.targetCPUPercent | default 70 }} }
+            {{- if $spec.database }}
+            ---
+            # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: database
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: postgresql.cnpg.io/v1
+                  kind: Cluster
+                  metadata: { name: {{ $name }}-db, namespace: {{ $ns }} }
+                  spec:
+                    instances: 1            # 3 for prod HA
+                    storage:
+                      size: 5Gi
+                      storageClass: local-path   # NEVER CIFS/NFS
+                    bootstrap:
+                      initdb: { database: {{ $spec.database.name | default $name }}, owner: app }
+            {{- end }}
+            # TODO(buckets):  emit a MinIO bucket + injected creds per spec.storage.buckets
+            # TODO(queues):   emit a NATS stream + injected creds per spec.queues
+            # TODO(secrets):  mount Sealed Secrets named in spec.secrets
+    - step: ready
+      functionRef:
+        name: function-auto-ready   # marks the XR ready when composed resources are

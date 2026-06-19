@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────
+# open-infra — keep the repo public-safe. NOTHING private here.
+# This repo is destined to become a public open-source project,
+# so anything describing a specific deployment, LAN, or secret
+# must stay OUT of git and live only in a local (ignored) config.
+# ─────────────────────────────────────────────────────────────
+
+# --- Local site/deployment config (the ONLY place real values live) ---
+config.yaml
+config.local.yaml
+*.local.yaml
+/site/
+/sites/
+
+# --- Internal LAN / private infra descriptions ---
+# Anything that names real hosts, subnets, NAS paths, or node inventories.
+inventory.yaml
+inventory.ini
+hosts.yaml
+lan/
+internal/
+private/
+*.private
+*.internal.yaml
+
+# --- Secrets & credentials (never commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+sealed-secrets-key*
+*-key.yaml
+credentials*
+*token*
+!*/templates/*token*       # allow Helm templates that reference tokens by name
+
+# --- Kubernetes / cluster state ---
+kubeconfig
+*.kubeconfig
+.kube/
+k3s.yaml
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# --- Cloudflare / WireGuard / tunnel material ---
+cloudflared/
+*.tunnel.json
+wg*.conf
+*.wgkey
+
+# --- Claude / agent + editor local state ---
+.claude/
+.claude.json
+*.swp
+.DS_Store
+.idea/
+.vscode/
+
+# --- Build / language artifacts ---
+bin/
+dist/
+node_modules/
+__pycache__/
+*.pyc

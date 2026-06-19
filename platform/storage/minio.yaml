@@ -1,0 +1,35 @@
+# MinIO — object storage ("S3"). S3-API compatible. Can reuse an existing NAS
+# data dir via a hostPath/PV (set storage.shared.minioDataPath in config.yaml and
+# wire a PersistentVolume; not committed because the path is site-specific).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.min.io/
+    chart: minio
+    targetRevision: 5.2.0
+    helm:
+      values: |
+        mode: standalone            # dev; use distributed for prod
+        replicas: 1
+        persistence:
+          enabled: true
+          size: 50Gi
+          # storageClass left default; for NAS reuse, bind a pre-made PV instead.
+        resources:
+          requests: { memory: 512Mi }
+        # Root creds come from a Sealed Secret in prod; chart default for dev only.
+        consoleService:
+          type: ClusterIP
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: minio
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

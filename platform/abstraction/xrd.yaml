@@ -1,0 +1,70 @@
+# The public API of open-infra. This CompositeResourceDefinition turns the
+# user-facing `kind: Application` (apiVersion openinfra.dev/v1) into a Crossplane
+# composite. KEEP THIS SCHEMA STABLE — it is the product's contract; the engine
+# behind it may change but users' infra.yaml must keep working.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xapplications.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  group: openinfra.dev
+  names:
+    kind: XApplication
+    plural: xapplications
+  claimNames:
+    kind: Application        # what users write in infra.yaml
+    plural: applications
+  defaultCompositionRef:
+    name: application
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image, port]
+              properties:
+                image:   { type: string, description: "Container image (CI replaces the tag)" }
+                port:    { type: integer, description: "Container port the app listens on" }
+                domain:  { type: string, description: "Hostname for Ingress + TLS + DNS" }
+                scaling:
+                  type: object
+                  properties:
+                    min: { type: integer, default: 1 }
+                    max: { type: integer, default: 5 }
+                    targetCPUPercent: { type: integer, default: 70 }
+                database:
+                  type: object
+                  properties:
+                    engine: { type: string, enum: [postgres], default: postgres }
+                    name:   { type: string }
+                storage:
+                  type: object
+                  properties:
+                    buckets: { type: array, items: { type: string } }
+                queues:
+                  type: array
+                  items: { type: string }
+                env:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:  { type: string }
+                      value: { type: string }
+                secrets:
+                  type: array
+                  items: { type: string }
+                  description: "Names mounted from Sealed Secrets"
+            status:
+              type: object
+              properties:
+                url: { type: string }

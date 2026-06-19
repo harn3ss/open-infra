@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# open-infra CLI — a thin, friendly wrapper over kubectl/Argo for the common loop.
+#   open-infra init     scaffold an infra.yaml in the current app repo
+#   open-infra deploy   validate infra.yaml, render the Application CR, commit to GitOps
+#   open-infra status   show your apps and their health
+#   open-infra logs     tail logs for an app
+set -euo pipefail
+
+KUBECTL="${KUBECTL:-kubectl}"
+command -v "$KUBECTL" >/dev/null 2>&1 || KUBECTL="k3s kubectl"
+SELF="open-infra"
+
+usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+
+cmd_init() {
+  [ -f infra.yaml ] && { echo "infra.yaml already exists"; exit 0; }
+  local name; name="$(basename "$(pwd)")"
+  cat > infra.yaml <<EOF
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: ${name}
+spec:
+  image: ghcr.io/CHANGEME/${name}    # CI replaces the tag on each push
+  port: 8080
+  scaling: { min: 1, max: 5, targetCPUPercent: 70 }
+  domain: ${name}.example            # dev mode rewrites this to sslip.io
+  # database: { engine: postgres, name: ${name}db }
+  # storage:  { buckets: [uploads] }
+  # queues:   [jobs]
+  env:
+    - { name: LOG_LEVEL, value: info }
+EOF
+  echo "wrote infra.yaml — edit it, then: $SELF deploy"
+}
+
+cmd_deploy() {
+  [ -f infra.yaml ] || { echo "no infra.yaml here — run: $SELF init" >&2; exit 1; }
+  echo "validating infra.yaml…"
+  # In CI the reusable Action does build+push+commit. Locally we apply directly
+  # so you can iterate without a full GitOps round-trip.
+  $KUBECTL apply -f infra.yaml
+  local name; name="$(awk '/^  name:/{print $2; exit}' infra.yaml)"
+  echo "applied Application/$name — track it with: $SELF status"
+}
+
+cmd_status() {
+  echo "== Applications =="
+  $KUBECTL get applications.openinfra.dev -A 2>/dev/null || echo "(none yet)"
+  echo; echo "== Argo CD =="
+  $KUBECTL -n argocd get applications 2>/dev/null || echo "(Argo not installed)"
+}
+
+cmd_logs() {
+  local name="${1:-}"; [ -n "$name" ] || { echo "usage: $SELF logs <app>" >&2; exit 1; }
+  $KUBECTL logs -l app.kubernetes.io/name="$name" --tail=100 -f
+}
+
+case "${1:-}" in
+  init)   cmd_init ;;
+  deploy) cmd_deploy ;;
+  status) cmd_status ;;
+  logs)   shift; cmd_logs "$@" ;;
+  ""|-h|--help) usage ;;
+  *) echo "unknown command: $1" >&2; usage; exit 1 ;;
+esac
