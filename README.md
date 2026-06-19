@@ -109,10 +109,10 @@ public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
 - [x] Phase 0 — Cluster foundation (k3s, MetalLB, Traefik, cert-manager) — nginx reachable over HTTPS ✓
 - [x] Phase 1 — GitOps engine (Argo CD app-of-apps reconciling from this repo) ✓
 - [x] Phase 2 — Platform services (MinIO, CloudNativePG, NATS, Redis) — all Healthy ✓
-- [~] Phase 3 — The `Application` abstraction (schema + Composition shipped; live end-to-end demo pending)
-- [~] Phase 4 — Observability (kube-prometheus-stack + Loki installed; default per-app dashboards pending)
+- [x] Phase 3 — The `Application` abstraction (Crossplane XRD + Composition; live end-to-end demo) ✓
+- [x] Phase 4 — Observability — Prometheus/Grafana/Alertmanager + Loki/Promtail; metrics **and** logs in Grafana with no per-app config ✓
 - [ ] Phase 5 — Serverless *(optional)*
-- [~] Phase 6 — DX & packaging (installer, CLI, GitHub Action shipped; docs site pending)
+- [~] Phase 6 — DX & packaging (installer, CLI, GitHub Action + a deployed **web console**; docs site pending)
 - [ ] Phase 7 — Hardening & multi-tenancy
 
 The substrate (Phases 0–2) has been brought up and reconciled end-to-end via
