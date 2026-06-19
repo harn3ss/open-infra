@@ -19,6 +19,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -156,6 +158,21 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.Handle("/k8s/*", proxy.New(client.Host, client.Transport, k8sPrefix, logger))
 	})
 
+	// --- Grafana reverse proxy (same-origin embedding) ---
+	// When GRAFANA_PROXY_TARGET is set, proxy /grafana/* to the in-cluster
+	// Grafana (which must serve_from_sub_path under /grafana). Same-origin means
+	// the console can iframe dashboards with no CORS / cross-origin cookies and
+	// no site-specific URL. No request timeout: Grafana has live/streaming calls.
+	if gt := getenv("GRAFANA_PROXY_TARGET", ""); gt != "" {
+		if gp, err := newGrafanaProxy(gt, logger); err != nil {
+			logger.Error("invalid GRAFANA_PROXY_TARGET", slog.String("error", err.Error()))
+		} else {
+			r.Handle("/grafana", gp)
+			r.Handle("/grafana/*", gp)
+			logger.Info("grafana reverse proxy enabled", slog.String("target", gt))
+		}
+	}
+
 	// --- SPA (fallback for everything else) ---
 	spa, err := newSPAHandler()
 	if err != nil {
@@ -187,20 +204,56 @@ func handleConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// newGrafanaProxy builds a reverse proxy to an in-cluster Grafana that serves
+// from the /grafana subpath. The path (including the /grafana prefix) is passed
+// through unchanged. Frame-blocking headers are dropped so the console can embed
+// dashboards same-origin in an iframe.
+func newGrafanaProxy(target string, logger *slog.Logger) (http.Handler, error) {
+	u, err := url.Parse(target)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, errors.New("GRAFANA_PROXY_TARGET must be an absolute URL")
+	}
+	rp := httputil.NewSingleHostReverseProxy(u)
+	rp.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Del("X-Frame-Options")
+		resp.Header.Del("Content-Security-Policy")
+		return nil
+	}
+	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, e error) {
+		logger.Warn("grafana proxy error", slog.String("error", e.Error()))
+		http.Error(w, "grafana upstream unavailable", http.StatusBadGateway)
+	}
+	return rp, nil
+}
+
+// grafanaSearchURL returns the absolute Grafana dashboard-search URL for
+// server-side calls: the in-cluster proxy target (Grafana under /grafana) when
+// set, else a direct absolute base URL (Grafana at root). Empty if neither is
+// usable server-side (e.g. a relative GRAFANA_BASE_URL like "/grafana").
+func grafanaSearchURL() string {
+	const q = "/api/search?type=dash-db&limit=500"
+	if t := strings.TrimRight(os.Getenv("GRAFANA_PROXY_TARGET"), "/"); t != "" {
+		return t + "/grafana" + q
+	}
+	if b := strings.TrimRight(os.Getenv("GRAFANA_BASE_URL"), "/"); strings.HasPrefix(b, "http") {
+		return b + q
+	}
+	return ""
+}
+
 // handleGrafanaDashboards proxies Grafana's dashboard search to the SPA. The
 // browser can't call Grafana directly (CORS), so the BFF fetches it server-side.
-// Returns an empty list when GRAFANA_BASE_URL is unset or Grafana is unreachable,
-// so the Monitoring page degrades gracefully rather than erroring.
+// Returns an empty list when Grafana isn't configured/reachable so the Monitoring
+// page degrades gracefully rather than erroring.
 func handleGrafanaDashboards(logger *slog.Logger) http.HandlerFunc {
 	cl := &http.Client{Timeout: 10 * time.Second}
 	return func(w http.ResponseWriter, r *http.Request) {
-		base := strings.TrimRight(os.Getenv("GRAFANA_BASE_URL"), "/")
-		if base == "" {
+		endpoint := grafanaSearchURL()
+		if endpoint == "" {
 			writeJSON(w, http.StatusOK, []any{})
 			return
 		}
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
-			base+"/api/search?type=dash-db&limit=500", nil)
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint, nil)
 		if err != nil {
 			writeJSON(w, http.StatusOK, []any{})
 			return
