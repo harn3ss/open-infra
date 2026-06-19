@@ -1,10 +1,12 @@
 # The compiler: one Application claim -> Deployment + Service + Ingress + HPA,
-# plus an optional CloudNativePG database. Uses pipeline mode with the
-# go-templating function so the fan-out is readable and easy to grow.
+# plus on-demand managed services with their connection creds injected as env.
+# Pipeline mode with the go-templating function keeps the fan-out readable.
 #
-# This is the smallest-useful Composition (Phase 3, v0). Buckets/queues/secrets
-# are stubbed with TODOs and grow next; the user-facing schema (xrd.yaml) already
-# covers them so adding them here needs no API change.
+# Implements the full user-facing schema (xrd.yaml):
+#   database        -> CloudNativePG Cluster + injected DATABASE_URL
+#   storage.buckets -> MinIO bucket(s) + per-app creds (MINIO_*) via a setup Job
+#   queues          -> injected NATS_URL + OPENINFRA_QUEUES (streams app-declared)
+#   secrets         -> envFrom each named secret
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
