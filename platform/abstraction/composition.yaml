@@ -30,8 +30,9 @@ spec:
         inline:
           template: |
             {{- $spec := .observed.composite.resource.spec }}
-            {{- $name := .observed.composite.resource.metadata.labels "crossplane.io/claim-name" | default .observed.composite.resource.metadata.name }}
-            {{- $ns := .observed.composite.resource.metadata.labels "crossplane.io/claim-namespace" | default "default" }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $scaling := $spec.scaling | default dict }}
             ---
             # --- Deployment ---
