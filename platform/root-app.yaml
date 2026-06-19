@@ -19,6 +19,9 @@ spec:
       # Pick up only the component Application manifests (one level per area).
       # Raw CRs (e.g. abstraction/config/*) are synced by their own child app.
       include: '{networking,storage,data,observability,security,abstraction,console}/*.yaml'
+      # Nested manifests/ dirs are deployed by their own child app (e.g. the
+      # console), not applied directly by the root app.
+      exclude: '**/manifests/**'
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
