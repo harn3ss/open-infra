@@ -27,6 +27,12 @@ spec:
             auth.anonymous:
               enabled: true
               org_role: Viewer
+            # Serve under /grafana so the console BFF can reverse-proxy it
+            # same-origin (no CORS, no cross-origin cookies). The console embeds
+            # dashboards at /grafana/d/<uid>.
+            server:
+              serve_from_sub_path: true
+              root_url: "%(protocol)s://%(domain)s/grafana"
         prometheus:
           prometheusSpec:
             retention: 7d
