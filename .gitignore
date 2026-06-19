@@ -14,12 +14,15 @@ config.local.yaml
 
 # --- Internal LAN / private infra descriptions ---
 # Anything that names real hosts, subnets, NAS paths, or node inventories.
+# NOTE: these are anchored to the repo root with a leading slash so they only
+# match a top-level private dir — they must NOT swallow Go `internal/` packages
+# in subprojects like console-api/internal/.
 inventory.yaml
 inventory.ini
 hosts.yaml
-lan/
-internal/
-private/
+/lan/
+/internal/
+/private/
 *.private
 *.internal.yaml
 

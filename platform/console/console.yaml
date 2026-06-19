@@ -1,0 +1,25 @@
+# open-infra console — Go BFF that serves the React SPA and proxies the k8s API.
+# Sync-wave 4: depends on Traefik (networking, wave 0) and cert-manager (wave -1).
+# The console namespace and RBAC are created from platform/console/manifests/.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: open-infra-console
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:harn3ss/open-infra.git
+    targetRevision: HEAD
+    path: platform/console/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: open-infra-console
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

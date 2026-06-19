@@ -1,0 +1,41 @@
+# Traefik Ingress for the open-infra console.
+#
+# PLACEHOLDER HOST — edit before deploying:
+#   The host below uses sslip.io with the RFC 5737 documentation IP (192.0.2.1).
+#   Replace it with your actual load-balancer IP in sslip.io notation:
+#     console.<your-lb-ip-dashes>.sslip.io
+#   e.g. if your k3s node is 10.0.1.50 → console.10-0-1-50.sslip.io
+#   For a real domain, just set the host to console.yourdomain.com and point
+#   DNS there. The cert-manager annotation still applies in both cases.
+#
+# TLS is handled by cert-manager using the self-signed openinfra-issuer (dev).
+# For publicly trusted certs, swap the ClusterIssuer for an ACME one.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: console
+  namespace: open-infra-console
+  annotations:
+    # Use the self-signed issuer installed by platform/networking/cluster-issuer.yaml.
+    # Swap for letsencrypt-prod (or similar) when pointing at a real domain.
+    cert-manager.io/cluster-issuer: openinfra-issuer
+    # Traefik is the ingress controller bundled with k3s.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        # PLACEHOLDER — replace 192-0-2-1 with your actual LB IP (dashes, not dots).
+        - console.192-0-2-1.sslip.io
+      secretName: console-tls
+  rules:
+    - host: console.192-0-2-1.sslip.io   # PLACEHOLDER — see note above
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: console
+                port:
+                  number: 80

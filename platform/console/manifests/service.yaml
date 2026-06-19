@@ -1,0 +1,18 @@
+# ClusterIP Service — exposes the console pod on port 80 within the cluster.
+# Traefik ingress (ingress.yaml) routes external traffic here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: console
+  namespace: open-infra-console
+  labels:
+    app: console
+spec:
+  type: ClusterIP
+  selector:
+    app: console
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
