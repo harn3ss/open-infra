@@ -37,12 +37,14 @@ spec:
           env:
             - name: CLUSTER_NAME
               value: "open-infra"
-            # Set GRAFANA_BASE_URL to the in-cluster Grafana service URL or its
-            # ingress hostname so the console can embed/link Grafana dashboards.
-            # Example (in-cluster): http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local
-            # Example (ingress):    https://grafana.192-0-2-1.sslip.io
+            # Same-origin Grafana embedding: the BFF reverse-proxies /grafana/* to
+            # the in-cluster Grafana (which serves_from_sub_path under /grafana),
+            # and the SPA embeds dashboards at the relative /grafana. No CORS, no
+            # cross-origin cookies, no site-specific URL.
             - name: GRAFANA_BASE_URL
-              value: ""
+              value: "/grafana"
+            - name: GRAFANA_PROXY_TARGET
+              value: "http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local"
 
           # Lightweight probes on the /healthz endpoint exposed by the Go BFF.
           readinessProbe:
