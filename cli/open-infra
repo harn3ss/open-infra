@@ -3,6 +3,7 @@
 #   open-infra init [app|model|function]  scaffold an infra.yaml (Application / Model / Function)
 #   open-infra deploy   validate infra.yaml, render the CR, commit to GitOps
 #   open-infra status   show your apps, models, and their health
+#   open-infra oirn     print the resource name (OIRN) of every resource
 #   open-infra logs     tail logs for an app
 set -euo pipefail
 
@@ -10,7 +11,17 @@ KUBECTL="${KUBECTL:-kubectl}"
 command -v "$KUBECTL" >/dev/null 2>&1 || KUBECTL="k3s kubectl"
 SELF="open-infra"
 
-usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Cluster name for OIRNs — matches the console (its CLUSTER_NAME env), falling
+# back to $CLUSTER_NAME then "local" so identifiers line up across CLI + UI.
+cluster_name() {
+  local c="${CLUSTER_NAME:-}"
+  [ -n "$c" ] && { printf '%s' "$c"; return; }
+  c="$($KUBECTL -n open-infra-console get deploy console \
+        -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CLUSTER_NAME")].value}' 2>/dev/null)" || true
+  printf '%s' "${c:-local}"
+}
 
 cmd_init() {
   [ -f infra.yaml ] && { echo "infra.yaml already exists"; exit 0; }
@@ -98,6 +109,26 @@ cmd_status() {
   $KUBECTL get functions.openinfra.dev -A 2>/dev/null || echo "(none yet)"
   echo; echo "== Argo CD =="
   $KUBECTL -n argocd get applications 2>/dev/null || echo "(Argo not installed)"
+  echo; echo "(resource names: $SELF oirn)"
+}
+
+# Print an OIRN (oirn:openinfra:<cluster>:<namespace>:<kind>/<name>) for every
+# resource — the AWS-ARN analog, derived from each object's identity.
+cmd_oirn() {
+  local cluster; cluster="$(cluster_name)"
+  printf '%-11s %s\n' "KIND" "OIRN"
+  local entry kind crd ns nm
+  for entry in application:applications.openinfra.dev \
+               model:models.openinfra.dev \
+               function:functions.openinfra.dev; do
+    kind="${entry%%:*}"; crd="${entry#*:}"
+    $KUBECTL get "$crd" -A \
+      -o jsonpath="{range .items[*]}{.metadata.namespace} {.metadata.name}{'\n'}{end}" 2>/dev/null \
+      | while read -r ns nm; do
+          [ -n "${nm:-}" ] && printf '%-11s oirn:openinfra:%s:%s:%s/%s\n' \
+            "$kind" "$cluster" "$ns" "$kind" "$nm"
+        done
+  done
 }
 
 cmd_logs() {
@@ -109,6 +140,7 @@ case "${1:-}" in
   init)   shift; cmd_init "$@" ;;
   deploy) cmd_deploy ;;
   status) cmd_status ;;
+  oirn)   cmd_oirn ;;
   logs)   shift; cmd_logs "$@" ;;
   ""|-h|--help) usage ;;
   *) echo "unknown command: $1" >&2; usage; exit 1 ;;

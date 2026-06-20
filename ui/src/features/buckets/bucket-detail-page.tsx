@@ -16,6 +16,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
+import { ResourceNameRow } from "@/components/common/resource-name-row";
+import { DangerZone } from "@/components/common/danger-zone";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import {
   EmptyState,
@@ -197,7 +199,6 @@ function ObjectsTab({ bucket }: { bucket: string }) {
 export function BucketDetailPage() {
   const { bucket } = useParams({ strict: false }) as { bucket: string };
   const navigate = useNavigate();
-  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { data: buckets } = useQuery({ queryKey: ["buckets"], queryFn: listBuckets });
   const meta = buckets?.find((b) => b.name === bucket);
@@ -214,12 +215,6 @@ export function BucketDetailPage() {
       icon={<HardDrive className="size-5" />}
       title={bucket}
       subtitle="Object storage bucket (MinIO / S3)"
-      actions={
-        <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-          <Trash2 className="size-4" />
-          Delete bucket
-        </Button>
-      }
     >
       <Tabs defaultValue="objects">
         <TabsList>
@@ -232,6 +227,7 @@ export function BucketDetailPage() {
         <TabsContent value="properties" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
+              <ResourceNameRow kind="bucket" name={bucket} />
               <DetailRow label="Name">{bucket}</DetailRow>
               <DetailRow label="Created">
                 {meta ? age(meta.createdAt) + " ago" : "—"}
@@ -244,20 +240,18 @@ export function BucketDetailPage() {
         </TabsContent>
       </Tabs>
 
-      <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
-        title="Delete bucket?"
-        description={
+      <DangerZone
+        resourceLabel="Bucket"
+        resourceName={bucket}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
           <>
             Permanently delete bucket{" "}
             <span className="font-medium text-foreground">{bucket}</span> and all
             its objects. This cannot be undone.
           </>
         }
-        confirmLabel="Delete bucket"
-        loading={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
       />
     </DetailShell>
   );

@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
+import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState, EmptyState } from "@/components/common/states";
 import { listQueues, publishToQueue, purgeQueue } from "@/lib/api";
@@ -86,6 +87,7 @@ export function QueueDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
+              <ResourceNameRow kind="queue" name={stream} />
               <DetailRow label="Messages">
                 {s.messages.toLocaleString()}
               </DetailRow>

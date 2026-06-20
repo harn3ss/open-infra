@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ExternalLink, Send, Trash2, Zap } from "lucide-react";
+import { ExternalLink, Send, Zap } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
-import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { ResourceNameRow } from "@/components/common/resource-name-row";
+import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { claimHealth } from "@/lib/resource-health";
 import {
@@ -169,7 +170,6 @@ export function FunctionDetailPage() {
     name: string;
   };
   const navigate = useNavigate();
-  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { data: fn, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["function", namespace, name],
@@ -196,12 +196,6 @@ export function FunctionDetailPage() {
       title={name}
       subtitle={`Serverless function · ${namespace}`}
       status={claimHealth(fn)}
-      actions={
-        <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-          <Trash2 className="size-4" />
-          Delete
-        </Button>
-      }
     >
       <Tabs defaultValue="test">
         <TabsList>
@@ -218,6 +212,7 @@ export function FunctionDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
+              <ResourceNameRow kind="function" name={name} namespace={namespace} />
               <DetailRow label="Image">
                 <code className="text-xs">{s?.image ?? "—"}</code>
               </DetailRow>
@@ -278,18 +273,10 @@ export function FunctionDetailPage() {
         </TabsContent>
       </Tabs>
 
-      <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
-        title="Delete Function?"
-        description={
-          <>
-            Permanently delete{" "}
-            <span className="font-medium text-foreground">{name}</span>.
-          </>
-        }
-        confirmLabel="Delete"
-        loading={deleteMutation.isPending}
+      <DangerZone
+        resourceLabel="Function"
+        resourceName={name}
+        deleting={deleteMutation.isPending}
         onConfirm={() => deleteMutation.mutate()}
       />
     </DetailShell>

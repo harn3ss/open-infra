@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bot, BrainCircuit, Eye, EyeOff, Send, Trash2 } from "lucide-react";
+import { Bot, BrainCircuit, Eye, EyeOff, Send } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,8 @@ import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
-import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { ResourceNameRow } from "@/components/common/resource-name-row";
+import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { modelHealth, modelDesiredReplicas } from "@/lib/resource-health";
 import { ApiError, k8sDelete, k8sGet, modelChat, type ChatMessage } from "@/lib/api";
@@ -129,7 +130,6 @@ export function ModelDetailPage() {
     name: string;
   };
   const [showKey, setShowKey] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const navigate = useNavigate();
   const { offlineNodes } = useNodeHealth();
   const podIndex = usePodNodeIndex(namespace);
@@ -175,12 +175,6 @@ export function ModelDetailPage() {
       title={name}
       subtitle={`Managed inference · ${model.spec?.model ?? ""}`}
       status={health}
-      actions={
-        <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
-          <Trash2 className="size-4" />
-          Delete
-        </Button>
-      }
     >
       <Tabs defaultValue="playground">
         <TabsList>
@@ -197,6 +191,7 @@ export function ModelDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
+              <ResourceNameRow kind="model" name={name} namespace={namespace} />
               <DetailRow label="Model">{model.spec?.model ?? "—"}</DetailRow>
               <DetailRow label="High availability">
                 {model.spec?.highAvailability ? (
@@ -302,20 +297,18 @@ export function ModelDetailPage() {
         </TabsContent>
       </Tabs>
 
-      <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
-        title="Delete Model?"
-        description={
+      <DangerZone
+        resourceLabel="Model"
+        resourceName={name}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
           <>
             Permanently delete{" "}
             <span className="font-medium text-foreground">{name}</span> and its
-            GPU-backed endpoint.
+            GPU-backed endpoint. This cannot be undone.
           </>
         }
-        confirmLabel="Delete"
-        loading={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
       />
     </DetailShell>
   );

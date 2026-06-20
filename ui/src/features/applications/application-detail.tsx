@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/common/status-badge";
 import { DetailRow, KeyValueList } from "@/components/common/detail-row";
+import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { age, formatTimestamp } from "@/lib/format";
@@ -76,6 +77,11 @@ export function ApplicationDetail({
                   ) : null}
 
                   <dl className="divide-y divide-border">
+                    <ResourceNameRow
+                      kind="application"
+                      name={app.metadata.name}
+                      namespace={app.metadata.namespace}
+                    />
                     <DetailRow label="Image">
                       <span className="flex items-center gap-1.5">
                         <code className="break-all text-xs">
@@ -234,7 +240,10 @@ export function ApplicationDetail({
             </div>
 
             <Separator />
-            <div className="flex items-center justify-end gap-2 p-4">
+            <div className="flex items-center justify-between gap-2 p-4">
+              <span className="text-sm font-semibold text-destructive">
+                Danger Zone
+              </span>
               <Button variant="destructive" onClick={() => onDelete(app)}>
                 <Trash2 className="size-4" />
                 Delete

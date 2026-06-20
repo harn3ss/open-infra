@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useParams, useNavigate } from "@tanstack/react-router";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Database, Eye, EyeOff } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,9 +9,11 @@ import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
+import { ResourceNameRow } from "@/components/common/resource-name-row";
+import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { k8sGet } from "@/lib/api";
-import { cnpgPaths } from "@/lib/k8s-paths";
+import { k8sDelete, k8sGet } from "@/lib/api";
+import { cnpgPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { type StatusTone } from "@/lib/format";
 import type { CnpgCluster, K8sObject } from "@/types/k8s";
 
@@ -39,6 +41,15 @@ export function DatabaseDetailPage() {
     name: string;
   };
   const [showUri, setShowUri] = useState(false);
+  const navigate = useNavigate();
+  // The CNPG cluster is named "<app>-db" and owned by its Application; deleting
+  // the database means deleting that Application (Crossplane would otherwise
+  // recreate the cluster). Strip the "-db" suffix to get the app name.
+  const appName = name.replace(/-db$/, "");
+  const deleteMutation = useMutation({
+    mutationFn: () => k8sDelete(openinfraPaths.application(namespace, appName)),
+    onSuccess: () => navigate({ to: "/databases" }),
+  });
 
   const { data: db, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["database", namespace, name],
@@ -82,6 +93,7 @@ export function DatabaseDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
+              <ResourceNameRow kind="database" name={name} namespace={namespace} />
               <DetailRow label="Status">{phase ?? "—"}</DetailRow>
               <DetailRow label="Instances">
                 {ready}/{total} ready
@@ -141,6 +153,20 @@ export function DatabaseDetailPage() {
           <YamlViewer value={db} />
         </TabsContent>
       </Tabs>
+
+      <DangerZone
+        resourceLabel="Database"
+        resourceName={name}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
+          <>
+            Permanently delete the application{" "}
+            <span className="font-medium text-foreground">{appName}</span> and its
+            PostgreSQL database. This cannot be undone.
+          </>
+        }
+      />
     </DetailShell>
   );
 }
