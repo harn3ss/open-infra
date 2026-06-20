@@ -82,12 +82,18 @@ gitops:
   path: deploy
 
 components:
-  # Toggle platform services. Defaults are batteries-included.
-  minio: true
-  cloudnativePG: true
-  nats: true
-  redis: true
-  observability: true          # kube-prometheus-stack + Loki
-  sealedSecrets: true
-  velero: false                # backups; enable once storage.shared is set
-  serverless: false            # Knative (Phase 5, optional)
+  # Platform services installed by the GitOps app-of-apps (platform/root-app.yaml).
+  # All are on by default (batteries-included). Per-component install toggles are
+  # on the roadmap; to leave one out today, drop its area from the root-app
+  # include glob. These values are informational until that wiring lands.
+  minio: true                  # object storage (S3)
+  cloudnativePG: true          # managed Postgres (RDS)
+  nats: true                   # queues / JetStream (SQS/SNS)
+  redis: true                  # cache
+  observability: true          # kube-prometheus-stack + Loki + Grafana
+  sealedSecrets: true          # encrypted secrets in Git
+  crossplane: true             # the Application/Model/Function abstraction engine
+  console: true                # the web console (UI for everything)
+  serverless: true             # Knative — kind: Function, scale-to-zero (Phase 5, shipped)
+  gpu: true                    # NVIDIA device plugin + DCGM metrics (GPU nodes only)
+  velero: false                # backups → NAS/MinIO (Phase 7, not yet implemented)
