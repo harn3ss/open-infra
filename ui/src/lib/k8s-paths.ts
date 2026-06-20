@@ -30,6 +30,13 @@ export const appsPaths = {
   deployments: (ns?: string) => `/apis/apps/v1${nsSegment(ns)}/deployments`,
 };
 
+export const networkingPaths = {
+  ingresses: (ns?: string) =>
+    `/apis/networking.k8s.io/v1${nsSegment(ns)}/ingresses`,
+  networkPolicies: (ns?: string) =>
+    `/apis/networking.k8s.io/v1${nsSegment(ns)}/networkpolicies`,
+};
+
 const oiGV = `/apis/${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`;
 
 export const openinfraPaths = {

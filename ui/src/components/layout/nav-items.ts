@@ -2,6 +2,7 @@ import {
   BrainCircuit,
   Boxes,
   Database,
+  Globe,
   HardDrive,
   LayoutDashboard,
   LineChart,
@@ -37,6 +38,7 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Workloads", to: "/workloads", icon: Network, matchPrefix: true, section: "Cluster" },
   { label: "Nodes", to: "/nodes", icon: Server, matchPrefix: true, section: "Cluster" },
+  { label: "Network", to: "/network", icon: Globe, matchPrefix: true, section: "Cluster" },
 
   { label: "Monitoring", to: "/monitoring", icon: LineChart, section: "Observability" },
 ];

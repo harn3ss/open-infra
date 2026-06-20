@@ -120,6 +120,35 @@ export interface ServiceStatus {
 
 export type Service = K8sObject<ServiceSpec, ServiceStatus>;
 
+/* ------------------------------ Networking ------------------------------ */
+
+export interface IngressSpec {
+  ingressClassName?: string;
+  rules?: {
+    host?: string;
+    http?: {
+      paths?: {
+        path?: string;
+        pathType?: string;
+        backend?: { service?: { name?: string; port?: { number?: number } } };
+      }[];
+    };
+  }[];
+  tls?: { hosts?: string[]; secretName?: string }[];
+}
+export interface IngressStatus {
+  loadBalancer?: { ingress?: { ip?: string; hostname?: string }[] };
+}
+export type Ingress = K8sObject<IngressSpec, IngressStatus>;
+
+export interface NetworkPolicySpec {
+  podSelector?: { matchLabels?: Record<string, string> };
+  policyTypes?: string[];
+  ingress?: unknown[];
+  egress?: unknown[];
+}
+export type NetworkPolicy = K8sObject<NetworkPolicySpec, unknown>;
+
 export interface NodeSpec {
   podCIDR?: string;
   taints?: { key: string; value?: string; effect: string }[];

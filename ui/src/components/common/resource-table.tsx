@@ -30,6 +30,8 @@ export interface ResourceTableConfig<T extends K8sObject> {
   deletePath?: (item: T) => string;
   /** Strings used for the global search filter. */
   searchFields: (item: T) => Array<string | undefined>;
+  /** Optional predicate to narrow the list (e.g. only LoadBalancer Services). */
+  filter?: (item: T) => boolean;
   /** Default sort. */
   defaultSort?: SortingState;
   emptyTitle?: string;
@@ -48,8 +50,11 @@ export function ResourceTable<T extends K8sObject>({
   config: ResourceTableConfig<T>;
   className?: string;
 }) {
-  const { items, isLoading, isError, error, live, refetch } = useK8sWatch<T>(
-    config.listPath,
+  const { items: allItems, isLoading, isError, error, live, refetch } =
+    useK8sWatch<T>(config.listPath);
+  const items = useMemo(
+    () => (config.filter ? allItems.filter(config.filter) : allItems),
+    [allItems, config],
   );
   const { filtered } = useListFilter(items, config.searchFields);
 
