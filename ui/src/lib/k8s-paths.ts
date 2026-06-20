@@ -1,5 +1,10 @@
 import {
   APPLICATIONS_PLURAL,
+  CNPG_CLUSTERS_PLURAL,
+  CNPG_GROUP,
+  CNPG_VERSION,
+  FUNCTIONS_PLURAL,
+  MODELS_PLURAL,
   OPENINFRA_GROUP,
   OPENINFRA_VERSION,
 } from "@/types/k8s";
@@ -25,11 +30,25 @@ export const appsPaths = {
   deployments: (ns?: string) => `/apis/apps/v1${nsSegment(ns)}/deployments`,
 };
 
+const oiGV = `/apis/${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`;
+
 export const openinfraPaths = {
-  applications: (ns?: string) =>
-    `/apis/${OPENINFRA_GROUP}/${OPENINFRA_VERSION}${nsSegment(ns)}/${APPLICATIONS_PLURAL}`,
+  applications: (ns?: string) => `${oiGV}${nsSegment(ns)}/${APPLICATIONS_PLURAL}`,
   application: (ns: string, name: string) =>
-    `/apis/${OPENINFRA_GROUP}/${OPENINFRA_VERSION}/namespaces/${ns}/${APPLICATIONS_PLURAL}/${name}`,
+    `${oiGV}/namespaces/${ns}/${APPLICATIONS_PLURAL}/${name}`,
+  functions: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FUNCTIONS_PLURAL}`,
+  function: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${FUNCTIONS_PLURAL}/${name}`,
+  models: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MODELS_PLURAL}`,
+  model: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${MODELS_PLURAL}/${name}`,
+};
+
+export const cnpgPaths = {
+  clusters: (ns?: string) =>
+    `/apis/${CNPG_GROUP}/${CNPG_VERSION}${nsSegment(ns)}/${CNPG_CLUSTERS_PLURAL}`,
+  cluster: (ns: string, name: string) =>
+    `/apis/${CNPG_GROUP}/${CNPG_VERSION}/namespaces/${ns}/${CNPG_CLUSTERS_PLURAL}/${name}`,
 };
 
 /** Single-resource path helpers for GET/DELETE on a named object. */

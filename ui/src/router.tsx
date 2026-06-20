@@ -8,6 +8,11 @@ import { NotFound } from "@/components/layout/not-found";
 import { RouteErrorBoundary } from "@/components/layout/route-error";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { ApplicationsPage } from "@/features/applications/applications-page";
+import { FunctionsPage } from "@/features/functions/functions-page";
+import { ModelsPage } from "@/features/models/models-page";
+import { DatabasesPage } from "@/features/databases/databases-page";
+import { BucketsPage } from "@/features/buckets/buckets-page";
+import { QueuesPage } from "@/features/queues/queues-page";
 import { WorkloadsPage } from "@/features/workloads/workloads-page";
 import { NodesPage } from "@/features/nodes/nodes-page";
 import { MonitoringPage } from "@/features/monitoring/monitoring-page";
@@ -28,6 +33,36 @@ const applicationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/applications",
   component: ApplicationsPage,
+});
+
+const functionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/functions",
+  component: FunctionsPage,
+});
+
+const modelsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/models",
+  component: ModelsPage,
+});
+
+const databasesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/databases",
+  component: DatabasesPage,
+});
+
+const bucketsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/buckets",
+  component: BucketsPage,
+});
+
+const queuesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/queues",
+  component: QueuesPage,
 });
 
 const workloadsRoute = createRoute({
@@ -51,6 +86,11 @@ const monitoringRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
+  functionsRoute,
+  modelsRoute,
+  databasesRoute,
+  bucketsRoute,
+  queuesRoute,
   workloadsRoute,
   nodesRoute,
   monitoringRoute,
