@@ -16,27 +16,18 @@ spec:
     targetRevision: 5.2.0
     helm:
       values: |
-        # Distributed (HA): 4 erasure-coded drives across nodes. Survives a
-        # single node loss (EC tolerates losing up to half the drives). On a
-        # 3-node cluster one node holds 2 drives. For single-node dev, set
-        # mode: standalone + replicas: 1.
-        mode: distributed
-        replicas: 4
+        # Standalone (default) — one instance, fine for dev/single-node. For HA
+        # set config.yaml `storage.highAvailability: true`; install.sh then
+        # selects storage/minio-ha.yaml (distributed, 4 erasure-coded drives)
+        # instead of this file. We don't default to HA.
+        mode: standalone
+        replicas: 1
         persistence:
           enabled: true
-          size: 20Gi
+          size: 50Gi
           # storageClass left default; for NAS reuse, bind a pre-made PV instead.
         resources:
           requests: { memory: 512Mi }
-        # Spread drives across nodes so a node loss doesn't take out a quorum.
-        affinity:
-          podAntiAffinity:
-            preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                podAffinityTerm:
-                  topologyKey: kubernetes.io/hostname
-                  labelSelector:
-                    matchLabels: { app: minio }
         # Root creds come from a Sealed Secret in prod; chart default for dev only.
         consoleService:
           type: ClusterIP
