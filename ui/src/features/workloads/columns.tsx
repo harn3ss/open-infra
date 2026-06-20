@@ -50,10 +50,15 @@ const ageCol = <T extends { metadata: { creationTimestamp?: string } }>(): Colum
 
 /* ------------------------------- Pods ------------------------------- */
 
-function podReady(pod: Pod): string {
+function podReady(pod: Pod, offlineNodes?: Set<string>): string {
   const statuses = pod.status?.containerStatuses ?? [];
-  const ready = statuses.filter((s) => s.ready).length;
   const total = statuses.length || pod.spec?.containers?.length || 0;
+  // On an offline node the kubelet stops reporting, so containerStatuses are
+  // frozen at their last (ready) value and don't reflect reality — an
+  // unreachable pod is not ready, so report 0.
+  const node = pod.spec?.nodeName;
+  if (node && offlineNodes?.has(node)) return `0/${total}`;
+  const ready = statuses.filter((s) => s.ready).length;
   return `${ready}/${total}`;
 }
 
@@ -117,9 +122,11 @@ export function podColumns(
     {
       id: "ready",
       header: "Ready",
-      accessorFn: (p) => podReady(p),
+      accessorFn: (p) => podReady(p, offlineNodes),
       cell: ({ row }) => (
-        <span className="font-mono text-xs">{podReady(row.original)}</span>
+        <span className="font-mono text-xs">
+          {podReady(row.original, offlineNodes)}
+        </span>
       ),
       size: 80,
     },
