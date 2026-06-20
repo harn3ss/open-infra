@@ -33,9 +33,12 @@ spec:
           properties:
             spec:
               type: object
-              required: [image, port]
+              # No hard-required fields: an Application is usually image+port, but it
+              # may be "data-only" (just a database/storage/queues block) — e.g. a
+              # database hand-rolled from the console. The workload renders only when
+              # an image is set.
               properties:
-                image:   { type: string, description: "Container image (CI replaces the tag)" }
+                image:   { type: string, description: "Container image (omit for a data-only app)" }
                 port:    { type: integer, description: "Container port the app listens on" }
                 domain:  { type: string, description: "Hostname for Ingress + TLS + DNS" }
                 scaling:

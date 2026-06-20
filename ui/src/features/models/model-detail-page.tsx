@@ -280,8 +280,21 @@ export function ModelDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="monitoring" className="pt-4">
-          <GrafanaEmbed uid="openinfra-gpu-overview" />
+        <TabsContent value="monitoring" className="space-y-4 pt-4">
+          {/* Resource-scoped: this model's own pods (CPU / memory / logs). */}
+          <div>
+            <p className="pb-2 text-sm font-medium">This model</p>
+            <GrafanaEmbed
+              uid="openinfra-app-overview"
+              vars={{ "var-namespace": namespace, "var-pod": `${name}-.*` }}
+              height={460}
+            />
+          </div>
+          {/* GPU metrics are per-device (cluster-wide) — shown for context. */}
+          <div>
+            <p className="pb-2 text-sm font-medium">GPU devices (cluster)</p>
+            <GrafanaEmbed uid="openinfra-gpu-overview" height={460} />
+          </div>
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">

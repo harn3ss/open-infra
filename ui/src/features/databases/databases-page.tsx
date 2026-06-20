@@ -1,14 +1,18 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
-import { Database } from "lucide-react";
+import { Database, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { NewDatabaseDialog } from "@/features/databases/new-database-dialog";
 import { claimHealth } from "@/lib/resource-health";
-import { openinfraPaths } from "@/lib/k8s-paths";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { useK8sWatch } from "@/hooks/use-k8s-watch";
+import { useNamespace } from "@/lib/namespace-context";
 import { age } from "@/lib/format";
-import type { Application } from "@/types/k8s";
+import type { Application, K8sObject } from "@/types/k8s";
 
 /** Databases are provisioned by an Application's `database:` block — postgres
  *  (CloudNativePG) or mongo (FerretDB). We list them from their owning
@@ -19,6 +23,13 @@ function engineLabel(engine?: string): string {
 
 export function DatabasesPage() {
   const navigate = useNavigate();
+  const { scoped } = useNamespace();
+  const [newOpen, setNewOpen] = useState(false);
+  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
+  const namespaces = nsWatch.items
+    .map((n) => n.metadata.name)
+    .filter((n): n is string => Boolean(n))
+    .sort((a, b) => a.localeCompare(b));
   const columns = useMemo<ColumnDef<Application, unknown>[]>(
     () => [
       {
@@ -103,6 +114,7 @@ export function DatabasesPage() {
   );
 
   return (
+    <>
     <ResourceTablePage<Application>
       icon={<Database />}
       title="Databases"
@@ -119,20 +131,37 @@ export function DatabasesPage() {
       singular="Database"
       plural="Databases"
       emptyTitle="No Databases yet"
-      emptyDescription="Add a `database:` block to an Application (engine: postgres or mongo) and it appears here."
+      emptyDescription="Add a `database:` block to an Application (engine: postgres or mongo), or click New Database."
+      headerActions={
+        <Button onClick={() => setNewOpen(true)}>
+          <Plus className="size-4" />
+          New Database
+        </Button>
+      }
       onRowClick={(a) => {
-        // Postgres has a rich CloudNativePG detail page (cluster <app>-db).
-        // Mongo (FerretDB) has no detail page yet — clicking is a no-op for now.
-        if ((a.spec?.database?.engine ?? "postgres") !== "mongo") {
+        const ns = a.metadata.namespace ?? "default";
+        if ((a.spec?.database?.engine ?? "postgres") === "mongo") {
+          // FerretDB detail keys off the owning Application name.
+          navigate({
+            to: "/databases/mongo/$namespace/$name",
+            params: { namespace: ns, name: a.metadata.name ?? "" },
+          });
+        } else {
+          // Postgres -> the CloudNativePG cluster detail (cluster <app>-db).
           navigate({
             to: "/databases/$namespace/$name",
-            params: {
-              namespace: a.metadata.namespace ?? "default",
-              name: `${a.metadata.name}-db`,
-            },
+            params: { namespace: ns, name: `${a.metadata.name}-db` },
           });
         }
       }}
     />
+      <NewDatabaseDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        namespaces={namespaces}
+        defaultNamespace={scoped || "default"}
+        listPath={openinfraPaths.applications(scoped)}
+      />
+    </>
   );
 }

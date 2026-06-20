@@ -45,6 +45,10 @@ spec:
             {{- $dbName := "" }}
             {{- if $spec.database }}{{ $dbName = ($spec.database.name | default $name) }}{{- end }}
             {{- $dbPass := .observed.composite.resource.metadata.uid | sha256sum | trunc 24 }}
+            {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
+                   image is given. An Application may be database-only — just declare
+                   a `database:` block and the platform provisions the DB, no app. */}}
+            {{- if $spec.image }}
             ---
             # --- Deployment ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -177,6 +181,7 @@ spec:
                         resource:
                           name: cpu
                           target: { type: Utilization, averageUtilization: {{ $scaling.targetCPUPercent | default 70 }} }
+            {{- end }}
             ---
             # --- Tenant isolation: per-container defaults + max size (so the
             #     count quota below never rejects a pod for missing resources) ---

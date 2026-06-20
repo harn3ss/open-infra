@@ -269,7 +269,7 @@ export function FunctionDetailPage() {
         <TabsContent value="monitoring" className="pt-4">
           <GrafanaEmbed
             uid="openinfra-app-overview"
-            vars={{ "var-namespace": namespace }}
+            vars={{ "var-namespace": namespace, "var-pod": `${name}-.*` }}
           />
         </TabsContent>
 
