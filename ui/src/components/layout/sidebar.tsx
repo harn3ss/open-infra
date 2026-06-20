@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -46,11 +47,14 @@ export function Sidebar({
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-2">
         <TooltipProvider delayDuration={0}>
-          {NAV_ITEMS.map((item) => {
+          {NAV_ITEMS.map((item, i) => {
             const active = isActive(pathname, item.to, item.matchPrefix);
+            const showSection =
+              !collapsed &&
+              item.section &&
+              item.section !== NAV_ITEMS[i - 1]?.section;
             const link = (
               <Link
-                key={item.to}
                 to={item.to}
                 className={cn(
                   "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
@@ -65,13 +69,22 @@ export function Sidebar({
                 {!collapsed ? <span>{item.label}</span> : null}
               </Link>
             );
-            return collapsed ? (
-              <Tooltip key={item.to}>
-                <TooltipTrigger asChild>{link}</TooltipTrigger>
-                <TooltipContent side="right">{item.label}</TooltipContent>
-              </Tooltip>
-            ) : (
-              link
+            return (
+              <Fragment key={item.to}>
+                {showSection ? (
+                  <div className="px-3 pb-1 pt-3 text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                    {item.section}
+                  </div>
+                ) : null}
+                {collapsed ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>{link}</TooltipTrigger>
+                    <TooltipContent side="right">{item.label}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  link
+                )}
+              </Fragment>
             );
           })}
         </TooltipProvider>

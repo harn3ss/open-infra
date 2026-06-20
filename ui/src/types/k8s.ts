@@ -186,4 +186,56 @@ export type Application = K8sObject<ApplicationSpec, ApplicationStatus>;
 export const OPENINFRA_GROUP = "openinfra.dev";
 export const OPENINFRA_VERSION = "v1";
 export const APPLICATIONS_PLURAL = "applications";
+
+/* ------------------------ open-infra Function CRD ------------------------- */
+
+export interface FunctionSpec {
+  image: string;
+  port?: number;
+  gpu?: number;
+  scaling?: { min?: number; max?: number; target?: number };
+  queues?: string[];
+  env?: { name: string; value: string }[];
+  secrets?: string[];
+}
+
+/** Serverless (Knative) Function. Named OpenInfraFunction to avoid shadowing the global `Function`. */
+export type OpenInfraFunction = K8sObject<FunctionSpec, ApplicationStatus>;
+export const FUNCTIONS_PLURAL = "functions";
+
+/* -------------------------- open-infra Model CRD -------------------------- */
+
+export interface ModelSpec {
+  model: string;
+  gpu?: number;
+  domain?: string;
+  storageSize?: string;
+}
+
+export interface ModelStatus {
+  endpoint?: string;
+  model?: string;
+  conditions?: Condition[];
+}
+
+export type Model = K8sObject<ModelSpec, ModelStatus>;
+export const MODELS_PLURAL = "models";
+
+/* ---------------------- CloudNativePG managed Postgres -------------------- */
+
+export interface CnpgClusterSpec {
+  instances?: number;
+  storage?: { size?: string; storageClass?: string };
+}
+
+export interface CnpgClusterStatus {
+  phase?: string;
+  readyInstances?: number;
+  instances?: number;
+}
+
+export type CnpgCluster = K8sObject<CnpgClusterSpec, CnpgClusterStatus>;
+export const CNPG_GROUP = "postgresql.cnpg.io";
+export const CNPG_VERSION = "v1";
+export const CNPG_CLUSTERS_PLURAL = "clusters";
 export const APPLICATIONS_CRD_NAME = "applications.openinfra.dev";
