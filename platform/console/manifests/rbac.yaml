@@ -50,12 +50,20 @@ rules:
       - applications
     verbs: [get, list, watch]
 
-  # ── openinfra.dev: full CRUD on the product CRD (the console is the primary
-  #    interface for creating/updating/deleting platform Applications) ─────────
+  # ── openinfra.dev: full CRUD on the product CRDs (the console is the primary
+  #    interface for creating/updating/deleting Applications, Functions, Models) ─
   - apiGroups: [openinfra.dev]
     resources:
       - applications
+      - functions
+      - models
     verbs: [get, list, watch, create, update, patch, delete]
+
+  # ── CloudNativePG: read managed Postgres clusters (the Databases view) ──────
+  - apiGroups: [postgresql.cnpg.io]
+    resources:
+      - clusters
+    verbs: [get, list, watch]
 
   # ── Core write verbs for "create resource" UI (common kinds only) ──────────
   # These verbs let the console create/delete ConfigMaps and Services so basic
