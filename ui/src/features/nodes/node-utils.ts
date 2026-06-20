@@ -37,15 +37,29 @@ export interface NodeCapacity {
   cpuCores: number;
   memoryBytes: string;
   pods: number;
+  gpus: number;
+  gpuModel?: string;
 }
 
 export function nodeCapacity(node: Node): NodeCapacity {
   const cap = node.status?.capacity ?? {};
+  const model = node.metadata.labels?.["openinfra.dev/gpu-model"];
   return {
     cpuCores: parseQuantity(cap["cpu"]),
     memoryBytes: formatBytes(parseQuantity(cap["memory"])),
     pods: Number(cap["pods"] ?? 0),
+    // Advertised by the NVIDIA device plugin; model comes from a node label.
+    gpus: Number(cap["nvidia.com/gpu"] ?? 0),
+    gpuModel: model ? model.replace(/-/g, " ") : undefined,
   };
+}
+
+/** Total GPUs advertised across a set of nodes. */
+export function totalGpus(nodes: Node[]): number {
+  return nodes.reduce(
+    (sum, n) => sum + Number(n.status?.capacity?.["nvidia.com/gpu"] ?? 0),
+    0,
+  );
 }
 
 export function nodeInternalIP(node: Node): string | undefined {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Cpu, FileCode2, MemoryStick, Server } from "lucide-react";
+import { Cpu, FileCode2, MemoryStick, Server, Zap } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import {
   nodeReady,
   nodeRoles,
   nodeWarnings,
+  totalGpus,
 } from "@/features/nodes/node-utils";
 import type { Node } from "@/types/k8s";
 
@@ -83,6 +84,16 @@ function NodeCard({
           </div>
         </div>
 
+        {cap.gpus > 0 ? (
+          <div className="flex items-center gap-2 rounded-md bg-primary/5 px-2.5 py-2 text-sm ring-1 ring-primary/20">
+            <Zap className="size-4 text-primary" />
+            <span className="text-muted-foreground">GPU</span>
+            <span className="ml-auto font-medium text-primary">
+              {cap.gpus}× {cap.gpuModel ?? "GPU"}
+            </span>
+          </div>
+        ) : null}
+
         <div className="space-y-1 text-xs text-muted-foreground">
           {ip ? (
             <div className="flex justify-between">
@@ -136,6 +147,7 @@ export function NodesPage() {
   const [yamlOpen, setYamlOpen] = useState(false);
 
   const readyCount = items.filter((n) => nodeReady(n).ready).length;
+  const gpus = totalGpus(items);
 
   return (
     <div className="space-y-5">
@@ -144,7 +156,7 @@ export function NodesPage() {
         title="Nodes"
         description={
           items.length
-            ? `${readyCount} of ${items.length} nodes ready`
+            ? `${readyCount} of ${items.length} nodes ready${gpus ? ` · ${gpus} GPU${gpus > 1 ? "s" : ""}` : ""}`
             : "Cluster nodes, capacity, and health."
         }
         actions={<LiveIndicator live={live} />}
