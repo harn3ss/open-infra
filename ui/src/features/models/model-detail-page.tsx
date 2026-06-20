@@ -13,10 +13,13 @@ import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { claimHealth } from "@/lib/resource-health";
+import { claimHealth, nodeAwareHealth } from "@/lib/resource-health";
 import { ApiError, k8sDelete, k8sGet, modelChat, type ChatMessage } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
+import { useNodeHealth } from "@/hooks/use-node-health";
+import { usePodNodeIndex } from "@/hooks/use-pod-node-index";
 import { cn } from "@/lib/utils";
+import { AlertTriangle } from "lucide-react";
 import type { K8sObject, Model } from "@/types/k8s";
 
 function decode(v?: string): string {
@@ -128,6 +131,8 @@ export function ModelDetailPage() {
   const [showKey, setShowKey] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const navigate = useNavigate();
+  const { offlineNodes } = useNodeHealth();
+  const podIndex = usePodNodeIndex(namespace);
   const deleteMutation = useMutation({
     mutationFn: () => k8sDelete(openinfraPaths.model(namespace, name)),
     onSuccess: () => navigate({ to: "/models" }),
@@ -152,7 +157,8 @@ export function ModelDetailPage() {
   const data = secret?.data ?? {};
   const endpoint = decode(data["OPENAI_BASE_URL"]);
   const apiKey = decode(data["OPENAI_API_KEY"]);
-  const health = claimHealth(model);
+  const nodes = podIndex.nodesForApp(namespace, name);
+  const health = nodeAwareHealth(claimHealth(model), nodes, offlineNodes);
 
   return (
     <DetailShell
@@ -187,6 +193,35 @@ export function ModelDetailPage() {
               <DetailRow label="Model">{model.spec?.model ?? "—"}</DetailRow>
               <DetailRow label="GPUs">{model.spec?.gpu ?? 1}×</DetailRow>
               <DetailRow label="Namespace">{namespace}</DetailRow>
+              <DetailRow label="Node">
+                {nodes.length === 0 ? (
+                  <span className="text-muted-foreground">
+                    No running pod (scaled to zero or unscheduled)
+                  </span>
+                ) : (
+                  <span className="flex flex-wrap items-center gap-2">
+                    {nodes.map((n) => {
+                      const offline = offlineNodes.has(n);
+                      return (
+                        <span
+                          key={n}
+                          className={cn(
+                            "flex items-center gap-1",
+                            offline && "font-medium text-destructive",
+                          )}
+                          title={offline ? "Node is NotReady" : undefined}
+                        >
+                          {offline ? (
+                            <AlertTriangle className="size-3.5" />
+                          ) : null}
+                          <code className="text-xs">{n}</code>
+                          {offline ? " (offline)" : ""}
+                        </span>
+                      );
+                    })}
+                  </span>
+                )}
+              </DetailRow>
               <DetailRow label="Endpoint (OpenAI-compatible)">
                 <span className="flex items-center gap-1">
                   <code className="text-xs">{endpoint || "—"}</code>

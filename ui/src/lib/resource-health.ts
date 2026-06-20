@@ -31,3 +31,28 @@ export function claimHealth(
   if (conditions.length === 0) return { label: "Pending", tone: "warning" };
   return { label: "Provisioning", tone: "warning" };
 }
+
+/**
+ * Refine a claim's health with the liveness of the node(s) backing it.
+ *
+ * A claim keeps reporting `Ready` for a grace period after its node goes
+ * NotReady (Kubernetes hasn't evicted its pods yet), so a "Ready" Model/App
+ * whose pods all sit on offline nodes is really unreachable. `nodes` are the
+ * node names hosting the claim's pods; `offlineNodes` is the set of NotReady
+ * nodes. With no scheduled pods or no offline nodes, the base health stands.
+ */
+export function nodeAwareHealth(
+  base: Health,
+  nodes: string[],
+  offlineNodes: Set<string>,
+): Health {
+  if (!nodes.length || offlineNodes.size === 0) return base;
+  const offline = nodes.filter((n) => offlineNodes.has(n));
+  if (offline.length === 0) return base;
+  if (offline.length === nodes.length) {
+    // Every backing pod is on a dead node — the claim is not actually serving.
+    return { label: "Node offline", tone: "destructive" };
+  }
+  // Some replicas remain on healthy nodes: degraded, not down.
+  return { label: "Degraded", tone: "warning" };
+}
