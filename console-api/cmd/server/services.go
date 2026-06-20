@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -343,10 +344,22 @@ func handleModelChat(cs kubernetes.Interface, logger *slog.Logger) http.HandlerF
 			writeError(w, http.StatusBadGateway, "model endpoint unknown")
 			return
 		}
+		// Inject the model tag from the secret so callers needn't know it (the
+		// OpenAI API requires a "model" field).
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			payload = map[string]any{}
+		}
+		if _, ok := payload["model"]; !ok {
+			if m := string(sec.Data["MODEL"]); m != "" {
+				payload["model"] = m
+			}
+		}
+		buf, _ := json.Marshal(payload)
 		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			strings.TrimRight(base, "/")+"/chat/completions", r.Body)
+			strings.TrimRight(base, "/")+"/chat/completions", bytes.NewReader(buf))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "bad request")
 			return
