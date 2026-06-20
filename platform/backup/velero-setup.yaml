@@ -1,0 +1,43 @@
+# One-time setup for Velero: create the `velero` bucket in MinIO and write the
+# velero-cloud-credentials secret (AWS-format creds for the S3 backup store),
+# reusing the openinfra-bucket-setup ServiceAccount (cluster-wide secret create)
+# and the MinIO root creds via env — so no credentials are ever committed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: velero-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: 20
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: openinfra-bucket-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: alpine/k8s:1.30.0
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+            - name: AWS_DEFAULT_REGION
+              value: minio
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb s3://velero 2>/dev/null || true
+              printf '[default]\naws_access_key_id=%s\naws_secret_access_key=%s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" > /tmp/cloud
+              kubectl create secret generic velero-cloud-credentials -n velero --from-file=cloud=/tmp/cloud --dry-run=client -o yaml | kubectl apply -f -
+              echo "velero bucket + credentials ready"
