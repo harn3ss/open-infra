@@ -45,8 +45,9 @@ CNCF projects — not a reinvention of databases or storage.
 | Route 53 | DNS | ExternalDNS / sslip.io / Cloudflare |
 | ACM | TLS | cert-manager |
 | S3 | object storage | MinIO |
-| RDS | managed Postgres | CloudNativePG |
+| RDS | managed SQL (`engine: postgres`/`mysql`) | CloudNativePG / MariaDB |
 | DynamoDB | document store (`engine: mongo`) | FerretDB on DocumentDB-Postgres |
+| OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | ElastiCache | cache | Redis |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
@@ -139,23 +140,19 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 
 ## Status
 
-**Working spine — validated on a live 3-node cluster (2 nodes with GPUs).** Phases (see [`docs/roadmap.md`](docs/roadmap.md)):
+**Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
+k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
+MinIO, CloudNativePG, NATS, Redis, kube-prometheus-stack + Loki, Sealed Secrets,
+Knative, Velero). The three public abstractions are shipped and verified
+end-to-end:
 
-- [x] Phase 0 — Cluster foundation (k3s, MetalLB, Traefik, cert-manager) — nginx reachable over HTTPS ✓
-- [x] Phase 1 — GitOps engine (Argo CD app-of-apps reconciling from this repo) ✓
-- [x] Phase 2 — Platform services (MinIO, CloudNativePG, NATS, Redis) — all Healthy ✓
-- [x] Phase 3 — The `Application` abstraction (Crossplane XRD + Composition; live end-to-end demo) ✓
-- [x] Phase 4 — Observability — Prometheus/Grafana/Alertmanager + Loki/Promtail; metrics **and** logs in Grafana with no per-app config ✓
-- [x] Phase 5 — Serverless — `kind: Function` on Knative (scale-to-zero 0→N→0, incl. GPU functions) ✓
-- [x] Phase 6 — DX & packaging (installer, CLI, GitHub Action, and a deployed **web console**) ✓
-- [x] Phase 7 — Hardening & multi-tenancy (per-app ResourceQuota + LimitRange + NetworkPolicy + Sealed Secrets; Velero backups to MinIO with verified restore; Trivy scan + cosign signing in CI) ✓
-- [x] GPU & managed inference — NVIDIA device plugin + DCGM metrics/Grafana, and a Bedrock-like `kind: Model` (GPU-backed, OpenAI-compatible, key-gated) ✓
+- **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
+  (Postgres / MySQL / MongoDB), object storage, and queues — with per-app
+  quotas, limits, and NetworkPolicies.
+- **`Model`** — GPU-backed, OpenAI-compatible inference (open-infra's "Bedrock").
+- **`Function`** — Knative scale-to-zero serverless (open-infra's "Lambda").
 
-A one-command `install.sh` stands up k3s + MetalLB + Argo CD, and the app-of-apps
-installs cert-manager, MinIO, CloudNativePG, NATS, Redis, and the
-kube-prometheus-stack/Loki observability stack. Both abstractions — `Application`
-(Deployment/Service/Ingress/HPA + Postgres/bucket/queue) and `Model` (GPU-backed
-inference) — are shipped and verified end-to-end on the live cluster.
+The build history and phase plan live in [`docs/roadmap.md`](docs/roadmap.md).
 
 > **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap
 > (Bitnami purged its public versioned tags in Aug 2025); migrating off Bitnami
