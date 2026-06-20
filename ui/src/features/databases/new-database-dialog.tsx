@@ -145,7 +145,13 @@ export function NewDatabaseDialog({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="db-engine">Engine</Label>
-            <Select value={engine} onValueChange={setEngine}>
+            <Select
+              value={engine}
+              onValueChange={(v) => {
+                setEngine(v);
+                if (v === "mysql") setHa(false); // HA n/a for MySQL
+              }}
+            >
               <SelectTrigger id="db-engine">
                 <SelectValue placeholder="Engine" />
               </SelectTrigger>
@@ -161,15 +167,22 @@ export function NewDatabaseDialog({
             <label className="flex h-9 items-center gap-2 text-sm">
               <input
                 type="checkbox"
-                checked={ha}
+                checked={ha && engine !== "mysql"}
+                disabled={engine === "mysql"}
                 onChange={(e) => setHa(e.target.checked)}
-                className="size-4 accent-primary"
+                className="size-4 accent-primary disabled:opacity-50"
               />
-              <span className="text-muted-foreground">
+              <span
+                className={
+                  engine === "mysql"
+                    ? "text-muted-foreground/60"
+                    : "text-muted-foreground"
+                }
+              >
                 {engine === "mongo"
                   ? "2 FerretDB replicas (proxy tier)"
                   : engine === "mysql"
-                    ? "not yet supported for MySQL (single instance)"
+                    ? "Not available for MySQL yet (single instance)"
                     : "Primary + standby, auto-failover"}
               </span>
             </label>
