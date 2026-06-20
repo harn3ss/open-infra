@@ -1,0 +1,24 @@
+# Knative Serving operator — installs + manages Knative Serving (scale-to-zero
+# HTTP, the "Lambda" of open-infra) declaratively. We use the operator (vs raw
+# release YAML) so the install is one Helm app + one small KnativeServing CR, and
+# upgrades are a version bump. net-kourier is enabled by that CR (Knative needs its
+# own networking layer; Traefik isn't a supported one).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: knative-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://knative.github.io/operator
+    chart: knative-operator
+    targetRevision: v1.22.2
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: knative-operator
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

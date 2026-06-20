@@ -1,0 +1,37 @@
+# The namespace Knative Serving runs in (the operator reconciles Serving here).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knative-serving
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+# Declares Knative Serving with net-kourier as the ingress. The operator installs
+# serving-core + kourier and keeps config in sync.
+#
+# - config.features enables the podspec fields a `kind: Function` needs for GPU
+#   functions: runtimeClassName (nvidia runtime) + nodeSelector (Knative locks
+#   these down by default).
+# - config.domain (external DNS = the kourier MetalLB IP) is environment-specific,
+#   so it's set out-of-band; the scale-to-zero contract is testable in-cluster
+#   without it.
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+  namespace: knative-serving
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  ingress:
+    kourier:
+      enabled: true
+  config:
+    network:
+      ingress-class: "kourier.ingress.networking.knative.dev"
+    features:
+      kubernetes.podspec-runtimeclassname: enabled
+      kubernetes.podspec-nodeselector: enabled
+  high-availability:
+    replicas: 1
