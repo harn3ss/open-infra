@@ -49,6 +49,10 @@ spec:
                   properties:
                     engine: { type: string, enum: [postgres], default: postgres }
                     name:   { type: string }
+                    # Run a primary + standby on separate nodes with automatic
+                    # failover (CloudNativePG). Survives a node loss; needs >=2
+                    # nodes. Default false = single instance (fine for dev).
+                    highAvailability: { type: boolean, default: false }
                 storage:
                   type: object
                   properties:
