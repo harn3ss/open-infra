@@ -3,8 +3,8 @@
 # drivers + nvidia-container-toolkit are a prerequisite (installed out-of-band on
 # the GPU nodes); this only exposes the GPUs to Kubernetes.
 #
-# Runs only on nodes labeled openinfra.dev/gpu=true (currently cake = RTX A2000,
-# mlbox = RTX 3090), using the nvidia RuntimeClass.
+# Runs only on nodes labeled openinfra.dev/gpu=true (e.g. an RTX A2000 and an
+# RTX 3090), using the nvidia RuntimeClass.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

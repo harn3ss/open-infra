@@ -2,9 +2,9 @@
 #
 # open-infra console — single-container image (BFF + embedded React SPA).
 #
-# IMPORTANT — BUILD CONTEXT MUST BE THE REPO ROOT (/home/cake/open-infra), not
-# console-api/. Both the UI (ui/) and the BFF (console-api/) are needed, so build
-# with the repo root as context:
+# IMPORTANT — BUILD CONTEXT MUST BE THE REPO ROOT, not console-api/. Both the UI
+# (ui/) and the BFF (console-api/) are needed, so build with the repo root as
+# context:
 #
 #     docker build -f console-api/Dockerfile -t open-infra-console:dev .
 #
