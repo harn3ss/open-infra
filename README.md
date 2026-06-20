@@ -46,6 +46,7 @@ CNCF projects — not a reinvention of databases or storage.
 | ACM | TLS | cert-manager |
 | S3 | object storage | MinIO |
 | RDS | managed Postgres | CloudNativePG |
+| DynamoDB | document store (`engine: mongo`) | FerretDB on DocumentDB-Postgres |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | ElastiCache | cache | Redis |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
