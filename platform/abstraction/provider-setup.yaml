@@ -27,7 +27,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 rules:
   - apiGroups: [""]
-    resources: [services, configmaps, secrets, resourcequotas, limitranges]
+    resources: [services, configmaps, secrets, resourcequotas, limitranges, persistentvolumeclaims]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
     resources: [deployments]
