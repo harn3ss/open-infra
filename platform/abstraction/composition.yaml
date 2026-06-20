@@ -247,7 +247,17 @@ spec:
                   kind: Cluster
                   metadata: { name: {{ $name }}-db, namespace: {{ $ns }} }
                   spec:
-                    instances: 1            # 3 for prod HA
+                    # database.highAvailability -> primary + hot standby, streaming
+                    # replication, automatic failover. local-path PVs are node-local,
+                    # so anti-affinity (one instance per node) is what makes the DB
+                    # survive a node loss — the standby is promoted automatically.
+                    instances: {{ if $spec.database.highAvailability }}2{{ else }}1{{ end }}
+                    {{- if $spec.database.highAvailability }}
+                    affinity:
+                      enablePodAntiAffinity: true
+                      topologyKey: kubernetes.io/hostname
+                      podAntiAffinityType: required
+                    {{- end }}
                     storage:
                       size: 5Gi
                       storageClass: local-path   # NEVER CIFS/NFS

@@ -11,6 +11,7 @@ spec:
     - { name: GREETING, value: "hello from open-infra" }
   # Uncomment any of these — the platform provisions them and injects creds:
   # database: { engine: postgres, name: hellodb }   # -> DATABASE_URL
+  #   add highAvailability: true -> primary + standby on separate nodes, auto-failover
   # storage:  { buckets: [uploads] }                # -> MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKETS
   # queues:   [jobs]                                # -> NATS_URL, OPENINFRA_QUEUES
   # secrets:  [hello-extra]                         # -> envFrom that secret (e.g. a Sealed Secret)
