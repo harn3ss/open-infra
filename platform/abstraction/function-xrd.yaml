@@ -43,18 +43,13 @@ spec:
                     min:    { type: integer, default: 0, description: "Min instances (0 = scale to zero)" }
                     max:    { type: integer, default: 10 }
                     target: { type: integer, default: 100, description: "Target concurrent requests per pod" }
-                database:
-                  type: object
-                  properties:
-                    engine: { type: string, enum: [postgres], default: postgres }
-                    name:   { type: string }
-                storage:
-                  type: object
-                  properties:
-                    buckets: { type: array, items: { type: string } }
+                # Functions are stateless compute: they CONNECT to resources, they
+                # don't own them. To use a database/bucket, provision it on an
+                # Application and reference its secret here (e.g. secrets: [api-db-app]).
                 queues:
                   type: array
                   items: { type: string }
+                  description: "Queues this function works with (injects NATS_URL + OPENINFRA_QUEUES)"
                 env:
                   type: array
                   items:
@@ -65,7 +60,7 @@ spec:
                 secrets:
                   type: array
                   items: { type: string }
-                  description: "Names mounted from Sealed Secrets (envFrom)"
+                  description: "Secrets to inject (envFrom) — e.g. an app's DB/bucket creds, or a Sealed Secret"
             status:
               type: object
               properties:

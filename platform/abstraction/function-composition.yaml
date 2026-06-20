@@ -64,27 +64,19 @@ spec:
                         containers:
                           - image: {{ $spec.image }}
                             ports: [ { containerPort: {{ $spec.port | default 8080 }} } ]
-                            {{- if or $spec.env $spec.database $spec.queues }}
+                            {{- if or $spec.env $spec.queues }}
                             env:
                             {{- range $spec.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
-                            {{- end }}
-                            {{- if $spec.database }}
-                              - name: DATABASE_URL
-                                valueFrom:
-                                  secretKeyRef: { name: {{ $name }}-db-app, key: uri }
                             {{- end }}
                             {{- if $spec.queues }}
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
                               - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
                             {{- end }}
                             {{- end }}
-                            {{- $envFrom := list }}
-                            {{- if and $spec.storage $spec.storage.buckets }}{{- $envFrom = append $envFrom (printf "%s-minio" $name) }}{{- end }}
-                            {{- range $spec.secrets }}{{- $envFrom = append $envFrom . }}{{- end }}
-                            {{- if $envFrom }}
+                            {{- if $spec.secrets }}
                             envFrom:
-                            {{- range $envFrom }}
+                            {{- range $spec.secrets }}
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
@@ -92,64 +84,6 @@ spec:
                             resources:
                               limits: { nvidia.com/gpu: {{ $gpu }} }
                             {{- end }}
-            {{- if $spec.database }}
-            ---
-            # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: database
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: postgresql.cnpg.io/v1
-                  kind: Cluster
-                  metadata: { name: {{ $name }}-db, namespace: {{ $ns }} }
-                  spec:
-                    instances: 1
-                    storage:
-                      size: 5Gi
-                      storageClass: local-path
-                    bootstrap:
-                      initdb: { database: {{ $spec.database.name | default $name }}, owner: app }
-            {{- end }}
-            {{- if and $spec.storage $spec.storage.buckets }}
-            ---
-            # --- Object storage ("S3"): a Job creates the bucket(s) + writes the
-            #     per-function creds secret (<name>-minio), same pattern as apps. ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: batch/v1
-                  kind: Job
-                  metadata: { name: {{ $name }}-bucket-setup, namespace: minio }
-                  spec:
-                    backoffLimit: 20
-                    ttlSecondsAfterFinished: 600
-                    template:
-                      spec:
-                        serviceAccountName: openinfra-bucket-setup
-                        restartPolicy: OnFailure
-                        containers:
-                          - name: setup
-                            image: alpine/k8s:1.30.0
-                            env:
-                              - name: AWS_ACCESS_KEY_ID
-                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
-                              - name: AWS_SECRET_ACCESS_KEY
-                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
-                              - name: AWS_DEFAULT_REGION
-                                value: us-east-1
-                            command: ["/bin/sh", "-c"]
-                            args:
-                              - 'for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ join "," $spec.storage.buckets }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
-            {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
