@@ -37,6 +37,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | ElastiCache | cache | **Redis** | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
 | Lambda | serverless | **Knative** | Phase 5, optional, scale-to-zero |
+| Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
 | ECR | registry | **GHCR** (default) / **Harbor** | Harbor for offline/self-host |
 | CloudFormation/CDK | the manifest | **infra.yaml → Crossplane** | the heart of the product |
 | CloudWatch | metrics/logs/alerts | **kube-prometheus-stack** + **Loki** | Grafana = the console |
@@ -56,6 +57,16 @@ and the compiler in [`platform/abstraction/composition.yaml`](../platform/abstra
 behind it changes. Crossplane (Compositions) was chosen over a bespoke operator
 or KubeVela for v1: declarative, CNCF, and "one claim → many resources" fits
 exactly.
+
+## The `Model` abstraction (managed inference)
+
+A second composite, `kind: Model`, is open-infra's "Bedrock": one resource →
+a GPU-backed [Ollama](https://ollama.com) server + an nginx auth sidecar that
+gates an OpenAI-compatible endpoint behind a generated API key, plus a PVC for
+cached weights, a Service, optional Ingress, and a `<name>-model` connection
+secret apps consume like the database secret. GPUs are exposed to the scheduler by
+the NVIDIA device plugin and observed via DCGM (`platform/gpu/`). Host setup and
+usage: [`docs/gpu.md`](gpu.md).
 
 ## Storage tiering (read this twice)
 

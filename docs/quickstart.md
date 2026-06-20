@@ -56,6 +56,10 @@ A 15-line `infra.yaml` becomes Deployment + Service + Ingress + HPA (+ optional
 Postgres/bucket/queue). In dev mode your app is reachable at
 `https://<app>.<lb-ip>.sslip.io` with a self-signed cert.
 
+> **GPU / managed inference?** On a GPU node, `open-infra init model` scaffolds a
+> `kind: Model` — a GPU-backed, OpenAI-compatible endpoint gated by an API key.
+> See [`docs/gpu.md`](gpu.md) for the one-time host setup and how apps consume it.
+
 ## 3. Deploy on `git push` (the AWS-like loop)
 
 Add the reusable Action to your app repo (see
