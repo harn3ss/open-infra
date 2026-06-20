@@ -57,7 +57,7 @@ spec:
                     resources: { requests: { storage: {{ $size }} } }
             ---
             # --- Auth-proxy config (Secret so the key isn't in a plaintext CM).
-            #     nginx $variables below are literal (outside Go-template {{ }}). ---
+            #     nginx $variables below are literal (not Go-template actions). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
