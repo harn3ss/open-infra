@@ -14,7 +14,7 @@ import { ModelsPage } from "@/features/models/models-page";
 import { ModelDetailPage } from "@/features/models/model-detail-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
-import { MongoDetailPage } from "@/features/databases/mongo-detail-page";
+import { ManagedDatabaseDetailPage } from "@/features/databases/managed-detail-page";
 import { QueueDetailPage } from "@/features/queues/queue-detail-page";
 import { BucketsPage } from "@/features/buckets/buckets-page";
 import { BucketDetailPage } from "@/features/buckets/bucket-detail-page";
@@ -78,10 +78,10 @@ const databaseDetailRoute = createRoute({
   component: DatabaseDetailPage,
 });
 
-const mongoDetailRoute = createRoute({
+const managedDbDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/databases/mongo/$namespace/$name",
-  component: MongoDetailPage,
+  path: "/databases/managed/$namespace/$name",
+  component: ManagedDatabaseDetailPage,
 });
 
 const bucketsRoute = createRoute({
@@ -141,7 +141,7 @@ const routeTree = rootRoute.addChildren([
   modelDetailRoute,
   databasesRoute,
   databaseDetailRoute,
-  mongoDetailRoute,
+  managedDbDetailRoute,
   bucketsRoute,
   bucketDetailRoute,
   queuesRoute,

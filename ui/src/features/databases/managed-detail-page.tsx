@@ -27,13 +27,33 @@ function decode(v?: string): string {
   }
 }
 
+// Per-engine wiring for the non-CNPG databases (no Cluster CR — the DB is the
+// stack a mongo/mysql Application provisions, keyed off that Application).
+const ENGINES = {
+  mongo: {
+    label: "MongoDB (FerretDB)",
+    secretSuffix: "-mongo-app",
+    uriKey: "MONGODB_URI",
+    uriLabel: "Connection (MONGODB_URI)",
+    consume: "MONGODB_URI (any MongoDB driver)",
+    podRe: "(mongo|docdb)",
+  },
+  mysql: {
+    label: "MySQL (MariaDB)",
+    secretSuffix: "-mysql-app",
+    uriKey: "DATABASE_URL",
+    uriLabel: "Connection (DATABASE_URL)",
+    consume: "DATABASE_URL (any MySQL driver)",
+    podRe: "mysql",
+  },
+} as const;
+
 /**
- * Detail view for a mongo (FerretDB) database. Unlike postgres there's no CNPG
- * Cluster CR; the database is the FerretDB + DocumentDB-Postgres stack a mongo
- * Application provisions, so we key off the owning Application and its
- * connection secret (<app>-mongo-app). Route name param = the Application name.
+ * Detail view for a managed database that has no CloudNativePG Cluster CR —
+ * mongo (FerretDB) or mysql (MariaDB). Keys off the owning Application + its
+ * connection secret. Route name param = the Application name.
  */
-export function MongoDetailPage() {
+export function ManagedDatabaseDetailPage() {
   const { namespace, name } = useParams({ strict: false }) as {
     namespace: string;
     name: string;
@@ -46,14 +66,19 @@ export function MongoDetailPage() {
   });
 
   const { data: app, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["mongo-app", namespace, name],
+    queryKey: ["managed-db", namespace, name],
     queryFn: () => k8sGet<Application>(openinfraPaths.application(namespace, name)),
   });
+
+  const engineKey = (app?.spec?.database?.engine ?? "mongo") as keyof typeof ENGINES;
+  const e = ENGINES[engineKey] ?? ENGINES.mongo;
+
   const { data: secret } = useQuery({
-    queryKey: ["mongo-secret", namespace, name],
+    queryKey: ["managed-db-secret", namespace, name, engineKey],
+    enabled: Boolean(app),
     queryFn: () =>
       k8sGet<K8sObject<unknown, unknown> & { data?: Record<string, string> }>(
-        `/api/v1/namespaces/${namespace}/secrets/${name}-mongo-app`,
+        `/api/v1/namespaces/${namespace}/secrets/${name}${e.secretSuffix}`,
       ),
     retry: false,
   });
@@ -62,7 +87,7 @@ export function MongoDetailPage() {
   if (isError || !app) return <ErrorState error={error} onRetry={refetch} />;
 
   const db = app.spec?.database;
-  const uri = decode(secret?.data?.["MONGODB_URI"]);
+  const uri = decode(secret?.data?.[e.uriKey]);
   const health = claimHealth(app);
   const ha = Boolean(db?.highAvailability);
 
@@ -72,7 +97,7 @@ export function MongoDetailPage() {
       backLabel="Databases"
       icon={<Database className="size-5" />}
       title={db?.name ?? name}
-      subtitle={`MongoDB (FerretDB) · ${namespace}`}
+      subtitle={`${e.label} · ${namespace}`}
       status={health}
     >
       <Tabs defaultValue="overview">
@@ -87,17 +112,17 @@ export function MongoDetailPage() {
             <CardContent className="divide-y divide-border p-0">
               <ResourceNameRow kind="database" name={name} namespace={namespace} />
               <DetailRow label="Engine">
-                <Badge variant="secondary">MongoDB (FerretDB)</Badge>
+                <Badge variant="secondary">{e.label}</Badge>
               </DetailRow>
               <DetailRow label="Database">{db?.name ?? "—"}</DetailRow>
               <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Application">{name}</DetailRow>
               <DetailRow label="High availability">
-                {ha
+                {engineKey === "mongo" && ha
                   ? "On · 2 FerretDB replicas (proxy tier)"
-                  : "Off (single replica)"}
+                  : "Off (single instance)"}
               </DetailRow>
-              <DetailRow label="Connection (MONGODB_URI)">
+              <DetailRow label={e.uriLabel}>
                 <span className="flex items-center gap-1">
                   <code className="text-xs">
                     {uri ? (showUri ? uri : "•".repeat(16)) : "—"}
@@ -121,19 +146,19 @@ export function MongoDetailPage() {
                 </span>
               </DetailRow>
               <DetailRow label="Apps consume it via">
-                <code className="text-xs">MONGODB_URI</code> (any MongoDB driver)
+                <code className="text-xs">{e.consume}</code>
               </DetailRow>
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="monitoring" className="pt-4">
-          {/* Scoped to this database's FerretDB + DocumentDB-Postgres pods. */}
+          {/* Scoped to this database's backing pods. */}
           <GrafanaEmbed
             uid="openinfra-app-overview"
             vars={{
               "var-namespace": namespace,
-              "var-pod": `${name}-(mongo|docdb)-.*`,
+              "var-pod": `${name}-${e.podRe}-.*`,
             }}
           />
         </TabsContent>
@@ -151,8 +176,8 @@ export function MongoDetailPage() {
         confirmDescription={
           <>
             Permanently delete the application{" "}
-            <span className="font-medium text-foreground">{name}</span> and its
-            FerretDB database. This cannot be undone.
+            <span className="font-medium text-foreground">{name}</span> and its{" "}
+            {e.label} database. This cannot be undone.
           </>
         }
       />

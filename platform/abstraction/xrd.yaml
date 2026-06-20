@@ -53,13 +53,18 @@ spec:
                     # postgres -> CloudNativePG (relational, injects DATABASE_URL).
                     # mongo    -> FerretDB on DocumentDB-Postgres (document store,
                     #             Mongo wire protocol, injects MONGODB_URI). Apache-2.0.
-                    engine: { type: string, enum: [postgres, mongo], default: postgres }
+                    # mysql    -> MariaDB (relational, MySQL wire protocol, injects
+                    #             DATABASE_URL). GPLv2.
+                    engine: { type: string, enum: [postgres, mongo, mysql], default: postgres }
                     name:   { type: string }
                     # postgres: primary + standby on separate nodes with automatic
                     # failover (CloudNativePG). mongo: scales the stateless FerretDB
                     # proxy tier (storage-tier failover is a tracked follow-up).
                     # Needs >=2 nodes. Default false = single instance (fine for dev).
                     highAvailability: { type: boolean, default: false }
+                    # postgres only: enable the pgvector extension (vector
+                    # similarity search) — pairs with kind: Model for RAG.
+                    vector: { type: boolean, default: false }
                 storage:
                   type: object
                   properties:

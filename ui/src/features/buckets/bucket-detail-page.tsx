@@ -32,7 +32,21 @@ import {
   objectDownloadUrl,
   uploadObject,
 } from "@/lib/api";
+import { useK8sWatch } from "@/hooks/use-k8s-watch";
+import { corePaths } from "@/lib/k8s-paths";
 import { age, formatBytes } from "@/lib/format";
+import type { Pod } from "@/types/k8s";
+
+/** Nodes the MinIO storage pods run on (object storage lives there). */
+function useMinioNodes(): string[] {
+  const { items } = useK8sWatch<Pod>(corePaths.pods("minio"));
+  const nodes = new Set<string>();
+  for (const p of items) {
+    if (p.metadata.labels?.["app"] !== "minio") continue;
+    if (p.spec?.nodeName) nodes.add(p.spec.nodeName);
+  }
+  return [...nodes].sort();
+}
 
 function basename(key: string): string {
   const k = key.endsWith("/") ? key.slice(0, -1) : key;
@@ -199,6 +213,7 @@ function ObjectsTab({ bucket }: { bucket: string }) {
 export function BucketDetailPage() {
   const { bucket } = useParams({ strict: false }) as { bucket: string };
   const navigate = useNavigate();
+  const storageNodes = useMinioNodes();
 
   const { data: buckets } = useQuery({ queryKey: ["buckets"], queryFn: listBuckets });
   const meta = buckets?.find((b) => b.name === bucket);
@@ -234,6 +249,28 @@ export function BucketDetailPage() {
               </DetailRow>
               <DetailRow label="Endpoint">
                 {`s3://${bucket} (minio.minio.svc.cluster.local:9000)`}
+              </DetailRow>
+              <DetailRow label="Storage nodes">
+                {storageNodes.length ? (
+                  <span className="flex flex-wrap gap-2">
+                    {storageNodes.map((n) => (
+                      <code key={n} className="text-xs">
+                        {n}
+                      </code>
+                    ))}
+                    {storageNodes.length > 1 ? (
+                      <span className="text-xs text-success">
+                        · distributed ({storageNodes.length} nodes)
+                      </span>
+                    ) : (
+                      <span className="text-xs text-warning">
+                        · single node (no HA)
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
               </DetailRow>
             </CardContent>
           </Card>

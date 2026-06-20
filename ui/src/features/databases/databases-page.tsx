@@ -18,7 +18,14 @@ import type { Application, K8sObject } from "@/types/k8s";
  *  (CloudNativePG) or mongo (FerretDB). We list them from their owning
  *  Application so both engines appear with the engine they use. */
 function engineLabel(engine?: string): string {
-  return engine === "mongo" ? "MongoDB (FerretDB)" : "PostgreSQL";
+  if (engine === "mongo") return "MongoDB (FerretDB)";
+  if (engine === "mysql") return "MySQL (MariaDB)";
+  return "PostgreSQL";
+}
+
+/** Engines without a CloudNativePG Cluster CR use the managed-db detail page. */
+function isManagedEngine(engine?: string): boolean {
+  return engine === "mongo" || engine === "mysql";
 }
 
 export function DatabasesPage() {
@@ -140,10 +147,10 @@ export function DatabasesPage() {
       }
       onRowClick={(a) => {
         const ns = a.metadata.namespace ?? "default";
-        if ((a.spec?.database?.engine ?? "postgres") === "mongo") {
-          // FerretDB detail keys off the owning Application name.
+        if (isManagedEngine(a.spec?.database?.engine)) {
+          // mongo (FerretDB) / mysql (MariaDB) detail keys off the Application.
           navigate({
-            to: "/databases/mongo/$namespace/$name",
+            to: "/databases/managed/$namespace/$name",
             params: { namespace: ns, name: a.metadata.name ?? "" },
           });
         } else {

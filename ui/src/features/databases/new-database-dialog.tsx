@@ -151,6 +151,7 @@ export function NewDatabaseDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="postgres">PostgreSQL (relational)</SelectItem>
+                <SelectItem value="mysql">MySQL / MariaDB (relational)</SelectItem>
                 <SelectItem value="mongo">MongoDB / FerretDB (document)</SelectItem>
               </SelectContent>
             </Select>
@@ -167,7 +168,9 @@ export function NewDatabaseDialog({
               <span className="text-muted-foreground">
                 {engine === "mongo"
                   ? "2 FerretDB replicas (proxy tier)"
-                  : "Primary + standby, auto-failover"}
+                  : engine === "mysql"
+                    ? "not yet supported for MySQL (single instance)"
+                    : "Primary + standby, auto-failover"}
               </span>
             </label>
           </div>
