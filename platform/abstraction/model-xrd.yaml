@@ -1,0 +1,44 @@
+# open-infra's "Bedrock": a second public API, kind: Model. Give it a model name
+# and get a GPU-backed, OpenAI-compatible inference endpoint gated by a generated
+# API key — provisioned the same way `kind: Application` provisions apps.
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xmodels.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XModel
+    plural: xmodels
+  claimNames:
+    kind: Model            # what users write in infra.yaml
+    plural: models
+  defaultCompositionRef:
+    name: model
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [model]
+              properties:
+                model:       { type: string, description: "Ollama model tag, e.g. llama3.1:8b" }
+                gpu:         { type: integer, default: 1, description: "GPUs to allocate" }
+                domain:      { type: string, description: "Hostname for external Ingress + TLS" }
+                storageSize: { type: string, default: "20Gi", description: "PVC size for cached model weights" }
+            status:
+              type: object
+              properties:
+                endpoint: { type: string }
+                model:    { type: string }
