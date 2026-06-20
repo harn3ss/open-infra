@@ -199,7 +199,7 @@ export interface ApplicationSpec {
     max?: number;
     targetCPUPercent?: number;
   };
-  database?: { engine?: string; name?: string };
+  database?: { engine?: string; name?: string; highAvailability?: boolean };
   storage?: { buckets?: string[] };
   queues?: string[];
   env?: { name: string; value: string }[];
