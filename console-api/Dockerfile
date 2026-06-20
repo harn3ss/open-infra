@@ -10,10 +10,9 @@
 #
 # (run from the repository root). All COPY paths below are relative to that root.
 #
-# NOTE on the Go toolchain version: the BFF pins k8s.io/client-go v0.33.x, whose
-# go.mod requires Go >= 1.24. We therefore use golang:1.24-alpine here (the
-# project targets "Go 1.23+", and 1.24 satisfies that). Bump in lock-step with
-# go.mod's `go` directive.
+# NOTE on the Go toolchain version: keep this in lock-step with go.mod's `go`
+# directive. `go mod tidy` raised it to 1.25 (a transitive dep of minio-go/v7
+# requires Go >= 1.25), so the builder must be >= 1.25.
 
 # ---------------------------------------------------------------------------
 # Stage 1 — build the React SPA (produces ui/dist).
@@ -33,7 +32,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2 — build the Go BFF with the SPA embedded.
 # ---------------------------------------------------------------------------
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 WORKDIR /src
 
 # Module graph first for layer caching (re-downloads only when go.mod/sum change).
