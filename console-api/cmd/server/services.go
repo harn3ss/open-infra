@@ -405,6 +405,7 @@ func handleFunctionRoutes(cs kubernetes.Interface, logger *slog.Logger) http.Han
 	specLocations := []string{
 		"/openapi.json", "/swagger.json", "/v3/api-docs",
 		"/q/openapi.json", "/swagger/v1/swagger.json", "/openapi",
+		"/spec.json", // Swagger 2.0 (e.g. httpbin) — parsed the same way (.paths)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := chi.URLParam(r, "namespace")
