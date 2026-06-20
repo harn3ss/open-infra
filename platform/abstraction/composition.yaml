@@ -61,9 +61,10 @@ spec:
                           - name: app
                             image: {{ $spec.image }}
                             ports: [ { containerPort: {{ $spec.port }} } ]
-                            # Requests are required for the HPA to compute CPU%.
+                            # Requests drive the HPA; limits bound the app (tenant).
                             resources:
                               requests: { cpu: 50m, memory: 64Mi }
+                              limits: { cpu: 500m, memory: 512Mi }
                             # Health checks auto-injected — k8s self-heals.
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
@@ -160,6 +161,69 @@ spec:
                         resource:
                           name: cpu
                           target: { type: Utilization, averageUtilization: {{ $scaling.targetCPUPercent | default 70 }} }
+            ---
+            # --- Tenant isolation: per-container defaults + max size (so the
+            #     count quota below never rejects a pod for missing resources) ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: limitrange
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: LimitRange
+                  metadata: { name: {{ $name }}-limits, namespace: {{ $ns }} }
+                  spec:
+                    limits:
+                      - type: Container
+                        max: { cpu: "4", memory: 4Gi }
+                        default: { cpu: 500m, memory: 512Mi }
+                        defaultRequest: { cpu: 50m, memory: 64Mi }
+            ---
+            # --- Tenant isolation: object-count quota (counts only — safe; never
+            #     blocks pods for missing requests/limits) ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: quota
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ResourceQuota
+                  metadata: { name: {{ $name }}-quota, namespace: {{ $ns }} }
+                  spec:
+                    hard:
+                      pods: "50"
+                      persistentvolumeclaims: "20"
+                      services: "20"
+            ---
+            # --- Tenant isolation: restrict ingress to the app's pods to the same
+            #     namespace + the ingress controller (kube-system). Egress stays
+            #     open so DNS / DB / MinIO / NATS keep working. (k3s exempts
+            #     kubelet health probes, verified.) ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata: { name: {{ $name }}-allow, namespace: {{ $ns }} }
+                  spec:
+                    podSelector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          - podSelector: {}
+                          - namespaceSelector:
+                              matchLabels: { kubernetes.io/metadata.name: kube-system }
             {{- if $spec.database }}
             ---
             # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---
