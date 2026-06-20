@@ -37,7 +37,9 @@ export interface K8sList<T extends K8sObject = K8sObject> {
 }
 
 /** A k8s watch event as delivered over the BFF's SSE channel. */
-export type WatchEventType = "ADDED" | "MODIFIED" | "DELETED";
+// BOOKMARK is a resourceVersion checkpoint (no real object payload) sent when
+// the watch is opened with allowWatchBookmarks=true — never a list member.
+export type WatchEventType = "ADDED" | "MODIFIED" | "DELETED" | "BOOKMARK";
 
 export interface WatchEvent<T extends K8sObject = K8sObject> {
   type: WatchEventType;

@@ -82,9 +82,24 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
       queryClient.setQueryData<K8sList<T>>(key, (prev) => {
         if (!prev) return prev;
         const incoming = evt.object;
-        const incomingUid = uidOf(incoming);
         const nextRv =
-          incoming.metadata.resourceVersion ?? prev.metadata.resourceVersion;
+          incoming.metadata?.resourceVersion ?? prev.metadata.resourceVersion;
+
+        // BOOKMARK events (and any payload without a name/uid) are
+        // resourceVersion checkpoints, not resources. Advance the RV but never
+        // add them to the list — otherwise they render as phantom rows/cards
+        // (e.g. a nameless "NotReady" node, or apps that appear to spawn).
+        if (
+          evt.type === "BOOKMARK" ||
+          (!incoming.metadata?.name && !incoming.metadata?.uid)
+        ) {
+          return {
+            ...prev,
+            metadata: { ...prev.metadata, resourceVersion: nextRv },
+          };
+        }
+
+        const incomingUid = uidOf(incoming);
         let items = prev.items;
 
         if (evt.type === "DELETED") {
