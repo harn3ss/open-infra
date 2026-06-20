@@ -23,9 +23,15 @@ spec:
         runtimeClassName: nvidia
         nodeSelector:
           openinfra.dev/gpu: "true"
-        # Clear the chart's default nodeAffinity (it requires Node-Feature-
-        # Discovery labels we don't run); our nodeSelector targets GPU nodes.
-        affinity: {}
+        # Replace the chart's default nodeAffinity (it requires Node-Feature-
+        # Discovery labels we don't run) with our GPU label. Helm replaces list
+        # values, so this overrides the default nodeSelectorTerms entirely.
+        affinity:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - { key: openinfra.dev/gpu, operator: In, values: ["true"] }
   destination:
     server: https://kubernetes.default.svc
     namespace: nvidia-device-plugin
