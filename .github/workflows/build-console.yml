@@ -66,7 +66,7 @@ jobs:
 
       # --- Supply chain: scan + sign the pushed image ---
       - name: Trivy vulnerability scan (SARIF)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-console@${{ steps.build.outputs.digest }}
           format: sarif
