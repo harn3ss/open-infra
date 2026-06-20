@@ -82,10 +82,9 @@ gitops:
   path: deploy
 
 components:
-  # Platform services installed by the GitOps app-of-apps (platform/root-app.yaml).
-  # All are on by default (batteries-included). Per-component install toggles are
-  # on the roadmap; to leave one out today, drop its area from the root-app
-  # include glob. These values are informational until that wiring lands.
+  # Platform services installed by the GitOps app-of-apps. All are on by default
+  # (batteries-included). Set any to `false` to leave it out — install.sh wires
+  # this into the app-of-apps include path.
   minio: true                  # object storage (S3)
   cloudnativePG: true          # managed Postgres (RDS)
   nats: true                   # queues / JetStream (SQS/SNS)
@@ -94,6 +93,6 @@ components:
   sealedSecrets: true          # encrypted secrets in Git
   crossplane: true             # the Application/Model/Function abstraction engine
   console: true                # the web console (UI for everything)
-  serverless: true             # Knative — kind: Function, scale-to-zero (Phase 5, shipped)
+  serverless: true             # Knative — kind: Function, scale-to-zero
   gpu: true                    # NVIDIA device plugin + DCGM metrics (GPU nodes only)
-  velero: false                # backups → NAS/MinIO (Phase 7, not yet implemented)
+  velero: true                 # scheduled backups → MinIO (node-agent fs backups)

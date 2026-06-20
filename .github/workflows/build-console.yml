@@ -18,6 +18,8 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write # cosign keyless signing (Sigstore OIDC)
+  security-events: write # upload Trivy results to the Security tab
 
 concurrency:
   group: build-console-${{ github.ref }}
@@ -49,6 +51,7 @@ jobs:
             type=sha,format=short
 
       - name: Build & push
+        id: build
         uses: docker/build-push-action@v6
         with:
           # Build context is the repo root so the Dockerfile can pull in both
@@ -60,3 +63,31 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # --- Supply chain: scan + sign the pushed image ---
+      - name: Trivy vulnerability scan (SARIF)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-console@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: "true"
+        env:
+          # Cache the vuln DB across runs; avoids rate-limited DB pulls.
+          TRIVY_CACHE_DIR: .trivycache
+
+      - name: Upload Trivy results to the Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-console
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless, Sigstore)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/open-infra-console@${{ steps.build.outputs.digest }}
