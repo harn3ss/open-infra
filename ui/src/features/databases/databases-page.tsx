@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { useNavigate } from "@tanstack/react-router";
 import { Database } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
@@ -19,6 +20,7 @@ function dbTone(phase?: string): StatusTone {
 }
 
 export function DatabasesPage() {
+  const navigate = useNavigate();
   const columns = useMemo<ColumnDef<CnpgCluster, unknown>[]>(
     () => [
       {
@@ -107,6 +109,15 @@ export function DatabasesPage() {
       plural="Databases"
       emptyTitle="No Databases yet"
       emptyDescription="Add `database: { engine: postgres }` to an Application and the platform provisions a Postgres cluster here."
+      onRowClick={(c) =>
+        navigate({
+          to: "/databases/$namespace/$name",
+          params: {
+            namespace: c.metadata.namespace ?? "default",
+            name: c.metadata.name ?? "",
+          },
+        })
+      }
     />
   );
 }

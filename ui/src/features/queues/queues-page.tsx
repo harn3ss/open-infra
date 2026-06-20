@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { type ColumnDef, type SortingState } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { RefreshCw, Send } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { listQueues, type StreamInfo } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 
 export function QueuesPage() {
+  const navigate = useNavigate();
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["queues"],
     queryFn: listQueues,
@@ -129,6 +131,9 @@ export function QueuesPage() {
             getRowId={(s) => `${s.account}/${s.name}`}
             sorting={sorting}
             onSortingChange={setSorting}
+            onRowClick={(s) =>
+              navigate({ to: "/queues/$stream", params: { stream: s.name } })
+            }
             emptyState={
               <EmptyState
                 title="No matches"

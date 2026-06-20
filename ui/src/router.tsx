@@ -9,9 +9,12 @@ import { RouteErrorBoundary } from "@/components/layout/route-error";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { ApplicationsPage } from "@/features/applications/applications-page";
 import { FunctionsPage } from "@/features/functions/functions-page";
+import { FunctionDetailPage } from "@/features/functions/function-detail-page";
 import { ModelsPage } from "@/features/models/models-page";
 import { ModelDetailPage } from "@/features/models/model-detail-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
+import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
+import { QueueDetailPage } from "@/features/queues/queue-detail-page";
 import { BucketsPage } from "@/features/buckets/buckets-page";
 import { BucketDetailPage } from "@/features/buckets/bucket-detail-page";
 import { QueuesPage } from "@/features/queues/queues-page";
@@ -43,6 +46,12 @@ const functionsRoute = createRoute({
   component: FunctionsPage,
 });
 
+const functionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/functions/$namespace/$name",
+  component: FunctionDetailPage,
+});
+
 const modelsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/models",
@@ -61,6 +70,12 @@ const databasesRoute = createRoute({
   component: DatabasesPage,
 });
 
+const databaseDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/databases/$namespace/$name",
+  component: DatabaseDetailPage,
+});
+
 const bucketsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/buckets",
@@ -77,6 +92,12 @@ const queuesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/queues",
   component: QueuesPage,
+});
+
+const queueDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/queues/$stream",
+  component: QueueDetailPage,
 });
 
 const workloadsRoute = createRoute({
@@ -101,12 +122,15 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
   functionsRoute,
+  functionDetailRoute,
   modelsRoute,
   modelDetailRoute,
   databasesRoute,
+  databaseDetailRoute,
   bucketsRoute,
   bucketDetailRoute,
   queuesRoute,
+  queueDetailRoute,
   workloadsRoute,
   nodesRoute,
   monitoringRoute,

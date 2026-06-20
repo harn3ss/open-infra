@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { useNavigate } from "@tanstack/react-router";
 import { Zap } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
@@ -9,6 +10,7 @@ import { age } from "@/lib/format";
 import type { OpenInfraFunction } from "@/types/k8s";
 
 export function FunctionsPage() {
+  const navigate = useNavigate();
   const columns = useMemo<ColumnDef<OpenInfraFunction, unknown>[]>(
     () => [
       {
@@ -95,6 +97,15 @@ export function FunctionsPage() {
       plural="Functions"
       emptyTitle="No Functions yet"
       emptyDescription="Scaffold one with `open-infra init function` — scale-to-zero HTTP or serverless GPU inference."
+      onRowClick={(f) =>
+        navigate({
+          to: "/functions/$namespace/$name",
+          params: {
+            namespace: f.metadata.namespace ?? "default",
+            name: f.metadata.name ?? "",
+          },
+        })
+      }
     />
   );
 }
