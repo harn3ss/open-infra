@@ -12,15 +12,17 @@ import {
 } from "@/features/workloads/columns";
 import { appsPaths, corePaths, resourcePaths } from "@/lib/k8s-paths";
 import { useNamespace } from "@/lib/namespace-context";
+import { useNodeHealth } from "@/hooks/use-node-health";
 import type { Deployment, Pod, Service } from "@/types/k8s";
 
 export function WorkloadsPage() {
   const { scoped } = useNamespace();
+  const { offlineNodes } = useNodeHealth();
 
   const podsConfig: ResourceTableConfig<Pod> = {
     kind: "Pod",
     listPath: corePaths.pods(scoped),
-    columns: podColumns,
+    columns: podColumns(offlineNodes),
     searchFields: (p) => [
       p.metadata.name,
       p.metadata.namespace,

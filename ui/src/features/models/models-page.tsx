@@ -6,8 +6,10 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { NewResourceDialog } from "@/components/common/new-resource-dialog";
 import { Button } from "@/components/ui/button";
-import { claimHealth } from "@/lib/resource-health";
+import { claimHealth, nodeAwareHealth } from "@/lib/resource-health";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
+import { useNodeHealth } from "@/hooks/use-node-health";
+import { usePodNodeIndex } from "@/hooks/use-pod-node-index";
 import { useNamespace } from "@/lib/namespace-context";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
@@ -17,6 +19,8 @@ export function ModelsPage() {
   const navigate = useNavigate();
   const { scoped } = useNamespace();
   const [newOpen, setNewOpen] = useState(false);
+  const { offlineNodes } = useNodeHealth();
+  const podIndex = usePodNodeIndex(scoped);
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
     .map((n) => n.metadata.name)
@@ -67,9 +71,19 @@ export function ModelsPage() {
       {
         id: "status",
         header: "Status",
-        accessorFn: (m) => claimHealth(m).label,
+        accessorFn: (m) =>
+          nodeAwareHealth(
+            claimHealth(m),
+            podIndex.nodesForApp(m.metadata.namespace, m.metadata.name),
+            offlineNodes,
+          ).label,
         cell: ({ row }) => {
-          const h = claimHealth(row.original);
+          const m = row.original;
+          const h = nodeAwareHealth(
+            claimHealth(m),
+            podIndex.nodesForApp(m.metadata.namespace, m.metadata.name),
+            offlineNodes,
+          );
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
         size: 150,
@@ -86,7 +100,7 @@ export function ModelsPage() {
         size: 90,
       },
     ],
-    [],
+    [offlineNodes, podIndex],
   );
 
   return (
