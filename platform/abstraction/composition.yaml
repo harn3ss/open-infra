@@ -177,8 +177,12 @@ spec:
                   metadata: { name: {{ $name }}-limits, namespace: {{ $ns }} }
                   spec:
                     limits:
+                      # max is a safety ceiling against a runaway container, not a
+                      # tenant cap (the ResourceQuota bounds total usage). Keep it
+                      # generous enough for real workloads — e.g. a co-located Model's
+                      # Ollama container needs 8Gi; 4Gi here rejected it at admission.
                       - type: Container
-                        max: { cpu: "4", memory: 4Gi }
+                        max: { cpu: "8", memory: 16Gi }
                         default: { cpu: 500m, memory: 512Mi }
                         defaultRequest: { cpu: 50m, memory: 64Mi }
             ---

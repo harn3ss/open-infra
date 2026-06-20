@@ -39,23 +39,6 @@ spec:
             {{- $key := .observed.composite.resource.metadata.uid | sha256sum | trunc 32 }}
             {{- $svc := printf "%s.%s.svc.cluster.local" $name $ns }}
             ---
-            # --- PVC: cache Ollama model weights so they survive restarts ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: models-pvc
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: v1
-                  kind: PersistentVolumeClaim
-                  metadata: { name: {{ $name }}-models, namespace: {{ $ns }} }
-                  spec:
-                    accessModes: [ReadWriteOnce]
-                    storageClassName: local-path   # local NVMe; never CIFS/NFS
-                    resources: { requests: { storage: {{ $size }} } }
-            ---
             # --- Auth-proxy config (Secret so the key isn't in a plaintext CM).
             #     nginx $variables below are literal (not Go-template actions). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -133,8 +116,13 @@ spec:
                               - { name: proxy-conf, mountPath: /etc/nginx/conf.d }
                             readinessProbe: { tcpSocket: { port: 8080 } }
                         volumes:
+                          # Ephemeral weight cache. Stateless by design: a node-local
+                          # PVC would pin the Model to one node (local-path PVs carry a
+                          # hostname nodeAffinity), so it could never reschedule when
+                          # that node fails. The startup `ollama pull` re-fetches weights
+                          # on any GPU node; sizeLimit bounds the scratch space.
                           - name: models
-                            persistentVolumeClaim: { claimName: {{ $name }}-models }
+                            emptyDir: { sizeLimit: {{ $size }} }
                           - name: proxy-conf
                             secret: { secretName: {{ $name }}-proxy-conf }
             ---
