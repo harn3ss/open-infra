@@ -202,6 +202,7 @@ export interface FunctionSpec {
 /** Serverless (Knative) Function. Named OpenInfraFunction to avoid shadowing the global `Function`. */
 export type OpenInfraFunction = K8sObject<FunctionSpec, ApplicationStatus>;
 export const FUNCTIONS_PLURAL = "functions";
+export const FUNCTIONS_CRD_NAME = "functions.openinfra.dev";
 
 /* -------------------------- open-infra Model CRD -------------------------- */
 
@@ -220,6 +221,7 @@ export interface ModelStatus {
 
 export type Model = K8sObject<ModelSpec, ModelStatus>;
 export const MODELS_PLURAL = "models";
+export const MODELS_CRD_NAME = "models.openinfra.dev";
 
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
