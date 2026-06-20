@@ -27,9 +27,11 @@ metrics **and** logs, no per-app config (4); serverless `kind: Function` on Knat
 — scale-to-zero 0→N→0 verified (5); and the installer/CLI/Action + a deployed web
 console (6). On top of the numbered plan: GPU scheduling + DCGM metrics, a
 Bedrock-style `kind: Model` (GPU-backed, OpenAI-compatible, key-gated inference),
-and GPU-capable serverless functions. **Phase 7** (hardening) is in progress —
-per-app ResourceQuota/LimitRange/NetworkPolicy + Sealed Secrets shipped and
-verified; Velero backups and image scanning remain.
+and GPU-capable serverless functions. **Phase 7** (hardening) is done — per-app
+ResourceQuota/LimitRange/NetworkPolicy + Sealed Secrets, Velero scheduled backups
+to MinIO (backup→delete→restore verified), and Trivy image scanning + cosign
+signing in CI. (Argo Rollouts / progressive delivery is the one optional Phase 7
+item left for a future iteration.)
 
 Issues surfaced and fixed during live bring-up (kept here so they don't resurface):
 

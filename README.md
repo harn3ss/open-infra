@@ -1,5 +1,9 @@
 # open-infra
 
+[![Release](https://img.shields.io/github/v/release/elemenopyunome/open-infra?sort=semver)](https://github.com/elemenopyunome/open-infra/releases)
+[![Build console](https://github.com/elemenopyunome/open-infra/actions/workflows/build-console.yml/badge.svg)](https://github.com/elemenopyunome/open-infra/actions/workflows/build-console.yml)
+[![License: Apache-2.0](https://img.shields.io/github/license/elemenopyunome/open-infra)](LICENSE)
+
 > A **free, self-hostable mini-cloud**. Drop one simple `infra.yaml` into your app
 > repo, `git push`, and get an AWS-like managed experience — autoscaling HTTPS
 > services, a Postgres database, object storage, queues — running on your own
@@ -143,7 +147,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 - [x] Phase 4 — Observability — Prometheus/Grafana/Alertmanager + Loki/Promtail; metrics **and** logs in Grafana with no per-app config ✓
 - [x] Phase 5 — Serverless — `kind: Function` on Knative (scale-to-zero 0→N→0, incl. GPU functions) ✓
 - [x] Phase 6 — DX & packaging (installer, CLI, GitHub Action, and a deployed **web console**) ✓
-- [~] Phase 7 — Hardening & multi-tenancy (per-app ResourceQuota + LimitRange + NetworkPolicy shipped; backups + image scanning pending)
+- [x] Phase 7 — Hardening & multi-tenancy (per-app ResourceQuota + LimitRange + NetworkPolicy + Sealed Secrets; Velero backups to MinIO with verified restore; Trivy scan + cosign signing in CI) ✓
 - [x] GPU & managed inference — NVIDIA device plugin + DCGM metrics/Grafana, and a Bedrock-like `kind: Model` (GPU-backed, OpenAI-compatible, key-gated) ✓
 
 A one-command `install.sh` stands up k3s + MetalLB + Argo CD, and the app-of-apps

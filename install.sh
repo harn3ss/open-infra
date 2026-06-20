@@ -56,6 +56,29 @@ METALLB_POOL="$(yget networking.metallbPool)"
 GITOPS_REPO="$(yget gitops.repoUrl)"
 GITOPS_PATH="$(yget gitops.path)"; GITOPS_PATH="${GITOPS_PATH:-deploy}"
 
+# Per-component install toggles (config.yaml `components.*`). Default = install
+# everything; a component set to "false" is excluded from the app-of-apps include
+# path. (console manifests/ are always excluded — deployed by the console child app.)
+EXCLUDES="**/manifests/**"
+excl() {
+  if [ "$(yget "components.$1")" = "false" ]; then
+    EXCLUDES="${EXCLUDES},$2"
+    LOG "component disabled: $1"
+  fi
+}
+excl minio         "storage/minio.yaml"
+excl cloudnativePG "data/cloudnativepg.yaml"
+excl nats          "data/nats.yaml"
+excl redis         "data/redis.yaml"
+excl observability "observability/*"
+excl sealedSecrets "security/sealed-secrets.yaml"
+excl crossplane    "abstraction/*"
+excl console       "console/*"
+excl serverless    "serverless/*"
+excl gpu           "gpu/*"
+excl velero        "backup/*"
+case "$EXCLUDES" in *,*) EXCLUDE_GLOB="{${EXCLUDES}}";; *) EXCLUDE_GLOB="$EXCLUDES";; esac
+
 LOG "mode=$MODE cluster=$CLUSTER_NAME k3s=$K3S_CHANNEL"
 [ "$DRY_RUN" = 1 ] && LOG "DRY RUN — no changes will be made"
 
@@ -112,9 +135,10 @@ fi
 LOG "bootstrapping app-of-apps from $GITOPS_REPO ($GITOPS_PATH)…"
 # root-app.yaml carries no private values; repo/path are patched in at apply time.
 if [ "$DRY_RUN" = 1 ]; then
-  printf '  + apply platform/root-app.yaml (repoURL=%s path=%s)\n' "$GITOPS_REPO" "$GITOPS_PATH"
+  printf '  + apply platform/root-app.yaml (repoURL=%s path=%s exclude=%s)\n' "$GITOPS_REPO" "$GITOPS_PATH" "$EXCLUDE_GLOB"
 else
   sed -e "s#__REPO_URL__#${GITOPS_REPO}#g" -e "s#__PATH__#${GITOPS_PATH}#g" \
+    -e "s#'\*\*/manifests/\*\*'#'${EXCLUDE_GLOB}'#g" \
     "${REPO_DIR}/platform/root-app.yaml" | $KUBECTL apply -f -
 fi
 
