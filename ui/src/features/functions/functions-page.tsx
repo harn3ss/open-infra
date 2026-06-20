@@ -1,16 +1,31 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
-import { Zap } from "lucide-react";
+import { Plus, Zap } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { NewResourceDialog } from "@/components/common/new-resource-dialog";
+import { Button } from "@/components/ui/button";
 import { claimHealth } from "@/lib/resource-health";
-import { openinfraPaths } from "@/lib/k8s-paths";
+import { useK8sWatch } from "@/hooks/use-k8s-watch";
+import { useNamespace } from "@/lib/namespace-context";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
-import type { OpenInfraFunction } from "@/types/k8s";
+import {
+  FUNCTIONS_CRD_NAME,
+  type K8sObject,
+  type OpenInfraFunction,
+} from "@/types/k8s";
 
 export function FunctionsPage() {
   const navigate = useNavigate();
+  const { scoped } = useNamespace();
+  const [newOpen, setNewOpen] = useState(false);
+  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
+  const namespaces = nsWatch.items
+    .map((n) => n.metadata.name)
+    .filter((n): n is string => Boolean(n))
+    .sort((a, b) => a.localeCompare(b));
   const columns = useMemo<ColumnDef<OpenInfraFunction, unknown>[]>(
     () => [
       {
@@ -86,26 +101,46 @@ export function FunctionsPage() {
   );
 
   return (
-    <ResourceTablePage<OpenInfraFunction>
-      icon={<Zap />}
-      title="Functions"
-      description="Serverless, scale-to-zero HTTP — open-infra's Lambda (Knative). Scales 0→N→0 with traffic; optional GPU."
-      listPath={openinfraPaths.functions}
-      columns={columns}
-      search={(f) => [f.metadata.name, f.metadata.namespace, f.spec?.image]}
-      singular="Function"
-      plural="Functions"
-      emptyTitle="No Functions yet"
-      emptyDescription="Scaffold one with `open-infra init function` — scale-to-zero HTTP or serverless GPU inference."
-      onRowClick={(f) =>
-        navigate({
-          to: "/functions/$namespace/$name",
-          params: {
-            namespace: f.metadata.namespace ?? "default",
-            name: f.metadata.name ?? "",
-          },
-        })
-      }
-    />
+    <>
+      <ResourceTablePage<OpenInfraFunction>
+        icon={<Zap />}
+        title="Functions"
+        description="Serverless, scale-to-zero HTTP — open-infra's Lambda (Knative). Scales 0→N→0 with traffic; optional GPU."
+        listPath={openinfraPaths.functions}
+        columns={columns}
+        search={(f) => [f.metadata.name, f.metadata.namespace, f.spec?.image]}
+        singular="Function"
+        plural="Functions"
+        emptyTitle="No Functions yet"
+        emptyDescription="Create one, or scaffold with `open-infra init function`."
+        onRowClick={(f) =>
+          navigate({
+            to: "/functions/$namespace/$name",
+            params: {
+              namespace: f.metadata.namespace ?? "default",
+              name: f.metadata.name ?? "",
+            },
+          })
+        }
+        headerActions={
+          <Button onClick={() => setNewOpen(true)}>
+            <Plus className="size-4" />
+            New Function
+          </Button>
+        }
+      />
+      <NewResourceDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        kind="Function"
+        crdName={FUNCTIONS_CRD_NAME}
+        createPath={openinfraPaths.functions}
+        listPath={openinfraPaths.functions(scoped)}
+        namespaces={namespaces}
+        defaultNamespace={scoped}
+        icon={<Zap className="size-5 text-primary" />}
+        description="A scale-to-zero HTTP service (Knative). Set the image and scaling; optionally a GPU."
+      />
+    </>
   );
 }

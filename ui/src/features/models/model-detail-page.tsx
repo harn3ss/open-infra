@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Bot, BrainCircuit, Eye, EyeOff, Send } from "lucide-react";
+import { Bot, BrainCircuit, Eye, EyeOff, Send, Trash2 } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,9 +11,10 @@ import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { claimHealth } from "@/lib/resource-health";
-import { ApiError, k8sGet, modelChat, type ChatMessage } from "@/lib/api";
+import { ApiError, k8sDelete, k8sGet, modelChat, type ChatMessage } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { cn } from "@/lib/utils";
 import type { K8sObject, Model } from "@/types/k8s";
@@ -125,6 +126,12 @@ export function ModelDetailPage() {
     name: string;
   };
   const [showKey, setShowKey] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const navigate = useNavigate();
+  const deleteMutation = useMutation({
+    mutationFn: () => k8sDelete(openinfraPaths.model(namespace, name)),
+    onSuccess: () => navigate({ to: "/models" }),
+  });
 
   const { data: model, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["model", namespace, name],
@@ -155,6 +162,12 @@ export function ModelDetailPage() {
       title={name}
       subtitle={`Managed inference · ${model.spec?.model ?? ""}`}
       status={health}
+      actions={
+        <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+          <Trash2 className="size-4" />
+          Delete
+        </Button>
+      }
     >
       <Tabs defaultValue="playground">
         <TabsList>
@@ -215,6 +228,22 @@ export function ModelDetailPage() {
           <YamlViewer value={model} />
         </TabsContent>
       </Tabs>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete Model?"
+        description={
+          <>
+            Permanently delete{" "}
+            <span className="font-medium text-foreground">{name}</span> and its
+            GPU-backed endpoint.
+          </>
+        }
+        confirmLabel="Delete"
+        loading={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
     </DetailShell>
   );
 }

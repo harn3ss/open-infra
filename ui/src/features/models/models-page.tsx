@@ -1,16 +1,27 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
-import { BrainCircuit } from "lucide-react";
+import { BrainCircuit, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { NewResourceDialog } from "@/components/common/new-resource-dialog";
+import { Button } from "@/components/ui/button";
 import { claimHealth } from "@/lib/resource-health";
-import { openinfraPaths } from "@/lib/k8s-paths";
+import { useK8sWatch } from "@/hooks/use-k8s-watch";
+import { useNamespace } from "@/lib/namespace-context";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
-import type { Model } from "@/types/k8s";
+import { MODELS_CRD_NAME, type K8sObject, type Model } from "@/types/k8s";
 
 export function ModelsPage() {
   const navigate = useNavigate();
+  const { scoped } = useNamespace();
+  const [newOpen, setNewOpen] = useState(false);
+  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
+  const namespaces = nsWatch.items
+    .map((n) => n.metadata.name)
+    .filter((n): n is string => Boolean(n))
+    .sort((a, b) => a.localeCompare(b));
   const columns = useMemo<ColumnDef<Model, unknown>[]>(
     () => [
       {
@@ -79,26 +90,46 @@ export function ModelsPage() {
   );
 
   return (
-    <ResourceTablePage<Model>
-      icon={<BrainCircuit />}
-      title="Models"
-      description="Managed GPU inference — open-infra's Bedrock. A model name becomes a key-gated, OpenAI-compatible endpoint."
-      listPath={openinfraPaths.models}
-      columns={columns}
-      search={(m) => [m.metadata.name, m.metadata.namespace, m.spec?.model]}
-      singular="Model"
-      plural="Models"
-      emptyTitle="No Models yet"
-      emptyDescription="Scaffold one with `open-infra init model` — a GPU-backed, OpenAI-compatible inference endpoint."
-      onRowClick={(m) =>
-        navigate({
-          to: "/models/$namespace/$name",
-          params: {
-            namespace: m.metadata.namespace ?? "default",
-            name: m.metadata.name ?? "",
-          },
-        })
-      }
-    />
+    <>
+      <ResourceTablePage<Model>
+        icon={<BrainCircuit />}
+        title="Models"
+        description="Managed GPU inference — open-infra's Bedrock. A model name becomes a key-gated, OpenAI-compatible endpoint."
+        listPath={openinfraPaths.models}
+        columns={columns}
+        search={(m) => [m.metadata.name, m.metadata.namespace, m.spec?.model]}
+        singular="Model"
+        plural="Models"
+        emptyTitle="No Models yet"
+        emptyDescription="Create one, or scaffold with `open-infra init model`."
+        onRowClick={(m) =>
+          navigate({
+            to: "/models/$namespace/$name",
+            params: {
+              namespace: m.metadata.namespace ?? "default",
+              name: m.metadata.name ?? "",
+            },
+          })
+        }
+        headerActions={
+          <Button onClick={() => setNewOpen(true)}>
+            <Plus className="size-4" />
+            New Model
+          </Button>
+        }
+      />
+      <NewResourceDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        kind="Model"
+        crdName={MODELS_CRD_NAME}
+        createPath={openinfraPaths.models}
+        listPath={openinfraPaths.models(scoped)}
+        namespaces={namespaces}
+        defaultNamespace={scoped}
+        icon={<BrainCircuit className="size-5 text-primary" />}
+        description="A GPU-backed, OpenAI-compatible inference endpoint. Set the model tag and GPU count."
+      />
+    </>
   );
 }

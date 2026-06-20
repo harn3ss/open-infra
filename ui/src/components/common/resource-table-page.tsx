@@ -31,6 +31,8 @@ export interface ResourceTablePageProps<T extends K8sObject> {
   /** If set, a row click runs this (e.g. navigate to a detail page) instead of
    *  opening the YAML drawer. */
   onRowClick?: (item: T) => void;
+  /** Extra header actions (e.g. a "New" button), rendered left of refresh. */
+  headerActions?: ReactNode;
 }
 
 /**
@@ -50,6 +52,7 @@ export function ResourceTablePage<T extends K8sObject>({
   emptyTitle,
   emptyDescription,
   onRowClick,
+  headerActions,
 }: ResourceTablePageProps<T>) {
   const { scoped } = useNamespace();
   const { items, isLoading, isError, error, live, refetch } = useK8sWatch<T>(
@@ -79,6 +82,7 @@ export function ResourceTablePage<T extends K8sObject>({
             >
               <RefreshCw className="size-4" />
             </Button>
+            {headerActions}
           </>
         }
       />
