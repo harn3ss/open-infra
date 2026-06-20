@@ -380,3 +380,84 @@ func handleModelChat(cs kubernetes.Interface, logger *slog.Logger) http.HandlerF
 		_, _ = io.Copy(w, resp.Body)
 	}
 }
+
+// handleFunctionInvoke proxies a test request from the console to a Knative
+// function's cluster-internal Service. The browser can't reach
+// <name>.<ns>.svc.cluster.local directly, so the BFF forwards it (and the call
+// wakes a scaled-to-zero function). The target host is fixed to the function's
+// own Service — only method/path/headers/body are caller-controlled — and we
+// verify the Service exists first, so this can't be used to hit arbitrary
+// in-cluster endpoints.
+func handleFunctionInvoke(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ns := chi.URLParam(r, "namespace")
+		name := chi.URLParam(r, "name")
+		if _, err := cs.CoreV1().Services(ns).Get(r.Context(), name, metav1.GetOptions{}); err != nil {
+			writeError(w, http.StatusNotFound, "function service not found")
+			return
+		}
+
+		var in struct {
+			Method  string            `json:"method"`
+			Path    string            `json:"path"`
+			Headers map[string]string `json:"headers"`
+			Body    string            `json:"body"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		method := strings.ToUpper(strings.TrimSpace(in.Method))
+		if method == "" {
+			method = http.MethodGet
+		}
+		reqPath := in.Path
+		if reqPath == "" {
+			reqPath = "/"
+		} else if !strings.HasPrefix(reqPath, "/") {
+			reqPath = "/" + reqPath
+		}
+		target := fmt.Sprintf("http://%s.%s.svc.cluster.local%s", name, ns, reqPath)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		var body io.Reader
+		if in.Body != "" {
+			body = strings.NewReader(in.Body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, target, body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad request: "+err.Error())
+			return
+		}
+		for k, v := range in.Headers {
+			if k != "" {
+				req.Header.Set(k, v)
+			}
+		}
+
+		start := time.Now()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			logger.Error("function invoke", slog.String("error", err.Error()))
+			writeError(w, http.StatusBadGateway, "function unreachable: "+err.Error())
+			return
+		}
+		defer resp.Body.Close()
+		// Cap the captured body so a chatty function can't exhaust memory.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		durMs := time.Since(start).Milliseconds()
+
+		hdrs := map[string]string{}
+		for k := range resp.Header {
+			hdrs[k] = resp.Header.Get(k)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     resp.StatusCode,
+			"durationMs": durMs,
+			"headers":    hdrs,
+			"body":       string(respBody),
+		})
+	}
+}

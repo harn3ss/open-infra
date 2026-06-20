@@ -171,6 +171,8 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 			Delete("/buckets/{bucket}/object", handleDeleteObject(*client.Clientset, logger))
 		api.With(middleware.Timeout(125*time.Second)).
 			Post("/models/{namespace}/{name}/chat", handleModelChat(*client.Clientset, logger))
+		api.With(middleware.Timeout(65*time.Second)).
+			Post("/functions/{namespace}/{name}/invoke", handleFunctionInvoke(*client.Clientset, logger))
 		api.With(middleware.Timeout(10*time.Second)).
 			Post("/queues/publish", handleQueuePublish(logger))
 		api.With(middleware.Timeout(15*time.Second)).

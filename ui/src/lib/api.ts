@@ -279,3 +279,29 @@ export function modelChat(
     },
   );
 }
+
+export interface FunctionInvokeRequest {
+  method: string;
+  path: string;
+  body?: string;
+  headers?: Record<string, string>;
+}
+export interface FunctionInvokeResponse {
+  status: number;
+  durationMs: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** Send a test request to a Function via the BFF (which reaches the in-cluster
+ *  Service the browser can't). Wakes a scaled-to-zero function. */
+export function invokeFunction(
+  namespace: string,
+  name: string,
+  req: FunctionInvokeRequest,
+): Promise<FunctionInvokeResponse> {
+  return request<FunctionInvokeResponse>(
+    `/functions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/invoke`,
+    { method: "POST", body: JSON.stringify(req) },
+  );
+}
