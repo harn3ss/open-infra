@@ -39,8 +39,9 @@ spec:
   port: 8080
   scaling: { min: 1, max: 5, targetCPUPercent: 70 }
   domain: ${name}.example            # dev mode rewrites this to sslip.io
-  # database: { engine: postgres, name: ${name}db }   # +highAvailability / +vector (pgvector)
+  # database: { engine: postgres, name: ${name}db }   # +highAvailability / +vector / +expose
   #   engine: mysql -> MariaDB (DATABASE_URL); engine: mongo -> FerretDB (MONGODB_URI)
+  #   expose: true  -> reach the DB on a LAN IP (MetalLB) from workstations
   # storage:  { buckets: [uploads] }
   # queues:   [jobs]
   # secrets:  [chat-model]           # inject a Model endpoint (see: init model)

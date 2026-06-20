@@ -54,12 +54,14 @@ export function NewDatabaseDialog({
   const [namespace, setNamespace] = useState(defaultNamespace ?? "default");
   const [engine, setEngine] = useState("postgres");
   const [ha, setHa] = useState(false);
+  const [expose, setExpose] = useState(false);
   const [touched, setTouched] = useState(false);
 
   function reset() {
     setName("");
     setEngine("postgres");
     setHa(false);
+    setExpose(false);
     setTouched(false);
     createMutation.reset();
   }
@@ -89,7 +91,7 @@ export function NewDatabaseDialog({
       kind: "Application",
       metadata: { name, namespace },
       // Data-only Application: just a database, no workload.
-      spec: { database: { engine, name, highAvailability: ha } },
+      spec: { database: { engine, name, highAvailability: ha, expose } },
     } as K8sObject);
   };
 
@@ -184,6 +186,20 @@ export function NewDatabaseDialog({
                   : engine === "mysql"
                     ? "Not available for MySQL yet (single instance)"
                     : "Primary + standby, auto-failover"}
+              </span>
+            </label>
+          </div>
+          <div className="space-y-1.5">
+            <Label>LAN access</Label>
+            <label className="flex h-9 items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={expose}
+                onChange={(e) => setExpose(e.target.checked)}
+                className="size-4 accent-primary"
+              />
+              <span className="text-muted-foreground">
+                Expose on a LAN IP (MetalLB) for workstation access
               </span>
             </label>
           </div>

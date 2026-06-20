@@ -14,6 +14,7 @@ spec:
   #   engine: postgres -> +highAvailability: true (failover); +vector: true (pgvector)
   #   engine: mysql    -> MariaDB, injects DATABASE_URL
   #   engine: mongo    -> document store (FerretDB), injects MONGODB_URI
+  #   add expose: true -> reachable on a LAN IP (MetalLB) for workstation access
   # storage:  { buckets: [uploads] }                # -> MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKETS
   # queues:   [jobs]                                # -> NATS_URL, OPENINFRA_QUEUES
   # secrets:  [hello-extra]                         # -> envFrom that secret (e.g. a Sealed Secret)

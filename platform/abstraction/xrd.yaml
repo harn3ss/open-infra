@@ -65,6 +65,10 @@ spec:
                     # postgres only: enable the pgvector extension (vector
                     # similarity search) — pairs with kind: Model for RAG.
                     vector: { type: boolean, default: false }
+                    # Expose the database on a LAN IP (MetalLB LoadBalancer) so
+                    # workstations can reach it directly. Default false = in-cluster
+                    # only (apps connect via the injected URL; admins port-forward).
+                    expose: { type: boolean, default: false }
                 storage:
                   type: object
                   properties:

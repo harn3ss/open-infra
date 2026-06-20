@@ -11,6 +11,7 @@ import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ResourceNameRow } from "@/components/common/resource-name-row";
+import { DbConnectivity } from "@/components/common/db-connectivity";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { claimHealth } from "@/lib/resource-health";
@@ -37,6 +38,9 @@ const ENGINES = {
     uriLabel: "Connection (MONGODB_URI)",
     consume: "MONGODB_URI (any MongoDB driver)",
     podRe: "(mongo|docdb)",
+    svcSuffix: "-mongo",
+    port: 27017,
+    scheme: "mongodb",
   },
   mysql: {
     label: "MySQL (MariaDB)",
@@ -45,6 +49,9 @@ const ENGINES = {
     uriLabel: "Connection (DATABASE_URL)",
     consume: "DATABASE_URL (any MySQL driver)",
     podRe: "mysql",
+    svcSuffix: "-mysql",
+    port: 3306,
+    scheme: "mysql",
   },
 } as const;
 
@@ -103,6 +110,7 @@ export function ManagedDatabaseDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
@@ -150,6 +158,16 @@ export function ManagedDatabaseDetailPage() {
               </DetailRow>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="connectivity" className="pt-4">
+          <DbConnectivity
+            namespace={namespace}
+            internalSvc={`${name}${e.svcSuffix}`}
+            lanSvc={`${name}-db-lan`}
+            port={e.port}
+            scheme={e.scheme}
+          />
         </TabsContent>
 
         <TabsContent value="monitoring" className="pt-4">

@@ -552,6 +552,39 @@ spec:
                         {{- end }}
             {{- end }}
             {{- end }}
+            {{- if and $spec.database $spec.database.expose }}
+            ---
+            # --- LAN endpoint: a MetalLB LoadBalancer so workstations on the LAN
+            #     can reach the database directly (psql/GUI/migrations). Consumes
+            #     one pool IP — opt-in via database.expose. Targets the writable
+            #     primary for postgres. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: db-lan
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}-db-lan
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/part-of: {{ $name }} }
+                  spec:
+                    type: LoadBalancer
+                    {{- if eq $dbEngine "mongo" }}
+                    selector: { app.kubernetes.io/name: {{ $name }}-mongo }
+                    ports: [ { port: 27017, targetPort: 27017 } ]
+                    {{- else if eq $dbEngine "mysql" }}
+                    selector: { app.kubernetes.io/name: {{ $name }}-mysql }
+                    ports: [ { port: 3306, targetPort: 3306 } ]
+                    {{- else }}
+                    selector: { cnpg.io/cluster: {{ $name }}-db, cnpg.io/instanceRole: primary }
+                    ports: [ { port: 5432, targetPort: 5432 } ]
+                    {{- end }}
+            {{- end }}
             {{- if and $spec.storage $spec.storage.buckets }}
             ---
             # --- Object storage ("S3"): one Job (aws-cli + kubectl in alpine/k8s)

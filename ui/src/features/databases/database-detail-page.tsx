@@ -10,6 +10,7 @@ import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ResourceNameRow } from "@/components/common/resource-name-row";
+import { DbConnectivity } from "@/components/common/db-connectivity";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
@@ -140,6 +141,15 @@ export function DatabaseDetailPage() {
               </DetailRow>
             </CardContent>
           </Card>
+          <div className="pt-4">
+            <DbConnectivity
+              namespace={namespace}
+              internalSvc={`${name}-rw`}
+              lanSvc={`${appName}-db-lan`}
+              port={5432}
+              scheme="postgresql"
+            />
+          </div>
         </TabsContent>
 
         <TabsContent value="monitoring" className="pt-4">
