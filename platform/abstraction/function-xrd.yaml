@@ -1,0 +1,72 @@
+# open-infra's "Lambda": a third public API, kind: Function — a scale-to-zero HTTP
+# service on Knative Serving. Give it a container image; get request-driven
+# autoscaling (0..N..0), with optional GPU (serverless inference) and the same
+# DB/storage/queue/secret injection as kind: Application.
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xfunctions.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XFunction
+    plural: xfunctions
+  claimNames:
+    kind: Function          # what users write in infra.yaml
+    plural: functions
+  defaultCompositionRef:
+    name: function
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image]
+              properties:
+                image: { type: string, description: "Container image that serves HTTP (CI replaces the tag)" }
+                port:  { type: integer, default: 8080, description: "Container port the function listens on" }
+                gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
+                scaling:
+                  type: object
+                  properties:
+                    min:    { type: integer, default: 0, description: "Min instances (0 = scale to zero)" }
+                    max:    { type: integer, default: 10 }
+                    target: { type: integer, default: 100, description: "Target concurrent requests per pod" }
+                database:
+                  type: object
+                  properties:
+                    engine: { type: string, enum: [postgres], default: postgres }
+                    name:   { type: string }
+                storage:
+                  type: object
+                  properties:
+                    buckets: { type: array, items: { type: string } }
+                queues:
+                  type: array
+                  items: { type: string }
+                env:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:  { type: string }
+                      value: { type: string }
+                secrets:
+                  type: array
+                  items: { type: string }
+                  description: "Names mounted from Sealed Secrets (envFrom)"
+            status:
+              type: object
+              properties:
+                url: { type: string }

@@ -41,6 +41,10 @@ rules:
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Knative Services for the kind: Function (serverless) abstraction.
+  - apiGroups: [serving.knative.dev]
+    resources: [services]
+    verbs: [get, list, watch, create, update, patch, delete]
   # Jobs: the Composition runs an idempotent `mc` job to create MinIO buckets.
   - apiGroups: [batch]
     resources: [jobs]

@@ -1,0 +1,155 @@
+# The compiler for kind: Function -> a Knative Service (scale-to-zero HTTP), plus
+# the same on-demand managed services as kind: Application (DB / bucket / queue /
+# secret injection). Knative handles the Service, ingress route, and request-driven
+# autoscaling (0..N..0); we just declare the container + scaling + optional GPU.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: function
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XFunction
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $scaling := $spec.scaling | default dict }}
+            {{- $gpu := $spec.gpu | default 0 }}
+            ---
+            # --- Knative Service: the scale-to-zero "Function" ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: function
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: serving.knative.dev/v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                  spec:
+                    template:
+                      metadata:
+                        annotations:
+                          # KPA scaling: min 0 = scale to zero when idle.
+                          autoscaling.knative.dev/min-scale: "{{ $scaling.min | default 0 }}"
+                          autoscaling.knative.dev/max-scale: "{{ $scaling.max | default 10 }}"
+                          autoscaling.knative.dev/target: "{{ $scaling.target | default 100 }}"
+                      spec:
+                        {{- if gt (int $gpu) 0 }}
+                        runtimeClassName: nvidia
+                        nodeSelector: { openinfra.dev/gpu: "true" }
+                        {{- end }}
+                        containers:
+                          - image: {{ $spec.image }}
+                            ports: [ { containerPort: {{ $spec.port | default 8080 }} } ]
+                            {{- if or $spec.env $spec.database $spec.queues }}
+                            env:
+                            {{- range $spec.env }}
+                              - { name: {{ .name }}, value: "{{ .value }}" }
+                            {{- end }}
+                            {{- if $spec.database }}
+                              - name: DATABASE_URL
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $name }}-db-app, key: uri }
+                            {{- end }}
+                            {{- if $spec.queues }}
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
+                            {{- end }}
+                            {{- end }}
+                            {{- $envFrom := list }}
+                            {{- if and $spec.storage $spec.storage.buckets }}{{- $envFrom = append $envFrom (printf "%s-minio" $name) }}{{- end }}
+                            {{- range $spec.secrets }}{{- $envFrom = append $envFrom . }}{{- end }}
+                            {{- if $envFrom }}
+                            envFrom:
+                            {{- range $envFrom }}
+                              - secretRef: { name: {{ . }}, optional: true }
+                            {{- end }}
+                            {{- end }}
+                            {{- if gt (int $gpu) 0 }}
+                            resources:
+                              limits: { nvidia.com/gpu: {{ $gpu }} }
+                            {{- end }}
+            {{- if $spec.database }}
+            ---
+            # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: database
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: postgresql.cnpg.io/v1
+                  kind: Cluster
+                  metadata: { name: {{ $name }}-db, namespace: {{ $ns }} }
+                  spec:
+                    instances: 1
+                    storage:
+                      size: 5Gi
+                      storageClass: local-path
+                    bootstrap:
+                      initdb: { database: {{ $spec.database.name | default $name }}, owner: app }
+            {{- end }}
+            {{- if and $spec.storage $spec.storage.buckets }}
+            ---
+            # --- Object storage ("S3"): a Job creates the bucket(s) + writes the
+            #     per-function creds secret (<name>-minio), same pattern as apps. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-bucket-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ join "," $spec.storage.buckets }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+            {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
