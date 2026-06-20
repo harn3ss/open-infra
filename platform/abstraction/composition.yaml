@@ -221,7 +221,11 @@ spec:
                     policyTypes: [Ingress]
                     ingress:
                       - from:
-                          - podSelector: {}
+                          # same namespace (kube-router honors namespaceSelector by
+                          # the auto-applied name label, not a bare podSelector {})
+                          - namespaceSelector:
+                              matchLabels: { kubernetes.io/metadata.name: {{ $ns }} }
+                          # the ingress controller (Traefik) so external traffic works
                           - namespaceSelector:
                               matchLabels: { kubernetes.io/metadata.name: kube-system }
             {{- if $spec.database }}
