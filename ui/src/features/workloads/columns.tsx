@@ -80,8 +80,18 @@ function podStatusView(
   offlineNodes: Set<string>,
 ): { label: string; tone?: StatusTone } {
   const node = pod.spec?.nodeName;
-  if (node && offlineNodes.has(node) && !pod.metadata.deletionTimestamp) {
+  // If the node is offline the pod is unreachable, and both its reported phase
+  // (often still "Running") and a stuck "Terminating" are misleading. The node
+  // controller marks pods for deletion when a node goes NotReady, but they can't
+  // finish on a dead node — so deletionTimestamp must NOT exclude this case.
+  if (node && offlineNodes.has(node)) {
     return { label: "Node down", tone: "destructive" };
+  }
+  // Terminating isn't a phase; it's signalled by deletionTimestamp. Surface it
+  // (a pod genuinely terminating on a healthy node) instead of the stale
+  // "Running" phase it still carries.
+  if (pod.metadata.deletionTimestamp) {
+    return { label: "Terminating", tone: "warning" };
   }
   return { label: podPhase(pod) };
 }
