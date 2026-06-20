@@ -3,89 +3,94 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { Database } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
-import { cnpgPaths } from "@/lib/k8s-paths";
-import { age, type StatusTone } from "@/lib/format";
-import type { CnpgCluster } from "@/types/k8s";
+import { claimHealth } from "@/lib/resource-health";
+import { openinfraPaths } from "@/lib/k8s-paths";
+import { age } from "@/lib/format";
+import type { Application } from "@/types/k8s";
 
-/** CloudNativePG reports a free-text status.phase ("Cluster in healthy state", …). */
-function dbTone(phase?: string): StatusTone {
-  if (!phase) return "muted";
-  const p = phase.toLowerCase();
-  if (p.includes("healthy")) return "success";
-  if (p.includes("fail") || p.includes("unhealth") || p.includes("error")) {
-    return "destructive";
-  }
-  return "warning";
+/** Databases are provisioned by an Application's `database:` block — postgres
+ *  (CloudNativePG) or mongo (FerretDB). We list them from their owning
+ *  Application so both engines appear with the engine they use. */
+function engineLabel(engine?: string): string {
+  return engine === "mongo" ? "MongoDB (FerretDB)" : "PostgreSQL";
 }
 
 export function DatabasesPage() {
   const navigate = useNavigate();
-  const columns = useMemo<ColumnDef<CnpgCluster, unknown>[]>(
+  const columns = useMemo<ColumnDef<Application, unknown>[]>(
     () => [
       {
         id: "name",
         header: "Name",
-        accessorFn: (c) => c.metadata.name,
+        accessorFn: (a) => a.spec?.database?.name ?? a.metadata.name,
         cell: ({ row }) => (
-          <span className="font-medium">{row.original.metadata.name}</span>
+          <span className="font-medium">
+            {row.original.spec?.database?.name ?? row.original.metadata.name}
+          </span>
         ),
-        size: 220,
+        size: 190,
       },
       {
         id: "namespace",
         header: "Namespace",
-        accessorFn: (c) => c.metadata.namespace,
+        accessorFn: (a) => a.metadata.namespace,
         cell: ({ row }) => (
           <span className="text-muted-foreground">
             {row.original.metadata.namespace}
           </span>
         ),
-        size: 140,
+        size: 130,
       },
       {
-        id: "instances",
-        header: "Instances",
-        accessorFn: (c) => c.status?.readyInstances ?? 0,
-        cell: ({ row }) => {
-          const s = row.original;
-          const ready = s.status?.readyInstances ?? 0;
-          const total = s.spec?.instances ?? s.status?.instances ?? 1;
-          return (
-            <span className="text-xs text-muted-foreground">
-              {ready}/{total} ready
-            </span>
-          );
-        },
-        size: 120,
+        id: "engine",
+        header: "Engine",
+        accessorFn: (a) => engineLabel(a.spec?.database?.engine),
+        cell: ({ row }) => (
+          <Badge variant="secondary">
+            {engineLabel(row.original.spec?.database?.engine)}
+          </Badge>
+        ),
+        size: 170,
       },
       {
-        id: "storage",
-        header: "Storage",
-        accessorFn: (c) => c.spec?.storage?.size ?? "",
+        id: "ha",
+        header: "HA",
+        accessorFn: (a) => (a.spec?.database?.highAvailability ? "yes" : "no"),
+        cell: ({ row }) =>
+          row.original.spec?.database?.highAvailability ? (
+            <Badge variant="secondary">HA</Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          ),
+        size: 70,
+      },
+      {
+        id: "app",
+        header: "Application",
+        accessorFn: (a) => a.metadata.name,
         cell: ({ row }) => (
           <span className="text-xs text-muted-foreground">
-            {row.original.spec?.storage?.size ?? "—"}
+            {row.original.metadata.name}
           </span>
         ),
-        size: 100,
+        size: 150,
       },
       {
         id: "status",
         header: "Status",
-        accessorFn: (c) => c.status?.phase ?? "",
+        accessorFn: (a) => claimHealth(a).label,
         cell: ({ row }) => {
-          const phase = row.original.status?.phase;
-          return (
-            <StatusBadge status={phase ?? "Pending"} tone={dbTone(phase)} />
-          );
+          const h = claimHealth(row.original);
+          return <StatusBadge status={h.label} tone={h.tone} />;
         },
-        size: 220,
+        size: 150,
       },
       {
         id: "age",
         header: "Age",
-        accessorFn: (c) => c.metadata.creationTimestamp ?? "",
+        accessorFn: (a) => a.metadata.creationTimestamp ?? "",
         cell: ({ row }) => (
           <span className="text-muted-foreground">
             {age(row.original.metadata.creationTimestamp)}
@@ -98,26 +103,36 @@ export function DatabasesPage() {
   );
 
   return (
-    <ResourceTablePage<CnpgCluster>
+    <ResourceTablePage<Application>
       icon={<Database />}
       title="Databases"
-      description="Managed PostgreSQL — open-infra's RDS (CloudNativePG). Provisioned by an Application's `database:` block."
-      listPath={cnpgPaths.clusters}
+      description="Managed databases — open-infra's RDS. Provisioned by an Application's `database:` block: postgres (CloudNativePG) or mongo (FerretDB)."
+      listPath={openinfraPaths.applications}
       columns={columns}
-      search={(c) => [c.metadata.name, c.metadata.namespace, c.status?.phase]}
+      filter={(a) => Boolean(a.spec?.database)}
+      search={(a) => [
+        a.metadata.name,
+        a.metadata.namespace,
+        a.spec?.database?.name,
+        a.spec?.database?.engine,
+      ]}
       singular="Database"
       plural="Databases"
       emptyTitle="No Databases yet"
-      emptyDescription="Add `database: { engine: postgres }` to an Application and the platform provisions a Postgres cluster here."
-      onRowClick={(c) =>
-        navigate({
-          to: "/databases/$namespace/$name",
-          params: {
-            namespace: c.metadata.namespace ?? "default",
-            name: c.metadata.name ?? "",
-          },
-        })
-      }
+      emptyDescription="Add a `database:` block to an Application (engine: postgres or mongo) and it appears here."
+      onRowClick={(a) => {
+        // Postgres has a rich CloudNativePG detail page (cluster <app>-db).
+        // Mongo (FerretDB) has no detail page yet — clicking is a no-op for now.
+        if ((a.spec?.database?.engine ?? "postgres") !== "mongo") {
+          navigate({
+            to: "/databases/$namespace/$name",
+            params: {
+              namespace: a.metadata.namespace ?? "default",
+              name: `${a.metadata.name}-db`,
+            },
+          });
+        }
+      }}
     />
   );
 }

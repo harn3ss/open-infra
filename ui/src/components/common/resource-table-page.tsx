@@ -24,6 +24,8 @@ export interface ResourceTablePageProps<T extends K8sObject> {
   listPath: (ns?: string) => string;
   columns: ColumnDef<T, unknown>[];
   search: (item: T) => (string | undefined)[];
+  /** Optional predicate to narrow the list (e.g. only Apps with a database). */
+  filter?: (item: T) => boolean;
   singular: string;
   plural: string;
   emptyTitle: string;
@@ -47,6 +49,7 @@ export function ResourceTablePage<T extends K8sObject>({
   listPath,
   columns,
   search,
+  filter,
   singular,
   plural,
   emptyTitle,
@@ -55,9 +58,9 @@ export function ResourceTablePage<T extends K8sObject>({
   headerActions,
 }: ResourceTablePageProps<T>) {
   const { scoped } = useNamespace();
-  const { items, isLoading, isError, error, live, refetch } = useK8sWatch<T>(
-    listPath(scoped),
-  );
+  const { items: allItems, isLoading, isError, error, live, refetch } =
+    useK8sWatch<T>(listPath(scoped));
+  const items = filter ? allItems.filter(filter) : allItems;
   const { filtered } = useListFilter(items, search);
   const [sorting, setSorting] = useState<SortingState>([
     { id: "name", desc: false },
