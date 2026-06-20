@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ExternalLink, Send, Trash2, Zap } from "lucide-react";
@@ -16,6 +16,7 @@ import { LoadingState, ErrorState } from "@/components/common/states";
 import { claimHealth } from "@/lib/resource-health";
 import {
   ApiError,
+  getFunctionRoutes,
   invokeFunction,
   k8sDelete,
   k8sGet,
@@ -24,9 +25,12 @@ import {
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { OpenInfraFunction } from "@/types/k8s";
 
-const METHODS = ["GET", "POST", "PUT", "DELETE"] as const;
+const ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
 
-/** Send a test request to the function through the BFF and show the response. */
+/** Send a test request to the function through the BFF and show the response.
+ *  Routes + allowed methods are discovered from the function's OpenAPI spec
+ *  (if it exposes one); otherwise we fall back to a free-form path + all
+ *  methods. */
 function FunctionTester({
   namespace,
   name,
@@ -34,10 +38,40 @@ function FunctionTester({
   namespace: string;
   name: string;
 }) {
+  const { data: routesData } = useQuery({
+    queryKey: ["function-routes", namespace, name],
+    queryFn: () => getFunctionRoutes(namespace, name),
+    staleTime: 60_000,
+  });
+  const routes = routesData?.routes ?? [];
+  const discovered = routesData?.source === "openapi" && routes.length > 0;
+
   const [method, setMethod] = useState<string>("GET");
   const [path, setPath] = useState("/");
   const [body, setBody] = useState("");
   const [result, setResult] = useState<FunctionInvokeResponse | null>(null);
+  const [initialized, setInitialized] = useState(false);
+
+  // Seed from the first discovered route once the spec loads.
+  useEffect(() => {
+    const first = routes[0];
+    if (!initialized && discovered && first) {
+      setPath(first.path);
+      setMethod(first.methods[0] ?? "GET");
+      setInitialized(true);
+    }
+  }, [initialized, discovered, routes]);
+
+  // Methods offered = the matching route's methods (so unsupported verbs aren't
+  // shown), or all methods when the path isn't a known route / no spec exists.
+  const matched = routes.find((r) => r.path === path);
+  const availableMethods = matched ? matched.methods : ALL_METHODS;
+
+  const onPathChange = (next: string) => {
+    setPath(next);
+    const r = routes.find((rt) => rt.path === next);
+    if (r && !r.methods.includes(method)) setMethod(r.methods[0] ?? "GET");
+  };
 
   const invoke = useMutation({
     mutationFn: () =>
@@ -48,7 +82,8 @@ function FunctionTester({
       }),
     onSuccess: setResult,
   });
-  const hasBody = method === "POST" || method === "PUT";
+  const hasBody = method === "POST" || method === "PUT" || method === "PATCH";
+  const listId = `routes-${namespace}-${name}`;
 
   return (
     <div className="flex flex-col gap-3">
@@ -59,18 +94,26 @@ function FunctionTester({
           className="rounded-md border border-border bg-background px-2 text-sm"
           aria-label="HTTP method"
         >
-          {METHODS.map((m) => (
+          {availableMethods.map((m) => (
             <option key={m}>{m}</option>
           ))}
         </select>
         <Input
           value={path}
-          onChange={(e) => setPath(e.target.value)}
+          onChange={(e) => onPathChange(e.target.value)}
           placeholder="/"
+          list={discovered ? listId : undefined}
           onKeyDown={(e) => {
             if (e.key === "Enter") invoke.mutate();
           }}
         />
+        {discovered ? (
+          <datalist id={listId}>
+            {routes.map((r) => (
+              <option key={r.path} value={r.path} />
+            ))}
+          </datalist>
+        ) : null}
         <Button onClick={() => invoke.mutate()} disabled={invoke.isPending}>
           <Send className="size-4" />
           Send
@@ -85,8 +128,10 @@ function FunctionTester({
         />
       ) : null}
       <p className="text-xs text-muted-foreground">
-        Calls the function in-cluster through the console. The first request may
-        be slow — it wakes a scaled-to-zero function.
+        {discovered
+          ? `${routes.length} route${routes.length > 1 ? "s" : ""} discovered from the function's OpenAPI spec — pick one (methods filter to what each route allows).`
+          : "No OpenAPI spec exposed by this function, so routes can't be auto-discovered — enter a path and method manually."}{" "}
+        The first request may be slow — it wakes a scaled-to-zero function.
       </p>
       {invoke.isPending ? (
         <p className="text-sm text-muted-foreground">…invoking</p>

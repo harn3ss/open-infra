@@ -305,3 +305,24 @@ export function invokeFunction(
     { method: "POST", body: JSON.stringify(req) },
   );
 }
+
+export interface FunctionRoute {
+  path: string;
+  methods: string[];
+}
+export interface FunctionRoutes {
+  /** "openapi" if a spec was discovered, else "none" (free-form fallback). */
+  source: "openapi" | "none";
+  specPath: string;
+  routes: FunctionRoute[];
+}
+
+/** Discover a function's routes + allowed methods from its OpenAPI spec (if any). */
+export function getFunctionRoutes(
+  namespace: string,
+  name: string,
+): Promise<FunctionRoutes> {
+  return request<FunctionRoutes>(
+    `/functions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/routes`,
+  );
+}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -378,6 +379,96 @@ func handleModelChat(cs kubernetes.Interface, logger *slog.Logger) http.HandlerF
 		}
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
+	}
+}
+
+// openAPIMethods are the OpenAPI/Swagger path-item keys that denote HTTP verbs
+// (a path item also carries non-verb keys like "parameters"/"summary").
+var openAPIMethods = map[string]bool{
+	"get": true, "post": true, "put": true, "delete": true,
+	"patch": true, "head": true, "options": true,
+}
+
+// functionRoute is one discovered endpoint: a path and the methods it accepts.
+type functionRoute struct {
+	Path    string   `json:"path"`
+	Methods []string `json:"methods"`
+}
+
+// handleFunctionRoutes discovers a function's routes by probing it for an
+// OpenAPI/Swagger document at well-known locations. If one is found, we return
+// its paths and the methods each accepts so the console can offer a route
+// dropdown and per-route method filtering. Functions that expose no spec return
+// source="none" and the UI falls back to a free-form path + all methods — there
+// is no universal way to enumerate an arbitrary HTTP server's routes.
+func handleFunctionRoutes(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	specLocations := []string{
+		"/openapi.json", "/swagger.json", "/v3/api-docs",
+		"/q/openapi.json", "/swagger/v1/swagger.json", "/openapi",
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		ns := chi.URLParam(r, "namespace")
+		name := chi.URLParam(r, "name")
+		if _, err := cs.CoreV1().Services(ns).Get(r.Context(), name, metav1.GetOptions{}); err != nil {
+			writeError(w, http.StatusNotFound, "function service not found")
+			return
+		}
+		base := fmt.Sprintf("http://%s.%s.svc.cluster.local", name, ns)
+
+		var doc struct {
+			Paths map[string]map[string]json.RawMessage `json:"paths"`
+		}
+		foundAt := ""
+		for _, loc := range specLocations {
+			ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+loc, nil)
+			if err != nil {
+				cancel()
+				continue
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				cancel()
+				continue
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+			resp.Body.Close()
+			cancel()
+			if resp.StatusCode != http.StatusOK {
+				continue
+			}
+			doc.Paths = nil
+			if err := json.Unmarshal(body, &doc); err == nil && len(doc.Paths) > 0 {
+				foundAt = loc
+				break
+			}
+		}
+
+		routes := []functionRoute{}
+		for p, ops := range doc.Paths {
+			methods := []string{}
+			for m := range ops {
+				if openAPIMethods[strings.ToLower(m)] {
+					methods = append(methods, strings.ToUpper(m))
+				}
+			}
+			if len(methods) > 0 {
+				sort.Strings(methods)
+				routes = append(routes, functionRoute{Path: p, Methods: methods})
+			}
+		}
+		sort.Slice(routes, func(i, j int) bool { return routes[i].Path < routes[j].Path })
+
+		source := "none"
+		if foundAt != "" {
+			source = "openapi"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"source":   source,
+			"specPath": foundAt,
+			"routes":   routes,
+		})
 	}
 }
 
