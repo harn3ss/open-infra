@@ -1,0 +1,33 @@
+# NVIDIA DCGM exporter — exports per-GPU metrics (utilization, framebuffer/VRAM,
+# temperature, power) to Prometheus so the cluster has real GPU observability.
+# Runs on GPU nodes (openinfra.dev/gpu=true) with the nvidia RuntimeClass; its
+# ServiceMonitor carries the kube-prometheus-stack release label so Prometheus
+# (which selects serviceMonitors by release=kube-prometheus-stack) scrapes it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dcgm-exporter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://nvidia.github.io/dcgm-exporter/helm-charts
+    chart: dcgm-exporter
+    targetRevision: 4.8.2
+    helm:
+      values: |
+        runtimeClassName: nvidia
+        nodeSelector:
+          openinfra.dev/gpu: "true"
+        serviceMonitor:
+          enabled: true
+          additionalLabels:
+            release: kube-prometheus-stack
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dcgm-exporter
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
