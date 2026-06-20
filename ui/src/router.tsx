@@ -20,6 +20,7 @@ import { BucketDetailPage } from "@/features/buckets/bucket-detail-page";
 import { QueuesPage } from "@/features/queues/queues-page";
 import { WorkloadsPage } from "@/features/workloads/workloads-page";
 import { NodesPage } from "@/features/nodes/nodes-page";
+import { NetworkPage } from "@/features/network/network-page";
 import { MonitoringPage } from "@/features/monitoring/monitoring-page";
 
 const rootRoute = createRootRoute({
@@ -112,6 +113,12 @@ const nodesRoute = createRoute({
   component: NodesPage,
 });
 
+const networkRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/network",
+  component: NetworkPage,
+});
+
 const monitoringRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/monitoring",
@@ -133,6 +140,7 @@ const routeTree = rootRoute.addChildren([
   queueDetailRoute,
   workloadsRoute,
   nodesRoute,
+  networkRoute,
   monitoringRoute,
 ]);
 

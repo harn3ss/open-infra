@@ -38,6 +38,14 @@ rules:
       - daemonsets
     verbs: [get, list, watch]
 
+  # ── Networking: read ingress routes + network policies (the Network view).
+  #    LoadBalancer Services come from the core "services" rule above. ─────────
+  - apiGroups: [networking.k8s.io]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: [get, list, watch]
+
   # ── Secrets: read by name only (no list/watch, so the console can't enumerate
   #    all secrets). Used to surface connection info — a Model's API key for the
   #    in-console playground, a Database's connection URI. ─────────────────────

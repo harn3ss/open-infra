@@ -8,6 +8,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   applications: "Applications",
   workloads: "Workloads",
   nodes: "Nodes",
+  network: "Network",
   monitoring: "Monitoring",
 };
 
