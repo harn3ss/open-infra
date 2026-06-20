@@ -1,0 +1,10 @@
+# RuntimeClass mapping to the `nvidia` containerd runtime that k3s auto-configures
+# once nvidia-container-toolkit is installed on the GPU nodes. GPU pods (and the
+# device plugin) run with runtimeClassName: nvidia so they get GPU access.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+handler: nvidia
