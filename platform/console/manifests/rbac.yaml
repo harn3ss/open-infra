@@ -38,6 +38,13 @@ rules:
       - daemonsets
     verbs: [get, list, watch]
 
+  # ── Secrets: read by name only (no list/watch, so the console can't enumerate
+  #    all secrets). Used to surface connection info — a Model's API key for the
+  #    in-console playground, a Database's connection URI. ─────────────────────
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+
   # ── apiextensions: read CRD schemas (for the schema explorer UI) ──────────
   - apiGroups: [apiextensions.k8s.io]
     resources:

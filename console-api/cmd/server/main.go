@@ -158,6 +158,24 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.With(middleware.Timeout(10*time.Second)).
 			Get("/queues", handleQueues(logger))
 
+		// Resource interactions: bucket/object writes, model chat (playground),
+		// queue publish/purge. Upload/download have no request timeout (large
+		// transfers); chat allows a long timeout for generation.
+		api.With(middleware.Timeout(10*time.Second)).
+			Post("/buckets", handleCreateBucket(*client.Clientset, logger))
+		api.With(middleware.Timeout(10*time.Second)).
+			Delete("/buckets/{bucket}", handleDeleteBucket(*client.Clientset, logger))
+		api.Put("/buckets/{bucket}/object", handleUploadObject(*client.Clientset, logger))
+		api.Get("/buckets/{bucket}/object", handleDownloadObject(*client.Clientset, logger))
+		api.With(middleware.Timeout(10*time.Second)).
+			Delete("/buckets/{bucket}/object", handleDeleteObject(*client.Clientset, logger))
+		api.With(middleware.Timeout(125*time.Second)).
+			Post("/models/{namespace}/{name}/chat", handleModelChat(*client.Clientset, logger))
+		api.With(middleware.Timeout(10*time.Second)).
+			Post("/queues/publish", handleQueuePublish(logger))
+		api.With(middleware.Timeout(15*time.Second)).
+			Post("/queues/{stream}/purge", handleQueuePurge(logger))
+
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
 

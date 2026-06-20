@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -189,4 +193,177 @@ func handleQueues(logger *slog.Logger) http.HandlerFunc {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// --- MinIO bucket + object writes -------------------------------------------
+
+func handleCreateBucket(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+			writeError(w, http.StatusBadRequest, "bucket name required")
+			return
+		}
+		cl, err := minioClient(cs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := cl.MakeBucket(ctx, body.Name, minio.MakeBucketOptions{}); err != nil {
+			logger.Error("make bucket", slog.String("error", err.Error()))
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"name": body.Name})
+	}
+}
+
+func handleDeleteBucket(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cl, err := minioClient(cs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := cl.RemoveBucket(ctx, chi.URLParam(r, "bucket")); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func handleUploadObject(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bucket := chi.URLParam(r, "bucket")
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "key required")
+			return
+		}
+		cl, err := minioClient(cs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
+			return
+		}
+		ct := r.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		if _, err := cl.PutObject(r.Context(), bucket, key, r.Body, r.ContentLength,
+			minio.PutObjectOptions{ContentType: ct}); err != nil {
+			logger.Error("put object", slog.String("error", err.Error()))
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"key": key})
+	}
+}
+
+func handleDownloadObject(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bucket := chi.URLParam(r, "bucket")
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "key required")
+			return
+		}
+		cl, err := minioClient(cs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
+			return
+		}
+		obj, err := cl.GetObject(r.Context(), bucket, key, minio.GetObjectOptions{})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		defer obj.Close()
+		st, err := obj.Stat()
+		if err != nil {
+			writeError(w, http.StatusNotFound, "object not found")
+			return
+		}
+		if st.ContentType != "" {
+			w.Header().Set("Content-Type", st.ContentType)
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(st.Size, 10))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(key)))
+		_, _ = io.Copy(w, obj)
+	}
+}
+
+func handleDeleteObject(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bucket := chi.URLParam(r, "bucket")
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			writeError(w, http.StatusBadRequest, "key required")
+			return
+		}
+		cl, err := minioClient(cs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := cl.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{}); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// --- Model chat proxy (the "playground") ------------------------------------
+//
+// Reads the <name>-model secret (OPENAI_BASE_URL + OPENAI_API_KEY) and forwards
+// the request to the model's in-cluster OpenAI-compatible endpoint with the key,
+// so the browser can chat with a Model without ever seeing the key.
+
+func handleModelChat(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ns := chi.URLParam(r, "namespace")
+		name := chi.URLParam(r, "name")
+		sec, err := cs.CoreV1().Secrets(ns).Get(r.Context(), name+"-model", metav1.GetOptions{})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "model connection secret not found")
+			return
+		}
+		base := string(sec.Data["OPENAI_BASE_URL"])
+		key := string(sec.Data["OPENAI_API_KEY"])
+		if base == "" {
+			writeError(w, http.StatusBadGateway, "model endpoint unknown")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimRight(base, "/")+"/chat/completions", r.Body)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "bad request")
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			logger.Error("model chat", slog.String("error", err.Error()))
+			writeError(w, http.StatusBadGateway, "model unreachable")
+			return
+		}
+		defer resp.Body.Close()
+		if ct := resp.Header.Get("Content-Type"); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}
 }
