@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # open-infra CLI — a thin, friendly wrapper over kubectl/Argo for the common loop.
-#   open-infra init     scaffold an infra.yaml in the current app repo
-#   open-infra deploy   validate infra.yaml, render the Application CR, commit to GitOps
-#   open-infra status   show your apps and their health
+#   open-infra init [app|model]  scaffold an infra.yaml (Application, or a Bedrock-style Model)
+#   open-infra deploy   validate infra.yaml, render the CR, commit to GitOps
+#   open-infra status   show your apps, models, and their health
 #   open-infra logs     tail logs for an app
 set -euo pipefail
 
@@ -10,12 +10,15 @@ KUBECTL="${KUBECTL:-kubectl}"
 command -v "$KUBECTL" >/dev/null 2>&1 || KUBECTL="k3s kubectl"
 SELF="open-infra"
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; }
 
 cmd_init() {
   [ -f infra.yaml ] && { echo "infra.yaml already exists"; exit 0; }
+  local kind="${1:-app}"
   local name; name="$(basename "$(pwd)")"
-  cat > infra.yaml <<EOF
+  case "$kind" in
+    app|application)
+      cat > infra.yaml <<EOF
 apiVersion: openinfra.dev/v1
 kind: Application
 metadata:
@@ -28,10 +31,30 @@ spec:
   # database: { engine: postgres, name: ${name}db }
   # storage:  { buckets: [uploads] }
   # queues:   [jobs]
+  # secrets:  [chat-model]           # inject a Model endpoint (see: init model)
   env:
     - { name: LOG_LEVEL, value: info }
 EOF
-  echo "wrote infra.yaml — edit it, then: $SELF deploy"
+      ;;
+    model|bedrock|inference)
+      cat > infra.yaml <<EOF
+apiVersion: openinfra.dev/v1
+kind: Model
+metadata:
+  name: ${name}
+spec:
+  model: llama3.1:8b                 # any Ollama model tag (must fit the GPU's VRAM)
+  gpu: 1                             # GPUs to allocate
+  # domain: ${name}.example          # optional: expose externally (Ingress + TLS)
+  # storageSize: 20Gi                # PVC for cached model weights
+# A GPU-backed, OpenAI-compatible endpoint gated by a generated API key. Apps
+# consume it by referencing the secret '${name}-model' in their Application's
+# spec.secrets (injects OPENAI_BASE_URL / OPENAI_API_KEY / MODEL). See docs/gpu.md.
+EOF
+      ;;
+    *) echo "unknown template '$kind' — use: $SELF init [app|model]" >&2; exit 1 ;;
+  esac
+  echo "wrote infra.yaml (${kind}) — edit it, then: $SELF deploy"
 }
 
 cmd_deploy() {
@@ -47,6 +70,8 @@ cmd_deploy() {
 cmd_status() {
   echo "== Applications =="
   $KUBECTL get applications.openinfra.dev -A 2>/dev/null || echo "(none yet)"
+  echo; echo "== Models (managed inference) =="
+  $KUBECTL get models.openinfra.dev -A 2>/dev/null || echo "(none yet)"
   echo; echo "== Argo CD =="
   $KUBECTL -n argocd get applications 2>/dev/null || echo "(Argo not installed)"
 }
@@ -57,7 +82,7 @@ cmd_logs() {
 }
 
 case "${1:-}" in
-  init)   cmd_init ;;
+  init)   shift; cmd_init "$@" ;;
   deploy) cmd_deploy ;;
   status) cmd_status ;;
   logs)   shift; cmd_logs "$@" ;;

@@ -45,6 +45,7 @@ CNCF projects — not a reinvention of databases or storage.
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | ElastiCache | cache | Redis |
 | Lambda | serverless | Knative *(optional)* |
+| Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | Secrets Manager | secrets | Sealed Secrets |
@@ -102,9 +103,33 @@ public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
 
 ---
 
+## GPU & managed inference ("Bedrock")
+
+Label a GPU node and open-infra advertises its GPUs (shown on the console **Nodes**
+panel), scrapes per-GPU metrics into Grafana, and lets you stand up **managed
+inference** with one resource:
+
+```yaml
+# infra.yaml — a GPU-backed, OpenAI-compatible endpoint gated by an API key
+apiVersion: openinfra.dev/v1
+kind: Model
+metadata:
+  name: chat
+spec:
+  model: llama3.1:8b      # any Ollama model tag
+  gpu: 1
+```
+
+`open-infra init model` scaffolds this; apps consume it by referencing the
+generated `chat-model` secret (`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `MODEL`).
+Full setup — host prerequisites, the device plugin, GPU dashboards, and consuming
+the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
+
+---
+
 ## Status
 
-**Working spine — validated on a live single-node cluster.** Phases (see [`docs/roadmap.md`](docs/roadmap.md)):
+**Working spine — validated on a live 3-node cluster (2 nodes with GPUs).** Phases (see [`docs/roadmap.md`](docs/roadmap.md)):
 
 - [x] Phase 0 — Cluster foundation (k3s, MetalLB, Traefik, cert-manager) — nginx reachable over HTTPS ✓
 - [x] Phase 1 — GitOps engine (Argo CD app-of-apps reconciling from this repo) ✓
@@ -112,15 +137,15 @@ public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
 - [x] Phase 3 — The `Application` abstraction (Crossplane XRD + Composition; live end-to-end demo) ✓
 - [x] Phase 4 — Observability — Prometheus/Grafana/Alertmanager + Loki/Promtail; metrics **and** logs in Grafana with no per-app config ✓
 - [ ] Phase 5 — Serverless *(optional)*
-- [~] Phase 6 — DX & packaging (installer, CLI, GitHub Action + a deployed **web console**; docs site pending)
-- [ ] Phase 7 — Hardening & multi-tenancy
+- [x] Phase 6 — DX & packaging (installer, CLI, GitHub Action, and a deployed **web console**) ✓
+- [~] Phase 7 — Hardening & multi-tenancy (per-app ResourceQuota + LimitRange + NetworkPolicy shipped; backups + image scanning pending)
+- [x] GPU & managed inference — NVIDIA device plugin + DCGM metrics/Grafana, and a Bedrock-like `kind: Model` (GPU-backed, OpenAI-compatible, key-gated) ✓
 
-The substrate (Phases 0–2) has been brought up and reconciled end-to-end via
-Argo CD: a one-command `install.sh` stands up k3s + MetalLB + Argo CD, and the
-app-of-apps installs cert-manager, MinIO, CloudNativePG, NATS, Redis, and the
-kube-prometheus-stack/Loki observability stack. The `Application` abstraction
-(XRD + Crossplane Composition) is shipped; wiring its live end-to-end demo is the
-current focus.
+A one-command `install.sh` stands up k3s + MetalLB + Argo CD, and the app-of-apps
+installs cert-manager, MinIO, CloudNativePG, NATS, Redis, and the
+kube-prometheus-stack/Loki observability stack. Both abstractions — `Application`
+(Deployment/Service/Ingress/HPA + Postgres/bucket/queue) and `Model` (GPU-backed
+inference) — are shipped and verified end-to-end on the live cluster.
 
 > **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap
 > (Bitnami purged its public versioned tags in Aug 2025); migrating off Bitnami

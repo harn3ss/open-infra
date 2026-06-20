@@ -1,0 +1,12 @@
+apiVersion: openinfra.dev/v1
+kind: Model
+metadata:
+  name: bedrock-chat
+spec:
+  model: llama3.1:8b          # any Ollama model tag (must fit the GPU's VRAM)
+  gpu: 1                      # GPUs to allocate
+  # domain: chat.example      # optional: expose externally (Ingress + TLS); dev rewrites to sslip.io
+  # storageSize: 20Gi         # PVC for cached model weights (default 20Gi)
+# Provisions a GPU-backed, OpenAI-compatible inference endpoint gated by a
+# generated API key. Consumers reference the secret 'bedrock-chat-model'
+# (OPENAI_BASE_URL / OPENAI_API_KEY / MODEL). See docs/gpu.md.
