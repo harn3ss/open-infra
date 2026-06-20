@@ -148,6 +148,16 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/crd-schema", handleCRDSchema(crd.New(client.Host, client.Transport), logger))
 
+		// MinIO object storage (S3 browser) + NATS JetStream (queues). These talk
+		// to in-cluster MinIO/NATS rather than the k8s API, so they're their own
+		// endpoints (not the /k8s proxy).
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/buckets", handleBuckets(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).
+			Get("/buckets/{bucket}/objects", handleBucketObjects(*client.Clientset, logger))
+		api.With(middleware.Timeout(10*time.Second)).
+			Get("/queues", handleQueues(logger))
+
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
 

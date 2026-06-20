@@ -8,10 +8,12 @@ import {
   Server,
   Zap,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/features/dashboard/stat-card";
 import { HealthPanel } from "@/features/dashboard/health-panel";
 import { EventsFeed } from "@/features/dashboard/events-feed";
+import { listBuckets, listQueues } from "@/lib/api";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import {
   appsPaths,
@@ -53,14 +55,10 @@ export function DashboardPage() {
   const healthyApps = apps.items.filter((a) => isReady(a.status?.conditions)).length;
   const readyFns = fns.items.filter((f) => isReady(f.status?.conditions)).length;
   const readyModels = models.items.filter((m) => isReady(m.status?.conditions)).length;
-  const bucketCount = apps.items.reduce(
-    (n, a) => n + (a.spec?.storage?.buckets?.length ?? 0),
-    0,
-  );
-  const queueCount = apps.items.reduce(
-    (n, a) => n + (a.spec?.queues?.length ?? 0),
-    0,
-  );
+  const bucketsQuery = useQuery({ queryKey: ["buckets"], queryFn: listBuckets });
+  const queuesQuery = useQuery({ queryKey: ["queues"], queryFn: listQueues });
+  const bucketCount = bucketsQuery.data?.length ?? 0;
+  const queueCount = queuesQuery.data?.length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -114,8 +112,8 @@ export function DashboardPage() {
           value={bucketCount}
           icon={HardDrive}
           to="/buckets"
-          loading={apps.isLoading}
-          error={apps.isError}
+          loading={bucketsQuery.isLoading}
+          error={bucketsQuery.isError}
           accent="warning"
         />
         <StatCard
@@ -123,8 +121,8 @@ export function DashboardPage() {
           value={queueCount}
           icon={Send}
           to="/queues"
-          loading={apps.isLoading}
-          error={apps.isError}
+          loading={queuesQuery.isLoading}
+          error={queuesQuery.isError}
           accent="accent"
         />
         <StatCard

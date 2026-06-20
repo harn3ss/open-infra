@@ -92,3 +92,31 @@ subjects:
   - kind: ServiceAccount
     name: console
     namespace: open-infra-console
+---
+# Narrow cross-namespace read: the console SA may GET only the MinIO root secret
+# (in the minio namespace) so the BFF can reach MinIO's S3 API for the Buckets
+# browser. Scoped to the single named secret — nothing else in that namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-infra-console-minio
+  namespace: minio
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [minio]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: open-infra-console-minio
+  namespace: minio
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: open-infra-console-minio
+subjects:
+  - kind: ServiceAccount
+    name: console
+    namespace: open-infra-console

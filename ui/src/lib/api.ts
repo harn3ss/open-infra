@@ -168,3 +168,44 @@ export function watchUrl(path: string, resourceVersion?: string): string {
   if (resourceVersion) params.set("resourceVersion", resourceVersion);
   return `${API_BASE}/watch?${params.toString()}`;
 }
+
+/* ------------------------- Object storage (MinIO/S3) ------------------------- */
+
+export interface BucketInfo {
+  name: string;
+  createdAt: string;
+}
+export interface ObjectInfo {
+  key: string;
+  size: number;
+  lastModified: string;
+  isPrefix: boolean;
+}
+
+export function listBuckets(): Promise<BucketInfo[]> {
+  return request<BucketInfo[]>("/buckets");
+}
+export function listBucketObjects(
+  bucket: string,
+  prefix?: string,
+): Promise<ObjectInfo[]> {
+  const q = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
+  return request<ObjectInfo[]>(
+    `/buckets/${encodeURIComponent(bucket)}/objects${q}`,
+  );
+}
+
+/* ---------------------- Messaging (NATS JetStream/SQS) ---------------------- */
+
+export interface StreamInfo {
+  name: string;
+  account: string;
+  subjects: string[];
+  messages: number;
+  bytes: number;
+  consumers: number;
+}
+
+export function listQueues(): Promise<StreamInfo[]> {
+  return request<StreamInfo[]>("/queues");
+}
