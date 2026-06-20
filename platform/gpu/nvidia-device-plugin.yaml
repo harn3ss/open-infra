@@ -23,6 +23,9 @@ spec:
         runtimeClassName: nvidia
         nodeSelector:
           openinfra.dev/gpu: "true"
+        # Clear the chart's default nodeAffinity (it requires Node-Feature-
+        # Discovery labels we don't run); our nodeSelector targets GPU nodes.
+        affinity: {}
   destination:
     server: https://kubernetes.default.svc
     namespace: nvidia-device-plugin
