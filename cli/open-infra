@@ -43,11 +43,15 @@ kind: Model
 metadata:
   name: ${name}
 spec:
-  model: llama3.1:8b                 # any Ollama model tag (must fit the GPU's VRAM)
-  gpu: 1                             # GPUs to allocate
+  # Pick from the curated catalog (sets resources + GPU class automatically):
+  #   qwen2.5:0.5b, llama3.2:1b  -> nano  (CPU-only, ultra-fast)
+  #   llama3.2:3b                -> small (small GPU)
+  #   llama3.1:8b                -> standard (small GPU)
+  #   mixtral:8x7b               -> large (requires a large GPU)
+  model: llama3.1:8b
+  # highAvailability: true           # 2 replicas across nodes (degrades if GPUs scarce)
   # domain: ${name}.example          # optional: expose externally (Ingress + TLS)
-  # storageSize: 20Gi                # PVC for cached model weights
-# A GPU-backed, OpenAI-compatible endpoint gated by a generated API key. Apps
+# An OpenAI-compatible endpoint gated by a generated API key. Apps
 # consume it by referencing the secret '${name}-model' in their Application's
 # spec.secrets (injects OPENAI_BASE_URL / OPENAI_API_KEY / MODEL). See docs/gpu.md.
 EOF

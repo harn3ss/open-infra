@@ -39,7 +39,15 @@ that are intentionally NOT in the repo — they touch the host OS, not the clust
    ```bash
    kubectl label node <node> openinfra.dev/gpu=true
    kubectl label node <node> openinfra.dev/gpu-model=RTX-3090-24GB   # optional; shown in the console
+   # GPU class for Model placement — "large" for >=24GB cards, "small" otherwise:
+   kubectl label node <node> openinfra.dev/gpu-tier=large            # or: small
    ```
+
+   `gpu-tier` is how the **Model catalog** right-sizes placement: `small`/`standard`
+   models prefer a `small` GPU (but may use a `large` one), `large` models require a
+   `large` GPU, and `nano` (CPU-only) models need no GPU at all. See
+   [`docs/serverless.md`](serverless.md) and the catalog in
+   `platform/abstraction/model-composition.yaml`.
 
 Confirm GPUs are now advertised to the scheduler:
 
@@ -83,15 +91,40 @@ kind: Model
 metadata:
   name: chat
 spec:
-  model: llama3.1:8b      # any Ollama model tag
-  gpu: 1                  # GPUs to allocate (default 1)
-  # domain: chat.example  # optional: expose externally (Ingress + TLS)
-  # storageSize: 20Gi     # PVC for cached weights (default 20Gi)
+  model: llama3.1:8b          # from the curated catalog (below)
+  # highAvailability: true    # 2 replicas across nodes; degrades if GPUs are scarce
+  # domain: chat.example      # optional: expose externally (Ingress + TLS)
 ```
+
+### Catalog (allowlist + right-sizing)
+
+`spec.model` is an **enum** — only vetted models are allowed, and each maps to a
+tier that sets CPU/RAM and GPU placement (no manual `gpu` count). Keep the XRD
+enum and the Composition `$catalog` in sync when adding models.
+
+| `model` | Tier | Hardware | CPU / RAM |
+|---|---|---|---|
+| `qwen2.5:0.5b`, `llama3.2:1b` | nano | **CPU-only** (no GPU) | 2 / 4Gi |
+| `llama3.2:3b` | small | small GPU (may use large) | 4 / 8Gi |
+| `llama3.1:8b` | standard | small GPU (may use large) | 4 / 12Gi |
+| `mixtral:8x7b` | large | **requires** a large GPU | 8 / 16Gi |
+
+GPU placement uses the node label `openinfra.dev/gpu-tier` (`small`/`large`) — see
+§1. `nano` needs no GPU and runs on any node.
+
+### High availability
+
+`highAvailability: true` runs **2 replicas with pod anti-affinity** (one per node),
+load-balanced by the Service — so a node loss doesn't drop the endpoint. Because a
+GPU can't be split, **each replica needs its own GPU node**: a `large` model (only
+one big-GPU node) or any model when GPU nodes are scarce **degrades gracefully** to
+one replica, surfaced in the console as `Degraded (1/2)` rather than a false "Ready".
 
 The `model` Crossplane Composition compiles this into:
 
-- an **Ollama** Deployment on a GPU node (pulls + caches the model on a PVC),
+- an **Ollama** Deployment placed per the catalog tier (CPU-only or the right GPU
+  class), with the weight cache on an ephemeral `emptyDir` (stateless — so it can
+  reschedule on node failure),
 - an **nginx auth sidecar** enforcing `Authorization: Bearer <key>`,
 - a **Service** (the endpoint), plus optional **Ingress** + TLS,
 - a connection **Secret `<name>-model`** with `OPENAI_BASE_URL`, `OPENAI_API_KEY`,
@@ -118,8 +151,12 @@ Bedrock), so one Model can be shared across namespaces.
 
 ## Notes & sizing
 
-- The model is pulled once and cached on the PVC; the first start is slower.
-- Pick a model that fits the GPU's VRAM (e.g. `llama3.1:8b` ≈ 5–6 GB quantized;
-  a 24 GB card comfortably runs 8–14B models).
-- A rolling update can't share a single GPU / RWO PVC, so the Deployment uses the
-  `Recreate` strategy (brief downtime when the spec changes).
+- The catalog already right-sizes each model to a GPU class that fits its VRAM —
+  pick the tier that matches your latency/quality needs (nano for ultra-fast/CPU,
+  large only when you need it).
+- Weights are pulled on each fresh pod into an ephemeral `emptyDir` (the Model is
+  stateless so it can reschedule on node failure); the first start is slower.
+- A rolling update can't share a single GPU, so the Deployment uses the `Recreate`
+  strategy (brief downtime when the spec changes).
+- Adding a model = add it to **both** the XRD enum (`model-xrd.yaml`) and the
+  Composition `$catalog` (`model-composition.yaml`).
