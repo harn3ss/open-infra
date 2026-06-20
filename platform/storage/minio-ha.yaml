@@ -1,0 +1,47 @@
+# MinIO (HA variant) — distributed object storage. Selected by install.sh when
+# config.yaml `storage.highAvailability: true`; otherwise storage/minio.yaml
+# (standalone) is used. Exactly one of the two is included in the app-of-apps.
+#
+# Distributed = 4 erasure-coded drives across nodes; survives a single node loss.
+# Needs >=4 drives (one node holds 2 on a 3-node cluster). NOT for single-node dev.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.min.io/
+    chart: minio
+    targetRevision: 5.2.0
+    helm:
+      values: |
+        mode: distributed
+        replicas: 4
+        persistence:
+          enabled: true
+          size: 20Gi
+          # storageClass left default; for NAS reuse, bind a pre-made PV instead.
+        resources:
+          requests: { memory: 512Mi }
+        # Spread drives across nodes so a node loss doesn't take out a quorum.
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels: { app: minio }
+        # Root creds come from a Sealed Secret in prod; chart default for dev only.
+        consoleService:
+          type: ClusterIP
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: minio
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

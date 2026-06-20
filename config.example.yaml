@@ -62,6 +62,10 @@ edge:
 storage:
   # Fast local NVMe (RWO) for databases. k3s local-path. NEVER put DBs on CIFS/NFS.
   databaseStorageClass: local-path
+  # MinIO object storage topology. false = standalone (default; fine for dev /
+  # single node). true = distributed HA (4 erasure-coded drives across nodes;
+  # needs >=4 drives). Not defaulted to HA — opt in deliberately.
+  highAvailability: false
   # NAS-backed shared/bulk volumes (RWX). Point at an SMB/NFS export.
   shared:
     enabled: false

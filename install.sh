@@ -66,7 +66,7 @@ excl() {
     LOG "component disabled: $1"
   fi
 }
-excl minio         "storage/minio.yaml"
+excl minio         "storage/minio.yaml,storage/minio-ha.yaml"
 excl cloudnativePG "data/cloudnativepg.yaml"
 excl nats          "data/nats.yaml"
 excl redis         "data/redis.yaml"
@@ -77,6 +77,18 @@ excl console       "console/*"
 excl serverless    "serverless/*"
 excl gpu           "gpu/*"
 excl velero        "backup/*"
+
+# MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
+# distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
+# NOT default to HA. (Skip when MinIO is disabled — both already excluded above.)
+if [ "$(yget components.minio)" != "false" ]; then
+  if [ "$(yget storage.highAvailability)" = "true" ]; then
+    EXCLUDES="${EXCLUDES},storage/minio.yaml"
+    LOG "storage: MinIO HA (distributed)"
+  else
+    EXCLUDES="${EXCLUDES},storage/minio-ha.yaml"
+  fi
+fi
 case "$EXCLUDES" in *,*) EXCLUDE_GLOB="{${EXCLUDES}}";; *) EXCLUDE_GLOB="$EXCLUDES";; esac
 
 LOG "mode=$MODE cluster=$CLUSTER_NAME k3s=$K3S_CHANNEL"
