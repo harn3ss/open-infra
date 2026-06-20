@@ -1,0 +1,23 @@
+# Daily cluster backup at 03:00, kept 7 days. Backs up all namespaces' resources
+# + PV data, excluding system namespaces and minio (the backup target itself —
+# avoids a circular/huge backup; for real DR, replicate MinIO off-box).
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  schedule: "0 3 * * *"
+  template:
+    ttl: 168h0m0s
+    storageLocation: default
+    defaultVolumesToFsBackup: true
+    includedNamespaces:
+      - "*"
+    excludedNamespaces:
+      - kube-system
+      - velero
+      - minio

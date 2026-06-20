@@ -1,0 +1,51 @@
+# Velero — cluster backup/restore ("AWS Backup"). Backs up Kubernetes resources
+# plus PV data (node-agent / kopia file-level backup, since k3s local-path has no
+# CSI snapshots) to the MinIO `velero` bucket. Credentials come from the
+# velero-cloud-credentials secret created by velero-setup.yaml (never committed).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://vmware-tanzu.github.io/helm-charts
+    chart: velero
+    targetRevision: 12.0.3
+    helm:
+      values: |
+        initContainers:
+          - name: velero-plugin-for-aws
+            image: velero/velero-plugin-for-aws:v1.14.1
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+        credentials:
+          useSecret: true
+          existingSecret: velero-cloud-credentials
+        configuration:
+          backupStorageLocation:
+            - name: default
+              provider: aws
+              bucket: velero
+              default: true
+              config:
+                region: minio
+                s3ForcePathStyle: "true"
+                s3Url: http://minio.minio.svc.cluster.local:9000
+          volumeSnapshotLocation: []
+        snapshotsEnabled: false
+        deployNodeAgent: true
+        defaultVolumesToFsBackup: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: velero
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
