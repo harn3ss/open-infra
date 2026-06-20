@@ -98,6 +98,11 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
    └──────────────────────────────────────────────────────────────────┘
 ```
 
+A **web console** ships with the platform — an AWS-console-style UI over every
+resource (Applications, Functions, Models, Databases, Buckets, Queues, Nodes/GPUs,
+Monitoring) with per-resource detail pages and actions (object browser, model
+playground, create/delete). See [`docs/console.md`](docs/console.md).
+
 See [`docs/architecture.md`](docs/architecture.md) for the full diagram and the
 public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
 

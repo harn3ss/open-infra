@@ -32,7 +32,15 @@ Watch the platform converge:
 k3s kubectl -n argocd get applications        # everything should go Healthy/Synced
 ```
 
-Get the Argo CD UI (the "AWS console" feel):
+## 1b. Open the console
+
+open-infra ships a **web console** — the AWS-console-style UI for everything you
+run (Applications, Functions, Models, Databases, Buckets, Queues, Nodes, GPUs,
+Monitoring), with per-resource detail pages and actions (browse/upload objects,
+chat with a model, create/delete, publish to a queue). It's served behind Traefik
+at `https://console.<lb-ip>.sslip.io`. See [`docs/console.md`](console.md).
+
+For the raw GitOps view, the Argo CD UI is also there:
 
 ```bash
 k3s kubectl -n argocd get secret argocd-initial-admin-secret \
@@ -46,7 +54,7 @@ k3s kubectl -n argocd port-forward svc/argocd-server 8080:443
 In your app repo (or try `examples/hello-web`):
 
 ```bash
-./cli/open-infra init        # scaffolds infra.yaml
+./cli/open-infra init        # scaffolds infra.yaml (also: init model | init function)
 $EDITOR infra.yaml           # set image + port (+ optional db/storage/queues)
 ./cli/open-infra deploy      # applies the Application; Crossplane fans it out
 ./cli/open-infra status      # watch it come up
