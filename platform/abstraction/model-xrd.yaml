@@ -33,10 +33,24 @@ spec:
               type: object
               required: [model]
               properties:
-                model:       { type: string, description: "Ollama model tag, e.g. llama3.1:8b" }
-                gpu:         { type: integer, default: 1, description: "GPUs to allocate" }
+                # Curated catalog (allowlist). Each entry maps to a tier + resource
+                # profile in the Composition (CPU/RAM, GPU class, or CPU-only). This
+                # is the governance + right-sizing contract — adding a model means
+                # adding it here AND to the Composition's $catalog.
+                model:
+                  type: string
+                  description: "Model to serve (from the curated catalog)."
+                  enum:
+                    - qwen2.5:0.5b     # nano  · CPU-only · ultra-fast, tiny
+                    - llama3.2:1b      # nano  · CPU-only
+                    - llama3.2:3b      # small · GPU (A2000 class)
+                    - llama3.1:8b      # standard · GPU (A2000 class)
+                    - mixtral:8x7b     # large · requires a large GPU (3090 class)
+                # Run two replicas on separate nodes (load-balanced, survives a node
+                # loss). Degrades gracefully to one replica if GPU nodes are scarce.
+                highAvailability: { type: boolean, default: false }
                 domain:      { type: string, description: "Hostname for external Ingress + TLS" }
-                storageSize: { type: string, default: "20Gi", description: "PVC size for cached model weights" }
+                storageSize: { type: string, default: "20Gi", description: "Ephemeral weight-cache size limit (emptyDir)" }
             status:
               type: object
               properties:

@@ -209,6 +209,8 @@ export const FUNCTIONS_CRD_NAME = "functions.openinfra.dev";
 export interface ModelSpec {
   model: string;
   gpu?: number;
+  /** Run two replicas across nodes (load-balanced, survives a node loss). */
+  highAvailability?: boolean;
   domain?: string;
   storageSize?: string;
 }

@@ -13,7 +13,7 @@ import { YamlViewer } from "@/components/common/yaml-viewer";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { claimHealth, nodeAwareHealth } from "@/lib/resource-health";
+import { modelHealth, modelDesiredReplicas } from "@/lib/resource-health";
 import { ApiError, k8sDelete, k8sGet, modelChat, type ChatMessage } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { useNodeHealth } from "@/hooks/use-node-health";
@@ -158,7 +158,14 @@ export function ModelDetailPage() {
   const endpoint = decode(data["OPENAI_BASE_URL"]);
   const apiKey = decode(data["OPENAI_API_KEY"]);
   const nodes = podIndex.nodesForApp(namespace, name);
-  const health = nodeAwareHealth(claimHealth(model), nodes, offlineNodes);
+  const desiredReplicas = modelDesiredReplicas(model.spec?.highAvailability);
+  const readyReplicas = podIndex.statsForApp(namespace, name).ready;
+  const health = modelHealth(model, {
+    nodes,
+    offlineNodes,
+    ready: readyReplicas,
+    desired: desiredReplicas,
+  });
 
   return (
     <DetailShell
@@ -191,7 +198,25 @@ export function ModelDetailPage() {
           <Card>
             <CardContent className="divide-y divide-border p-0">
               <DetailRow label="Model">{model.spec?.model ?? "—"}</DetailRow>
-              <DetailRow label="GPUs">{model.spec?.gpu ?? 1}×</DetailRow>
+              <DetailRow label="High availability">
+                {model.spec?.highAvailability ? (
+                  <span
+                    className={cn(
+                      readyReplicas < desiredReplicas &&
+                        "font-medium text-warning",
+                    )}
+                  >
+                    On · {readyReplicas}/{desiredReplicas} replicas ready
+                    {readyReplicas < desiredReplicas
+                      ? " (degraded — GPU-limited?)"
+                      : ""}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    Off (single replica)
+                  </span>
+                )}
+              </DetailRow>
               <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Node">
                 {nodes.length === 0 ? (

@@ -6,14 +6,28 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { NewResourceDialog } from "@/components/common/new-resource-dialog";
 import { Button } from "@/components/ui/button";
-import { claimHealth, nodeAwareHealth } from "@/lib/resource-health";
+import { modelHealth, modelDesiredReplicas } from "@/lib/resource-health";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNodeHealth } from "@/hooks/use-node-health";
-import { usePodNodeIndex } from "@/hooks/use-pod-node-index";
+import { usePodNodeIndex, type PodNodeIndex } from "@/hooks/use-pod-node-index";
 import { useNamespace } from "@/lib/namespace-context";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import { MODELS_CRD_NAME, type K8sObject, type Model } from "@/types/k8s";
+
+/** Node-aware + replica-aware status for a Model row. */
+function modelStatus(
+  m: Model,
+  podIndex: PodNodeIndex,
+  offlineNodes: Set<string>,
+) {
+  return modelHealth(m, {
+    nodes: podIndex.nodesForApp(m.metadata.namespace, m.metadata.name),
+    offlineNodes,
+    ready: podIndex.statsForApp(m.metadata.namespace, m.metadata.name).ready,
+    desired: modelDesiredReplicas(m.spec?.highAvailability),
+  });
+}
 
 export function ModelsPage() {
   const navigate = useNavigate();
@@ -58,35 +72,35 @@ export function ModelsPage() {
         size: 220,
       },
       {
-        id: "gpu",
-        header: "GPU",
-        accessorFn: (m) => m.spec?.gpu ?? 1,
-        cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">
-            {row.original.spec?.gpu ?? 1}×
-          </span>
-        ),
-        size: 80,
+        id: "ha",
+        header: "HA",
+        accessorFn: (m) => (m.spec?.highAvailability ? "yes" : "no"),
+        cell: ({ row }) => {
+          const m = row.original;
+          if (!m.spec?.highAvailability)
+            return <span className="text-xs text-muted-foreground">—</span>;
+          const desired = modelDesiredReplicas(true);
+          const { ready } = podIndex.statsForApp(
+            m.metadata.namespace,
+            m.metadata.name,
+          );
+          return (
+            <span className="font-mono text-xs">
+              {ready}/{desired}
+            </span>
+          );
+        },
+        size: 70,
       },
       {
         id: "status",
         header: "Status",
-        accessorFn: (m) =>
-          nodeAwareHealth(
-            claimHealth(m),
-            podIndex.nodesForApp(m.metadata.namespace, m.metadata.name),
-            offlineNodes,
-          ).label,
+        accessorFn: (m) => modelStatus(m, podIndex, offlineNodes).label,
         cell: ({ row }) => {
-          const m = row.original;
-          const h = nodeAwareHealth(
-            claimHealth(m),
-            podIndex.nodesForApp(m.metadata.namespace, m.metadata.name),
-            offlineNodes,
-          );
+          const h = modelStatus(row.original, podIndex, offlineNodes);
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
-        size: 150,
+        size: 160,
       },
       {
         id: "age",

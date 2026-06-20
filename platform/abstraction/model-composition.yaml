@@ -1,8 +1,11 @@
-# The compiler for kind: Model -> a GPU-backed Ollama server + an nginx auth
-# sidecar that gates the OpenAI-compatible endpoint behind a generated API key,
-# + a PVC for cached weights, + a Service, + (optional) Ingress, + a connection
-# Secret (<name>-model: OPENAI_BASE_URL / OPENAI_API_KEY / MODEL) that apps
-# reference the same way they reference the database secret.
+# The compiler for kind: Model -> an Ollama server + an nginx auth sidecar that
+# gates the OpenAI-compatible endpoint behind a generated API key, + a Service,
+# + (optional) Ingress, + a connection Secret (<name>-model: OPENAI_BASE_URL /
+# OPENAI_API_KEY / MODEL) that apps reference like the database secret.
+#
+# Resources/placement are driven by a curated catalog ($catalog below, in sync
+# with the XRD enum): each model maps to a tier (cpu / smallgpu / largegpu) that
+# sets CPU/RAM and GPU targeting. highAvailability runs 2 replicas across nodes.
 #
 # The API key is derived deterministically from the composite's UID, so it is
 # stable across reconciles (re-rendering must not churn the key).
@@ -34,10 +37,23 @@ spec:
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
-            {{- $gpu := $spec.gpu | default 1 }}
             {{- $size := $spec.storageSize | default "20Gi" }}
             {{- $key := .observed.composite.resource.metadata.uid | sha256sum | trunc 32 }}
             {{- $svc := printf "%s.%s.svc.cluster.local" $name $ns }}
+            {{- /* Curated catalog: model tag -> resource profile. KEEP IN SYNC with
+                   the XRD enum. tier drives GPU placement: cpu (no GPU, runs
+                   anywhere), smallgpu (A2000 class, may use a large GPU), largegpu
+                   (requires a large GPU). */}}
+            {{- $catalog := dict
+                  "qwen2.5:0.5b" (dict "tier" "cpu"      "cpu" "2" "memory" "4Gi")
+                  "llama3.2:1b"  (dict "tier" "cpu"      "cpu" "2" "memory" "4Gi")
+                  "llama3.2:3b"  (dict "tier" "smallgpu" "cpu" "4" "memory" "8Gi")
+                  "llama3.1:8b"  (dict "tier" "smallgpu" "cpu" "4" "memory" "12Gi")
+                  "mixtral:8x7b" (dict "tier" "largegpu" "cpu" "8" "memory" "16Gi") }}
+            {{- $profile := (index $catalog $spec.model) | default (dict "tier" "cpu" "cpu" "2" "memory" "4Gi") }}
+            {{- $tier := $profile.tier }}
+            {{- $useGpu := ne $tier "cpu" }}
+            {{- $replicas := 1 }}{{- if $spec.highAvailability }}{{- $replicas = 2 }}{{- end }}
             ---
             # --- Auth-proxy config (Secret so the key isn't in a plaintext CM).
             #     nginx $variables below are literal (not Go-template actions). ---
@@ -66,8 +82,9 @@ spec:
                         }
                       }
             ---
-            # --- Deployment: Ollama (GPU) + nginx auth sidecar. Recreate strategy
-            #     because the GPU + RWO PVC can't be shared during a rollover. ---
+            # --- Deployment: Ollama + nginx auth sidecar. Resources, GPU class, and
+            #     replica count all come from the catalog profile + highAvailability.
+            #     Recreate strategy: a GPU can't host two replicas during a rollover. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -83,25 +100,67 @@ spec:
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/name: {{ $name }} }
                   spec:
+                    replicas: {{ $replicas }}
                     selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
                     strategy: { type: Recreate }
                     template:
                       metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
                       spec:
+                        {{- if $useGpu }}
                         runtimeClassName: nvidia
-                        nodeSelector: { openinfra.dev/gpu: "true" }
+                        {{- end }}
+                        {{- if or $useGpu $spec.highAvailability }}
+                        affinity:
+                          {{- if $useGpu }}
+                          # Target the right GPU class. largegpu requires a large GPU;
+                          # smallgpu prefers a small GPU but may use a large one (so it
+                          # doesn't strand on a single node), keeping big GPUs free.
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - key: openinfra.dev/gpu-tier
+                                      operator: In
+                                      {{- if eq $tier "largegpu" }}
+                                      values: [large]
+                                      {{- else }}
+                                      values: [small, large]
+                                      {{- end }}
+                            {{- if eq $tier "smallgpu" }}
+                            preferredDuringSchedulingIgnoredDuringExecution:
+                              - weight: 100
+                                preference:
+                                  matchExpressions:
+                                    - { key: openinfra.dev/gpu-tier, operator: In, values: [small] }
+                            {{- end }}
+                          {{- end }}
+                          {{- if $spec.highAvailability }}
+                          # Spread replicas across nodes. If too few qualifying nodes
+                          # exist, the extra replica stays Pending (graceful degrade).
+                          podAntiAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              - labelSelector:
+                                  matchLabels: { app.kubernetes.io/name: {{ $name }} }
+                                topologyKey: kubernetes.io/hostname
+                          {{- end }}
+                        {{- end }}
                         containers:
                           - name: ollama
                             image: ollama/ollama:0.30.10
-                            # Start the server, wait for it, pull the model once
-                            # (cached on the PVC), then hand the process back.
+                            # Start the server, wait for it, pull the model once, then
+                            # hand the process back. Weights re-pull on each fresh pod.
                             command: ["/bin/sh", "-c"]
                             args:
                               - 'ollama serve & pid=$!; until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull {{ $spec.model }} || true; wait $pid'
                             ports: [ { containerPort: 11434 } ]
                             resources:
                               requests: { cpu: 250m, memory: 1Gi }
-                              limits: { cpu: "4", memory: 8Gi, nvidia.com/gpu: {{ $gpu }} }
+                              limits:
+                                cpu: "{{ $profile.cpu }}"
+                                memory: {{ $profile.memory }}
+                                {{- if $useGpu }}
+                                nvidia.com/gpu: 1
+                                {{- end }}
                             volumeMounts:
                               - { name: models, mountPath: /root/.ollama }
                             readinessProbe: { tcpSocket: { port: 11434 }, initialDelaySeconds: 5, periodSeconds: 10 }

@@ -56,3 +56,36 @@ export function nodeAwareHealth(
   // Some replicas remain on healthy nodes: degraded, not down.
   return { label: "Degraded", tone: "warning" };
 }
+
+/**
+ * Health for a Model, layering replica availability on top of the node-aware
+ * claim health. A highAvailability Model wants 2 replicas; if GPU nodes are
+ * scarce the extra one stays Pending, so we surface "Degraded (1/2)" rather
+ * than a flat "Ready" — the honest state for graceful HA degradation.
+ *
+ * `nodes`/`offlineNodes` feed nodeAwareHealth; `ready`/`desired` are the running
+ * vs wanted replica counts.
+ */
+export function modelHealth(
+  model: K8sObject<{ highAvailability?: boolean }, { conditions?: Condition[] }>,
+  ctx: {
+    nodes: string[];
+    offlineNodes: Set<string>;
+    ready: number;
+    desired: number;
+  },
+): Health {
+  const base = nodeAwareHealth(claimHealth(model), ctx.nodes, ctx.offlineNodes);
+  if (model.metadata.deletionTimestamp) return base;
+  // Only refine when at least one replica is up — zero ready means base health
+  // (Node offline / Not ready / Provisioning) is the more accurate story.
+  if (ctx.desired > 1 && ctx.ready >= 1 && ctx.ready < ctx.desired) {
+    return { label: `Degraded (${ctx.ready}/${ctx.desired})`, tone: "warning" };
+  }
+  return base;
+}
+
+/** Desired replica count for a Model given its HA setting. */
+export function modelDesiredReplicas(highAvailability?: boolean): number {
+  return highAvailability ? 2 : 1;
+}
