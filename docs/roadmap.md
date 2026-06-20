@@ -17,16 +17,19 @@ test* — the bar for calling it done.
 
 ## Current state
 
-**Phases 0–2 are validated on a live single-node cluster.** `install.sh` stands
-up k3s + MetalLB + Argo CD, and the app-of-apps reconciles the platform from this
-repo: cert-manager, MinIO, CloudNativePG, NATS, Redis, and kube-prometheus-stack
-+ Loki all reach Healthy. The Phase 0 exit test (nginx over HTTPS via
-Traefik/MetalLB) passes.
+**Validated on a live 3-node cluster (2 nodes with GPUs).** `install.sh` stands up
+k3s + MetalLB + Argo CD, and the app-of-apps reconciles the platform from this
+repo: cert-manager, MinIO, CloudNativePG, NATS, Redis, kube-prometheus-stack +
+Loki, Sealed Secrets, and Knative all reach Healthy.
 
-Phase 3 (the `Application` abstraction) is done and demoed end-to-end. Phase 4 is
-done: Prometheus/Grafana/Alertmanager + Loki/Promtail, with metrics **and** logs
-queryable in Grafana (and the console) with no per-app config. A deployed web
-console (Phase 6) surfaces it all.
+**Phases 0–6 are done.** The `Application` abstraction (3); observability with
+metrics **and** logs, no per-app config (4); serverless `kind: Function` on Knative
+— scale-to-zero 0→N→0 verified (5); and the installer/CLI/Action + a deployed web
+console (6). On top of the numbered plan: GPU scheduling + DCGM metrics, a
+Bedrock-style `kind: Model` (GPU-backed, OpenAI-compatible, key-gated inference),
+and GPU-capable serverless functions. **Phase 7** (hardening) is in progress —
+per-app ResourceQuota/LimitRange/NetworkPolicy + Sealed Secrets shipped and
+verified; Velero backups and image scanning remain.
 
 Issues surfaced and fixed during live bring-up (kept here so they don't resurface):
 
@@ -34,8 +37,9 @@ Issues surfaced and fixed during live bring-up (kept here so they don't resurfac
   targets had replicas too), so Loki never deployed and the app sat `Unknown`.
   Fixed: zero read/write/backend, add `schemaConfig`, disable caches/gateway.
   Lesson: an Argo app stuck `Unknown` (ComparisonError) is *broken*, not cosmetic.
-- **sealed-secrets** — same `Unknown` symptom: its Helm repo URL 404s, so it never
-  deployed. *Fix in Phase 7 (security).*
+- **sealed-secrets** — same `Unknown` symptom: its Helm repo URL 404'd, so it never
+  deployed. *Fixed:* the chart moved orgs (`bitnami-labs.github.io` →
+  `bitnami.github.io`); bumped to 2.19.0.
 
 - **Argo CD install** must use `--server-side` — the ApplicationSet CRD exceeds
   the 256 KB client-side `last-applied-configuration` annotation limit.

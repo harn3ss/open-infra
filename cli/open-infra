@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # open-infra CLI — a thin, friendly wrapper over kubectl/Argo for the common loop.
-#   open-infra init [app|model]  scaffold an infra.yaml (Application, or a Bedrock-style Model)
+#   open-infra init [app|model|function]  scaffold an infra.yaml (Application / Model / Function)
 #   open-infra deploy   validate infra.yaml, render the CR, commit to GitOps
 #   open-infra status   show your apps, models, and their health
 #   open-infra logs     tail logs for an app
@@ -52,7 +52,24 @@ spec:
 # spec.secrets (injects OPENAI_BASE_URL / OPENAI_API_KEY / MODEL). See docs/gpu.md.
 EOF
       ;;
-    *) echo "unknown template '$kind' — use: $SELF init [app|model]" >&2; exit 1 ;;
+    function|fn|serverless)
+      cat > infra.yaml <<EOF
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: ${name}
+spec:
+  image: ghcr.io/CHANGEME/${name}    # container that serves HTTP; CI replaces the tag
+  port: 8080
+  scaling: { min: 0, max: 10 }       # min 0 = scale to zero when idle
+  # gpu: 1                           # serverless GPU inference (releases the GPU when idle)
+  # queues: [events]                 # event-driven (injects NATS_URL + OPENINFRA_QUEUES)
+  # secrets: [api-db-app]            # connect to an app's DB/bucket; functions don't provision state
+  env:
+    - { name: LOG_LEVEL, value: info }
+EOF
+      ;;
+    *) echo "unknown template '$kind' — use: $SELF init [app|model|function]" >&2; exit 1 ;;
   esac
   echo "wrote infra.yaml (${kind}) — edit it, then: $SELF deploy"
 }
@@ -72,6 +89,8 @@ cmd_status() {
   $KUBECTL get applications.openinfra.dev -A 2>/dev/null || echo "(none yet)"
   echo; echo "== Models (managed inference) =="
   $KUBECTL get models.openinfra.dev -A 2>/dev/null || echo "(none yet)"
+  echo; echo "== Functions (serverless) =="
+  $KUBECTL get functions.openinfra.dev -A 2>/dev/null || echo "(none yet)"
   echo; echo "== Argo CD =="
   $KUBECTL -n argocd get applications 2>/dev/null || echo "(Argo not installed)"
 }

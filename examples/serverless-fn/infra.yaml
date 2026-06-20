@@ -1,0 +1,13 @@
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: serverless-fn
+spec:
+  image: ghcr.io/knative/helloworld-go:latest   # any container that serves HTTP
+  port: 8080
+  scaling: { min: 0, max: 5 }      # min 0 = scale to zero when idle (pay nothing idle)
+  # gpu: 1                         # serverless GPU inference (releases the GPU when idle)
+  # queues: [events]              # event-driven: injects NATS_URL + OPENINFRA_QUEUES
+  # secrets: [api-db-app]         # connect to an Application's DB/bucket (don't provision state here)
+  env:
+    - { name: TARGET, value: "open-infra serverless" }

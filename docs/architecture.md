@@ -36,7 +36,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
 | ElastiCache | cache | **Redis** | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
-| Lambda | serverless | **Knative** | Phase 5, optional, scale-to-zero |
+| Lambda | serverless | **Knative** (net-kourier) | `kind: Function`; scale-to-zero 0..N..0, optional GPU |
 | Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
 | ECR | registry | **GHCR** (default) / **Harbor** | Harbor for offline/self-host |
 | CloudFormation/CDK | the manifest | **infra.yaml → Crossplane** | the heart of the product |
@@ -67,6 +67,17 @@ cached weights, a Service, optional Ingress, and a `<name>-model` connection
 secret apps consume like the database secret. GPUs are exposed to the scheduler by
 the NVIDIA device plugin and observed via DCGM (`platform/gpu/`). Host setup and
 usage: [`docs/gpu.md`](gpu.md).
+
+## The `Function` abstraction (serverless)
+
+A third composite, `kind: Function`, is open-infra's "Lambda": a container that
+serves HTTP, compiled to a Knative Service that autoscales **0→N→0** (the activator
+buffers the first request and cold-starts a pod). Unlike `Application` (HPA, min 1),
+Functions scale to zero. They're **stateless by design** — they connect to
+resources via `secrets`/`queues` rather than provisioning a DB/bucket (coupling
+durable state to ephemeral, bursty compute invites data-loss and connection-storm
+problems). `spec.gpu` makes a function GPU-backed and frees the GPU when idle.
+Details: [`docs/serverless.md`](serverless.md).
 
 ## Storage tiering (read this twice)
 

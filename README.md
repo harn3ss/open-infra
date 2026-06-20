@@ -44,7 +44,7 @@ CNCF projects — not a reinvention of databases or storage.
 | RDS | managed Postgres | CloudNativePG |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | ElastiCache | cache | Redis |
-| Lambda | serverless | Knative *(optional)* |
+| Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
@@ -136,7 +136,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 - [x] Phase 2 — Platform services (MinIO, CloudNativePG, NATS, Redis) — all Healthy ✓
 - [x] Phase 3 — The `Application` abstraction (Crossplane XRD + Composition; live end-to-end demo) ✓
 - [x] Phase 4 — Observability — Prometheus/Grafana/Alertmanager + Loki/Promtail; metrics **and** logs in Grafana with no per-app config ✓
-- [ ] Phase 5 — Serverless *(optional)*
+- [x] Phase 5 — Serverless — `kind: Function` on Knative (scale-to-zero 0→N→0, incl. GPU functions) ✓
 - [x] Phase 6 — DX & packaging (installer, CLI, GitHub Action, and a deployed **web console**) ✓
 - [~] Phase 7 — Hardening & multi-tenancy (per-app ResourceQuota + LimitRange + NetworkPolicy shipped; backups + image scanning pending)
 - [x] GPU & managed inference — NVIDIA device plugin + DCGM metrics/Grafana, and a Bedrock-like `kind: Model` (GPU-backed, OpenAI-compatible, key-gated) ✓
