@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { useNavigate } from "@tanstack/react-router";
 import { BrainCircuit } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
@@ -9,6 +10,7 @@ import { age } from "@/lib/format";
 import type { Model } from "@/types/k8s";
 
 export function ModelsPage() {
+  const navigate = useNavigate();
   const columns = useMemo<ColumnDef<Model, unknown>[]>(
     () => [
       {
@@ -88,6 +90,15 @@ export function ModelsPage() {
       plural="Models"
       emptyTitle="No Models yet"
       emptyDescription="Scaffold one with `open-infra init model` — a GPU-backed, OpenAI-compatible inference endpoint."
+      onRowClick={(m) =>
+        navigate({
+          to: "/models/$namespace/$name",
+          params: {
+            namespace: m.metadata.namespace ?? "default",
+            name: m.metadata.name ?? "",
+          },
+        })
+      }
     />
   );
 }

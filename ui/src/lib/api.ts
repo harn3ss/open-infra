@@ -195,6 +195,36 @@ export function listBucketObjects(
   );
 }
 
+export function createBucket(name: string): Promise<{ name: string }> {
+  return request("/buckets", { method: "POST", body: JSON.stringify({ name }) });
+}
+export function deleteBucket(bucket: string): Promise<void> {
+  return request(`/buckets/${encodeURIComponent(bucket)}`, { method: "DELETE" });
+}
+export function uploadObject(
+  bucket: string,
+  key: string,
+  file: File,
+): Promise<{ key: string }> {
+  return request(
+    `/buckets/${encodeURIComponent(bucket)}/object?key=${encodeURIComponent(key)}`,
+    {
+      method: "PUT",
+      body: file,
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    },
+  );
+}
+export function objectDownloadUrl(bucket: string, key: string): string {
+  return `${API_BASE}/buckets/${encodeURIComponent(bucket)}/object?key=${encodeURIComponent(key)}`;
+}
+export function deleteObject(bucket: string, key: string): Promise<void> {
+  return request(
+    `/buckets/${encodeURIComponent(bucket)}/object?key=${encodeURIComponent(key)}`,
+    { method: "DELETE" },
+  );
+}
+
 /* ---------------------- Messaging (NATS JetStream/SQS) ---------------------- */
 
 export interface StreamInfo {
@@ -208,4 +238,44 @@ export interface StreamInfo {
 
 export function listQueues(): Promise<StreamInfo[]> {
   return request<StreamInfo[]>("/queues");
+}
+
+export function publishToQueue(
+  subject: string,
+  data: string,
+): Promise<{ status: string }> {
+  return request("/queues/publish", {
+    method: "POST",
+    body: JSON.stringify({ subject, data }),
+  });
+}
+export function purgeQueue(stream: string): Promise<{ status: string }> {
+  return request(`/queues/${encodeURIComponent(stream)}/purge`, {
+    method: "POST",
+  });
+}
+
+/* ----------------------- Model playground (chat proxy) ---------------------- */
+
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+export interface ChatCompletion {
+  choices?: { message?: ChatMessage }[];
+  error?: { message?: string } | string;
+}
+
+export function modelChat(
+  namespace: string,
+  name: string,
+  messages: ChatMessage[],
+): Promise<ChatCompletion> {
+  return request<ChatCompletion>(
+    `/models/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/chat`,
+    {
+      method: "POST",
+      body: JSON.stringify({ messages, stream: false }),
+    },
+  );
 }

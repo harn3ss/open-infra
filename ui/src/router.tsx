@@ -10,8 +10,10 @@ import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { ApplicationsPage } from "@/features/applications/applications-page";
 import { FunctionsPage } from "@/features/functions/functions-page";
 import { ModelsPage } from "@/features/models/models-page";
+import { ModelDetailPage } from "@/features/models/model-detail-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { BucketsPage } from "@/features/buckets/buckets-page";
+import { BucketDetailPage } from "@/features/buckets/bucket-detail-page";
 import { QueuesPage } from "@/features/queues/queues-page";
 import { WorkloadsPage } from "@/features/workloads/workloads-page";
 import { NodesPage } from "@/features/nodes/nodes-page";
@@ -47,6 +49,12 @@ const modelsRoute = createRoute({
   component: ModelsPage,
 });
 
+const modelDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/models/$namespace/$name",
+  component: ModelDetailPage,
+});
+
 const databasesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/databases",
@@ -57,6 +65,12 @@ const bucketsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/buckets",
   component: BucketsPage,
+});
+
+const bucketDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/buckets/$bucket",
+  component: BucketDetailPage,
 });
 
 const queuesRoute = createRoute({
@@ -88,8 +102,10 @@ const routeTree = rootRoute.addChildren([
   applicationsRoute,
   functionsRoute,
   modelsRoute,
+  modelDetailRoute,
   databasesRoute,
   bucketsRoute,
+  bucketDetailRoute,
   queuesRoute,
   workloadsRoute,
   nodesRoute,

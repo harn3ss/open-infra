@@ -28,6 +28,9 @@ export interface ResourceTablePageProps<T extends K8sObject> {
   plural: string;
   emptyTitle: string;
   emptyDescription: string;
+  /** If set, a row click runs this (e.g. navigate to a detail page) instead of
+   *  opening the YAML drawer. */
+  onRowClick?: (item: T) => void;
 }
 
 /**
@@ -46,6 +49,7 @@ export function ResourceTablePage<T extends K8sObject>({
   plural,
   emptyTitle,
   emptyDescription,
+  onRowClick,
 }: ResourceTablePageProps<T>) {
   const { scoped } = useNamespace();
   const { items, isLoading, isError, error, live, refetch } = useK8sWatch<T>(
@@ -100,8 +104,12 @@ export function ResourceTablePage<T extends K8sObject>({
             sorting={sorting}
             onSortingChange={setSorting}
             onRowClick={(o) => {
-              setYamlObj(o);
-              setYamlOpen(true);
+              if (onRowClick) {
+                onRowClick(o);
+              } else {
+                setYamlObj(o);
+                setYamlOpen(true);
+              }
             }}
             emptyState={
               <EmptyState
