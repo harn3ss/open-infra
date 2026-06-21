@@ -46,14 +46,16 @@ spec:
             {{- /* Curated OS catalog: os -> disk image + type. KEEP IN SYNC with the
                    XRD enum. Linux images are ready-made cloud images (containerdisks)
                    imported by CDI; windows clones the golden image PVC built once
-                   from an eval ISO (scripts/build-windows-image.sh). */}}
+                   built via kind: VmImage (console: VM Images). */}}
             {{- $catalog := dict
                   "ubuntu-24.04"    (dict "image" "quay.io/containerdisks/ubuntu:24.04"    "osType" "linux")
                   "ubuntu-22.04"    (dict "image" "quay.io/containerdisks/ubuntu:22.04"    "osType" "linux")
                   "fedora-40"       (dict "image" "quay.io/containerdisks/fedora:40"       "osType" "linux")
                   "debian-12"       (dict "image" "quay.io/containerdisks/debian:12"       "osType" "linux")
-                  "centos-stream-9" (dict "image" "quay.io/containerdisks/centos-stream:9" "osType" "linux")
-                  "windows"         (dict "image" ""                                       "osType" "windows") }}
+                  "centos-stream-9"     (dict "image" "quay.io/containerdisks/centos-stream:9" "osType" "linux")
+                  "windows-server-2019" (dict "image" "" "osType" "windows")
+                  "windows-server-2022" (dict "image" "" "osType" "windows")
+                  "windows-server-2025" (dict "image" "" "osType" "windows") }}
             {{- $profile := (index $catalog $spec.os) | default (dict "image" "quay.io/containerdisks/ubuntu:24.04" "osType" "linux") }}
             {{- $isWin := eq $profile.osType "windows" }}
             {{- $port := 22 }}{{- $user := "openinfra" }}{{- $proto := "ssh" }}
@@ -94,10 +96,10 @@ spec:
                             storageClassName: local-path
                           source:
                             {{- if $isWin }}
-                            # Clone the golden Windows image (built once; see docs).
+                            # Clone the per-version golden image (build via kind: VmImage).
                             pvc:
                               namespace: openinfra-images
-                              name: windows-golden
+                              name: {{ $spec.os }}-golden
                             {{- else }}
                             registry:
                               url: "docker://{{ $profile.image }}"

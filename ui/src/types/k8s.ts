@@ -293,6 +293,30 @@ export interface VmiStatus {
 }
 export type Vmi = K8sObject<unknown, VmiStatus>;
 
+// KubeVirt VirtualMachine — read for the installer's printableStatus (the VM
+// Images build progress: Provisioning/Running/Stopped).
+export interface KubevirtVmStatus {
+  printableStatus?: string;
+  ready?: boolean;
+}
+export type KubevirtVm = K8sObject<unknown, KubevirtVmStatus>;
+
+/* ---------------------- open-infra VmImage CRD (AMI builder) -------------- */
+
+export interface VmImageSpec {
+  os: string;
+  sourceUrl?: string;
+  diskSize?: string;
+}
+export interface VmImageStatus {
+  phase?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type VmImage = K8sObject<VmImageSpec, VmImageStatus>;
+export const VMIMAGES_PLURAL = "vmimages";
+export const VMIMAGES_CRD_NAME = "vmimages.openinfra.dev";
+
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
 export interface CnpgClusterSpec {

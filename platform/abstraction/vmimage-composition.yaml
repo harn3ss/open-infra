@@ -1,0 +1,219 @@
+# The compiler for kind: VmImage -> a Windows golden image, built declaratively:
+#   - CDI imports the Microsoft eval ISO (from a verified fwlink) + virtio-win,
+#   - a sysprep ConfigMap carries the unattended answer file (per-version edition
+#     + virtio driver path; FirstLogonCommands install virtio guest tools +
+#     cloudbase-init + RDP, then sysprep /generalize /shutdown),
+#   - an installer VM (runStrategy: Once, so it stops after sysprep) writes the
+#     golden disk, which survives as <os>-golden in openinfra-images.
+#
+# kind: VirtualMachine os: <same version> then clones <os>-golden.
+# Resources live in openinfra-images so any namespace's VM can clone cross-ns.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: vmimage
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XVmImage
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $os := $spec.os }}
+            {{- $disk := $spec.diskSize | default "64Gi" }}
+            {{- $ns := "openinfra-images" }}
+            {{- $virtio := "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso" }}
+            {{- /* Curated catalog: os -> verified eval-ISO fwlink + unattend params.
+                   KEEP IN SYNC with the XRD enum + the VM os catalog. */}}
+            {{- $catalog := dict
+                  "windows-server-2019" (dict "url" "https://go.microsoft.com/fwlink/p/?LinkID=2195167" "edition" "Windows Server 2019 Standard Evaluation (Desktop Experience)" "driver" "2k19")
+                  "windows-server-2022" (dict "url" "https://go.microsoft.com/fwlink/p/?LinkID=2195280" "edition" "Windows Server 2022 Standard Evaluation (Desktop Experience)" "driver" "2k22")
+                  "windows-server-2025" (dict "url" "https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us" "edition" "Windows Server 2025 Standard Evaluation (Desktop Experience)" "driver" "2k25") }}
+            {{- $c := (index $catalog $os) | default (index $catalog "windows-server-2022") }}
+            {{- $url := $spec.sourceUrl | default $c.url }}
+            {{- $pass := printf "%s-img" .observed.composite.resource.metadata.uid | sha256sum | trunc 14 }}
+            ---
+            # --- Windows eval ISO (CDI follows the fwlink redirect) ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: winiso
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: cdi.kubevirt.io/v1beta1
+                  kind: DataVolume
+                  metadata: { name: {{ $os }}-winiso, namespace: {{ $ns }} }
+                  spec:
+                    source: { http: { url: "{{ $url }}" } }
+                    storage:
+                      accessModes: [ReadWriteOnce]
+                      resources: { requests: { storage: 9Gi } }
+                      storageClassName: local-path
+            ---
+            # --- virtio-win drivers ISO ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: virtio
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: cdi.kubevirt.io/v1beta1
+                  kind: DataVolume
+                  metadata: { name: {{ $os }}-virtio, namespace: {{ $ns }} }
+                  spec:
+                    source: { http: { url: "{{ $virtio }}" } }
+                    storage:
+                      accessModes: [ReadWriteOnce]
+                      resources: { requests: { storage: 1Gi } }
+                      storageClassName: local-path
+            ---
+            # --- The golden disk (blank now; the installer writes + syspreps it).
+            #     Standalone so it survives after the installer VM stops. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: golden
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: cdi.kubevirt.io/v1beta1
+                  kind: DataVolume
+                  metadata:
+                    name: {{ $os }}-golden
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/vm-image: {{ $os }} }
+                  spec:
+                    source: { blank: {} }
+                    storage:
+                      accessModes: [ReadWriteOnce]
+                      resources: { requests: { storage: {{ $disk }} } }
+                      storageClassName: local-path
+            ---
+            # --- Sysprep ConfigMap: the unattended answer file (KubeVirt mounts it
+            #     as the autounattend CD). Edition + virtio driver path per version.
+            #     FirstLogonCommands do virtio tools + cloudbase-init + RDP + sysprep. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sysprep
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata: { name: {{ $os }}-sysprep, namespace: {{ $ns }} }
+                  data:
+                    autounattend.xml: |
+                      <?xml version="1.0" encoding="utf-8"?>
+                      <unattend xmlns="urn:schemas-microsoft-com:unattend">
+                        <settings pass="windowsPE">
+                          <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+                            <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale>
+                            <UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+                          </component>
+                          <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <DriverPaths>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="1" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\viostor\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="2" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                            </DriverPaths>
+                            <DiskConfiguration>
+                              <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+                                <DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk>
+                                <CreatePartitions>
+                                  <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>200</Size></CreatePartition>
+                                  <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+                                  <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+                                </CreatePartitions>
+                                <ModifyPartitions>
+                                  <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
+                                  <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+                                  <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+                                </ModifyPartitions>
+                              </Disk>
+                            </DiskConfiguration>
+                            <ImageInstall><OSImage>
+                              <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
+                              <InstallFrom><MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Key>/IMAGE/NAME</Key><Value>{{ $c.edition }}</Value></MetaData></InstallFrom>
+                            </OSImage></ImageInstall>
+                            <UserData><AcceptEula>true</AcceptEula><FullName>openinfra</FullName><Organization>open-infra</Organization></UserData>
+                          </component>
+                        </settings>
+                        <settings pass="oobeSystem">
+                          <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <UserAccounts><AdministratorPassword><Value>{{ $pass }}</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
+                            <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><NetworkLocation>Work</NetworkLocation><ProtectYourPC>3</ProtectYourPC></OOBE>
+                            <AutoLogon><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>Administrator</Username><Password><Value>{{ $pass }}</Value><PlainText>true</PlainText></Password></AutoLogon>
+                            <TimeZone>UTC</TimeZone>
+                            <FirstLogonCommands>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Description>virtio guest tools</Description><CommandLine>powershell -ExecutionPolicy Bypass -Command "$d=(Get-Volume | ? {$_.DriveType -eq 'CD-ROM' -and (Test-Path ($_.DriveLetter+':\virtio-win-guest-tools.exe'))} | Select -First 1).DriveLetter; if($d){Start-Process -Wait ($d+':\virtio-win-guest-tools.exe') -ArgumentList '/install','/quiet','/norestart'}"</CommandLine></SynchronousCommand>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><Description>enable RDP</Description><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f &amp; netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>3</Order><Description>cloudbase-init</Description><CommandLine>powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; iwr 'https://github.com/cloudbase/cloudbase-init/releases/latest/download/CloudbaseInitSetup_x64.msi' -OutFile $env:TEMP\cbi.msi; Start-Process -Wait msiexec.exe -ArgumentList '/i',\"$env:TEMP\cbi.msi\",'/qn','RUN_SERVICE_AS_LOCAL_SYSTEM=1'"</CommandLine></SynchronousCommand>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>4</Order><Description>sysprep</Description><CommandLine>cmd /c C:\Windows\System32\Sysprep\Sysprep.exe /generalize /oobe /shutdown /quiet</CommandLine></SynchronousCommand>
+                            </FirstLogonCommands>
+                          </component>
+                        </settings>
+                      </unattend>
+            ---
+            # --- Installer VM: boots the ISO, installs onto the golden disk, runs
+            #     FirstLogonCommands, sysprep-shuts-down. runStrategy Once = stays off. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: installer
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubevirt.io/v1
+                  kind: VirtualMachine
+                  metadata:
+                    name: {{ $os }}-installer
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/vm-image-installer: {{ $os }} }
+                  spec:
+                    runStrategy: Once
+                    template:
+                      spec:
+                        domain:
+                          cpu: { cores: 4 }
+                          resources: { requests: { memory: 6Gi } }
+                          machine: { type: q35 }
+                          features: { acpi: {}, apic: {}, smm: {} }
+                          firmware: { bootloader: { efi: { secureBoot: false } } }
+                          devices:
+                            disks:
+                              - { name: target, disk: { bus: virtio }, bootOrder: 2 }
+                              - { name: winiso, cdrom: { bus: sata }, bootOrder: 1 }
+                              - { name: virtio, cdrom: { bus: sata } }
+                              - { name: sysprep, cdrom: { bus: sata } }
+                            interfaces: [ { name: default, masquerade: {} } ]
+                        networks: [ { name: default, pod: {} } ]
+                        volumes:
+                          - { name: target, dataVolume: { name: {{ $os }}-golden } }
+                          - { name: winiso, dataVolume: { name: {{ $os }}-winiso } }
+                          - { name: virtio, dataVolume: { name: {{ $os }}-virtio } }
+                          - { name: sysprep, sysprep: { configMap: { name: {{ $os }}-sysprep } } }
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

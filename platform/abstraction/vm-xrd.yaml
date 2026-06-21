@@ -36,19 +36,21 @@ spec:
               properties:
                 # Curated OS catalog (allowlist). Each entry maps to a disk image +
                 # osType in the Composition's $catalog. Linux entries are ready-made
-                # cloud images (containerdisks); "windows" clones a golden image you
-                # build once from an eval ISO (see scripts/build-windows-image.sh).
+                # cloud images (containerdisks); windows-server-* clone a golden image
+                # built via kind: VmImage (console: Virtual Machines -> VM Images).
                 # Adding an OS means adding it here AND to the Composition's $catalog.
                 os:
                   type: string
                   description: "Operating system (from the curated catalog)."
                   enum:
-                    - ubuntu-24.04      # linux · cloud image
-                    - ubuntu-22.04      # linux · cloud image
-                    - fedora-40         # linux · cloud image
-                    - debian-12         # linux · cloud image
-                    - centos-stream-9   # linux · cloud image
-                    - windows           # windows · clones the golden image (eval)
+                    - ubuntu-24.04         # linux · cloud image
+                    - ubuntu-22.04         # linux · cloud image
+                    - fedora-40            # linux · cloud image
+                    - debian-12            # linux · cloud image
+                    - centos-stream-9      # linux · cloud image
+                    - windows-server-2019  # windows · clones <os>-golden (build via kind: VmImage)
+                    - windows-server-2022  # windows
+                    - windows-server-2025  # windows
                 cpu:      { type: integer, default: 2, minimum: 1, description: "vCPU cores" }
                 memory:   { type: string, default: "2Gi", description: "Guest RAM" }
                 diskSize: { type: string, default: "20Gi", description: "Root disk size (persistent)" }

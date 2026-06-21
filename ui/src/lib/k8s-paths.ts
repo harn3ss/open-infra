@@ -10,6 +10,7 @@ import {
   OPENINFRA_GROUP,
   OPENINFRA_VERSION,
   VIRTUALMACHINES_PLURAL,
+  VMIMAGES_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -27,6 +28,7 @@ export const corePaths = {
   events: (ns?: string) => `/api/v1${nsSegment(ns)}/events`,
   nodes: () => `/api/v1/nodes`,
   namespaces: () => `/api/v1/namespaces`,
+  pvcs: (ns?: string) => `/api/v1${nsSegment(ns)}/persistentvolumeclaims`,
 };
 
 export const appsPaths = {
@@ -56,15 +58,20 @@ export const openinfraPaths = {
     `${oiGV}${nsSegment(ns)}/${VIRTUALMACHINES_PLURAL}`,
   virtualmachine: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${VIRTUALMACHINES_PLURAL}/${name}`,
+  vmimages: (ns?: string) => `${oiGV}${nsSegment(ns)}/${VMIMAGES_PLURAL}`,
+  vmimage: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${VMIMAGES_PLURAL}/${name}`,
 };
 
 const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;
 
-// KubeVirt VirtualMachineInstance — read-only live guest status (IP, phase).
+// KubeVirt VirtualMachineInstance (live guest IP/phase) + VirtualMachine
+// (installer printableStatus for image builds).
 export const kubevirtPaths = {
   vmis: (ns?: string) => `${kvGV}${nsSegment(ns)}/virtualmachineinstances`,
   vmi: (ns: string, name: string) =>
     `${kvGV}/namespaces/${ns}/virtualmachineinstances/${name}`,
+  vms: (ns?: string) => `${kvGV}${nsSegment(ns)}/virtualmachines`,
 };
 
 export const cnpgPaths = {

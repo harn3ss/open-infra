@@ -28,7 +28,7 @@ import {
   OPENINFRA_VERSION,
   type K8sObject,
 } from "@/types/k8s";
-import { OS_CATALOG, osFamily } from "./vm-shared";
+import { IMAGES_NAMESPACE, OS_CATALOG, osFamily } from "./vm-shared";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -75,6 +75,24 @@ export function NewVmDialog({
   });
   const bridgeReady = (nodesQuery.data?.items ?? []).some(
     (n) => n.metadata?.labels?.["openinfra.dev/vm-lan"] === "true",
+  );
+
+  // Windows versions are only selectable once their golden image is built (the
+  // <os>-golden PVC exists). Build them on the VM Images page.
+  const goldenQuery = useQuery({
+    queryKey: ["vm-goldens"],
+    queryFn: () => k8sList<K8sObject>(corePaths.pvcs(IMAGES_NAMESPACE)),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const builtWindows = new Set(
+    (goldenQuery.data?.items ?? [])
+      .map((p) => p.metadata?.name ?? "")
+      .filter((n) => n.endsWith("-golden"))
+      .map((n) => n.replace(/-golden$/, "")),
+  );
+  const hasUnbuiltWindows = OS_CATALOG.some(
+    (o) => o.family === "windows" && !builtWindows.has(o.value),
   );
 
   function reset() {
@@ -183,13 +201,24 @@ export function NewVmDialog({
                 <SelectValue placeholder="OS" />
               </SelectTrigger>
               <SelectContent>
-                {OS_CATALOG.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>
-                    {o.label}
-                  </SelectItem>
-                ))}
+                {OS_CATALOG.map((o) => {
+                  const win = o.family === "windows";
+                  const built = !win || builtWindows.has(o.value);
+                  return (
+                    <SelectItem key={o.value} value={o.value} disabled={!built}>
+                      {o.label}
+                      {win && !built ? " — not built" : ""}
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
+            {hasUnbuiltWindows ? (
+              <p className="text-xs text-muted-foreground">
+                Greyed-out Windows versions need building first on the{" "}
+                <strong>VM Images</strong> page.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="vm-cpu">vCPU</Label>

@@ -74,6 +74,7 @@ rules:
       - functions
       - models
       - virtualmachines
+      - vmimages
     verbs: [get, list, watch, create, update, patch, delete]
 
   # ── KubeVirt + CDI: read VM/guest/disk status for the Virtual Machines view
