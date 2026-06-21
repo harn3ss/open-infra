@@ -132,9 +132,10 @@ spec:
                             <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale>
                             <UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
                           </component>
-                          <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                          <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
                             <DriverPaths>
-                              <!-- The virtio ISO's drive letter is non-deterministic in WinPE
+                              <!-- virtio drivers for WinPE so Setup sees the virtio disk.
+                                   The virtio ISO's WinPE drive letter is non-deterministic
                                    (multiple CD-ROMs), so list every plausible letter; Setup
                                    ignores paths that don't exist. -->
                               <PathAndCredentials wcm:action="add" wcm:keyValue="1" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\viostor\{{ $c.driver }}\amd64</Path></PathAndCredentials>
@@ -144,6 +145,8 @@ spec:
                               <PathAndCredentials wcm:action="add" wcm:keyValue="5" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                               <PathAndCredentials wcm:action="add" wcm:keyValue="6" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                             </DriverPaths>
+                          </component>
+                          <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
                             <DiskConfiguration>
                               <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
                                 <DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk>
