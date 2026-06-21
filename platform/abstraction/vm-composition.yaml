@@ -131,7 +131,8 @@ spec:
                             requests:
                               memory: {{ $memory }}
                           {{- if $isWin }}
-                          # Windows performance/compat: q35 + UEFI + Hyper-V enlightenments.
+                          # Windows: q35 BIOS (no EFI — matches the MBR golden image)
+                          # + Hyper-V enlightenments for performance.
                           machine:
                             type: q35
                           features:

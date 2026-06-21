@@ -150,21 +150,15 @@ spec:
                             <DiskConfiguration>
                               <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
                                 <DiskID>0</DiskID><WillWipeDisk>true</WillWipeDisk>
-                                <CreatePartitions>
-                                  <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>200</Size></CreatePartition>
-                                  <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
-                                  <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
-                                </CreatePartitions>
-                                <ModifyPartitions>
-                                  <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
-                                  <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
-                                  <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
-                                </ModifyPartitions>
+                                <CreatePartitions><CreatePartition wcm:action="add"><Order>1</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition></CreatePartitions>
+                                <ModifyPartitions><ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter><Active>true</Active></ModifyPartition></ModifyPartitions>
                               </Disk>
                             </DiskConfiguration>
                             <ImageInstall><OSImage>
-                              <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
-                              <InstallFrom><MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Key>/IMAGE/NAME</Key><Value>{{ $c.edition }}</Value></MetaData></InstallFrom>
+                              <InstallTo><DiskID>0</DiskID><PartitionID>1</PartitionID></InstallTo>
+                              <!-- INDEX 2 = Standard (Desktop Experience) on all Server eval ISOs;
+                                   robust vs. /IMAGE/NAME string matching (validated on 2019). -->
+                              <InstallFrom><MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Key>/IMAGE/INDEX</Key><Value>2</Value></MetaData></InstallFrom>
                             </OSImage></ImageInstall>
                             <UserData><AcceptEula>true</AcceptEula><FullName>openinfra</FullName><Organization>open-infra</Organization></UserData>
                           </component>
@@ -178,8 +172,7 @@ spec:
                             <FirstLogonCommands>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Description>virtio guest tools</Description><CommandLine>powershell -ExecutionPolicy Bypass -Command "$d=(Get-Volume | ? {$_.DriveType -eq 'CD-ROM' -and (Test-Path ($_.DriveLetter+':\virtio-win-guest-tools.exe'))} | Select -First 1).DriveLetter; if($d){Start-Process -Wait ($d+':\virtio-win-guest-tools.exe') -ArgumentList '/install','/quiet','/norestart'}"</CommandLine></SynchronousCommand>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><Description>enable RDP</Description><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f &amp; netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
-                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>3</Order><Description>cloudbase-init</Description><CommandLine>powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol='Tls12'; iwr 'https://github.com/cloudbase/cloudbase-init/releases/latest/download/CloudbaseInitSetup_x64.msi' -OutFile $env:TEMP\cbi.msi; Start-Process -Wait msiexec.exe -ArgumentList '/i',\"$env:TEMP\cbi.msi\",'/qn','RUN_SERVICE_AS_LOCAL_SYSTEM=1'"</CommandLine></SynchronousCommand>
-                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>4</Order><Description>sysprep</Description><CommandLine>cmd /c C:\Windows\System32\Sysprep\Sysprep.exe /generalize /oobe /shutdown /quiet</CommandLine></SynchronousCommand>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>3</Order><Description>sysprep generalize</Description><CommandLine>cmd /c C:\Windows\System32\Sysprep\Sysprep.exe /generalize /oobe /shutdown /quiet</CommandLine></SynchronousCommand>
                             </FirstLogonCommands>
                           </component>
                         </settings>
@@ -209,13 +202,14 @@ spec:
                           cpu: { cores: 4 }
                           resources: { requests: { memory: 6Gi } }
                           machine: { type: q35 }
-                          features: { acpi: {}, apic: {}, smm: {} }
-                          firmware: { bootloader: { efi: { secureBoot: false } } }
+                          features: { acpi: {}, apic: {} }
+                          # BIOS (SeaBIOS, no EFI): SeaBIOS boots the Windows install CD
+                          # WITHOUT the "Press any key" prompt that blocks headless EFI
+                          # installs. Validated end-to-end on Server 2019 (MBR layout).
                           devices:
                             disks:
-                              # target first: empty disk has no loader -> OVMF falls through
-                              # to the CD (matches kubevirt-tekton windows-efi-installer); after
-                              # install the disk is bootable + wins on the post-install reboot.
+                              # blank target first: not bootable -> BIOS falls through to the
+                              # CD and boots Setup; after install the disk boots Windows.
                               - { name: target, disk: { bus: virtio }, bootOrder: 1 }
                               - { name: winiso, cdrom: { bus: sata }, bootOrder: 2 }
                               - { name: virtio, cdrom: { bus: sata } }
@@ -227,42 +221,6 @@ spec:
                           - { name: winiso, dataVolume: { name: {{ $os }}-winiso } }
                           - { name: virtio, dataVolume: { name: {{ $os }}-virtio } }
                           - { name: sysprep, sysprep: { configMap: { name: {{ $os }}-sysprep } } }
-            ---
-            # --- Boot-assist Job: with the boot order fixed, OVMF reaches the CD's
-            #     "Press any key to boot from CD or DVD" prompt; this sends Enter over
-            #     the installer's VNC during boot to dismiss it (headless). See
-            #     vmimage-bootkey.yaml for the SA/RBAC + script. ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: bootkey
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: batch/v1
-                  kind: Job
-                  metadata: { name: {{ $os }}-bootkey, namespace: {{ $ns }} }
-                  spec:
-                    backoffLimit: 1
-                    ttlSecondsAfterFinished: 600
-                    template:
-                      spec:
-                        serviceAccountName: openinfra-bootkey
-                        restartPolicy: Never
-                        containers:
-                          - name: bootkey
-                            image: python:3.12-slim
-                            env:
-                              - { name: NAMESPACE, value: {{ $ns }} }
-                              - { name: VMI_NAME, value: {{ $os }}-installer }
-                            command: [sh, -c]
-                            args:
-                              - "pip install -q websocket-client && python /script/bootkey.py"
-                            volumeMounts:
-                              - { name: script, mountPath: /script }
-                        volumes:
-                          - { name: script, configMap: { name: openinfra-bootkey } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
