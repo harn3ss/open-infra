@@ -144,6 +144,12 @@ spec:
                               <PathAndCredentials wcm:action="add" wcm:keyValue="4" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                               <PathAndCredentials wcm:action="add" wcm:keyValue="5" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                               <PathAndCredentials wcm:action="add" wcm:keyValue="6" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <!-- vioscsi: virtio-SCSI driver. Hotplugged volumes (kind: Volume)
+                                   attach over the SCSI bus, so without this Windows can't see
+                                   them. Inject at install so every clone has it. -->
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="7" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\vioscsi\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="8" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\vioscsi\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="9" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\vioscsi\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                             </DriverPaths>
                           </component>
                           <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
