@@ -150,6 +150,16 @@ spec:
                               <PathAndCredentials wcm:action="add" wcm:keyValue="7" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\vioscsi\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                               <PathAndCredentials wcm:action="add" wcm:keyValue="8" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\vioscsi\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                               <PathAndCredentials wcm:action="add" wcm:keyValue="9" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\vioscsi\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <!-- vioserial: virtio-serial. The QEMU guest agent talks to the
+                                   host over this channel — without it the agent never connects
+                                   (no IP in the console, no quiesced snapshots). -->
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="10" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\vioserial\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="11" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\vioserial\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="12" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\vioserial\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <!-- Balloon: virtio memory balloon (KubeVirt attaches one by default). -->
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="13" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\Balloon\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="14" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\Balloon\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="15" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\Balloon\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                             </DriverPaths>
                           </component>
                           <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
