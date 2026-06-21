@@ -1,0 +1,10 @@
+# Namespace for VM golden images: kind: VmImage builders (installer VMs, imported
+# ISOs) and the <os>-golden PVCs that Windows VMs clone cross-namespace. Declared
+# here (synced with the abstraction) so it always exists — the console's VM Images
+# build targets it, and a missing namespace would fail the build.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"

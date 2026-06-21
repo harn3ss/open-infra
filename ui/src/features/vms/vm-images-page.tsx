@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/common/status-badge";
 import { useK8sWatch, watchQueryKey } from "@/hooks/use-k8s-watch";
 import { corePaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
-import { k8sCreate, k8sDelete } from "@/lib/api";
+import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
 import type { StatusTone } from "@/lib/format";
 import {
   OPENINFRA_GROUP,
@@ -88,6 +88,14 @@ export function VmImagesPage() {
         only</strong> (180 days). A build downloads a ~5&nbsp;GB ISO and runs an
         unattended install — expect 20–40 minutes.
       </div>
+      {build.error || remove.error ? (
+        <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          {(() => {
+            const e = build.error ?? remove.error;
+            return e instanceof ApiError ? e.message : "Action failed.";
+          })()}
+        </div>
+      ) : null}
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {WINDOWS_CATALOG.map((os) => {
