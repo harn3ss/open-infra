@@ -317,6 +317,31 @@ export type VmImage = K8sObject<VmImageSpec, VmImageStatus>;
 export const VMIMAGES_PLURAL = "vmimages";
 export const VMIMAGES_CRD_NAME = "vmimages.openinfra.dev";
 
+/* ---------------------- open-infra Volume CRD (EBS-style) ----------------- */
+
+export interface VolumeSpec {
+  size?: string;
+  source?: { snapshot?: string };
+}
+export interface VolumeStatus {
+  phase?: string;
+  size?: string;
+}
+export type Volume = K8sObject<VolumeSpec, VolumeStatus>;
+export const VOLUMES_PLURAL = "volumes";
+
+/* CSI VolumeSnapshot (snapshot.storage.k8s.io) — snapshots of a Volume's PVC. */
+export interface VolumeSnapshotSpec {
+  source?: { persistentVolumeClaimName?: string };
+  volumeSnapshotClassName?: string;
+}
+export interface VolumeSnapshotStatus {
+  readyToUse?: boolean;
+  restoreSize?: string;
+  creationTime?: string;
+}
+export type VolumeSnapshot = K8sObject<VolumeSnapshotSpec, VolumeSnapshotStatus>;
+
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
 export interface CnpgClusterSpec {

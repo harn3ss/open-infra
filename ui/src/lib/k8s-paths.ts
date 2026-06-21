@@ -11,6 +11,7 @@ import {
   OPENINFRA_VERSION,
   VIRTUALMACHINES_PLURAL,
   VMIMAGES_PLURAL,
+  VOLUMES_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -61,6 +62,9 @@ export const openinfraPaths = {
   vmimages: (ns?: string) => `${oiGV}${nsSegment(ns)}/${VMIMAGES_PLURAL}`,
   vmimage: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${VMIMAGES_PLURAL}/${name}`,
+  volumes: (ns?: string) => `${oiGV}${nsSegment(ns)}/${VOLUMES_PLURAL}`,
+  volume: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${VOLUMES_PLURAL}/${name}`,
 };
 
 const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;
@@ -76,6 +80,20 @@ export const kubevirtPaths = {
   // builds a same-origin wss URL that the BFF reverse-proxies (with the SA token).
   vnc: (ns: string, name: string) =>
     `/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachineinstances/${name}/vnc`,
+  // Hotplug attach/detach of a volume to a running VM (PUT AddVolumeOptions /
+  // RemoveVolumeOptions). --persist semantics: also updates the VM spec.
+  addVolume: (ns: string, vm: string) =>
+    `/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachines/${vm}/addvolume`,
+  removeVolume: (ns: string, vm: string) =>
+    `/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachines/${vm}/removevolume`,
+};
+
+// CSI VolumeSnapshots (snapshot.storage.k8s.io) — snapshot/restore Volumes.
+export const snapshotPaths = {
+  volumeSnapshots: (ns?: string) =>
+    `/apis/snapshot.storage.k8s.io/v1${nsSegment(ns)}/volumesnapshots`,
+  volumeSnapshot: (ns: string, name: string) =>
+    `/apis/snapshot.storage.k8s.io/v1/namespaces/${ns}/volumesnapshots/${name}`,
 };
 
 export const cnpgPaths = {

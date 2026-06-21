@@ -18,6 +18,7 @@ import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
 import { kubevirtPaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
 import type { K8sObject, VirtualMachine, Vmi } from "@/types/k8s";
 import { osFamily, osLabel, vmIp, vmStatus } from "./vm-shared";
+import { VmVolumesTab } from "./vm-volumes";
 
 function decode(v?: string): string {
   if (!v) return "";
@@ -140,6 +141,7 @@ export function VmDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="access">Access</TabsTrigger>
+          <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
@@ -237,6 +239,10 @@ export function VmDetailPage() {
               </DetailRow>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="storage" className="pt-4">
+          <VmVolumesTab namespace={namespace} vmName={name} vmi={vmi} />
         </TabsContent>
 
         <TabsContent value="monitoring" className="pt-4">

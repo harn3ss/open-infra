@@ -75,6 +75,7 @@ rules:
       - models
       - virtualmachines
       - vmimages
+      - volumes
     verbs: [get, list, watch, create, update, patch, delete]
 
   # ── KubeVirt + CDI: read VM/guest/disk status for the Virtual Machines view
@@ -96,6 +97,23 @@ rules:
     resources:
       - virtualmachineinstances/vnc
     verbs: [get]
+  # Hotplug attach/detach of volumes to running VMs (EBS-style). These subresources
+  # are invoked via PUT (RBAC verb: update); --persist updates the VM spec too.
+  - apiGroups: [subresources.kubevirt.io]
+    resources:
+      - virtualmachines/addvolume
+      - virtualmachines/removevolume
+    verbs: [update]
+
+  # ── CSI VolumeSnapshots: snapshot/restore EBS-style volumes (kind: Volume). ──
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources:
+      - volumesnapshots
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources:
+      - volumesnapshotclasses
+    verbs: [get, list, watch]
 
   # ── CloudNativePG: read managed Postgres clusters (the Databases view) ──────
   - apiGroups: [postgresql.cnpg.io]
