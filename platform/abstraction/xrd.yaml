@@ -41,6 +41,9 @@ spec:
                 image:   { type: string, description: "Container image (omit for a data-only app)" }
                 port:    { type: integer, description: "Container port the app listens on" }
                 domain:  { type: string, description: "Hostname for Ingress + TLS + DNS" }
+                # Expose the app's port directly on a LAN IP (MetalLB LoadBalancer),
+                # in addition to any Ingress — for raw TCP / non-HTTP / no-DNS access.
+                expose:  { type: boolean, default: false }
                 scaling:
                   type: object
                   properties:

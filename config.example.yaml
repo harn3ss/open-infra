@@ -32,6 +32,15 @@ networking:
   # Ingress controller bundled with k3s. Keep traefik for v1.
   ingress: traefik
 
+  # Direct-LAN networking for VMs (kind: VirtualMachine, network: bridge): attach
+  # VMs to the physical LAN via Multus + macvlan so they pull a real DHCP lease —
+  # a first-class LAN host, no MetalLB/NAT. Opt-in; enable with scripts/enable-vm-lan.sh
+  # (installs Multus — a cluster CNI change). 'interface' is the LAN NIC on the
+  # nodes that will host bridged VMs (label them openinfra.dev/vm-lan=true).
+  vmLan:
+    enabled: false
+    interface: eno1             # your LAN NIC (e.g. eno1 / enp4s0) — may differ per node
+
 dns:
   # "sslip"     -> zero-config magic DNS: <app>.<lb-ip>.sslip.io  (great for dev)
   # "cloudflare"-> real public DNS via Cloudflare (see edge: below)

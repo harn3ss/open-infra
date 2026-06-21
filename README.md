@@ -156,6 +156,12 @@ end-to-end:
   catalog (Linux + Windows), persistent disk, SSH/RDP. See
   [`docs/virtual-machines.md`](docs/virtual-machines.md).
 
+**Reach anything from the LAN.** Every resource takes `expose: true` to get a
+real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;
+Functions are LAN-reachable via the Knative gateway (`expose: false` makes them
+cluster-local). VMs can also go fully on-LAN with `network: bridge` (a real DHCP
+lease, no NAT).
+
 The build history and phase plan live in [`docs/roadmap.md`](docs/roadmap.md).
 
 > **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap

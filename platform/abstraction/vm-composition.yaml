@@ -58,6 +58,7 @@ spec:
             {{- $isWin := eq $profile.osType "windows" }}
             {{- $port := 22 }}{{- $user := "openinfra" }}{{- $proto := "ssh" }}
             {{- if $isWin }}{{- $port = 3389 }}{{- $user = "Administrator" }}{{- $proto = "rdp" }}{{- end }}
+            {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via
             #     CDI (registry import for Linux; clone of the golden PVC for Windows).
@@ -107,6 +108,16 @@ spec:
                           kubevirt.io/domain: {{ $name }}
                           app.kubernetes.io/name: {{ $name }}
                       spec:
+                        {{- if $bridge }}
+                        # Bridge VMs must land where the macvlan parent NIC exists
+                        # (label those nodes openinfra.dev/vm-lan=true).
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - { key: openinfra.dev/vm-lan, operator: In, values: ["true"] }
+                        {{- end }}
                         domain:
                           cpu:
                             cores: {{ $cpu }}
@@ -144,10 +155,20 @@ spec:
                             interfaces:
                               - name: default
                                 masquerade: {}
+                              {{- if $bridge }}
+                              # Second NIC bridged onto the physical LAN (macvlan).
+                              - name: lan
+                                bridge: {}
+                              {{- end }}
                             networkInterfaceMultiqueue: true
                         networks:
                           - name: default
                             pod: {}
+                          {{- if $bridge }}
+                          - name: lan
+                            multus:
+                              networkName: default/openinfra-lan
+                          {{- end }}
                         volumes:
                           - name: root
                             dataVolume:
@@ -186,6 +207,14 @@ spec:
                                 runcmd:
                                   - [systemctl, enable, --now, qemu-guest-agent]
                                 {{- end }}
+                              {{- if $bridge }}
+                              # DHCP both NICs: eth0 (pod) + eth1 (LAN bridge).
+                              networkData: |
+                                version: 2
+                                ethernets:
+                                  eth0: { dhcp4: true }
+                                  eth1: { dhcp4: true }
+                              {{- end }}
             ---
             # --- Service: in-cluster reach to SSH (Linux) / RDP (Windows). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2

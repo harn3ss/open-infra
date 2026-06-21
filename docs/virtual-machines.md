@@ -71,6 +71,48 @@ stopped.
 > Web (in-browser) console is intentionally **not** provided — access is native
 > SSH / RDP, so there is no extra in-cluster console dependency to run.
 
+## Networking: NAT vs direct-LAN (bridge)
+
+`spec.network` controls how the VM attaches:
+
+- **`masquerade`** (default) — the VM sits behind the pod network (NAT). Reach it
+  in-cluster via its `Service`, or from the LAN via `expose: true` (a MetalLB
+  LoadBalancer hands it a LAN IP). The pod overlay (`10.42/16`) is **not** routable
+  from your LAN, which is why a raw pod IP isn't reachable from a workstation.
+- **`bridge`** — the VM joins the **physical LAN directly** (Multus + macvlan) and
+  pulls a real **DHCP lease** from your router. It's a first-class LAN host — no
+  MetalLB, no NAT.
+
+### Enabling bridge mode (one-time, operator)
+
+Bridge mode needs Multus (a cluster CNI change), so it's opt-in:
+
+```sh
+# sets networking.vmLan.interface in config.yaml, or pass --interface
+scripts/enable-vm-lan.sh --interface eno1
+# then label the nodes whose LAN NIC matches (bridged VMs schedule only there):
+kubectl label node <node> openinfra.dev/vm-lan=true
+```
+
+The script installs Multus + the macvlan plugin (k3s paths), self-tests that new
+pods still get networking, and creates the `default/openinfra-lan`
+NetworkAttachmentDefinition (macvlan, no IPAM → guest DHCP). Then:
+
+```yaml
+spec:
+  os: ubuntu-24.04
+  network: bridge        # real LAN IP via DHCP
+```
+
+**Caveats**
+- **NIC names may differ per node** (e.g. `eno1` vs `enp4s0`); the NAD has one
+  `master`, so label only nodes whose LAN NIC matches it (the VM gets a node
+  affinity to `openinfra.dev/vm-lan=true`).
+- **macvlan limitation**: the *host node* cannot talk to its own bridged VMs
+  (other LAN hosts can) — a kernel macvlan property.
+- The VM still keeps a pod NIC (eth0) for in-cluster/Service access; the LAN lease
+  lands on eth1.
+
 ## Windows: build the golden image once
 
 Windows has no redistributable cloud image, so you build a reusable **golden
