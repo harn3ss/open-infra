@@ -76,7 +76,7 @@ spec:
             {{- $joinReady := false }}
             {{- $djDomain := "" }}{{- $djNet := "" }}{{- $djUser := "" }}{{- $djPass := "" }}{{- $dcip := "" }}
             {{- if and $isWin $domain }}
-              {{- $ds := index .observed.resources "dir-secret" }}
+              {{- $ds := index (.observed.resources | default dict) "dir-secret" }}
               {{- if $ds }}{{- with $ds.resource.status }}{{- with .atProvider }}{{- with .manifest.data }}
                 {{- $djDomain = (.DOMAIN | default "" | b64dec) }}
                 {{- $djNet = (.NETBIOS | default "" | b64dec) }}

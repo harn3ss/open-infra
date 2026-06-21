@@ -57,7 +57,7 @@ spec:
                    composition creates (populated on the reconcile after the Service
                    exists). A domain-joined VM uses it as its DNS server. */}}
             {{- $dcip := "" }}
-            {{- $svc := index .observed.resources "service" }}
+            {{- $svc := index (.observed.resources | default dict) "service" }}
             {{- if $svc }}{{- with $svc.resource.status }}{{- with .atProvider }}{{- $dcip = (.manifest.spec.clusterIP | default "") }}{{- end }}{{- end }}{{- end }}
             ---
             # sambacc config: declaratively provisions the domain. The whole config
