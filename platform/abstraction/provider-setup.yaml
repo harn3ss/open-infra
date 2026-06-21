@@ -30,7 +30,7 @@ rules:
     resources: [services, configmaps, secrets, resourcequotas, limitranges, persistentvolumeclaims]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
-    resources: [deployments]
+    resources: [deployments, statefulsets]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [networking.k8s.io]
     resources: [ingresses, networkpolicies]
