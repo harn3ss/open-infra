@@ -31,7 +31,11 @@ function buildState(
   golden: Pvc | undefined,
 ): { label: string; tone: StatusTone; state: "none" | "building" | "ready" } {
   const ps = installer?.status?.printableStatus;
-  const built = ps === "Stopped" || (!installer && golden?.status?.phase === "Bound");
+  // Ready ONLY when the installer ran to completion (sysprep -> Stopped) and the
+  // golden disk is bound. A blank golden PVC is Bound the instant it's created,
+  // so "golden Bound" alone is NOT readiness (that showed a torn-down/incomplete
+  // build as "Ready" and would clone an empty disk).
+  const built = ps === "Stopped" && golden?.status?.phase === "Bound";
   if (built) return { label: "Ready", tone: "success", state: "ready" };
   if (claim || installer)
     return {
