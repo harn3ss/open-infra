@@ -53,6 +53,12 @@ spec:
                    never fails the policy. Stable across reconciles (derived from
                    the composite UID), like the FileShare password. */}}
             {{- $pass := printf "Aa1!%s" (printf "%s-adminpass" .observed.composite.resource.metadata.uid | sha256sum | trunc 16) }}
+            {{- /* The DC's stable ClusterIP, read back from the Service this
+                   composition creates (populated on the reconcile after the Service
+                   exists). A domain-joined VM uses it as its DNS server. */}}
+            {{- $dcip := "" }}
+            {{- $svc := index .observed.resources "service" }}
+            {{- if $svc }}{{- with $svc.resource.status }}{{- with .atProvider }}{{- $dcip = (.manifest.spec.clusterIP | default "") }}{{- end }}{{- end }}{{- end }}
             ---
             # sambacc config: declaratively provisions the domain. The whole config
             # lives in a Secret (not a ConfigMap) so the admin password never lands
@@ -208,6 +214,7 @@ spec:
                     ADMIN_USER: {{ $admin }}
                     ADMIN_PASSWORD: {{ $pass }}
                     DC_SERVICE: {{ $name }}.{{ $ns }}.svc.cluster.local
+                    DC_IP: {{ $dcip | quote }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
