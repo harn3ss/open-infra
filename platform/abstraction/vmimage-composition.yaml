@@ -176,7 +176,12 @@ spec:
                             <AutoLogon><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>Administrator</Username><Password><Value>{{ $pass }}</Value><PlainText>true</PlainText></Password></AutoLogon>
                             <TimeZone>UTC</TimeZone>
                             <FirstLogonCommands>
-                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Description>virtio guest tools</Description><CommandLine>powershell -ExecutionPolicy Bypass -Command "$d=(Get-Volume | ? {$_.DriveType -eq 'CD-ROM' -and (Test-Path ($_.DriveLetter+':\virtio-win-guest-tools.exe'))} | Select -First 1).DriveLetter; if($d){Start-Process -Wait ($d+':\virtio-win-guest-tools.exe') -ArgumentList '/install','/quiet','/norestart'}"</CommandLine></SynchronousCommand>
+                              <!-- QEMU guest agent: reports the guest IP to the console and
+                                   lets snapshots quiesce the filesystem. Install the MSI
+                                   directly (the bundled .exe's silent args were unreliable);
+                                   search drive letters D..Z for the virtio CD. virtio block/
+                                   net/scsi drivers come from the DriverPaths injection above. -->
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><Description>qemu guest agent</Description><CommandLine>powershell -ExecutionPolicy Bypass -Command "foreach($i in 68..90){$m=([char]$i)+':\guest-agent\qemu-ga-x86_64.msi'; if(Test-Path $m){Start-Process -Wait msiexec.exe -ArgumentList '/i',$m,'/qn','/norestart'; break}}"</CommandLine></SynchronousCommand>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><Description>enable RDP</Description><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f &amp; netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>3</Order><Description>sysprep generalize</Description><CommandLine>cmd /c C:\Windows\System32\Sysprep\Sysprep.exe /generalize /oobe /shutdown /quiet</CommandLine></SynchronousCommand>
                             </FirstLogonCommands>
