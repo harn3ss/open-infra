@@ -139,10 +139,12 @@ export function k8sCreate<T = K8sObject>(
 export function k8sReplace<T = K8sObject>(
   path: string,
   obj: unknown,
+  headers?: Record<string, string>,
 ): Promise<T> {
   return request<T>(k8sPath(path), {
     method: "PUT",
     body: JSON.stringify(obj),
+    headers,
   });
 }
 
