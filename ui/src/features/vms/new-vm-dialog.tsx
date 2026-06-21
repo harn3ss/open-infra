@@ -57,8 +57,9 @@ export function NewVmDialog({
   const [memory, setMemory] = useState("2Gi");
   const [diskSize, setDiskSize] = useState("20Gi");
   const [sshKey, setSshKey] = useState("");
-  const [expose, setExpose] = useState(false);
-  const [network, setNetwork] = useState("masquerade");
+  // One cohesive reachability choice (maps to network + expose at submit):
+  //   internal = pod network only · lan = MetalLB LAN IP · bridge = direct DHCP
+  const [access, setAccess] = useState("internal");
   const [touched, setTouched] = useState(false);
 
   const isWindows = osFamily(os) === "windows";
@@ -83,8 +84,7 @@ export function NewVmDialog({
     setMemory("2Gi");
     setDiskSize("20Gi");
     setSshKey("");
-    setExpose(false);
-    setNetwork("masquerade");
+    setAccess("internal");
     setTouched(false);
     createMutation.reset();
   }
@@ -119,9 +119,9 @@ export function NewVmDialog({
         memory: memory || "2Gi",
         diskSize: diskSize || "20Gi",
         ...(sshKey.trim() && !isWindows ? { sshKey: sshKey.trim() } : {}),
-        expose,
-        // Never submit bridge unless it's actually enabled (option is also gated).
-        network: bridgeReady ? network : "masquerade",
+        // Derive network + expose from the single access choice.
+        expose: access === "lan",
+        network: access === "bridge" && bridgeReady ? "bridge" : "masquerade",
       },
     } as K8sObject);
   };
@@ -219,42 +219,32 @@ export function NewVmDialog({
               placeholder="20Gi"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="vm-net">Network</Label>
-            <Select value={network} onValueChange={setNetwork}>
-              <SelectTrigger id="vm-net">
-                <SelectValue placeholder="Network" />
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="vm-access">Network access</Label>
+            <Select value={access} onValueChange={setAccess}>
+              <SelectTrigger id="vm-access">
+                <SelectValue placeholder="Network access" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="masquerade">Pod NAT (default)</SelectItem>
+                <SelectItem value="internal">
+                  In-cluster only (default)
+                </SelectItem>
+                <SelectItem value="lan">
+                  LAN IP — reach {isWindows ? "RDP (3389)" : "SSH (22)"} from your
+                  network (MetalLB)
+                </SelectItem>
                 <SelectItem value="bridge" disabled={!bridgeReady}>
-                  Bridged to LAN (direct IP){!bridgeReady ? " — not enabled" : ""}
+                  Direct on LAN — real DHCP address
+                  {!bridgeReady ? " (needs enabling)" : ""}
                 </SelectItem>
               </SelectContent>
             </Select>
             {!bridgeReady ? (
               <p className="text-xs text-muted-foreground">
-                Needs enabling: set <code>networking.vmLan.enabled</code> in
-                config and re-run <code>./install.sh</code>.
+                "Direct on LAN" needs{" "}
+                <code>networking.vmLan.enabled</code> + <code>./install.sh</code>.
               </p>
             ) : null}
-          </div>
-          <div className="space-y-1.5">
-            <Label>LAN access</Label>
-            <label className="flex h-9 items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={expose}
-                disabled={network === "bridge"}
-                onChange={(e) => setExpose(e.target.checked)}
-                className="size-4 accent-primary disabled:opacity-50"
-              />
-              <span className="text-muted-foreground">
-                {network === "bridge"
-                  ? "already on the LAN (bridged)"
-                  : `${isWindows ? "RDP (3389)" : "SSH (22)"} on a LAN IP`}
-              </span>
-            </label>
           </div>
           {isWindows ? (
             <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
