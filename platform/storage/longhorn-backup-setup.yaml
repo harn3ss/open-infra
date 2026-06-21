@@ -1,0 +1,71 @@
+# Wire Longhorn's backup target to MinIO without committing any secret: a one-shot
+# Job copies the MinIO root credentials into longhorn-system as longhorn-minio-creds
+# (which Longhorn's defaultBackupStore references). Idempotent (kubectl apply) and
+# retries until the MinIO secret exists. The bucket itself is pre-created by the
+# MinIO chart (storage/minio.yaml). sync-wave 2 = after MinIO + Longhorn.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: longhorn-backup-setup
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: longhorn-backup-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: longhorn-backup-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: longhorn-backup-setup
+subjects:
+  - kind: ServiceAccount
+    name: longhorn-backup-setup
+    namespace: longhorn-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: longhorn-backup-setup
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    # Re-run when the manifest changes; don't block sync waiting on it.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: longhorn-backup-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: bitnami/kubectl
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              RU=$(kubectl get secret minio -n minio -o jsonpath='{.data.rootUser}' | base64 -d)
+              RP=$(kubectl get secret minio -n minio -o jsonpath='{.data.rootPassword}' | base64 -d)
+              [ -n "$RU" ] && [ -n "$RP" ] || { echo "waiting for MinIO secret…"; exit 1; }
+              kubectl create secret generic longhorn-minio-creds -n longhorn-system \
+                --from-literal=AWS_ACCESS_KEY_ID="$RU" \
+                --from-literal=AWS_SECRET_ACCESS_KEY="$RP" \
+                --from-literal=AWS_ENDPOINTS="http://minio.minio.svc:9000" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              echo "longhorn-minio-creds ready"

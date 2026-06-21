@@ -31,6 +31,11 @@ spec:
         # Root creds come from a Sealed Secret in prod; chart default for dev only.
         consoleService:
           type: ClusterIP
+        # Pre-create the bucket Longhorn backs volumes/snapshots into (EBS-to-S3).
+        buckets:
+          - name: longhorn
+            policy: none
+            purge: false
   destination:
     server: https://kubernetes.default.svc
     namespace: minio

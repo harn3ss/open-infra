@@ -24,6 +24,13 @@ spec:
       values: |
         preUpgradeChecker:
           jobEnabled: false
+        # Backup target = MinIO (EBS-to-S3). The longhorn-minio-creds secret is
+        # created by longhorn-backup-setup.yaml from the MinIO root secret; the
+        # 'longhorn' bucket is pre-created by the MinIO chart (storage/minio.yaml).
+        defaultBackupStore:
+          backupTarget: s3://longhorn@us-east-1/
+          backupTargetCredentialSecret: longhorn-minio-creds
+          pollInterval: 300
         persistence:
           defaultClass: false
           defaultClassReplicaCount: 2

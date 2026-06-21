@@ -1,7 +1,8 @@
-# In-cluster CSI snapshot class for Longhorn — used by kind: Volume snapshots and
-# restores (type=snap = a Longhorn snapshot stored in-cluster). A backup class
-# (type=bak, writes to the MinIO backup target) can be added once the backup
-# target is configured. sync-wave 2 so the longhorn CSI driver exists first.
+# CSI snapshot classes for Longhorn (used by kind: Volume snapshots/restores).
+#   longhorn-snapshot (type=snap) — in-cluster Longhorn snapshot (fast, default).
+#   longhorn-backup   (type=bak)  — also writes the snapshot to the backup target
+#                                   (MinIO), i.e. EBS-to-S3 durability.
+# sync-wave 2 so the longhorn CSI driver exists first.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
@@ -14,3 +15,14 @@ driver: driver.longhorn.io
 deletionPolicy: Delete
 parameters:
   type: snap
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: longhorn-backup
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+driver: driver.longhorn.io
+deletionPolicy: Delete
+parameters:
+  type: bak
