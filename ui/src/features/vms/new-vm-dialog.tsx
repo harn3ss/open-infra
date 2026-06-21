@@ -95,14 +95,6 @@ export function NewVmDialog({
     (o) => o.family === "windows" && !builtWindows.has(o.value),
   );
 
-  function onOsChange(v: string) {
-    setOs(v);
-    // Windows clones a ~68GiB golden image — bump the disk so the clone fits.
-    if (osFamily(v) === "windows" && (parseInt(diskSize, 10) || 0) < 70) {
-      setDiskSize("70Gi");
-    }
-  }
-
   function reset() {
     setName("");
     setOs("ubuntu-24.04");
@@ -143,7 +135,8 @@ export function NewVmDialog({
         os,
         cpu: Number(cpu) || 2,
         memory: memory || "2Gi",
-        diskSize: diskSize || "20Gi",
+        // Linux only: the composition fixes the Windows root at 70Gi regardless.
+        ...(!isWindows ? { diskSize: diskSize || "20Gi" } : {}),
         ...(sshKey.trim() && !isWindows ? { sshKey: sshKey.trim() } : {}),
         // Derive network + expose from the single access choice.
         expose: access === "lan",
@@ -204,7 +197,7 @@ export function NewVmDialog({
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="vm-os">Operating system</Label>
-            <Select value={os} onValueChange={onOsChange}>
+            <Select value={os} onValueChange={setOs}>
               <SelectTrigger id="vm-os">
                 <SelectValue placeholder="OS" />
               </SelectTrigger>
@@ -247,15 +240,20 @@ export function NewVmDialog({
               placeholder="2Gi"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="vm-disk">Disk size</Label>
-            <Input
-              id="vm-disk"
-              value={diskSize}
-              onChange={(e) => setDiskSize(e.target.value)}
-              placeholder="20Gi"
-            />
-          </div>
+          {/* Disk size is Linux-only: cloud-init grows the rootfs to fit. The
+              Windows root is fixed at 70Gi (its C: can't be auto-grown); extra
+              Windows storage comes from attachable volumes. */}
+          {!isWindows ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="vm-disk">Disk size</Label>
+              <Input
+                id="vm-disk"
+                value={diskSize}
+                onChange={(e) => setDiskSize(e.target.value)}
+                placeholder="20Gi"
+              />
+            </div>
+          ) : null}
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="vm-access">Network access</Label>
             <Select value={access} onValueChange={setAccess}>
@@ -284,9 +282,11 @@ export function NewVmDialog({
           {isWindows ? (
             <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
               Windows clones a golden image you build once from an eval ISO (see
-              docs). Login is <span className="font-medium">Administrator</span> +
-              a generated password (revealable on the VM page); connect with{" "}
-              <code>mstsc</code> over RDP.
+              docs). The root disk is fixed at <strong>70&nbsp;GiB</strong> — add
+              more storage with attachable volumes, not a bigger C:. Login is{" "}
+              <span className="font-medium">Administrator</span> + a generated
+              password (revealable on the VM page); connect with <code>mstsc</code>{" "}
+              over RDP.
             </div>
           ) : (
             <div className="space-y-1.5 sm:col-span-2">
