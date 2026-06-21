@@ -262,18 +262,16 @@ export function NewVmDialog({
                   LAN IP — reach {isWindows ? "RDP (3389)" : "SSH (22)"} from your
                   network (MetalLB)
                 </SelectItem>
-                <SelectItem value="bridge" disabled={!bridgeReady}>
-                  Direct on LAN — real DHCP address
-                  {!bridgeReady ? " (needs enabling)" : ""}
-                </SelectItem>
+                {/* Bridge is an advanced cluster-CNI mode; only offer it when an
+                    operator has enabled it. Everyday LAN access is "LAN IP" above,
+                    which needs no setup. */}
+                {bridgeReady ? (
+                  <SelectItem value="bridge">
+                    Direct on LAN — real DHCP address
+                  </SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
-            {!bridgeReady ? (
-              <p className="text-xs text-muted-foreground">
-                "Direct on LAN" needs{" "}
-                <code>networking.vmLan.enabled</code> + <code>./install.sh</code>.
-              </p>
-            ) : null}
           </div>
           {isWindows ? (
             <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
