@@ -67,6 +67,25 @@ spec:
                    keeps the user's diskSize — cloud-init grows the rootfs to fit. */}}
             {{- if $isWin }}{{- $disk = "70Gi" }}{{- end }}
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
+            {{- /* Domain-join (Windows): spec.domain names a kind: Directory in this
+                   namespace. We Observe its connection secret (the dir-secret Object
+                   below) for the DC IP + admin creds; $joinReady gates the wiring
+                   until that data lands (a reconcile or two after create — the disk
+                   clone is slow enough that it is populated before first boot). */}}
+            {{- $domain := $spec.domain | default "" }}
+            {{- $joinReady := false }}
+            {{- $djDomain := "" }}{{- $djNet := "" }}{{- $djUser := "" }}{{- $djPass := "" }}{{- $dcip := "" }}
+            {{- if and $isWin $domain }}
+              {{- $ds := index .observed.resources "dir-secret" }}
+              {{- if $ds }}{{- with $ds.resource.status }}{{- with .atProvider }}{{- with .manifest.data }}
+                {{- $djDomain = (.DOMAIN | default "" | b64dec) }}
+                {{- $djNet = (.NETBIOS | default "" | b64dec) }}
+                {{- $djUser = (.ADMIN_USER | default "" | b64dec) }}
+                {{- $djPass = (.ADMIN_PASSWORD | default "" | b64dec) }}
+                {{- $dcip = (.DC_IP | default "" | b64dec) }}
+              {{- end }}{{- end }}{{- end }}{{- end }}
+              {{- if and $djDomain $dcip }}{{- $joinReady = true }}{{- end }}
+            {{- end }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via
             #     CDI (registry import for Linux; clone of the golden PVC for Windows).
@@ -187,6 +206,15 @@ spec:
                             multus:
                               networkName: default/openinfra-lan
                           {{- end }}
+                        {{- if $joinReady }}
+                        # Domain-join: the guest uses the Directory's DC as its DNS
+                        # (the DC answers the AD zone and forwards everything else),
+                        # so it can resolve + join the domain on first boot.
+                        dnsPolicy: None
+                        dnsConfig:
+                          nameservers: [{{ $dcip | quote }}]
+                          searches: [{{ $djDomain | quote }}]
+                        {{- end }}
                         volumes:
                           - name: root
                             dataVolume:
@@ -263,10 +291,33 @@ spec:
                             <FirstLogonCommands>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f</CommandLine></SynchronousCommand>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><CommandLine>netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
+                              {{- if $joinReady }}
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>3</Order><CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Computer -DomainName '{{ $djDomain }}' -NewName '{{ $name | trunc 15 }}' -Credential (New-Object System.Management.Automation.PSCredential('{{ $djNet }}\{{ $djUser }}',(ConvertTo-SecureString '{{ $djPass }}' -AsPlainText -Force))) -Restart -Force"</CommandLine></SynchronousCommand>
+                              {{- end }}
                             </FirstLogonCommands>
                           </component>
                         </settings>
                       </unattend>
+            {{- end }}
+            {{- if and $isWin $domain }}
+            ---
+            # --- Observe (read-only) the target Directory's connection secret for the
+            #     DC IP + admin creds used by the unattended domain-join above.
+            #     managementPolicies: [Observe] => never created/modified, only read. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dir-secret
+            spec:
+              managementPolicies: ["Observe"]
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $domain }}-directory
+                    namespace: {{ $ns }}
             {{- end }}
             ---
             # --- Service: in-cluster reach to SSH (Linux) / RDP (Windows). ---
