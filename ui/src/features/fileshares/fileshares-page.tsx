@@ -243,22 +243,10 @@ function ConnectDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-sm">
-          <Field label="Username" value={user} />
-          <Field label="Password" value={pass || "—"} mono />
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Windows (net use)</Label>
-            <div className="flex items-center gap-1">
-              <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">{winCmd}</code>
-              <CopyButton value={winCmd} />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Linux (mount -t cifs)</Label>
-            <div className="flex items-center gap-1">
-              <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">{linCmd}</code>
-              <CopyButton value={linCmd} />
-            </div>
-          </div>
+          <Row label="Username" value={user} />
+          <Row label="Password" value={pass || "—"} />
+          <Row label="Windows (net use)" value={winCmd} />
+          <Row label="Linux (mount -t cifs)" value={linCmd} />
         </div>
         <DialogFooter>
           <Button onClick={onClose}>Close</Button>
@@ -268,14 +256,14 @@ function ConnectDialog({
   );
 }
 
-function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="flex items-center gap-1">
-        <code className={mono ? "text-xs" : "text-sm"}>{value}</code>
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="flex items-center gap-1">
+        <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">{value}</code>
         <CopyButton value={value} />
-      </span>
+      </div>
     </div>
   );
 }
