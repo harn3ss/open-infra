@@ -136,7 +136,19 @@ export function VirtualDataTable<TData>({
                       ref={(node) => rowVirtualizer.measureElement(node)}
                       onClick={
                         onRowClick
-                          ? () => onRowClick(row.original)
+                          ? (e) => {
+                              // Don't fire the row action (YAML drawer) when the
+                              // click came from an interactive control in the row —
+                              // action buttons, copy buttons, and links have their
+                              // own handlers and shouldn't also open the drawer.
+                              if (
+                                (e.target as HTMLElement).closest(
+                                  "button, a, input, select, textarea, [role='button'], [role='menuitem']",
+                                )
+                              )
+                                return;
+                              onRowClick(row.original);
+                            }
                           : undefined
                       }
                       className={cn(
