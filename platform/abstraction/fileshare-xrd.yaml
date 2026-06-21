@@ -1,0 +1,49 @@
+# open-infra's "FSx for Windows File Server": kind: FileShare — a managed SMB
+# share backed by Longhorn that VMs (and desktops) mount as a network drive
+# (Windows: net use; Linux: mount -t cifs). One claim -> a Samba server, a LAN
+# endpoint, and a connection secret (USERNAME/PASSWORD/SHARE/HOST). NFS export for
+# Linux-native access is a planned addition.
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xfileshares.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XFileShare
+    plural: xfileshares
+  claimNames:
+    kind: FileShare    # what users write
+    plural: fileshares
+  defaultCompositionRef:
+    name: fileshare
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [size]
+              properties:
+                size:
+                  type: string
+                  description: "Share capacity, e.g. 100Gi (Longhorn-backed)."
+                expose:
+                  type: boolean
+                  default: true
+                  description: "Get a LAN IP (SMB 445) so VMs/desktops can mount it. On by default — a share you can't reach isn't useful."
+            status:
+              type: object
+              properties:
+                share: { type: string }
+                ready: { type: boolean }

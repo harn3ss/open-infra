@@ -1,0 +1,152 @@
+# The compiler for kind: FileShare -> a Longhorn PVC served over SMB by a Samba
+# Deployment, a Service (LAN LoadBalancer on 445 when expose), and a connection
+# Secret (<name>-fileshare: USERNAME/PASSWORD/SHARE/HOST). Mount it from Windows
+# (net use \\HOST\<name>) or Linux (mount -t cifs). The login password is derived
+# from the composite UID so it is stable across reconciles.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: fileshare
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XFileShare
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $size := $spec.size | default "50Gi" }}
+            {{- $user := "openinfra" }}
+            {{- $pass := printf "%s-smbpass" .observed.composite.resource.metadata.uid | sha256sum | trunc 20 }}
+            {{- /* expose defaults true (hasKey check: Sprig default treats false as empty) */}}
+            {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
+            ---
+            # Backing storage for the share (Longhorn, served by Samba).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: pvc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/fileshare: "true" }
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    storageClassName: longhorn
+                    resources:
+                      requests:
+                        storage: {{ $size }}
+            ---
+            # Samba server exporting the PVC as the SMB share "<name>".
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: samba
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-smb
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/fileshare: "true" }
+                  spec:
+                    replicas: 1
+                    strategy: { type: Recreate }
+                    selector: { matchLabels: { app: {{ $name }}-smb } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-smb } }
+                      spec:
+                        containers:
+                          - name: samba
+                            image: dperson/samba
+                            args:
+                              - "-u"
+                              - "{{ $user }};{{ $pass }}"
+                              - "-s"
+                              - "{{ $name }};/share;yes;no;no;{{ $user }}"
+                              - "-p"
+                              - "-g"
+                              - "server min protocol = SMB2"
+                            ports:
+                              - { containerPort: 445, name: smb }
+                            securityContext:
+                              capabilities:
+                                add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+                            volumeMounts:
+                              - { name: share, mountPath: /share }
+                        volumes:
+                          - name: share
+                            persistentVolumeClaim:
+                              claimName: {{ $name }}
+              readiness:
+                policy: DeriveFromObject
+            ---
+            # Service: SMB on 445. LoadBalancer (LAN IP) when expose, else ClusterIP.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                  spec:
+                    type: {{ if $expose }}LoadBalancer{{ else }}ClusterIP{{ end }}
+                    selector: { app: {{ $name }}-smb }
+                    ports:
+                      - { name: smb, port: 445, targetPort: 445 }
+            ---
+            # Connection secret: how to mount the share.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: conn-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-fileshare
+                    namespace: {{ $ns }}
+                  stringData:
+                    PROTOCOL: smb
+                    SHARE: {{ $name }}
+                    USERNAME: {{ $user }}
+                    PASSWORD: {{ $pass }}
+                    HOST: {{ $name }}.{{ $ns }}.svc.cluster.local
+                    ACCESS: 'net use Z: \\HOST\{{ $name }} /user:{{ $user }} {{ $pass }}  (HOST = LAN IP when exposed)'
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
