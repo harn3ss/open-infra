@@ -342,6 +342,19 @@ export interface VolumeSnapshotStatus {
 }
 export type VolumeSnapshot = K8sObject<VolumeSnapshotSpec, VolumeSnapshotStatus>;
 
+/* ---------------------- open-infra FileShare CRD (FSx-style SMB) ---------- */
+
+export interface FileShareSpec {
+  size?: string;
+  expose?: boolean;
+}
+export interface FileShareStatus {
+  share?: string;
+  ready?: boolean;
+}
+export type FileShare = K8sObject<FileShareSpec, FileShareStatus>;
+export const FILESHARES_PLURAL = "fileshares";
+
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
 export interface CnpgClusterSpec {
