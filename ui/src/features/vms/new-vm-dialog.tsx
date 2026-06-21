@@ -234,8 +234,8 @@ export function NewVmDialog({
             </Select>
             {!bridgeReady ? (
               <p className="text-xs text-muted-foreground">
-                Needs enabling: <code>scripts/enable-vm-lan.sh</code> + a node
-                labelled <code>openinfra.dev/vm-lan</code>.
+                Needs enabling: set <code>networking.vmLan.enabled</code> in
+                config and re-run <code>./install.sh</code>.
               </p>
             ) : null}
           </div>

@@ -37,6 +37,8 @@ command -v curl >/dev/null || DIE "curl is required"
 yget() { # yget some.nested.key  -> value (or empty)
   awk -v path="$1" '
     function indent(s){ match(s,/^ */); return RLENGTH }
+    /^[ \t]*$/ { next }          # skip blank lines (would reset the key stack)
+    /^[ \t]*#/ { next }          # skip comments (may contain colons)
     { lvl=indent($0); key=$0; sub(/^ +/,"",key); sub(/:.*/,"",key)
       stack[lvl]=key; full=""
       for(i=0;i<=lvl;i+=2){ full=full (full?".":"") stack[i] }
@@ -149,6 +151,75 @@ else
   RUN "$KUBECTL -n kubevirt wait --for=condition=Available kubevirt/kubevirt --timeout=300s || true"
   # Holds the golden Windows image (cloned per-VM). Created empty; see docs.
   RUN "$KUBECTL create namespace openinfra-images --dry-run=client -o yaml | $KUBECTL apply -f -"
+fi
+
+# ── 2c. VM direct-LAN networking (bridge) ────────────────────
+# Opt-in (networking.vmLan.enabled): installs Multus + the macvlan plugin so
+# kind: VirtualMachine network=bridge can attach VMs straight to the physical LAN
+# (real DHCP lease). Auto-labels nodes that actually have the LAN NIC, so bridged
+# VMs schedule only where they can work. Self-service: a config flag, no manual
+# scripts. Multus changes the cluster CNI (delegates to flannel), hence opt-in.
+if [ "$(yget networking.vmLan.enabled)" = "true" ]; then
+  VMLAN_IFACE="$(yget networking.vmLan.interface)"; VMLAN_IFACE="${VMLAN_IFACE:-eno1}"
+  MULTUS_VERSION="v4.1.0"; CNI_PLUGINS_VERSION="v1.5.1"
+  K3S_CNI_BIN="/var/lib/rancher/k3s/data/current/bin"
+  K3S_CNI_CONF="/var/lib/rancher/k3s/agent/etc/cni/net.d"
+  LOG "VM LAN bridge: Multus + macvlan (parent NIC: $VMLAN_IFACE)…"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + install macvlan plugin + Multus %s; create NAD; label nodes with %s\n' "$MULTUS_VERSION" "$VMLAN_IFACE"
+  else
+    # 1. macvlan reference plugin into k3s' CNI bin (k3s ships a minimal set).
+    cat <<EOF | $KUBECTL apply -f - || WARN "macvlan plugin install failed"
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: openinfra-cni-plugins, namespace: kube-system }
+spec:
+  selector: { matchLabels: { app: openinfra-cni-plugins } }
+  template:
+    metadata: { labels: { app: openinfra-cni-plugins } }
+    spec:
+      hostNetwork: true
+      tolerations: [ { operator: Exists } ]
+      initContainers:
+        - name: install
+          image: curlimages/curl:8.10.1
+          securityContext: { runAsUser: 0 }
+          command: [sh, -c]
+          args:
+            - |
+              cd /tmp
+              curl -sfL https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz | tar xz
+              for p in macvlan static tuning; do cp -f \$p /host/bin/ && echo installed \$p; done
+          volumeMounts: [ { name: bin, mountPath: /host/bin } ]
+      containers:
+        - { name: pause, image: registry.k8s.io/pause:3.9 }
+      volumes:
+        - { name: bin, hostPath: { path: ${K3S_CNI_BIN} } }
+EOF
+    # 2. Multus (thick), pointed at k3s' CNI paths; delegates default to flannel.
+    curl -sfL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
+      | sed -e "s#/etc/cni/net.d#${K3S_CNI_CONF}#g" -e "s#/opt/cni/bin#${K3S_CNI_BIN}#g" \
+      | $KUBECTL apply -f - || WARN "Multus install failed"
+    $KUBECTL -n kube-system rollout status ds/kube-multus-ds --timeout=180s || WARN "Multus not ready yet"
+    # 3. The macvlan NetworkAttachmentDefinition (no IPAM -> guest DHCP).
+    cat <<EOF | $KUBECTL apply -f - || WARN "NAD create failed"
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata: { name: openinfra-lan, namespace: default }
+spec:
+  config: '{ "cniVersion": "0.3.1", "type": "macvlan", "master": "${VMLAN_IFACE}", "mode": "bridge", "ipam": {} }'
+EOF
+    # 4. Auto-label nodes that actually have the LAN NIC (handles per-node NIC
+    #    name differences — only matching nodes can host bridged VMs).
+    for node in $($KUBECTL get nodes -o jsonpath='{.items[*].metadata.name}'); do
+      has="$($KUBECTL run vmlan-detect-${node%%.*} --rm -i --restart=Never --image=busybox:1.36 \
+        --overrides="{\"spec\":{\"hostNetwork\":true,\"nodeName\":\"$node\",\"tolerations\":[{\"operator\":\"Exists\"}],\"containers\":[{\"name\":\"d\",\"image\":\"busybox:1.36\",\"command\":[\"sh\",\"-c\",\"[ -d /sys/class/net/$VMLAN_IFACE ] && echo yes || echo no\"]}]}}" 2>/dev/null | tr -d '[:space:]')" || has="no"
+      case "$has" in
+        *yes*) $KUBECTL label node "$node" openinfra.dev/vm-lan=true --overwrite >/dev/null 2>&1 && LOG "  $node has $VMLAN_IFACE → labelled vm-lan" ;;
+        *)     $KUBECTL label node "$node" openinfra.dev/vm-lan- >/dev/null 2>&1 || true ;;
+      esac
+    done
+  fi
 fi
 
 # ── 3. Argo CD ───────────────────────────────────────────────

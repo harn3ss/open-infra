@@ -83,20 +83,30 @@ stopped.
   pulls a real **DHCP lease** from your router. It's a first-class LAN host — no
   MetalLB, no NAT.
 
-### Enabling bridge mode (one-time, operator)
+### Enabling bridge mode
 
-Bridge mode needs Multus (a cluster CNI change), so it's opt-in:
+Bridge mode needs Multus (a cluster CNI change), so it's opt-in — but it's a
+config flag, not a manual step. In `config.yaml`:
 
-```sh
-# sets networking.vmLan.interface in config.yaml, or pass --interface
-scripts/enable-vm-lan.sh --interface eno1
-# then label the nodes whose LAN NIC matches (bridged VMs schedule only there):
-kubectl label node <node> openinfra.dev/vm-lan=true
+```yaml
+networking:
+  vmLan:
+    enabled: true
+    interface: eno1     # your LAN NIC
 ```
 
-The script installs Multus + the macvlan plugin (k3s paths), self-tests that new
-pods still get networking, and creates the `default/openinfra-lan`
-NetworkAttachmentDefinition (macvlan, no IPAM → guest DHCP). Then:
+then re-run the installer:
+
+```sh
+./install.sh            # idempotent
+```
+
+`install.sh` installs Multus + the macvlan plugin (k3s paths), creates the
+`default/openinfra-lan` NetworkAttachmentDefinition (macvlan, no IPAM → guest
+DHCP), and **auto-labels every node that actually has `interface`** with
+`openinfra.dev/vm-lan=true` (so bridged VMs schedule only where they can work —
+NIC names may differ per node). Once a node is labelled, the console's New VM
+dialog enables "Bridged to LAN" on its own. Then:
 
 ```yaml
 spec:
@@ -106,8 +116,9 @@ spec:
 
 **Caveats**
 - **NIC names may differ per node** (e.g. `eno1` vs `enp4s0`); the NAD has one
-  `master`, so label only nodes whose LAN NIC matches it (the VM gets a node
-  affinity to `openinfra.dev/vm-lan=true`).
+  `master`, so only nodes that have that NIC can host bridged VMs. `install.sh`
+  detects this and labels just those nodes `openinfra.dev/vm-lan=true` (the VM
+  carries a matching node affinity) — no manual labelling.
 - **macvlan limitation**: the *host node* cannot talk to its own bridged VMs
   (other LAN hosts can) — a kernel macvlan property.
 - The VM still keeps a pod NIC (eth0) for in-cluster/Service access; the LAN lease
