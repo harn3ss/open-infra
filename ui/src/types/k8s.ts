@@ -256,6 +256,43 @@ export type Model = K8sObject<ModelSpec, ModelStatus>;
 export const MODELS_PLURAL = "models";
 export const MODELS_CRD_NAME = "models.openinfra.dev";
 
+/* ---------------------- open-infra VirtualMachine CRD --------------------- */
+
+export interface VirtualMachineSpec {
+  os: string;
+  cpu?: number;
+  memory?: string;
+  diskSize?: string;
+  sshKey?: string;
+  expose?: boolean;
+  running?: boolean;
+}
+
+export interface VirtualMachineStatus {
+  os?: string;
+  ip?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+
+export type VirtualMachine = K8sObject<
+  VirtualMachineSpec,
+  VirtualMachineStatus
+>;
+export const VIRTUALMACHINES_PLURAL = "virtualmachines";
+export const VIRTUALMACHINES_CRD_NAME = "virtualmachines.openinfra.dev";
+
+// KubeVirt VirtualMachineInstance — the running guest. The console reads it
+// (read-only) for live status: IP + phase. Backs the VM's connection + console.
+export const KUBEVIRT_GROUP = "kubevirt.io";
+export const KUBEVIRT_VERSION = "v1";
+export interface VmiStatus {
+  phase?: string;
+  nodeName?: string;
+  interfaces?: { ipAddress?: string; name?: string }[];
+}
+export type Vmi = K8sObject<unknown, VmiStatus>;
+
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
 export interface CnpgClusterSpec {

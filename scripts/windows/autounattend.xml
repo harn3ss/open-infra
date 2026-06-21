@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Unattended install for the open-infra Windows golden image.
+  Targets Windows Server 2022 Standard (Desktop Experience), evaluation edition,
+  installed directly onto a KubeVirt virtio disk (viostor driver injected in
+  WinPE). After install, SetupComplete.cmd installs cloudbase-init (which sets the
+  per-VM Administrator password + enables RDP from the VM's cloud-init), the
+  virtio guest tools and qemu-guest-agent, then sysprep generalizes the image.
+
+  Adjust for other Windows versions: the image /Value (edition), the driver paths
+  (\2k22\), and the disk layout if not UEFI. The virtio ISO mounts as drive E:.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage><UILanguage>en-US</UILanguage></SetupUILanguage>
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <!-- Inject the virtio block driver so Setup can see the virtio disk. -->
+      <DriverPaths>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="1"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Path>E:\viostor\2k22\amd64</Path>
+        </PathAndCredentials>
+        <PathAndCredentials wcm:action="add" wcm:keyValue="2"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Path>E:\NetKVM\2k22\amd64</Path>
+        </PathAndCredentials>
+      </DriverPaths>
+      <DiskConfiguration>
+        <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add"><Order>1</Order><Type>EFI</Type><Size>200</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>2</Order><Type>MSR</Type><Size>16</Size></CreatePartition>
+            <CreatePartition wcm:action="add"><Order>3</Order><Type>Primary</Type><Extend>true</Extend></CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add"><Order>1</Order><PartitionID>1</PartitionID><Format>FAT32</Format><Label>System</Label></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>2</Order><PartitionID>2</PartitionID></ModifyPartition>
+            <ModifyPartition wcm:action="add"><Order>3</Order><PartitionID>3</PartitionID><Format>NTFS</Format><Label>Windows</Label><Letter>C</Letter></ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <ImageInstall>
+        <OSImage>
+          <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
+          <InstallFrom>
+            <MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+              <Key>/IMAGE/NAME</Key>
+              <Value>Windows Server 2022 Standard Evaluation (Desktop Experience)</Value>
+            </MetaData>
+          </InstallFrom>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>openinfra</FullName>
+        <Organization>open-infra</Organization>
+      </UserData>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <UserAccounts>
+        <!-- Temporary build password; cloudbase-init resets it per-VM on first
+             boot from the cloud-init userdata the Composition injects. -->
+        <AdministratorPassword><Value>Cl0udbase!Build</Value><PlainText>true</PlainText></AdministratorPassword>
+      </UserAccounts>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <NetworkLocation>Work</NetworkLocation>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Username>Administrator</Username>
+        <Password><Value>Cl0udbase!Build</Value><PlainText>true</PlainText></Password>
+      </AutoLogon>
+      <TimeZone>UTC</TimeZone>
+      <!-- After first auto-logon, run the post-install script from whichever
+           removable drive carries it (the aux ISO built by build-windows-image.sh). -->
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>1</Order>
+          <Description>open-infra post-install</Description>
+          <CommandLine>powershell -ExecutionPolicy Bypass -Command "$p = Get-ChildItem -Path @('A:\','D:\','E:\','F:\','G:\') -Filter setup.ps1 -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) { &amp; $p.FullName }"</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>

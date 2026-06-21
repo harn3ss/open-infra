@@ -4,9 +4,12 @@ import {
   CNPG_GROUP,
   CNPG_VERSION,
   FUNCTIONS_PLURAL,
+  KUBEVIRT_GROUP,
+  KUBEVIRT_VERSION,
   MODELS_PLURAL,
   OPENINFRA_GROUP,
   OPENINFRA_VERSION,
+  VIRTUALMACHINES_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -49,6 +52,19 @@ export const openinfraPaths = {
   models: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MODELS_PLURAL}`,
   model: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${MODELS_PLURAL}/${name}`,
+  virtualmachines: (ns?: string) =>
+    `${oiGV}${nsSegment(ns)}/${VIRTUALMACHINES_PLURAL}`,
+  virtualmachine: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${VIRTUALMACHINES_PLURAL}/${name}`,
+};
+
+const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;
+
+// KubeVirt VirtualMachineInstance — read-only live guest status (IP, phase).
+export const kubevirtPaths = {
+  vmis: (ns?: string) => `${kvGV}${nsSegment(ns)}/virtualmachineinstances`,
+  vmi: (ns: string, name: string) =>
+    `${kvGV}/namespaces/${ns}/virtualmachineinstances/${name}`,
 };
 
 export const cnpgPaths = {
