@@ -60,6 +60,10 @@ spec:
             {{- $isWin := eq $profile.osType "windows" }}
             {{- $port := 22 }}{{- $user := "openinfra" }}{{- $proto := "ssh" }}
             {{- if $isWin }}{{- $port = 3389 }}{{- $user = "Administrator" }}{{- $proto = "rdp" }}{{- end }}
+            {{- /* Windows clones the golden image (built at 64Gi -> ~68GiB actual).
+                   A CDI clone needs target >= source, so floor the disk at 70Gi for
+                   windows (respect a larger user choice). Assumes Gi units. */}}
+            {{- if $isWin }}{{- $req := (regexReplaceAll "[^0-9]" $disk "") | int }}{{- if lt $req 70 }}{{- $disk = "70Gi" }}{{- end }}{{- end }}
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via

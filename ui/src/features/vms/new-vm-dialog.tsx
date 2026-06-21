@@ -95,6 +95,14 @@ export function NewVmDialog({
     (o) => o.family === "windows" && !builtWindows.has(o.value),
   );
 
+  function onOsChange(v: string) {
+    setOs(v);
+    // Windows clones a ~68GiB golden image — bump the disk so the clone fits.
+    if (osFamily(v) === "windows" && (parseInt(diskSize, 10) || 0) < 70) {
+      setDiskSize("70Gi");
+    }
+  }
+
   function reset() {
     setName("");
     setOs("ubuntu-24.04");
@@ -196,7 +204,7 @@ export function NewVmDialog({
           </div>
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="vm-os">Operating system</Label>
-            <Select value={os} onValueChange={setOs}>
+            <Select value={os} onValueChange={onOsChange}>
               <SelectTrigger id="vm-os">
                 <SelectValue placeholder="OS" />
               </SelectTrigger>

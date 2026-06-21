@@ -134,8 +134,15 @@ spec:
                           </component>
                           <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
                             <DriverPaths>
-                              <PathAndCredentials wcm:action="add" wcm:keyValue="1" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\viostor\{{ $c.driver }}\amd64</Path></PathAndCredentials>
-                              <PathAndCredentials wcm:action="add" wcm:keyValue="2" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <!-- The virtio ISO's drive letter is non-deterministic in WinPE
+                                   (multiple CD-ROMs), so list every plausible letter; Setup
+                                   ignores paths that don't exist. -->
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="1" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\viostor\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="2" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\viostor\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="3" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\viostor\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="4" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>D:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="5" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>E:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
+                              <PathAndCredentials wcm:action="add" wcm:keyValue="6" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Path>F:\NetKVM\{{ $c.driver }}\amd64</Path></PathAndCredentials>
                             </DriverPaths>
                             <DiskConfiguration>
                               <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -203,8 +210,11 @@ spec:
                           firmware: { bootloader: { efi: { secureBoot: false } } }
                           devices:
                             disks:
-                              - { name: target, disk: { bus: virtio }, bootOrder: 2 }
-                              - { name: winiso, cdrom: { bus: sata }, bootOrder: 1 }
+                              # target first: empty disk has no loader -> OVMF falls through
+                              # to the CD (matches kubevirt-tekton windows-efi-installer); after
+                              # install the disk is bootable + wins on the post-install reboot.
+                              - { name: target, disk: { bus: virtio }, bootOrder: 1 }
+                              - { name: winiso, cdrom: { bus: sata }, bootOrder: 2 }
                               - { name: virtio, cdrom: { bus: sata } }
                               - { name: sysprep, cdrom: { bus: sata } }
                             interfaces: [ { name: default, masquerade: {} } ]
@@ -214,6 +224,42 @@ spec:
                           - { name: winiso, dataVolume: { name: {{ $os }}-winiso } }
                           - { name: virtio, dataVolume: { name: {{ $os }}-virtio } }
                           - { name: sysprep, sysprep: { configMap: { name: {{ $os }}-sysprep } } }
+            ---
+            # --- Boot-assist Job: with the boot order fixed, OVMF reaches the CD's
+            #     "Press any key to boot from CD or DVD" prompt; this sends Enter over
+            #     the installer's VNC during boot to dismiss it (headless). See
+            #     vmimage-bootkey.yaml for the SA/RBAC + script. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bootkey
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $os }}-bootkey, namespace: {{ $ns }} }
+                  spec:
+                    backoffLimit: 1
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bootkey
+                        restartPolicy: Never
+                        containers:
+                          - name: bootkey
+                            image: python:3.12-slim
+                            env:
+                              - { name: NAMESPACE, value: {{ $ns }} }
+                              - { name: VMI_NAME, value: {{ $os }}-installer }
+                            command: [sh, -c]
+                            args:
+                              - "pip install -q websocket-client && python /script/bootkey.py"
+                            volumeMounts:
+                              - { name: script, mountPath: /script }
+                        volumes:
+                          - { name: script, configMap: { name: openinfra-bootkey } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

@@ -23,24 +23,48 @@ export function InstallerVnc({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    setStatus("connecting");
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${window.location.host}/api/k8s${kubevirtPaths.vnc(
       namespace,
       name,
     )}`;
     let rfb: RFB | null = null;
-    try {
-      rfb = new RFB(el, url, { wsProtocols: ["plain.kubevirt.io"] });
-      rfb.viewOnly = true; // watch-only; the install is unattended
-      rfb.scaleViewport = true;
-      rfb.background = "#000";
-      rfb.addEventListener("connect", () => setStatus("connected"));
-      rfb.addEventListener("disconnect", () => setStatus("error"));
-    } catch {
-      setStatus("error");
-    }
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    let cancelled = false;
+
+    // noVNC has no built-in reconnect, and an idle install screen gets its
+    // websocket dropped (Traefik idle timeout). Reconnect with capped backoff so
+    // the live view keeps streaming without a manual page refresh.
+    const connect = () => {
+      if (cancelled) return;
+      setStatus("connecting");
+      try {
+        rfb = new RFB(el, url, { wsProtocols: ["plain.kubevirt.io"] });
+        rfb.viewOnly = true; // watch-only; the install is unattended
+        rfb.scaleViewport = true;
+        rfb.background = "#000";
+        rfb.addEventListener("connect", () => {
+          attempt = 0;
+          setStatus("connected");
+        });
+        rfb.addEventListener("disconnect", () => {
+          rfb = null;
+          if (cancelled) return;
+          setStatus("connecting");
+          const delay = Math.min(1000 * 2 ** attempt, 10000);
+          attempt += 1;
+          retry = setTimeout(connect, delay);
+        });
+      } catch {
+        setStatus("error");
+      }
+    };
+    connect();
+
     return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
       try {
         rfb?.disconnect();
       } catch {
