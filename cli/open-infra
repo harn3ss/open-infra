@@ -40,7 +40,7 @@ spec:
   scaling: { min: 1, max: 5, targetCPUPercent: 70 }
   domain: ${name}.example            # dev mode rewrites this to sslip.io
   # database: { engine: postgres, name: ${name}db }   # +highAvailability / +vector / +expose
-  #   engine: mysql -> MariaDB (DATABASE_URL); engine: mongo -> FerretDB (MONGODB_URI)
+  #   engine: mysql -> MariaDB (DATABASE_URL; +highAvailability -> Galera); mongo -> FerretDB
   #   expose: true  -> reach the DB on a LAN IP (MetalLB) from workstations
   # storage:  { buckets: [uploads] }
   # queues:   [jobs]

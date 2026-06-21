@@ -12,7 +12,7 @@ spec:
   # Uncomment any of these — the platform provisions them and injects creds:
   # database: { engine: postgres, name: hellodb }   # -> DATABASE_URL
   #   engine: postgres -> +highAvailability: true (failover); +vector: true (pgvector)
-  #   engine: mysql    -> MariaDB, injects DATABASE_URL
+  #   engine: mysql    -> MariaDB (operator); +highAvailability: true -> Galera 3-node
   #   engine: mongo    -> document store (FerretDB), injects MONGODB_URI
   #   add expose: true -> reachable on a LAN IP (MetalLB) for workstation access
   # storage:  { buckets: [uploads] }                # -> MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKETS

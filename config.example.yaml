@@ -91,6 +91,7 @@ components:
   # this into the app-of-apps include path.
   minio: true                  # object storage (S3)
   cloudnativePG: true          # managed Postgres (RDS)
+  mariadbOperator: true        # managed MySQL/MariaDB (RDS MySQL) — engine: mysql
   nats: true                   # queues / JetStream (SQS/SNS)
   redis: true                  # cache
   observability: true          # kube-prometheus-stack + Loki + Grafana

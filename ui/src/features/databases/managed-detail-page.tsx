@@ -126,8 +126,10 @@ export function ManagedDatabaseDetailPage() {
               <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Application">{name}</DetailRow>
               <DetailRow label="High availability">
-                {engineKey === "mongo" && ha
-                  ? "On · 2 FerretDB replicas (proxy tier)"
+                {ha
+                  ? engineKey === "mongo"
+                    ? "On · 2 FerretDB replicas (proxy tier)"
+                    : "On · Galera 3-node cluster"
                   : "Off (single instance)"}
               </DetailRow>
               <DetailRow label={e.uriLabel}>

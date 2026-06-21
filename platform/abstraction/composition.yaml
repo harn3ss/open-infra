@@ -413,8 +413,10 @@ spec:
                     ports: [ { port: 27017, targetPort: 27017 } ]
             {{- else if eq $dbEngine "mysql" }}
             ---
-            # --- Relational ("RDS MySQL"): MariaDB (MySQL wire protocol, GPLv2).
-            #     Self-contained Deployment + PVC, single instance for now. ---
+            # --- Relational ("RDS MySQL"): MariaDB via mariadb-operator (GPLv2 /
+            #     operator MIT). highAvailability -> 3-node Galera (synchronous,
+            #     auto-recovery); else a single instance. The operator owns the
+            #     StatefulSet + Services (primary svc is <name>-mysql). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -433,24 +435,8 @@ spec:
                     database: "{{ $dbName }}"
                     DATABASE_URL: "mysql://app:{{ $dbPass }}@{{ $name }}-mysql.{{ $ns }}.svc.cluster.local:3306/{{ $dbName }}"
             ---
-            # MariaDB data volume (local NVMe).
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: mysql-pvc
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: v1
-                  kind: PersistentVolumeClaim
-                  metadata: { name: {{ $name }}-mysql-data, namespace: {{ $ns }} }
-                  spec:
-                    accessModes: [ReadWriteOnce]
-                    storageClassName: local-path
-                    resources: { requests: { storage: 5Gi } }
-            ---
-            # MariaDB server.
+            # MariaDB (operator CR). Operator provisions the StatefulSet, user,
+            # database, and Services from these refs.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -459,59 +445,26 @@ spec:
             spec:
               forProvider:
                 manifest:
-                  apiVersion: apps/v1
-                  kind: Deployment
-                  metadata:
-                    name: {{ $name }}-mysql
-                    namespace: {{ $ns }}
-                    labels: { app.kubernetes.io/name: {{ $name }}-mysql }
-                  spec:
-                    replicas: 1
-                    strategy: { type: Recreate }
-                    selector: { matchLabels: { app.kubernetes.io/name: {{ $name }}-mysql } }
-                    template:
-                      metadata: { labels: { app.kubernetes.io/name: {{ $name }}-mysql } }
-                      spec:
-                        containers:
-                          - name: mariadb
-                            image: mariadb:11
-                            env:
-                              - name: MARIADB_ROOT_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $name }}-mysql-app, key: rootPassword } }
-                              - name: MARIADB_DATABASE
-                                valueFrom: { secretKeyRef: { name: {{ $name }}-mysql-app, key: database } }
-                              - name: MARIADB_USER
-                                valueFrom: { secretKeyRef: { name: {{ $name }}-mysql-app, key: username } }
-                              - name: MARIADB_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $name }}-mysql-app, key: password } }
-                            ports: [ { containerPort: 3306 } ]
-                            resources:
-                              requests: { cpu: 100m, memory: 256Mi }
-                              limits: { cpu: "2", memory: 1Gi }
-                            volumeMounts: [ { name: data, mountPath: /var/lib/mysql } ]
-                            readinessProbe:
-                              exec: { command: ["healthcheck.sh", "--connect", "--innodb_initialized"] }
-                              initialDelaySeconds: 15
-                              periodSeconds: 10
-                        volumes:
-                          - name: data
-                            persistentVolumeClaim: { claimName: {{ $name }}-mysql-data }
-            ---
-            # MariaDB Service — the MySQL endpoint apps connect to (3306).
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: mysql-svc
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: v1
-                  kind: Service
+                  apiVersion: k8s.mariadb.com/v1alpha1
+                  kind: MariaDB
                   metadata: { name: {{ $name }}-mysql, namespace: {{ $ns }} }
                   spec:
-                    selector: { app.kubernetes.io/name: {{ $name }}-mysql }
-                    ports: [ { port: 3306, targetPort: 3306 } ]
+                    rootPasswordSecretKeyRef: { name: {{ $name }}-mysql-app, key: rootPassword }
+                    username: app
+                    passwordSecretKeyRef: { name: {{ $name }}-mysql-app, key: password }
+                    database: {{ $dbName }}
+                    port: 3306
+                    replicas: {{ if $spec.database.highAvailability }}3{{ else }}1{{ end }}
+                    {{- if $spec.database.highAvailability }}
+                    galera:
+                      enabled: true
+                    {{- end }}
+                    storage:
+                      size: 5Gi
+                      storageClassName: local-path
+                    resources:
+                      requests: { cpu: 100m, memory: 256Mi }
+                      limits: { cpu: "2", memory: 1Gi }
             {{- else }}
             ---
             # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---
@@ -578,7 +531,7 @@ spec:
                     selector: { app.kubernetes.io/name: {{ $name }}-mongo }
                     ports: [ { port: 27017, targetPort: 27017 } ]
                     {{- else if eq $dbEngine "mysql" }}
-                    selector: { app.kubernetes.io/name: {{ $name }}-mysql }
+                    selector: { app.kubernetes.io/instance: {{ $name }}-mysql, app.kubernetes.io/name: mariadb }
                     ports: [ { port: 3306, targetPort: 3306 } ]
                     {{- else }}
                     selector: { cnpg.io/cluster: {{ $name }}-db, cnpg.io/instanceRole: primary }

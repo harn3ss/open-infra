@@ -1,0 +1,31 @@
+# mariadb-operator — manages MariaDB (incl. Galera HA) via CRDs. MIT licensed.
+# Powers the Application abstraction's `database: { engine: mysql }`:
+#   - single instance by default
+#   - Galera (3-node synchronous, auto-recovery) when highAvailability: true
+# CRDs are installed as a subchart (crds.enabled).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mariadb-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://mariadb-operator.github.io/mariadb-operator
+    chart: mariadb-operator
+    targetRevision: 26.6.0
+    helm:
+      values: |
+        crds:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mariadb-operator
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=true
+      # CRDs are large — server-side apply avoids the 256KB annotation limit.
+      - ServerSideApply=true
