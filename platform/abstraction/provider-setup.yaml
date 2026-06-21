@@ -49,6 +49,15 @@ rules:
   - apiGroups: [batch]
     resources: [jobs]
     verbs: [get, list, watch, create, update, patch, delete]
+  # VirtualMachines for the kind: VirtualMachine (EC2) abstraction. KubeVirt's own
+  # controller creates the backing DataVolume/VMI from dataVolumeTemplates, so the
+  # provider only manages the VirtualMachine itself (datavolumes listed for safety).
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachines, virtualmachineinstances]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes]
+    verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

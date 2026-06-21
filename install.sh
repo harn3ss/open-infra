@@ -133,6 +133,24 @@ EOF
   fi
 fi
 
+# ── 2b. KubeVirt + CDI (VMs) ─────────────────────────────────
+# Cluster virtualization for the kind: VirtualMachine (EC2) abstraction. Installed
+# from upstream release manifests (like MetalLB), not Argo. Needs hardware virt
+# (/dev/kvm) on the nodes. The abstraction's XRD/Composition ship with Crossplane.
+if [ "$(yget components.virtualization)" = "false" ]; then
+  LOG "component disabled: virtualization (KubeVirt/CDI)"
+else
+  KUBEVIRT_VERSION="v1.8.4"; CDI_VERSION="v1.65.0"
+  LOG "installing KubeVirt ${KUBEVIRT_VERSION} + CDI ${CDI_VERSION} (VMs)…"
+  RUN "$KUBECTL apply -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-operator.yaml"
+  RUN "$KUBECTL apply -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-cr.yaml"
+  RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-operator.yaml"
+  RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-cr.yaml"
+  RUN "$KUBECTL -n kubevirt wait --for=condition=Available kubevirt/kubevirt --timeout=300s || true"
+  # Holds the golden Windows image (cloned per-VM). Created empty; see docs.
+  RUN "$KUBECTL create namespace openinfra-images --dry-run=client -o yaml | $KUBECTL apply -f -"
+fi
+
 # ── 3. Argo CD ───────────────────────────────────────────────
 LOG "installing Argo CD…"
 RUN "$KUBECTL create namespace argocd --dry-run=client -o yaml | $KUBECTL apply -f -"
