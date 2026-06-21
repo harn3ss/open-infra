@@ -34,12 +34,13 @@ networking:
 
   # Direct-LAN networking for VMs (kind: VirtualMachine, network: bridge): attach
   # VMs to the physical LAN via Multus + macvlan so they pull a real DHCP lease —
-  # a first-class LAN host, no MetalLB/NAT. Opt-in; enable with scripts/enable-vm-lan.sh
-  # (installs Multus — a cluster CNI change). 'interface' is the LAN NIC on the
-  # nodes that will host bridged VMs (label them openinfra.dev/vm-lan=true).
+  # a first-class LAN host, no MetalLB/NAT. Set enabled: true and re-run
+  # ./install.sh — it installs Multus (a cluster CNI change) and auto-labels the
+  # nodes that have 'interface'. No manual steps. 'interface' is your LAN NIC;
+  # only nodes that actually have it will host bridged VMs.
   vmLan:
     enabled: false
-    interface: eno1             # your LAN NIC (e.g. eno1 / enp4s0) — may differ per node
+    interface: eno1             # your LAN NIC (e.g. eno1 / enp4s0)
 
 dns:
   # "sslip"     -> zero-config magic DNS: <app>.<lb-ip>.sslip.io  (great for dev)
