@@ -162,8 +162,6 @@ Functions are LAN-reachable via the Knative gateway (`expose: false` makes them
 cluster-local). VMs can also go fully on-LAN with `network: bridge` (a real DHCP
 lease, no NAT).
 
-The build history and phase plan live in [`docs/roadmap.md`](docs/roadmap.md).
-
 > **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap
 > (Bitnami purged its public versioned tags in Aug 2025); migrating off Bitnami
 > is tracked for v1.
