@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Monitor, Rocket } from "lucide-react";
 import {
   Dialog,
@@ -20,8 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/common/states";
-import { ApiError, k8sCreate } from "@/lib/api";
-import { openinfraPaths } from "@/lib/k8s-paths";
+import { ApiError, k8sCreate, k8sList } from "@/lib/api";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
 import {
   OPENINFRA_GROUP,
@@ -62,6 +62,19 @@ export function NewVmDialog({
   const [touched, setTouched] = useState(false);
 
   const isWindows = osFamily(os) === "windows";
+
+  // Bridge mode only works once an operator has enabled it (Multus + a node
+  // labelled openinfra.dev/vm-lan=true). Without that, a bridge VM can't schedule,
+  // so gate the option instead of letting it hang.
+  const nodesQuery = useQuery({
+    queryKey: ["nodes-vmlan"],
+    queryFn: () => k8sList<K8sObject>(corePaths.nodes()),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const bridgeReady = (nodesQuery.data?.items ?? []).some(
+    (n) => n.metadata?.labels?.["openinfra.dev/vm-lan"] === "true",
+  );
 
   function reset() {
     setName("");
@@ -107,7 +120,8 @@ export function NewVmDialog({
         diskSize: diskSize || "20Gi",
         ...(sshKey.trim() && !isWindows ? { sshKey: sshKey.trim() } : {}),
         expose,
-        network,
+        // Never submit bridge unless it's actually enabled (option is also gated).
+        network: bridgeReady ? network : "masquerade",
       },
     } as K8sObject);
   };
@@ -213,9 +227,17 @@ export function NewVmDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="masquerade">Pod NAT (default)</SelectItem>
-                <SelectItem value="bridge">Bridged to LAN (direct IP)</SelectItem>
+                <SelectItem value="bridge" disabled={!bridgeReady}>
+                  Bridged to LAN (direct IP){!bridgeReady ? " — not enabled" : ""}
+                </SelectItem>
               </SelectContent>
             </Select>
+            {!bridgeReady ? (
+              <p className="text-xs text-muted-foreground">
+                Needs enabling: <code>scripts/enable-vm-lan.sh</code> + a node
+                labelled <code>openinfra.dev/vm-lan</code>.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label>LAN access</Label>
