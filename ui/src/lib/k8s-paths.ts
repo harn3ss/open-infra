@@ -72,6 +72,10 @@ export const kubevirtPaths = {
   vmi: (ns: string, name: string) =>
     `${kvGV}/namespaces/${ns}/virtualmachineinstances/${name}`,
   vms: (ns?: string) => `${kvGV}${nsSegment(ns)}/virtualmachines`,
+  // VNC websocket subresource (served by virt-api). Relative to /api/k8s — the UI
+  // builds a same-origin wss URL that the BFF reverse-proxies (with the SA token).
+  vnc: (ns: string, name: string) =>
+    `/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachineinstances/${name}/vnc`,
 };
 
 export const cnpgPaths = {
