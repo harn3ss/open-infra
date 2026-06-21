@@ -242,7 +242,7 @@ function ConnectDialog({
               : "LAN IP pending — using the in-cluster name for now."}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 text-sm">
+        <div className="min-w-0 space-y-3 text-sm">
           <Row label="Username" value={user} />
           <Row label="Password" value={pass || "—"} />
           <Row label="Windows (net use)" value={winCmd} />
@@ -258,10 +258,15 @@ function ConnectDialog({
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       <Label className="text-xs text-muted-foreground">{label}</Label>
-      <div className="flex items-center gap-1">
-        <code className="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">{value}</code>
+      <div className="flex min-w-0 items-center gap-1">
+        <code
+          title={value}
+          className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-xs"
+        >
+          {value}
+        </code>
         <CopyButton value={value} />
       </div>
     </div>
