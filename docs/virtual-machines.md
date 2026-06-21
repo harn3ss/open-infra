@@ -47,7 +47,7 @@ and how to connect.
 | `fedora-40` | Linux | cloud image |
 | `debian-12` | Linux | cloud image |
 | `centos-stream-9` | Linux | cloud image |
-| `windows` | Windows | **clones a golden image you build once** (see below) |
+| `windows-server-2019`, `-2022`, `-2025` | Windows | **clones `<os>-golden`** — build it on the VM Images page (see below) |
 
 The catalog lives in two places that must stay in sync: the XRD enum
 (`platform/abstraction/vm-xrd.yaml`) and the Composition's `$catalog`
@@ -124,57 +124,52 @@ spec:
 - The VM still keeps a pod NIC (eth0) for in-cluster/Service access; the LAN lease
   lands on eth1.
 
-## Windows: build the golden image once
+## Windows: build the golden image (in the console)
 
 Windows has no redistributable cloud image, so you build a reusable **golden
-image** once from a Microsoft **evaluation ISO**, then every `os: windows` VM
-clones it (fast). This is a one-time, operator-run step.
+image** once per version, then every `os: windows-server-*` VM clones it (fast).
+It's a click — no scripts.
 
 ### Licensing (read this)
 
 - **Evaluation editions are free and legal for testing/non-production only.**
-  Windows Server eval = 180 days; Windows 10/11 Enterprise eval = 90 days.
-  Download from the [Microsoft Evaluation Center](https://www.microsoft.com/evalcenter).
+  Windows Server eval = 180 days.
+  Download is handled for you from the [Microsoft Evaluation Center](https://www.microsoft.com/evalcenter).
 - **Production Windows VDI/desktops require Microsoft licensing** (VDA / Windows
   Enterprise E3+ / RDS CALs). open-infra does not and cannot provide that — it is
   not open source. Linux VMs have no such constraint.
 
 ### Build it
 
-```sh
-# 1. Get an eval ISO from the Microsoft Evaluation Center (e.g. Windows Server
-#    2022) and note its path or a URL the cluster can reach.
-# 2. Run the builder (needs genisoimage/mkisofs locally):
-scripts/build-windows-image.sh \
-  --windows-iso https://software-static.download.../SERVER_EVAL_x64.iso \
-  --name windows-golden
+Console → **Virtual Machines → VM Images** → pick a version (Server 2019 / 2022 /
+2025) → **Build**. Or declaratively:
+
+```yaml
+apiVersion: openinfra.dev/v1
+kind: VmImage
+metadata: { name: windows-server-2022, namespace: openinfra-images }
+spec:
+  os: windows-server-2022       # sourceUrl: <override> if the catalog fwlink ever moves
 ```
 
-The script (see `scripts/build-windows-image.sh`):
+The `VmImage` Composition (`platform/abstraction/vmimage-composition.yaml`):
 
-1. Creates the `openinfra-images` namespace and a blank target `DataVolume`.
-2. Imports the Windows ISO and the latest **virtio-win** ISO via CDI.
-3. Builds a small `autounattend` ISO from `scripts/windows/autounattend.xml`
-   (unattended install + virtio storage driver + `SetupComplete.cmd`).
-4. Boots an installer VM that runs Windows Setup unattended; `SetupComplete.cmd`
-   installs **cloudbase-init** (consumes the per-VM cloud-init: sets the
-   `Administrator` password + enables RDP), installs the **virtio guest tools**
-   and **qemu-guest-agent**, then runs `sysprep /generalize /oobe /shutdown`.
-5. On shutdown, the target disk is your golden image — kept as the
-   `windows-golden` PVC in `openinfra-images`. Delete the installer VM.
+1. CDI imports the official eval ISO (a verified Microsoft `fwlink`) + virtio-win.
+2. A **sysprep ConfigMap** carries the unattended answer file (per-version edition
+   + virtio driver path; FirstLogonCommands install virtio guest tools +
+   **cloudbase-init** + RDP, then `sysprep /generalize /shutdown`).
+3. An **installer VM** (`runStrategy: Once`) writes the golden disk and powers off
+   after sysprep. The disk survives as `<os>-golden` in `openinfra-images`.
 
-After that, `spec.os: windows` works like any other VM (the Composition clones
-`windows-golden`).
-
-> The answer file targets **Windows Server 2022**. Other versions
-> (Windows 11, Server 2025) may need edition-index or driver-path tweaks in
-> `autounattend.xml`.
+The VM Images page shows progress (Building → Ready); when Ready, that version
+becomes selectable in **New VM** (it's greyed out until then). A build downloads
+~5 GB and runs an unattended install — 20–40 minutes.
 
 ## Desktops & workspaces
 
 open-infra's answer to **AWS WorkSpaces** is a VM, not a separate abstraction:
 
-- **Windows desktop** — `os: windows` is Server 2022 *Desktop Experience*.
+- **Windows desktop** — `os: windows-server-2022` (or 2019/2025) is the *Desktop Experience* edition.
   Connect with `mstsc /v:<host>:3389` as `Administrator` using the generated
   password shown on the VM's page. (Per the licensing note above, eval is
   non-production only.)
@@ -199,5 +194,5 @@ Access is **native** (RDP/SSH), so there's no in-browser desktop gateway to run.
   KubeVirt is `Deployed`: `kubectl get kubevirt -n kubevirt`.
 - **No IP shown** — the guest agent reports the IP; Linux installs
   `qemu-guest-agent` via cloud-init on first boot (give it a minute).
-- **Windows VM won't boot** — the `windows-golden` PVC must exist in
-  `openinfra-images`. Build it first (above).
+- **Windows VM won't boot** — its `<os>-golden` image must be built first (VM
+  Images page → Build, wait for Ready).

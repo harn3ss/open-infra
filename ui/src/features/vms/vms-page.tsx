@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
-import { Monitor, Plus } from "lucide-react";
+import { Disc, Monitor, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { Button } from "@/components/ui/button";
@@ -152,10 +152,19 @@ export function VmsPage() {
           })
         }
         headerActions={
-          <Button onClick={() => setNewOpen(true)}>
-            <Plus className="size-4" />
-            New VM
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => navigate({ to: "/vms/images" })}
+            >
+              <Disc className="size-4" />
+              VM Images
+            </Button>
+            <Button onClick={() => setNewOpen(true)}>
+              <Plus className="size-4" />
+              New VM
+            </Button>
+          </div>
         }
       />
       <NewVmDialog

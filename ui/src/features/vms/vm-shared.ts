@@ -17,8 +17,21 @@ export const OS_CATALOG: OsEntry[] = [
   { value: "fedora-40", label: "Fedora 40", family: "linux" },
   { value: "debian-12", label: "Debian 12", family: "linux" },
   { value: "centos-stream-9", label: "CentOS Stream 9", family: "linux" },
-  { value: "windows", label: "Windows (eval golden image)", family: "windows" },
+  { value: "windows-server-2019", label: "Windows Server 2019", family: "windows" },
+  { value: "windows-server-2022", label: "Windows Server 2022", family: "windows" },
+  { value: "windows-server-2025", label: "Windows Server 2025", family: "windows" },
 ];
+
+// Windows versions buildable via kind: VmImage (the "VM Images" page). In sync
+// with platform/abstraction/vmimage-xrd.yaml + vmimage-composition.yaml $catalog.
+export const WINDOWS_CATALOG = OS_CATALOG.filter((o) => o.family === "windows");
+
+// Where golden images + builders live (cross-namespace clone source).
+export const IMAGES_NAMESPACE = "openinfra-images";
+// The golden-image PVC a VM clones / a build produces, per os.
+export function goldenPvcName(os: string): string {
+  return `${os}-golden`;
+}
 
 export function osLabel(v?: string): string {
   return OS_CATALOG.find((o) => o.value === v)?.label ?? v ?? "—";

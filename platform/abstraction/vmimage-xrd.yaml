@@ -1,0 +1,57 @@
+# open-infra's "AMI builder": kind: VmImage. Pick a Windows Server version and the
+# platform builds a reusable golden image (KubeVirt + CDI + sysprep) from the
+# official Microsoft EVALUATION ISO — fully declarative, no scripts. kind:
+# VirtualMachine os: <same version> then clones it.
+#
+# Windows eval editions are free for non-production testing only (180 days).
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xvmimages.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XVmImage
+    plural: xvmimages
+  claimNames:
+    kind: VmImage          # what users write / the console creates
+    plural: vmimages
+  defaultCompositionRef:
+    name: vmimage
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [os]
+              properties:
+                # Curated catalog (allowlist). Each maps to a verified Microsoft
+                # eval-ISO fwlink + unattended-install params in the Composition's
+                # $catalog. KEEP IN SYNC with that catalog and the VM os enum.
+                os:
+                  type: string
+                  description: "Windows version to build (curated catalog)."
+                  enum:
+                    - windows-server-2019
+                    - windows-server-2022
+                    - windows-server-2025
+                # Override the catalog's eval-ISO URL (Microsoft fwlinks are stable
+                # but can change; this is the escape hatch).
+                sourceUrl: { type: string, description: "Override eval-ISO URL" }
+                diskSize:  { type: string, default: "64Gi", description: "Golden disk size" }
+            status:
+              type: object
+              properties:
+                phase: { type: string }
+                ready: { type: boolean }
