@@ -117,6 +117,26 @@ After that, `spec.os: windows` works like any other VM (the Composition clones
 > (Windows 11, Server 2025) may need edition-index or driver-path tweaks in
 > `autounattend.xml`.
 
+## Desktops & workspaces
+
+open-infra's answer to **AWS WorkSpaces** is a VM, not a separate abstraction:
+
+- **Windows desktop** — `os: windows` is Server 2022 *Desktop Experience*.
+  Connect with `mstsc /v:<host>:3389` as `Administrator` using the generated
+  password shown on the VM's page. (Per the licensing note above, eval is
+  non-production only.)
+- **Linux desktop** — start from any Linux `os` and install a desktop + RDP on
+  first boot, e.g. add to `infra.yaml`:
+  ```yaml
+  # (cloud-init runcmd — Ubuntu example)
+  # apt-get install -y xubuntu-desktop xrdp && systemctl enable --now xrdp
+  ```
+  then RDP in (or just use SSH/X-forwarding).
+- **Per-user** — give each person their own VM (one claim each); the disk
+  persists across stop/start. Expose on the LAN (`expose: true`) or port-forward.
+
+Access is **native** (RDP/SSH), so there's no in-browser desktop gateway to run.
+
 ## Troubleshooting
 
 - **Disk stuck importing** — watch CDI: `kubectl get datavolume -n <ns> <name>-root -w`.
