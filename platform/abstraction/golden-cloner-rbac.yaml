@@ -1,0 +1,35 @@
+# Cross-namespace clone authorization for Windows golden images.
+#
+# A Windows VM created in ANY namespace clones its golden image (a CDI clone) from
+# the openinfra-images namespace. KubeVirt/CDI require the VM's service account to
+# be authorized to create the datavolumes/source subresource in the SOURCE namespace
+# — without it the VM hangs with "UnauthorizedDataVolumeCreate ... insufficient
+# permissions in clone source namespace openinfra-images".
+#
+# The goldens are read-only templates built to be cloned by any VM, so grant all
+# service accounts that one verb, scoped to openinfra-images via the RoleBinding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-golden-cloner
+rules:
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes/source"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims/source"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-golden-cloner
+  namespace: openinfra-images
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-golden-cloner
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts
