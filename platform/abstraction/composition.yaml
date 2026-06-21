@@ -135,6 +135,29 @@ spec:
                   spec:
                     selector: { app.kubernetes.io/name: {{ $name }} }
                     ports: [ { port: 80, targetPort: {{ $spec.port }} } ]
+            {{- if $spec.expose }}
+            ---
+            # --- LAN LoadBalancer (MetalLB): the app's port on a LAN IP, for raw
+            #     TCP / non-HTTP / no-DNS access (alongside any Ingress). ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: app-lan
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}-lan
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/app-lan: {{ $name }} }
+                  spec:
+                    type: LoadBalancer
+                    selector: { app.kubernetes.io/name: {{ $name }} }
+                    ports: [ { port: {{ $spec.port }}, targetPort: {{ $spec.port }} } ]
+            {{- end }}
             {{- if $spec.domain }}
             ---
             # --- Ingress (Traefik) + TLS via cert-manager ---

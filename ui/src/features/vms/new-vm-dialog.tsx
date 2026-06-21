@@ -58,6 +58,7 @@ export function NewVmDialog({
   const [diskSize, setDiskSize] = useState("20Gi");
   const [sshKey, setSshKey] = useState("");
   const [expose, setExpose] = useState(false);
+  const [network, setNetwork] = useState("masquerade");
   const [touched, setTouched] = useState(false);
 
   const isWindows = osFamily(os) === "windows";
@@ -70,6 +71,7 @@ export function NewVmDialog({
     setDiskSize("20Gi");
     setSshKey("");
     setExpose(false);
+    setNetwork("masquerade");
     setTouched(false);
     createMutation.reset();
   }
@@ -105,6 +107,7 @@ export function NewVmDialog({
         diskSize: diskSize || "20Gi",
         ...(sshKey.trim() && !isWindows ? { sshKey: sshKey.trim() } : {}),
         expose,
+        network,
       },
     } as K8sObject);
   };
@@ -203,16 +206,31 @@ export function NewVmDialog({
             />
           </div>
           <div className="space-y-1.5">
+            <Label htmlFor="vm-net">Network</Label>
+            <Select value={network} onValueChange={setNetwork}>
+              <SelectTrigger id="vm-net">
+                <SelectValue placeholder="Network" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="masquerade">Pod NAT (default)</SelectItem>
+                <SelectItem value="bridge">Bridged to LAN (direct IP)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
             <Label>LAN access</Label>
             <label className="flex h-9 items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={expose}
+                disabled={network === "bridge"}
                 onChange={(e) => setExpose(e.target.checked)}
-                className="size-4 accent-primary"
+                className="size-4 accent-primary disabled:opacity-50"
               />
               <span className="text-muted-foreground">
-                {isWindows ? "RDP (3389)" : "SSH (22)"} on a LAN IP
+                {network === "bridge"
+                  ? "already on the LAN (bridged)"
+                  : `${isWindows ? "RDP (3389)" : "SSH (22)"} on a LAN IP`}
               </span>
             </label>
           </div>

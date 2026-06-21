@@ -32,6 +32,9 @@ spec:
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $scaling := $spec.scaling | default dict }}
             {{- $gpu := $spec.gpu | default 0 }}
+            {{- /* expose defaults true; hasKey check (Sprig default treats false
+                   as empty). false -> cluster-local (in-cluster only). */}}
+            {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
             ---
             # --- Knative Service: the scale-to-zero "Function" ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -47,7 +50,12 @@ spec:
                   metadata:
                     name: {{ $name }}
                     namespace: {{ $ns }}
-                    labels: { app.kubernetes.io/name: {{ $name }} }
+                    labels:
+                      app.kubernetes.io/name: {{ $name }}
+                      {{- if not $expose }}
+                      # Private: only reachable from inside the cluster.
+                      networking.knative.dev/visibility: cluster-local
+                      {{- end }}
                   spec:
                     template:
                       metadata:

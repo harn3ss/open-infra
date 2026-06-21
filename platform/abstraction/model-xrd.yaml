@@ -51,6 +51,9 @@ spec:
                 highAvailability: { type: boolean, default: false }
                 domain:      { type: string, description: "Hostname for external Ingress + TLS" }
                 storageSize: { type: string, default: "20Gi", description: "Ephemeral weight-cache size limit (emptyDir)" }
+                # Expose the inference endpoint on a LAN IP (MetalLB LoadBalancer) so
+                # workstations can hit the OpenAI-compatible API without DNS/Ingress.
+                expose:      { type: boolean, default: false }
             status:
               type: object
               properties:

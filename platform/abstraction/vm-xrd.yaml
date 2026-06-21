@@ -58,6 +58,17 @@ spec:
                 # Reach the VM on a LAN IP (MetalLB): SSH (22) for Linux, RDP (3389)
                 # for Windows. Off by default — port-forward / web console otherwise.
                 expose:   { type: boolean, default: false }
+                # Network attachment:
+                #   masquerade (default) — VM behind the pod network (NAT); reach it
+                #     in-cluster via its Service, or from the LAN via expose/MetalLB.
+                #   bridge — VM joins the physical LAN directly via Multus+macvlan and
+                #     pulls a real DHCP lease (a first-class LAN host, no MetalLB/NAT).
+                #     Requires networking.vmLan enabled at install (Multus) and nodes
+                #     labelled openinfra.dev/vm-lan=true. See docs/virtual-machines.md.
+                network:
+                  type: string
+                  enum: [masquerade, bridge]
+                  default: masquerade
                 # Power state. The console's Start/Stop flips this; the Composition
                 # maps it to KubeVirt runStrategy (Always/Halted). Disk is retained
                 # when stopped. Kept in spec (not a subresource) so it stays GitOps-

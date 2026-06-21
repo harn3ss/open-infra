@@ -37,6 +37,9 @@ spec:
                 image: { type: string, description: "Container image that serves HTTP (CI replaces the tag)" }
                 port:  { type: integer, default: 8080, description: "Container port the function listens on" }
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
+                # Reachable on the LAN via the Knative gateway (default). Set false
+                # to make the function cluster-local (in-cluster callers only).
+                expose: { type: boolean, default: true }
                 scaling:
                   type: object
                   properties:
