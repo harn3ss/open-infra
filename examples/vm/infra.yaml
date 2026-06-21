@@ -1,0 +1,24 @@
+# A virtual machine (open-infra's EC2). The platform imports the OS image to a
+# persistent disk (CDI), boots it on KubeVirt, injects your login, and gives you
+# a web VNC console + SSH (Linux) / RDP (Windows).
+#
+#   ./cli/open-infra deploy        # from this directory
+#
+apiVersion: openinfra.dev/v1
+kind: VirtualMachine
+metadata:
+  name: dev-box
+spec:
+  # Curated OS catalog:
+  #   ubuntu-24.04 · ubuntu-22.04 · fedora-40 · debian-12 · centos-stream-9
+  #   windows   (clones a golden image you build once — see docs/virtual-machines.md)
+  os: ubuntu-24.04
+  cpu: 2
+  memory: 4Gi
+  diskSize: 30Gi
+  # Linux login. Omit to use the generated password (revealable in the console).
+  sshKey: "ssh-ed25519 AAAA...replace-with-your-public-key"
+  # true -> reachable on a LAN IP (MetalLB): SSH (22) for Linux, RDP (3389) for
+  # Windows. Off -> use the web VNC console or `kubectl port-forward`.
+  expose: false
+  # running: false   # power off (disk retained); the console's Start/Stop flips this

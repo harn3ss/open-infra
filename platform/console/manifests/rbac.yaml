@@ -66,13 +66,28 @@ rules:
     verbs: [get, list, watch]
 
   # ── openinfra.dev: full CRUD on the product CRDs (the console is the primary
-  #    interface for creating/updating/deleting Applications, Functions, Models) ─
+  #    interface for creating/updating/deleting Applications, Functions, Models,
+  #    VirtualMachines). VM Start/Stop is a patch of the claim's spec.running. ─
   - apiGroups: [openinfra.dev]
     resources:
       - applications
       - functions
       - models
+      - virtualmachines
     verbs: [get, list, watch, create, update, patch, delete]
+
+  # ── KubeVirt + CDI: read VM/guest/disk status for the Virtual Machines view
+  #    (IP, phase, import progress). The VM objects themselves are created via the
+  #    openinfra.dev claim above; these are read-only live status. ──────────────
+  - apiGroups: [kubevirt.io]
+    resources:
+      - virtualmachines
+      - virtualmachineinstances
+    verbs: [get, list, watch]
+  - apiGroups: [cdi.kubevirt.io]
+    resources:
+      - datavolumes
+    verbs: [get, list, watch]
 
   # ── CloudNativePG: read managed Postgres clusters (the Databases view) ──────
   - apiGroups: [postgresql.cnpg.io]

@@ -1,0 +1,256 @@
+# The compiler for kind: VirtualMachine -> a KubeVirt VirtualMachine with a
+# persistent CDI disk (cloud image for Linux, a cloned golden image for Windows),
+# first-boot config (cloud-init for Linux, cloudbase-init PowerShell for Windows),
+# a Service, a connection Secret (<name>-vm: USERNAME/PASSWORD/HOST/PORT/ACCESS),
+# and an optional LAN LoadBalancer (SSH 22 / RDP 3389).
+#
+# OS image + type come from a curated catalog ($catalog below, in sync with the
+# XRD enum). The login password is derived deterministically from the composite's
+# UID so it is stable across reconciles. Power state (spec.running) maps to
+# runStrategy so the console can Start/Stop without the provider reverting it.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: vm
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XVirtualMachine
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $cpu := $spec.cpu | default 2 }}
+            {{- $memory := $spec.memory | default "2Gi" }}
+            {{- $disk := $spec.diskSize | default "20Gi" }}
+            {{- /* running defaults true; explicit hasKey check because Sprig
+                   `default` treats boolean false as empty (would force true). */}}
+            {{- $running := true }}{{- if hasKey $spec "running" }}{{- $running = $spec.running }}{{- end }}
+            {{- $pass := printf "%s-vmpass" .observed.composite.resource.metadata.uid | sha256sum | trunc 20 }}
+            {{- /* Curated OS catalog: os -> disk image + type. KEEP IN SYNC with the
+                   XRD enum. Linux images are ready-made cloud images (containerdisks)
+                   imported by CDI; windows clones the golden image PVC built once
+                   from an eval ISO (scripts/build-windows-image.sh). */}}
+            {{- $catalog := dict
+                  "ubuntu-24.04"    (dict "image" "quay.io/containerdisks/ubuntu:24.04"    "osType" "linux")
+                  "ubuntu-22.04"    (dict "image" "quay.io/containerdisks/ubuntu:22.04"    "osType" "linux")
+                  "fedora-40"       (dict "image" "quay.io/containerdisks/fedora:40"       "osType" "linux")
+                  "debian-12"       (dict "image" "quay.io/containerdisks/debian:12"       "osType" "linux")
+                  "centos-stream-9" (dict "image" "quay.io/containerdisks/centos-stream:9" "osType" "linux")
+                  "windows"         (dict "image" ""                                       "osType" "windows") }}
+            {{- $profile := (index $catalog $spec.os) | default (dict "image" "quay.io/containerdisks/ubuntu:24.04" "osType" "linux") }}
+            {{- $isWin := eq $profile.osType "windows" }}
+            {{- $port := 22 }}{{- $user := "openinfra" }}{{- $proto := "ssh" }}
+            {{- if $isWin }}{{- $port = 3389 }}{{- $user = "Administrator" }}{{- $proto = "rdp" }}{{- end }}
+            ---
+            # --- The VM. dataVolumeTemplates provisions the persistent root disk via
+            #     CDI (registry import for Linux; clone of the golden PVC for Windows).
+            #     runStrategy follows spec.running so Start/Stop is a spec toggle. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: virtualmachine
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubevirt.io/v1
+                  kind: VirtualMachine
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      app.kubernetes.io/name: {{ $name }}
+                      openinfra.dev/vm: "true"
+                      openinfra.dev/os: {{ $spec.os }}
+                  spec:
+                    runStrategy: {{ if $running }}Always{{ else }}Halted{{ end }}
+                    dataVolumeTemplates:
+                      - metadata:
+                          name: {{ $name }}-root
+                        spec:
+                          storage:
+                            accessModes: [ReadWriteOnce]
+                            resources:
+                              requests:
+                                storage: {{ $disk }}
+                            storageClassName: local-path
+                          source:
+                            {{- if $isWin }}
+                            # Clone the golden Windows image (built once; see docs).
+                            pvc:
+                              namespace: openinfra-images
+                              name: windows-golden
+                            {{- else }}
+                            registry:
+                              url: "docker://{{ $profile.image }}"
+                            {{- end }}
+                    template:
+                      metadata:
+                        labels:
+                          kubevirt.io/domain: {{ $name }}
+                          app.kubernetes.io/name: {{ $name }}
+                      spec:
+                        domain:
+                          cpu:
+                            cores: {{ $cpu }}
+                          resources:
+                            requests:
+                              memory: {{ $memory }}
+                          {{- if $isWin }}
+                          # Windows performance/compat: q35 + UEFI + Hyper-V enlightenments.
+                          machine:
+                            type: q35
+                          features:
+                            acpi: {}
+                            apic: {}
+                            hyperv:
+                              relaxed: {}
+                              vapic: {}
+                              spinlocks:
+                                spinlocks: 8191
+                          clock:
+                            utc: {}
+                            timer:
+                              hpet:
+                                present: false
+                              hyperv: {}
+                          {{- end }}
+                          devices:
+                            disks:
+                              - name: root
+                                disk:
+                                  bus: virtio
+                                bootOrder: 1
+                              - name: cloudinit
+                                disk:
+                                  bus: virtio
+                            interfaces:
+                              - name: default
+                                masquerade: {}
+                            networkInterfaceMultiqueue: true
+                        networks:
+                          - name: default
+                            pod: {}
+                        volumes:
+                          - name: root
+                            dataVolume:
+                              name: {{ $name }}-root
+                          - name: cloudinit
+                            cloudInitNoCloud:
+                              userData: |-
+                                {{- if $isWin }}
+                                #ps1_sysnative
+                                # cloudbase-init runs this on first boot: set the admin
+                                # password (per-VM) and enable RDP for mstsc.
+                                net user {{ $user }} '{{ $pass }}'
+                                Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+                                Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+                                Set-Service -Name TermService -StartupType Automatic
+                                Start-Service -Name TermService
+                                {{- else }}
+                                #cloud-config
+                                hostname: {{ $name }}
+                                users:
+                                  - name: {{ $user }}
+                                    sudo: ALL=(ALL) NOPASSWD:ALL
+                                    shell: /bin/bash
+                                    lock_passwd: false
+                                    {{- if $spec.sshKey }}
+                                    ssh_authorized_keys:
+                                      - {{ $spec.sshKey }}
+                                    {{- end }}
+                                ssh_pwauth: true
+                                chpasswd:
+                                  expire: false
+                                  list: |
+                                    {{ $user }}:{{ $pass }}
+                                packages:
+                                  - qemu-guest-agent
+                                runcmd:
+                                  - [systemctl, enable, --now, qemu-guest-agent]
+                                {{- end }}
+            ---
+            # --- Service: in-cluster reach to SSH (Linux) / RDP (Windows). ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata: { name: {{ $name }}, namespace: {{ $ns }} }
+                  spec:
+                    selector: { kubevirt.io/domain: {{ $name }} }
+                    ports:
+                      - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
+            ---
+            # --- Connection Secret: how to log in (cf. the DB/model secret). ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: vm-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $name }}-vm, namespace: {{ $ns }} }
+                  stringData:
+                    OS: "{{ $spec.os }}"
+                    PROTOCOL: "{{ $proto }}"
+                    USERNAME: "{{ $user }}"
+                    PASSWORD: "{{ $pass }}"
+                    HOST: "{{ $name }}.{{ $ns }}.svc.cluster.local"
+                    PORT: "{{ $port }}"
+                    {{- if $isWin }}
+                    ACCESS: "mstsc /v:HOST:{{ $port }}  (user {{ $user }})"
+                    {{- else }}
+                    ACCESS: "ssh {{ $user }}@HOST"
+                    {{- end }}
+            {{- if $spec.expose }}
+            ---
+            # --- LAN LoadBalancer (MetalLB): reach the VM from workstations. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: vm-lan
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}-lan
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/vm-lan: {{ $name }} }
+                  spec:
+                    type: LoadBalancer
+                    selector: { kubevirt.io/domain: {{ $name }} }
+                    ports:
+                      - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
+            {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

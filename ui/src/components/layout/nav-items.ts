@@ -6,6 +6,7 @@ import {
   HardDrive,
   LayoutDashboard,
   LineChart,
+  Monitor,
   Network,
   Send,
   Server,
@@ -29,6 +30,7 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Applications", to: "/applications", icon: Boxes, matchPrefix: true, section: "Compute" },
   { label: "Functions", to: "/functions", icon: Zap, matchPrefix: true, section: "Compute" },
+  { label: "Virtual Machines", to: "/vms", icon: Monitor, matchPrefix: true, section: "Compute" },
 
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "AI" },
 

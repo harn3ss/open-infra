@@ -12,6 +12,8 @@ import { FunctionsPage } from "@/features/functions/functions-page";
 import { FunctionDetailPage } from "@/features/functions/function-detail-page";
 import { ModelsPage } from "@/features/models/models-page";
 import { ModelDetailPage } from "@/features/models/model-detail-page";
+import { VmsPage } from "@/features/vms/vms-page";
+import { VmDetailPage } from "@/features/vms/vm-detail-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
 import { ManagedDatabaseDetailPage } from "@/features/databases/managed-detail-page";
@@ -64,6 +66,18 @@ const modelDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/models/$namespace/$name",
   component: ModelDetailPage,
+});
+
+const vmsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/vms",
+  component: VmsPage,
+});
+
+const vmDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/vms/$namespace/$name",
+  component: VmDetailPage,
 });
 
 const databasesRoute = createRoute({
@@ -139,6 +153,8 @@ const routeTree = rootRoute.addChildren([
   functionDetailRoute,
   modelsRoute,
   modelDetailRoute,
+  vmsRoute,
+  vmDetailRoute,
   databasesRoute,
   databaseDetailRoute,
   managedDbDetailRoute,
