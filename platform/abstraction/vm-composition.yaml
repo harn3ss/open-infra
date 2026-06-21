@@ -156,9 +156,18 @@ spec:
                                 disk:
                                   bus: virtio
                                 bootOrder: 1
+                              {{- if $isWin }}
+                              # Per-VM OOBE answer file on a sysprep CD: the generalized
+                              # golden reads it on first boot, sets the Administrator
+                              # password + enables RDP, and auto-completes OOBE.
+                              - name: sysprep
+                                cdrom:
+                                  bus: sata
+                              {{- else }}
                               - name: cloudinit
                                 disk:
                                   bus: virtio
+                              {{- end }}
                             interfaces:
                               - name: default
                                 masquerade: {}
@@ -180,19 +189,15 @@ spec:
                           - name: root
                             dataVolume:
                               name: {{ $name }}-root
+                          {{- if $isWin }}
+                          - name: sysprep
+                            sysprep:
+                              configMap:
+                                name: {{ $name }}-oobe
+                          {{- else }}
                           - name: cloudinit
                             cloudInitNoCloud:
                               userData: |-
-                                {{- if $isWin }}
-                                #ps1_sysnative
-                                # cloudbase-init runs this on first boot: set the admin
-                                # password (per-VM) and enable RDP for mstsc.
-                                net user {{ $user }} '{{ $pass }}'
-                                Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
-                                Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
-                                Set-Service -Name TermService -StartupType Automatic
-                                Start-Service -Name TermService
-                                {{- else }}
                                 #cloud-config
                                 hostname: {{ $name }}
                                 users:
@@ -213,7 +218,6 @@ spec:
                                   - qemu-guest-agent
                                 runcmd:
                                   - [systemctl, enable, --now, qemu-guest-agent]
-                                {{- end }}
                               {{- if $bridge }}
                               # DHCP both NICs: eth0 (pod) + eth1 (LAN bridge).
                               networkData: |
@@ -222,6 +226,46 @@ spec:
                                   eth0: { dhcp4: true }
                                   eth1: { dhcp4: true }
                               {{- end }}
+                          {{- end }}
+            {{- if $isWin }}
+            ---
+            # --- Windows OOBE answer file (per-VM): the generalized golden reads this
+            #     sysprep CD on first boot to set the Administrator password + enable
+            #     RDP, then auto-completes OOBE. Each clone gets its own password. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: oobe
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata: { name: {{ $name }}-oobe, namespace: {{ $ns }} }
+                  data:
+                    # NB: a DEPLOYED generalized image's oobeSystem pass reads
+                    # `unattend.xml` from removable media — NOT `autounattend.xml`
+                    # (that name is only honored by Setup during windowsPE). Validated.
+                    unattend.xml: |
+                      <?xml version="1.0" encoding="utf-8"?>
+                      <unattend xmlns="urn:schemas-microsoft-com:unattend">
+                        <settings pass="oobeSystem">
+                          <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+                          </component>
+                          <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <UserAccounts><AdministratorPassword><Value>{{ $pass }}</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
+                            <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><NetworkLocation>Work</NetworkLocation><ProtectYourPC>3</ProtectYourPC></OOBE>
+                            <TimeZone>UTC</TimeZone>
+                            <FirstLogonCommands>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f</CommandLine></SynchronousCommand>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><CommandLine>netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
+                            </FirstLogonCommands>
+                          </component>
+                        </settings>
+                      </unattend>
+            {{- end }}
             ---
             # --- Service: in-cluster reach to SSH (Linux) / RDP (Windows). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
