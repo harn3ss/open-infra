@@ -98,20 +98,28 @@ export function VmVolumesTab({
     void qc.invalidateQueries({ queryKey: ["vmi", namespace, vmName] });
   };
 
+  // KubeVirt's addvolume/removevolume subresources don't produce application/json,
+  // so the default Accept: application/json gets a 406. Send Accept: */* (what
+  // virtctl/curl do) — the call returns 202 Accepted.
+  const SUBRES = { Accept: "*/*" };
   const attach = useMutation({
     mutationFn: (vol: string) =>
       // PUT AddVolumeOptions to the addvolume subresource (scsi bus is required
       // for hotplug). --persist == also update the VM spec, so it survives reboot.
-      k8sReplace(kubevirtPaths.addVolume(namespace, vmName), {
-        name: vol,
-        disk: { name: vol, disk: { bus: "scsi" }, serial: vol },
-        volumeSource: { persistentVolumeClaim: { claimName: vol } },
-      }),
+      k8sReplace(
+        kubevirtPaths.addVolume(namespace, vmName),
+        {
+          name: vol,
+          disk: { name: vol, disk: { bus: "scsi" }, serial: vol },
+          volumeSource: { persistentVolumeClaim: { claimName: vol } },
+        },
+        SUBRES,
+      ),
     onSuccess: invalidate,
   });
   const detach = useMutation({
     mutationFn: (vol: string) =>
-      k8sReplace(kubevirtPaths.removeVolume(namespace, vmName), { name: vol }),
+      k8sReplace(kubevirtPaths.removeVolume(namespace, vmName), { name: vol }, SUBRES),
     onSuccess: invalidate,
   });
   const snapshot = useMutation({
