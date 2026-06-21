@@ -67,8 +67,6 @@ spec:
                       kind: VolumeSnapshot
                       apiGroup: snapshot.storage.k8s.io
                     {{- end }}
-              readiness:
-                policy: DeriveFromObject
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

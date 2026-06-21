@@ -103,8 +103,6 @@ spec:
                           - name: share
                             persistentVolumeClaim:
                               claimName: {{ $name }}
-              readiness:
-                policy: DeriveFromObject
             ---
             # Service: SMB on 445. LoadBalancer (LAN IP) when expose, else ClusterIP.
             apiVersion: kubernetes.crossplane.io/v1alpha2
