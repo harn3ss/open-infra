@@ -1,0 +1,48 @@
+# Longhorn — distributed block storage. Backs kind: Volume (EBS-style attachable
+# volumes for VMs): CSI snapshots + (optionally) backups to MinIO. NON-default
+# storageClass — local-path stays the cluster default (VM roots, app PVCs); volumes
+# opt in via storageClassName: longhorn.
+#
+# NOTE: preUpgradeChecker.jobEnabled=false — the chart's pre-upgrade Helm hook
+# deadlocks a fresh Argo install (the PreSync Job needs longhorn-service-account,
+# which the main sync creates only afterwards). Disabling the hook is the fix.
+# Host prereq (open-iscsi/nfs) is installed by longhorn-host-prereq.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.longhorn.io
+    chart: longhorn
+    targetRevision: 1.12.0
+    helm:
+      values: |
+        preUpgradeChecker:
+          jobEnabled: false
+        persistence:
+          defaultClass: false
+          defaultClassReplicaCount: 2
+          reclaimPolicy: Delete
+        defaultSettings:
+          defaultReplicaCount: 2
+          defaultDataPath: /var/lib/longhorn
+          replicaSoftAntiAffinity: true
+          storageOverProvisioningPercentage: 100
+        csi:
+          attacherReplicaCount: 1
+          provisionerReplicaCount: 1
+          resizerReplicaCount: 1
+          snapshotterReplicaCount: 1
+        longhornUI:
+          replicas: 1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
