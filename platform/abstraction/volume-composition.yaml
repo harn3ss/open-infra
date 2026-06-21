@@ -1,0 +1,74 @@
+# The compiler for kind: Volume -> a Longhorn PersistentVolumeClaim (an EBS-style
+# standalone disk). Optionally restores a new volume from a CSI VolumeSnapshot
+# (spec.source.snapshot). Attach/detach to VMs (KubeVirt hotplug) and taking
+# snapshots are actions the console performs imperatively (like VM Start/Stop) —
+# they are not declared here; this composition only owns the volume's lifecycle.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: volume
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XVolume
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $size := $spec.size | default "10Gi" }}
+            ---
+            # The volume itself: a Longhorn PVC (RWO, snapshot-capable). When
+            # spec.source.snapshot is set, restore the data from that snapshot.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: pvc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/volume: "true"
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    # Block mode is required for reliable KubeVirt hotplug — a
+                    # Filesystem-mode volume attaches to the node but never reaches
+                    # the guest (validated: Filesystem stalls at AttachedToNode;
+                    # Block reaches Ready and the guest sees the raw disk).
+                    volumeMode: Block
+                    storageClassName: longhorn
+                    resources:
+                      requests:
+                        storage: {{ $size }}
+                    {{- if and $spec.source $spec.source.snapshot }}
+                    dataSource:
+                      name: {{ $spec.source.snapshot }}
+                      kind: VolumeSnapshot
+                      apiGroup: snapshot.storage.k8s.io
+                    {{- end }}
+              readiness:
+                policy: DeriveFromObject
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

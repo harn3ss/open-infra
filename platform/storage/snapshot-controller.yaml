@@ -1,0 +1,26 @@
+# external-snapshotter — the cluster-level VolumeSnapshot CRDs + snapshot-controller
+# that k3s does not ship. Required for any CSI snapshot (Longhorn volume snapshots
+# behind kind: Volume, and KubeVirt VM snapshots). Two pinned sources: the CRDs and
+# the controller. sync-wave 0 so the CRDs exist before Longhorn/abstraction.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: snapshot-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/kubernetes-csi/external-snapshotter
+      targetRevision: v8.2.0
+      path: client/config/crd
+    - repoURL: https://github.com/kubernetes-csi/external-snapshotter
+      targetRevision: v8.2.0
+      path: deploy/kubernetes/snapshot-controller
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

@@ -1,0 +1,48 @@
+# Longhorn host prerequisite: open-iscsi + nfs-common on every node. Longhorn
+# attaches volumes over iSCSI and serves RWX over NFS, neither of which ships on
+# a stock Ubuntu/k3s node. This privileged DaemonSet nsenters the host to install
+# them idempotently (no-op once present), so new nodes are covered automatically.
+# In kube-system (always exists) and sync-wave -1 so it runs before Longhorn.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: longhorn-host-prereq
+  namespace: kube-system
+  labels: { app: longhorn-host-prereq }
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  selector: { matchLabels: { app: longhorn-host-prereq } }
+  template:
+    metadata: { labels: { app: longhorn-host-prereq } }
+    spec:
+      hostPID: true
+      initContainers:
+        - name: install
+          image: ubuntu:24.04
+          securityContext: { privileged: true }
+          command:
+            - nsenter
+            - "--target=1"
+            - "--mount"
+            - "--uts"
+            - "--ipc"
+            - "--net"
+            - "--pid"
+            - "--"
+            - bash
+            - -c
+            - |
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              need=""
+              command -v iscsiadm >/dev/null 2>&1 || need="$need open-iscsi"
+              command -v mount.nfs >/dev/null 2>&1 || need="$need nfs-common"
+              if [ -n "$need" ]; then apt-get update -y && apt-get install -y $need; fi
+              systemctl enable --now iscsid
+              modprobe iscsi_tcp 2>/dev/null || true
+              echo "longhorn host prereq OK on $(hostname)"
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+      tolerations: [ { operator: Exists } ]

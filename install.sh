@@ -146,6 +146,9 @@ else
   LOG "installing KubeVirt ${KUBEVIRT_VERSION} + CDI ${CDI_VERSION} (VMs)…"
   RUN "$KUBECTL apply -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-operator.yaml"
   RUN "$KUBECTL apply -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-cr.yaml"
+  # Opt into HotplugVolumes (attach/detach EBS-style volumes to running VMs) and
+  # Snapshot (VM/volume snapshots) — both are feature-gated in v1.8.4, not GA.
+  RUN "$KUBECTL patch kubevirt kubevirt -n kubevirt --type=merge -p '{\"spec\":{\"configuration\":{\"developerConfiguration\":{\"featureGates\":[\"HotplugVolumes\",\"Snapshot\"]}}}}'"
   RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-operator.yaml"
   RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-cr.yaml"
   RUN "$KUBECTL -n kubevirt wait --for=condition=Available kubevirt/kubevirt --timeout=300s || true"

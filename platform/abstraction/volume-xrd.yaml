@@ -1,0 +1,52 @@
+# open-infra's "EBS": kind: Volume — a standalone, persistent block volume on
+# Longhorn that you attach/detach to VMs and snapshot, independent of the VM's
+# fixed root disk. The volume LIFECYCLE is declarative here (create, size, restore
+# from a snapshot); attach/detach + snapshot are actions the console performs
+# (KubeVirt hotplug + CSI VolumeSnapshot), the same way it Start/Stops a VM.
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xvolumes.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XVolume
+    plural: xvolumes
+  claimNames:
+    kind: Volume     # what users write
+    plural: volumes
+  defaultCompositionRef:
+    name: volume
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [size]
+              properties:
+                size:
+                  type: string
+                  description: "Volume size, e.g. 50Gi (expandable later)."
+                source:
+                  type: object
+                  description: "Optional: restore a new volume from a snapshot."
+                  properties:
+                    snapshot:
+                      type: string
+                      description: "VolumeSnapshot name (same namespace) to restore from."
+            status:
+              type: object
+              properties:
+                phase: { type: string }
+                size:  { type: string }
