@@ -21,6 +21,7 @@ import {
   WINDOWS_CATALOG,
   goldenPvcName,
 } from "./vm-shared";
+import { InstallerVnc } from "./installer-vnc";
 
 type Pvc = K8sObject<unknown, { phase?: string }>;
 
@@ -97,54 +98,81 @@ export function VmImagesPage() {
         </div>
       ) : null}
 
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {WINDOWS_CATALOG.map((os) => {
-          const claim = byName.im.get(os.value);
-          const installer = byName.inst.get(`${os.value}-installer`);
-          const golden = byName.gold.get(goldenPvcName(os.value));
-          const st = buildState(claim, installer, golden);
-          return (
-            <Card key={os.value}>
-              <CardContent className="space-y-3 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{os.label}</span>
-                  <StatusBadge status={st.label} tone={st.tone} />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {st.state === "ready"
-                    ? `Available as os: ${os.value} when you create a VM.`
-                    : st.state === "building"
-                      ? "Importing the ISO + running the unattended install…"
-                      : "Not built yet."}
-                </p>
-                {st.state === "none" ? (
-                  <Button
-                    size="sm"
-                    onClick={() => build.mutate(os.value)}
-                    disabled={build.isPending}
-                  >
-                    <Plus className="size-4" /> Build
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => remove.mutate(os.value)}
-                    disabled={remove.isPending}
-                  >
-                    {st.state === "building" ? (
-                      <Loader2 className="size-4 animate-spin" />
+      {(() => {
+        const rows = WINDOWS_CATALOG.map((os) => ({
+          os,
+          st: buildState(
+            byName.im.get(os.value),
+            byName.inst.get(`${os.value}-installer`),
+            byName.gold.get(goldenPvcName(os.value)),
+          ),
+        }));
+        const building = rows.filter((r) => r.st.state === "building");
+        return (
+          <>
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {rows.map(({ os, st }) => (
+                <Card key={os.value}>
+                  <CardContent className="space-y-3 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{os.label}</span>
+                      <StatusBadge status={st.label} tone={st.tone} />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {st.state === "ready"
+                        ? `Available as os: ${os.value} when you create a VM.`
+                        : st.state === "building"
+                          ? "Importing the ISO + running the unattended install…"
+                          : "Not built yet."}
+                    </p>
+                    {st.state === "none" ? (
+                      <Button
+                        size="sm"
+                        onClick={() => build.mutate(os.value)}
+                        disabled={build.isPending}
+                      >
+                        <Plus className="size-4" /> Build
+                      </Button>
                     ) : (
-                      <Trash2 className="size-4" />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => remove.mutate(os.value)}
+                        disabled={remove.isPending}
+                      >
+                        {st.state === "building" ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                        {st.state === "building" ? "Cancel" : "Remove"}
+                      </Button>
                     )}
-                    {st.state === "building" ? "Cancel" : "Remove"}
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {/* Live install screens for in-progress builds (under the panels). */}
+            {building.length ? (
+              <div className="mt-6 space-y-4">
+                <h3 className="text-sm font-medium">Live install</h3>
+                {building.map(({ os }) => (
+                  <div key={os.value} className="space-y-1">
+                    <div className="text-xs text-muted-foreground">
+                      {os.label} — watching <code>{os.value}-installer</code>
+                    </div>
+                    <InstallerVnc
+                      namespace={IMAGES_NAMESPACE}
+                      name={`${os.value}-installer`}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </>
+        );
+      })()}
     </DetailShell>
   );
 }

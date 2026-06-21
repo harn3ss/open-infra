@@ -89,6 +89,13 @@ rules:
     resources:
       - datavolumes
     verbs: [get, list, watch]
+  # VNC of installer VMs — the BFF reverse-proxies this websocket (served by
+  # virt-api) so the VM Images page can show a live build screen. Scoped to the
+  # vnc subresource only (not console/exec).
+  - apiGroups: [subresources.kubevirt.io]
+    resources:
+      - virtualmachineinstances/vnc
+    verbs: [get]
 
   # ── CloudNativePG: read managed Postgres clusters (the Databases view) ──────
   - apiGroups: [postgresql.cnpg.io]
