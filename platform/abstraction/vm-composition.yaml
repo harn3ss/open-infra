@@ -261,6 +261,12 @@ spec:
                             <FirstLogonCommands>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f</CommandLine></SynchronousCommand>
                               <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><CommandLine>netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
+                              <!-- Grow C: to fill the disk. The golden's partition is sized to
+                                   the golden (~68GiB); cloning onto a larger disk leaves the
+                                   extra space unallocated, so extend C: to the max on first boot
+                                   (Linux does this via cloud-init/growpart; Windows has no
+                                   equivalent). No-op when the disk == golden size. -->
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>3</Order><CommandLine>powershell -ExecutionPolicy Bypass -Command "$m=(Get-PartitionSupportedSize -DriveLetter C).SizeMax; if ($m -gt (Get-Partition -DriveLetter C).Size) { Resize-Partition -DriveLetter C -Size $m }"</CommandLine></SynchronousCommand>
                             </FirstLogonCommands>
                           </component>
                         </settings>
