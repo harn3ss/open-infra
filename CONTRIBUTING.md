@@ -24,8 +24,8 @@ distributed systems.
 
 - Bring up a throwaway single-node cluster in `dev` mode (`mode: dev` in
   `config.yaml`) — sslip.io DNS + self-signed TLS, no external dependencies.
-- Each phase has an **exit test** (see `docs/roadmap.md`); add/extend one when
-  you land a phase.
+- Land each change with a verification step — an automated test or a documented
+  manual check that proves it works end-to-end.
 
 ## Commit / PR conventions
 
