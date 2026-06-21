@@ -1,0 +1,58 @@
+# open-infra's "Directory Service": kind: Directory — a managed Active Directory
+# Domain Controller (Samba AD DC) that Windows and Linux machines domain-join.
+# One claim -> a Samba AD DC, a LAN endpoint (DNS/Kerberos/LDAP/SMB), and a
+# connection secret (DOMAIN/REALM/DC_HOST/ADMIN_USER/ADMIN_PASSWORD).
+#
+# This is the open-source AD path (Samba 4) — equivalent to AWS Directory Service
+# "Simple AD": a real, domain-joinable directory with NO Microsoft licensing or
+# CALs. (The Windows VMs that join carry their own OS licensing, unrelated to the
+# directory itself.)
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdirectories.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XDirectory
+    plural: xdirectories
+  claimNames:
+    kind: Directory    # what users write
+    plural: directories
+  defaultCompositionRef:
+    name: directory
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [domain]
+              properties:
+                domain:
+                  type: string
+                  description: "AD domain FQDN, lowercase, e.g. corp.openinfra.lan. The Kerberos realm (uppercase) and the NetBIOS short name are derived from it."
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$'
+                size:
+                  type: string
+                  default: "5Gi"
+                  description: "Storage for the directory database (Longhorn-backed)."
+                expose:
+                  type: boolean
+                  default: true
+                  description: "Get a LAN IP (DNS/Kerberos/LDAP/SMB) so machines can join. On by default — a directory you can't reach isn't useful."
+            status:
+              type: object
+              properties:
+                domain: { type: string }
+                ready: { type: boolean }

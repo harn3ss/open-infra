@@ -1,0 +1,213 @@
+# The compiler for kind: Directory -> a Samba Active Directory Domain Controller
+# (the open-source AD path; equivalent to AWS Directory Service "Simple AD"). It
+# renders a sambacc-driven StatefulSet (the DC, provisioned headlessly from a JSON
+# config), a Service exposing the AD ports (DNS/Kerberos/LDAP/SMB), and a
+# connection Secret (DOMAIN/REALM/ADMIN_USER/ADMIN_PASSWORD). Windows and Linux
+# machines domain-join it; the VM composition can auto-join on first boot when a
+# VM sets spec.domain.
+#
+# Image + config grounded in the upstream samba-in-kubernetes / sambacc project:
+#   - quay.io/samba.org/samba-ad-server (sambacc "addc" feature)
+#   - SAMBA_CONTAINER_ID selects the config key; SAMBACC_CONFIG points at the JSON
+#     (colon-separated layering: base ConfigMap + a Secret holding the password).
+#   - Needs CAP_SYS_ADMIN (Samba AD DC writes NT ACLs to the security.* xattr).
+#   - /var/lib/samba is the AD database; an EMPTY dir triggers provisioning, a
+#     populated one just serves — so a stable PVC (StatefulSet volumeClaimTemplate)
+#     is what makes restarts safe instead of wiping + re-provisioning.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: directory
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XDirectory
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $domain := $spec.domain }}
+            {{- $realm := $domain | upper }}
+            {{- $netbios := (splitList "." $domain) | first | upper }}
+            {{- $size := $spec.size | default "5Gi" }}
+            {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
+            {{- $admin := "Administrator" }}
+            {{- /* AD password complexity needs upper+lower+digit+symbol; prefix a
+                   fixed "Aa1!" onto a stable per-directory hash so provisioning
+                   never fails the policy. Stable across reconciles (derived from
+                   the composite UID), like the FileShare password. */}}
+            {{- $pass := printf "Aa1!%s" (printf "%s-adminpass" .observed.composite.resource.metadata.uid | sha256sum | trunc 16) }}
+            ---
+            # sambacc config: declaratively provisions the domain. The whole config
+            # lives in a Secret (not a ConfigMap) so the admin password never lands
+            # in plaintext config — sambacc's multi-file SAMBACC_CONFIG does NOT
+            # deep-merge (a later file's domain_settings replaces the earlier one),
+            # so splitting realm/password across files drops the realm. One file.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dc-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-dc-secret
+                    namespace: {{ $ns }}
+                  stringData:
+                    addc.json: |
+                      {
+                        "samba-container-config": "v0",
+                        "configs": {
+                          "dc1": {
+                            "instance_features": ["addc"],
+                            "instance_name": "DC1",
+                            "domain_settings": "dom"
+                          }
+                        },
+                        "domain_settings": {
+                          "dom": {
+                            "realm": "{{ $realm }}",
+                            "short_domain": "{{ $netbios }}",
+                            "admin_password": "{{ $pass }}"
+                          }
+                        }
+                      }
+            ---
+            # The DC: a sambacc-driven Samba AD DC. StatefulSet so the /var/lib/samba
+            # PVC is stable across restarts (populated dir => serve, never
+            # re-provision). One replica (single-DC; multi-DC is a future addition).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: StatefulSet
+                  metadata:
+                    name: {{ $name }}-dc
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-dc, openinfra.dev/directory: "true" }
+                  spec:
+                    serviceName: {{ $name }}
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-dc } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-dc } }
+                      spec:
+                        hostname: dc1
+                        containers:
+                          - name: dc
+                            image: quay.io/samba.org/samba-ad-server:v0.9
+                            securityContext:
+                              capabilities:
+                                add: ["SYS_ADMIN"]
+                            env:
+                              - { name: SAMBA_CONTAINER_ID, value: "dc1" }
+                              - { name: SAMBACC_CONFIG, value: "/etc/sambacc/addc.json" }
+                            ports:
+                              - { containerPort: 53, protocol: TCP }
+                              - { containerPort: 53, protocol: UDP }
+                              - { containerPort: 88, protocol: TCP }
+                              - { containerPort: 88, protocol: UDP }
+                              - { containerPort: 389, protocol: TCP }
+                              - { containerPort: 445, protocol: TCP }
+                              - { containerPort: 464, protocol: TCP }
+                              - { containerPort: 464, protocol: UDP }
+                            readinessProbe:
+                              tcpSocket: { port: 389 }
+                              initialDelaySeconds: 30
+                              periodSeconds: 10
+                              failureThreshold: 30
+                            volumeMounts:
+                              - { name: data, mountPath: /var/lib/samba }
+                              - { name: config, mountPath: /etc/sambacc }
+                        volumes:
+                          - name: config
+                            secret: { secretName: {{ $name }}-dc-secret }
+                    volumeClaimTemplates:
+                      - metadata: { name: data }
+                        spec:
+                          accessModes: [ReadWriteOnce]
+                          storageClassName: longhorn
+                          resources:
+                            requests:
+                              storage: {{ $size }}
+            ---
+            # Service: the AD ports. LoadBalancer (LAN IP) when expose, else
+            # ClusterIP. Either way it has a stable ClusterIP that in-cluster VMs
+            # use as their DNS server to resolve the domain and join.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/directory: "true" }
+                  spec:
+                    type: {{ if $expose }}LoadBalancer{{ else }}ClusterIP{{ end }}
+                    selector: { app: {{ $name }}-dc }
+                    ports:
+                      - { name: dns-tcp, port: 53, targetPort: 53, protocol: TCP }
+                      - { name: dns-udp, port: 53, targetPort: 53, protocol: UDP }
+                      - { name: kerberos-tcp, port: 88, targetPort: 88, protocol: TCP }
+                      - { name: kerberos-udp, port: 88, targetPort: 88, protocol: UDP }
+                      - { name: ldap, port: 389, targetPort: 389, protocol: TCP }
+                      - { name: smb, port: 445, targetPort: 445, protocol: TCP }
+                      - { name: kpasswd-tcp, port: 464, targetPort: 464, protocol: TCP }
+                      - { name: kpasswd-udp, port: 464, targetPort: 464, protocol: UDP }
+            ---
+            # Connection secret: the domain + admin credentials, for the console and
+            # for the VM composition's auto-join. The live DC IP is read from the
+            # Service by the console (not stored here).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: conn-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-directory
+                    namespace: {{ $ns }}
+                  stringData:
+                    DOMAIN: {{ $domain }}
+                    REALM: {{ $realm }}
+                    NETBIOS: {{ $netbios }}
+                    ADMIN_USER: {{ $admin }}
+                    ADMIN_PASSWORD: {{ $pass }}
+                    DC_SERVICE: {{ $name }}.{{ $ns }}.svc.cluster.local
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

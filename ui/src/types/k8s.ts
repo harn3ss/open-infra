@@ -355,6 +355,20 @@ export interface FileShareStatus {
 export type FileShare = K8sObject<FileShareSpec, FileShareStatus>;
 export const FILESHARES_PLURAL = "fileshares";
 
+/* ------------- open-infra Directory CRD (Active Directory / Simple AD) ----- */
+
+export interface DirectorySpec {
+  domain?: string;
+  size?: string;
+  expose?: boolean;
+}
+export interface DirectoryStatus {
+  domain?: string;
+  ready?: boolean;
+}
+export type Directory = K8sObject<DirectorySpec, DirectoryStatus>;
+export const DIRECTORIES_PLURAL = "directories";
+
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
 export interface CnpgClusterSpec {

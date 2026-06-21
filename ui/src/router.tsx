@@ -17,6 +17,7 @@ import { VmDetailPage } from "@/features/vms/vm-detail-page";
 import { VmImagesPage } from "@/features/vms/vm-images-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
+import { DirectoriesPage } from "@/features/directories/directories-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
 import { ManagedDatabaseDetailPage } from "@/features/databases/managed-detail-page";
@@ -101,6 +102,12 @@ const fileSharesRoute = createRoute({
   component: FileSharesPage,
 });
 
+const directoriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/directories",
+  component: DirectoriesPage,
+});
+
 const databasesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/databases",
@@ -179,6 +186,7 @@ const routeTree = rootRoute.addChildren([
   vmDetailRoute,
   volumesRoute,
   fileSharesRoute,
+  directoriesRoute,
   databasesRoute,
   databaseDetailRoute,
   managedDbDetailRoute,

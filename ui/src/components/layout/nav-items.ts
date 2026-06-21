@@ -1,6 +1,7 @@
 import {
   BrainCircuit,
   Boxes,
+  Building2,
   Database,
   Disc3,
   FolderTree,
@@ -36,6 +37,8 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Volumes", to: "/volumes", icon: Disc3, matchPrefix: true, section: "Storage" },
   { label: "File Shares", to: "/fileshares", icon: FolderTree, matchPrefix: true, section: "Storage" },
+
+  { label: "Active Directory", to: "/directories", icon: Building2, matchPrefix: true, section: "Identity" },
 
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "AI" },
 

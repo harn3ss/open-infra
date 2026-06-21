@@ -13,6 +13,7 @@ import {
   VMIMAGES_PLURAL,
   VOLUMES_PLURAL,
   FILESHARES_PLURAL,
+  DIRECTORIES_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -69,6 +70,9 @@ export const openinfraPaths = {
   fileshares: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FILESHARES_PLURAL}`,
   fileshare: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${FILESHARES_PLURAL}/${name}`,
+  directories: (ns?: string) => `${oiGV}${nsSegment(ns)}/${DIRECTORIES_PLURAL}`,
+  directory: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${DIRECTORIES_PLURAL}/${name}`,
 };
 
 const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;
