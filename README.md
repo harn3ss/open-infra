@@ -52,6 +52,7 @@ CNCF projects — not a reinvention of databases or storage.
 | ElastiCache | cache | Redis |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
+| EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | Secrets Manager | secrets | Sealed Secrets |
@@ -143,7 +144,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, NATS, Redis, kube-prometheus-stack + Loki, Sealed Secrets,
-Knative, Velero). The three public abstractions are shipped and verified
+Knative, Velero, KubeVirt). The four public abstractions are shipped and verified
 end-to-end:
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
@@ -151,6 +152,9 @@ end-to-end:
   quotas, limits, and NetworkPolicies.
 - **`Model`** — GPU-backed, OpenAI-compatible inference (open-infra's "Bedrock").
 - **`Function`** — Knative scale-to-zero serverless (open-infra's "Lambda").
+- **`VirtualMachine`** — real VMs via KubeVirt (open-infra's "EC2"): an OS
+  catalog (Linux + Windows), persistent disk, SSH/RDP. See
+  [`docs/virtual-machines.md`](docs/virtual-machines.md).
 
 The build history and phase plan live in [`docs/roadmap.md`](docs/roadmap.md).
 
