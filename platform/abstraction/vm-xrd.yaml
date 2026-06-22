@@ -57,10 +57,6 @@ spec:
                 # SSH public key injected via cloud-init (Linux). If omitted, a
                 # generated password (in the connection secret) is the only login.
                 sshKey:   { type: string, description: "SSH public key for login (Linux)" }
-                # Domain-join (Windows only): the name of a kind: Directory in this
-                # namespace. The VM points its DNS at that domain's DC and joins on
-                # first boot (Add-Computer in the sysprep). Linux VMs ignore it.
-                domain:   { type: string, description: "Active Directory domain to auto-join (Windows): the name of a kind: Directory in this namespace" }
                 # Reach the VM on a LAN IP (MetalLB): SSH (22) for Linux, RDP (3389)
                 # for Windows. Off by default — port-forward / web console otherwise.
                 expose:   { type: boolean, default: false }

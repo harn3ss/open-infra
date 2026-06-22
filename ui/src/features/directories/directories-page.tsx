@@ -190,7 +190,7 @@ export function DirectoriesPage() {
       <ResourceTablePage<Directory>
         icon={<Building2 />}
         title="Active Directory"
-        description="Managed Active Directory domains — open-infra's Directory Service (Samba AD DC, the open-source path; no Microsoft licensing). Windows and Linux machines domain-join it; new VMs can auto-join by picking a domain at create time."
+        description="Managed Active Directory domains — open-infra's Directory Service (Samba AD DC, the open-source path; no Microsoft licensing). Windows and Linux machines domain-join it — click Join for the per-machine steps."
         listPath={openinfraPaths.directories}
         columns={columns}
         search={(d) => [d.metadata.name, d.metadata.namespace, d.spec?.domain]}
@@ -251,7 +251,7 @@ function JoinDialog({
           <DialogTitle>Join {domain}</DialogTitle>
           <DialogDescription>
             {join?.ip
-              ? "Point the machine's DNS at the DC, then join with the admin credentials below. New VMs can auto-join by selecting this domain at create time."
+              ? "Point the machine's DNS at the DC, then join with the admin credentials below."
               : "DC address pending — give it a moment to get an IP."}
           </DialogDescription>
         </DialogHeader>
@@ -327,7 +327,7 @@ function NewDirectoryDialog({
           <DialogTitle>New Directory</DialogTitle>
           <DialogDescription>
             A managed Active Directory domain (Samba AD DC) on its own LAN IP. Join
-            VMs and desktops to it; new VMs can auto-join at create time.
+            VMs and desktops to it from the Join dialog.
           </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-3">

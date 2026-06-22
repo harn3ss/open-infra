@@ -26,7 +26,6 @@ import { watchQueryKey } from "@/hooks/use-k8s-watch";
 import {
   OPENINFRA_GROUP,
   OPENINFRA_VERSION,
-  type Directory,
   type K8sObject,
 } from "@/types/k8s";
 import { IMAGES_NAMESPACE, OS_CATALOG, osFamily } from "./vm-shared";
@@ -58,9 +57,6 @@ export function NewVmDialog({
   const [memory, setMemory] = useState("2Gi");
   const [diskSize, setDiskSize] = useState("20Gi");
   const [sshKey, setSshKey] = useState("");
-  // Active Directory domain to auto-join (Windows). "__none__" = workgroup
-  // (Radix Select forbids an empty-string item value, hence the sentinel).
-  const [domain, setDomain] = useState("__none__");
   // One cohesive reachability choice (maps to network + expose at submit):
   //   internal = pod network only · lan = MetalLB LAN IP · bridge = direct DHCP
   const [access, setAccess] = useState("internal");
@@ -99,18 +95,6 @@ export function NewVmDialog({
     (o) => o.family === "windows" && !builtWindows.has(o.value),
   );
 
-  // Active Directory domains a Windows VM can auto-join, from the selected
-  // namespace. Picking one wires DNS-at-DC + Add-Computer into the sysprep.
-  const dirsQuery = useQuery({
-    queryKey: ["directories-pick", namespace],
-    queryFn: () => k8sList<Directory>(openinfraPaths.directories(namespace)),
-    enabled: open && isWindows,
-    staleTime: 30_000,
-  });
-  const directories = (dirsQuery.data?.items ?? [])
-    .map((d) => d.metadata.name)
-    .filter((n): n is string => Boolean(n));
-
   function reset() {
     setName("");
     setOs("ubuntu-24.04");
@@ -118,7 +102,6 @@ export function NewVmDialog({
     setMemory("2Gi");
     setDiskSize("20Gi");
     setSshKey("");
-    setDomain("__none__");
     setAccess("internal");
     setTouched(false);
     createMutation.reset();
@@ -155,8 +138,6 @@ export function NewVmDialog({
         // Linux only: the composition fixes the Windows root at 70Gi regardless.
         ...(!isWindows ? { diskSize: diskSize || "20Gi" } : {}),
         ...(sshKey.trim() && !isWindows ? { sshKey: sshKey.trim() } : {}),
-        // Windows only: auto-join the selected Active Directory domain on boot.
-        ...(isWindows && domain !== "__none__" ? { domain } : {}),
         // Derive network + expose from the single access choice.
         expose: access === "lan",
         network: access === "bridge" && bridgeReady ? "bridge" : "masquerade",
@@ -299,36 +280,14 @@ export function NewVmDialog({
             </Select>
           </div>
           {isWindows ? (
-            <>
-              <div className="space-y-1.5 sm:col-span-2">
-                <Label htmlFor="vm-domain">Join Active Directory domain</Label>
-                <Select value={domain} onValueChange={setDomain}>
-                  <SelectTrigger id="vm-domain">
-                    <SelectValue placeholder="None (workgroup)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None (workgroup)</SelectItem>
-                    {directories.map((d) => (
-                      <SelectItem key={d} value={d}>
-                        {d}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Optional — auto-joins the domain on first boot. Manage domains on
-                  the <strong>Active Directory</strong> page.
-                </p>
-              </div>
-              <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
-                Windows clones a golden image you build once from an eval ISO (see
-                docs). The root disk is fixed at <strong>70&nbsp;GiB</strong> — add
-                more storage with attachable volumes, not a bigger C:. Login is{" "}
-                <span className="font-medium">Administrator</span> + a generated
-                password (revealable on the VM page); connect with <code>mstsc</code>{" "}
-                over RDP.
-              </div>
-            </>
+            <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
+              Windows clones a golden image you build once from an eval ISO (see
+              docs). The root disk is fixed at <strong>70&nbsp;GiB</strong> — add
+              more storage with attachable volumes, not a bigger C:. Login is{" "}
+              <span className="font-medium">Administrator</span> + a generated
+              password (revealable on the VM page); connect with <code>mstsc</code>{" "}
+              over RDP.
+            </div>
           ) : (
             <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="vm-ssh">SSH public key</Label>
