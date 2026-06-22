@@ -42,7 +42,38 @@ import {
 } from "@/types/k8s";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-const SOURCE_ENGINES = ["postgres", "mysql"];
+const SOURCE_ENGINES = ["postgres", "mysql", "mariadb", "sqlserver", "mongodb"];
+const ENGINE_LABELS: Record<string, string> = {
+  postgres: "PostgreSQL",
+  mysql: "MySQL",
+  mariadb: "MariaDB",
+  sqlserver: "SQL Server",
+  mongodb: "MongoDB",
+};
+const ENGINE_PORTS: Record<string, string> = {
+  postgres: "5432",
+  mysql: "3306",
+  mariadb: "3306",
+  sqlserver: "1433",
+  mongodb: "27017",
+};
+// Engines whose replication is scoped by SQL schemas (the wizard shows a Schemas field).
+const usesSchemas = (e: string) => e === "postgres" || e === "sqlserver";
+const cdcHint = (e: string): string => {
+  switch (e) {
+    case "postgres":
+      return "Postgres: wal_level=logical + a replication slot/publication.";
+    case "mysql":
+    case "mariadb":
+      return "MySQL/MariaDB: binlog_format=ROW.";
+    case "sqlserver":
+      return "SQL Server: CDC enabled (sp_cdc_enable_db) + SQL Server Agent.";
+    case "mongodb":
+      return "MongoDB: a replica set (read via change streams).";
+    default:
+      return "";
+  }
+};
 const MODES = [
   { value: "full-load", label: "Full load — one-shot copy of existing data" },
   { value: "cdc", label: "CDC — ongoing change-data-capture sync only" },
@@ -208,7 +239,7 @@ export function MigrationsPage() {
       <ResourceTablePage<Migration>
         icon={<ArrowRightLeft />}
         title="Migrations"
-        description="Database migrations — open-infra's DMS. Full-load and/or ongoing CDC sync from a source database (Postgres, MySQL) into a managed Postgres. Like AWS DMS: define source + target endpoints, pick a task type, and it keeps your data flowing."
+        description="Database migrations — open-infra's DMS. Full-load and/or ongoing CDC sync from a source database (Postgres, MySQL, MariaDB, SQL Server, MongoDB) into a managed Postgres. Like AWS DMS: define source + target endpoints, pick a task type, and it keeps your data flowing."
         listPath={openinfraPaths.migrations}
         columns={columns}
         search={(m) => [m.metadata.name, m.metadata.namespace, m.spec?.source?.engine, m.spec?.source?.host]}
@@ -280,7 +311,8 @@ function NewMigrationWizard({
 
   function onEngineChange(e: string) {
     setSrcEngine(e);
-    setSrcPort(e === "mysql" ? "3306" : "5432");
+    setSrcPort(ENGINE_PORTS[e] ?? "5432");
+    setSrcSchemas(e === "sqlserver" ? "dbo" : "public");
   }
 
   const create = useMutation({
@@ -301,7 +333,7 @@ function NewMigrationWizard({
         passwordSecretRef: { name: `${name}-creds`, key: "src-password" },
         ssl: srcSsl === "require",
       };
-      if (srcEngine === "postgres") {
+      if (usesSchemas(srcEngine)) {
         source.schemas = srcSchemas.split(",").map((s) => s.trim()).filter(Boolean);
       }
       const spec: Record<string, unknown> = {
@@ -348,10 +380,9 @@ function NewMigrationWizard({
         database: srcDb.trim(),
         username: srcUser.trim(),
         password: srcPass,
-        schemas:
-          srcEngine === "postgres"
-            ? srcSchemas.split(",").map((s) => s.trim()).filter(Boolean)
-            : undefined,
+        schemas: usesSchemas(srcEngine)
+          ? srcSchemas.split(",").map((s) => s.trim()).filter(Boolean)
+          : undefined,
         ssl: srcSsl === "require",
       }),
     enabled: open && tableMode === "choose" && sourceValid,
@@ -359,6 +390,7 @@ function NewMigrationWizard({
     staleTime: 30_000,
   });
 
+  const itemTerm = srcEngine === "mongodb" ? "collections" : "tables";
   const tablesValid = tableMode === "all" || selectedTables.size > 0;
   const taskValid =
     RFC1123.test(name) && Boolean(namespace) && Boolean(mode) && tablesValid;
@@ -409,7 +441,7 @@ function NewMigrationWizard({
                 <Select value={srcEngine} onValueChange={onEngineChange}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {SOURCE_ENGINES.map((e) => (<SelectItem key={e} value={e}>{e}</SelectItem>))}
+                    {SOURCE_ENGINES.map((e) => (<SelectItem key={e} value={e}>{ENGINE_LABELS[e] ?? e}</SelectItem>))}
                   </SelectContent>
                 </Select>
               </Field>
@@ -437,9 +469,13 @@ function NewMigrationWizard({
               <Field label="Password">
                 <Input type="password" value={srcPass} onChange={(e) => setSrcPass(e.target.value)} />
               </Field>
-              {srcEngine === "postgres" && (
+              {usesSchemas(srcEngine) && (
                 <Field label="Schemas (comma-separated)" className="col-span-2">
-                  <Input value={srcSchemas} onChange={(e) => setSrcSchemas(e.target.value)} placeholder="public" />
+                  <Input
+                    value={srcSchemas}
+                    onChange={(e) => setSrcSchemas(e.target.value)}
+                    placeholder={srcEngine === "sqlserver" ? "dbo" : "public"}
+                  />
                 </Field>
               )}
             </div>
@@ -504,7 +540,7 @@ function NewMigrationWizard({
                 </Select>
               </Field>
               <div className="col-span-2 space-y-1.5">
-                <Label className="text-xs">Tables</Label>
+                <Label className="text-xs">{srcEngine === "mongodb" ? "Collections" : "Tables"}</Label>
                 <div className="flex gap-2">
                   <Button
                     type="button"
@@ -512,7 +548,7 @@ function NewMigrationWizard({
                     variant={tableMode === "all" ? "default" : "outline"}
                     onClick={() => setTableMode("all")}
                   >
-                    All tables
+                    All {itemTerm}
                   </Button>
                   <Button
                     type="button"
@@ -520,12 +556,12 @@ function NewMigrationWizard({
                     variant={tableMode === "choose" ? "default" : "outline"}
                     onClick={() => setTableMode("choose")}
                   >
-                    Choose tables
+                    Choose {itemTerm}
                   </Button>
                 </div>
                 {tableMode === "all" ? (
                   <p className="text-xs text-muted-foreground">
-                    Every table in the source schema will be replicated.
+                    Every {srcEngine === "mongodb" ? "collection" : "table"} in the source will be replicated.
                   </p>
                 ) : (
                   <div className="rounded-md border">
@@ -593,7 +629,7 @@ function NewMigrationWizard({
                           })}
                           {discover.data.tables.length === 0 && (
                             <p className="px-2 py-2 text-xs text-muted-foreground">
-                              No tables found in the source.
+                              No {itemTerm} found in the source.
                             </p>
                           )}
                         </div>
@@ -604,8 +640,7 @@ function NewMigrationWizard({
               </div>
               {(mode === "cdc" || mode === "full-load-and-cdc") && (
                 <p className="col-span-2 text-xs text-muted-foreground">
-                  CDC requires a CDC-ready source — Postgres: <code>wal_level=logical</code> + a replication
-                  slot/publication; MySQL: <code>binlog_format=ROW</code>.
+                  CDC requires a CDC-ready source — {cdcHint(srcEngine)}
                 </p>
               )}
             </div>
@@ -617,7 +652,7 @@ function NewMigrationWizard({
               <Row k="Task type" v={mode} />
               <Row
                 k="Source"
-                v={`${srcEngine} · ${srcUser}@${srcHost}:${srcPort}/${srcDb}${srcEngine === "postgres" ? ` · schemas ${srcSchemas}` : ""}`}
+                v={`${ENGINE_LABELS[srcEngine] ?? srcEngine} · ${srcUser}@${srcHost}:${srcPort}/${srcDb}${usesSchemas(srcEngine) ? ` · schemas ${srcSchemas}` : ""}`}
               />
               <Row k="Target" v={`postgres · ${tgtUser}@${tgtHost}:${tgtPort}/${tgtDb} · schema ${tgtSchema}`} />
               <Row

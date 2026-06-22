@@ -7,18 +7,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"sort"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/lib/pq"
+	_ "github.com/microsoft/go-mssqldb"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // --- Source table discovery (the DMS wizard's table picker) ------------------
 //
 // Before a Migration exists, the wizard needs the source's table list so the
-// user can pick which to replicate. The BFF connects to the source database
-// directly (Postgres/MySQL) using the endpoint + credentials the user entered,
-// and lists base tables from information_schema. Short timeouts; single conn.
+// user can pick which to replicate. The BFF connects to the source directly
+// using the endpoint + credentials the user entered, and lists base tables
+// (Postgres/MySQL/MariaDB/SQL Server via information_schema) or collections
+// (MongoDB). Short timeouts; single conn.
 
 type discoverReq struct {
 	Engine   string   `json:"engine"`
@@ -39,11 +46,22 @@ func handleMigrationDiscover(logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 		if in.Port == 0 {
-			if in.Engine == "mysql" {
+			switch in.Engine {
+			case "mysql", "mariadb":
 				in.Port = 3306
-			} else {
+			case "sqlserver":
+				in.Port = 1433
+			case "mongodb":
+				in.Port = 27017
+			default:
 				in.Port = 5432
 			}
+		}
+
+		// MongoDB is non-relational — discover collections via the mongo driver.
+		if in.Engine == "mongodb" {
+			discoverMongo(w, r, logger, in)
+			return
 		}
 
 		var driver, dsn, query string
@@ -63,7 +81,8 @@ func handleMigrationDiscover(logger *slog.Logger) http.HandlerFunc {
 			}
 			query = "SELECT table_name FROM information_schema.tables WHERE table_schema = ANY($1) AND table_type = 'BASE TABLE' ORDER BY table_name"
 			args = []any{pq.Array(schemas)}
-		case "mysql":
+		case "mysql", "mariadb":
+			// MariaDB speaks the MySQL wire protocol — same driver + catalog query.
 			tls := ""
 			if in.SSL {
 				tls = "&tls=skip-verify"
@@ -73,6 +92,25 @@ func handleMigrationDiscover(logger *slog.Logger) http.HandlerFunc {
 				in.Username, in.Password, in.Host, in.Port, in.Database, tls)
 			query = "SELECT table_name FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name"
 			args = []any{in.Database}
+		case "sqlserver":
+			enc := "disable"
+			q := url.Values{}
+			q.Set("database", in.Database)
+			if in.SSL {
+				enc = "true"
+				q.Set("trustservercertificate", "true")
+			}
+			q.Set("encrypt", enc)
+			q.Set("dial timeout", "8")
+			u := &url.URL{
+				Scheme:   "sqlserver",
+				User:     url.UserPassword(in.Username, in.Password),
+				Host:     fmt.Sprintf("%s:%d", in.Host, in.Port),
+				RawQuery: q.Encode(),
+			}
+			driver = "sqlserver"
+			dsn = u.String()
+			query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME"
 		default:
 			writeError(w, http.StatusBadRequest, "unsupported source engine")
 			return
@@ -109,4 +147,42 @@ func handleMigrationDiscover(logger *slog.Logger) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"tables": tables})
 	}
+}
+
+// discoverMongo lists the collections in the source database (MongoDB's
+// equivalent of tables) via the mongo driver.
+func discoverMongo(w http.ResponseWriter, r *http.Request, logger *slog.Logger, in discoverReq) {
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+
+	q := url.Values{}
+	q.Set("authSource", "admin")
+	if in.SSL {
+		q.Set("tls", "true")
+	}
+	u := &url.URL{
+		Scheme:   "mongodb",
+		User:     url.UserPassword(in.Username, in.Password),
+		Host:     fmt.Sprintf("%s:%d", in.Host, in.Port),
+		RawQuery: q.Encode(),
+	}
+
+	cl, err := mongo.Connect(ctx, options.Client().ApplyURI(u.String()))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "could not open source connection")
+		return
+	}
+	defer cl.Disconnect(context.Background())
+
+	names, err := cl.Database(in.Database).ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		logger.Error("discover", slog.String("error", err.Error()))
+		writeError(w, http.StatusBadGateway, "could not read the source: "+err.Error())
+		return
+	}
+	sort.Strings(names)
+	if len(names) > 1000 {
+		names = names[:1000]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tables": names})
 }
