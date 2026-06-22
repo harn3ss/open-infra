@@ -33,6 +33,7 @@ export const corePaths = {
   nodes: () => `/api/v1/nodes`,
   namespaces: () => `/api/v1/namespaces`,
   pvcs: (ns?: string) => `/api/v1${nsSegment(ns)}/persistentvolumeclaims`,
+  secrets: (ns?: string) => `/api/v1${nsSegment(ns)}/secrets`,
 };
 
 export const appsPaths = {
@@ -125,6 +126,8 @@ export const resourcePaths = {
   pod: (ns: string, name: string) => `/api/v1/namespaces/${ns}/pods/${name}`,
   service: (ns: string, name: string) =>
     `/api/v1/namespaces/${ns}/services/${name}`,
+  secret: (ns: string, name: string) =>
+    `/api/v1/namespaces/${ns}/secrets/${name}`,
   deployment: (ns: string, name: string) =>
     `/apis/apps/v1/namespaces/${ns}/deployments/${name}`,
   node: (name: string) => `/api/v1/nodes/${name}`,

@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
-import { ArrowRightLeft, Plus, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, Plus, Trash2 } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
@@ -25,29 +25,33 @@ import {
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
 import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
-import { corePaths, openinfraPaths, batchPaths } from "@/lib/k8s-paths";
+import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import {
   OPENINFRA_GROUP,
   OPENINFRA_VERSION,
-  type Job,
   type Migration,
   type K8sObject,
 } from "@/types/k8s";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-// Sources pgloader can full-load into PostgreSQL (the v1 target).
-const SOURCE_ENGINES = ["postgres", "mysql", "mariadb", "sqlite", "mssql"];
+const SOURCE_ENGINES = ["postgres", "mysql"];
+const MODES = [
+  { value: "full-load", label: "Full load — one-shot copy of existing data" },
+  { value: "cdc", label: "CDC — ongoing change-data-capture sync only" },
+  { value: "full-load-and-cdc", label: "Full load + CDC — copy, then keep in sync" },
+];
+const STEPS = ["Source", "Target", "Task", "Review"];
 
-// A Migration's run status is derived from its pgloader Job.
-function migStatus(job?: Job): { label: string; tone: StatusTone } {
-  const s = job?.status;
-  if (!s) return { label: "Pending", tone: "muted" };
-  if ((s.succeeded ?? 0) > 0) return { label: "Migrated", tone: "success" };
-  if ((s.active ?? 0) > 0) return { label: "Running", tone: "warning" };
-  if ((s.failed ?? 0) > 0) return { label: "Failed", tone: "destructive" };
-  return { label: "Pending", tone: "muted" };
+// A Migration's status, derived from the claim's Crossplane conditions.
+function migStatus(m: Migration): { label: string; tone: StatusTone } {
+  const conds = m.status?.conditions ?? [];
+  const ready = conds.find((c) => c.type === "Ready");
+  const synced = conds.find((c) => c.type === "Synced");
+  if (ready?.status === "True") return { label: "Ready", tone: "success" };
+  if (synced?.status === "False") return { label: "Error", tone: "destructive" };
+  return { label: "Provisioning", tone: "warning" };
 }
 
 export function MigrationsPage() {
@@ -60,23 +64,14 @@ export function MigrationsPage() {
     .filter((n): n is string => Boolean(n))
     .sort((a, b) => a.localeCompare(b));
 
-  // The pgloader Job for each migration (Job name == <migration>-migration).
-  const jobWatch = useK8sWatch<Job>(batchPaths.jobs(scoped));
-  const jobByMig = useMemo(() => {
-    const m = new Map<string, Job>();
-    for (const j of jobWatch.items) {
-      const n = j.metadata.name ?? "";
-      if (n.endsWith("-migration"))
-        m.set(`${j.metadata.namespace}/${n.replace(/-migration$/, "")}`, j);
-    }
-    return m;
-  }, [jobWatch.items]);
-  const jobFor = (mig: Migration) =>
-    jobByMig.get(`${mig.metadata.namespace}/${mig.metadata.name}`);
-
   const remove = useMutation({
-    mutationFn: (mig: Migration) =>
-      k8sDelete(openinfraPaths.migration(mig.metadata.namespace ?? "default", mig.metadata.name ?? "")),
+    mutationFn: async (m: Migration) => {
+      const ns = m.metadata.namespace ?? "default";
+      const name = m.metadata.name ?? "";
+      await k8sDelete(openinfraPaths.migration(ns, name));
+      // Best-effort cleanup of the wizard-created credential Secret.
+      await k8sDelete(resourcePaths.secret(ns, `${name}-creds`)).catch(() => {});
+    },
   });
 
   const columns = useMemo<ColumnDef<Migration, unknown>[]>(
@@ -98,35 +93,37 @@ export function MigrationsPage() {
         size: 110,
       },
       {
-        id: "source",
-        header: "Source",
-        accessorFn: (m) => m.spec?.source?.engine ?? "",
-        cell: ({ row }) => (
-          <span className="text-xs">
-            <code>{row.original.spec?.source?.engine}</code>{" "}
-            <span className="text-muted-foreground">{row.original.spec?.source?.secretRef}</span>
-          </span>
-        ),
-        size: 190,
+        id: "mode",
+        header: "Type",
+        accessorFn: (m) => m.spec?.mode ?? "full-load",
+        cell: ({ row }) => <span className="text-xs">{row.original.spec?.mode ?? "full-load"}</span>,
+        size: 130,
       },
       {
-        id: "target",
-        header: "Target",
-        accessorFn: (m) => m.spec?.target?.secretRef ?? "",
-        cell: ({ row }) => (
-          <span className="text-xs">
-            <code>postgres</code>{" "}
-            <span className="text-muted-foreground">{row.original.spec?.target?.secretRef}</span>
-          </span>
-        ),
-        size: 180,
+        id: "route",
+        header: "Route",
+        accessorFn: (m) => m.spec?.source?.engine ?? "",
+        cell: ({ row }) => {
+          const s = row.original.spec?.source;
+          const t = row.original.spec?.target;
+          return (
+            <span className="text-xs">
+              <code>{s?.engine}</code>{" "}
+              <span className="text-muted-foreground">{s?.host}</span>
+              {" → "}
+              <code>postgres</code>{" "}
+              <span className="text-muted-foreground">{t?.host}</span>
+            </span>
+          );
+        },
+        size: 280,
       },
       {
         id: "status",
         header: "Status",
-        accessorFn: (m) => migStatus(jobFor(m)).label,
+        accessorFn: (m) => migStatus(m).label,
         cell: ({ row }) => {
-          const s = migStatus(jobFor(row.original));
+          const s = migStatus(row.original);
           return <StatusBadge status={s.label} tone={s.tone} />;
         },
         size: 110,
@@ -151,7 +148,7 @@ export function MigrationsPage() {
               variant="outline"
               onClick={() => remove.mutate(row.original)}
               disabled={remove.isPending}
-              title="Delete this migration"
+              title="Delete this migration (and its credential secret)"
             >
               <Trash2 className="size-4" />
             </Button>
@@ -160,7 +157,7 @@ export function MigrationsPage() {
         size: 80,
       },
     ],
-    [jobByMig, remove],
+    [remove],
   );
 
   return (
@@ -168,21 +165,21 @@ export function MigrationsPage() {
       <ResourceTablePage<Migration>
         icon={<ArrowRightLeft />}
         title="Migrations"
-        description="Database migrations — open-infra's DMS. Full-load a source database (Postgres, MySQL, MariaDB, SQLite, MS SQL Server) into a managed Postgres via pgloader. Source + target are connection-secret references (key: uri)."
+        description="Database migrations — open-infra's DMS. Full-load and/or ongoing CDC sync from a source database (Postgres, MySQL) into a managed Postgres. Like AWS DMS: define source + target endpoints, pick a task type, and it keeps your data flowing."
         listPath={openinfraPaths.migrations}
         columns={columns}
-        search={(m) => [m.metadata.name, m.metadata.namespace, m.spec?.source?.engine]}
+        search={(m) => [m.metadata.name, m.metadata.namespace, m.spec?.source?.engine, m.spec?.source?.host]}
         singular="Migration"
         plural="Migrations"
         emptyTitle="No migrations yet"
-        emptyDescription="Create one to full-load a source database into a managed Postgres."
+        emptyDescription="Create one to full-load or continuously sync a source database into a managed Postgres."
         headerActions={
           <Button onClick={() => setNewOpen(true)}>
             <Plus className="size-4" /> New Migration
           </Button>
         }
       />
-      <NewMigrationDialog
+      <NewMigrationWizard
         open={newOpen}
         onOpenChange={setNewOpen}
         namespaces={namespaces}
@@ -192,7 +189,7 @@ export function MigrationsPage() {
   );
 }
 
-function NewMigrationDialog({
+function NewMigrationWizard({
   open,
   onOpenChange,
   namespaces,
@@ -203,94 +200,319 @@ function NewMigrationDialog({
   namespaces: string[];
   defaultNamespace?: string;
 }) {
+  const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(defaultNamespace ?? "default");
+  const [mode, setMode] = useState("full-load");
+  const [tables, setTables] = useState("");
+  // source
   const [srcEngine, setSrcEngine] = useState("postgres");
-  const [srcSecret, setSrcSecret] = useState("");
-  const [tgtSecret, setTgtSecret] = useState("");
+  const [srcHost, setSrcHost] = useState("");
+  const [srcPort, setSrcPort] = useState("5432");
+  const [srcDb, setSrcDb] = useState("");
+  const [srcUser, setSrcUser] = useState("");
+  const [srcPass, setSrcPass] = useState("");
+  const [srcSchemas, setSrcSchemas] = useState("public");
+  const [srcSsl, setSrcSsl] = useState("disable");
+  // target
+  const [tgtHost, setTgtHost] = useState("");
+  const [tgtPort, setTgtPort] = useState("5432");
+  const [tgtDb, setTgtDb] = useState("");
+  const [tgtUser, setTgtUser] = useState("");
+  const [tgtPass, setTgtPass] = useState("");
+  const [tgtSchema, setTgtSchema] = useState("public");
+  const [tgtSsl, setTgtSsl] = useState("disable");
+
+  function reset() {
+    setStep(0);
+    setName("");
+    setMode("full-load");
+    setTables("");
+    setSrcEngine("postgres");
+    setSrcHost(""); setSrcPort("5432"); setSrcDb(""); setSrcUser(""); setSrcPass(""); setSrcSchemas("public"); setSrcSsl("disable");
+    setTgtHost(""); setTgtPort("5432"); setTgtDb(""); setTgtUser(""); setTgtPass(""); setTgtSchema("public"); setTgtSsl("disable");
+  }
+
+  function onEngineChange(e: string) {
+    setSrcEngine(e);
+    setSrcPort(e === "mysql" ? "3306" : "5432");
+  }
 
   const create = useMutation({
-    mutationFn: () =>
-      k8sCreate(openinfraPaths.migrations(namespace), {
+    mutationFn: async () => {
+      // One Secret per Migration holding both endpoint passwords.
+      await k8sCreate(corePaths.secrets(namespace), {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: `${name}-creds`, namespace },
+        stringData: { "src-password": srcPass, "tgt-password": tgtPass },
+      } as K8sObject);
+      const source: Record<string, unknown> = {
+        engine: srcEngine,
+        host: srcHost.trim(),
+        port: Number(srcPort) || 5432,
+        database: srcDb.trim(),
+        username: srcUser.trim(),
+        passwordSecretRef: { name: `${name}-creds`, key: "src-password" },
+        ssl: srcSsl === "require",
+      };
+      if (srcEngine === "postgres") {
+        source.schemas = srcSchemas.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+      const spec: Record<string, unknown> = {
+        mode,
+        source,
+        target: {
+          engine: "postgres",
+          host: tgtHost.trim(),
+          port: Number(tgtPort) || 5432,
+          database: tgtDb.trim(),
+          username: tgtUser.trim(),
+          passwordSecretRef: { name: `${name}-creds`, key: "tgt-password" },
+          schema: tgtSchema.trim() || "public",
+          ssl: tgtSsl === "require",
+        },
+      };
+      const tbl = tables.split(",").map((t) => t.trim()).filter(Boolean);
+      if (tbl.length) spec.tables = tbl;
+      await k8sCreate(openinfraPaths.migrations(namespace), {
         apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
         kind: "Migration",
         metadata: { name, namespace },
-        spec: {
-          source: { engine: srcEngine, secretRef: srcSecret.trim() },
-          target: { engine: "postgres", secretRef: tgtSecret.trim() },
-          mode: "full-load",
-        },
-      } as K8sObject),
+        spec,
+      } as K8sObject);
+    },
     onSuccess: () => {
-      setName("");
-      setSrcSecret("");
-      setTgtSecret("");
+      reset();
       onOpenChange(false);
     },
   });
 
-  const valid = RFC1123.test(name) && Boolean(srcSecret.trim()) && Boolean(tgtSecret.trim());
+  const sourceValid = Boolean(srcHost.trim() && srcDb.trim() && srcUser.trim() && srcPass);
+  const targetValid = Boolean(tgtHost.trim() && tgtDb.trim() && tgtUser.trim() && tgtPass);
+  const taskValid = RFC1123.test(name) && Boolean(namespace) && Boolean(mode);
+  const stepValid = [sourceValid, targetValid, taskValid, true][step];
+
+  function close(o: boolean) {
+    if (create.isPending) return;
+    if (!o) reset();
+    onOpenChange(o);
+  }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !create.isPending && onOpenChange(o)}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent className="sm:max-w-[640px]">
         <DialogHeader>
           <DialogTitle>New Migration</DialogTitle>
           <DialogDescription>
-            Full-load a source database into a managed Postgres (pgloader). Give the source and
-            target as the names of Secrets holding a connection URI (key <code>uri</code>) — a
-            managed DB is just its <code>&lt;app&gt;-db-app</code> secret.
+            Define the source + target database endpoints and a task type, like AWS DMS. open-infra
+            runs it on the headless Airbyte engine.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="mig-name">Name</Label>
-            <Input id="mig-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="legacy-import" autoFocus />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="mig-ns">Namespace</Label>
-            <Select value={namespace} onValueChange={setNamespace}>
-              <SelectTrigger id="mig-ns"><SelectValue placeholder="Namespace" /></SelectTrigger>
-              <SelectContent>
-                {(namespaces.length ? namespaces : [namespace]).map((ns) => (
-                  <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="mig-src-engine">Source engine</Label>
-            <Select value={srcEngine} onValueChange={setSrcEngine}>
-              <SelectTrigger id="mig-src-engine"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {SOURCE_ENGINES.map((e) => (<SelectItem key={e} value={e}>{e}</SelectItem>))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="mig-src-secret">Source secret</Label>
-            <Input id="mig-src-secret" value={srcSecret} onChange={(e) => setSrcSecret(e.target.value)} placeholder="src-conn" />
-          </div>
-          <div className="space-y-1.5 col-span-2">
-            <Label htmlFor="mig-tgt-secret">Target Postgres secret</Label>
-            <Input id="mig-tgt-secret" value={tgtSecret} onChange={(e) => setTgtSecret(e.target.value)} placeholder="myapp-db-app" />
-            <p className="text-xs text-muted-foreground">
-              A managed Postgres connection secret (key <code>uri</code>) — e.g. an app's <code>&lt;app&gt;-db-app</code>.
-            </p>
-          </div>
+
+        {/* Stepper */}
+        <div className="flex items-center gap-1 text-xs">
+          {STEPS.map((s, i) => (
+            <div key={s} className="flex items-center gap-1">
+              <span
+                className={`flex size-5 items-center justify-center rounded-full text-[10px] ${
+                  i < step
+                    ? "bg-primary text-primary-foreground"
+                    : i === step
+                      ? "bg-primary/20 text-foreground ring-1 ring-primary"
+                      : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {i < step ? <Check className="size-3" /> : i + 1}
+              </span>
+              <span className={i === step ? "font-medium" : "text-muted-foreground"}>{s}</span>
+              {i < STEPS.length - 1 && <span className="mx-1 text-muted-foreground">/</span>}
+            </div>
+          ))}
         </div>
+
+        <div className="min-h-[260px] py-1">
+          {step === 0 && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Engine">
+                <Select value={srcEngine} onValueChange={onEngineChange}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {SOURCE_ENGINES.map((e) => (<SelectItem key={e} value={e}>{e}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="TLS">
+                <Select value={srcSsl} onValueChange={setSrcSsl}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="disable">Disabled</SelectItem>
+                    <SelectItem value="require">Required</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Host" className="col-span-2">
+                <Input value={srcHost} onChange={(e) => setSrcHost(e.target.value)} placeholder="olddb.example.com" autoFocus />
+              </Field>
+              <Field label="Port">
+                <Input value={srcPort} onChange={(e) => setSrcPort(e.target.value)} inputMode="numeric" />
+              </Field>
+              <Field label="Database">
+                <Input value={srcDb} onChange={(e) => setSrcDb(e.target.value)} placeholder="app" />
+              </Field>
+              <Field label="Username">
+                <Input value={srcUser} onChange={(e) => setSrcUser(e.target.value)} placeholder="migrator" />
+              </Field>
+              <Field label="Password">
+                <Input type="password" value={srcPass} onChange={(e) => setSrcPass(e.target.value)} />
+              </Field>
+              {srcEngine === "postgres" && (
+                <Field label="Schemas (comma-separated)" className="col-span-2">
+                  <Input value={srcSchemas} onChange={(e) => setSrcSchemas(e.target.value)} placeholder="public" />
+                </Field>
+              )}
+            </div>
+          )}
+
+          {step === 1 && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Engine">
+                <Input value="postgres" disabled />
+              </Field>
+              <Field label="TLS">
+                <Select value={tgtSsl} onValueChange={setTgtSsl}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="disable">Disabled</SelectItem>
+                    <SelectItem value="require">Required</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Host" className="col-span-2">
+                <Input value={tgtHost} onChange={(e) => setTgtHost(e.target.value)} placeholder="myapp-db-rw.myapp.svc" autoFocus />
+              </Field>
+              <Field label="Port">
+                <Input value={tgtPort} onChange={(e) => setTgtPort(e.target.value)} inputMode="numeric" />
+              </Field>
+              <Field label="Database">
+                <Input value={tgtDb} onChange={(e) => setTgtDb(e.target.value)} placeholder="app" />
+              </Field>
+              <Field label="Username">
+                <Input value={tgtUser} onChange={(e) => setTgtUser(e.target.value)} placeholder="app" />
+              </Field>
+              <Field label="Password">
+                <Input type="password" value={tgtPass} onChange={(e) => setTgtPass(e.target.value)} />
+              </Field>
+              <Field label="Target schema" className="col-span-2">
+                <Input value={tgtSchema} onChange={(e) => setTgtSchema(e.target.value)} placeholder="public" />
+              </Field>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Name">
+                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="legacy-import" autoFocus />
+              </Field>
+              <Field label="Namespace">
+                <Select value={namespace} onValueChange={setNamespace}>
+                  <SelectTrigger><SelectValue placeholder="Namespace" /></SelectTrigger>
+                  <SelectContent>
+                    {(namespaces.length ? namespaces : [namespace]).map((ns) => (
+                      <SelectItem key={ns} value={ns}>{ns}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Task type" className="col-span-2">
+                <Select value={mode} onValueChange={setMode}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MODES.map((m) => (<SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Tables (comma-separated, optional — empty = all)" className="col-span-2">
+                <Input value={tables} onChange={(e) => setTables(e.target.value)} placeholder="users, orders" />
+              </Field>
+              {(mode === "cdc" || mode === "full-load-and-cdc") && (
+                <p className="col-span-2 text-xs text-muted-foreground">
+                  CDC requires a CDC-ready source — Postgres: <code>wal_level=logical</code> + a replication
+                  slot/publication; MySQL: <code>binlog_format=ROW</code>.
+                </p>
+              )}
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="space-y-2 text-sm">
+              <Row k="Name" v={`${name} (${namespace})`} />
+              <Row k="Task type" v={mode} />
+              <Row
+                k="Source"
+                v={`${srcEngine} · ${srcUser}@${srcHost}:${srcPort}/${srcDb}${srcEngine === "postgres" ? ` · schemas ${srcSchemas}` : ""}`}
+              />
+              <Row k="Target" v={`postgres · ${tgtUser}@${tgtHost}:${tgtPort}/${tgtDb} · schema ${tgtSchema}`} />
+              {tables.trim() && <Row k="Tables" v={tables} />}
+              <p className="pt-1 text-xs text-muted-foreground">
+                Creates a Secret <code>{name}-creds</code> with the endpoint passwords and the Migration that
+                references it.
+              </p>
+            </div>
+          )}
+        </div>
+
         {create.error ? (
           <p className="text-sm text-destructive">
             {create.error instanceof ApiError ? create.error.message : "Failed to create the migration."}
           </p>
         ) : null}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={create.isPending}>Cancel</Button>
-          <Button onClick={() => create.mutate()} disabled={create.isPending || !valid}>
-            {create.isPending ? "Creating…" : "Create"}
+
+        <DialogFooter className="sm:justify-between">
+          <Button
+            variant="outline"
+            onClick={() => (step === 0 ? close(false) : setStep(step - 1))}
+            disabled={create.isPending}
+          >
+            {step === 0 ? "Cancel" : "Back"}
           </Button>
+          {step < STEPS.length - 1 ? (
+            <Button onClick={() => setStep(step + 1)} disabled={!stepValid}>
+              Next
+            </Button>
+          ) : (
+            <Button onClick={() => create.mutate()} disabled={create.isPending || !taskValid}>
+              {create.isPending ? "Creating…" : "Create migration"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function Field({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`space-y-1.5 ${className ?? ""}`}>
+      <Label className="text-xs">{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+function Row({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex gap-2">
+      <span className="w-24 shrink-0 text-muted-foreground">{k}</span>
+      <span className="min-w-0 break-words font-medium">{v}</span>
+    </div>
   );
 }
