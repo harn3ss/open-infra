@@ -377,13 +377,13 @@ export interface MigrationPasswordRef {
 }
 /** A source or target database endpoint. Source uses `schemas`; target uses `schema`. */
 export interface MigrationEndpoint {
-  engine?: string; // source: postgres | mysql · target: postgres
+  engine?: string; // source: postgres|mysql|mariadb|sqlserver|mongodb · target: postgres
   host?: string;
   port?: number;
   database?: string;
   username?: string;
   passwordSecretRef?: MigrationPasswordRef;
-  schemas?: string[]; // source (postgres)
+  schemas?: string[]; // source (postgres, sqlserver)
   schema?: string; // target
   ssl?: boolean;
 }

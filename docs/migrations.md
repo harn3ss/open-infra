@@ -33,8 +33,9 @@ UI — it is purely an engine.
 
 **Data → Migrations → New Migration** opens a guided wizard:
 
-1. **Source** — engine (`postgres` / `mysql`), host, port, database, username,
-   password (TLS optional; Postgres also takes schemas).
+1. **Source** — engine (`postgres` / `mysql` / `mariadb` / `sqlserver` / `mongodb`),
+   host, port, database, username, password (TLS optional; Postgres & SQL Server
+   also take schemas; MongoDB's "tables" are collections).
 2. **Target** — a managed Postgres endpoint (host/port/database/username/password +
    schema). For a managed DB, use its `<cluster>-rw.<ns>.svc` host.
 3. **Task** — a name + namespace, a **task type** (full load / CDC / full load + CDC),
@@ -57,13 +58,13 @@ metadata:
 spec:
   mode: full-load-and-cdc          # full-load | cdc | full-load-and-cdc
   source:
-    engine: mysql                  # postgres | mysql
+    engine: mysql                  # postgres | mysql | mariadb | sqlserver | mongodb
     host: olddb.example.com
     port: 3306
     database: app
     username: migrator
     passwordSecretRef: { name: src-creds, key: password }
-    # schemas: ["public"]          # Postgres only; default ["public"]
+    # schemas: ["public"]          # Postgres (public) / SQL Server (dbo); default ["public"]
     # ssl: false
   target:
     engine: postgres
@@ -96,8 +97,14 @@ namespace once provisioned.
 
 ## Source & target engines
 
-- **Sources:** PostgreSQL, MySQL.
+- **Sources:** PostgreSQL, MySQL, MariaDB, SQL Server, MongoDB. A source may be
+  proprietary (e.g. SQL Server) — it's *your* database, the platform only reads from
+  it. Relational sources (pg/mysql/mariadb/sqlserver) map cleanly; MongoDB →
+  Postgres flattens documents (each collection becomes a table).
 - **Target:** PostgreSQL (a managed CloudNativePG cluster, or any reachable Postgres).
+  Targets must be one of the engines open-infra *hosts* (today: Postgres; MySQL/MariaDB
+  and Mongo/FerretDB targets are on the roadmap), because the target has to be
+  something the platform runs.
 
 Adding more source/target engines is a matter of extending the XRD enum + the
 composition's per-engine connector config (Airbyte ships 600+ connectors).
