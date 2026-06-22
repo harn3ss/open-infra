@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRightLeft, Check, Play, Plus, Trash2 } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
@@ -24,7 +24,13 @@ import {
 } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete, triggerMigrationSync } from "@/lib/api";
+import {
+  ApiError,
+  k8sCreate,
+  k8sDelete,
+  triggerMigrationSync,
+  discoverTables,
+} from "@/lib/api";
 import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -241,7 +247,8 @@ function NewMigrationWizard({
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(defaultNamespace ?? "default");
   const [mode, setMode] = useState("full-load");
-  const [tables, setTables] = useState("");
+  const [tableMode, setTableMode] = useState<"all" | "choose">("all");
+  const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   // source
   const [srcEngine, setSrcEngine] = useState("postgres");
   const [srcHost, setSrcHost] = useState("");
@@ -264,7 +271,8 @@ function NewMigrationWizard({
     setStep(0);
     setName("");
     setMode("full-load");
-    setTables("");
+    setTableMode("all");
+    setSelectedTables(new Set());
     setSrcEngine("postgres");
     setSrcHost(""); setSrcPort("5432"); setSrcDb(""); setSrcUser(""); setSrcPass(""); setSrcSchemas("public"); setSrcSsl("disable");
     setTgtHost(""); setTgtPort("5432"); setTgtDb(""); setTgtUser(""); setTgtPass(""); setTgtSchema("public"); setTgtSsl("disable");
@@ -310,8 +318,9 @@ function NewMigrationWizard({
           ssl: tgtSsl === "require",
         },
       };
-      const tbl = tables.split(",").map((t) => t.trim()).filter(Boolean);
-      if (tbl.length) spec.tables = tbl;
+      if (tableMode === "choose" && selectedTables.size) {
+        spec.tables = Array.from(selectedTables);
+      }
       await k8sCreate(openinfraPaths.migrations(namespace), {
         apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
         kind: "Migration",
@@ -327,7 +336,32 @@ function NewMigrationWizard({
 
   const sourceValid = Boolean(srcHost.trim() && srcDb.trim() && srcUser.trim() && srcPass);
   const targetValid = Boolean(tgtHost.trim() && tgtDb.trim() && tgtUser.trim() && tgtPass);
-  const taskValid = RFC1123.test(name) && Boolean(namespace) && Boolean(mode);
+
+  // Discover the source's tables for the picker (connects to the source DB via the BFF).
+  const discover = useQuery({
+    queryKey: ["dms-discover", srcEngine, srcHost, srcPort, srcDb, srcSchemas, srcSsl],
+    queryFn: () =>
+      discoverTables({
+        engine: srcEngine,
+        host: srcHost.trim(),
+        port: Number(srcPort) || 5432,
+        database: srcDb.trim(),
+        username: srcUser.trim(),
+        password: srcPass,
+        schemas:
+          srcEngine === "postgres"
+            ? srcSchemas.split(",").map((s) => s.trim()).filter(Boolean)
+            : undefined,
+        ssl: srcSsl === "require",
+      }),
+    enabled: open && tableMode === "choose" && sourceValid,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  const tablesValid = tableMode === "all" || selectedTables.size > 0;
+  const taskValid =
+    RFC1123.test(name) && Boolean(namespace) && Boolean(mode) && tablesValid;
   const stepValid = [sourceValid, targetValid, taskValid, true][step];
 
   function close(o: boolean) {
@@ -469,9 +503,105 @@ function NewMigrationWizard({
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label="Tables (comma-separated, optional — empty = all)" className="col-span-2">
-                <Input value={tables} onChange={(e) => setTables(e.target.value)} placeholder="users, orders" />
-              </Field>
+              <div className="col-span-2 space-y-1.5">
+                <Label className="text-xs">Tables</Label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={tableMode === "all" ? "default" : "outline"}
+                    onClick={() => setTableMode("all")}
+                  >
+                    All tables
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={tableMode === "choose" ? "default" : "outline"}
+                    onClick={() => setTableMode("choose")}
+                  >
+                    Choose tables
+                  </Button>
+                </div>
+                {tableMode === "all" ? (
+                  <p className="text-xs text-muted-foreground">
+                    Every table in the source schema will be replicated.
+                  </p>
+                ) : (
+                  <div className="rounded-md border">
+                    {discover.isFetching && (
+                      <p className="px-2 py-2 text-xs text-muted-foreground">Discovering tables…</p>
+                    )}
+                    {discover.isError && (
+                      <p className="px-2 py-2 text-xs text-destructive">
+                        {discover.error instanceof ApiError
+                          ? discover.error.message
+                          : "Couldn't read the source."}{" "}
+                        — check the Source step.
+                      </p>
+                    )}
+                    {discover.data && !discover.isFetching && (
+                      <>
+                        <div className="flex items-center gap-2 border-b px-2 py-1 text-xs">
+                          <button
+                            type="button"
+                            className="text-primary hover:underline"
+                            onClick={() => setSelectedTables(new Set(discover.data?.tables ?? []))}
+                          >
+                            Select all
+                          </button>
+                          <button
+                            type="button"
+                            className="text-primary hover:underline"
+                            onClick={() => setSelectedTables(new Set())}
+                          >
+                            Clear
+                          </button>
+                          <span className="ml-auto text-muted-foreground">
+                            {selectedTables.size}/{discover.data.tables.length}
+                          </span>
+                        </div>
+                        <div className="max-h-40 overflow-auto">
+                          {discover.data.tables.map((t) => {
+                            const on = selectedTables.has(t);
+                            return (
+                              <button
+                                type="button"
+                                key={t}
+                                onClick={() =>
+                                  setSelectedTables((prev) => {
+                                    const n = new Set(prev);
+                                    if (n.has(t)) n.delete(t);
+                                    else n.add(t);
+                                    return n;
+                                  })
+                                }
+                                className="flex w-full items-center gap-2 px-2 py-1 text-left text-sm hover:bg-muted"
+                              >
+                                <span
+                                  className={`flex size-4 shrink-0 items-center justify-center rounded border ${
+                                    on
+                                      ? "border-primary bg-primary text-primary-foreground"
+                                      : "border-input"
+                                  }`}
+                                >
+                                  {on && <Check className="size-3" />}
+                                </span>
+                                {t}
+                              </button>
+                            );
+                          })}
+                          {discover.data.tables.length === 0 && (
+                            <p className="px-2 py-2 text-xs text-muted-foreground">
+                              No tables found in the source.
+                            </p>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
               {(mode === "cdc" || mode === "full-load-and-cdc") && (
                 <p className="col-span-2 text-xs text-muted-foreground">
                   CDC requires a CDC-ready source — Postgres: <code>wal_level=logical</code> + a replication
@@ -490,7 +620,14 @@ function NewMigrationWizard({
                 v={`${srcEngine} · ${srcUser}@${srcHost}:${srcPort}/${srcDb}${srcEngine === "postgres" ? ` · schemas ${srcSchemas}` : ""}`}
               />
               <Row k="Target" v={`postgres · ${tgtUser}@${tgtHost}:${tgtPort}/${tgtDb} · schema ${tgtSchema}`} />
-              {tables.trim() && <Row k="Tables" v={tables} />}
+              <Row
+                k="Tables"
+                v={
+                  tableMode === "all"
+                    ? "All tables"
+                    : Array.from(selectedTables).join(", ") || "(none selected)"
+                }
+              />
               <p className="pt-1 text-xs text-muted-foreground">
                 Creates a Secret <code>{name}-creds</code> with the endpoint passwords and the Migration that
                 references it.

@@ -293,6 +293,26 @@ export function migrationSyncStatus(
   );
 }
 
+export interface DiscoverSource {
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password: string;
+  schemas?: string[];
+  ssl?: boolean;
+}
+/** Discover a source database's tables (the wizard's table picker). */
+export function discoverTables(
+  src: DiscoverSource,
+): Promise<{ tables: string[] }> {
+  return request<{ tables: string[] }>("/migrations/discover", {
+    method: "POST",
+    body: JSON.stringify(src),
+  });
+}
+
 /* ----------------------- Model playground (chat proxy) ---------------------- */
 
 export interface ChatMessage {

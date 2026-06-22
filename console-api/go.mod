@@ -4,6 +4,8 @@ go 1.25.0
 
 require (
 	github.com/go-chi/chi/v5 v5.3.0
+	github.com/go-sql-driver/mysql v1.10.0
+	github.com/lib/pq v1.12.3
 	github.com/minio/minio-go/v7 v7.2.0
 	github.com/nats-io/nats.go v1.52.0
 	k8s.io/apimachinery v0.33.13
@@ -11,6 +13,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

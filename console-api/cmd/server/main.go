@@ -187,6 +187,9 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 			Post("/migrations/{namespace}/{name}/sync", handleMigrationSync(*client.Clientset, logger))
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/migrations/{namespace}/{name}/sync", handleMigrationSyncStatus(*client.Clientset, logger))
+		// DMS wizard: discover a source's tables (connects to the source DB directly).
+		api.With(middleware.Timeout(15*time.Second)).
+			Post("/migrations/discover", handleMigrationDiscover(logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

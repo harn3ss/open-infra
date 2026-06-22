@@ -52,6 +52,7 @@ spec:
             {{- $srcPwKey := (($src.passwordSecretRef).key) | default "password" }}
             {{- $tgtPwKey := (($tgt.passwordSecretRef).key) | default "password" }}
             {{- $srcSchemas := $src.schemas | default (list "public") }}
+            {{- $tables := $spec.tables | default (list) }}
             ---
             apiVersion: tf.upbound.io/v1beta1
             kind: Workspace
@@ -147,6 +148,15 @@ spec:
                     schedule = { schedule_type = "cron", cron_expression = "0 0 * * * ?" }
                   {{- else }}
                     schedule = { schedule_type = "manual" }
+                  {{- end }}
+                  {{- if $tables }}
+                    configurations = {
+                      streams = [
+                  {{- range $t := $tables }}
+                        { name = "{{ $t }}", sync_mode = "{{ if $cdc }}incremental_append{{ else }}full_refresh_overwrite{{ end }}" },
+                  {{- end }}
+                      ]
+                    }
                   {{- end }}
                   }
 
