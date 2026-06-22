@@ -369,6 +369,36 @@ export interface DirectoryStatus {
 export type Directory = K8sObject<DirectorySpec, DirectoryStatus>;
 export const DIRECTORIES_PLURAL = "directories";
 
+/* ------------------- open-infra Migration CRD (DMS, full-load) ------------ */
+
+export interface MigrationEndpoint {
+  engine?: string;
+  secretRef?: string;
+  secretKey?: string;
+}
+export interface MigrationSpec {
+  source?: MigrationEndpoint;
+  target?: MigrationEndpoint;
+  mode?: string;
+}
+export interface MigrationStatus {
+  phase?: string;
+  ready?: boolean;
+}
+export type Migration = K8sObject<MigrationSpec, MigrationStatus>;
+export const MIGRATIONS_PLURAL = "migrations";
+
+/* batch/v1 Job — read (only) to surface a Migration's live run status. */
+export interface JobStatus {
+  active?: number;
+  succeeded?: number;
+  failed?: number;
+  startTime?: string;
+  completionTime?: string;
+  conditions?: Condition[];
+}
+export type Job = K8sObject<unknown, JobStatus>;
+
 /* ---------------------- CloudNativePG managed Postgres -------------------- */
 
 export interface CnpgClusterSpec {

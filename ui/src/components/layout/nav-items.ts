@@ -1,4 +1,5 @@
 import {
+  ArrowRightLeft,
   BrainCircuit,
   Boxes,
   Building2,
@@ -43,6 +44,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "AI" },
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },
+  { label: "Migrations", to: "/migrations", icon: ArrowRightLeft, matchPrefix: true, section: "Data" },
   { label: "Buckets", to: "/buckets", icon: HardDrive, matchPrefix: true, section: "Data" },
   { label: "Queues", to: "/queues", icon: Send, matchPrefix: true, section: "Data" },
 

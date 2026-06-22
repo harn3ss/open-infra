@@ -14,6 +14,7 @@ import {
   VOLUMES_PLURAL,
   FILESHARES_PLURAL,
   DIRECTORIES_PLURAL,
+  MIGRATIONS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -36,6 +37,11 @@ export const corePaths = {
 
 export const appsPaths = {
   deployments: (ns?: string) => `/apis/apps/v1${nsSegment(ns)}/deployments`,
+};
+
+// batch/v1 Jobs — read-only, to surface a Migration's live run status.
+export const batchPaths = {
+  jobs: (ns?: string) => `/apis/batch/v1${nsSegment(ns)}/jobs`,
 };
 
 export const networkingPaths = {
@@ -73,6 +79,9 @@ export const openinfraPaths = {
   directories: (ns?: string) => `${oiGV}${nsSegment(ns)}/${DIRECTORIES_PLURAL}`,
   directory: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${DIRECTORIES_PLURAL}/${name}`,
+  migrations: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MIGRATIONS_PLURAL}`,
+  migration: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${MIGRATIONS_PLURAL}/${name}`,
 };
 
 const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;

@@ -38,6 +38,12 @@ rules:
       - daemonsets
     verbs: [get, list, watch]
 
+  # ── Batch: read Jobs to surface a Migration's live run status ──────────────
+  - apiGroups: [batch]
+    resources:
+      - jobs
+    verbs: [get, list, watch]
+
   # ── Networking: read ingress routes + network policies (the Network view).
   #    LoadBalancer Services come from the core "services" rule above. ─────────
   - apiGroups: [networking.k8s.io]
@@ -78,6 +84,7 @@ rules:
       - volumes
       - fileshares
       - directories
+      - migrations
     verbs: [get, list, watch, create, update, patch, delete]
 
   # ── KubeVirt + CDI: read VM/guest/disk status for the Virtual Machines view
