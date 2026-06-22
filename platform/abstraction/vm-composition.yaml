@@ -286,6 +286,13 @@ spec:
                           </component>
                           <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
                             <UserAccounts><AdministratorPassword><Value>{{ $pass }}</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
+                            {{- if $joinReady }}
+                            <!-- Auto-logon once so the FirstLogonCommands (incl. the
+                                 domain join) actually run on first boot; without it a
+                                 generalized image lands on the login screen and the
+                                 join never fires. LogonCount=1 => disabled after. -->
+                            <AutoLogon><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>Administrator</Username><Password><Value>{{ $pass }}</Value><PlainText>true</PlainText></Password></AutoLogon>
+                            {{- end }}
                             <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><NetworkLocation>Work</NetworkLocation><ProtectYourPC>3</ProtectYourPC></OOBE>
                             <TimeZone>UTC</TimeZone>
                             <FirstLogonCommands>
