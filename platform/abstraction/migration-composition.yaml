@@ -53,6 +53,12 @@ spec:
             {{- $tgtPwKey := (($tgt.passwordSecretRef).key) | default "password" }}
             {{- $srcSchemas := $src.schemas | default (list "public") }}
             {{- $tables := $spec.tables | default (list) }}
+            {{- /* Map the engine to its Airbyte OSS source connector. MariaDB rides
+                   the MySQL connector; SQL Server is source-mssql; Mongo is v2. */}}
+            {{- $srcConnector := "source-postgres" }}
+            {{- if or (eq $src.engine "mysql") (eq $src.engine "mariadb") }}{{ $srcConnector = "source-mysql" }}{{- end }}
+            {{- if eq $src.engine "sqlserver" }}{{ $srcConnector = "source-mssql" }}{{- end }}
+            {{- if eq $src.engine "mongodb" }}{{ $srcConnector = "source-mongodb-v2" }}{{- end }}
             ---
             apiVersion: tf.upbound.io/v1beta1
             kind: Workspace
@@ -85,8 +91,23 @@ spec:
                   }
 
                   data "airbyte_connector_configuration" "src" {
-                    connector_name     = "source-{{ $src.engine }}"
+                    connector_name     = "{{ $srcConnector }}"
                     connector_registry = "oss"
+                  {{- if eq $src.engine "mongodb" }}
+                    # MongoDB is non-relational: a database_config (self-managed replica
+                    # set — change streams need one) instead of host/port/schemas. The
+                    # password rides var.src_password (still sourced from the Secret).
+                    configuration = {
+                      database_config = {
+                        cluster_type      = "SELF_MANAGED_REPLICA_SET"
+                        connection_string = "mongodb://{{ $src.host }}:{{ $src.port | default 27017 }}/"
+                        database          = "{{ $src.database }}"
+                        username          = "{{ $src.username }}"
+                        password          = var.src_password
+                        auth_source       = "admin"
+                      }
+                    }
+                  {{- else }}
                     configuration = {
                       host     = "{{ $src.host }}"
                       port     = {{ $src.port | default 5432 }}
@@ -95,8 +116,12 @@ spec:
                       schemas  = [{{ range $i, $s := $srcSchemas }}{{ if $i }}, {{ end }}"{{ $s }}"{{ end }}]
                       ssl_mode = { mode = "{{ if $src.ssl }}require{{ else }}disable{{ end }}" }
                       replication_method = { {{ if $cdc }}method = "CDC", replication_slot = "airbyte_slot_{{ $xrname }}", publication = "airbyte_pub_{{ $xrname }}"{{ else }}method = "Xmin"{{ end }} }
-                  {{- else if eq $src.engine "mysql" }}
+                  {{- else if or (eq $src.engine "mysql") (eq $src.engine "mariadb") }}
                       ssl_mode = { mode = "{{ if $src.ssl }}required{{ else }}preferred{{ end }}" }
+                      replication_method = { method = "{{ if $cdc }}CDC{{ else }}STANDARD{{ end }}" }
+                  {{- else if eq $src.engine "sqlserver" }}
+                      schemas  = [{{ range $i, $s := $srcSchemas }}{{ if $i }}, {{ end }}"{{ $s }}"{{ end }}]
+                      ssl_method = { ssl_method = "{{ if $src.ssl }}encrypted_trust_server_certificate{{ else }}unencrypted{{ end }}" }
                       replication_method = { method = "{{ if $cdc }}CDC{{ else }}STANDARD{{ end }}" }
                   {{- end }}
                       tunnel_method = { tunnel_method = "NO_TUNNEL" }
@@ -105,6 +130,7 @@ spec:
                       username = "{{ $src.username }}"
                       password = var.src_password
                     }
+                  {{- end }}
                   }
 
                   data "airbyte_connector_configuration" "dst" {

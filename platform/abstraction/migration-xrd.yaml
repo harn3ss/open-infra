@@ -49,25 +49,29 @@ spec:
                     existing data. cdc = ongoing change-data-capture sync only.
                     full-load-and-cdc = initial copy then keep in sync. CDC modes
                     require a CDC-ready source (Postgres: wal_level=logical + a
-                    replication slot/publication; MySQL: binlog_format=ROW).
+                    replication slot/publication; MySQL/MariaDB: binlog_format=ROW;
+                    SQL Server: CDC enabled + SQL Server Agent; MongoDB: a replica
+                    set, read via change streams).
                 source:
                   type: object
                   required: [engine, host, database, username, passwordSecretRef]
                   properties:
                     engine:
                       type: string
-                      enum: [postgres, mysql]
-                      description: "Source database engine."
+                      enum: [postgres, mysql, mariadb, sqlserver, mongodb]
+                      description: >-
+                        Source database engine. A source may be proprietary (e.g.
+                        sqlserver) — it's your database, we only read from it.
                     host:
                       type: string
                       description: "Source host (a Service DNS name for internal sources, or any reachable host)."
                     port:
                       type: integer
                       default: 5432
-                      description: "Source port (Postgres 5432, MySQL 3306)."
+                      description: "Source port (Postgres 5432, MySQL/MariaDB 3306, SQL Server 1433, MongoDB 27017)."
                     database:
                       type: string
-                      description: "Source database name."
+                      description: "Source database name (for MongoDB, the database whose collections are replicated)."
                     username:
                       type: string
                       description: "Source username (needs read + replication for CDC)."
@@ -81,7 +85,7 @@ spec:
                       type: array
                       items: { type: string }
                       default: ["public"]
-                      description: "Schemas to replicate (Postgres). Ignored for MySQL."
+                      description: "Schemas to replicate (Postgres: public; SQL Server: dbo). Ignored for MySQL/MariaDB/MongoDB."
                     ssl:
                       type: boolean
                       default: false
@@ -121,7 +125,7 @@ spec:
                 tables:
                   type: array
                   items: { type: string }
-                  description: "Optional table/stream selection. Empty = all tables in the selected schemas."
+                  description: "Optional table/stream selection (MongoDB: collection names). Empty = all tables/collections."
             status:
               type: object
               properties:
