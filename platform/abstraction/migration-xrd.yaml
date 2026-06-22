@@ -1,14 +1,14 @@
-# open-infra's "DMS" (Database Migration Service): kind: Migration — a one-shot
-# full-load data migration into a managed database. v1 targets PostgreSQL and
-# migrates ANY supported source (Postgres / MySQL / MariaDB / SQLite / MSSQL) into
-# it via pgloader (schema + data + type casts), run as a Kubernetes Job. Source
-# and target are Secret references holding a connection URI, so an internal
-# managed DB is just its own connection secret (e.g. <app>-db-app) and
-# internal→internal works the same as external→internal.
+# open-infra's "DMS" (Database Migration Service): kind: Migration.
 #
-# Planned follow-ons: pgcopydb (fast Postgres→Postgres), mydumper (→MySQL),
-# CDC / ongoing replication (Debezium Server → NATS JetStream), and richer ETL
-# (Meltano + dbt). KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+# AWS-DMS-style replication: full-load and/or ongoing CDC sync from a source
+# database into a managed PostgreSQL, powered by the headless Airbyte engine
+# (platform/data/airbyte.yaml) and driven declaratively through Crossplane
+# (provider-terraform → the airbytehq/airbyte Terraform provider). A Migration
+# renders one Airbyte source + destination + connection; users never see Airbyte.
+#
+# source/target are structured endpoints (host/port/db/user + a passwordSecretRef)
+# so the console can present an AWS-DMS endpoint form and so secrets stay in
+# Secrets (injected into the Terraform run as TF_VAR_*; never inlined).
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -40,44 +40,103 @@ spec:
               type: object
               required: [source, target]
               properties:
+                mode:
+                  type: string
+                  enum: [full-load, cdc, full-load-and-cdc]
+                  default: full-load
+                  description: >-
+                    Replication type, like AWS DMS. full-load = one-shot copy of
+                    existing data. cdc = ongoing change-data-capture sync only.
+                    full-load-and-cdc = initial copy then keep in sync. CDC modes
+                    require a CDC-ready source (Postgres: wal_level=logical + a
+                    replication slot/publication; MySQL: binlog_format=ROW).
                 source:
                   type: object
-                  required: [engine, secretRef]
+                  required: [engine, host, database, username, passwordSecretRef]
                   properties:
                     engine:
                       type: string
-                      enum: [postgres, mysql, mariadb, sqlite, mssql]
-                      description: "Source database engine (informational; the actual scheme is in the connection URI)."
-                    secretRef:
+                      enum: [postgres, mysql]
+                      description: "Source database engine."
+                    host:
                       type: string
-                      description: "Name of a Secret (same namespace) holding the source connection URI — e.g. mysql://user:pass@host:3306/db, postgres://…, sqlite://…"
-                    secretKey:
+                      description: "Source host (a Service DNS name for internal sources, or any reachable host)."
+                    port:
+                      type: integer
+                      default: 5432
+                      description: "Source port (Postgres 5432, MySQL 3306)."
+                    database:
                       type: string
-                      default: "uri"
-                      description: "Key in the Secret that holds the connection URI."
+                      description: "Source database name."
+                    username:
+                      type: string
+                      description: "Source username (needs read + replication for CDC)."
+                    passwordSecretRef:
+                      type: object
+                      required: [name]
+                      properties:
+                        name: { type: string, description: "Secret (same namespace) holding the source password." }
+                        key:  { type: string, default: "password", description: "Key in the Secret." }
+                    schemas:
+                      type: array
+                      items: { type: string }
+                      default: ["public"]
+                      description: "Schemas to replicate (Postgres). Ignored for MySQL."
+                    ssl:
+                      type: boolean
+                      default: false
+                      description: "Require TLS to the source."
                 target:
                   type: object
-                  required: [secretRef]
+                  required: [host, database, username, passwordSecretRef]
                   properties:
                     engine:
                       type: string
                       enum: [postgres]
                       default: postgres
                       description: "Target engine. v1 supports PostgreSQL (a managed CloudNativePG cluster, or any Postgres)."
-                    secretRef:
+                    host:
                       type: string
-                      description: "Name of the target Postgres connection Secret (e.g. a managed DB's <app>-db-app) holding a connection URI."
-                    secretKey:
+                      description: "Target Postgres host (e.g. <cluster>-rw.<ns>.svc for a managed DB)."
+                    port:
+                      type: integer
+                      default: 5432
+                    database:
                       type: string
-                      default: "uri"
-                      description: "Key in the Secret that holds the connection URI."
-                mode:
-                  type: string
-                  enum: [full-load]
-                  default: full-load
-                  description: "Migration type. v1 supports full-load (one-shot copy of existing data). CDC / ongoing replication is a planned addition."
+                    username:
+                      type: string
+                    passwordSecretRef:
+                      type: object
+                      required: [name]
+                      properties:
+                        name: { type: string }
+                        key:  { type: string, default: "password" }
+                    schema:
+                      type: string
+                      default: "public"
+                      description: "Target schema to write into."
+                    ssl:
+                      type: boolean
+                      default: false
+                tables:
+                  type: array
+                  items: { type: string }
+                  description: "Optional table/stream selection. Empty = all tables in the selected schemas."
             status:
               type: object
               properties:
+                connectionId:
+                  type: string
+                  description: "The Airbyte connection id backing this Migration."
                 phase: { type: string }
                 ready: { type: boolean }
+      additionalPrinterColumns:
+        - name: Mode
+          type: string
+          jsonPath: .spec.mode
+        - name: Source
+          type: string
+          jsonPath: .spec.source.engine
+        - name: Connection
+          type: string
+          jsonPath: .status.connectionId

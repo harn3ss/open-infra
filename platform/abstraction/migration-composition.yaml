@@ -1,8 +1,18 @@
-# The compiler for kind: Migration -> a one-shot pgloader Job that full-loads a
-# source database into a managed PostgreSQL (open-infra's DMS, full-load mode).
-# pgloader migrates Postgres/MySQL/MariaDB/SQLite/MSSQL -> PostgreSQL (schema +
-# data + type casts) in a single run. Source + target connection URIs come from
-# the referenced Secrets (a managed DB is just its own <app>-db-app secret).
+# The compiler for kind: Migration -> an Airbyte source + destination + connection,
+# created declaratively through Crossplane provider-terraform (the airbytehq/airbyte
+# Terraform provider) against the headless Airbyte engine. This is open-infra's
+# AWS-DMS-style replication: full-load and/or ongoing CDC sync into a managed
+# PostgreSQL. The user only ever sees kind: Migration / the console — Airbyte is the
+# invisible engine.
+#
+# A Workspace per Migration runs an inline Terraform module that:
+#   - resolves the source/destination connector configs (data sources),
+#   - creates the source, then the destination (serialized via depends_on to avoid
+#     Airbyte's config-DB `secrets`-table create race), then the connection,
+#   - outputs the connection id (written to <name>-outputs in the claim namespace).
+# DB passwords + the Airbyte client creds are injected as TF_VAR_* env from Secrets
+# (never inlined). TF state is a per-Workspace kubernetes-backend secret so deletes
+# cleanly destroy the Airbyte resources.
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -27,64 +37,152 @@ spec:
         source: Inline
         inline:
           template: |
-            {{- $spec := .observed.composite.resource.spec }}
-            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
-            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $xrname := $xr.metadata.name }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xrname }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $src := $spec.source }}
             {{- $tgt := $spec.target }}
-            {{- $srcKey := $src.secretKey | default "uri" }}
-            {{- $tgtKey := $tgt.secretKey | default "uri" }}
+            {{- $mode := $spec.mode | default "full-load" }}
+            {{- $cdc := or (eq $mode "cdc") (eq $mode "full-load-and-cdc") }}
+            {{- $abname := printf "%s-%s" $ns $name }}
+            {{- $wsid := "6d21a569-ed76-4fef-b3f0-cd4a1ae03697" }}
+            {{- $srcPwKey := (($src.passwordSecretRef).key) | default "password" }}
+            {{- $tgtPwKey := (($tgt.passwordSecretRef).key) | default "password" }}
+            {{- $srcSchemas := $src.schemas | default (list "public") }}
             ---
-            # One-shot full-load Job. pgloader reads the source + target URIs from
-            # env (sourced from the referenced Secrets — kept out of the manifest).
-            # The connection strings still appear in the container's process args at
-            # runtime; a future hardening is to mount a .load/.pgpass file instead.
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
+            apiVersion: tf.upbound.io/v1beta1
+            kind: Workspace
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: job
+                gotemplating.fn.crossplane.io/composition-resource-name: workspace
+                crossplane.io/external-name: mig-{{ $xrname }}
             spec:
+              providerConfigRef:
+                name: airbyte
               forProvider:
-                manifest:
-                  apiVersion: batch/v1
-                  kind: Job
-                  metadata:
-                    name: {{ $name }}-migration
-                    namespace: {{ $ns }}
-                    labels: { openinfra.dev/migration: "true", app: {{ $name }}-migration }
-                  spec:
-                    backoffLimit: 2
-                    # Keep the finished Job (and its logs) around for a day so the
-                    # console + operators can inspect the result.
-                    ttlSecondsAfterFinished: 86400
-                    template:
-                      metadata: { labels: { openinfra.dev/migration: {{ $name }} } }
-                      spec:
-                        restartPolicy: Never
-                        containers:
-                          - name: pgloader
-                            image: ghcr.io/dimitri/pgloader:latest
-                            command: ["/bin/sh", "-c"]
-                            args:
-                              - |
-                                set -e
-                                # pgloader wants postgresql:// (not postgres://) for the target.
-                                SRC=$(printf '%s' "$SOURCE_URI" | sed -E 's,^postgres://,postgresql://,')
-                                TGT=$(printf '%s' "$TARGET_URI" | sed -E 's,^postgres://,postgresql://,')
-                                echo "open-infra migration: ${SOURCE_ENGINE} source -> postgres target (full-load)"
-                                exec pgloader --verbose "$SRC" "$TGT"
-                            env:
-                              - { name: SOURCE_ENGINE, value: "{{ $src.engine }}" }
-                              - name: SOURCE_URI
-                                valueFrom:
-                                  secretKeyRef: { name: {{ $src.secretRef }}, key: {{ $srcKey }} }
-                              - name: TARGET_URI
-                                valueFrom:
-                                  secretKeyRef: { name: {{ $tgt.secretRef }}, key: {{ $tgtKey }} }
-                        # pgloader is memory-hungry on big tables; give it room.
-                        # (no resources block — inherit namespace defaults)
+                source: Inline
+                enableTerraformCLILogging: false
+                module: |
+                  terraform {
+                    backend "kubernetes" {
+                      secret_suffix     = "mig-{{ $xrname }}"
+                      namespace         = "crossplane-system"
+                      in_cluster_config = true
+                    }
+                  }
+
+                  variable "src_password" {
+                    type      = string
+                    sensitive = true
+                  }
+                  variable "dst_password" {
+                    type      = string
+                    sensitive = true
+                  }
+
+                  data "airbyte_connector_configuration" "src" {
+                    connector_name     = "source-{{ $src.engine }}"
+                    connector_registry = "oss"
+                    configuration = {
+                      host     = "{{ $src.host }}"
+                      port     = {{ $src.port | default 5432 }}
+                      database = "{{ $src.database }}"
+                  {{- if eq $src.engine "postgres" }}
+                      schemas  = [{{ range $i, $s := $srcSchemas }}{{ if $i }}, {{ end }}"{{ $s }}"{{ end }}]
+                      ssl_mode = { mode = "{{ if $src.ssl }}require{{ else }}disable{{ end }}" }
+                      replication_method = { {{ if $cdc }}method = "CDC", replication_slot = "airbyte_slot_{{ $xrname }}", publication = "airbyte_pub_{{ $xrname }}"{{ else }}method = "Xmin"{{ end }} }
+                  {{- else if eq $src.engine "mysql" }}
+                      ssl_mode = { mode = "{{ if $src.ssl }}required{{ else }}preferred{{ end }}" }
+                      replication_method = { method = "{{ if $cdc }}CDC{{ else }}STANDARD{{ end }}" }
+                  {{- end }}
+                      tunnel_method = { tunnel_method = "NO_TUNNEL" }
+                    }
+                    configuration_secrets = {
+                      username = "{{ $src.username }}"
+                      password = var.src_password
+                    }
+                  }
+
+                  data "airbyte_connector_configuration" "dst" {
+                    connector_name     = "destination-postgres"
+                    connector_registry = "oss"
+                    configuration = {
+                      host     = "{{ $tgt.host }}"
+                      port     = {{ $tgt.port | default 5432 }}
+                      database = "{{ $tgt.database }}"
+                      schema   = "{{ $tgt.schema | default "public" }}"
+                      ssl_mode = { mode = "{{ if $tgt.ssl }}require{{ else }}disable{{ end }}" }
+                      tunnel_method = { tunnel_method = "NO_TUNNEL" }
+                    }
+                    configuration_secrets = {
+                      username = "{{ $tgt.username }}"
+                      password = var.dst_password
+                    }
+                  }
+
+                  resource "airbyte_source" "src" {
+                    name          = "{{ $abname }}-source"
+                    workspace_id  = "{{ $wsid }}"
+                    definition_id = data.airbyte_connector_configuration.src.definition_id
+                    configuration = data.airbyte_connector_configuration.src.configuration_json
+                  }
+
+                  resource "airbyte_destination" "dst" {
+                    name          = "{{ $abname }}-destination"
+                    workspace_id  = "{{ $wsid }}"
+                    definition_id = data.airbyte_connector_configuration.dst.definition_id
+                    configuration = data.airbyte_connector_configuration.dst.configuration_json
+                    depends_on    = [airbyte_source.src]
+                  }
+
+                  resource "airbyte_connection" "conn" {
+                    name           = "{{ $abname }}"
+                    source_id      = airbyte_source.src.source_id
+                    destination_id = airbyte_destination.dst.destination_id
+                    status         = "active"
+                  {{- if $cdc }}
+                    schedule = { schedule_type = "cron", cron_expression = "0 0 * * * ?" }
+                  {{- else }}
+                    schedule = { schedule_type = "manual" }
+                  {{- end }}
+                  }
+
+                  output "connection_id" {
+                    value = airbyte_connection.conn.connection_id
+                  }
+                  output "source_id" {
+                    value = airbyte_source.src.source_id
+                  }
+                  output "destination_id" {
+                    value = airbyte_destination.dst.destination_id
+                  }
+                env:
+                  - name: TF_VAR_src_password
+                    secretKeyRef:
+                      namespace: {{ $ns }}
+                      name: {{ $src.passwordSecretRef.name }}
+                      key: {{ $srcPwKey }}
+                  - name: TF_VAR_dst_password
+                    secretKeyRef:
+                      namespace: {{ $ns }}
+                      name: {{ $tgt.passwordSecretRef.name }}
+                      key: {{ $tgtPwKey }}
+                  - name: TF_VAR_airbyte_client_id
+                    secretKeyRef:
+                      namespace: airbyte
+                      name: airbyte-auth-secrets
+                      key: instance-admin-client-id
+                  - name: TF_VAR_airbyte_client_secret
+                    secretKeyRef:
+                      namespace: airbyte
+                      name: airbyte-auth-secrets
+                      key: instance-admin-client-secret
+              writeConnectionSecretToRef:
+                namespace: {{ $ns }}
+                name: {{ $name }}-outputs
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
