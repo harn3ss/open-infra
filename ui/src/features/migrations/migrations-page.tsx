@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
-import { ArrowRightLeft, Check, Plus, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, Play, Plus, Trash2 } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
+import { ApiError, k8sCreate, k8sDelete, triggerMigrationSync } from "@/lib/api";
 import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -57,6 +57,7 @@ function migStatus(m: Migration): { label: string; tone: StatusTone } {
 export function MigrationsPage() {
   const { scoped } = useNamespace();
   const [newOpen, setNewOpen] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
@@ -72,6 +73,18 @@ export function MigrationsPage() {
       // Best-effort cleanup of the wizard-created credential Secret.
       await k8sDelete(resourcePaths.secret(ns, `${name}-creds`)).catch(() => {});
     },
+  });
+
+  const runSync = useMutation({
+    mutationFn: (m: Migration) =>
+      triggerMigrationSync(m.metadata.namespace ?? "default", m.metadata.name ?? ""),
+    onSuccess: (_d, m) =>
+      setSyncMsg({ tone: "ok", text: `Sync started for ${m.metadata.name}.` }),
+    onError: (e, m) =>
+      setSyncMsg({
+        tone: "err",
+        text: `Couldn't sync ${m.metadata.name}: ${e instanceof ApiError ? e.message : "error"}`,
+      }),
   });
 
   const columns = useMemo<ColumnDef<Migration, unknown>[]>(
@@ -146,6 +159,18 @@ export function MigrationsPage() {
             <Button
               size="sm"
               variant="outline"
+              onClick={() => runSync.mutate(row.original)}
+              disabled={
+                runSync.isPending &&
+                runSync.variables?.metadata?.name === row.original.metadata.name
+              }
+              title="Run a sync now"
+            >
+              <Play className="size-4" />
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
               onClick={() => remove.mutate(row.original)}
               disabled={remove.isPending}
               title="Delete this migration (and its credential secret)"
@@ -157,11 +182,23 @@ export function MigrationsPage() {
         size: 80,
       },
     ],
-    [remove],
+    [remove, runSync],
   );
 
   return (
     <>
+      {syncMsg && (
+        <button
+          onClick={() => setSyncMsg(null)}
+          className={`mb-2 block w-full rounded-md px-3 py-2 text-left text-sm ${
+            syncMsg.tone === "ok"
+              ? "bg-primary/10 text-foreground"
+              : "bg-destructive/10 text-destructive"
+          }`}
+        >
+          {syncMsg.text}
+        </button>
+      )}
       <ResourceTablePage<Migration>
         icon={<ArrowRightLeft />}
         title="Migrations"
