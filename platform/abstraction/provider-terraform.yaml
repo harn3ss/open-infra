@@ -1,0 +1,75 @@
+# provider-terraform — lets a Crossplane Composition run Terraform, so it can manage
+# EXTERNAL systems via their Terraform providers (not just k8s objects). Here it drives
+# the headless Airbyte engine (the AWS-level DMS): a Workspace per kind: Migration
+# creates the Airbyte source + destination + connection via the airbytehq/airbyte
+# provider. Airbyte itself never exposes a UI — the console + this provider drive it.
+#
+# RBAC: the crossplane-system SA *group* already has cluster-wide secret CRUD
+# (platform/abstraction/provider-setup.yaml), which covers both the Terraform
+# kubernetes state backend (state secrets in crossplane-system) and reading the
+# Airbyte client creds (airbyte-auth-secrets) — so no extra RBAC here.
+---
+# Terraform forks a process tree per reconcile and writes to /tf/<uid>, so the runtime
+# needs a writable root FS (default) and more headroom than a typical provider.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: provider-terraform
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          containers:
+            - name: package-runtime
+              args:
+                - --debug
+                - --poll=10m                 # drift re-check cadence
+                - --max-reconcile-rate=1     # one terraform process at a time (small node)
+              resources:
+                requests: { cpu: "250m", memory: 512Mi }
+                limits: { cpu: "2", memory: 2Gi }
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-terraform
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: xpkg.upbound.io/upbound/provider-terraform:v1.1.5
+  runtimeConfigRef:
+    name: provider-terraform
+---
+# ProviderConfig for the headless Airbyte engine. The provider block + required_providers
+# live here (shared by every Migration); the kubernetes STATE BACKEND is set per-Workspace
+# (a unique secret_suffix) so each Migration's TF state is isolated and survives for a
+# clean destroy. Client creds are injected per-Workspace via TF_VAR_airbyte_client_id /
+# TF_VAR_airbyte_client_secret env (sourced from the airbyte-auth-secrets secret).
+apiVersion: tf.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: airbyte
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  configuration: |
+    terraform {
+      required_providers {
+        airbyte = {
+          source  = "airbytehq/airbyte"
+          version = "1.2.0"
+        }
+      }
+    }
+    variable "airbyte_client_id"     { type = string }
+    variable "airbyte_client_secret" { type = string, sensitive = true }
+    provider "airbyte" {
+      server_url    = "http://airbyte-airbyte-server-svc.airbyte:8001/api/public/v1/"
+      client_id     = var.airbyte_client_id
+      client_secret = var.airbyte_client_secret
+    }
