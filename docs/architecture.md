@@ -27,9 +27,9 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | AWS | open-infra | Tool | Notes |
 |---|---|---|---|
 | EC2/ECS/Fargate | orchestration | **k3s** | HA = 3 servers w/ embedded etcd |
-| Auto Scaling Groups | autoscaling | **HPA** + **KEDA** | node autoscaling on bare metal is manual in v1 |
+| Auto Scaling Groups | autoscaling | **HPA** | pod CPU/mem autoscaling; KEDA (event-driven) + node autoscaling are planned |
 | ELB/ALB/NLB | ingress + LB | **Traefik** + **MetalLB** | MetalLB needs reserved LAN IPs |
-| Route 53 | DNS | **ExternalDNS** / sslip.io / **Cloudflare** | sslip.io = zero-config dev default |
+| Route 53 | DNS | sslip.io / **Cloudflare** | sslip.io = zero-config dev default; ExternalDNS planned |
 | ACM | TLS | **cert-manager** | LE public, or self-signed LAN CA |
 | S3 | object storage | **MinIO** | can reuse an existing NAS data dir |
 | EBS | block volumes | **Longhorn** | `kind: Volume`; RWO, snapshot/restore, hotplug to VMs |
@@ -42,15 +42,15 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | Lambda | serverless | **Knative** (net-kourier) | `kind: Function`; scale-to-zero 0..N..0, optional GPU |
 | Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
 | EC2 (full VMs) | virtual machines | **KubeVirt + CDI** | `kind: VirtualMachine`; Linux + Windows, VNC, hotplug disks |
-| ECR | registry | **GHCR** (default) / **Harbor** | Harbor for offline/self-host |
+| ECR | registry | **GHCR** | Harbor (offline/self-host) planned |
 | CloudFormation/CDK | the manifest | **infra.yaml → Crossplane** | the heart of the product |
 | CloudWatch | metrics/logs/alerts | **kube-prometheus-stack** + **Loki** | Grafana = the console |
 | IAM | authz/isolation | k8s **RBAC** + namespaces + **NetworkPolicy** | one namespace per app |
 | Directory Service | Active Directory | **Samba AD DC** | `kind: Directory`; Windows domain join |
-| Secrets Manager | secrets | **Sealed Secrets** [+ Vault] | encrypted secrets safe in Git |
-| VPC | network isolation | namespaces + **Cilium/Calico** policies | |
+| Secrets Manager | secrets | **Sealed Secrets** | encrypted secrets safe in Git; Vault planned |
+| VPC | network isolation | namespaces + **NetworkPolicy** | the Application composition authors per-app NetworkPolicies; k3s's built-in controller enforces them |
 | AWS Backup | backup/DR | **Velero** → MinIO/NAS | |
-| Cost Explorer | usage/billing | **Kubecost** / Grafana | a fun "what AWS would've charged" panel |
+| Cost Explorer | usage/billing | *(planned)* | a "what AWS would've charged" panel (Kubecost/Grafana) — not yet built |
 
 ## The `Application` abstraction (the product)
 
