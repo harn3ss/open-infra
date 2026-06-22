@@ -40,9 +40,9 @@ CNCF projects — not a reinvention of databases or storage.
 | AWS | open-infra | Tool |
 |---|---|---|
 | EC2 / ECS | container orchestration | k3s |
-| ASG | autoscaling | HPA + KEDA |
+| ASG | autoscaling | HPA |
 | ALB / ELB | ingress + LB | Traefik + MetalLB |
-| Route 53 | DNS | ExternalDNS / sslip.io / Cloudflare |
+| Route 53 | DNS | sslip.io / Cloudflare |
 | ACM | TLS | cert-manager |
 | S3 | object storage | MinIO |
 | EBS | block volumes (`kind: Volume`) | Longhorn |
