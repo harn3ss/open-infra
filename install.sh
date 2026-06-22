@@ -80,6 +80,7 @@ excl serverless    "serverless/*"
 excl gpu           "gpu/*"
 excl velero        "backup/*"
 excl mariadbOperator "data/mariadb-operator.yaml"
+excl airbyte       "data/airbyte.yaml"
 
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
