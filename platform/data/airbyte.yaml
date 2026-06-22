@@ -4,9 +4,9 @@
 # /api/public/v1) by the console BFF and by Crossplane (provider-terraform).
 # Users only ever see the open-infra console; Airbyte is invisible.
 #
-# Placement: pinned to `cakenas`, the only non-GPU node, so the heavy data
-# plane stays off the GPU boxes (mlbox-g477 = 3090, cake-precision = A2000)
-# which are reserved for models/inference.
+# Placement: pinned (via the openinfra.dev/storage=true node label) to a storage
+# node, so the heavy data plane stays off GPU/ephemeral nodes reserved for
+# models/inference.  Label a node:  kubectl label node <n> openinfra.dev/storage=true
 #
 # Phase A scope: bundled Postgres + MinIO (chart defaults) for a low-risk first
 # bring-up — the official minio/minio image (no Bitnami relocation trap) and
@@ -30,11 +30,11 @@ spec:
       values: |
         global:
           edition: community
-          # Connector (sync/check/discover) job pods land on the non-GPU node too.
+          # Connector (sync/check/discover) job pods land on a storage node too.
           jobs:
             kube:
               nodeSelector:
-                kubernetes.io/hostname: cakenas
+                openinfra.dev/storage: "true"
         # ── Headless: no UI, and drop components a DMS engine doesn't need ──
         webapp:        { enabled: false }   # already default-off in V2; explicit
         keycloak:      { enabled: false }
@@ -43,10 +43,10 @@ spec:
         metrics:       { enabled: false }
         connectorRolloutWorker: { enabled: false }
         manifestServer:         { enabled: false }   # only for low-code/Builder connectors
-        # ── Pin every platform pod to the non-GPU node (cakenas) ──
+        # ── Pin every platform pod to a storage node (openinfra.dev/storage) ──
         server:
           nodeSelector: &pin
-            kubernetes.io/hostname: cakenas
+            openinfra.dev/storage: "true"
         worker:
           nodeSelector: *pin
         workloadLauncher:

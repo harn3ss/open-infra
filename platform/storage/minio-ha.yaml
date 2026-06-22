@@ -2,10 +2,11 @@
 # config.yaml `storage.highAvailability: true`; otherwise storage/minio.yaml
 # (standalone) is used. Exactly one of the two is included in the app-of-apps.
 #
-# Distributed = 4 erasure-coded drives pinned to the always-on nodes (cakenas +
-# cake-precision), 2 per node — so powering down mlbox (the GPU box) never drops
-# MinIO below write quorum. Trade-off: losing one of those two nodes also drops
-# below write quorum (acceptable — they stay up). NOT for single-node dev.
+# Distributed = 4 erasure-coded drives, 2 per storage node. Drives are pinned (via
+# the openinfra.dev/storage=true node label) to your always-on storage nodes, so an
+# ephemeral node powering down never drops MinIO below write quorum. Label at least
+# two nodes first:  kubectl label node <a> <b> openinfra.dev/storage=true
+# NOT for single-node dev (use storage/minio.yaml).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -29,17 +30,17 @@ spec:
           # storageClass left default; for NAS reuse, bind a pre-made PV instead.
         resources:
           requests: { memory: 512Mi }
-        # Pin drives to the always-on nodes (cakenas + cake-precision); never mlbox
-        # (the GPU box that gets powered down) — otherwise stopping it drops MinIO
-        # below write quorum. Soft anti-affinity then spreads the 4 drives 2-per-node.
+        # Pin drives to nodes labelled openinfra.dev/storage=true (your always-on
+        # storage nodes), never ephemeral ones — otherwise stopping a node drops
+        # MinIO below write quorum. Soft anti-affinity then spreads the 4 drives.
         affinity:
           nodeAffinity:
             requiredDuringSchedulingIgnoredDuringExecution:
               nodeSelectorTerms:
                 - matchExpressions:
-                    - key: kubernetes.io/hostname
+                    - key: openinfra.dev/storage
                       operator: In
-                      values: [cakenas, cake-precision-5820-tower-x-series]
+                      values: ["true"]
           podAntiAffinity:
             preferredDuringSchedulingIgnoredDuringExecution:
               - weight: 100
