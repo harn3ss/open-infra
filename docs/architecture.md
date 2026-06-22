@@ -33,6 +33,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | ACM | TLS | **cert-manager** | LE public, or self-signed LAN CA |
 | S3 | object storage | **MinIO** | can reuse an existing NAS data dir |
 | RDS/Aurora | managed Postgres | **CloudNativePG** | **local NVMe PVs, never CIFS/NFS** |
+| DMS | DB migration + CDC | **Airbyte** (headless) → Crossplane | `kind: Migration`; full-load / ongoing CDC into managed Postgres — see [migrations.md](migrations.md) |
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
 | ElastiCache | cache | **Redis** | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
