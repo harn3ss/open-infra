@@ -257,6 +257,42 @@ export function purgeQueue(stream: string): Promise<{ status: string }> {
   });
 }
 
+/* --------------------------- DMS (migration sync) -------------------------- */
+
+export interface SyncJob {
+  jobId?: number;
+  status?: string;
+  jobType?: string;
+  startTime?: string;
+  lastUpdatedAt?: string;
+  rowsSynced?: number;
+  bytesSynced?: number;
+}
+export interface MigrationSyncStatus {
+  data?: SyncJob[];
+  connectionId?: string;
+}
+
+/** Trigger a sync for a Migration's Airbyte connection (the engine stays hidden). */
+export function triggerMigrationSync(
+  namespace: string,
+  name: string,
+): Promise<unknown> {
+  return request(
+    `/migrations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/sync`,
+    { method: "POST" },
+  );
+}
+/** Recent sync jobs for a Migration's connection. */
+export function migrationSyncStatus(
+  namespace: string,
+  name: string,
+): Promise<MigrationSyncStatus> {
+  return request<MigrationSyncStatus>(
+    `/migrations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/sync`,
+  );
+}
+
 /* ----------------------- Model playground (chat proxy) ---------------------- */
 
 export interface ChatMessage {
