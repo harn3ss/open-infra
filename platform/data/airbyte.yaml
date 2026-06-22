@@ -1,0 +1,75 @@
+# Airbyte (OSS, Helm chart V2) — the headless data-movement ENGINE behind
+# open-infra's DMS. NO webapp/UI is exposed: the platform is driven entirely
+# through its API (the `airbyte-airbyte-server-svc:8001` service, base path
+# /api/public/v1) by the console BFF and by Crossplane (provider-terraform).
+# Users only ever see the open-infra console; Airbyte is invisible.
+#
+# Placement: pinned to `cakenas`, the only non-GPU node, so the heavy data
+# plane stays off the GPU boxes (mlbox-g477 = 3090, cake-precision = A2000)
+# which are reserved for models/inference.
+#
+# Phase A scope: bundled Postgres + MinIO (chart defaults) for a low-risk first
+# bring-up — the official minio/minio image (no Bitnami relocation trap) and
+# airbyte/db. Hardening to the platform's CloudNativePG + MinIO is a later
+# values change (global.database.type=external / global.storage.type=S3).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: airbyte
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://airbytehq.github.io/charts
+    chart: airbyte
+    targetRevision: 2.1.0
+    helm:
+      releaseName: airbyte
+      values: |
+        global:
+          edition: community
+          # Connector (sync/check/discover) job pods land on the non-GPU node too.
+          jobs:
+            kube:
+              nodeSelector:
+                kubernetes.io/hostname: cakenas
+        # ── Headless: no UI, and drop components a DMS engine doesn't need ──
+        webapp:        { enabled: false }   # already default-off in V2; explicit
+        keycloak:      { enabled: false }
+        keycloakSetup: { enabled: false }
+        temporalUi:    { enabled: false }
+        metrics:       { enabled: false }
+        connectorRolloutWorker: { enabled: false }
+        manifestServer:         { enabled: false }   # only for low-code/Builder connectors
+        # ── Pin every platform pod to the non-GPU node (cakenas) ──
+        server:
+          nodeSelector: &pin
+            kubernetes.io/hostname: cakenas
+        worker:
+          nodeSelector: *pin
+        workloadLauncher:
+          nodeSelector: *pin
+        workloadApiServer:
+          nodeSelector: *pin
+        temporal:
+          nodeSelector: *pin
+        cron:
+          nodeSelector: *pin
+        airbyteBootloader:
+          nodeSelector: *pin
+        postgresql:
+          nodeSelector: *pin
+        minio:
+          nodeSelector: *pin
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: airbyte
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

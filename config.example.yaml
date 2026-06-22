@@ -112,3 +112,4 @@ components:
   gpu: true                    # NVIDIA device plugin + DCGM metrics (GPU nodes only)
   velero: true                 # scheduled backups → MinIO (node-agent fs backups)
   virtualization: true         # KubeVirt + CDI — kind: VirtualMachine (EC2-style VMs); needs /dev/kvm
+  airbyte: false               # DMS data-movement engine (headless Airbyte): 600+ connectors + CDC, driven via API/Crossplane (no UI exposed). HEAVY (~8-16GB + a standing control plane) — opt in.
