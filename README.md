@@ -45,14 +45,18 @@ CNCF projects — not a reinvention of databases or storage.
 | Route 53 | DNS | ExternalDNS / sslip.io / Cloudflare |
 | ACM | TLS | cert-manager |
 | S3 | object storage | MinIO |
+| EBS | block volumes (`kind: Volume`) | Longhorn |
+| EFS / FSx | shared file storage (`kind: FileShare`) | Samba (SMB) on Longhorn |
 | RDS | managed SQL (`engine: postgres`/`mysql`) | CloudNativePG / MariaDB |
 | DynamoDB | document store (`engine: mongo`) | FerretDB on DocumentDB-Postgres |
 | OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
+| DMS | DB migration + CDC (`kind: Migration`) | Airbyte (headless) + Crossplane |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | ElastiCache | cache | Redis |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
+| Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | Secrets Manager | secrets | Sealed Secrets |
@@ -106,9 +110,10 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
 ```
 
 A **web console** ships with the platform — an AWS-console-style UI over every
-resource (Applications, Functions, Models, Databases, Buckets, Queues, Nodes/GPUs,
-Monitoring) with per-resource detail pages and actions (object browser, model
-playground, create/delete). See [`docs/console.md`](docs/console.md).
+resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
+File Shares, Buckets, Queues, Migrations, Active Directory, Nodes/GPUs, Monitoring)
+with per-resource detail pages and actions (object browser, model playground, the
+DMS migration wizard, create/delete). See [`docs/console.md`](docs/console.md).
 
 See [`docs/architecture.md`](docs/architecture.md) for the full diagram and the
 public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
@@ -143,9 +148,9 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
-MinIO, CloudNativePG, NATS, Redis, kube-prometheus-stack + Loki, Sealed Secrets,
-Knative, Velero, KubeVirt). The four public abstractions are shipped and verified
-end-to-end:
+MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt, Airbyte). The eight public
+abstractions are shipped and verified end-to-end:
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
   (Postgres / MySQL / MongoDB), object storage, and queues — with per-app
@@ -155,6 +160,14 @@ end-to-end:
 - **`VirtualMachine`** — real VMs via KubeVirt (open-infra's "EC2"): an OS
   catalog (Linux + Windows), persistent disk, SSH/RDP. See
   [`docs/virtual-machines.md`](docs/virtual-machines.md).
+- **`Volume`** — EBS-style block volumes (Longhorn): create, hotplug-attach to VMs,
+  snapshot/restore.
+- **`FileShare`** — shared SMB file storage (open-infra's "EFS/FSx"), with a Connect
+  helper (Windows `net use` / Linux `mount`).
+- **`Directory`** — managed Active Directory (Samba AD DC) for Windows domain join.
+- **`Migration`** — AWS-DMS-style DB migration + CDC on a headless Airbyte engine:
+  full-load or continuous sync into a managed Postgres, with a console wizard. See
+  [`docs/migrations.md`](docs/migrations.md).
 
 **Reach anything from the LAN.** Every resource takes `expose: true` to get a
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;
