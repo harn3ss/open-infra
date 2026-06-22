@@ -369,21 +369,35 @@ export interface DirectoryStatus {
 export type Directory = K8sObject<DirectorySpec, DirectoryStatus>;
 export const DIRECTORIES_PLURAL = "directories";
 
-/* ------------------- open-infra Migration CRD (DMS, full-load) ------------ */
+/* --------------- open-infra Migration CRD (DMS — Airbyte-backed) ----------- */
 
+export interface MigrationPasswordRef {
+  name?: string;
+  key?: string;
+}
+/** A source or target database endpoint. Source uses `schemas`; target uses `schema`. */
 export interface MigrationEndpoint {
-  engine?: string;
-  secretRef?: string;
-  secretKey?: string;
+  engine?: string; // source: postgres | mysql · target: postgres
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  passwordSecretRef?: MigrationPasswordRef;
+  schemas?: string[]; // source (postgres)
+  schema?: string; // target
+  ssl?: boolean;
 }
 export interface MigrationSpec {
+  mode?: string; // full-load | cdc | full-load-and-cdc
   source?: MigrationEndpoint;
   target?: MigrationEndpoint;
-  mode?: string;
+  tables?: string[];
 }
 export interface MigrationStatus {
+  connectionId?: string;
   phase?: string;
   ready?: boolean;
+  conditions?: Condition[];
 }
 export type Migration = K8sObject<MigrationSpec, MigrationStatus>;
 export const MIGRATIONS_PLURAL = "migrations";

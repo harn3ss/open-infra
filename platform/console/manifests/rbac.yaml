@@ -52,12 +52,13 @@ rules:
       - networkpolicies
     verbs: [get, list, watch]
 
-  # ── Secrets: read by name only (no list/watch, so the console can't enumerate
-  #    all secrets). Used to surface connection info — a Model's API key for the
-  #    in-console playground, a Database's connection URI. ─────────────────────
+  # ── Secrets: get by name (no list/watch, so the console can't enumerate all
+  #    secrets) + create/manage. Read surfaces connection info (a Model's API key,
+  #    a Database's URI); write lets the DMS wizard create the per-Migration
+  #    credential Secret it references, and clean it up on delete. ──────────────
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get]
+    verbs: [get, create, update, patch, delete]
 
   # ── apiextensions: read CRD schemas (for the schema explorer UI) ──────────
   - apiGroups: [apiextensions.k8s.io]
