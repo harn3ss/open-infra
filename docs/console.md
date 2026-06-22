@@ -16,10 +16,12 @@ time, so the same image runs in any cluster.
 The sidebar is grouped like a cloud console:
 
 - **Dashboard** — counts + health for every resource type, plus recent events.
-- **Compute** — Applications, Functions.
+- **Compute** — Applications, Functions, Virtual Machines.
+- **Storage** — Volumes, File Shares.
+- **Identity** — Active Directory.
 - **AI** — Models.
-- **Data** — Databases, Buckets, Queues.
-- **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity).
+- **Data** — Databases, Migrations, Buckets, Queues.
+- **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity), Network.
 - **Observability** — Monitoring (embedded Grafana dashboards).
 
 ## Resource views & detail pages
@@ -31,10 +33,15 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 |---|---|
 | **Application** | spec, attached DB/buckets/queues, conditions, YAML · create / delete |
 | **Function** (Lambda) | Overview (image/scaling/URL), Monitoring (Grafana), YAML · create / delete |
+| **Virtual Machine** (EC2) | Overview (phase/IP/resources), **VNC console**, disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
 | **Model** (Bedrock) | **Playground** (chat with the model), Overview (endpoint + API key), GPU Monitoring, YAML · create / delete |
 | **Database** (RDS) | Overview (phase/instances/storage), Connectivity (host/port/db/user + connection URI), Monitoring, YAML |
+| **Migration** (DMS) | **New Migration wizard** (source → target → task type → table picker → review), **Run sync**, status · create / delete |
 | **Bucket** (S3) | Objects — browse folders, **upload / download / delete** · create / delete bucket |
 | **Queue** (SQS) | Overview (messages/size/consumers/subjects), **Publish** a message, **Purge** |
+| **Volume** (EBS) | Overview (size/class/attachment), **snapshot / restore**, attach to a VM, YAML · create / delete |
+| **File Share** (EFS/FSx) | Overview, **Connect** (Windows `net use` / Linux `mount`), YAML · create / delete |
+| **Active Directory** (Directory Service) | Overview (domain/realm/DC), **Join** instructions, YAML · create / delete |
 | **Node** | CPU/memory/pod capacity, **GPU** (count + model), conditions, YAML |
 
 ## How it works
@@ -49,13 +56,14 @@ browser ──► console pod (single container)
                    ├─ /api/buckets…    MinIO S3 (list / browse / upload / download / delete)
                    ├─ /api/queues…     NATS JetStream (stats / publish / purge)
                    ├─ /api/models/…/chat   proxy to a Model's gated endpoint (key stays server-side)
+                   ├─ /api/migrations/… discover source tables + trigger/poll a DMS sync (Airbyte stays hidden)
                    └─ /grafana/*       same-origin Grafana embed
 ```
 
 The console runs **read-mostly**: its ServiceAccount has scoped RBAC — read
-workloads + CRDs, CRUD on the `openinfra.dev` kinds, `get`-only on secrets (for
-connection info / a model's key), and a narrow read of just the MinIO root secret.
-It is **not** cluster-admin.
+workloads + CRDs, CRUD on the `openinfra.dev` kinds, `get` + create/manage on
+secrets *by name* (connection info, a model's key, and the DMS wizard's credential
+secret), and a narrow read of just the MinIO root secret. It is **not** cluster-admin.
 
 ## Tech
 

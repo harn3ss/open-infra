@@ -32,6 +32,8 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | Route 53 | DNS | **ExternalDNS** / sslip.io / **Cloudflare** | sslip.io = zero-config dev default |
 | ACM | TLS | **cert-manager** | LE public, or self-signed LAN CA |
 | S3 | object storage | **MinIO** | can reuse an existing NAS data dir |
+| EBS | block volumes | **Longhorn** | `kind: Volume`; RWO, snapshot/restore, hotplug to VMs |
+| EFS/FSx | shared file storage | **Samba (SMB)** on Longhorn | `kind: FileShare`; RWX, Connect helper (net use / mount) |
 | RDS/Aurora | managed Postgres | **CloudNativePG** | **local NVMe PVs, never CIFS/NFS** |
 | DMS | DB migration + CDC | **Airbyte** (headless) → Crossplane | `kind: Migration`; full-load / ongoing CDC into managed Postgres — see [migrations.md](migrations.md) |
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
@@ -39,10 +41,12 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
 | Lambda | serverless | **Knative** (net-kourier) | `kind: Function`; scale-to-zero 0..N..0, optional GPU |
 | Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
+| EC2 (full VMs) | virtual machines | **KubeVirt + CDI** | `kind: VirtualMachine`; Linux + Windows, VNC, hotplug disks |
 | ECR | registry | **GHCR** (default) / **Harbor** | Harbor for offline/self-host |
 | CloudFormation/CDK | the manifest | **infra.yaml → Crossplane** | the heart of the product |
 | CloudWatch | metrics/logs/alerts | **kube-prometheus-stack** + **Loki** | Grafana = the console |
 | IAM | authz/isolation | k8s **RBAC** + namespaces + **NetworkPolicy** | one namespace per app |
+| Directory Service | Active Directory | **Samba AD DC** | `kind: Directory`; Windows domain join |
 | Secrets Manager | secrets | **Sealed Secrets** [+ Vault] | encrypted secrets safe in Git |
 | VPC | network isolation | namespaces + **Cilium/Calico** policies | |
 | AWS Backup | backup/DR | **Velero** → MinIO/NAS | |
