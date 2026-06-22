@@ -77,4 +77,8 @@ spec:
       server_url    = "http://airbyte-airbyte-server-svc.airbyte:8001/api/public/v1/"
       client_id     = var.airbyte_client_id
       client_secret = var.airbyte_client_secret
+      # Self-hosted: server_url defaults to Airbyte Cloud and token_url defaults to the
+      # Cloud auth endpoint, so BOTH must be overridden or the token request hits Cloud
+      # (returns HTML → "invalid character '<'"). This is the instance's own token endpoint.
+      token_url     = "http://airbyte-airbyte-server-svc.airbyte:8001/api/public/v1/applications/token"
     }
