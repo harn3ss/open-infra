@@ -1,0 +1,90 @@
+# The compiler for kind: Migration -> a one-shot pgloader Job that full-loads a
+# source database into a managed PostgreSQL (open-infra's DMS, full-load mode).
+# pgloader migrates Postgres/MySQL/MariaDB/SQLite/MSSQL -> PostgreSQL (schema +
+# data + type casts) in a single run. Source + target connection URIs come from
+# the referenced Secrets (a managed DB is just its own <app>-db-app secret).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: migration
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XMigration
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $src := $spec.source }}
+            {{- $tgt := $spec.target }}
+            {{- $srcKey := $src.secretKey | default "uri" }}
+            {{- $tgtKey := $tgt.secretKey | default "uri" }}
+            ---
+            # One-shot full-load Job. pgloader reads the source + target URIs from
+            # env (sourced from the referenced Secrets — kept out of the manifest).
+            # The connection strings still appear in the container's process args at
+            # runtime; a future hardening is to mount a .load/.pgpass file instead.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: job
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-migration
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/migration: "true", app: {{ $name }}-migration }
+                  spec:
+                    backoffLimit: 2
+                    # Keep the finished Job (and its logs) around for a day so the
+                    # console + operators can inspect the result.
+                    ttlSecondsAfterFinished: 86400
+                    template:
+                      metadata: { labels: { openinfra.dev/migration: {{ $name }} } }
+                      spec:
+                        restartPolicy: Never
+                        containers:
+                          - name: pgloader
+                            image: ghcr.io/dimitri/pgloader:latest
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                set -e
+                                # pgloader wants postgresql:// (not postgres://) for the target.
+                                SRC=$(printf '%s' "$SOURCE_URI" | sed -E 's,^postgres://,postgresql://,')
+                                TGT=$(printf '%s' "$TARGET_URI" | sed -E 's,^postgres://,postgresql://,')
+                                echo "open-infra migration: ${SOURCE_ENGINE} source -> postgres target (full-load)"
+                                exec pgloader --verbose "$SRC" "$TGT"
+                            env:
+                              - { name: SOURCE_ENGINE, value: "{{ $src.engine }}" }
+                              - name: SOURCE_URI
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $src.secretRef }}, key: {{ $srcKey }} }
+                              - name: TARGET_URI
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $tgt.secretRef }}, key: {{ $tgtKey }} }
+                        # pgloader is memory-hungry on big tables; give it room.
+                        # (no resources block — inherit namespace defaults)
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

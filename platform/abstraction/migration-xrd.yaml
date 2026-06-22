@@ -1,0 +1,83 @@
+# open-infra's "DMS" (Database Migration Service): kind: Migration — a one-shot
+# full-load data migration into a managed database. v1 targets PostgreSQL and
+# migrates ANY supported source (Postgres / MySQL / MariaDB / SQLite / MSSQL) into
+# it via pgloader (schema + data + type casts), run as a Kubernetes Job. Source
+# and target are Secret references holding a connection URI, so an internal
+# managed DB is just its own connection secret (e.g. <app>-db-app) and
+# internal→internal works the same as external→internal.
+#
+# Planned follow-ons: pgcopydb (fast Postgres→Postgres), mydumper (→MySQL),
+# CDC / ongoing replication (Debezium Server → NATS JetStream), and richer ETL
+# (Meltano + dbt). KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xmigrations.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XMigration
+    plural: xmigrations
+  claimNames:
+    kind: Migration    # what users write
+    plural: migrations
+  defaultCompositionRef:
+    name: migration
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [source, target]
+              properties:
+                source:
+                  type: object
+                  required: [engine, secretRef]
+                  properties:
+                    engine:
+                      type: string
+                      enum: [postgres, mysql, mariadb, sqlite, mssql]
+                      description: "Source database engine (informational; the actual scheme is in the connection URI)."
+                    secretRef:
+                      type: string
+                      description: "Name of a Secret (same namespace) holding the source connection URI — e.g. mysql://user:pass@host:3306/db, postgres://…, sqlite://…"
+                    secretKey:
+                      type: string
+                      default: "uri"
+                      description: "Key in the Secret that holds the connection URI."
+                target:
+                  type: object
+                  required: [secretRef]
+                  properties:
+                    engine:
+                      type: string
+                      enum: [postgres]
+                      default: postgres
+                      description: "Target engine. v1 supports PostgreSQL (a managed CloudNativePG cluster, or any Postgres)."
+                    secretRef:
+                      type: string
+                      description: "Name of the target Postgres connection Secret (e.g. a managed DB's <app>-db-app) holding a connection URI."
+                    secretKey:
+                      type: string
+                      default: "uri"
+                      description: "Key in the Secret that holds the connection URI."
+                mode:
+                  type: string
+                  enum: [full-load]
+                  default: full-load
+                  description: "Migration type. v1 supports full-load (one-shot copy of existing data). CDC / ongoing replication is a planned addition."
+            status:
+              type: object
+              properties:
+                phase: { type: string }
+                ready: { type: boolean }
