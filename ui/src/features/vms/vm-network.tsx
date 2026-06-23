@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DetailRow } from "@/components/common/detail-row";
+import { SecurityGroupPicker } from "@/components/common/security-group-picker";
 import { k8sGet, k8sReplace } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { VirtualMachine } from "@/types/k8s";
@@ -25,6 +26,7 @@ export function VmNetworkTab({
   namespace,
   vmName,
   ports,
+  securityGroups,
   lanIp,
   accessPort,
   accessLabel,
@@ -33,6 +35,7 @@ export function VmNetworkTab({
   namespace: string;
   vmName: string;
   ports: Port[];
+  securityGroups: string[];
   lanIp?: string;
   accessPort: string;
   accessLabel: string;
@@ -49,6 +52,17 @@ export function VmNetworkTab({
       return k8sReplace<VirtualMachine>(vmPath, {
         ...cur,
         spec: { ...(cur.spec ?? {}), ports: next },
+      } as VirtualMachine);
+    },
+    onSuccess: () => onChange(),
+  });
+
+  const saveSgs = useMutation({
+    mutationFn: async (next: string[]) => {
+      const cur = await k8sGet<VirtualMachine>(vmPath);
+      return k8sReplace<VirtualMachine>(vmPath, {
+        ...cur,
+        spec: { ...(cur.spec ?? {}), securityGroups: next },
       } as VirtualMachine);
     },
     onSuccess: () => onChange(),
@@ -148,6 +162,23 @@ export function VmNetworkTab({
       {save.error ? (
         <p className="text-sm text-destructive">Couldn't update ports — try again.</p>
       ) : null}
+
+      <div className="border-t pt-4">
+        <div className="mb-2 text-sm font-medium">Security groups</div>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Attach firewall rule sets to control who can reach this VM (e.g. restrict
+          SSH/RDP to a CIDR). Click to attach/detach — changes apply immediately.
+        </p>
+        <SecurityGroupPicker
+          namespace={namespace}
+          value={securityGroups}
+          onChange={(next) => saveSgs.mutate(next)}
+          disabled={saveSgs.isPending}
+        />
+        {saveSgs.error ? (
+          <p className="mt-2 text-sm text-destructive">Couldn't update security groups — try again.</p>
+        ) : null}
+      </div>
     </div>
   );
 }

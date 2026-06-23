@@ -261,6 +261,7 @@ export function VmDetailPage() {
             namespace={namespace}
             vmName={name}
             ports={spec?.ports ?? []}
+            securityGroups={spec?.securityGroups ?? []}
             lanIp={lanIp}
             accessPort={port}
             accessLabel={isWin ? "RDP" : "SSH"}
