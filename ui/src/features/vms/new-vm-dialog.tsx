@@ -62,6 +62,13 @@ export function NewVmDialog({
   //   internal = pod network only · lan = MetalLB LAN IP · bridge = direct DHCP
   const [access, setAccess] = useState("internal");
   const [securityGroups, setSecurityGroups] = useState<string[]>([]);
+  // Launch-wizard firewall: by default open the OS access port (SSH 22 / RDP 3389),
+  // like AWS. Creates a "<name>-access" SecurityGroup attached to the VM.
+  const [allowAccess, setAllowAccess] = useState(true);
+  const [accessSource, setAccessSource] = useState("anywhere"); // anywhere | cidr
+  const [accessCidr, setAccessCidr] = useState("");
+  const [allowHttp, setAllowHttp] = useState(false);
+  const [allowHttps, setAllowHttps] = useState(false);
   const [touched, setTouched] = useState(false);
 
   const isWindows = osFamily(os) === "windows";
@@ -106,13 +113,55 @@ export function NewVmDialog({
     setSshKey("");
     setAccess("internal");
     setSecurityGroups([]);
+    setAllowAccess(true);
+    setAccessSource("anywhere");
+    setAccessCidr("");
+    setAllowHttp(false);
+    setAllowHttps(false);
     setTouched(false);
     createMutation.reset();
   }
 
+  const accessPort = isWindows ? 3389 : 22;
+  const useFirewall = allowAccess || allowHttp || allowHttps;
+  const accessSgName = `${name}-access`;
+
   const createMutation = useMutation({
-    mutationFn: (manifest: K8sObject) =>
-      k8sCreate<K8sObject>(openinfraPaths.virtualmachines(namespace), manifest),
+    mutationFn: async (manifest: K8sObject) => {
+      // Launch-wizard convenience: create a "<name>-access" SecurityGroup opening
+      // the OS access port (+ optional HTTP/HTTPS) and intra-namespace traffic,
+      // then attach it (+ any picked SGs) to the VM. Default-deny otherwise.
+      const attached = [...(useFirewall ? [accessSgName] : []), ...securityGroups];
+      if (useFirewall) {
+        const peer =
+          accessSource === "cidr" && accessCidr.trim()
+            ? { cidr: accessCidr.trim() }
+            : { cidr: "0.0.0.0/0" };
+        const ingress: Record<string, unknown>[] = [
+          // keep the VM reachable in-cluster (platform, same-namespace workloads)
+          { from: [{ namespace }] },
+        ];
+        if (allowAccess) ingress.push({ protocol: "TCP", ports: [accessPort], from: [peer] });
+        if (allowHttp) ingress.push({ protocol: "TCP", ports: [80], from: [{ cidr: "0.0.0.0/0" }] });
+        if (allowHttps) ingress.push({ protocol: "TCP", ports: [443], from: [{ cidr: "0.0.0.0/0" }] });
+        try {
+          await k8sCreate<K8sObject>(openinfraPaths.securitygroups(namespace), {
+            apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
+            kind: "SecurityGroup",
+            metadata: { name: accessSgName, namespace },
+            spec: { ingress },
+          } as K8sObject);
+        } catch (e) {
+          // Reuse a pre-existing access group (e.g. recreating a VM of the same name).
+          if (!(e instanceof ApiError && e.status === 409)) throw e;
+        }
+      }
+      const spec = (manifest.spec ?? {}) as Record<string, unknown>;
+      return k8sCreate<K8sObject>(openinfraPaths.virtualmachines(namespace), {
+        ...manifest,
+        spec: { ...spec, ...(attached.length ? { securityGroups: attached } : {}) },
+      } as K8sObject);
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: watchQueryKey(listPath) });
       reset();
@@ -144,7 +193,6 @@ export function NewVmDialog({
         // Derive network + expose from the single access choice.
         expose: access === "lan",
         network: access === "bridge" && bridgeReady ? "bridge" : "masquerade",
-        ...(securityGroups.length ? { securityGroups } : {}),
       },
     } as K8sObject);
   };
@@ -283,13 +331,61 @@ export function NewVmDialog({
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label>Security groups</Label>
-            <SecurityGroupPicker
-              namespace={namespace}
-              value={securityGroups}
-              onChange={setSecurityGroups}
-            />
+          <div className="space-y-2 sm:col-span-2 rounded-md border p-3">
+            <div className="text-sm font-medium">Firewall</div>
+            <p className="text-xs text-muted-foreground">
+              A <code>{(name || "<name>") + "-access"}</code> security group is created
+              and attached, allowing what you pick below (default-deny otherwise). Edit it
+              anytime on the VM's <strong>Network</strong> tab.
+            </p>
+            <label className="flex flex-wrap items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={allowAccess}
+                onChange={(e) => setAllowAccess(e.target.checked)}
+                className="size-4 accent-primary"
+              />
+              Allow {isWindows ? "RDP (3389)" : "SSH (22)"} from
+              <Select value={accessSource} onValueChange={setAccessSource} disabled={!allowAccess}>
+                <SelectTrigger className="h-8 w-44"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="anywhere">Anywhere (0.0.0.0/0)</SelectItem>
+                  <SelectItem value="cidr">Custom IP / CIDR</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            {allowAccess && accessSource === "cidr" ? (
+              <Input
+                value={accessCidr}
+                onChange={(e) => setAccessCidr(e.target.value)}
+                placeholder="192.0.2.0/24"
+                className="h-8 w-56"
+              />
+            ) : null}
+            {allowAccess && accessSource === "anywhere" ? (
+              <p className="text-xs text-warning">
+                Open to the whole internet — fine for a quick test; scope the source for
+                anything real.
+              </p>
+            ) : null}
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={allowHttp} onChange={(e) => setAllowHttp(e.target.checked)} className="size-4 accent-primary" />
+              Allow HTTP (80) from anywhere
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={allowHttps} onChange={(e) => setAllowHttps(e.target.checked)} className="size-4 accent-primary" />
+              Allow HTTPS (443) from anywhere
+            </label>
+            <div className="pt-1">
+              <Label className="text-xs text-muted-foreground">Additional security groups</Label>
+              <div className="mt-1.5">
+                <SecurityGroupPicker
+                  namespace={namespace}
+                  value={securityGroups}
+                  onChange={setSecurityGroups}
+                />
+              </div>
+            </div>
           </div>
           {isWindows ? (
             <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
