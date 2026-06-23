@@ -101,7 +101,7 @@ spec:
                       database_config = {
                         cluster_type      = "SELF_MANAGED_REPLICA_SET"
                         connection_string = "mongodb://{{ $src.host }}:{{ $src.port | default 27017 }}/"
-                        database          = "{{ $src.database }}"
+                        databases         = ["{{ $src.database }}"]
                         username          = "{{ $src.username }}"
                         password          = var.src_password
                         auth_source       = "admin"
