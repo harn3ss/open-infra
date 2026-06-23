@@ -1,0 +1,100 @@
+# open-infra's streaming CDC: kind: Stream — the "Kinesis" path.
+#
+# A Stream taps a source database's change log (CDC) and publishes every row-level
+# change as a real-time event onto NATS JetStream, where apps, Functions, and sinks
+# subscribe. Powered by a headless Debezium Server (platform/abstraction/
+# stream-composition.yaml) whose nats-jetstream sink writes to subjects
+# cdc.<name>.<schema>.<table>; users only ever see kind: Stream / the console.
+#
+# Complements kind: Migration (Airbyte → a managed DB, batch/CDC sync to a
+# *database*). Stream emits to an *event bus* for event-driven consumers.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xstreams.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XStream
+    plural: xstreams
+  claimNames:
+    kind: Stream      # what users write
+    plural: streams
+  defaultCompositionRef:
+    name: stream
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [source]
+              properties:
+                source:
+                  type: object
+                  required: [engine, host, database, username, passwordSecretRef]
+                  properties:
+                    engine:
+                      type: string
+                      enum: [postgres, mysql, mariadb, sqlserver, mongodb]
+                      description: >-
+                        Source database engine for CDC capture. A source may be
+                        proprietary (e.g. sqlserver) — we only read its change log.
+                    host:
+                      type: string
+                      description: "Source host (a Service DNS name, or any reachable host)."
+                    port:
+                      type: integer
+                      default: 5432
+                      description: "Source port (Postgres 5432, MySQL/MariaDB 3306, SQL Server 1433, MongoDB 27017)."
+                    database:
+                      type: string
+                      description: "Source database (for MongoDB, the database whose collections are captured)."
+                    username:
+                      type: string
+                      description: "Source user with replication/CDC rights."
+                    passwordSecretRef:
+                      type: object
+                      required: [name]
+                      properties:
+                        name: { type: string, description: "Secret (same namespace) holding the source password." }
+                        key:  { type: string, default: "password", description: "Key in the Secret." }
+                    schemas:
+                      type: array
+                      items: { type: string }
+                      default: ["public"]
+                      description: "Schema(s) the tables live in (Postgres: public; SQL Server: dbo). Ignored for MySQL/MariaDB/MongoDB."
+                    tables:
+                      type: array
+                      items: { type: string }
+                      description: "Tables/collections to capture (bare names). Empty = all in the database."
+                    ssl:
+                      type: boolean
+                      default: false
+                      description: "Require TLS to the source."
+            status:
+              type: object
+              properties:
+                stream:   { type: string, description: "The JetStream stream backing this Stream." }
+                subjects: { type: string, description: "The subject wildcard change events publish to." }
+                phase:    { type: string }
+                ready:    { type: boolean }
+      additionalPrinterColumns:
+        - name: Engine
+          type: string
+          jsonPath: .spec.source.engine
+        - name: Source
+          type: string
+          jsonPath: .spec.source.host
+        - name: Subjects
+          type: string
+          jsonPath: .status.subjects
