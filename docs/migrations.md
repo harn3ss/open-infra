@@ -101,6 +101,9 @@ namespace once provisioned.
   proprietary (e.g. SQL Server) — it's *your* database, the platform only reads from
   it. Relational sources (pg/mysql/mariadb/sqlserver) map cleanly; MongoDB →
   Postgres flattens documents (each collection becomes a table).
+  - **MariaDB:** use **Choose tables**, not *All tables*. Airbyte's MySQL connector
+    can't auto-discover MariaDB's catalog, so an unscoped "all" connection syncs
+    nothing; an explicit table list works (validated: full-load lands all rows).
 - **Target:** PostgreSQL (a managed CloudNativePG cluster, or any reachable Postgres).
   Targets must be one of the engines open-infra *hosts* (today: Postgres; MySQL/MariaDB
   and Mongo/FerretDB targets are on the roadmap), because the target has to be

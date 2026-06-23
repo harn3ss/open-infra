@@ -559,6 +559,12 @@ function NewMigrationWizard({
                     Choose {itemTerm}
                   </Button>
                 </div>
+                {srcEngine === "mariadb" && tableMode === "all" && (
+                  <p className="text-xs text-amber-600 dark:text-amber-500">
+                    MariaDB: please <b>Choose tables</b> — Airbyte's MySQL connector can't
+                    auto-discover MariaDB's full catalog, so “All tables” may sync nothing.
+                  </p>
+                )}
                 {tableMode === "all" ? (
                   <p className="text-xs text-muted-foreground">
                     Every {srcEngine === "mongodb" ? "collection" : "table"} in the source will be replicated.
