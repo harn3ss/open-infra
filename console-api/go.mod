@@ -9,7 +9,7 @@ require (
 	github.com/microsoft/go-mssqldb v1.10.0
 	github.com/minio/minio-go/v7 v7.2.0
 	github.com/nats-io/nats.go v1.52.0
-	go.mongodb.org/mongo-driver v1.17.4
+	go.mongodb.org/mongo-driver v1.17.7
 	k8s.io/apimachinery v0.33.13
 	k8s.io/client-go v0.33.13
 )
