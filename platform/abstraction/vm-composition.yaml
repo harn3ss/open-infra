@@ -118,6 +118,11 @@ spec:
                         labels:
                           kubevirt.io/domain: {{ $name }}
                           app.kubernetes.io/name: {{ $name }}
+                          {{- /* SecurityGroup membership: launcher pod inherits VMI labels,
+                                 so attached SGs' NetworkPolicies select the VM. */}}
+                          {{- range $sg := ($spec.securityGroups | default list) }}
+                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
                       spec:
                         {{- if $bridge }}
                         # Bridge VMs must land where the macvlan parent NIC exists

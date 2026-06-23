@@ -64,6 +64,13 @@ spec:
                           autoscaling.knative.dev/min-scale: "{{ $scaling.min | default 0 }}"
                           autoscaling.knative.dev/max-scale: "{{ $scaling.max | default 10 }}"
                           autoscaling.knative.dev/target: "{{ $scaling.target | default 100 }}"
+                        {{- if $spec.securityGroups }}
+                        # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
+                        labels:
+                          {{- range $sg := $spec.securityGroups }}
+                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
+                        {{- end }}
                       spec:
                         {{- if gt (int $gpu) 0 }}
                         runtimeClassName: nvidia

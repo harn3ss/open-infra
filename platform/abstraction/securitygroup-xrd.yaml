@@ -1,0 +1,86 @@
+# open-infra's "Security Group": kind: SecurityGroup — a named, reusable set of
+# allow-rules you attach to resources (Application / Function / VirtualMachine) via
+# `securityGroups: [<name>]`. It compiles to a Kubernetes NetworkPolicy that selects
+# the members (pods labelled openinfra.dev/sg-<name>): default-deny on the directions
+# you define, plus your allows — stateful, like an AWS SG.
+#
+# Enforced by Cilium (the cluster CNI). Sources/destinations are:
+#   - cidr          -> real IP/CIDR enforcement for EDGE/LAN traffic (e.g. 192.0.2.0/24)
+#   - securityGroup -> members of another SG (east-west, by identity)
+#   - namespace     -> all pods in a namespace (east-west, by identity)
+# Note: CIDR rules match EXTERNAL sources; in-cluster pods are matched by identity,
+# so use securityGroup/namespace refs for east-west and cidr for the edge.
+# If any egress rule is set, members become egress-restricted and DNS is auto-allowed.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xsecuritygroups.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XSecurityGroup
+    plural: xsecuritygroups
+  claimNames:
+    kind: SecurityGroup
+    plural: securitygroups
+  defaultCompositionRef:
+    name: securitygroup
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                ingress:
+                  type: array
+                  description: "Inbound allow-rules. Omit for none (members stay default-deny inbound once attached)."
+                  items:
+                    type: object
+                    properties:
+                      protocol: { type: string, enum: [TCP, UDP], default: TCP }
+                      ports:
+                        type: array
+                        items: { type: integer }
+                        description: "Ports to allow. Empty = all ports."
+                      from:
+                        type: array
+                        description: "Sources (OR'd). Each is one of cidr / securityGroup / namespace."
+                        items:
+                          type: object
+                          properties:
+                            cidr:          { type: string, description: "edge/LAN source, e.g. 192.0.2.0/24 or 0.0.0.0/0" }
+                            securityGroup: { type: string, description: "members of another SecurityGroup (same namespace)" }
+                            namespace:     { type: string, description: "all pods in this namespace" }
+                egress:
+                  type: array
+                  description: "Outbound allow-rules. If set, members become egress-restricted (DNS auto-allowed)."
+                  items:
+                    type: object
+                    properties:
+                      protocol: { type: string, enum: [TCP, UDP], default: TCP }
+                      ports:
+                        type: array
+                        items: { type: integer }
+                      to:
+                        type: array
+                        description: "Destinations (OR'd). Each is one of cidr / securityGroup / namespace."
+                        items:
+                          type: object
+                          properties:
+                            cidr:          { type: string }
+                            securityGroup: { type: string }
+                            namespace:     { type: string }
+            status:
+              type: object
+              properties:
+                memberLabel: { type: string, description: "Pods carrying this label are members." }

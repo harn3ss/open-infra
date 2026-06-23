@@ -49,7 +49,8 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | IAM | authz/isolation | k8s **RBAC** + namespaces + **NetworkPolicy** | one namespace per app |
 | Directory Service | Active Directory | **Samba AD DC** | `kind: Directory`; Windows domain join |
 | Secrets Manager | secrets | **Sealed Secrets** | encrypted secrets safe in Git; Vault planned |
-| VPC | network isolation | namespaces + **NetworkPolicy** | the Application composition authors per-app NetworkPolicies; k3s's built-in controller enforces them |
+| VPC | network isolation | namespaces + **NetworkPolicy** | the Application composition authors per-app NetworkPolicies; **Cilium** enforces them |
+| VPC Security Groups | host firewall | **Cilium NetworkPolicy** | `kind: SecurityGroup`; reusable rule sets (CIDR / SG / namespace, ingress + egress) attached to apps/functions/VMs — see [security-groups.md](security-groups.md) |
 | AWS Backup | backup/DR | **Velero** → MinIO/NAS | |
 | Cost Explorer | usage/billing | *(planned)* | a "what AWS would've charged" panel (Kubecost/Grafana) — not yet built |
 

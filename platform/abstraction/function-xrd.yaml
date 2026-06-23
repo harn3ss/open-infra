@@ -64,6 +64,10 @@ spec:
                   type: array
                   items: { type: string }
                   description: "Secrets to inject (envFrom) — e.g. an app's DB/bucket creds, or a Sealed Secret"
+                securityGroups:
+                  type: array
+                  items: { type: string }
+                  description: "Names of SecurityGroups (firewall rule sets) to attach to this function's pods."
                 trigger:
                   type: object
                   description: >-

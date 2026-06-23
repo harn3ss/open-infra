@@ -90,6 +90,10 @@ spec:
                   type: array
                   items: { type: string }
                   description: "Names mounted from Sealed Secrets"
+                securityGroups:
+                  type: array
+                  items: { type: string }
+                  description: "Names of SecurityGroups (firewall rule sets) to attach to this app's pods."
             status:
               type: object
               properties:
