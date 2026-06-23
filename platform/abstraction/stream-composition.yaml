@@ -1,0 +1,245 @@
+# The compiler for kind: Stream -> a headless Debezium Server that captures the
+# source's change log (CDC) and publishes every row change onto NATS JetStream.
+# This is open-infra's "Kinesis" path: change events land on subjects
+# cdc.<name>.<schema>.<table> in a durable JetStream stream cdc-<name>, where
+# apps, Functions, and sinks subscribe. The user only ever sees kind: Stream.
+#
+# Per Stream the composition renders:
+#   - a PVC (Debezium offsets + schema history, so restarts resume, not re-snapshot),
+#   - a ConfigMap (Debezium Server application.properties; the source password is
+#     NEVER in here — it's injected as an env var from the user's Secret, which
+#     Quarkus maps onto debezium.source.{database,mongodb}.password),
+#   - a Deployment (Debezium Server; an initContainer creates the JetStream stream),
+#   - a connection Secret (<name>-stream: NATS_URL / STREAM / SUBJECTS) for consumers.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: stream
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XStream
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $src := $spec.source }}
+            {{- $engine := $src.engine }}
+            {{- $host := $src.host }}
+            {{- $port := $src.port | default 5432 }}
+            {{- $db := $src.database }}
+            {{- $user := $src.username }}
+            {{- $ssl := $src.ssl | default false }}
+            {{- $schemas := $src.schemas | default (list "public") }}
+            {{- $tables := $src.tables | default (list) }}
+            {{- $pwKey := (($src.passwordSecretRef).key) | default "password" }}
+            {{- $pwSecret := $src.passwordSecretRef.name }}
+            {{- $slot := printf "dbz_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") }}
+            {{- $streamName := printf "cdc-%s" $name }}
+            {{- $subjects := printf "cdc.%s.>" $name }}
+            {{- /* mongo's password property is debezium.source.mongodb.password; the
+                   relational engines use debezium.source.database.password. Quarkus
+                   maps the matching UPPER_SNAKE env var onto the property. */}}
+            {{- $pwEnv := "DEBEZIUM_SOURCE_DATABASE_PASSWORD" }}
+            {{- if eq $engine "mongodb" }}{{ $pwEnv = "DEBEZIUM_SOURCE_MONGODB_PASSWORD" }}{{- end }}
+            {{- /* table/collection include list: qualify each bare table name. */}}
+            {{- $qualifier := $db }}
+            {{- if or (eq $engine "postgres") (eq $engine "sqlserver") }}{{ $qualifier = ($schemas | first) }}{{- end }}
+            {{- $include := "" }}
+            {{- if $tables }}
+            {{-   $q := list }}
+            {{-   range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qualifier $t) }}{{- end }}
+            {{-   $include = join "," $q }}
+            {{- end }}
+            ---
+            # Debezium offsets + (relational) schema history. Stable so a restart
+            # resumes from the last LSN/binlog position instead of re-snapshotting.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: offsets-pvc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}-stream-offsets
+                    namespace: {{ $ns }}
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    storageClassName: longhorn
+                    resources:
+                      requests:
+                        storage: 1Gi
+            ---
+            # Debezium Server config. NOTE: no password here — it's an env var.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-stream-config
+                    namespace: {{ $ns }}
+                  data:
+                    application.properties: |
+                      debezium.sink.type=nats-jetstream
+                      debezium.sink.nats-jetstream.url=nats://nats.nats.svc.cluster.local:4222
+                      debezium.source.offset.storage.file.filename=/debezium/data/offsets.dat
+                      debezium.source.offset.flush.interval.ms=0
+                      debezium.source.topic.prefix=cdc.{{ $name }}
+                      debezium.format.key=json
+                      debezium.format.value=json
+                      debezium.format.key.schemas.enable=false
+                      debezium.format.value.schemas.enable=false
+                      quarkus.log.console.json=false
+                  {{- if eq $engine "postgres" }}
+                      debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+                      debezium.source.plugin.name=pgoutput
+                      debezium.source.slot.name={{ $slot }}
+                      debezium.source.publication.name={{ $slot }}_pub
+                      debezium.source.database.hostname={{ $host }}
+                      debezium.source.database.port={{ $port }}
+                      debezium.source.database.user={{ $user }}
+                      debezium.source.database.dbname={{ $db }}
+                    {{- if $ssl }}
+                      debezium.source.database.sslmode=require
+                    {{- end }}
+                    {{- if $include }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- end }}
+                  {{- else if or (eq $engine "mysql") (eq $engine "mariadb") }}
+                      debezium.source.connector.class=io.debezium.connector.mysql.MySqlConnector
+                      debezium.source.database.hostname={{ $host }}
+                      debezium.source.database.port={{ $port }}
+                      debezium.source.database.user={{ $user }}
+                      debezium.source.database.server.id={{ $name | adler32sum }}
+                      debezium.source.database.include.list={{ $db }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                    {{- if $ssl }}
+                      debezium.source.database.ssl.mode=required
+                    {{- end }}
+                    {{- if $include }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- end }}
+                  {{- else if eq $engine "sqlserver" }}
+                      debezium.source.connector.class=io.debezium.connector.sqlserver.SqlServerConnector
+                      debezium.source.database.hostname={{ $host }}
+                      debezium.source.database.port={{ $port }}
+                      debezium.source.database.user={{ $user }}
+                      debezium.source.database.names={{ $db }}
+                      debezium.source.database.encrypt={{ $ssl }}
+                    {{- if $ssl }}
+                      debezium.source.database.trustServerCertificate=true
+                    {{- end }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                    {{- if $include }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- end }}
+                  {{- else if eq $engine "mongodb" }}
+                      debezium.source.connector.class=io.debezium.connector.mongodb.MongoDbConnector
+                      debezium.source.mongodb.connection.string=mongodb://{{ $host }}:{{ $port }}/?authSource=admin{{ if $ssl }}&tls=true{{ end }}
+                      debezium.source.mongodb.user={{ $user }}
+                      debezium.source.capture.mode=change_streams_update_full
+                    {{- if $include }}
+                      debezium.source.collection.include.list={{ $include }}
+                    {{- end }}
+                  {{- end }}
+            ---
+            # Debezium Server. initContainer creates the JetStream stream first so the
+            # nats-jetstream sink has somewhere to publish.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: debezium
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-stream-dbz
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-stream, openinfra.dev/stream: "true" }
+                  spec:
+                    replicas: 1
+                    strategy: { type: Recreate }
+                    selector: { matchLabels: { app: {{ $name }}-stream } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-stream } }
+                      spec:
+                        securityContext: { fsGroup: 185 }
+                        initContainers:
+                          - name: ensure-stream
+                            image: natsio/nats-box:latest
+                            env:
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                            command:
+                              - sh
+                              - -c
+                              - nats stream info {{ $streamName }} >/dev/null 2>&1 || nats stream add {{ $streamName }} --subjects='{{ $subjects }}' --storage=file --replicas=1 --defaults
+                        containers:
+                          - name: debezium
+                            image: quay.io/debezium/server:2.7.3.Final
+                            env:
+                              - name: {{ $pwEnv }}
+                                valueFrom:
+                                  secretKeyRef:
+                                    name: {{ $pwSecret }}
+                                    key: {{ $pwKey }}
+                            volumeMounts:
+                              - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
+                              - { name: data, mountPath: /debezium/data }
+                        volumes:
+                          - name: config
+                            configMap: { name: {{ $name }}-stream-config }
+                          - name: data
+                            persistentVolumeClaim: { claimName: {{ $name }}-stream-offsets }
+            ---
+            # Connection secret: where consumers find the change events.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: conn-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-stream
+                    namespace: {{ $ns }}
+                  stringData:
+                    NATS_URL: nats://nats.nats.svc.cluster.local:4222
+                    STREAM: {{ $streamName }}
+                    SUBJECTS: {{ $subjects }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
