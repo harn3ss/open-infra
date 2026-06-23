@@ -94,9 +94,12 @@ CDC reads the source's change log, which the source must be configured for:
 ## Engines
 
 PostgreSQL, MySQL, MariaDB, SQL Server, MongoDB — a source may be proprietary
-(e.g. SQL Server); we only read its change log. Validated end-to-end on PostgreSQL
-(snapshot + live CDC → JetStream); the other engines use the same machinery with
-their standard Debezium connector config.
+(e.g. SQL Server); we only read its change log. Validated end-to-end (snapshot +
+live CDC → JetStream) on **PostgreSQL** (logical replication), **MariaDB** (binlog),
+**MongoDB** (change streams), and **SQL Server** (CDC tables); MySQL uses the same
+Debezium connector as MariaDB. Note: MariaDB streams cleanly here even though its
+DMS *batch* path needs explicit table selection — Debezium reads the binlog
+directly, sidestepping that.
 
 ## `Stream` vs `Migration`
 
