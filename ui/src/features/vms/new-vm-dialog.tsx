@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/common/states";
+import { SecurityGroupPicker } from "@/components/common/security-group-picker";
 import { ApiError, k8sCreate, k8sList } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
@@ -60,6 +61,7 @@ export function NewVmDialog({
   // One cohesive reachability choice (maps to network + expose at submit):
   //   internal = pod network only · lan = MetalLB LAN IP · bridge = direct DHCP
   const [access, setAccess] = useState("internal");
+  const [securityGroups, setSecurityGroups] = useState<string[]>([]);
   const [touched, setTouched] = useState(false);
 
   const isWindows = osFamily(os) === "windows";
@@ -103,6 +105,7 @@ export function NewVmDialog({
     setDiskSize("20Gi");
     setSshKey("");
     setAccess("internal");
+    setSecurityGroups([]);
     setTouched(false);
     createMutation.reset();
   }
@@ -141,6 +144,7 @@ export function NewVmDialog({
         // Derive network + expose from the single access choice.
         expose: access === "lan",
         network: access === "bridge" && bridgeReady ? "bridge" : "masquerade",
+        ...(securityGroups.length ? { securityGroups } : {}),
       },
     } as K8sObject);
   };
@@ -278,6 +282,14 @@ export function NewVmDialog({
                 ) : null}
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label>Security groups</Label>
+            <SecurityGroupPicker
+              namespace={namespace}
+              value={securityGroups}
+              onChange={setSecurityGroups}
+            />
           </div>
           {isWindows ? (
             <div className="sm:col-span-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-muted-foreground">
