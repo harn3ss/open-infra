@@ -60,6 +60,9 @@ spec:
             {{- $isWin := eq $profile.osType "windows" }}
             {{- $port := 22 }}{{- $user := "openinfra" }}{{- $proto := "ssh" }}
             {{- if $isWin }}{{- $port = 3389 }}{{- $user = "Administrator" }}{{- $proto = "rdp" }}{{- end }}
+            {{- /* Extra TCP ports to publish on the VM's LAN IP (the masquerade NIC
+                   forwards all ports to the guest; the Service just advertises these). */}}
+            {{- $ports := $spec.ports | default (list) }}
             {{- /* Windows root disk is FIXED at 70Gi and NOT user-selectable: a
                    generalized image's C: can't be reliably auto-grown, so a larger
                    root would only strand unallocated space. Extra Windows storage is
@@ -285,6 +288,9 @@ spec:
                     selector: { kubevirt.io/domain: {{ $name }} }
                     ports:
                       - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
+                      {{- range $p := $ports }}
+                      - { name: "p{{ $p }}", port: {{ $p }}, targetPort: {{ $p }} }
+                      {{- end }}
             ---
             # --- Connection Secret: how to log in (cf. the DB/model secret). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -310,9 +316,10 @@ spec:
                     {{- else }}
                     ACCESS: "ssh {{ $user }}@HOST"
                     {{- end }}
-            {{- if $spec.expose }}
+            {{- if or $spec.expose $ports }}
             ---
-            # --- LAN LoadBalancer (MetalLB): reach the VM from workstations. ---
+            # --- LAN LoadBalancer (MetalLB): reach the VM from workstations. One IP
+            #     carries the access port (SSH/RDP) plus any spec.ports (e.g. 80/443). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -332,6 +339,9 @@ spec:
                     selector: { kubevirt.io/domain: {{ $name }} }
                     ports:
                       - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
+                      {{- range $p := $ports }}
+                      - { name: "p{{ $p }}", port: {{ $p }}, targetPort: {{ $p }} }
+                      {{- end }}
             {{- end }}
     - step: ready
       functionRef:
