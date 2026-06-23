@@ -69,7 +69,13 @@ spec:
                   spec:
                     selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
                     template:
-                      metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
+                      metadata:
+                        labels:
+                          app.kubernetes.io/name: {{ $name }}
+                          {{- /* SecurityGroup membership: each attached SG's NetworkPolicy selects this label */}}
+                          {{- range $sg := ($spec.securityGroups | default list) }}
+                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
                       spec:
                         containers:
                           - name: app
@@ -275,8 +281,8 @@ spec:
                     policyTypes: [Ingress]
                     ingress:
                       - from:
-                          # same namespace (kube-router honors namespaceSelector by
-                          # the auto-applied name label, not a bare podSelector {})
+                          # same namespace (matched via the auto-applied name label;
+                          # Cilium enforces the policy)
                           - namespaceSelector:
                               matchLabels: { kubernetes.io/metadata.name: {{ $ns }} }
                           # the ingress controller (Traefik) so external traffic works

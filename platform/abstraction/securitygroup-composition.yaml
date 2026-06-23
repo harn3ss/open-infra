@@ -1,0 +1,119 @@
+# The compiler: one SecurityGroup claim -> one NetworkPolicy that selects the SG's
+# members (pods labelled openinfra.dev/sg-<name>) and applies default-deny + the
+# declared allows. Enforced by Cilium.
+#
+#   from/to:
+#     cidr          -> ipBlock          (edge/LAN IP enforcement; external sources)
+#     securityGroup -> podSelector      (members of another SG, same namespace)
+#     namespace     -> namespaceSelector (all pods in a namespace)
+#   protocol/ports  -> NetworkPolicyPort list (empty ports = all ports)
+#   any egress rule -> Egress policyType + an auto DNS allow (UDP/TCP 53 to kube-system)
+#
+# Members are produced by the resource compositions: an Application/Function/VM with
+# `securityGroups: [web]` stamps openinfra.dev/sg-web="" on its pods.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: securitygroup
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XSecurityGroup
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $defIngress := hasKey $spec "ingress" }}
+            {{- $defEgress := hasKey $spec "egress" }}
+            {{- /* build ingress rules */}}
+            {{- $ingressRules := list }}
+            {{- range $rule := ($spec.ingress | default list) }}
+              {{- $peers := list }}
+              {{- range $src := ($rule.from | default list) }}
+                {{- if $src.cidr }}{{ $peers = append $peers (dict "ipBlock" (dict "cidr" $src.cidr)) }}
+                {{- else if $src.securityGroup }}{{ $peers = append $peers (dict "podSelector" (dict "matchLabels" (dict (printf "openinfra.dev/sg-%s" $src.securityGroup) ""))) }}
+                {{- else if $src.namespace }}{{ $peers = append $peers (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $src.namespace))) }}
+                {{- end }}
+              {{- end }}
+              {{- $r := dict "from" $peers }}
+              {{- if $rule.ports }}
+                {{- $ports := list }}
+                {{- range $p := $rule.ports }}{{ $ports = append $ports (dict "protocol" ($rule.protocol | default "TCP") "port" $p) }}{{ end }}
+                {{- $r = set $r "ports" $ports }}
+              {{- end }}
+              {{- $ingressRules = append $ingressRules $r }}
+            {{- end }}
+            {{- /* build egress rules + auto DNS */}}
+            {{- $egressRules := list }}
+            {{- range $rule := ($spec.egress | default list) }}
+              {{- $peers := list }}
+              {{- range $dst := ($rule.to | default list) }}
+                {{- if $dst.cidr }}{{ $peers = append $peers (dict "ipBlock" (dict "cidr" $dst.cidr)) }}
+                {{- else if $dst.securityGroup }}{{ $peers = append $peers (dict "podSelector" (dict "matchLabels" (dict (printf "openinfra.dev/sg-%s" $dst.securityGroup) ""))) }}
+                {{- else if $dst.namespace }}{{ $peers = append $peers (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $dst.namespace))) }}
+                {{- end }}
+              {{- end }}
+              {{- $r := dict "to" $peers }}
+              {{- if $rule.ports }}
+                {{- $ports := list }}
+                {{- range $p := $rule.ports }}{{ $ports = append $ports (dict "protocol" ($rule.protocol | default "TCP") "port" $p) }}{{ end }}
+                {{- $r = set $r "ports" $ports }}
+              {{- end }}
+              {{- $egressRules = append $egressRules $r }}
+            {{- end }}
+            {{- if $defEgress }}
+              {{- $dns := dict "to" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")))) "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53)) }}
+              {{- $egressRules = append $egressRules $dns }}
+            {{- end }}
+            ---
+            # --- The SecurityGroup's NetworkPolicy ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: sg-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/securitygroup: {{ $name }} }
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        openinfra.dev/sg-{{ $name }}: ""
+                    policyTypes:
+                    {{- if $defIngress }}
+                      - Ingress
+                    {{- end }}
+                    {{- if $defEgress }}
+                      - Egress
+                    {{- end }}
+                    {{- if $defIngress }}
+                    ingress:{{ if $ingressRules }}{{ toYaml $ingressRules | nindent 22 }}{{ else }} []{{ end }}
+                    {{- end }}
+                    {{- if $defEgress }}
+                    egress:{{ if $egressRules }}{{ toYaml $egressRules | nindent 22 }}{{ else }} []{{ end }}
+                    {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
