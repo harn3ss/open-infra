@@ -74,10 +74,40 @@ nats sub 'cdc.orders-cdc.>'                 # tail all changes
 nats sub 'cdc.orders-cdc.public.orders'     # just one table
 ```
 
-A [`Function`](serverless.md) makes a serverless, scale-to-zero processor (the
-Lambda-on-Kinesis pattern): subscribe to the subject, transform/enrich/route each
-event. The `<name>-stream` connection Secret holds `NATS_URL` / `STREAM` /
-`SUBJECTS` for consumers.
+The `<name>-stream` connection Secret holds `NATS_URL` / `STREAM` / `SUBJECTS` for
+any consumer you write.
+
+## Trigger a Function (the Lambda-on-Kinesis pattern)
+
+The first-class way to *process* a stream is a [`Function`](serverless.md) with a
+**`trigger`** — an event-source mapping. The platform runs a small **pump** (a
+durable JetStream consumer) that POSTs each event to the function; the function
+**cold-starts on demand and scales back to zero** when the stream is idle. Only the
+pump stays up.
+
+```yaml
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: orders-processor
+  namespace: myapp
+spec:
+  image: ghcr.io/me/orders-processor   # serves HTTP; gets each event as a POST body
+  trigger:
+    stream: orders-cdc                  # the kind: Stream to consume
+    # subject: cdc.orders-cdc.public.orders   # optional filter (default cdc.<stream>.>)
+```
+
+Each change event arrives as an HTTP `POST` whose body is the Debezium envelope
+(above). Return **2xx to ack**; a non-2xx (or a crash) leaves the event unacked, so
+the pump redelivers — at-least-once delivery. The pump waits up to 90s for a
+response (covers cold starts). Stateless per-event work (enrich, filter, route, fan
+out to another stream or a DB) is the sweet spot; stateful aggregation belongs in a
+streaming-SQL engine (a later tier).
+
+Validated end-to-end: a `Function` with `trigger` cold-started from zero on the
+snapshot event, then received live `op:"c"` inserts within seconds, with the pump's
+durable consumer acking cleanly.
 
 ## Source CDC prerequisites
 

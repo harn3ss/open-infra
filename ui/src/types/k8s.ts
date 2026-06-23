@@ -228,6 +228,7 @@ export interface FunctionSpec {
   queues?: string[];
   env?: { name: string; value: string }[];
   secrets?: string[];
+  trigger?: { stream?: string; subject?: string }; // event-source mapping: CDC Stream -> this fn
 }
 
 /** Serverless (Knative) Function. Named OpenInfraFunction to avoid shadowing the global `Function`. */
