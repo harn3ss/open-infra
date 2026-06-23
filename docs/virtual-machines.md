@@ -83,6 +83,25 @@ stopped.
   pulls a real **DHCP lease** from your router. It's a first-class LAN host — no
   MetalLB, no NAT.
 
+### Publishing extra ports (masquerade)
+
+A masquerade VM publishes only its access port (SSH 22 / RDP 3389). To expose more
+— a web server on 80, DNS on 53/UDP, etc. — add them to `spec.ports`; they ride the
+**same** MetalLB LAN IP as SSH/RDP (one IP, the ports you pick), no bridge needed:
+
+```yaml
+spec:
+  ports:
+    - { port: 80 }                 # TCP by default
+    - { port: 443 }
+    - { port: 53, protocol: UDP }
+```
+
+Setting any port also gives the VM a LAN IP (implies `expose`). In the console the
+VM's **Network** tab manages this list (add/remove port + protocol). The guest must
+actually be listening on the port. For a *full* LAN host (every port, a real DHCP
+IP), use `network: bridge` instead.
+
 ### Enabling bridge mode
 
 Bridge mode needs Multus (a cluster CNI change), so it's opt-in — but it's a

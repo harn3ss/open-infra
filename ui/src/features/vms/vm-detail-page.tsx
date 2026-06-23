@@ -19,6 +19,7 @@ import { kubevirtPaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
 import type { K8sObject, VirtualMachine, Vmi } from "@/types/k8s";
 import { osFamily, osLabel, vmIp, vmStatus } from "./vm-shared";
 import { VmVolumesTab } from "./vm-volumes";
+import { VmNetworkTab } from "./vm-network";
 
 function decode(v?: string): string {
   if (!v) return "";
@@ -69,7 +70,7 @@ export function VmDetailPage() {
 
   const { data: lanSvc } = useQuery({
     queryKey: ["vm-lan", namespace, name],
-    enabled: Boolean(vm?.spec?.expose),
+    enabled: Boolean(vm?.spec?.expose) || (vm?.spec?.ports?.length ?? 0) > 0,
     queryFn: () =>
       k8sGet<SvcStatus>(resourcePaths.service(namespace, `${name}-lan`)),
     retry: false,
@@ -141,6 +142,7 @@ export function VmDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="access">Access</TabsTrigger>
+          <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
@@ -239,6 +241,18 @@ export function VmDetailPage() {
               </DetailRow>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="network" className="pt-4">
+          <VmNetworkTab
+            namespace={namespace}
+            vmName={name}
+            ports={spec?.ports ?? []}
+            lanIp={lanIp}
+            accessPort={port}
+            accessLabel={isWin ? "RDP" : "SSH"}
+            onChange={() => void refetch()}
+          />
         </TabsContent>
 
         <TabsContent value="storage" className="pt-4">
