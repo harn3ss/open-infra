@@ -15,6 +15,7 @@ import {
   Radio,
   Send,
   Server,
+  Shield,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -41,6 +42,8 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "File Shares", to: "/fileshares", icon: FolderTree, matchPrefix: true, section: "Storage" },
 
   { label: "Active Directory", to: "/directories", icon: Building2, matchPrefix: true, section: "Identity" },
+
+  { label: "Security Groups", to: "/security-groups", icon: Shield, matchPrefix: true, section: "Security" },
 
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "AI" },
 

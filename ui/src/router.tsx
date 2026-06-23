@@ -18,6 +18,7 @@ import { VmImagesPage } from "@/features/vms/vm-images-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
+import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { MigrationsPage } from "@/features/migrations/migrations-page";
 import { StreamsPage } from "@/features/streams/streams-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
@@ -108,6 +109,12 @@ const directoriesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/directories",
   component: DirectoriesPage,
+});
+
+const securityGroupsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/security-groups",
+  component: SecurityGroupsPage,
 });
 
 const migrationsRoute = createRoute({
@@ -201,6 +208,7 @@ const routeTree = rootRoute.addChildren([
   volumesRoute,
   fileSharesRoute,
   directoriesRoute,
+  securityGroupsRoute,
   migrationsRoute,
   streamsRoute,
   databasesRoute,

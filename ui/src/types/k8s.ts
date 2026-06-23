@@ -204,6 +204,7 @@ export interface ApplicationSpec {
   queues?: string[];
   env?: { name: string; value: string }[];
   secrets?: string[];
+  securityGroups?: string[];
 }
 
 export interface ApplicationStatus {
@@ -228,6 +229,7 @@ export interface FunctionSpec {
   queues?: string[];
   env?: { name: string; value: string }[];
   secrets?: string[];
+  securityGroups?: string[];
   trigger?: { stream?: string; subject?: string }; // event-source mapping: CDC Stream -> this fn
 }
 
@@ -268,6 +270,7 @@ export interface VirtualMachineSpec {
   expose?: boolean;
   running?: boolean;
   ports?: { port: number; protocol?: string }[]; // extra TCP/UDP ports on the LAN IP
+  securityGroups?: string[];
 }
 
 export interface VirtualMachineStatus {
@@ -428,6 +431,32 @@ export interface StreamStatus {
 }
 export type Stream = K8sObject<StreamSpec, StreamStatus>;
 export const STREAMS_PLURAL = "streams";
+
+/* ------------- open-infra SecurityGroup CRD (AWS Security Group) ----------- */
+
+/** One peer in a rule: exactly one of cidr / securityGroup / namespace. */
+export interface SecurityGroupPeer {
+  cidr?: string;
+  securityGroup?: string;
+  namespace?: string;
+}
+export interface SecurityGroupRule {
+  protocol?: string; // TCP (default) | UDP
+  ports?: number[]; // empty = all ports
+  from?: SecurityGroupPeer[]; // ingress
+  to?: SecurityGroupPeer[]; // egress
+}
+export interface SecurityGroupSpec {
+  ingress?: SecurityGroupRule[];
+  egress?: SecurityGroupRule[];
+}
+export interface SecurityGroupStatus {
+  memberLabel?: string;
+  conditions?: Condition[];
+}
+export type SecurityGroup = K8sObject<SecurityGroupSpec, SecurityGroupStatus>;
+export const SECURITYGROUPS_PLURAL = "securitygroups";
+export const SECURITYGROUPS_CRD_NAME = "securitygroups.openinfra.dev";
 
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
