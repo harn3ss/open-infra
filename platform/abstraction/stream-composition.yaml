@@ -53,6 +53,7 @@ spec:
             {{- $slot := printf "dbz_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") }}
             {{- $streamName := printf "cdc-%s" $name }}
             {{- $subjects := printf "cdc.%s.>" $name }}
+            {{- $rs := $src.replicaSet | default "rs0" }}
             {{- /* mongo's password property is debezium.source.mongodb.password; the
                    relational engines use debezium.source.database.password. Quarkus
                    maps the matching UPPER_SNAKE env var onto the property. */}}
@@ -118,6 +119,7 @@ spec:
                       quarkus.log.console.json=false
                   {{- if eq $engine "postgres" }}
                       debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+                      debezium.source.include.schema.changes=false
                       debezium.source.plugin.name=pgoutput
                       debezium.source.slot.name={{ $slot }}
                       debezium.source.publication.name={{ $slot }}_pub
@@ -133,6 +135,7 @@ spec:
                     {{- end }}
                   {{- else if or (eq $engine "mysql") (eq $engine "mariadb") }}
                       debezium.source.connector.class=io.debezium.connector.mysql.MySqlConnector
+                      debezium.source.include.schema.changes=false
                       debezium.source.database.hostname={{ $host }}
                       debezium.source.database.port={{ $port }}
                       debezium.source.database.user={{ $user }}
@@ -148,6 +151,7 @@ spec:
                     {{- end }}
                   {{- else if eq $engine "sqlserver" }}
                       debezium.source.connector.class=io.debezium.connector.sqlserver.SqlServerConnector
+                      debezium.source.include.schema.changes=false
                       debezium.source.database.hostname={{ $host }}
                       debezium.source.database.port={{ $port }}
                       debezium.source.database.user={{ $user }}
@@ -163,7 +167,7 @@ spec:
                     {{- end }}
                   {{- else if eq $engine "mongodb" }}
                       debezium.source.connector.class=io.debezium.connector.mongodb.MongoDbConnector
-                      debezium.source.mongodb.connection.string=mongodb://{{ $host }}:{{ $port }}/?authSource=admin{{ if $ssl }}&tls=true{{ end }}
+                      debezium.source.mongodb.connection.string=mongodb://{{ $host }}:{{ $port }}/?replicaSet={{ $rs }}&authSource=admin{{ if $ssl }}&tls=true{{ end }}
                       debezium.source.mongodb.user={{ $user }}
                       debezium.source.capture.mode=change_streams_update_full
                     {{- if $include }}
@@ -203,7 +207,7 @@ spec:
                             command:
                               - sh
                               - -c
-                              - nats stream info {{ $streamName }} >/dev/null 2>&1 || nats stream add {{ $streamName }} --subjects='{{ $subjects }}' --storage=file --replicas=1 --defaults
+                              - nats stream info {{ $streamName }} >/dev/null 2>&1 || nats stream add {{ $streamName }} --subjects='cdc.{{ $name }}.>' --subjects='cdc.{{ $name }}' --storage=file --replicas=1 --defaults
                         containers:
                           - name: debezium
                             image: quay.io/debezium/server:2.7.3.Final
