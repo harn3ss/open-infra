@@ -222,6 +222,15 @@ export function FunctionDetailPage() {
                 {s?.scaling?.target ?? 100} concurrent
                 {(s?.gpu ?? 0) > 0 ? ` · ${s?.gpu}×GPU` : ""}
               </DetailRow>
+              {s?.trigger?.stream ? (
+                <DetailRow label="Trigger">
+                  <span className="text-xs">
+                    CDC stream <code>{s.trigger.stream}</code> →{" "}
+                    <code>{s.trigger.subject ?? `cdc.${s.trigger.stream}.>`}</code>{" "}
+                    <span className="text-muted-foreground">(event-source mapping)</span>
+                  </span>
+                </DetailRow>
+              ) : null}
               {url ? (
                 <DetailRow label="URL">
                   <a

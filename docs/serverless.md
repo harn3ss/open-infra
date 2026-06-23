@@ -51,6 +51,22 @@ always-on `kind: Model` (instant, holds a GPU): use a GPU Function for bursty or
 infrequent inference where freeing the GPU matters. Cold start includes pod
 scheduling + model load. See [`docs/gpu.md`](gpu.md).
 
+## Stream triggers (event-driven)
+
+A function can be driven by a [`Stream`](streaming.md)'s CDC events instead of HTTP
+callers — open-infra's Lambda-on-Kinesis. Add a `trigger`:
+
+```yaml
+spec:
+  image: ghcr.io/me/orders-processor
+  trigger: { stream: orders-cdc }   # optional: subject: cdc.orders-cdc.public.orders
+```
+
+The platform runs a small **pump** (a durable JetStream consumer) that POSTs each
+change event to the function; the function cold-starts on demand and scales back to
+zero when the stream is idle. Return 2xx to ack (at-least-once otherwise). Details +
+the event format: [`docs/streaming.md`](streaming.md#trigger-a-function-the-lambda-on-kinesis-pattern).
+
 ## External access
 
 Knative routes via net-kourier, whose gateway gets its own MetalLB IP. For external
