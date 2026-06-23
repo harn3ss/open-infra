@@ -52,6 +52,7 @@ CNCF projects — not a reinvention of databases or storage.
 | OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
 | DMS | DB migration + CDC (`kind: Migration`) | Airbyte (headless) + Crossplane |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
+| Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Redis |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
@@ -111,7 +112,7 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
 
 A **web console** ships with the platform — an AWS-console-style UI over every
 resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
-File Shares, Buckets, Queues, Migrations, Active Directory, Nodes/GPUs, Monitoring)
+File Shares, Buckets, Queues, Migrations, Streams, Active Directory, Nodes/GPUs, Monitoring)
 with per-resource detail pages and actions (object browser, model playground, the
 DMS migration wizard, create/delete). See [`docs/console.md`](docs/console.md).
 
@@ -149,7 +150,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt, Airbyte). The eight public
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt, Airbyte). The nine public
 abstractions are shipped and verified end-to-end:
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
@@ -168,6 +169,9 @@ abstractions are shipped and verified end-to-end:
 - **`Migration`** — AWS-DMS-style DB migration + CDC on a headless Airbyte engine:
   full-load or continuous sync into a managed Postgres, with a console wizard. See
   [`docs/migrations.md`](docs/migrations.md).
+- **`Stream`** — Kinesis-style streaming CDC: a headless Debezium Server publishes a
+  source database's row changes as real-time events onto NATS JetStream for
+  event-driven consumers. See [`docs/streaming.md`](docs/streaming.md).
 
 **Reach anything from the LAN.** Every resource takes `expose: true` to get a
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;
