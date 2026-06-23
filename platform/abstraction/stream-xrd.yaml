@@ -81,6 +81,10 @@ spec:
                       type: boolean
                       default: false
                       description: "Require TLS to the source."
+                    replicaSet:
+                      type: string
+                      default: "rs0"
+                      description: "MongoDB replica set name (change streams require a replica set)."
             status:
               type: object
               properties:
