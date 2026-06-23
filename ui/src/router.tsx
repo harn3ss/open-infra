@@ -19,6 +19,7 @@ import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
 import { MigrationsPage } from "@/features/migrations/migrations-page";
+import { StreamsPage } from "@/features/streams/streams-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
 import { ManagedDatabaseDetailPage } from "@/features/databases/managed-detail-page";
@@ -115,6 +116,12 @@ const migrationsRoute = createRoute({
   component: MigrationsPage,
 });
 
+const streamsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/streams",
+  component: StreamsPage,
+});
+
 const databasesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/databases",
@@ -195,6 +202,7 @@ const routeTree = rootRoute.addChildren([
   fileSharesRoute,
   directoriesRoute,
   migrationsRoute,
+  streamsRoute,
   databasesRoute,
   databaseDetailRoute,
   managedDbDetailRoute,
