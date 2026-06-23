@@ -12,13 +12,16 @@ production the BFF serves this app's built `dist/`.
 ## Features
 
 - **Dashboard** — resource counts, a cluster-health panel, and a live event feed.
-- **Applications** — the open-infra flagship `Application` CRD: a live,
-  virtualized list, a detail drawer, a **"New Application" wizard** generated
-  from the CRD's JSON Schema, and delete-with-confirm.
-- **Workloads** — live, virtualized Pods / Deployments / Services tables with
-  status badges, a YAML viewer, and row actions (view YAML, delete).
-- **Nodes** — capacity, roles, conditions, and health.
-- **Monitoring** — embedded Grafana (kiosk mode), driven by `grafanaBaseUrl`
+- **The nine `openinfra.dev` abstractions**, each with a live list + detail page:
+  **Applications, Functions, Models** (with a chat playground), **Virtual Machines**
+  (VNC console, start/stop, disk hotplug), **Volumes, File Shares, Directories,
+  Migrations** (the DMS wizard), and **Streams** (CDC). Create forms are generated
+  from each CRD's JSON Schema (rjsf); delete-with-confirm throughout.
+- **Data services** — **Databases**, **Buckets** (MinIO S3 object browser:
+  upload/download/delete), **Queues** (NATS JetStream: publish/purge).
+- **Cluster** — **Workloads** (Pods/Deployments/Services), **Nodes** (capacity +
+  GPU), **Network**.
+- **Monitoring** — embedded Grafana (same-origin), driven by `grafanaBaseUrl`
   from runtime config.
 - App shell with a collapsible sidebar, namespace switcher, global filter,
   breadcrumbs, and a dark/light toggle.
@@ -99,15 +102,15 @@ src/
     ui/                   # shadcn/ui primitives (Radix-based)
     layout/               # app shell: sidebar, topbar, breadcrumbs, ...
     common/               # shared widgets: tables, states, YAML viewer, ...
-  features/
-    dashboard/            # landing page: stats, health, events
-    applications/         # Application CRD: list, detail, New wizard
-    workloads/            # Pods / Deployments / Services
-    nodes/                # node cards
-    monitoring/           # Grafana embed
+  features/               # one folder per resource area:
+    dashboard/            #   landing page: stats, health, events
+    applications/ functions/ models/ virtualmachines/   # compute + AI
+    volumes/ fileshares/ directories/                    # storage + identity
+    databases/ migrations/ streams/ buckets/ queues/     # data
+    workloads/ nodes/ network/ monitoring/               # cluster + observability
   hooks/                  # useK8sWatch, delete, list filter
   lib/                    # api client, k8s paths, formatting, contexts
-  types/                  # minimal k8s + Application typings
+  types/                  # k8s + openinfra.dev resource typings
 ```
 
 ## License

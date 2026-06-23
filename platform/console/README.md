@@ -35,32 +35,31 @@ annotation to an ACME issuer for a publicly trusted certificate.
 
 ## Wiring up Grafana
 
-Set the `GRAFANA_BASE_URL` env var in `manifests/deployment.yaml` so the
-console can embed or link Grafana dashboards.
+The console embeds Grafana **same-origin** (no CORS, no cross-origin cookies, no
+site-specific URL). Two env vars in `manifests/deployment.yaml`:
 
-- **In-cluster service (default install):**
+- `GRAFANA_BASE_URL: "/grafana"` — the SPA embeds dashboards at this relative path.
+- `GRAFANA_PROXY_TARGET` — the in-cluster Grafana the BFF reverse-proxies `/grafana/*` to:
   ```
   http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local
   ```
-- **Via ingress:**
-  ```
-  https://grafana.<lb-ip>.sslip.io
-  ```
+  (Grafana must serve from the `/grafana` sub-path — set in the kube-prometheus-stack values.)
 
 ## Security / RBAC
 
-The console runs as UID 65532 (distroless nonroot) with a read-only root
-filesystem. Its `ClusterRole` (`open-infra-console` in `manifests/rbac.yaml`)
+The console runs as UID 65532 (nonroot) on an `alpine` runtime with a read-only
+root filesystem. Its `ClusterRole` (`open-infra-console` in `manifests/rbac.yaml`)
 is **intentionally not cluster-admin**:
 
-- **Read-only** on core workloads, nodes, namespaces, events, pods/log,
-  services, configmaps, PVCs, apps workload objects, CRD schemas, and Argo CD
-  Applications.
-- **Full CRUD** on `openinfra.dev/applications` — the product CRD that users
-  manage via the console UI.
-- **Create/update/delete** on core `configmaps`, core `services`, and
-  `apps/deployments` to support the console's generic "create resource" flow
-  for the most common kinds.
+- **Read-only** on core workloads, nodes, namespaces, events, pods/log, services,
+  configmaps, PVCs, apps workloads, batch jobs, CRD schemas, Argo CD Applications,
+  and KubeVirt VM/guest/disk status.
+- **Full CRUD** on the `openinfra.dev` product CRDs — applications, functions,
+  models, virtualmachines, vmimages, volumes, fileshares, directories, migrations,
+  streams — the kinds users manage via the console.
+- **Secrets**: `get` + create/manage, scoped to connection info (a Model's API key,
+  a DB/bucket secret) and the DMS wizard's credential secret.
+- **KubeVirt subresources**: the VNC console + VM start/stop.
 
 Operators who need the console to manage additional resource types can add an
 aggregated ClusterRole without modifying this file:
