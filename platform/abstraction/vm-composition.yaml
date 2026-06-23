@@ -289,7 +289,7 @@ spec:
                     ports:
                       - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
                       {{- range $p := $ports }}
-                      - { name: "p{{ $p }}", port: {{ $p }}, targetPort: {{ $p }} }
+                      - { name: "{{ ($p.protocol | default "TCP") | lower }}{{ $p.port }}", port: {{ $p.port }}, targetPort: {{ $p.port }}, protocol: {{ $p.protocol | default "TCP" }} }
                       {{- end }}
             ---
             # --- Connection Secret: how to log in (cf. the DB/model secret). ---
@@ -340,7 +340,7 @@ spec:
                     ports:
                       - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
                       {{- range $p := $ports }}
-                      - { name: "p{{ $p }}", port: {{ $p }}, targetPort: {{ $p }} }
+                      - { name: "{{ ($p.protocol | default "TCP") | lower }}{{ $p.port }}", port: {{ $p.port }}, targetPort: {{ $p.port }}, protocol: {{ $p.protocol | default "TCP" }} }
                       {{- end }}
             {{- end }}
     - step: ready
