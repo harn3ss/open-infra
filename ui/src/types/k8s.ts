@@ -402,6 +402,31 @@ export interface MigrationStatus {
 export type Migration = K8sObject<MigrationSpec, MigrationStatus>;
 export const MIGRATIONS_PLURAL = "migrations";
 
+/** A CDC Stream: source DB change log -> NATS JetStream (open-infra's "Kinesis"). */
+export interface StreamSource {
+  engine?: string; // postgres|mysql|mariadb|sqlserver|mongodb
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  passwordSecretRef?: MigrationPasswordRef;
+  schemas?: string[];
+  tables?: string[];
+  ssl?: boolean;
+}
+export interface StreamSpec {
+  source?: StreamSource;
+}
+export interface StreamStatus {
+  stream?: string;
+  subjects?: string;
+  phase?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type Stream = K8sObject<StreamSpec, StreamStatus>;
+export const STREAMS_PLURAL = "streams";
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;

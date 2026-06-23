@@ -39,6 +39,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
 | ElastiCache | cache | **Redis** | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
+| Kinesis | streaming CDC | **Debezium** → **NATS JetStream** | `kind: Stream`; row changes → events on `cdc.<name>.*` — see [streaming.md](streaming.md) |
 | Lambda | serverless | **Knative** (net-kourier) | `kind: Function`; scale-to-zero 0..N..0, optional GPU |
 | Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
 | EC2 (full VMs) | virtual machines | **KubeVirt + CDI** | `kind: VirtualMachine`; Linux + Windows, VNC, hotplug disks |

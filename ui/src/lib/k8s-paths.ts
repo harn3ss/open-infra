@@ -15,6 +15,7 @@ import {
   FILESHARES_PLURAL,
   DIRECTORIES_PLURAL,
   MIGRATIONS_PLURAL,
+  STREAMS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -83,6 +84,9 @@ export const openinfraPaths = {
   migrations: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MIGRATIONS_PLURAL}`,
   migration: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${MIGRATIONS_PLURAL}/${name}`,
+  streams: (ns?: string) => `${oiGV}${nsSegment(ns)}/${STREAMS_PLURAL}`,
+  stream: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${STREAMS_PLURAL}/${name}`,
 };
 
 const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;

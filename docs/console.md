@@ -20,7 +20,7 @@ The sidebar is grouped like a cloud console:
 - **Storage** — Volumes, File Shares.
 - **Identity** — Active Directory.
 - **AI** — Models.
-- **Data** — Databases, Migrations, Buckets, Queues.
+- **Data** — Databases, Migrations, Streams, Buckets, Queues.
 - **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity), Network.
 - **Observability** — Monitoring (embedded Grafana dashboards).
 
@@ -37,6 +37,7 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **Model** (Bedrock) | **Playground** (chat with the model), Overview (endpoint + API key), GPU Monitoring, YAML · create / delete |
 | **Database** (RDS) | Overview (phase/instances/storage), Connectivity (host/port/db/user + connection URI), Monitoring, YAML |
 | **Migration** (DMS) | **New Migration wizard** (source → target → task type → table picker → review), **Run sync**, status · create / delete |
+| **Stream** (Kinesis) | **New Stream** (source endpoint + tables), JetStream subjects, status · create / delete |
 | **Bucket** (S3) | Objects — browse folders, **upload / download / delete** · create / delete bucket |
 | **Queue** (SQS) | Overview (messages/size/consumers/subjects), **Publish** a message, **Purge** |
 | **Volume** (EBS) | Overview (size/class/attachment), **snapshot / restore**, attach to a VM, YAML · create / delete |
