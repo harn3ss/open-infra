@@ -267,6 +267,7 @@ export interface VirtualMachineSpec {
   sshKey?: string;
   expose?: boolean;
   running?: boolean;
+  ports?: { port: number; protocol?: string }[]; // extra TCP/UDP ports on the LAN IP
 }
 
 export interface VirtualMachineStatus {
