@@ -29,9 +29,18 @@ The browser is never given a kubeconfig or token.
 | ------ | ---- | ------- |
 | `GET` | `/healthz` | Liveness probe. Returns `200 ok`. |
 | `GET` | `/api/config` | Runtime config as JSON: `{clusterName, grafanaBaseUrl, version}`. Read from env on every request (**not** baked into the SPA), so one image runs in any cluster. |
-| `* `   | `/api/k8s/*` | Reverse proxy to the API server. The `/api/k8s` prefix is stripped, so `/api/k8s/apis/openinfra.dev/v1/...` → `<apiserver>/apis/openinfra.dev/v1/...`. All methods (GET/POST/PUT/PATCH/DELETE) and query params pass through. This is the full CRUD surface. |
+| `*` | `/api/k8s/*` | Reverse proxy to the API server (the `/api/k8s` prefix is stripped). All methods + query params pass through; the SA's RBAC is the authorization. The generic CRUD surface for k8s/CRD resources. |
 | `GET` | `/api/watch?path=<list-path>&resourceVersion=<rv>` | Opens a Kubernetes watch and re-emits it as **Server-Sent Events**. See below. |
-| `GET` | `/api/crd-schema?name=<crd>` | Fetches a CRD, extracts the storage version's `openAPIV3Schema`, and normalizes it for [react-jsonschema-form](https://github.com/rjsf-team/react-jsonschema-form). |
+| `GET` | `/api/crd-schema?name=<crd>` | CRD → storage-version `openAPIV3Schema`, normalized for [react-jsonschema-form](https://github.com/rjsf-team/react-jsonschema-form) create forms. |
+| `GET` | `/api/grafana/dashboards` | Server-side proxy to Grafana's dashboard search (populates the picker; avoids CORS). |
+| `GET`·`POST`·`DELETE` | `/api/buckets`, `/api/buckets/{bucket}` | MinIO (S3): list / create / delete buckets. |
+| `GET`·`PUT`·`DELETE` | `/api/buckets/{bucket}/objects`, `…/object` | Browse, upload, download, delete objects. |
+| `GET`·`POST` | `/api/queues`, `/api/queues/publish`, `/api/queues/{stream}/purge` | NATS JetStream: stats, publish, purge. |
+| `POST` | `/api/models/{ns}/{name}/chat` | Proxy to a Model's gated endpoint (API key stays server-side) — the playground. |
+| `GET`·`POST` | `/api/functions/{ns}/{name}/routes`·`/invoke` | List a Function's routes / invoke it (the Test tab). |
+| `POST`·`GET` | `/api/migrations/{ns}/{name}/sync` | DMS: trigger (POST) / poll (GET) a Migration's Airbyte sync (Airbyte stays hidden). |
+| `POST` | `/api/migrations/discover` | DMS wizard: discover a source DB's tables. |
+| `*` | `/grafana/*` | Same-origin reverse proxy to in-cluster Grafana (when `GRAFANA_PROXY_TARGET` is set) for iframe embedding. |
 | `GET` | `/*` | The embedded SPA, with history-mode fallback (unknown non-API, non-asset paths → `index.html`). |
 
 ### `/api/config`
@@ -140,10 +149,9 @@ docker build -f console-api/Dockerfile \
 Stages:
 
 1. `node:22-alpine` — `npm ci` + `npm run build` in `ui/` → `ui/dist`.
-2. `golang:1.24-alpine` — copies `ui/dist` into `console-api/web/`, then
+2. `golang:1.25-alpine` — copies `ui/dist` into `console-api/web/`, then
    `CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=..."`.
-   (Go **1.24** because `k8s.io/client-go` v0.33.x requires it; the project's
-   "Go 1.23+" target is satisfied.)
+   (Go **1.25**, matching the `go.mod` toolchain; `k8s.io/client-go` v0.33.x needs ≥1.24.)
 3. `alpine:3.20` — minimal runtime, **non-root uid 65532**, `EXPOSE 8080`,
    `HEALTHCHECK` against `/healthz`.
 
@@ -179,9 +187,13 @@ kubeconfig needed for cluster access.
 
 ```
 console-api/
-├── cmd/server/        # main: router, /api/config, /api/crd-schema handler,
-│   ├── main.go        #   graceful shutdown (SIGTERM), slog logging
-│   └── spa.go         # embedded-SPA handler with history-mode fallback
+├── cmd/server/        # main + per-resource handlers (alongside main.go):
+│   ├── main.go        #   route table, /api/config, graceful shutdown, slog
+│   ├── spa.go         # embedded-SPA handler (history-mode fallback)
+│   ├── services.go    # MinIO (S3), NATS queues, model chat, functions, Grafana
+│   ├── queues_actions.go # NATS JetStream publish / purge
+│   ├── airbyte.go     # DMS: trigger/poll a Migration's Airbyte sync
+│   └── discover.go    # DMS wizard: source table discovery
 ├── internal/
 │   ├── k8s/           # REST config (in-cluster | kubeconfig) + authed transport
 │   ├── proxy/         # /api/k8s/* reverse proxy (prefix strip, header scrub)

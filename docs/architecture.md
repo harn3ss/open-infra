@@ -35,7 +35,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | EBS | block volumes | **Longhorn** | `kind: Volume`; RWO, snapshot/restore, hotplug to VMs |
 | EFS/FSx | shared file storage | **Samba (SMB)** on Longhorn | `kind: FileShare`; RWX, Connect helper (net use / mount) |
 | RDS/Aurora | managed Postgres | **CloudNativePG** | **local NVMe PVs, never CIFS/NFS** |
-| DMS | DB migration + CDC | **Airbyte** (headless) → Crossplane | `kind: Migration`; full-load / ongoing CDC into managed Postgres — see [migrations.md](migrations.md) |
+| DMS | DB migration + CDC | **Airbyte** (headless) + Crossplane | `kind: Migration`; full-load / ongoing CDC into managed Postgres — see [migrations.md](migrations.md) |
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
 | ElastiCache | cache | **Redis** | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
