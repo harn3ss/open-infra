@@ -85,6 +85,10 @@ spec:
                   type: string
                   enum: [masquerade, bridge]
                   default: masquerade
+                securityGroups:
+                  type: array
+                  items: { type: string }
+                  description: "Names of SecurityGroups (firewall rule sets) to attach to this VM."
                 # Power state. The console's Start/Stop flips this; the Composition
                 # maps it to KubeVirt runStrategy (Always/Halted). Disk is retained
                 # when stopped. Kept in spec (not a subresource) so it stays GitOps-

@@ -58,6 +58,7 @@ CNCF projects — not a reinvention of databases or storage.
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
+| Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | Secrets Manager | secrets | Sealed Secrets |

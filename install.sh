@@ -104,12 +104,38 @@ if command -v k3s >/dev/null 2>&1; then
 else
   LOG "installing k3s (server)…"
   # Traefik ships with k3s; we keep it (see docs). servicelb disabled in favor of MetalLB.
-  RUN "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL='$K3S_CHANNEL' sh -s - server --disable servicelb --write-kubeconfig-mode 0644"
+  # CNI: flannel + the embedded kube-proxy and network-policy controller are all
+  # disabled — Cilium (installed next) replaces all three, giving real ipBlock/CIDR
+  # NetworkPolicy enforcement (the basis for kind: SecurityGroup).
+  RUN "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL='$K3S_CHANNEL' sh -s - server --disable servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy --write-kubeconfig-mode 0644"
 fi
 
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 KUBECTL="k3s kubectl"
 $KUBECTL version >/dev/null 2>&1 || [ "$DRY_RUN" = 1 ] || DIE "k3s not responding; check: systemctl status k3s"
+
+# ── 1b. Cilium CNI (kube-proxy replacement) ──────────────────
+# Cilium is the cluster CNI: it replaces flannel, kube-proxy, and the embedded
+# network-policy controller (all disabled above). Installed directly (not via Argo)
+# because it IS the network — it must be up before any other pod can get an IP.
+# kube-proxy replacement needs the API endpoint by IP (no kube-proxy yet to route
+# the kubernetes Service), so k8sServiceHost = this node's IP.
+if $KUBECTL -n kube-system get ds/cilium >/dev/null 2>&1; then
+  LOG "Cilium already installed — skipping"
+elif [ "$DRY_RUN" = 1 ]; then
+  printf '  + install Cilium (kubeProxyReplacement=true, ipam=kubernetes)\n'
+else
+  LOG "installing Cilium (CNI, kube-proxy replacement)…"
+  NODE_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
+  [ -n "$NODE_IP" ] || NODE_IP="$(hostname -I | awk '{print $1}')"
+  if ! command -v cilium >/dev/null 2>&1; then
+    CILIUM_CLI_VERSION="v0.16.24"
+    ARCH="amd64"; [ "$(uname -m)" = "aarch64" ] && ARCH="arm64"
+    RUN "curl -sL --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${ARCH}.tar.gz | tar xz -C /usr/local/bin cilium"
+  fi
+  RUN "cilium install --set kubeProxyReplacement=true --set k8sServiceHost='$NODE_IP' --set k8sServicePort=6443 --set ipam.mode=kubernetes"
+  RUN "cilium status --wait --wait-duration 5m || true"
+fi
 
 # ── 2. MetalLB (L2) ──────────────────────────────────────────
 if [ -z "$METALLB_POOL" ]; then
@@ -162,7 +188,7 @@ fi
 # kind: VirtualMachine network=bridge can attach VMs straight to the physical LAN
 # (real DHCP lease). Auto-labels nodes that actually have the LAN NIC, so bridged
 # VMs schedule only where they can work. Self-service: a config flag, no manual
-# scripts. Multus changes the cluster CNI (delegates to flannel), hence opt-in.
+# scripts. Multus changes the cluster CNI (delegates to Cilium), hence opt-in.
 if [ "$(yget networking.vmLan.enabled)" = "true" ]; then
   VMLAN_IFACE="$(yget networking.vmLan.interface)"; VMLAN_IFACE="${VMLAN_IFACE:-eno1}"
   MULTUS_VERSION="v4.1.0"; CNI_PLUGINS_VERSION="v1.5.1"
@@ -200,7 +226,7 @@ spec:
       volumes:
         - { name: bin, hostPath: { path: ${K3S_CNI_BIN} } }
 EOF
-    # 2. Multus (thick), pointed at k3s' CNI paths; delegates default to flannel.
+    # 2. Multus (thick), pointed at k3s' CNI paths; delegates default to Cilium.
     curl -sfL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
       | sed -e "s#/etc/cni/net.d#${K3S_CNI_CONF}#g" -e "s#/opt/cni/bin#${K3S_CNI_BIN}#g" \
       | $KUBECTL apply -f - || WARN "Multus install failed"
