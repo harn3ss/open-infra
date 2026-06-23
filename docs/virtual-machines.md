@@ -83,24 +83,21 @@ stopped.
   pulls a real **DHCP lease** from your router. It's a first-class LAN host — no
   MetalLB, no NAT.
 
-### Publishing extra ports (masquerade)
+### Opening extra ports (masquerade)
 
-A masquerade VM publishes only its access port (SSH 22 / RDP 3389). To expose more
-— a web server on 80, DNS on 53/UDP, etc. — add them to `spec.ports`; they ride the
-**same** MetalLB LAN IP as SSH/RDP (one IP, the ports you pick), no bridge needed:
+A masquerade VM is reachable on its access port (SSH 22 / RDP 3389) plus whatever
+its **security groups** allow — exposure follows the firewall, so there's a single
+place to manage access (see [security-groups.md](security-groups.md)). To expose a
+web server on 80, add an inbound `HTTP` rule to a `SecurityGroup` attached to the VM;
+the platform publishes the matching LAN listener automatically (same MetalLB LAN IP
+as SSH/RDP, no bridge needed). In the console this is the VM's **Network** tab: the
+**Reachable ports** list is read-only and follows the rules, and you attach/edit
+groups under **Security groups** — there's no separate "publish a port" control.
 
-```yaml
-spec:
-  ports:
-    - { port: 80 }                 # TCP by default
-    - { port: 443 }
-    - { port: 53, protocol: UDP }
-```
-
-Setting any port also gives the VM a LAN IP (implies `expose`). In the console the
-VM's **Network** tab manages this list (add/remove port + protocol). The guest must
-actually be listening on the port. For a *full* LAN host (every port, a real DHCP
-IP), use `network: bridge` instead.
+> Under the hood the LoadBalancer's listeners live in `spec.ports`; the console keeps
+> that list in sync with the attached security groups (each specific inbound port
+> becomes a listener). The guest must actually be listening on the port. For a *full*
+> LAN host (every port, a real DHCP IP), use `network: bridge` instead.
 
 ### Enabling bridge mode
 
