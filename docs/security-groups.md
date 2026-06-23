@@ -125,6 +125,24 @@ stamp it on pods; the SecurityGroup's NetworkPolicy selects it. Cross-namespace
 `securityGroup:` references resolve within the SG's own namespace (NetworkPolicy
 podSelectors are namespace-local).
 
+## In the console
+
+The **Security Groups** page creates rule sets AWS-style: each rule is a **Type**
+(SSH, RDP, HTTP, HTTPS, PostgreSQL, … — which fills in the protocol and port for
+you) plus a **Source/Destination** (Anywhere, a custom CIDR, another security
+group, or a namespace). Outbound left empty = all outbound allowed; add outbound
+rules to restrict it (DNS stays allowed). Attach to a VM from its **Network** tab,
+or to an app/function via `securityGroups` on create.
+
+## Default access on a new VM
+
+Like the EC2 launch wizard, **New VM** opens the OS access port by default — it
+creates a `<name>-access` security group allowing **SSH (22) for Linux / RDP (3389)
+for Windows** (source defaults to *Anywhere*, with a warning — scope it for real
+use), plus same-namespace traffic so the VM stays reachable in-cluster. Untick it
+for a locked-down VM, or add HTTP/HTTPS. The group is a normal `SecurityGroup` you
+can edit afterwards.
+
 ## See also
 
 - [architecture.md](architecture.md) — where Security Groups sit in the AWS map.

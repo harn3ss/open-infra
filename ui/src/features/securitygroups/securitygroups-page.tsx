@@ -4,7 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Shield, Plus, Trash2 } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
-import { NewResourceDialog } from "@/components/common/new-resource-dialog";
+import { NewSecurityGroupDialog } from "./new-security-group-dialog";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
@@ -13,7 +13,6 @@ import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import {
-  SECURITYGROUPS_CRD_NAME,
   type Condition,
   type K8sObject,
   type SecurityGroup,
@@ -169,17 +168,11 @@ export function SecurityGroupsPage() {
           </Button>
         }
       />
-      <NewResourceDialog
+      <NewSecurityGroupDialog
         open={newOpen}
         onOpenChange={setNewOpen}
-        kind="SecurityGroup"
-        crdName={SECURITYGROUPS_CRD_NAME}
-        createPath={openinfraPaths.securitygroups}
-        listPath={openinfraPaths.securitygroups()}
         namespaces={namespaces}
         defaultNamespace={scoped}
-        icon={<Shield className="size-5" />}
-        description="A named set of ingress/egress allow-rules. Sources/destinations can be a CIDR, another Security Group, or a namespace."
       />
     </>
   );
