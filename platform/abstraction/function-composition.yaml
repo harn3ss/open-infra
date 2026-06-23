@@ -92,6 +92,72 @@ spec:
                             resources:
                               limits: { nvidia.com/gpu: {{ $gpu }} }
                             {{- end }}
+            {{- if $spec.trigger }}
+            {{- $tstream := $spec.trigger.stream }}
+            {{- $tsubject := $spec.trigger.subject | default (printf "cdc.%s.>" $tstream) }}
+            ---
+            # Event-source mapping: a Benthos "pump" holds a durable JetStream
+            # consumer and POSTs each CDC event to this function (which cold-starts
+            # on demand, then scales back to zero). open-infra's Lambda-on-Kinesis.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: pump-config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-pump-cfg
+                    namespace: {{ $ns }}
+                  data:
+                    benthos.yaml: |
+                      logger: { level: INFO, format: logfmt }
+                      input:
+                        nats_jetstream:
+                          urls: ["nats://nats.nats.svc.cluster.local:4222"]
+                          subject: "{{ $tsubject }}"
+                          durable: "fn-{{ $name }}"
+                          deliver: all
+                          ack_wait: 2m
+                      output:
+                        http_client:
+                          url: "http://{{ $name }}.{{ $ns }}.svc.cluster.local"
+                          verb: POST
+                          timeout: 90s
+                          headers: { Content-Type: application/json }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: pump
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-pump
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-pump, openinfra.dev/function-pump: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-pump } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-pump } }
+                      spec:
+                        containers:
+                          - name: pump
+                            image: jeffail/benthos:4.27.0
+                            args: ["-c", "/etc/benthos/benthos.yaml"]
+                            volumeMounts: [{ name: cfg, mountPath: /etc/benthos }]
+                        volumes:
+                          - name: cfg
+                            configMap: { name: {{ $name }}-pump-cfg }
+            {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

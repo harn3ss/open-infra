@@ -64,6 +64,19 @@ spec:
                   type: array
                   items: { type: string }
                   description: "Secrets to inject (envFrom) — e.g. an app's DB/bucket creds, or a Sealed Secret"
+                trigger:
+                  type: object
+                  description: >-
+                    Event-source mapping: subscribe this function to a Stream's CDC
+                    events (kind: Stream). A pump delivers each change as an HTTP POST;
+                    the function cold-starts on demand and scales back to zero when idle.
+                  properties:
+                    stream:
+                      type: string
+                      description: "Stream (kind: Stream) name to consume — events from cdc.<stream>.*"
+                    subject:
+                      type: string
+                      description: "Optional subject filter (default cdc.<stream>.>), e.g. cdc.<stream>.public.orders"
             status:
               type: object
               properties:
