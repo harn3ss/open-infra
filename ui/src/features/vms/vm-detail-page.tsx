@@ -166,6 +166,19 @@ export function VmDetailPage() {
                 {ip ? <code className="text-xs">{ip}</code> : "—"}
               </DetailRow>
               <DetailRow label="Node">{vmi?.status?.nodeName ?? "—"}</DetailRow>
+              <DetailRow label="Security groups">
+                {spec?.securityGroups?.length ? (
+                  <span className="flex flex-wrap gap-1">
+                    {spec.securityGroups.map((sg) => (
+                      <Badge key={sg} variant="outline" className="font-mono text-xs">
+                        {sg}
+                      </Badge>
+                    ))}
+                  </span>
+                ) : (
+                  "—"
+                )}
+              </DetailRow>
               <DetailRow label="Namespace">{namespace}</DetailRow>
             </CardContent>
           </Card>
