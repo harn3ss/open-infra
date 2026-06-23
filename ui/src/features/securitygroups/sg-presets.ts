@@ -106,3 +106,68 @@ export function peerText(p: SecurityGroupPeer): string {
   if (p.namespace) return `ns:${p.namespace}`;
   return "?";
 }
+
+/** Build a SecurityGroup spec from the editor rows. Ingress is always present
+ * (empty = deny all inbound); egress only when restricted (else all outbound). */
+export function buildSpec(inbound: RuleRow[], outbound: RuleRow[]): Record<string, unknown> {
+  const spec: Record<string, unknown> = {
+    ingress: inbound.map((r) => rowToRule(r, "from")).filter(Boolean),
+  };
+  if (outbound.length) {
+    spec.egress = outbound.map((r) => rowToRule(r, "to")).filter(Boolean);
+  }
+  return spec;
+}
+
+let RID = 0;
+
+/** Parse stored SecurityGroup rules back into editor rows (one row per peer×port),
+ * so an existing group can be edited. Inverse of buildSpec. */
+export function rulesToRows(rules: SecurityGroupRule[] | undefined, dir: "from" | "to"): RuleRow[] {
+  const rows: RuleRow[] = [];
+  for (const rule of rules ?? []) {
+    const proto = rule.protocol === "UDP" ? "UDP" : "TCP";
+    const peers = (rule[dir] ?? []) as SecurityGroupPeer[];
+    const ports: (number | null)[] = rule.ports && rule.ports.length ? rule.ports : [null];
+    for (const peer of peers.length ? peers : [{} as SecurityGroupPeer]) {
+      for (const port of ports) {
+        rows.push(rowFromParts(proto, port, peer));
+      }
+    }
+  }
+  return rows;
+}
+
+function rowFromParts(proto: "TCP" | "UDP", port: number | null, peer: SecurityGroupPeer): RuleRow {
+  let typeId: string;
+  let customPort = "";
+  if (port == null) {
+    typeId = proto === "UDP" ? "all-udp" : "all-tcp";
+  } else {
+    const named = RULE_TYPES.find(
+      (t) => !t.custom && t.protocol === proto && t.ports.length === 1 && t.ports[0] === port,
+    );
+    if (named) {
+      typeId = named.id;
+    } else {
+      typeId = proto === "UDP" ? "custom-udp" : "custom-tcp";
+      customPort = String(port);
+    }
+  }
+  let peerKind: PeerKind = "anywhere";
+  let peerValue = "";
+  if (peer.cidr) {
+    if (peer.cidr === "0.0.0.0/0") peerKind = "anywhere";
+    else {
+      peerKind = "cidr";
+      peerValue = peer.cidr;
+    }
+  } else if (peer.securityGroup) {
+    peerKind = "securityGroup";
+    peerValue = peer.securityGroup;
+  } else if (peer.namespace) {
+    peerKind = "namespace";
+    peerValue = peer.namespace;
+  }
+  return { id: `p${RID++}`, typeId, customPort, peerKind, peerValue };
+}

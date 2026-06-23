@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, Plus, Trash2, AlertTriangle } from "lucide-react";
 import {
@@ -20,16 +20,22 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/common/states";
-import { ApiError, k8sCreate } from "@/lib/api";
+import { ApiError, k8sCreate, k8sGet, k8sReplace } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
-import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
+import {
+  OPENINFRA_GROUP,
+  OPENINFRA_VERSION,
+  type K8sObject,
+  type SecurityGroup,
+} from "@/types/k8s";
 import {
   PEER_KINDS,
   RULE_TYPES,
+  buildSpec,
   emptyRow,
-  rowToRule,
   rowValid,
+  rulesToRows,
   ruleTypeById,
   type RuleRow,
 } from "./sg-presets";
@@ -39,47 +45,57 @@ let SEQ = 0;
 const nextId = () => `r${SEQ++}`;
 
 /**
- * AWS-style Security Group create dialog. Inbound/outbound rules are built from a
- * "Type" preset (auto-fills protocol+port) + a source — so the only real question
- * per rule is "who can reach it". Outbound left empty = all outbound allowed
- * (DNS is always auto-allowed once you restrict egress), matching AWS defaults.
+ * Create OR edit a Security Group, AWS-style: each rule is a "Type" preset
+ * (auto-fills protocol+port) + a source/destination. Pass `editing` to load an
+ * existing group's rules and save in place; omit it to create a new one.
  */
 export function NewSecurityGroupDialog({
   open,
   onOpenChange,
   namespaces,
   defaultNamespace,
+  editing,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   namespaces: string[];
   defaultNamespace?: string;
+  editing?: SecurityGroup | null;
 }) {
   const queryClient = useQueryClient();
+  const isEdit = Boolean(editing);
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(defaultNamespace ?? "default");
   const [touched, setTouched] = useState(false);
   const [inbound, setInbound] = useState<RuleRow[]>([emptyRow(nextId())]);
   const [outbound, setOutbound] = useState<RuleRow[]>([]);
 
-  function reset() {
-    setName("");
+  // (Re)load the form whenever it opens — from the existing group when editing.
+  useEffect(() => {
+    if (!open) return;
     setTouched(false);
-    setInbound([emptyRow(nextId())]);
-    setOutbound([]);
-    create.reset();
-  }
+    save.reset();
+    if (editing) {
+      setName(editing.metadata.name ?? "");
+      setNamespace(editing.metadata.namespace ?? "default");
+      setInbound(rulesToRows(editing.spec?.ingress, "from"));
+      setOutbound(rulesToRows(editing.spec?.egress, "to"));
+    } else {
+      setName("");
+      setNamespace(defaultNamespace ?? "default");
+      setInbound([emptyRow(nextId())]);
+      setOutbound([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editing]);
 
-  const create = useMutation({
-    mutationFn: () => {
-      const spec: Record<string, unknown> = {
-        // Always present (even if empty) so inbound is default-deny + your allows.
-        ingress: inbound.map((r) => rowToRule(r, "from")).filter(Boolean),
-      };
-      // Only restrict egress if the user added outbound rules (else all outbound
-      // is allowed, like a new AWS SG). The composition auto-allows DNS.
-      if (outbound.length) {
-        spec.egress = outbound.map((r) => rowToRule(r, "to")).filter(Boolean);
+  const save = useMutation({
+    mutationFn: async () => {
+      const spec = buildSpec(inbound, outbound);
+      if (editing) {
+        const path = openinfraPaths.securitygroup(namespace, name);
+        const cur = await k8sGet<SecurityGroup>(path);
+        return k8sReplace<SecurityGroup>(path, { ...cur, spec } as SecurityGroup);
       }
       return k8sCreate(openinfraPaths.securitygroups(namespace), {
         apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
@@ -92,7 +108,6 @@ export function NewSecurityGroupDialog({
       void queryClient.invalidateQueries({
         queryKey: watchQueryKey(openinfraPaths.securitygroups()),
       });
-      reset();
       onOpenChange(false);
     },
   });
@@ -101,8 +116,7 @@ export function NewSecurityGroupDialog({
     touched && !RFC1123.test(name)
       ? "Lowercase letters, numbers and hyphens; must start/end alphanumeric."
       : null;
-  const rulesValid =
-    inbound.every(rowValid) && outbound.every(rowValid);
+  const rulesValid = inbound.every(rowValid) && outbound.every(rowValid);
   const openToWorld = inbound.some(
     (r) => r.peerKind === "anywhere" && ["ssh", "rdp"].includes(r.typeId),
   );
@@ -111,8 +125,7 @@ export function NewSecurityGroupDialog({
     <Dialog
       open={open}
       onOpenChange={(o) => {
-        if (create.isPending) return;
-        if (!o) reset();
+        if (save.isPending) return;
         onOpenChange(o);
       }}
     >
@@ -120,7 +133,7 @@ export function NewSecurityGroupDialog({
         <DialogHeader className="border-b border-border p-5">
           <DialogTitle className="flex items-center gap-2">
             <Shield className="size-5 text-primary" />
-            New Security Group
+            {isEdit ? `Edit ${name}` : "New Security Group"}
           </DialogTitle>
           <DialogDescription>
             A reusable firewall rule set. Pick a rule type (it fills in the
@@ -139,13 +152,14 @@ export function NewSecurityGroupDialog({
                 onChange={(e) => setName(e.target.value)}
                 onBlur={() => setTouched(true)}
                 placeholder="web"
-                autoFocus
+                autoFocus={!isEdit}
+                disabled={isEdit}
               />
               {nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="sg-ns">Namespace</Label>
-              <Select value={namespace} onValueChange={setNamespace}>
+              <Select value={namespace} onValueChange={setNamespace} disabled={isEdit}>
                 <SelectTrigger id="sg-ns">
                   <SelectValue placeholder="Namespace" />
                 </SelectTrigger>
@@ -185,23 +199,23 @@ export function NewSecurityGroupDialog({
             onChange={setOutbound}
           />
 
-          {create.error ? (
+          {save.error ? (
             <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-              {create.error instanceof ApiError ? create.error.message : "Failed to create the security group."}
+              {save.error instanceof ApiError ? save.error.message : "Failed to save the security group."}
             </div>
           ) : null}
         </div>
 
         <DialogFooter className="border-t border-border p-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={create.isPending}>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={save.isPending}>
             Cancel
           </Button>
           <Button
-            onClick={() => (RFC1123.test(name) ? create.mutate() : setTouched(true))}
-            disabled={create.isPending || !RFC1123.test(name) || !rulesValid}
+            onClick={() => (RFC1123.test(name) ? save.mutate() : setTouched(true))}
+            disabled={save.isPending || !RFC1123.test(name) || !rulesValid}
           >
-            {create.isPending ? <Spinner className="text-current" /> : <Shield className="size-4" />}
-            Create
+            {save.isPending ? <Spinner className="text-current" /> : <Shield className="size-4" />}
+            {isEdit ? "Save changes" : "Create"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -341,6 +341,11 @@ spec:
                     labels: { openinfra.dev/vm-lan: {{ $name }} }
                   spec:
                     type: LoadBalancer
+                    # Preserve the client's real source IP so SecurityGroup CIDR rules
+                    # can actually match LAN clients on these published ports (without
+                    # this, MetalLB SNATs the source to a node IP and CIDR rules can't
+                    # distinguish callers). MetalLB L2 announces from the VM's node.
+                    externalTrafficPolicy: Local
                     selector: { kubevirt.io/domain: {{ $name }} }
                     ports:
                       - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
