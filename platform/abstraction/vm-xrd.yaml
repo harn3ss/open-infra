@@ -60,6 +60,15 @@ spec:
                 # Reach the VM on a LAN IP (MetalLB): SSH (22) for Linux, RDP (3389)
                 # for Windows. Off by default — port-forward / web console otherwise.
                 expose:   { type: boolean, default: false }
+                # Extra TCP ports to publish on the VM's LAN IP, beyond the access
+                # port (SSH/RDP) — e.g. [80, 443] for a web server in the guest. They
+                # ride the same MetalLB IP as SSH/RDP (one LAN IP, the ports you pick).
+                # Setting any port also gives the VM a LAN IP (implies expose). The
+                # console's VM → Network tab manages this list.
+                ports:
+                  type: array
+                  items: { type: integer }
+                  description: "Extra TCP ports to publish on the VM's LAN IP (e.g. [80, 443])."
                 # Network attachment:
                 #   masquerade (default) — VM behind the pod network (NAT); reach it
                 #     in-cluster via its Service, or from the LAN via expose/MetalLB.
