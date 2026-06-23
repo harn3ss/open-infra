@@ -33,7 +33,7 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 |---|---|
 | **Application** | spec, attached DB/buckets/queues, conditions, YAML · create / delete |
 | **Function** (Lambda) | Overview (image/scaling/URL), Monitoring (Grafana), YAML · create / delete |
-| **Virtual Machine** (EC2) | Overview (phase/IP/resources), **VNC console**, **Network** (publish TCP/UDP ports on the LAN IP), disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
+| **Virtual Machine** (EC2) | Overview (phase/IP/resources), **VNC console**, **Network** (security groups — the firewall; reachable LAN ports follow the rules), disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
 | **Model** (Bedrock) | **Playground** (chat with the model), Overview (endpoint + API key), GPU Monitoring, YAML · create / delete |
 | **Database** (RDS) | Overview (phase/instances/storage), Connectivity (host/port/db/user + connection URI), Monitoring, YAML |
 | **Migration** (DMS) | **New Migration wizard** (source → target → task type → table picker → review), **Run sync**, status · create / delete |
