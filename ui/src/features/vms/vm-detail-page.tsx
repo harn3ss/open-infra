@@ -20,6 +20,7 @@ import type { K8sObject, VirtualMachine, Vmi } from "@/types/k8s";
 import { osFamily, osLabel, vmIp, vmStatus } from "./vm-shared";
 import { VmVolumesTab } from "./vm-volumes";
 import { VmNetworkTab } from "./vm-network";
+import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 
 function decode(v?: string): string {
   if (!v) return "";
@@ -93,6 +94,17 @@ export function VmDetailPage() {
     onSuccess: () => navigate({ to: "/vms" }),
   });
 
+  const saveSgs = useMutation({
+    mutationFn: async (next: string[]) => {
+      const cur = await k8sGet<VirtualMachine>(vmPath);
+      return k8sReplace<VirtualMachine>(vmPath, {
+        ...cur,
+        spec: { ...(cur.spec ?? {}), securityGroups: next },
+      } as VirtualMachine);
+    },
+    onSuccess: () => void refetch(),
+  });
+
   if (isLoading) return <LoadingState label="Loading VM…" />;
   if (isError || !vm) return <ErrorState error={error} onRetry={refetch} />;
 
@@ -143,6 +155,7 @@ export function VmDetailPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="access">Access</TabsTrigger>
           <TabsTrigger value="network">Network</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
@@ -266,6 +279,15 @@ export function VmDetailPage() {
             accessPort={port}
             accessLabel={isWin ? "RDP" : "SSH"}
             onChange={() => void refetch()}
+          />
+        </TabsContent>
+
+        <TabsContent value="security" className="pt-4">
+          <ResourceSecurityTab
+            namespace={namespace}
+            securityGroups={spec?.securityGroups ?? []}
+            onSave={(next) => saveSgs.mutate(next)}
+            saving={saveSgs.isPending}
           />
         </TabsContent>
 

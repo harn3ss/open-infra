@@ -8,6 +8,7 @@ import { NotFound } from "@/components/layout/not-found";
 import { RouteErrorBoundary } from "@/components/layout/route-error";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { ApplicationsPage } from "@/features/applications/applications-page";
+import { ApplicationDetailPage } from "@/features/applications/application-detail-page";
 import { FunctionsPage } from "@/features/functions/functions-page";
 import { FunctionDetailPage } from "@/features/functions/function-detail-page";
 import { ModelsPage } from "@/features/models/models-page";
@@ -19,6 +20,7 @@ import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
+import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
 import { MigrationsPage } from "@/features/migrations/migrations-page";
 import { StreamsPage } from "@/features/streams/streams-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
@@ -49,6 +51,12 @@ const applicationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/applications",
   component: ApplicationsPage,
+});
+
+const applicationDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/applications/$namespace/$name",
+  component: ApplicationDetailPage,
 });
 
 const functionsRoute = createRoute({
@@ -115,6 +123,12 @@ const securityGroupsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/security-groups",
   component: SecurityGroupsPage,
+});
+
+const securityGroupDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/security-groups/$namespace/$name",
+  component: SecurityGroupDetailPage,
 });
 
 const migrationsRoute = createRoute({
@@ -198,6 +212,7 @@ const monitoringRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
+  applicationDetailRoute,
   functionsRoute,
   functionDetailRoute,
   modelsRoute,
@@ -209,6 +224,7 @@ const routeTree = rootRoute.addChildren([
   fileSharesRoute,
   directoriesRoute,
   securityGroupsRoute,
+  securityGroupDetailRoute,
   migrationsRoute,
   streamsRoute,
   databasesRoute,

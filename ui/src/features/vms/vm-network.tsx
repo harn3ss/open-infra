@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { DetailRow } from "@/components/common/detail-row";
-import { SecurityGroupPicker } from "@/components/common/security-group-picker";
 import { Badge } from "@/components/ui/badge";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { k8sGet, k8sReplace } from "@/lib/api";
@@ -69,17 +68,6 @@ export function VmNetworkTab({
     }
     return Array.from(map.values()).sort((a, b) => a.port - b.port);
   }, [securityGroups, sgByName, accessPortNum]);
-
-  const saveSgs = useMutation({
-    mutationFn: async (next: string[]) => {
-      const cur = await k8sGet<VirtualMachine>(vmPath);
-      return k8sReplace<VirtualMachine>(vmPath, {
-        ...cur,
-        spec: { ...(cur.spec ?? {}), securityGroups: next },
-      } as VirtualMachine);
-    },
-    onSuccess: () => onChange(),
-  });
 
   const syncPorts = useMutation({
     mutationFn: async (next: Port[]) => {
@@ -151,27 +139,10 @@ export function VmNetworkTab({
           )}
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Ports are controlled by the attached security groups — to publish one, add an
-          inbound rule (e.g. <code>HTTP</code>) to a security group on the{" "}
-          <strong>Security Groups</strong> page. The LAN listener follows automatically.
+          Ports are controlled by the attached security groups — manage them on the{" "}
+          <strong>Security</strong> tab. Add an inbound rule (e.g. <code>HTTP</code>) to a
+          group and the LAN listener follows automatically.
         </p>
-      </div>
-
-      <div className="border-t pt-4">
-        <div className="mb-2 text-sm font-medium">Security groups</div>
-        <p className="mb-3 text-xs text-muted-foreground">
-          The firewall for this VM — they decide which ports are open and who may reach
-          them (e.g. restrict RDP to a CIDR). Click to attach/detach.
-        </p>
-        <SecurityGroupPicker
-          namespace={namespace}
-          value={securityGroups}
-          onChange={(next) => saveSgs.mutate(next)}
-          disabled={saveSgs.isPending}
-        />
-        {saveSgs.error ? (
-          <p className="mt-2 text-sm text-destructive">Couldn't update security groups — try again.</p>
-        ) : null}
       </div>
     </div>
   );

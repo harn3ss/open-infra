@@ -55,12 +55,14 @@ export function NewSecurityGroupDialog({
   namespaces,
   defaultNamespace,
   editing,
+  copyFrom,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   namespaces: string[];
   defaultNamespace?: string;
   editing?: SecurityGroup | null;
+  copyFrom?: SecurityGroup | null;
 }) {
   const queryClient = useQueryClient();
   const isEdit = Boolean(editing);
@@ -80,6 +82,11 @@ export function NewSecurityGroupDialog({
       setNamespace(editing.metadata.namespace ?? "default");
       setInbound(rulesToRows(editing.spec?.ingress, "from"));
       setOutbound(rulesToRows(editing.spec?.egress, "to"));
+    } else if (copyFrom) {
+      setName(`${copyFrom.metadata.name ?? "sg"}-copy`);
+      setNamespace(copyFrom.metadata.namespace ?? defaultNamespace ?? "default");
+      setInbound(rulesToRows(copyFrom.spec?.ingress, "from"));
+      setOutbound(rulesToRows(copyFrom.spec?.egress, "to"));
     } else {
       setName("");
       setNamespace(defaultNamespace ?? "default");
@@ -87,7 +94,7 @@ export function NewSecurityGroupDialog({
       setOutbound([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, editing]);
+  }, [open, editing, copyFrom]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -292,7 +299,7 @@ function RuleSection({
                 </Select>
               </div>
               {peerSpec.needsValue ? (
-                <div className="space-y-1 flex-1 min-w-[8rem]">
+                <div className="space-y-1 w-40">
                   <Label className="text-xs text-muted-foreground">&nbsp;</Label>
                   <Input
                     value={row.peerValue}
@@ -301,6 +308,14 @@ function RuleSection({
                   />
                 </div>
               ) : null}
+              <div className="space-y-1 flex-1 min-w-[8rem]">
+                <Label className="text-xs text-muted-foreground">Description</Label>
+                <Input
+                  value={row.description}
+                  onChange={(e) => update(row.id, { description: e.target.value })}
+                  placeholder="optional note"
+                />
+              </div>
               <Button
                 size="sm"
                 variant="ghost"

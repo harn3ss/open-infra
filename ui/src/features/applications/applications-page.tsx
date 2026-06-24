@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { type ColumnDef, type SortingState } from "@tanstack/react-table";
 import { Boxes, Plus, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
@@ -66,7 +67,16 @@ export function ApplicationsPage() {
         header: "Name",
         accessorFn: (a) => a.metadata.name,
         cell: ({ row }) => (
-          <span className="font-medium">{row.original.metadata.name}</span>
+          <Link
+            to="/applications/$namespace/$name"
+            params={{
+              namespace: row.original.metadata.namespace ?? "default",
+              name: row.original.metadata.name ?? "",
+            }}
+            className="font-medium text-primary hover:underline"
+          >
+            {row.original.metadata.name}
+          </Link>
         ),
         size: 220,
       },
