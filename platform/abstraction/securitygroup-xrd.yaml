@@ -48,6 +48,7 @@ spec:
                     type: object
                     properties:
                       protocol: { type: string, enum: [TCP, UDP], default: TCP }
+                      description: { type: string, description: "Optional note explaining why this rule exists." }
                       ports:
                         type: array
                         items: { type: integer }
@@ -68,6 +69,7 @@ spec:
                     type: object
                     properties:
                       protocol: { type: string, enum: [TCP, UDP], default: TCP }
+                      description: { type: string, description: "Optional note explaining why this rule exists." }
                       ports:
                         type: array
                         items: { type: integer }

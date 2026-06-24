@@ -54,10 +54,11 @@ export interface RuleRow {
   customPort: string; // used when the type is custom
   peerKind: PeerKind;
   peerValue: string;
+  description: string;
 }
 
 export function emptyRow(seed: string): RuleRow {
-  return { id: seed, typeId: "ssh", customPort: "", peerKind: "anywhere", peerValue: "" };
+  return { id: seed, typeId: "ssh", customPort: "", peerKind: "anywhere", peerValue: "", description: "" };
 }
 
 function rowToPeer(row: RuleRow): SecurityGroupPeer | null {
@@ -85,6 +86,7 @@ export function rowToRule(row: RuleRow, dir: "from" | "to"): SecurityGroupRule |
     : type.ports;
   const rule: SecurityGroupRule = { protocol: type.protocol, [dir]: [peer] } as SecurityGroupRule;
   if (ports.length) rule.ports = ports;
+  if (row.description.trim()) rule.description = row.description.trim();
   return rule;
 }
 
@@ -97,6 +99,24 @@ export function rowValid(row: RuleRow): boolean {
   const peerSpec = PEER_KINDS.find((k) => k.id === row.peerKind);
   if (peerSpec?.needsValue && !row.peerValue.trim()) return false;
   return true;
+}
+
+/** Display a stored rule's Type + Port range (inverse of the Type preset). */
+export function ruleDisplay(
+  protocol: string | undefined,
+  ports: number[] | undefined,
+): { type: string; portRange: string; protocol: string } {
+  const proto = protocol === "UDP" ? "UDP" : "TCP";
+  if (!ports || !ports.length) {
+    return { type: proto === "UDP" ? "All UDP" : "All TCP", portRange: "All", protocol: proto };
+  }
+  if (ports.length === 1) {
+    const named = RULE_TYPES.find(
+      (t) => !t.custom && t.protocol === proto && t.ports.length === 1 && t.ports[0] === ports[0],
+    );
+    if (named) return { type: named.label, portRange: String(ports[0]), protocol: proto };
+  }
+  return { type: `Custom ${proto}`, portRange: ports.join(","), protocol: proto };
 }
 
 /** Human summary of a rule (for the list table): "SSH ← 192.0.2.0/24". */
@@ -131,14 +151,14 @@ export function rulesToRows(rules: SecurityGroupRule[] | undefined, dir: "from" 
     const ports: (number | null)[] = rule.ports && rule.ports.length ? rule.ports : [null];
     for (const peer of peers.length ? peers : [{} as SecurityGroupPeer]) {
       for (const port of ports) {
-        rows.push(rowFromParts(proto, port, peer));
+        rows.push(rowFromParts(proto, port, peer, rule.description ?? ""));
       }
     }
   }
   return rows;
 }
 
-function rowFromParts(proto: "TCP" | "UDP", port: number | null, peer: SecurityGroupPeer): RuleRow {
+function rowFromParts(proto: "TCP" | "UDP", port: number | null, peer: SecurityGroupPeer, description: string): RuleRow {
   let typeId: string;
   let customPort = "";
   if (port == null) {
@@ -169,5 +189,5 @@ function rowFromParts(proto: "TCP" | "UDP", port: number | null, peer: SecurityG
     peerKind = "namespace";
     peerValue = peer.namespace;
   }
-  return { id: `p${RID++}`, typeId, customPort, peerKind, peerValue };
+  return { id: `p${RID++}`, typeId, customPort, peerKind, peerValue, description };
 }

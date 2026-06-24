@@ -21,9 +21,11 @@ import {
   invokeFunction,
   k8sDelete,
   k8sGet,
+  k8sReplace,
   type FunctionInvokeResponse,
 } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
+import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import type { OpenInfraFunction } from "@/types/k8s";
 
 const ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
@@ -182,6 +184,18 @@ export function FunctionDetailPage() {
     onSuccess: () => navigate({ to: "/functions" }),
   });
 
+  const saveSgs = useMutation({
+    mutationFn: async (next: string[]) => {
+      const fnPath = openinfraPaths.function(namespace, name);
+      const cur = await k8sGet<OpenInfraFunction>(fnPath);
+      return k8sReplace<OpenInfraFunction>(fnPath, {
+        ...cur,
+        spec: { ...(cur.spec ?? {}), securityGroups: next },
+      } as OpenInfraFunction);
+    },
+    onSuccess: () => void refetch(),
+  });
+
   if (isLoading) return <LoadingState label="Loading function…" />;
   if (isError || !fn) return <ErrorState error={error} onRetry={refetch} />;
 
@@ -201,9 +215,19 @@ export function FunctionDetailPage() {
         <TabsList>
           <TabsTrigger value="test">Test</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="security" className="pt-4">
+          <ResourceSecurityTab
+            namespace={namespace}
+            securityGroups={fn.spec?.securityGroups ?? []}
+            onSave={(next) => saveSgs.mutate(next)}
+            saving={saveSgs.isPending}
+          />
+        </TabsContent>
 
         <TabsContent value="test" className="pt-4">
           <FunctionTester namespace={namespace} name={name} />

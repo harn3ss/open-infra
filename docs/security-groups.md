@@ -127,12 +127,22 @@ podSelectors are namespace-local).
 
 ## In the console
 
-The **Security Groups** page creates rule sets AWS-style: each rule is a **Type**
-(SSH, RDP, HTTP, HTTPS, PostgreSQL, … — which fills in the protocol and port for
-you) plus a **Source/Destination** (Anywhere, a custom CIDR, another security
-group, or a namespace). Outbound left empty = all outbound allowed; add outbound
-rules to restrict it (DNS stays allowed). Attach to a VM from its **Network** tab,
-or to an app/function via `securityGroups` on create.
+Modelled on the EC2 experience — managed from **two sides that stay in sync**:
+
+- **The security group** (Security Groups page → click a group): a detail page with
+  **Inbound rules** / **Outbound rules** tabs, a **Used by** tab (which resources
+  reference it), and **Edit rules**. Each rule is a **Type** (SSH, RDP, HTTP,
+  PostgreSQL, … which fills in the protocol + port for you) plus a
+  **Source/Destination** (Anywhere, a custom CIDR, another security group, or a
+  namespace) and an optional **description**. Also **Copy to new** and Delete.
+  Outbound left empty = all outbound allowed; add outbound rules to restrict it
+  (DNS stays allowed).
+- **The resource** (a VM / App / Function's **Security** tab): the attached groups
+  plus the **aggregated inbound/outbound rules** across all of them — read-only,
+  each row tagged with the group it came from — and **Change security groups** to
+  attach/detach. Rule editing always happens on the group, so the resource view and
+  the group view always agree. This mirrors AWS: the *instance* manages membership;
+  the *security group* owns the rules.
 
 ## Default access on a new VM
 
