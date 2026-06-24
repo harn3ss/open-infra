@@ -137,7 +137,7 @@ Modelled on the EC2 experience — managed from **two sides that stay in sync**:
   namespace) and an optional **description**. Also **Copy to new** and Delete.
   Outbound left empty = all outbound allowed; add outbound rules to restrict it
   (DNS stays allowed).
-- **The resource** (a VM / App / Function's **Security** tab): the attached groups
+- **The resource** (a VM / App / Function / **Database**'s **Security** tab): the attached groups
   plus the **aggregated inbound/outbound rules** across all of them — read-only,
   each row tagged with the group it came from — and **Change security groups** to
   attach/detach. Rule editing always happens on the group, so the resource view and
