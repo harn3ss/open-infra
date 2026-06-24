@@ -14,8 +14,9 @@ import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DbConnectivity } from "@/components/common/db-connectivity";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
+import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import { claimHealth } from "@/lib/resource-health";
-import { k8sDelete, k8sGet } from "@/lib/api";
+import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { Application, K8sObject } from "@/types/k8s";
 
@@ -77,6 +78,18 @@ export function ManagedDatabaseDetailPage() {
     queryFn: () => k8sGet<Application>(openinfraPaths.application(namespace, name)),
   });
 
+  const saveSgs = useMutation({
+    mutationFn: async (next: string[]) => {
+      const p = openinfraPaths.application(namespace, name);
+      const cur = await k8sGet<Application>(p);
+      return k8sReplace<Application>(p, {
+        ...cur,
+        spec: { ...(cur.spec ?? {}), securityGroups: next },
+      } as Application);
+    },
+    onSuccess: () => void refetch(),
+  });
+
   const engineKey = (app?.spec?.database?.engine ?? "mongo") as keyof typeof ENGINES;
   const e = ENGINES[engineKey] ?? ENGINES.mongo;
 
@@ -111,9 +124,19 @@ export function ManagedDatabaseDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="security" className="pt-4">
+          <ResourceSecurityTab
+            namespace={namespace}
+            securityGroups={app.spec?.securityGroups ?? []}
+            onSave={(next) => saveSgs.mutate(next)}
+            saving={saveSgs.isPending}
+          />
+        </TabsContent>
 
         <TabsContent value="overview" className="pt-4">
           <Card>

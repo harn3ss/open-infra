@@ -13,10 +13,11 @@ import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DbConnectivity } from "@/components/common/db-connectivity";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { k8sDelete, k8sGet } from "@/lib/api";
+import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
+import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
 import { cnpgPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { type StatusTone } from "@/lib/format";
-import type { CnpgCluster, K8sObject } from "@/types/k8s";
+import type { Application, CnpgCluster, K8sObject } from "@/types/k8s";
 
 function decode(v?: string): string {
   if (!v) return "";
@@ -56,6 +57,24 @@ export function DatabaseDetailPage() {
     queryKey: ["database", namespace, name],
     queryFn: () => k8sGet<CnpgCluster>(cnpgPaths.cluster(namespace, name)),
   });
+  // The owning data-only Application carries securityGroups (propagated to the
+  // cluster's pods via inheritedMetadata by the composition).
+  const { data: app, refetch: refetchApp } = useQuery({
+    queryKey: ["database-app", namespace, appName],
+    queryFn: () => k8sGet<Application>(openinfraPaths.application(namespace, appName)),
+    retry: false,
+  });
+  const saveSgs = useMutation({
+    mutationFn: async (next: string[]) => {
+      const p = openinfraPaths.application(namespace, appName);
+      const cur = await k8sGet<Application>(p);
+      return k8sReplace<Application>(p, {
+        ...cur,
+        spec: { ...(cur.spec ?? {}), securityGroups: next },
+      } as Application);
+    },
+    onSuccess: () => void refetchApp(),
+  });
   const { data: secret } = useQuery({
     queryKey: ["database-secret", namespace, name],
     queryFn: () =>
@@ -87,9 +106,19 @@ export function DatabaseDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
+          <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="security" className="pt-4">
+          <ResourceSecurityTab
+            namespace={namespace}
+            securityGroups={app?.spec?.securityGroups ?? []}
+            onSave={(next) => saveSgs.mutate(next)}
+            saving={saveSgs.isPending}
+          />
+        </TabsContent>
 
         <TabsContent value="overview" className="pt-4">
           <Card>

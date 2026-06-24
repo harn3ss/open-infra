@@ -406,7 +406,12 @@ spec:
                     replicas: {{ if $spec.database.highAvailability }}2{{ else }}1{{ end }}
                     selector: { matchLabels: { app.kubernetes.io/name: {{ $name }}-mongo } }
                     template:
-                      metadata: { labels: { app.kubernetes.io/name: {{ $name }}-mongo } }
+                      metadata:
+                        labels:
+                          app.kubernetes.io/name: {{ $name }}-mongo
+                          {{- range $sg := ($spec.securityGroups | default list) }}
+                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
                       spec:
                         {{- if $spec.database.highAvailability }}
                         affinity:
@@ -480,6 +485,14 @@ spec:
                   kind: MariaDB
                   metadata: { name: {{ $name }}-mysql, namespace: {{ $ns }} }
                   spec:
+                    {{- if $spec.securityGroups }}
+                    # SecurityGroup membership: label the DB pods so attached SGs gate them.
+                    podMetadata:
+                      labels:
+                        {{- range $sg := $spec.securityGroups }}
+                        openinfra.dev/sg-{{ $sg }}: ""
+                        {{- end }}
+                    {{- end }}
                     rootPasswordSecretKeyRef: { name: {{ $name }}-mysql-app, key: rootPassword }
                     username: app
                     passwordSecretKeyRef: { name: {{ $name }}-mysql-app, key: password }
@@ -511,6 +524,15 @@ spec:
                   kind: Cluster
                   metadata: { name: {{ $name }}-db, namespace: {{ $ns }} }
                   spec:
+                    {{- if $spec.securityGroups }}
+                    # SecurityGroup membership: CNPG propagates inheritedMetadata to
+                    # the cluster's pods, so attached SecurityGroups actually gate the DB.
+                    inheritedMetadata:
+                      labels:
+                        {{- range $sg := $spec.securityGroups }}
+                        openinfra.dev/sg-{{ $sg }}: ""
+                        {{- end }}
+                    {{- end }}
                     # database.highAvailability -> primary + hot standby, streaming
                     # replication, automatic failover. local-path PVs are node-local,
                     # so anti-affinity (one instance per node) is what makes the DB
