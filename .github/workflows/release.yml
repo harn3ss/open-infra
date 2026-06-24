@@ -1,0 +1,63 @@
+# Cut a versioned, signed release of the console image.
+#
+# Triggered by pushing a semver tag (e.g. v1.0.0). Builds the console image and
+# publishes it to GHCR tagged with the version (1.0.0, 1.0, latest), then
+# cosign-signs it (keyless, Sigstore). The day-to-day `build-console` workflow
+# only emits latest/sha on pushes to main; this one produces the release package.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # cosign keyless signing (Sigstore OIDC)
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (version tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/open-infra-console
+          # v1.0.0 -> 1.0.0, 1.0, latest
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: console-api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless, Sigstore)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/open-infra-console@${{ steps.build.outputs.digest }}

@@ -1,7 +1,7 @@
 {
   "name": "open-infra-console",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "open-infra console — a self-hostable management UI for a k3s/Kubernetes cluster. Talks only to the same-origin Go BFF.",
   "license": "Apache-2.0",
