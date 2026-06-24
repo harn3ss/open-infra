@@ -233,13 +233,15 @@ spec:
                   metadata: { name: {{ $name }}-limits, namespace: {{ $ns }} }
                   spec:
                     limits:
-                      # max is a safety ceiling against a runaway container, not a
-                      # tenant cap (the ResourceQuota bounds total usage). Keep it
-                      # generous enough for real workloads — e.g. a co-located Model's
-                      # Ollama container needs 8Gi; 4Gi here rejected it at admission.
+                      # Only default *requests* — deliberately NO default limit and NO
+                      # max ceiling. A LimitRange is namespace-wide, so a default limit
+                      # or max would also hit co-located KubeVirt virt-launcher pods,
+                      # which legitimately request many CPUs / GiB, and reject them with
+                      # "request greater than limit" (a stray app's 512Mi default limit
+                      # once blocked a 12 GiB VM in the same namespace). App containers
+                      # set their own limits in the Deployment above; total namespace
+                      # usage is bounded by the ResourceQuota.
                       - type: Container
-                        max: { cpu: "8", memory: 16Gi }
-                        default: { cpu: 500m, memory: 512Mi }
                         defaultRequest: { cpu: 50m, memory: 64Mi }
             ---
             # --- Tenant isolation: object-count quota (counts only — safe; never
