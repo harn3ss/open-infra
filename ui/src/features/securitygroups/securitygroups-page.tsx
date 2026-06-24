@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
 import { Shield, Plus, Pencil, Trash2 } from "lucide-react";
@@ -74,7 +75,18 @@ export function SecurityGroupsPage() {
         id: "name",
         header: "Name",
         accessorFn: (sg) => sg.metadata.name,
-        cell: ({ row }) => <span className="font-medium">{row.original.metadata.name}</span>,
+        cell: ({ row }) => (
+          <Link
+            to="/security-groups/$namespace/$name"
+            params={{
+              namespace: row.original.metadata.namespace ?? "default",
+              name: row.original.metadata.name ?? "",
+            }}
+            className="font-medium text-primary hover:underline"
+          >
+            {row.original.metadata.name}
+          </Link>
+        ),
         size: 150,
       },
       {

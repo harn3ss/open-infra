@@ -442,6 +442,7 @@ export interface SecurityGroupPeer {
 }
 export interface SecurityGroupRule {
   protocol?: string; // TCP (default) | UDP
+  description?: string; // optional "why" note (AWS-style)
   ports?: number[]; // empty = all ports
   from?: SecurityGroupPeer[]; // ingress
   to?: SecurityGroupPeer[]; // egress
