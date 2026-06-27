@@ -374,7 +374,7 @@ export interface DirectoryStatus {
 export type Directory = K8sObject<DirectorySpec, DirectoryStatus>;
 export const DIRECTORIES_PLURAL = "directories";
 
-/* --------------- open-infra Migration CRD (DMS — Airbyte-backed) ----------- */
+/* ----- open-infra Migration CRD (DMS — Debezium + apply-sink engine) ------- */
 
 export interface MigrationPasswordRef {
   name?: string;
@@ -382,7 +382,7 @@ export interface MigrationPasswordRef {
 }
 /** A source or target database endpoint. Source uses `schemas`; target uses `schema`. */
 export interface MigrationEndpoint {
-  engine?: string; // source: postgres|mysql|mariadb|sqlserver|mongodb · target: postgres
+  engine?: string; // source: postgres|mysql|mariadb|sqlserver · target: postgres|mysql|sqlserver
   host?: string;
   port?: number;
   database?: string;
@@ -399,9 +399,9 @@ export interface MigrationSpec {
   tables?: string[];
 }
 export interface MigrationStatus {
-  connectionId?: string;
   phase?: string;
   ready?: boolean;
+  stream?: string;
   conditions?: Condition[];
 }
 export type Migration = K8sObject<MigrationSpec, MigrationStatus>;

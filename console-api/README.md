@@ -38,8 +38,7 @@ The browser is never given a kubeconfig or token.
 | `GET`·`POST` | `/api/queues`, `/api/queues/publish`, `/api/queues/{stream}/purge` | NATS JetStream: stats, publish, purge. |
 | `POST` | `/api/models/{ns}/{name}/chat` | Proxy to a Model's gated endpoint (API key stays server-side) — the playground. |
 | `GET`·`POST` | `/api/functions/{ns}/{name}/routes`·`/invoke` | List a Function's routes / invoke it (the Test tab). |
-| `POST`·`GET` | `/api/migrations/{ns}/{name}/sync` | DMS: trigger (POST) / poll (GET) a Migration's Airbyte sync (Airbyte stays hidden). |
-| `POST` | `/api/migrations/discover` | DMS wizard: discover a source DB's tables. |
+| `POST` | `/api/migrations/discover` | DMS wizard: discover a source DB's tables. (A Migration runs continuously — Debezium + apply-sink — so there is no manual sync trigger.) |
 | `*` | `/grafana/*` | Same-origin reverse proxy to in-cluster Grafana (when `GRAFANA_PROXY_TARGET` is set) for iframe embedding. |
 | `GET` | `/*` | The embedded SPA, with history-mode fallback (unknown non-API, non-asset paths → `index.html`). |
 
@@ -192,7 +191,6 @@ console-api/
 │   ├── spa.go         # embedded-SPA handler (history-mode fallback)
 │   ├── services.go    # MinIO (S3), NATS queues, model chat, functions, Grafana
 │   ├── queues_actions.go # NATS JetStream publish / purge
-│   ├── airbyte.go     # DMS: trigger/poll a Migration's Airbyte sync
 │   └── discover.go    # DMS wizard: source table discovery
 ├── internal/
 │   ├── k8s/           # REST config (in-cluster | kubeconfig) + authed transport
