@@ -307,6 +307,18 @@ export function getMigrationStatus(
     `/migrations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/status`,
   );
 }
+/** Per-site (per-direction) pipeline status for a bidirectional Replication. */
+export function getReplicationStatus(
+  namespace: string,
+  name: string,
+  siteA: string,
+  siteB: string,
+): Promise<Record<string, PipelineStatus>> {
+  const q = new URLSearchParams({ siteA, siteB }).toString();
+  return request<Record<string, PipelineStatus>>(
+    `/replications/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/status?${q}`,
+  );
+}
 
 /* ----------------------- Model playground (chat proxy) ---------------------- */
 

@@ -15,6 +15,7 @@ import {
   FILESHARES_PLURAL,
   DIRECTORIES_PLURAL,
   MIGRATIONS_PLURAL,
+  REPLICATIONS_PLURAL,
   STREAMS_PLURAL,
   SECURITYGROUPS_PLURAL,
 } from "@/types/k8s";
@@ -85,6 +86,9 @@ export const openinfraPaths = {
   migrations: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MIGRATIONS_PLURAL}`,
   migration: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${MIGRATIONS_PLURAL}/${name}`,
+  replications: (ns?: string) => `${oiGV}${nsSegment(ns)}/${REPLICATIONS_PLURAL}`,
+  replication: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${REPLICATIONS_PLURAL}/${name}`,
   streams: (ns?: string) => `${oiGV}${nsSegment(ns)}/${STREAMS_PLURAL}`,
   stream: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${STREAMS_PLURAL}/${name}`,
