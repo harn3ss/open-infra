@@ -25,6 +25,8 @@ import { MigrationsPage } from "@/features/migrations/migrations-page";
 import { MigrationDetailPage } from "@/features/migrations/migration-detail-page";
 import { ReplicationsPage } from "@/features/migrations/replications-page";
 import { ReplicationDetailPage } from "@/features/migrations/replication-detail-page";
+import { DataFlowsPage } from "@/features/dataflow/dataflows-page";
+import { DataFlowCanvasPage } from "@/features/dataflow/dataflow-canvas";
 import { StreamsPage } from "@/features/streams/streams-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
@@ -158,6 +160,24 @@ const replicationDetailRoute = createRoute({
   component: ReplicationDetailPage,
 });
 
+const dataflowsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dataflows",
+  component: DataFlowsPage,
+});
+
+const dataflowNewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dataflows/new",
+  component: DataFlowCanvasPage,
+});
+
+const dataflowDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/dataflows/$namespace/$name",
+  component: DataFlowCanvasPage,
+});
+
 const streamsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/streams",
@@ -250,6 +270,9 @@ const routeTree = rootRoute.addChildren([
   migrationDetailRoute,
   replicationsRoute,
   replicationDetailRoute,
+  dataflowsRoute,
+  dataflowNewRoute,
+  dataflowDetailRoute,
   streamsRoute,
   databasesRoute,
   databaseDetailRoute,
