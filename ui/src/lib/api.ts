@@ -279,6 +279,35 @@ export function discoverTables(
   });
 }
 
+/* ----------------------- DMS observability (live status) -------------------- */
+
+export interface TableStat {
+  subject: string;
+  table: string;
+  count: number;
+}
+/** Live apply-pipeline status for a Migration/Replication direction (from JetStream). */
+export interface PipelineStatus {
+  stream: string;
+  found: boolean; // has the engine been provisioned yet?
+  captured: number; // events captured into the stream
+  bytes: number;
+  lag: number; // events captured but not yet applied to the target
+  ackPending: number; // currently being applied
+  redelivered: number; // retries
+  tables: TableStat[] | null; // per-table captured counts
+  deadLetter: number; // rows that failed to apply
+  dlqSubjects: TableStat[] | null;
+}
+export function getMigrationStatus(
+  namespace: string,
+  name: string,
+): Promise<PipelineStatus> {
+  return request<PipelineStatus>(
+    `/migrations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/status`,
+  );
+}
+
 /* ----------------------- Model playground (chat proxy) ---------------------- */
 
 export interface ChatMessage {

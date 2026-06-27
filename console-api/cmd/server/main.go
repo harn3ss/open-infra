@@ -183,6 +183,12 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		// DMS wizard: discover a source's tables (connects to the source DB directly).
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/migrations/discover", handleMigrationDiscover(logger))
+			// DMS observability: live apply-pipeline status (JetStream lag, per-table
+			// counts, dead-letter) the browser can't read from NATS directly.
+			api.With(middleware.Timeout(15*time.Second)).
+				Get("/migrations/{namespace}/{name}/status", handleMigrationStatus(logger))
+			api.With(middleware.Timeout(15*time.Second)).
+				Get("/replications/{namespace}/{name}/status", handleReplicationStatus(logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

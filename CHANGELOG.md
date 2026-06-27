@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Observability
+- **Migration detail page** with a live apply-pipeline view (SymmetricDS/DMS-style):
+  a Capture → Buffer → Apply strip, the headline **replication lag** (events
+  captured but not yet applied), **per-table** event counts, and a **dead-letter**
+  panel for rows that failed to apply. Backed by a new BFF
+  `GET /api/migrations|replications/{ns}/{name}/status` that reads JetStream
+  stream/consumer + DLQ info (lag, throughput, errors) the browser can't see.
+
 ### Bidirectional / multi-master replication
 - **`kind: Replication`** — keep two database sites in sync both ways (each is
   source and target), including across engines (e.g. SQL Server ↔ Postgres). Built
