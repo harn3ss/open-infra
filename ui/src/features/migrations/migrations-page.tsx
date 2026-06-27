@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowRightLeft, Check, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, Plus, Trash2 } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
@@ -28,7 +28,6 @@ import {
   ApiError,
   k8sCreate,
   k8sDelete,
-  triggerMigrationSync,
   discoverTables,
 } from "@/lib/api";
 import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
@@ -42,7 +41,7 @@ import {
 } from "@/types/k8s";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-const SOURCE_ENGINES = ["postgres", "mysql", "mariadb", "sqlserver", "mongodb"];
+const SOURCE_ENGINES = ["postgres", "mysql", "mariadb", "sqlserver"];
 const ENGINE_LABELS: Record<string, string> = {
   postgres: "PostgreSQL",
   mysql: "MySQL",
@@ -94,7 +93,6 @@ function migStatus(m: Migration): { label: string; tone: StatusTone } {
 export function MigrationsPage() {
   const { scoped } = useNamespace();
   const [newOpen, setNewOpen] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
@@ -110,18 +108,6 @@ export function MigrationsPage() {
       // Best-effort cleanup of the wizard-created credential Secret.
       await k8sDelete(resourcePaths.secret(ns, `${name}-creds`)).catch(() => {});
     },
-  });
-
-  const runSync = useMutation({
-    mutationFn: (m: Migration) =>
-      triggerMigrationSync(m.metadata.namespace ?? "default", m.metadata.name ?? ""),
-    onSuccess: (_d, m) =>
-      setSyncMsg({ tone: "ok", text: `Sync started for ${m.metadata.name}.` }),
-    onError: (e, m) =>
-      setSyncMsg({
-        tone: "err",
-        text: `Couldn't sync ${m.metadata.name}: ${e instanceof ApiError ? e.message : "error"}`,
-      }),
   });
 
   const columns = useMemo<ColumnDef<Migration, unknown>[]>(
@@ -161,7 +147,7 @@ export function MigrationsPage() {
               <code>{s?.engine}</code>{" "}
               <span className="text-muted-foreground">{s?.host}</span>
               {" → "}
-              <code>postgres</code>{" "}
+              <code>{t?.engine ?? "postgres"}</code>{" "}
               <span className="text-muted-foreground">{t?.host}</span>
             </span>
           );
@@ -196,18 +182,6 @@ export function MigrationsPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => runSync.mutate(row.original)}
-              disabled={
-                runSync.isPending &&
-                runSync.variables?.metadata?.name === row.original.metadata.name
-              }
-              title="Run a sync now"
-            >
-              <Play className="size-4" />
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
               onClick={() => remove.mutate(row.original)}
               disabled={remove.isPending}
               title="Delete this migration (and its credential secret)"
@@ -219,27 +193,15 @@ export function MigrationsPage() {
         size: 80,
       },
     ],
-    [remove, runSync],
+    [remove],
   );
 
   return (
     <>
-      {syncMsg && (
-        <button
-          onClick={() => setSyncMsg(null)}
-          className={`mb-2 block w-full rounded-md px-3 py-2 text-left text-sm ${
-            syncMsg.tone === "ok"
-              ? "bg-primary/10 text-foreground"
-              : "bg-destructive/10 text-destructive"
-          }`}
-        >
-          {syncMsg.text}
-        </button>
-      )}
       <ResourceTablePage<Migration>
         icon={<ArrowRightLeft />}
         title="Migrations"
-        description="Database migrations — open-infra's DMS. Full-load and/or ongoing CDC sync from a source database (Postgres, MySQL, MariaDB, SQL Server, MongoDB) into a managed Postgres. Like AWS DMS: define source + target endpoints, pick a task type, and it keeps your data flowing."
+        description="Database migrations — open-infra's DMS. Full-load and/or ongoing CDC sync from a source database (Postgres, MySQL, MariaDB, SQL Server) into a target SQL database (Postgres, MySQL, or SQL Server). Like AWS DMS: define source + target endpoints, pick a task type, and it keeps your data flowing."
         listPath={openinfraPaths.migrations}
         columns={columns}
         search={(m) => [m.metadata.name, m.metadata.namespace, m.spec?.source?.engine, m.spec?.source?.host]}
@@ -409,7 +371,7 @@ function NewMigrationWizard({
           <DialogTitle>New Migration</DialogTitle>
           <DialogDescription>
             Define the source + target database endpoints and a task type, like AWS DMS. open-infra
-            runs it on the headless Airbyte engine.
+            captures changes with Debezium and applies them continuously to the target.
           </DialogDescription>
         </DialogHeader>
 
@@ -559,12 +521,6 @@ function NewMigrationWizard({
                     Choose {itemTerm}
                   </Button>
                 </div>
-                {srcEngine === "mariadb" && tableMode === "all" && (
-                  <p className="text-xs text-amber-600 dark:text-amber-500">
-                    MariaDB: please <b>Choose tables</b> — Airbyte's MySQL connector can't
-                    auto-discover MariaDB's full catalog, so “All tables” may sync nothing.
-                  </p>
-                )}
                 {tableMode === "all" ? (
                   <p className="text-xs text-muted-foreground">
                     Every {srcEngine === "mongodb" ? "collection" : "table"} in the source will be replicated.

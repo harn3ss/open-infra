@@ -1,164 +1,89 @@
-# Database Migrations (DMS)
+# Migrations (DMS)
 
-open-infra's Database Migration Service — the AWS DMS analog. A `kind: Migration`
-does a one-shot **full load** and/or an ongoing **CDC** (change-data-capture) sync
-from a source database into a managed PostgreSQL. It's powered by a **headless
-Airbyte** engine that the platform runs and drives for you — you never see or
-operate Airbyte; you write a `Migration` (or use the console wizard) and the data
-flows.
+`kind: Migration` is open-infra's Database Migration Service — AWS-DMS-style
+replication: **full-load and/or ongoing CDC** from a source database into a target
+SQL database. Source and target engines may differ (e.g. **SQL Server → Postgres**).
 
-| AWS DMS | open-infra |
-|---|---|
-| Replication instance | the shared headless Airbyte engine (`airbyte` namespace) |
-| Source / target endpoints | `spec.source` / `spec.target` on a `Migration` |
-| Replication task | a `Migration` |
-| Migration type (full-load / cdc / full-load-and-cdc) | `spec.mode` |
-| Table mappings | `spec.tables` (or the wizard's table picker) |
-| "Start/Resume task" | **Run sync** (console) / the connection's schedule |
-
-## How it works
+It runs entirely on open-infra's own engine (no external SaaS):
 
 ```
-kind: Migration  →  Crossplane (provider-terraform)  →  Airbyte API
-                                                         source + destination + connection
-                          the console + BFF  ──────────►  trigger sync / read status
+source DB ──▶ Debezium Server ──▶ NATS JetStream ──▶ apply-sink ──▶ target DB
+              (CDC capture)        (durable bus)      (upsert/delete + auto-schema)
 ```
 
-A `Migration` is compiled by Crossplane into an Airbyte **source**, **destination**,
-and **connection** (via the Airbyte Terraform provider). The console's BFF triggers
-syncs and reads status through Airbyte's API. Airbyte has no Ingress and no exposed
-UI — it is purely an engine.
+- **Debezium Server** captures the source's change log (Postgres logical decoding,
+  MySQL/MariaDB binlog, SQL Server CDC) and publishes each row change to a JetStream
+  stream `mig-<name>` on subjects `mig.<name>.<schema>.<table>`.
+- **[apply-sink](../apply-sink/)** consumes those events and applies them to the
+  target with the engine's native upsert (Postgres `ON CONFLICT`, MySQL
+  `ON DUPLICATE KEY UPDATE`, SQL Server `MERGE`). A schema-sync step introspects the
+  source and **auto-creates the target tables with cross-engine type mapping**.
 
-## Quick start (console)
+The user only ever sees `kind: Migration` / the console.
 
-**Data → Migrations → New Migration** opens a guided wizard:
-
-1. **Source** — engine (`postgres` / `mysql` / `mariadb` / `sqlserver` / `mongodb`),
-   host, port, database, username, password (TLS optional; Postgres & SQL Server
-   also take schemas; MongoDB's "tables" are collections).
-2. **Target** — a managed Postgres endpoint (host/port/database/username/password +
-   schema). For a managed DB, use its `<cluster>-rw.<ns>.svc` host.
-3. **Task** — a name + namespace, a **task type** (full load / CDC / full load + CDC),
-   and a **table picker**: *All tables*, or *Choose tables* to pick individual tables
-   from a live list discovered from your source.
-4. **Review → Create.**
-
-The wizard creates a `<name>-creds` Secret (holding both endpoint passwords) and the
-`Migration`. The row shows **Provisioning** for ~30–60s while Crossplane builds the
-Airbyte connection, then **Ready**. Click **▶ Run sync** to start a load.
-
-## The `Migration` resource (kubectl / GitOps)
+## Spec
 
 ```yaml
 apiVersion: openinfra.dev/v1
 kind: Migration
 metadata:
-  name: legacy-import
-  namespace: myapp
+  name: crm-to-warehouse
+  namespace: data
 spec:
-  mode: full-load-and-cdc          # full-load | cdc | full-load-and-cdc
+  mode: full-load-and-cdc          # full-load | cdc | full-load-and-cdc (default)
   source:
-    engine: mysql                  # postgres | mysql | mariadb | sqlserver | mongodb
-    host: olddb.example.com
-    port: 3306
-    database: app
-    username: migrator
-    passwordSecretRef: { name: src-creds, key: password }
-    # schemas: ["public"]          # Postgres (public) / SQL Server (dbo); default ["public"]
-    # ssl: false
+    engine: sqlserver              # postgres | mysql | mariadb | sqlserver
+    host: mssql.corp.svc
+    port: 1433
+    database: crm
+    username: dms_reader
+    passwordSecretRef: { name: crm-creds, key: password }
+    schemas: ["dbo"]               # postgres/sqlserver; ignored for mysql
   target:
-    engine: postgres
-    host: myapp-db-rw.myapp.svc     # a managed CloudNativePG cluster, or any Postgres
+    engine: postgres               # postgres | mysql | sqlserver
+    host: warehouse-rw.data.svc
     port: 5432
-    database: app
-    username: app
-    passwordSecretRef: { name: myapp-db-app, key: password }
-    schema: public
-  tables: ["customers", "orders"]   # optional; omit = all tables
+    database: analytics
+    username: loader
+    passwordSecretRef: { name: warehouse-creds, key: password }
+  tables: ["customers", "orders"]  # optional; empty = all tables
 ```
 
-Passwords are always referenced from Secrets (`passwordSecretRef`) — never inlined.
-Internal targets are easy: a managed DB's connection secret (e.g. CloudNativePG's
-`<cluster>-app`) already has a `password` key.
+Passwords always come from Secrets — they're injected into the Debezium and
+apply-sink pods as env and expanded into the connection DSNs at runtime, never
+inlined into manifests.
 
-The Airbyte connection id is published to a `<name>-outputs` Secret in the claim
-namespace once provisioned.
+## Modes
 
-## Task types
+| mode | behaviour |
+|------|-----------|
+| `full-load` | one-shot snapshot of existing rows |
+| `cdc` | ongoing change-data-capture only (no initial snapshot) |
+| `full-load-and-cdc` | snapshot, then keep in sync continuously (**default**) |
 
-| `spec.mode` | Behaviour | Schedule |
-|---|---|---|
-| `full-load` | One-shot copy of existing data. | Manual — click **Run sync**. |
-| `cdc` | Ongoing change-data-capture only. | Hourly (auto). |
-| `full-load-and-cdc` | Initial snapshot, then keep in sync. | Hourly (auto); **Run sync** to kick off the initial load immediately. |
+A Migration is **continuous** — once created it runs on its own (snapshot then
+stream). There is no manual "sync" button; status comes from the resource's
+conditions.
 
-> Full-load uses a *manual* schedule, so nothing moves until you **Run sync**. CDC
-> modes sync on an hourly cron; **Run sync** forces an immediate run.
+## CDC prerequisites on the source
 
-## Source & target engines
+- **Postgres** — `wal_level=logical`.
+- **MySQL / MariaDB** — `binlog_format=ROW` (default on MySQL 8); the user needs
+  `REPLICATION SLAVE` + `REPLICATION CLIENT`.
+- **SQL Server** — CDC enabled (`sys.sp_cdc_enable_db` / `sp_cdc_enable_table`) and
+  the SQL Server Agent running.
 
-- **Sources:** PostgreSQL, MySQL, MariaDB, SQL Server, MongoDB. A source may be
-  proprietary (e.g. SQL Server) — it's *your* database, the platform only reads from
-  it. Relational sources (pg/mysql/mariadb/sqlserver) map cleanly; MongoDB →
-  Postgres flattens documents (each collection becomes a table).
-  - **MariaDB:** use **Choose tables**, not *All tables*. Airbyte's MySQL connector
-    can't auto-discover MariaDB's catalog, so an unscoped "all" connection syncs
-    nothing; an explicit table list works (validated: full-load lands all rows).
-- **Target:** PostgreSQL (a managed CloudNativePG cluster, or any reachable Postgres).
-  Targets must be one of the engines open-infra *hosts* (today: Postgres; MySQL/MariaDB
-  and Mongo/FerretDB targets are on the roadmap), because the target has to be
-  something the platform runs.
+## Notes & limits
 
-Adding more source/target engines is a matter of extending the XRD enum + the
-composition's per-engine connector config (Airbyte ships 600+ connectors).
+- **Reliability** — at-least-once delivery with idempotent upserts; messages that
+  fail to apply are retried and, if persistently bad, dead-lettered to `dlq.<subject>`
+  (no poison loops). The JetStream stream is size-capped.
+- **Schema sync** runs at start for the selected tables; new tables added later
+  aren't auto-created (re-create the Migration or pre-create them).
+- **Type mapping** covers the common types across Postgres/MySQL/SQL Server
+  (numeric, text/varchar, temporal, boolean, uuid, bytea). Exotic/vendor-specific
+  types may need a pre-created target column.
+- Requires the `nats` component (the JetStream bus, shared with `kind: Stream`).
 
-## CDC prerequisites
-
-CDC modes read the source's change log, which the source must be configured for:
-
-- **PostgreSQL:** `wal_level=logical`, plus a replication slot and a publication. The
-  composition names them `airbyte_slot_<xr>` / `airbyte_pub_<xr>`; create them on the
-  source, and grant the user `REPLICATION`.
-- **MySQL:** `binlog_format=ROW` (the default on MySQL 8), `binlog_row_image=FULL`, and
-  a user with `REPLICATION SLAVE, REPLICATION CLIENT`.
-
-Full-load mode has no such prerequisites (it reads via plain `SELECT`).
-
-## Running & monitoring syncs
-
-- **Run sync** (console, ▶) triggers a sync immediately. Behind it, the BFF calls
-  `POST /api/migrations/{ns}/{name}/sync`.
-- Status: the `Migration` row reflects the claim's readiness; live job status is
-  available at `GET /api/migrations/{ns}/{name}/sync`.
-- `kubectl get migration -A` shows mode, source engine, and the connection id.
-
-## Under the hood
-
-- **Engine:** Airbyte OSS (Helm chart V2), deployed headless (no webapp) and pinned
-  to a non-GPU node. See `platform/data/airbyte.yaml`. Toggle with
-  `components.airbyte` in `config.yaml`.
-- **Compiler:** `platform/abstraction/migration-{xrd,composition}.yaml` — the
-  composition renders a `provider-terraform` `Workspace` whose inline module creates
-  the Airbyte resources. Each Migration gets an isolated Terraform state (a
-  per-Workspace kubernetes backend), so deletes cleanly `terraform destroy` the
-  Airbyte resources.
-- **Console glue:** `console-api` (the BFF) discovers source tables
-  (`POST /api/migrations/discover`), and triggers/reads syncs — reading the connection
-  id from `<name>-outputs` and the Airbyte client credentials from the
-  `airbyte-auth-secrets` Secret. The browser never talks to Airbyte.
-
-## Performance
-
-Validated on the single-node engine (untuned, default job resources): a 2,097,148-row
-MySQL→Postgres **CDC continuity sync** completed in ~140s — **≈15,000 rows/sec**,
-~695 MB, with an exact source↔target row-count reconciliation (zero loss). Throughput
-scales with row size, parallelism, and Airbyte resource limits.
-
-## Notes & limitations
-
-- Phase-1 deployment uses Airbyte's **bundled** Postgres + MinIO; hardening to the
-  platform's CloudNativePG + MinIO is a values change (`global.database` /
-  `global.storage`).
-- All Migrations currently target Airbyte's **Default Workspace**.
-- A `Migration` references password Secrets; the console wizard creates a
-  `<name>-creds` Secret for you and removes it on delete.
+Compare with [`kind: Stream`](streaming.md), which captures the same CDC but
+publishes it to NATS for apps/Functions to consume rather than loading a target DB.

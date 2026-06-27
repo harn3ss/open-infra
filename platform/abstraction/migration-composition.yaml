@@ -1,18 +1,21 @@
-# The compiler for kind: Migration -> an Airbyte source + destination + connection,
-# created declaratively through Crossplane provider-terraform (the airbytehq/airbyte
-# Terraform provider) against the headless Airbyte engine. This is open-infra's
-# AWS-DMS-style replication: full-load and/or ongoing CDC sync into a managed
-# PostgreSQL. The user only ever sees kind: Migration / the console — Airbyte is the
-# invisible engine.
+# The compiler for kind: Migration -> open-infra's own Debezium-based DMS engine.
+# AWS-DMS-style replication (full-load and/or CDC) from a source database into a
+# target SQL database, source and target engines free to differ. Replaces the
+# previous Airbyte/provider-terraform engine.
 #
-# A Workspace per Migration runs an inline Terraform module that:
-#   - resolves the source/destination connector configs (data sources),
-#   - creates the source, then the destination (serialized via depends_on to avoid
-#     Airbyte's config-DB `secrets`-table create race), then the connection,
-#   - outputs the connection id (written to <name>-outputs in the claim namespace).
-# DB passwords + the Airbyte client creds are injected as TF_VAR_* env from Secrets
-# (never inlined). TF state is a per-Workspace kubernetes-backend secret so deletes
-# cleanly destroy the Airbyte resources.
+# Per Migration the composition renders:
+#   - a PVC (Debezium offsets + schema history, so restarts resume not re-snapshot),
+#   - a ConfigMap (Debezium Server application.properties; the source password is an
+#     env var from the user's Secret, never inlined — Quarkus maps it onto
+#     debezium.source.database.password). The records are unwrapped
+#     (ExtractNewRecordState) and decimals emitted as strings for the apply-sink.
+#   - a Deployment (Debezium Server; an initContainer creates the JetStream stream),
+#   - a Job (apply-sink in schema-sync mode: introspect source -> auto-create target
+#     tables with cross-engine type mapping),
+#   - a Deployment (apply-sink in stream mode: consume the change events and apply
+#     idempotent upserts/deletes to the target).
+# DB passwords are injected as env from the user's Secrets and expanded into the
+# DSNs at runtime (${SOURCE_PASSWORD} / ${TARGET_PASSWORD}); never inlined.
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -40,185 +43,280 @@ spec:
             {{- $xr := .observed.composite.resource }}
             {{- $spec := $xr.spec }}
             {{- $labels := $xr.metadata.labels | default dict }}
-            {{- $xrname := $xr.metadata.name }}
-            {{- $name := (index $labels "crossplane.io/claim-name") | default $xrname }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $src := $spec.source }}
             {{- $tgt := $spec.target }}
-            {{- $mode := $spec.mode | default "full-load" }}
-            {{- $cdc := or (eq $mode "cdc") (eq $mode "full-load-and-cdc") }}
-            {{- $abname := printf "%s-%s" $ns $name }}
-            {{- $wsid := "6d21a569-ed76-4fef-b3f0-cd4a1ae03697" }}
-            {{- $srcPwKey := (($src.passwordSecretRef).key) | default "password" }}
-            {{- $tgtPwKey := (($tgt.passwordSecretRef).key) | default "password" }}
-            {{- $srcSchemas := $src.schemas | default (list "public") }}
+            {{- $mode := $spec.mode | default "full-load-and-cdc" }}
+            {{- $sengine := $src.engine }}
+            {{- $tengine := $tgt.engine | default "postgres" }}
+            {{- $shost := $src.host }}{{- $sport := $src.port | default 5432 }}{{- $sdb := $src.database }}{{- $suser := $src.username }}{{- $sssl := $src.ssl | default false }}
+            {{- $thost := $tgt.host }}{{- $tport := $tgt.port | default 5432 }}{{- $tdb := $tgt.database }}{{- $tuser := $tgt.username }}{{- $tssl := $tgt.ssl | default false }}
+            {{- $schemas := $src.schemas | default (list "public") }}
             {{- $tables := $spec.tables | default (list) }}
-            {{- /* Map the engine to its Airbyte OSS source connector. MariaDB rides
-                   the MySQL connector; SQL Server is source-mssql; Mongo is v2. */}}
-            {{- $srcConnector := "source-postgres" }}
-            {{- if or (eq $src.engine "mysql") (eq $src.engine "mariadb") }}{{ $srcConnector = "source-mysql" }}{{- end }}
-            {{- if eq $src.engine "sqlserver" }}{{ $srcConnector = "source-mssql" }}{{- end }}
-            {{- if eq $src.engine "mongodb" }}{{ $srcConnector = "source-mongodb-v2" }}{{- end }}
+            {{- $sPwSecret := $src.passwordSecretRef.name }}{{- $sPwKey := (($src.passwordSecretRef).key) | default "password" }}
+            {{- $tPwSecret := $tgt.passwordSecretRef.name }}{{- $tPwKey := (($tgt.passwordSecretRef).key) | default "password" }}
+            {{- $slot := printf "migdbz_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") }}
+            {{- $streamName := printf "mig-%s" $name }}
+            {{- $subjects := printf "mig.%s.>" $name }}
+            {{- $snap := "initial" }}
+            {{- if eq $mode "full-load" }}{{ $snap = "initial_only" }}{{- end }}
+            {{- if eq $mode "cdc" }}{{ $snap = "no_data" }}{{- end }}
+            {{- /* source table include list: qualify each bare table name. */}}
+            {{- $qualifier := $sdb }}
+            {{- if or (eq $sengine "postgres") (eq $sengine "sqlserver") }}{{ $qualifier = ($schemas | first) }}{{- end }}
+            {{- $include := "" }}
+            {{- if $tables }}{{- $q := list }}{{- range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qualifier $t) }}{{- end }}{{- $include = join "," $q }}{{- end }}
+            {{- /* runtime DSNs; password is ${...} expanded by the apply-sink from env */}}
+            {{- $srcDSN := "" }}{{- $tgtDSN := "" }}
+            {{- if or (eq $sengine "mysql") (eq $sengine "mariadb") }}
+            {{-   $srcDSN = printf "%s:${SOURCE_PASSWORD}@tcp(%s:%v)/%s?parseTime=true" $suser $shost $sport $sdb }}
+            {{- else if eq $sengine "sqlserver" }}
+            {{-   $srcDSN = printf "sqlserver://%s:${SOURCE_PASSWORD}@%s:%v?database=%s&encrypt=%s" $suser $shost $sport $sdb (ternary "true" "disable" $sssl) }}
+            {{- else }}
+            {{-   $srcDSN = printf "postgres://%s:${SOURCE_PASSWORD}@%s:%v/%s?sslmode=%s" $suser $shost $sport $sdb (ternary "require" "disable" $sssl) }}
+            {{- end }}
+            {{- if eq $tengine "mysql" }}
+            {{-   $tgtDSN = printf "%s:${TARGET_PASSWORD}@tcp(%s:%v)/%s?parseTime=true" $tuser $thost $tport $tdb }}
+            {{- else if eq $tengine "sqlserver" }}
+            {{-   $tgtDSN = printf "sqlserver://%s:${TARGET_PASSWORD}@%s:%v?database=%s&encrypt=%s" $tuser $thost $tport $tdb (ternary "true" "disable" $tssl) }}
+            {{- else }}
+            {{-   $tgtDSN = printf "postgres://%s:${TARGET_PASSWORD}@%s:%v/%s?sslmode=%s" $tuser $thost $tport $tdb (ternary "require" "disable" $tssl) }}
+            {{- end }}
             ---
-            apiVersion: tf.upbound.io/v1beta1
-            kind: Workspace
+            # Debezium offsets + (relational) schema history.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: workspace
-                crossplane.io/external-name: mig-{{ $xrname }}
+                gotemplating.fn.crossplane.io/composition-resource-name: offsets-pvc
             spec:
-              providerConfigRef:
-                name: airbyte
               forProvider:
-                source: Inline
-                enableTerraformCLILogging: false
-                module: |
-                  terraform {
-                    backend "kubernetes" {
-                      secret_suffix     = "mig-{{ $xrname }}"
-                      namespace         = "crossplane-system"
-                      in_cluster_config = true
-                    }
-                  }
-
-                  variable "src_password" {
-                    type      = string
-                    sensitive = true
-                  }
-                  variable "dst_password" {
-                    type      = string
-                    sensitive = true
-                  }
-
-                  data "airbyte_connector_configuration" "src" {
-                    connector_name     = "{{ $srcConnector }}"
-                    connector_registry = "oss"
-                  {{- if eq $src.engine "mongodb" }}
-                    # MongoDB is non-relational: a database_config (self-managed replica
-                    # set — change streams need one) instead of host/port/schemas. The
-                    # password rides var.src_password (still sourced from the Secret).
-                    configuration = {
-                      database_config = {
-                        cluster_type      = "SELF_MANAGED_REPLICA_SET"
-                        connection_string = "mongodb://{{ $src.host }}:{{ $src.port | default 27017 }}/"
-                        databases         = ["{{ $src.database }}"]
-                        username          = "{{ $src.username }}"
-                        password          = var.src_password
-                        auth_source       = "admin"
-                      }
-                    }
-                  {{- else }}
-                    configuration = {
-                      host     = "{{ $src.host }}"
-                      port     = {{ $src.port | default 5432 }}
-                      database = "{{ $src.database }}"
-                  {{- if eq $src.engine "postgres" }}
-                      schemas  = [{{ range $i, $s := $srcSchemas }}{{ if $i }}, {{ end }}"{{ $s }}"{{ end }}]
-                      ssl_mode = { mode = "{{ if $src.ssl }}require{{ else }}disable{{ end }}" }
-                      replication_method = { {{ if $cdc }}method = "CDC", replication_slot = "airbyte_slot_{{ $xrname }}", publication = "airbyte_pub_{{ $xrname }}"{{ else }}method = "Xmin"{{ end }} }
-                  {{- else if or (eq $src.engine "mysql") (eq $src.engine "mariadb") }}
-                      ssl_mode = { mode = "{{ if $src.ssl }}required{{ else }}preferred{{ end }}" }
-                      replication_method = { method = "{{ if $cdc }}CDC{{ else }}STANDARD{{ end }}" }
-                  {{- else if eq $src.engine "sqlserver" }}
-                      schemas  = [{{ range $i, $s := $srcSchemas }}{{ if $i }}, {{ end }}"{{ $s }}"{{ end }}]
-                      ssl_method = { ssl_method = "{{ if $src.ssl }}encrypted_trust_server_certificate{{ else }}unencrypted{{ end }}" }
-                      replication_method = { method = "{{ if $cdc }}CDC{{ else }}STANDARD{{ end }}" }
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}-migration-offsets
+                    namespace: {{ $ns }}
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    storageClassName: longhorn
+                    resources:
+                      requests:
+                        storage: 1Gi
+            ---
+            # Debezium Server config. Records are unwrapped to the after-image and
+            # decimals emitted as strings so the apply-sink can bind them directly.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dbz-config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-migration-config
+                    namespace: {{ $ns }}
+                  data:
+                    application.properties: |
+                      debezium.sink.type=nats-jetstream
+                      debezium.sink.nats-jetstream.url=nats://nats.nats.svc.cluster.local:4222
+                      debezium.source.offset.storage.file.filename=/debezium/data/offsets.dat
+                      debezium.source.offset.flush.interval.ms=0
+                      debezium.source.topic.prefix=mig.{{ $name }}
+                      debezium.source.snapshot.mode={{ $snap }}
+                      debezium.source.decimal.handling.mode=string
+                      debezium.source.include.schema.changes=false
+                      debezium.format.key=json
+                      debezium.format.value=json
+                      debezium.format.key.schemas.enable=false
+                      debezium.format.value.schemas.enable=false
+                      debezium.transforms=unwrap
+                      debezium.transforms.unwrap.type=io.debezium.transforms.ExtractNewRecordState
+                      debezium.transforms.unwrap.drop.tombstones=false
+                      debezium.transforms.unwrap.delete.handling.mode=rewrite
+                      quarkus.log.console.json=false
+                  {{- if eq $sengine "postgres" }}
+                      debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+                      debezium.source.plugin.name=pgoutput
+                      debezium.source.slot.name={{ $slot }}
+                      debezium.source.publication.name={{ $slot }}_pub
+                      debezium.source.database.hostname={{ $shost }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $suser }}
+                      debezium.source.database.dbname={{ $sdb }}
+                    {{- if $sssl }}
+                      debezium.source.database.sslmode=require
+                    {{- end }}
+                    {{- if $include }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- end }}
+                  {{- else if or (eq $sengine "mysql") (eq $sengine "mariadb") }}
+                      debezium.source.connector.class=io.debezium.connector.mysql.MySqlConnector
+                      debezium.source.database.hostname={{ $shost }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $suser }}
+                      debezium.source.database.server.id={{ $name | adler32sum }}
+                      debezium.source.database.include.list={{ $sdb }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                    {{- if $sssl }}
+                      debezium.source.database.ssl.mode=required
+                    {{- end }}
+                    {{- if $include }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- end }}
+                  {{- else if eq $sengine "sqlserver" }}
+                      debezium.source.connector.class=io.debezium.connector.sqlserver.SqlServerConnector
+                      debezium.source.database.hostname={{ $shost }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $suser }}
+                      debezium.source.database.names={{ $sdb }}
+                      debezium.source.database.encrypt={{ $sssl }}
+                    {{- if $sssl }}
+                      debezium.source.database.trustServerCertificate=true
+                    {{- end }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                    {{- if $include }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- end }}
                   {{- end }}
-                      tunnel_method = { tunnel_method = "NO_TUNNEL" }
-                    }
-                    configuration_secrets = {
-                      username = "{{ $src.username }}"
-                      password = var.src_password
-                    }
-                  {{- end }}
-                  }
-
-                  data "airbyte_connector_configuration" "dst" {
-                    connector_name     = "destination-postgres"
-                    connector_registry = "oss"
-                    configuration = {
-                      host     = "{{ $tgt.host }}"
-                      port     = {{ $tgt.port | default 5432 }}
-                      database = "{{ $tgt.database }}"
-                      schema   = "{{ $tgt.schema | default "public" }}"
-                      ssl_mode = { mode = "{{ if $tgt.ssl }}require{{ else }}disable{{ end }}" }
-                      tunnel_method = { tunnel_method = "NO_TUNNEL" }
-                    }
-                    configuration_secrets = {
-                      username = "{{ $tgt.username }}"
-                      password = var.dst_password
-                    }
-                  }
-
-                  resource "airbyte_source" "src" {
-                    name          = "{{ $abname }}-source"
-                    workspace_id  = "{{ $wsid }}"
-                    definition_id = data.airbyte_connector_configuration.src.definition_id
-                    configuration = data.airbyte_connector_configuration.src.configuration_json
-                  }
-
-                  resource "airbyte_destination" "dst" {
-                    name          = "{{ $abname }}-destination"
-                    workspace_id  = "{{ $wsid }}"
-                    definition_id = data.airbyte_connector_configuration.dst.definition_id
-                    configuration = data.airbyte_connector_configuration.dst.configuration_json
-                    depends_on    = [airbyte_source.src]
-                  }
-
-                  resource "airbyte_connection" "conn" {
-                    name           = "{{ $abname }}"
-                    source_id      = airbyte_source.src.source_id
-                    destination_id = airbyte_destination.dst.destination_id
-                    status         = "active"
-                  {{- if $cdc }}
-                    schedule = { schedule_type = "cron", cron_expression = "0 0 * * * ?" }
-                  {{- else }}
-                    schedule = { schedule_type = "manual" }
-                  {{- end }}
-                  {{- if $tables }}
-                    configurations = {
-                      streams = [
-                  {{- range $t := $tables }}
-                        { name = "{{ $t }}", sync_mode = "{{ if $cdc }}incremental_append{{ else }}full_refresh_overwrite{{ end }}" },
-                  {{- end }}
-                      ]
-                    }
-                  {{- end }}
-                  }
-
-                  output "connection_id" {
-                    value = airbyte_connection.conn.connection_id
-                  }
-                  output "source_id" {
-                    value = airbyte_source.src.source_id
-                  }
-                  output "destination_id" {
-                    value = airbyte_destination.dst.destination_id
-                  }
-                env:
-                  - name: TF_VAR_src_password
-                    secretKeyRef:
-                      namespace: {{ $ns }}
-                      name: {{ $src.passwordSecretRef.name }}
-                      key: {{ $srcPwKey }}
-                  - name: TF_VAR_dst_password
-                    secretKeyRef:
-                      namespace: {{ $ns }}
-                      name: {{ $tgt.passwordSecretRef.name }}
-                      key: {{ $tgtPwKey }}
-                  - name: TF_VAR_airbyte_client_id
-                    secretKeyRef:
-                      namespace: airbyte
-                      name: airbyte-auth-secrets
-                      key: instance-admin-client-id
-                  - name: TF_VAR_airbyte_client_secret
-                    secretKeyRef:
-                      namespace: airbyte
-                      name: airbyte-auth-secrets
-                      key: instance-admin-client-secret
-              writeConnectionSecretToRef:
-                namespace: {{ $ns }}
-                name: {{ $name }}-outputs
+            ---
+            # Debezium Server. initContainer creates the JetStream stream first.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dbz
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-migration-dbz
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-migration, openinfra.dev/migration: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    strategy: { type: Recreate }
+                    selector: { matchLabels: { app: {{ $name }}-migration-dbz } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-migration-dbz } }
+                      spec:
+                        securityContext: { fsGroup: 185 }
+                        initContainers:
+                          - name: ensure-stream
+                            image: natsio/nats-box:latest
+                            command:
+                              - sh
+                              - -c
+                              - nats stream info {{ $streamName }} >/dev/null 2>&1 || nats stream add {{ $streamName }} --subjects='mig.{{ $name }}.>' --subjects='mig.{{ $name }}' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults
+                            env:
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                        containers:
+                          - name: debezium
+                            image: quay.io/debezium/server:2.7.3.Final
+                            env:
+                              - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
+                                valueFrom:
+                                  secretKeyRef:
+                                    name: {{ $sPwSecret }}
+                                    key: {{ $sPwKey }}
+                            volumeMounts:
+                              - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
+                              - { name: data, mountPath: /debezium/data }
+                        volumes:
+                          - name: config
+                            configMap: { name: {{ $name }}-migration-config }
+                          - name: data
+                            persistentVolumeClaim: { claimName: {{ $name }}-migration-offsets }
+            ---
+            # schema-sync: introspect the source and auto-create the target tables
+            # (cross-engine type mapping). Runs to completion before/while streaming.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: schema-sync
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-migration-schemasync
+                    namespace: {{ $ns }}
+                  spec:
+                    backoffLimit: 30
+                    template:
+                      metadata: { labels: { app: {{ $name }}-migration-schemasync } }
+                      spec:
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: schema-sync
+                            image: ghcr.io/harn3ss/open-infra-apply-sink:latest
+                            env:
+                              - { name: MODE, value: schema-sync }
+                              - { name: SOURCE_ENGINE, value: "{{ $sengine }}" }
+                              - { name: SOURCE_DSN, value: "{{ $srcDSN }}" }
+                              - name: SOURCE_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $sPwSecret }}, key: {{ $sPwKey }} } }
+                              - { name: TARGET_ENGINE, value: "{{ $tengine }}" }
+                              - { name: TARGET_DSN, value: "{{ $tgtDSN }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $tPwSecret }}, key: {{ $tPwKey }} } }
+                          {{- if $include }}
+                              - { name: TABLES, value: "{{ $include }}" }
+                          {{- end }}
+                          {{- if $tgt.schema }}
+                              - { name: TARGET_SCHEMA, value: "{{ $tgt.schema }}" }
+                          {{- end }}
+            ---
+            # apply-sink: consume the change events and apply them to the target.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: apply-sink
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-migration-applysink
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-migration-applysink, openinfra.dev/migration: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-migration-applysink } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-migration-applysink } }
+                      spec:
+                        containers:
+                          - name: apply-sink
+                            image: ghcr.io/harn3ss/open-infra-apply-sink:latest
+                            env:
+                              - { name: MODE, value: stream }
+                              - { name: TARGET_ENGINE, value: "{{ $tengine }}" }
+                              - { name: TARGET_DSN, value: "{{ $tgtDSN }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $tPwSecret }}, key: {{ $tPwKey }} } }
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: STREAM, value: "{{ $streamName }}" }
+                              - { name: SUBJECT, value: "{{ $subjects }}" }
+                              - { name: DURABLE, value: "{{ $streamName }}" }
+                          {{- if $tgt.schema }}
+                              - { name: TARGET_SCHEMA, value: "{{ $tgt.schema }}" }
+                          {{- end }}
+                            resources:
+                              requests: { cpu: 50m, memory: 32Mi }
+                              limits: { cpu: "1", memory: 256Mi }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

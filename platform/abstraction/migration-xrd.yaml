@@ -1,14 +1,16 @@
 # open-infra's "DMS" (Database Migration Service): kind: Migration.
 #
 # AWS-DMS-style replication: full-load and/or ongoing CDC sync from a source
-# database into a managed PostgreSQL, powered by the headless Airbyte engine
-# (platform/data/airbyte.yaml) and driven declaratively through Crossplane
-# (provider-terraform → the airbytehq/airbyte Terraform provider). A Migration
-# renders one Airbyte source + destination + connection; users never see Airbyte.
+# database into a target SQL database. The engine is open-infra's own: Debezium
+# Server captures the source's changes onto NATS JetStream, and the apply-sink
+# (apply-sink/) writes them to the target as idempotent upserts/deletes,
+# auto-creating the target schema with cross-engine type mapping. Source and
+# target may be different engines (e.g. SQL Server -> PostgreSQL). Users only ever
+# see kind: Migration / the console — the engine is invisible.
 #
 # source/target are structured endpoints (host/port/db/user + a passwordSecretRef)
 # so the console can present an AWS-DMS endpoint form and so secrets stay in
-# Secrets (injected into the Terraform run as TF_VAR_*; never inlined).
+# Secrets (injected into the Debezium + apply-sink pods as env, never inlined).
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -43,22 +45,21 @@ spec:
                 mode:
                   type: string
                   enum: [full-load, cdc, full-load-and-cdc]
-                  default: full-load
+                  default: full-load-and-cdc
                   description: >-
                     Replication type, like AWS DMS. full-load = one-shot copy of
                     existing data. cdc = ongoing change-data-capture sync only.
-                    full-load-and-cdc = initial copy then keep in sync. CDC modes
-                    require a CDC-ready source (Postgres: wal_level=logical + a
-                    replication slot/publication; MySQL/MariaDB: binlog_format=ROW;
-                    SQL Server: CDC enabled + SQL Server Agent; MongoDB: a replica
-                    set, read via change streams).
+                    full-load-and-cdc = initial copy then keep in sync (continuous,
+                    the default). CDC modes require a CDC-ready source (Postgres:
+                    wal_level=logical; MySQL/MariaDB: binlog_format=ROW; SQL Server:
+                    CDC enabled + SQL Server Agent).
                 source:
                   type: object
                   required: [engine, host, database, username, passwordSecretRef]
                   properties:
                     engine:
                       type: string
-                      enum: [postgres, mysql, mariadb, sqlserver, mongodb]
+                      enum: [postgres, mysql, mariadb, sqlserver]
                       description: >-
                         Source database engine. A source may be proprietary (e.g.
                         sqlserver) — it's your database, we only read from it.
@@ -68,10 +69,10 @@ spec:
                     port:
                       type: integer
                       default: 5432
-                      description: "Source port (Postgres 5432, MySQL/MariaDB 3306, SQL Server 1433, MongoDB 27017)."
+                      description: "Source port (Postgres 5432, MySQL/MariaDB 3306, SQL Server 1433)."
                     database:
                       type: string
-                      description: "Source database name (for MongoDB, the database whose collections are replicated)."
+                      description: "Source database name."
                     username:
                       type: string
                       description: "Source username (needs read + replication for CDC)."
@@ -85,23 +86,27 @@ spec:
                       type: array
                       items: { type: string }
                       default: ["public"]
-                      description: "Schemas to replicate (Postgres: public; SQL Server: dbo). Ignored for MySQL/MariaDB/MongoDB."
+                      description: "Schemas to replicate (Postgres: public; SQL Server: dbo). Ignored for MySQL/MariaDB."
                     ssl:
                       type: boolean
                       default: false
                       description: "Require TLS to the source."
                 target:
                   type: object
-                  required: [host, database, username, passwordSecretRef]
+                  required: [engine, host, database, username, passwordSecretRef]
                   properties:
                     engine:
                       type: string
-                      enum: [postgres]
+                      enum: [postgres, mysql, sqlserver]
                       default: postgres
-                      description: "Target engine. v1 supports PostgreSQL (a managed CloudNativePG cluster, or any Postgres)."
+                      description: >-
+                        Target engine. The apply-sink writes via the engine's native
+                        upsert (Postgres ON CONFLICT / MySQL ON DUPLICATE KEY / SQL
+                        Server MERGE) and auto-creates tables with cross-engine type
+                        mapping, so the target may differ from the source.
                     host:
                       type: string
-                      description: "Target Postgres host (e.g. <cluster>-rw.<ns>.svc for a managed DB)."
+                      description: "Target host (e.g. <cluster>-rw.<ns>.svc for a managed Postgres)."
                     port:
                       type: integer
                       default: 5432
@@ -117,23 +122,22 @@ spec:
                         key:  { type: string, default: "password" }
                     schema:
                       type: string
-                      default: "public"
-                      description: "Target schema to write into."
+                      description: "Optional target schema/namespace override (default: source schema for Postgres, dbo for SQL Server, the database for MySQL)."
                     ssl:
                       type: boolean
                       default: false
                 tables:
                   type: array
                   items: { type: string }
-                  description: "Optional table/stream selection (MongoDB: collection names). Empty = all tables/collections."
+                  description: "Optional table selection (bare table names). Empty = all tables."
             status:
               type: object
               properties:
-                connectionId:
-                  type: string
-                  description: "The Airbyte connection id backing this Migration."
                 phase: { type: string }
                 ready: { type: boolean }
+                stream:
+                  type: string
+                  description: "The JetStream stream carrying this Migration's change events."
       additionalPrinterColumns:
         - name: Mode
           type: string
@@ -141,6 +145,9 @@ spec:
         - name: Source
           type: string
           jsonPath: .spec.source.engine
-        - name: Connection
+        - name: Target
           type: string
-          jsonPath: .status.connectionId
+          jsonPath: .spec.target.engine
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
