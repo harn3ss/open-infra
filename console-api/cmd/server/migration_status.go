@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -134,5 +135,76 @@ func handleReplicationStatus(logger *slog.Logger) http.HandlerFunc {
 			out[siteB] = gatherPipeline(ctx, js, "repl-"+name+"-"+siteB, name+"-"+siteB+"-"+siteA, "repl."+name+"."+siteB)
 		}
 		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// dataFlowEdgeReq is one edge of a DataFlow topology, as the canvas knows it.
+type dataFlowEdgeReq struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"` // replication | migration
+}
+
+// dataFlowDirection is one directed leg of the topology with its live pipeline.
+// (A replication edge yields two legs; a migration edge yields one.)
+type dataFlowDirection struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Type string `json:"type"`
+	pipelineStatus
+}
+
+// handleDataFlowStatus returns per-edge live status for a DataFlow. The naming
+// mirrors the composition: a node's changes land on stream flow-<name>-<node>
+// (subjects f.<name>.<node>.>); a replication leg <s>-><d> is consumed by durable
+// <name>-<s>-<d>; a migration leg by <name>-mig-<s>-<d>.
+func handleDataFlowStatus(logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		var body struct {
+			Edges []dataFlowEdgeReq `json:"edges"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		nc, err := natsConnect()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "messaging unavailable")
+			return
+		}
+		defer nc.Close()
+		js, err := jetstream.New(nc)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+
+		leg := func(s, d, typ string) dataFlowDirection {
+			durable := name + "-" + s + "-" + d
+			if typ == "migration" {
+				durable = name + "-mig-" + s + "-" + d
+			}
+			return dataFlowDirection{
+				From: s, To: d, Type: typ,
+				pipelineStatus: gatherPipeline(ctx, js, "flow-"+name+"-"+s, durable, "f."+name+"."+s),
+			}
+		}
+
+		dirs := []dataFlowDirection{}
+		for _, e := range body.Edges {
+			if e.From == "" || e.To == "" {
+				continue
+			}
+			if e.Type == "migration" {
+				dirs = append(dirs, leg(e.From, e.To, "migration"))
+			} else {
+				dirs = append(dirs, leg(e.From, e.To, "replication"))
+				dirs = append(dirs, leg(e.To, e.From, "replication"))
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"directions": dirs})
 	}
 }

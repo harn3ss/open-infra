@@ -307,6 +307,23 @@ export function getMigrationStatus(
     `/migrations/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/status`,
   );
 }
+
+/** One directed leg of a DataFlow topology with its live pipeline status. */
+export interface DataFlowDirection extends PipelineStatus {
+  from: string;
+  to: string;
+  type: string; // replication | migration
+}
+export function getDataFlowStatus(
+  namespace: string,
+  name: string,
+  edges: { from: string; to: string; type: string }[],
+): Promise<{ directions: DataFlowDirection[] | null }> {
+  return request<{ directions: DataFlowDirection[] | null }>(
+    `/dataflows/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/status`,
+    { method: "POST", body: JSON.stringify({ edges }) },
+  );
+}
 /** Per-site (per-direction) pipeline status for a bidirectional Replication. */
 export function getReplicationStatus(
   namespace: string,

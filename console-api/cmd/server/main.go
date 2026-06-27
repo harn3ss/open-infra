@@ -189,6 +189,11 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 				Get("/migrations/{namespace}/{name}/status", handleMigrationStatus(logger))
 			api.With(middleware.Timeout(15*time.Second)).
 				Get("/replications/{namespace}/{name}/status", handleReplicationStatus(logger))
+			// DataFlow canvas: per-edge live status for an arbitrary topology. POST
+			// because the edge list (which the UI already has from the loaded CR) is
+			// the input — the server maps each edge to its stream(s)/durable(s).
+			api.With(middleware.Timeout(15*time.Second)).
+				Post("/dataflows/{namespace}/{name}/status", handleDataFlowStatus(logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
