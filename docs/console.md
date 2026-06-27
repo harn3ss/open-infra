@@ -57,7 +57,7 @@ browser ──► console pod (single container)
                    ├─ /api/buckets…    MinIO S3 (list / browse / upload / download / delete)
                    ├─ /api/queues…     NATS JetStream (stats / publish / purge)
                    ├─ /api/models/…/chat   proxy to a Model's gated endpoint (key stays server-side)
-                   ├─ /api/migrations/… discover source tables + trigger/poll a DMS sync (Airbyte stays hidden)
+                   ├─ /api/migrations/… discover source tables (the DMS engine runs continuously and stays hidden)
                    └─ /grafana/*       same-origin Grafana embed
 ```
 

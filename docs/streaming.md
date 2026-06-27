@@ -135,7 +135,7 @@ directly, sidestepping that.
 
 | | `kind: Migration` | `kind: Stream` |
 |---|---|---|
-| Engine | Airbyte | Debezium Server |
+| Engine | Debezium + apply-sink | Debezium Server |
 | Output | a **managed database** (Postgres) | the **event bus** (JetStream) |
 | Use when | you want a synced copy / warehouse | you want event-driven consumers, fan-out, real-time processing |
 | Style | batch + scheduled CDC | continuous, per-change events |

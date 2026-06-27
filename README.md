@@ -50,7 +50,7 @@ CNCF projects — not a reinvention of databases or storage.
 | RDS | managed SQL (`engine: postgres`/`mysql`) | CloudNativePG / MariaDB |
 | DynamoDB | document store (`engine: mongo`) | FerretDB on DocumentDB-Postgres |
 | OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
-| DMS | DB migration + CDC (`kind: Migration`) | Airbyte (headless) + Crossplane |
+| DMS | DB migration + CDC (`kind: Migration`) | Debezium + apply-sink + Crossplane |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Redis |
@@ -151,7 +151,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt, Airbyte). The nine public
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The nine public
 abstractions are shipped and verified end-to-end:
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
@@ -167,7 +167,7 @@ abstractions are shipped and verified end-to-end:
 - **`FileShare`** — shared SMB file storage (open-infra's "EFS/FSx"), with a Connect
   helper (Windows `net use` / Linux `mount`).
 - **`Directory`** — managed Active Directory (Samba AD DC) for Windows domain join.
-- **`Migration`** — AWS-DMS-style DB migration + CDC on a headless Airbyte engine:
+- **`Migration`** — AWS-DMS-style DB migration + CDC on a Debezium + apply-sink engine:
   full-load or continuous sync into a managed Postgres, with a console wizard. See
   [`docs/migrations.md`](docs/migrations.md).
 - **`Stream`** — Kinesis-style streaming CDC: a headless Debezium Server publishes a

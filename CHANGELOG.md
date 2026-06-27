@@ -4,6 +4,22 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
+## Unreleased
+
+### Database migration (DMS) — re-platformed off Airbyte
+- **`kind: Migration` now runs on open-infra's own engine**: Debezium Server
+  captures the source's changes onto NATS JetStream and the new **apply-sink**
+  service applies them to the target as idempotent upserts/deletes, auto-creating
+  the target schema with **cross-engine type mapping**.
+- **Any SQL target** — `target.engine` is now `postgres`, `mysql`, or `sqlserver`
+  (was Postgres-only), and the source may differ from the target (e.g. SQL Server →
+  Postgres). Source engines: Postgres, MySQL/MariaDB, SQL Server.
+- **Continuous by default** — a Migration snapshots then streams CDC; the manual
+  "sync" trigger is gone (like AWS DMS continuous tasks).
+- **Airbyte and `provider-terraform` are removed entirely** — a much lighter stack
+  (no Temporal / workers / second Postgres). The apply-sink image is Trivy-scanned
+  and cosign-signed by CI like the console.
+
 ## v1.0.0 — 2026-06-23
 
 The first stable release. Since v0.1.0 the platform gained real network security,

@@ -6,7 +6,7 @@
 # stream-composition.yaml) whose nats-jetstream sink writes to subjects
 # cdc.<name>.<schema>.<table>; users only ever see kind: Stream / the console.
 #
-# Complements kind: Migration (Airbyte → a managed DB, batch/CDC sync to a
+# Complements kind: Migration (Debezium + apply-sink → a target DB, batch/CDC sync to a
 # *database*). Stream emits to an *event bus* for event-driven consumers.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).

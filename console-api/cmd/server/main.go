@@ -180,13 +180,6 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/queues/{stream}/purge", handleQueuePurge(logger))
 
-		// DMS: trigger + poll a Migration's Airbyte sync. The BFF reads the
-		// connection id from the Migration's outputs secret + the Airbyte creds,
-		// so the engine stays hidden from the browser.
-		api.With(middleware.Timeout(20*time.Second)).
-			Post("/migrations/{namespace}/{name}/sync", handleMigrationSync(*client.Clientset, logger))
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/migrations/{namespace}/{name}/sync", handleMigrationSyncStatus(*client.Clientset, logger))
 		// DMS wizard: discover a source's tables (connects to the source DB directly).
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/migrations/discover", handleMigrationDiscover(logger))

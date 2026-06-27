@@ -111,7 +111,7 @@ func main() {
 
 func runStream() {
 	engine := env("TARGET_ENGINE", "postgres")
-	dsn := env("TARGET_DSN", "")
+	dsn := os.ExpandEnv(env("TARGET_DSN", "")) // ${TARGET_PASSWORD} injected from a Secret
 	natsURL := env("NATS_URL", "nats://nats:4222")
 	stream := env("STREAM", "CDC")
 	subject := env("SUBJECT", "cdc.>")
@@ -157,30 +157,42 @@ func runStream() {
 			continue
 		}
 		for _, m := range msgs {
-			if err := apply(db, engine, m); err != nil {
-				nd := 1
-				if md, e := m.Metadata(); e == nil {
-					nd = int(md.NumDelivered)
-				}
-				if nd >= maxDeliver {
-					log.Printf("DEAD-LETTER subj=%s after %d attempts: %v", m.Subject, nd, err)
-					_, _ = js.Publish("dlq."+m.Subject, m.Data)
-					_ = m.Term()
-				} else {
-					log.Printf("apply error (attempt %d) subj=%s: %v", nd, m.Subject, err)
-					_ = m.Nak()
-				}
-			} else {
+			retry, err := apply(db, engine, m)
+			if err == nil {
 				_ = m.Ack()
+				continue
+			}
+			if retry {
+				// transient (e.g. target table not created by schema-sync yet) —
+				// retry indefinitely, never dead-letter, so we don't drop good rows.
+				log.Printf("retry subj=%s: %v", m.Subject, err)
+				_ = m.Nak()
+				continue
+			}
+			nd := 1
+			if md, e := m.Metadata(); e == nil {
+				nd = int(md.NumDelivered)
+			}
+			if nd >= maxDeliver {
+				log.Printf("DEAD-LETTER subj=%s after %d attempts: %v", m.Subject, nd, err)
+				_, _ = js.Publish("dlq."+m.Subject, m.Data)
+				_ = m.Term()
+			} else {
+				log.Printf("apply error (attempt %d) subj=%s: %v", nd, m.Subject, err)
+				_ = m.Nak()
 			}
 		}
 	}
 }
 
-func apply(db *sql.DB, engine string, m *nats.Msg) error {
+// apply returns (retryable, err). retryable=true means a transient condition
+// (e.g. the target table isn't created yet) — the caller should Nak and retry
+// without ever dead-lettering. retryable=false errors are data problems that
+// dead-letter after MAX_DELIVER.
+func apply(db *sql.DB, engine string, m *nats.Msg) (bool, error) {
 	parts := strings.Split(m.Subject, ".")
 	if len(parts) < 2 {
-		return fmt.Errorf("subject too short: %s", m.Subject)
+		return false, fmt.Errorf("subject too short: %s", m.Subject)
 	}
 	schema := targetSchema(engine, parts[len(parts)-2])
 	table := parts[len(parts)-1]
@@ -189,22 +201,22 @@ func apply(db *sql.DB, engine string, m *nats.Msg) error {
 	dec.UseNumber()
 	var row map[string]any
 	if err := dec.Decode(&row); err != nil {
-		return fmt.Errorf("decode: %w", err)
+		return false, fmt.Errorf("decode: %w", err)
 	}
 	if row == nil {
-		return nil
+		return false, nil
 	}
 	deleted := fmt.Sprint(row["__deleted"]) == "true"
 	delete(row, "__deleted")
 
 	mt, err := getMeta(db, engine, schema, table)
 	if err != nil {
-		return err
+		return true, err // target table may not be created by schema-sync yet
 	}
 	if deleted {
-		return execDelete(db, engine, schema, table, mt, row)
+		return false, execDelete(db, engine, schema, table, mt, row)
 	}
-	return execUpsert(db, engine, schema, table, mt, row)
+	return false, execUpsert(db, engine, schema, table, mt, row)
 }
 
 func getMeta(db *sql.DB, engine, schema, table string) (meta, error) {
@@ -564,9 +576,9 @@ type ddlCol struct {
 
 func runSchemaSync() {
 	srcEngine := env("SOURCE_ENGINE", "postgres")
-	srcDSN := env("SOURCE_DSN", "")
+	srcDSN := os.ExpandEnv(env("SOURCE_DSN", "")) // ${SOURCE_PASSWORD} from a Secret
 	tgtEngine := env("TARGET_ENGINE", "postgres")
-	tgtDSN := env("TARGET_DSN", "")
+	tgtDSN := os.ExpandEnv(env("TARGET_DSN", "")) // ${TARGET_PASSWORD} from a Secret
 	tables := env("TABLES", "")
 	if srcDSN == "" || tgtDSN == "" {
 		log.Fatal("SOURCE_DSN and TARGET_DSN required for schema-sync")
@@ -623,6 +635,34 @@ func discoverTables(db *sql.DB, engine string) ([][2]string, error) {
 	case "pgx":
 		rows, err := db.Query(`SELECT table_schema, table_name FROM information_schema.tables
 			WHERE table_type='BASE TABLE' AND table_schema NOT IN ('pg_catalog','information_schema')`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s, t string
+			if err := rows.Scan(&s, &t); err != nil {
+				return nil, err
+			}
+			out = append(out, [2]string{s, t})
+		}
+	case "mysql":
+		rows, err := db.Query(`SELECT table_schema, table_name FROM information_schema.tables
+			WHERE table_type='BASE TABLE' AND table_schema=DATABASE()`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s, t string
+			if err := rows.Scan(&s, &t); err != nil {
+				return nil, err
+			}
+			out = append(out, [2]string{s, t})
+		}
+	case "sqlserver":
+		rows, err := db.Query(`SELECT table_schema, table_name FROM information_schema.tables
+			WHERE table_type='BASE TABLE'`)
 		if err != nil {
 			return nil, err
 		}
