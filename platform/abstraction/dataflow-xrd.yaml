@@ -1,0 +1,103 @@
+# open-infra's data-movement topology: kind: DataFlow.
+#
+# A single resource describing a graph of databases ("nodes") connected by data
+# edges — drawn on the console's canvas. Each NODE is a database endpoint
+# (engine + connection), configured once. Each EDGE moves data between two nodes:
+#   - type: replication -> bidirectional multi-master (both ways), loop-prevented,
+#     last-write-wins on a Hybrid Logical Clock (see kind: Replication),
+#   - type: migration  -> one-way (from -> to), full-load and/or CDC, with target
+#     schema auto-create + cross-engine type mapping (see kind: Migration).
+# The same Debezium + NATS + apply-sink engine powers both; this kind just wires an
+# arbitrary topology of them. Node x/y positions are persisted so the canvas
+# reloads exactly.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdataflows.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XDataFlow
+    plural: xdataflows
+  claimNames:
+    kind: DataFlow
+    plural: dataflows
+  defaultCompositionRef:
+    name: dataflow
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [nodes, edges]
+              properties:
+                nodes:
+                  type: array
+                  description: "Database endpoints on the canvas. `name` is the node id used by edges and as the replication origin marker."
+                  items:
+                    type: object
+                    required: [name, engine, host, database, username, passwordSecretRef]
+                    properties:
+                      name: { type: string }
+                      engine: { type: string, enum: [postgres, mysql, mariadb, sqlserver] }
+                      host: { type: string }
+                      port: { type: integer, default: 5432 }
+                      database: { type: string }
+                      username: { type: string }
+                      passwordSecretRef:
+                        type: object
+                        required: [name]
+                        properties:
+                          name: { type: string }
+                          key:  { type: string, default: "password" }
+                      schema: { type: string, default: "public", description: "Schema/namespace (Postgres: public; SQL Server: dbo). Ignored for MySQL." }
+                      ssl: { type: boolean, default: false }
+                      x: { type: integer, default: 0, description: "Canvas position (persisted for the editor)." }
+                      y: { type: integer, default: 0 }
+                edges:
+                  type: array
+                  description: "Data movement between nodes."
+                  items:
+                    type: object
+                    required: [from, to, type]
+                    properties:
+                      from: { type: string, description: "Source node name." }
+                      to: { type: string, description: "Target node name (for replication the link is bidirectional)." }
+                      type:
+                        type: string
+                        enum: [replication, migration]
+                        description: "replication = bidirectional multi-master; migration = one-way from -> to."
+                      mode:
+                        type: string
+                        enum: [full-load, cdc, full-load-and-cdc]
+                        default: full-load-and-cdc
+                        description: "Migration edges only: full-load / cdc / both."
+                      tables:
+                        type: array
+                        items: { type: string }
+                        description: "Tables for this edge. Empty = use the topology-level tables."
+                tables:
+                  type: array
+                  items: { type: string }
+                  description: "Default tables replicated/migrated on every edge (override per-edge)."
+                versionColumn: { type: string, default: "_mm_version" }
+                originColumn: { type: string, default: "_mm_origin" }
+            status:
+              type: object
+              properties:
+                phase: { type: string }
+                ready: { type: boolean }
+      additionalPrinterColumns:
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
