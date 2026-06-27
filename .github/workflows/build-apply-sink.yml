@@ -1,0 +1,89 @@
+# Build the open-infra apply-sink image and push it to GHCR.
+#
+# apply-sink is the generic CDC apply engine behind kind: Migration: it consumes
+# Debezium change events from NATS JetStream and applies them to a target SQL
+# database (Postgres / MySQL / SQL Server), and in schema-sync mode auto-creates
+# the target tables. Same supply-chain treatment as the console image
+# (Trivy-scanned + cosign-signed).
+name: build-apply-sink
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apply-sink/**"
+      - ".github/workflows/build-apply-sink.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # cosign keyless signing (Sigstore OIDC)
+  security-events: write # upload Trivy results to the Security tab
+
+concurrency:
+  group: build-apply-sink-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/open-infra-apply-sink
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: apply-sink
+          file: apply-sink/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- Supply chain: scan + sign the pushed image ---
+      - name: Trivy vulnerability scan (SARIF)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-apply-sink@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: "true"
+        env:
+          TRIVY_CACHE_DIR: .trivycache
+
+      - name: Upload Trivy results to the Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-apply-sink
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless, Sigstore)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/open-infra-apply-sink@${{ steps.build.outputs.digest }}
