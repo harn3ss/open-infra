@@ -163,13 +163,39 @@ func runMMPrep() {
 			log.Printf("mm-prep: prepared %s.%s (site=%s)", t[0], t[1], site)
 		}
 	case "sqlserver":
-		// SQL Server lacks BEFORE-row triggers; (version, origin) columns are added
-		// here and stamped application-side / by an INSTEAD OF trigger (engine note).
+		// SQL Server has no BEFORE-row triggers, so stamping uses an AFTER trigger
+		// with a TRIGGER_NESTLEVEL recursion guard. Native writes get an HLC
+		// (version, origin); replication-applied writes (session flag) are skipped
+		// but advance the local HLC (observe). A DEFAULT keeps the pre-trigger
+		// version non-null. MERGE (the apply path) works with AFTER triggers.
+		exec(`IF OBJECT_ID('mm_hlc_state','U') IS NULL CREATE TABLE mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`)
+		exec(`IF NOT EXISTS(SELECT 1 FROM mm_hlc_state) INSERT INTO mm_hlc_state(id) VALUES(1)`)
 		for _, t := range splitTables(tables) {
-			qt := qualified(engine, t[0], t[1])
-			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s bigint`, t[0], t[1], vcol, qt, quoteIdent(engine, vcol)))
-			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s nvarchar(8)`, t[0], t[1], ocol, qt, quoteIdent(engine, ocol)))
-			log.Printf("mm-prep: prepared %s.%s columns (site=%s)", t[0], t[1], site)
+			schema, table := t[0], t[1]
+			qt := qualified(engine, schema, table)
+			qv := quoteIdent(engine, vcol)
+			qo := quoteIdent(engine, ocol)
+			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s bigint DEFAULT (DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME())*65536)`, schema, table, vcol, qt, qv))
+			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s nvarchar(16) DEFAULT N'%s'`, schema, table, ocol, qt, qo, site))
+			m, ierr := introspectSqlserver(db, schema, table)
+			if ierr != nil {
+				log.Fatalf("mm-prep introspect %s.%s: %v", schema, table, ierr)
+			}
+			var pkjoin []string
+			for _, p := range m.pk {
+				qp := quoteIdent(engine, p)
+				pkjoin = append(pkjoin, fmt.Sprintf("t.%s=i.%s", qp, qp))
+			}
+			if len(pkjoin) == 0 {
+				log.Fatalf("%s.%s has no primary key", schema, table)
+			}
+			trg := "mm_stamp_" + strings.ReplaceAll(table, ".", "_")
+			hlc := `DECLARE @pt bigint,@lc int,@now bigint,@v bigint; SELECT @pt=pt,@lc=lc FROM mm_hlc_state WITH (UPDLOCK,HOLDLOCK) WHERE id=1; SET @now=DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME()); IF @now>@pt BEGIN SET @pt=@now; SET @lc=0; END ELSE SET @lc=@lc+1; UPDATE mm_hlc_state SET pt=@pt,lc=@lc WHERE id=1; SET @v=@pt*65536+@lc;`
+			obs := fmt.Sprintf(`DECLARE @rmax bigint=(SELECT MAX(%s) FROM inserted); UPDATE mm_hlc_state SET pt=CASE WHEN @rmax/65536>pt THEN @rmax/65536 ELSE pt END WHERE id=1;`, qv)
+			body := fmt.Sprintf(`CREATE OR ALTER TRIGGER %s ON %s AFTER INSERT, UPDATE AS BEGIN SET NOCOUNT ON; IF TRIGGER_NESTLEVEL(OBJECT_ID(N'%s')) > 1 RETURN; IF SESSION_CONTEXT(N'app_replication')=N'on' BEGIN %s RETURN; END %s UPDATE t SET %s=@v, %s=N'%s' FROM %s t JOIN inserted i ON %s; END`,
+				trg, qt, trg, obs, hlc, qv, qo, site, qt, strings.Join(pkjoin, " AND "))
+			exec(body)
+			log.Printf("mm-prep: prepared %s.%s + AFTER stamp trigger (site=%s)", schema, table, site)
 		}
 	default:
 		log.Fatalf("mm-prep not implemented for engine %s", engine)
