@@ -407,6 +407,34 @@ export interface MigrationStatus {
 export type Migration = K8sObject<MigrationSpec, MigrationStatus>;
 export const MIGRATIONS_PLURAL = "migrations";
 
+/* ----- open-infra Replication CRD (bidirectional / multi-master) ----------- */
+
+export interface ReplicationEndpoint {
+  name?: string; // origin-marker site id
+  engine?: string; // postgres|mysql|mariadb|sqlserver
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  passwordSecretRef?: MigrationPasswordRef;
+  schema?: string;
+  ssl?: boolean;
+}
+export interface ReplicationSpec {
+  siteA?: ReplicationEndpoint;
+  siteB?: ReplicationEndpoint;
+  tables?: string[];
+  versionColumn?: string;
+  originColumn?: string;
+}
+export interface ReplicationStatus {
+  phase?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type Replication = K8sObject<ReplicationSpec, ReplicationStatus>;
+export const REPLICATIONS_PLURAL = "replications";
+
 /** A CDC Stream: source DB change log -> NATS JetStream (open-infra's "Kinesis"). */
 export interface StreamSource {
   engine?: string; // postgres|mysql|mariadb|sqlserver|mongodb

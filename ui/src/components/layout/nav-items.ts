@@ -13,6 +13,7 @@ import {
   Monitor,
   Network,
   Radio,
+  Repeat,
   Send,
   Server,
   Shield,
@@ -49,6 +50,7 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },
   { label: "Migrations", to: "/migrations", icon: ArrowRightLeft, matchPrefix: true, section: "Data" },
+  { label: "Replication", to: "/replications", icon: Repeat, matchPrefix: true, section: "Data" },
   { label: "Streams", to: "/streams", icon: Radio, matchPrefix: true, section: "Data" },
   { label: "Buckets", to: "/buckets", icon: HardDrive, matchPrefix: true, section: "Data" },
   { label: "Queues", to: "/queues", icon: Send, matchPrefix: true, section: "Data" },

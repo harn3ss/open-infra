@@ -86,6 +86,7 @@ rules:
       - fileshares
       - directories
       - migrations
+      - replications
       - streams
       - securitygroups
     verbs: [get, list, watch, create, update, patch, delete]

@@ -6,6 +6,13 @@ the product's public contract.
 
 ## Unreleased
 
+### Replication console
+- **`kind: Replication` is now a first-class console page** (Data → Replication):
+  list, create (both sites + tables), and a detail view showing **both directions**
+  of the multi-master pipeline — each with its own lag, per-table throughput, and
+  dead-letter panel (shared with the Migration view). Backed by the
+  `/api/replications/{ns}/{name}/status` endpoint.
+
 ### Observability
 - **Migration detail page** with a live apply-pipeline view (SymmetricDS/DMS-style):
   a Capture → Buffer → Apply strip, the headline **replication lag** (events
