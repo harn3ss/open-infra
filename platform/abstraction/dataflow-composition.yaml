@@ -1,0 +1,362 @@
+# The compiler for kind: DataFlow -> open-infra's data-movement topology engine.
+# For a graph of database nodes + edges it renders, using the same Debezium + NATS
+# + apply-sink engine as Migration/Replication:
+#   - per SOURCE node: a Debezium connector capturing that node's changes onto a
+#     capped JetStream stream (flow-<name>-<node>, subjects f.<name>.<node>.>),
+#   - per REPLICATION node: an mm-prep Job (version/origin columns + stamping trigger),
+#   - per REPLICATION edge a<->b: two apply-sinks (a->b and b->a) with origin-marker
+#     loop prevention + HLC last-write-wins,
+#   - per MIGRATION edge a->b: a schema-sync Job (auto-create target tables) + one
+#     plain apply-sink (a->b).
+# One Debezium per node feeds every edge that starts at it. Node x/y are ignored
+# here (editor-only). v1 uses the topology-level `tables` for every node/edge and a
+# snapshot+stream Debezium (the migration `mode` is best-effort).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: dataflow
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XDataFlow
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $nodes := $spec.nodes }}
+            {{- $edges := $spec.edges }}
+            {{- $tables := $spec.tables | default (list) }}
+            {{- $vcol := $spec.versionColumn | default "_mm_version" }}
+            {{- $ocol := $spec.originColumn | default "_mm_origin" }}
+            {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
+            {{- /* ---- per-node maps: engine, schema, dsn (with ${PW}), include list ---- */}}
+            {{- $nmap := dict }}{{- $eng := dict }}{{- $sch := dict }}{{- $dsn := dict }}{{- $inc := dict }}{{- $sec := dict }}{{- $seck := dict }}
+            {{- range $n := $nodes }}
+            {{-   $nmap = set $nmap $n.name $n }}
+            {{-   $eng = set $eng $n.name $n.engine }}
+            {{-   $sc := $n.schema | default (ternary "dbo" "public" (eq $n.engine "sqlserver")) }}
+            {{-   $sch = set $sch $n.name $sc }}
+            {{-   $sec = set $sec $n.name $n.passwordSecretRef.name }}
+            {{-   $seck = set $seck $n.name (($n.passwordSecretRef.key) | default "password") }}
+            {{-   $p := $n.port | default 5432 }}
+            {{-   $d := "" }}
+            {{-   if or (eq $n.engine "mysql") (eq $n.engine "mariadb") }}{{ $d = printf "%s:${PW}@tcp(%s:%v)/%s?parseTime=true" $n.username $n.host $p $n.database }}
+            {{-   else if eq $n.engine "sqlserver" }}{{ $d = printf "sqlserver://%s:${PW}@%s:%v?database=%s&encrypt=%s" $n.username $n.host $p $n.database (ternary "true" "disable" ($n.ssl | default false)) }}
+            {{-   else }}{{ $d = printf "postgres://%s:${PW}@%s:%v/%s?sslmode=%s" $n.username $n.host $p $n.database (ternary "require" "disable" ($n.ssl | default false)) }}
+            {{-   end }}
+            {{-   $dsn = set $dsn $n.name $d }}
+            {{-   $qual := ternary $n.database $sc (or (eq $n.engine "mysql") (eq $n.engine "mariadb")) }}
+            {{-   $q := list }}{{- range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qual $t) }}{{- end }}
+            {{-   $inc = set $inc $n.name (join "," $q) }}
+            {{- end }}
+            {{- /* ---- which nodes are sources (need Debezium) / replication (need mm-prep) ---- */}}
+            {{- $srcSet := dict }}{{- $replSet := dict }}
+            {{- range $e := $edges }}
+            {{-   $srcSet = set $srcSet $e.from true }}
+            {{-   if eq $e.type "replication" }}{{ $srcSet = set $srcSet $e.to true }}{{ $replSet = set $replSet $e.from true }}{{ $replSet = set $replSet $e.to true }}{{- end }}
+            {{- end }}
+            {{- /* ============ per-source-node Debezium capture ============ */}}
+            {{- range $n := $nodes }}
+            {{- if hasKey $srcSet $n.name }}
+            {{-   $node := $n.name }}
+            {{-   $engine := $n.engine }}
+            {{-   $prefix := printf "f.%s.%s" $name $node }}
+            {{-   $stream := printf "flow-%s-%s" $name $node }}
+            {{-   $slot := printf "df_%s_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") $node }}
+            {{-   $include := index $inc $node }}
+            {{-   $sport := $n.port | default 5432 }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dbz-config-{{ $node }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-flow-{{ $node }}-config
+                    namespace: {{ $ns }}
+                  data:
+                    application.properties: |
+                      debezium.sink.type=nats-jetstream
+                      debezium.sink.nats-jetstream.url=nats://nats.nats.svc.cluster.local:4222
+                      debezium.sink.nats-jetstream.create-stream=false
+                      debezium.source.offset.storage.file.filename=/debezium/data/offsets.dat
+                      debezium.source.offset.flush.interval.ms=0
+                      debezium.source.topic.prefix={{ $prefix }}
+                      debezium.source.snapshot.mode=initial
+                      debezium.source.decimal.handling.mode=string
+                      debezium.source.include.schema.changes=false
+                      debezium.transforms=unwrap
+                      debezium.transforms.unwrap.type=io.debezium.transforms.ExtractNewRecordState
+                      debezium.transforms.unwrap.drop.tombstones=false
+                      debezium.transforms.unwrap.delete.handling.mode=rewrite
+                      debezium.format.key=json
+                      debezium.format.value=json
+                      debezium.format.key.schemas.enable=false
+                      debezium.format.value.schemas.enable=false
+                      quarkus.log.console.json=false
+                  {{- if eq $engine "postgres" }}
+                      debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+                      debezium.source.plugin.name=pgoutput
+                      debezium.source.slot.name={{ $slot }}
+                      debezium.source.publication.name={{ $slot }}_pub
+                      debezium.source.database.hostname={{ $n.host }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $n.username }}
+                      debezium.source.database.dbname={{ $n.database }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- if $n.ssl }}
+                      debezium.source.database.sslmode=require
+                    {{- end }}
+                  {{- else if or (eq $engine "mysql") (eq $engine "mariadb") }}
+                      debezium.source.connector.class=io.debezium.connector.mysql.MySqlConnector
+                      debezium.source.database.hostname={{ $n.host }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $n.username }}
+                      debezium.source.database.server.id={{ adler32sum (printf "%s-%s" $name $node) }}
+                      debezium.source.database.include.list={{ $n.database }}
+                      debezium.source.table.include.list={{ $include }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                  {{- else if eq $engine "sqlserver" }}
+                      debezium.source.connector.class=io.debezium.connector.sqlserver.SqlServerConnector
+                      debezium.source.database.hostname={{ $n.host }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $n.username }}
+                      debezium.source.database.names={{ $n.database }}
+                      debezium.source.database.encrypt={{ $n.ssl | default false }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                      debezium.source.table.include.list={{ $include }}
+                  {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dbz-{{ $node }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-{{ $node }}-dbz
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-flow-{{ $node }}-dbz, openinfra.dev/dataflow: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    strategy: { type: Recreate }
+                    selector: { matchLabels: { app: {{ $name }}-flow-{{ $node }}-dbz } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $node }}-dbz } }
+                      spec:
+                        securityContext: { fsGroup: 185 }
+                        initContainers:
+                          - name: ensure-stream
+                            image: natsio/nats-box:latest
+                            command: ["sh","-c","nats stream info {{ $stream }} >/dev/null 2>&1 || nats stream add {{ $stream }} --subjects='{{ $prefix }}.>' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults"]
+                            env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
+                        containers:
+                          - name: debezium
+                            image: quay.io/debezium/server:2.7.3.Final
+                            env:
+                              - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $node }}, key: {{ index $seck $node }} } }
+                            volumeMounts:
+                              - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
+                              - { name: data, mountPath: /debezium/data }
+                        volumes:
+                          - { name: config, configMap: { name: {{ $name }}-flow-{{ $node }}-config } }
+                          - { name: data, emptyDir: {} }
+            {{- end }}
+            {{- /* mm-prep for replication nodes */}}
+            {{- if hasKey $replSet $n.name }}
+            {{-   $node := $n.name }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: mmprep-{{ $node }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-flow-{{ $node }}-mmprep
+                    namespace: {{ $ns }}
+                  spec:
+                    backoffLimit: 30
+                    template:
+                      spec:
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: mm-prep
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: mm-prep }
+                              - { name: PREP_ENGINE, value: "{{ index $eng $node }}" }
+                              - { name: PREP_DSN, value: "{{ replace "${PW}" "${PREP_PASSWORD}" (index $dsn $node) }}" }
+                              - name: PREP_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $node }}, key: {{ index $seck $node }} } }
+                              - { name: SITE, value: "{{ $node }}" }
+                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
+                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: TABLES, value: "{{ index $inc $node }}" }
+            {{- end }}
+            {{- end }}
+            {{- /* ============ per-edge sinks ============ */}}
+            {{- range $i, $e := $edges }}
+            {{-   $a := index $nmap $e.from }}{{- $b := index $nmap $e.to }}
+            {{-   $aSch := index $sch $e.from }}{{- $bSch := index $sch $e.to }}
+            {{-   if eq $e.type "replication" }}
+            {{-     range $dir := (list (dict "s" $e.from "d" $e.to) (dict "s" $e.to "d" $e.from)) }}
+            {{-       $sn := $dir.s }}{{- $dn := $dir.d }}
+            {{-       $tdsn := replace "${PW}" "${TARGET_PASSWORD}" (index $dsn $dn) }}
+            {{-       $replApply := "off" }}
+            {{-       if eq (index $eng $dn) "postgres" }}{{ $tdsn = printf "%s&options=-c%%20app.replication%%3Don" $tdsn }}{{ $replApply = "on" }}
+            {{-       else }}{{ $replApply = "on" }}{{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: rsink-{{ $sn }}-{{ $dn }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink, openinfra.dev/dataflow: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink } }
+                      spec:
+                        containers:
+                          - name: apply-sink
+                            image: {{ $img }}
+                            env:
+                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
+                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: STREAM, value: "flow-{{ $name }}-{{ $sn }}" }
+                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $sn }}.>" }
+                              - { name: DURABLE, value: "{{ $name }}-{{ $sn }}-{{ $dn }}" }
+                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: SKIP_ORIGIN, value: "{{ $dn }}" }
+                              - { name: CONFLICT_COLUMN, value: "{{ $vcol }}" }
+                              - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
+                              - { name: REPL_APPLY, value: "{{ $replApply }}" }
+                            resources:
+                              requests: { cpu: 50m, memory: 32Mi }
+                              limits: { cpu: "1", memory: 256Mi }
+            {{-     end }}
+            {{-   else }}
+            {{-     $sn := $e.from }}{{- $dn := $e.to }}
+            {{-     $tdsn := replace "${PW}" "${TARGET_PASSWORD}" (index $dsn $dn) }}
+            {{-     $sdsn := replace "${PW}" "${SOURCE_PASSWORD}" (index $dsn $sn) }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: msync-{{ $sn }}-{{ $dn }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msync
+                    namespace: {{ $ns }}
+                  spec:
+                    backoffLimit: 30
+                    template:
+                      spec:
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: schema-sync
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: schema-sync }
+                              - { name: SOURCE_ENGINE, value: "{{ index $eng $sn }}" }
+                              - { name: SOURCE_DSN, value: "{{ $sdsn }}" }
+                              - name: SOURCE_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $sn }}, key: {{ index $seck $sn }} } }
+                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
+                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                              - { name: TABLES, value: "{{ index $inc $sn }}" }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: msink-{{ $sn }}-{{ $dn }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink, openinfra.dev/dataflow: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink } }
+                      spec:
+                        containers:
+                          - name: apply-sink
+                            image: {{ $img }}
+                            env:
+                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
+                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: STREAM, value: "flow-{{ $name }}-{{ $sn }}" }
+                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $sn }}.>" }
+                              - { name: DURABLE, value: "{{ $name }}-mig-{{ $sn }}-{{ $dn }}" }
+                              - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
+                            resources:
+                              requests: { cpu: 50m, memory: 32Mi }
+                              limits: { cpu: "1", memory: 256Mi }
+            {{-   end }}
+            {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
