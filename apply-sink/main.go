@@ -67,9 +67,11 @@ func driverName(engine string) string {
 
 func openDB(engine, dsn string) (*sql.DB, error) {
 	var db *sql.DB
-	// A replication apply-sink writing to SQL Server sets a session flag so the
-	// per-site stamping trigger skips replication-applied rows (preserving the
-	// remote (version, origin)). pgx does the same via DSN options=-c.
+	// A replication apply-sink sets a per-session flag so the per-site stamping
+	// trigger skips replication-applied rows (preserving the remote version,origin):
+	//   - Postgres: options=-c app.replication=on in the DSN (set by the composition)
+	//   - SQL Server: sp_set_session_context via the connector's SessionInitSQL
+	//   - MySQL: a @app_replication user var via the DSN sessionVariables
 	if driverName(engine) == "sqlserver" && os.Getenv("REPL_APPLY") == "on" {
 		c, err := mssql.NewConnector(dsn)
 		if err != nil {
@@ -78,6 +80,14 @@ func openDB(engine, dsn string) (*sql.DB, error) {
 		c.SessionInitSQL = "EXEC sp_set_session_context N'app_replication', N'on'"
 		db = sql.OpenDB(c)
 	} else {
+		if driverName(engine) == "mysql" && os.Getenv("REPL_APPLY") == "on" {
+			if strings.Contains(dsn, "?") {
+				dsn += "&"
+			} else {
+				dsn += "?"
+			}
+			dsn += "sessionVariables=%40app_replication%3D1" // SET @app_replication=1
+		}
 		var err error
 		db, err = sql.Open(driverName(engine), dsn)
 		if err != nil {
@@ -196,6 +206,36 @@ func runMMPrep() {
 				trg, qt, trg, obs, hlc, qv, qo, site, qt, strings.Join(pkjoin, " AND "))
 			exec(body)
 			log.Printf("mm-prep: prepared %s.%s + AFTER stamp trigger (site=%s)", schema, table, site)
+		}
+	case "mysql":
+		// MySQL has BEFORE-row triggers. Stamp (version, origin) on native writes;
+		// skip replication-applied writes (the @app_replication session var the sink
+		// sets). version is millisecond-clock based (<<16), comparable to the PG/SQL
+		// Server HLC versions for cross-engine LWW.
+		for _, t := range splitTables(tables) {
+			table := t[1]
+			qtbl := quoteIdent(engine, table)
+			qv := quoteIdent(engine, vcol)
+			qo := quoteIdent(engine, ocol)
+			ensureCol := func(col, typ string) {
+				var n int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, col).Scan(&n); err != nil {
+					log.Fatalf("mm-prep check col %s: %v", col, err)
+				}
+				if n == 0 {
+					exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", qtbl, quoteIdent(engine, col), typ))
+				}
+			}
+			ensureCol(vcol, "bigint")
+			ensureCol(ocol, "varchar(16)")
+			stamp := fmt.Sprintf("SET NEW.%s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, NEW.%s = '%s'", qv, qo, site)
+			for _, ev := range []string{"INSERT", "UPDATE"} {
+				trg := quoteIdent(engine, fmt.Sprintf("mm_stamp_%s_%s", table, strings.ToLower(ev[:1])))
+				exec(fmt.Sprintf("DROP TRIGGER IF EXISTS %s", trg))
+				exec(fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s FOR EACH ROW BEGIN IF @app_replication IS NULL THEN %s; END IF; END",
+					trg, ev, qtbl, stamp))
+			}
+			log.Printf("mm-prep: prepared %s + BEFORE stamp triggers (site=%s)", table, site)
 		}
 	default:
 		log.Fatalf("mm-prep not implemented for engine %s", engine)
@@ -578,13 +618,28 @@ func buildUpsert(engine, schema, table string, cols []string, mt meta) string {
 	}
 	switch driverName(engine) {
 	case "mysql":
+		// Last-write-wins: only take the incoming value when it's newer (per-column
+		// IF guarded on the version, origin tiebreak). VALUES(col) is the incoming row.
+		var cond string
+		if cc := os.Getenv("CONFLICT_COLUMN"); cc != "" {
+			qcc := quoteIdent(engine, cc)
+			cond = fmt.Sprintf("VALUES(%s) > %s", qcc, qcc)
+			if oc := os.Getenv("ORIGIN_COLUMN"); oc != "" {
+				qoc := quoteIdent(engine, oc)
+				cond += fmt.Sprintf(" OR (VALUES(%s) = %s AND VALUES(%s) > %s)", qcc, qcc, qoc, qoc)
+			}
+		}
 		var set []string
 		for _, c := range cols {
 			if mt.pkset[c] {
 				continue
 			}
 			qc := quoteIdent(engine, c)
-			set = append(set, fmt.Sprintf("%s=VALUES(%s)", qc, qc))
+			if cond != "" {
+				set = append(set, fmt.Sprintf("%s=IF(%s, VALUES(%s), %s)", qc, cond, qc, qc))
+			} else {
+				set = append(set, fmt.Sprintf("%s=VALUES(%s)", qc, qc))
+			}
 		}
 		if len(set) == 0 { // all-PK table: no-op assignment so the clause is valid
 			set = append(set, fmt.Sprintf("%s=%s", qpk[0], qpk[0]))
