@@ -23,7 +23,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/microsoft/go-mssqldb"
+	mssql "github.com/microsoft/go-mssqldb"
 	"github.com/nats-io/nats.go"
 )
 
@@ -66,9 +66,23 @@ func driverName(engine string) string {
 }
 
 func openDB(engine, dsn string) (*sql.DB, error) {
-	db, err := sql.Open(driverName(engine), dsn)
-	if err != nil {
-		return nil, err
+	var db *sql.DB
+	// A replication apply-sink writing to SQL Server sets a session flag so the
+	// per-site stamping trigger skips replication-applied rows (preserving the
+	// remote (version, origin)). pgx does the same via DSN options=-c.
+	if driverName(engine) == "sqlserver" && os.Getenv("REPL_APPLY") == "on" {
+		c, err := mssql.NewConnector(dsn)
+		if err != nil {
+			return nil, err
+		}
+		c.SessionInitSQL = "EXEC sp_set_session_context N'app_replication', N'on'"
+		db = sql.OpenDB(c)
+	} else {
+		var err error
+		db, err = sql.Open(driverName(engine), dsn)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var perr error
 	for i := 0; i < 40; i++ {
@@ -102,8 +116,95 @@ func main() {
 	switch env("MODE", "stream") {
 	case "schema-sync":
 		runSchemaSync()
+	case "mm-prep":
+		runMMPrep()
 	default:
 		runStream()
+	}
+}
+
+// ===================== MULTI-MASTER PREP MODE =====================
+
+// runMMPrep installs the multi-master machinery on a site: a version column +
+// origin column on each table, and (Postgres) a Hybrid Logical Clock + a
+// per-site BEFORE trigger that stamps (version, origin) on native writes and
+// advances the local clock on replication-applied writes (those carry the
+// app.replication session flag). Idempotent.
+func runMMPrep() {
+	engine := env("PREP_ENGINE", "postgres")
+	dsn := os.ExpandEnv(env("PREP_DSN", ""))
+	site := env("SITE", "")
+	vcol := env("VERSION_COLUMN", "_mm_version")
+	ocol := env("ORIGIN_COLUMN", "_mm_origin")
+	tables := env("TABLES", "")
+	if dsn == "" || site == "" {
+		log.Fatal("PREP_DSN and SITE are required for mm-prep")
+	}
+	db, err := openDB(engine, dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	exec := func(q string) {
+		if _, err := db.Exec(q); err != nil {
+			log.Fatalf("mm-prep exec failed: %v\n  sql: %s", err, q)
+		}
+	}
+	switch driverName(engine) {
+	case "pgx":
+		for _, q := range pgHLCSetup(site, vcol) {
+			exec(q)
+		}
+		for _, t := range splitTables(tables) {
+			qt := qualified(engine, t[0], t[1])
+			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s bigint`, qt, quoteIdent(engine, vcol)))
+			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s text`, qt, quoteIdent(engine, ocol)))
+			exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS mm_stamp_trg ON %s`, qt))
+			exec(fmt.Sprintf(`CREATE TRIGGER mm_stamp_trg BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION mm_stamp()`, qt))
+			log.Printf("mm-prep: prepared %s.%s (site=%s)", t[0], t[1], site)
+		}
+	case "sqlserver":
+		// SQL Server lacks BEFORE-row triggers; (version, origin) columns are added
+		// here and stamped application-side / by an INSTEAD OF trigger (engine note).
+		for _, t := range splitTables(tables) {
+			qt := qualified(engine, t[0], t[1])
+			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s bigint`, t[0], t[1], vcol, qt, quoteIdent(engine, vcol)))
+			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s nvarchar(8)`, t[0], t[1], ocol, qt, quoteIdent(engine, ocol)))
+			log.Printf("mm-prep: prepared %s.%s columns (site=%s)", t[0], t[1], site)
+		}
+	default:
+		log.Fatalf("mm-prep not implemented for engine %s", engine)
+	}
+	log.Printf("mm-prep done (site=%s)", site)
+}
+
+func splitTables(tables string) [][2]string {
+	var out [][2]string
+	for _, t := range strings.Split(tables, ",") {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		p := strings.SplitN(t, ".", 2)
+		if len(p) == 2 {
+			out = append(out, [2]string{p[0], p[1]})
+		} else {
+			out = append(out, [2]string{"public", p[0]})
+		}
+	}
+	return out
+}
+
+// pgHLCSetup returns the (idempotent) Hybrid Logical Clock + stamping function
+// for a Postgres site. The stamp function bakes in this site's id + version col.
+func pgHLCSetup(site, vcol string) []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`,
+		`INSERT INTO mm_hlc_state(id) VALUES (1) ON CONFLICT DO NOTHING`,
+		`CREATE OR REPLACE FUNCTION mm_phys_ms() RETURNS bigint AS $f$ SELECT (floor(extract(epoch from clock_timestamp())*1000) + coalesce(current_setting('app.clock_skew_ms', true),'0')::bigint)::bigint; $f$ LANGUAGE sql`,
+		`CREATE OR REPLACE FUNCTION mm_hlc_tick() RETURNS bigint AS $f$ DECLARE p bigint; l int; n bigint; BEGIN SELECT pt,lc INTO p,l FROM mm_hlc_state WHERE id=1 FOR UPDATE; n:=mm_phys_ms(); IF n>p THEN p:=n; l:=0; ELSE l:=l+1; END IF; UPDATE mm_hlc_state SET pt=p,lc=l WHERE id=1; RETURN p*65536+l; END; $f$ LANGUAGE plpgsql`,
+		`CREATE OR REPLACE FUNCTION mm_hlc_observe(rv bigint) RETURNS void AS $f$ DECLARE p bigint; l int; n bigint; rp bigint; rl int; np bigint; nl int; BEGIN IF rv IS NULL THEN RETURN; END IF; SELECT pt,lc INTO p,l FROM mm_hlc_state WHERE id=1 FOR UPDATE; n:=mm_phys_ms(); rp:=rv/65536; rl:=(rv%65536)::int; np:=greatest(p,rp,n); IF np=p AND np=rp THEN nl:=greatest(l,rl)+1; ELSIF np=p THEN nl:=l+1; ELSIF np=rp THEN nl:=rl+1; ELSE nl:=0; END IF; UPDATE mm_hlc_state SET pt=np,lc=nl WHERE id=1; END; $f$ LANGUAGE plpgsql`,
+		fmt.Sprintf(`CREATE OR REPLACE FUNCTION mm_stamp() RETURNS trigger AS $f$ BEGIN IF current_setting('app.replication', true)='on' THEN PERFORM mm_hlc_observe(NEW.%s); RETURN NEW; END IF; NEW.%s:=mm_hlc_tick(); NEW.%s:='%s'; RETURN NEW; END; $f$ LANGUAGE plpgsql`,
+			vcol, vcol, env("ORIGIN_COLUMN", "_mm_origin"), site),
 	}
 }
 
@@ -208,6 +309,19 @@ func apply(db *sql.DB, engine string, m *nats.Msg) (bool, error) {
 	}
 	deleted := fmt.Sprint(row["__deleted"]) == "true"
 	delete(row, "__deleted")
+
+	// Bidirectional loop prevention via an origin-marker column. Each direction's
+	// sink drops events that originated at the peer site (so a write doesn't echo
+	// back and loop), and stamps its own SITE on everything it forwards. Upsert
+	// echoes are the loop risk (Postgres emits a WAL event even for no-op updates);
+	// deletes self-terminate (deleting an absent row produces no event).
+	if oc := os.Getenv("ORIGIN_COLUMN"); oc != "" {
+		if skip := os.Getenv("SKIP_ORIGIN"); skip != "" && fmt.Sprint(row[oc]) == skip {
+			return false, nil // originated at the peer — don't echo it back (ack + drop)
+		}
+		// NOTE: the writer stamps the origin (a per-site trigger), not the sink, so
+		// the marker reflects the true last-writer for last-write-wins tiebreaking.
+	}
 
 	mt, err := getMeta(db, engine, schema, table)
 	if err != nil {
@@ -476,7 +590,17 @@ func buildUpsert(engine, schema, table string, cols []string, mt meta) string {
 		}
 		matched := ""
 		if len(set) > 0 {
-			matched = " WHEN MATCHED THEN UPDATE SET " + strings.Join(set, ",")
+			cond := ""
+			if cc := os.Getenv("CONFLICT_COLUMN"); cc != "" {
+				qcc := quoteIdent(engine, cc)
+				cond = fmt.Sprintf(" AND (s.%s > t.%s", qcc, qcc)
+				if oc := os.Getenv("ORIGIN_COLUMN"); oc != "" {
+					qoc := quoteIdent(engine, oc)
+					cond += fmt.Sprintf(" OR (s.%s = t.%s AND s.%s > t.%s)", qcc, qcc, qoc, qoc)
+				}
+				cond += ")"
+			}
+			matched = " WHEN MATCHED" + cond + " THEN UPDATE SET " + strings.Join(set, ",")
 		}
 		return fmt.Sprintf("MERGE INTO %s AS t USING (SELECT %s) AS s ON (%s)%s WHEN NOT MATCHED THEN INSERT (%s) VALUES (%s);",
 			qt, strings.Join(using, ","), strings.Join(on, " AND "), matched,
@@ -491,9 +615,20 @@ func buildUpsert(engine, schema, table string, cols []string, mt meta) string {
 			qc := quoteIdent(engine, c)
 			set = append(set, fmt.Sprintf("%s=EXCLUDED.%s", qc, qc))
 		}
-		q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", qt, strings.Join(qcols, ","), strings.Join(ph, ","))
+		q := fmt.Sprintf("INSERT INTO %s AS t (%s) VALUES (%s)", qt, strings.Join(qcols, ","), strings.Join(ph, ","))
 		if len(set) > 0 {
 			q += fmt.Sprintf(" ON CONFLICT (%s) DO UPDATE SET %s", strings.Join(qpk, ","), strings.Join(set, ","))
+			// Last-write-wins conflict resolution: only overwrite when the incoming
+			// version is newer; ties broken deterministically by the origin marker.
+			if cc := os.Getenv("CONFLICT_COLUMN"); cc != "" {
+				qcc := quoteIdent(engine, cc)
+				w := fmt.Sprintf("t.%s < EXCLUDED.%s", qcc, qcc)
+				if oc := os.Getenv("ORIGIN_COLUMN"); oc != "" {
+					qoc := quoteIdent(engine, oc)
+					w += fmt.Sprintf(" OR (t.%s = EXCLUDED.%s AND t.%s < EXCLUDED.%s)", qcc, qcc, qoc, qoc)
+				}
+				q += " WHERE " + w
+			}
 		} else {
 			q += fmt.Sprintf(" ON CONFLICT (%s) DO NOTHING", strings.Join(qpk, ","))
 		}
