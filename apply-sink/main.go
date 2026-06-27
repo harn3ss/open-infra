@@ -86,7 +86,10 @@ func openDB(engine, dsn string) (*sql.DB, error) {
 			} else {
 				dsn += "?"
 			}
-			dsn += "sessionVariables=%40app_replication%3D1" // SET @app_replication=1
+			// go-sql-driver runs any unrecognized DSN param as a session SET, so the
+			// param name itself is the variable -> SET @app_replication=1. The name
+			// is used verbatim (not URL-decoded), so pass a literal @.
+			dsn += "@app_replication=1"
 		}
 		var err error
 		db, err = sql.Open(driverName(engine), dsn)
