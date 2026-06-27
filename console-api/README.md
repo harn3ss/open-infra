@@ -39,6 +39,7 @@ The browser is never given a kubeconfig or token.
 | `POST` | `/api/models/{ns}/{name}/chat` | Proxy to a Model's gated endpoint (API key stays server-side) — the playground. |
 | `GET`·`POST` | `/api/functions/{ns}/{name}/routes`·`/invoke` | List a Function's routes / invoke it (the Test tab). |
 | `POST` | `/api/migrations/discover` | DMS wizard: discover a source DB's tables. (A Migration runs continuously — Debezium + apply-sink — so there is no manual sync trigger.) |
+| `GET` | `/api/migrations\|replications/{ns}/{name}/status` | DMS observability: live apply-pipeline status (JetStream lag, per-table counts, dead-letter) the browser can't read from NATS. |
 | `*` | `/grafana/*` | Same-origin reverse proxy to in-cluster Grafana (when `GRAFANA_PROXY_TARGET` is set) for iframe embedding. |
 | `GET` | `/*` | The embedded SPA, with history-mode fallback (unknown non-API, non-asset paths → `index.html`). |
 
@@ -191,7 +192,8 @@ console-api/
 │   ├── spa.go         # embedded-SPA handler (history-mode fallback)
 │   ├── services.go    # MinIO (S3), NATS queues, model chat, functions, Grafana
 │   ├── queues_actions.go # NATS JetStream publish / purge
-│   └── discover.go    # DMS wizard: source table discovery
+│   ├── discover.go    # DMS wizard: source table discovery
+│   └── migration_status.go # DMS observability: JetStream lag / per-table / dead-letter
 ├── internal/
 │   ├── k8s/           # REST config (in-cluster | kubeconfig) + authed transport
 │   ├── proxy/         # /api/k8s/* reverse proxy (prefix strip, header scrub)

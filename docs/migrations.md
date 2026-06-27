@@ -65,6 +65,15 @@ A Migration is **continuous** — once created it runs on its own (snapshot then
 stream). There is no manual "sync" button; status comes from the resource's
 conditions.
 
+## Monitoring
+
+Open a Migration in the console for a live **Capture → Buffer → Apply** view: the
+headline **replication lag** (events captured but not yet applied to the target),
+**per-table** event counts, and a **dead-letter** panel listing rows that failed to
+apply. It's backed by `GET /api/migrations/{ns}/{name}/status`, which reads the
+JetStream stream + consumer (lag) + DLQ — signals the engine exposes natively, so
+there's nothing extra to wire up.
+
 ## CDC prerequisites on the source
 
 - **Postgres** — `wal_level=logical`.

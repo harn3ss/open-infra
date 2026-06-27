@@ -51,6 +51,7 @@ CNCF projects — not a reinvention of databases or storage.
 | DynamoDB | document store (`engine: mongo`) | FerretDB on DocumentDB-Postgres |
 | OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
 | DMS | DB migration + CDC (`kind: Migration`) | Debezium + apply-sink + Crossplane |
+| DMS (multi-master) | bidirectional replication (`kind: Replication`) | Debezium + apply-sink (HLC last-write-wins) |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Redis |
@@ -151,7 +152,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The nine public
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The ten public
 abstractions are shipped and verified end-to-end:
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
@@ -168,8 +169,14 @@ abstractions are shipped and verified end-to-end:
   helper (Windows `net use` / Linux `mount`).
 - **`Directory`** — managed Active Directory (Samba AD DC) for Windows domain join.
 - **`Migration`** — AWS-DMS-style DB migration + CDC on a Debezium + apply-sink engine:
-  full-load or continuous sync into a managed Postgres, with a console wizard. See
+  full-load or continuous sync into a target SQL database, with a console wizard and
+  a live status view (lag, per-table throughput, dead-letter). See
   [`docs/migrations.md`](docs/migrations.md).
+- **`Replication`** — bidirectional / multi-master replication (open-infra's
+  "SymmetricDS"): keep databases in sync both ways, across engines
+  (e.g. SQL Server ⇄ PostgreSQL ⇄ MySQL), with origin-marker loop prevention and
+  Hybrid-Logical-Clock last-write-wins conflict resolution. See
+  [`docs/replication.md`](docs/replication.md).
 - **`Stream`** — Kinesis-style streaming CDC: a headless Debezium Server publishes a
   source database's row changes as real-time events onto NATS JetStream for
   event-driven consumers. See [`docs/streaming.md`](docs/streaming.md).
