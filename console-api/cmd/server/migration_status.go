@@ -128,10 +128,10 @@ func handleReplicationStatus(logger *slog.Logger) http.HandlerFunc {
 		defer cancel()
 		out := map[string]pipelineStatus{}
 		if siteA != "" {
-			out[siteA] = gatherPipeline(ctx, js, "repl-"+name+"-"+siteA, name+"-"+siteA+"-"+siteB, "r"+siteA)
+			out[siteA] = gatherPipeline(ctx, js, "repl-"+name+"-"+siteA, name+"-"+siteA+"-"+siteB, "repl."+name+"."+siteA)
 		}
 		if siteB != "" {
-			out[siteB] = gatherPipeline(ctx, js, "repl-"+name+"-"+siteB, name+"-"+siteB+"-"+siteA, "r"+siteB)
+			out[siteB] = gatherPipeline(ctx, js, "repl-"+name+"-"+siteB, name+"-"+siteB+"-"+siteA, "repl."+name+"."+siteB)
 		}
 		writeJSON(w, http.StatusOK, out)
 	}

@@ -44,7 +44,7 @@ spec:
             {{-   $sengine := $src.engine }}{{-   $dengine := $dst.engine }}
             {{-   $sport := $src.port | default 5432 }}
             {{-   $sschema := $src.schema | default (ternary "dbo" "public" (eq $sengine "sqlserver")) }}
-            {{-   $prefix := printf "r%s" $sname }}
+            {{-   $prefix := printf "repl.%s.%s" $name $sname }}
             {{-   $stream := printf "repl-%s-%s" $name $sname }}
             {{-   $slot := printf "mm_%s_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") $sname }}
             {{-   $qualifier := ternary $src.database $sschema (or (eq $sengine "mysql") (eq $sengine "mariadb")) }}
