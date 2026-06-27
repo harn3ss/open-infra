@@ -184,7 +184,10 @@ export function MigrationsPage() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => remove.mutate(row.original)}
+              onClick={(e) => {
+                e.stopPropagation();
+                remove.mutate(row.original);
+              }}
               disabled={remove.isPending}
               title="Delete this migration (and its credential secret)"
             >
