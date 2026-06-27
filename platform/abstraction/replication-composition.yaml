@@ -1,0 +1,251 @@
+# The compiler for kind: Replication -> open-infra's bidirectional multi-master
+# engine. For the pair (siteA, siteB) it renders, per site, a Debezium connector
+# that captures changes onto a capped NATS JetStream stream, and per direction an
+# apply-sink that applies the peer's changes with loop prevention (origin marker)
+# and last-write-wins conflict resolution (HLC version). An mm-prep Job per site
+# installs the version + origin columns and the per-site stamping (Postgres: an
+# HLC trigger). Sites may be different engines (e.g. SQL Server <-> Postgres).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: replication
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XReplication
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $vcol := $spec.versionColumn | default "_mm_version" }}
+            {{- $ocol := $spec.originColumn | default "_mm_origin" }}
+            {{- $tables := $spec.tables }}
+            {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
+            {{- range $pair := (list (dict "src" $spec.siteA "dst" $spec.siteB) (dict "src" $spec.siteB "dst" $spec.siteA)) }}
+            {{-   $src := $pair.src }}{{- $dst := $pair.dst }}
+            {{-   $sname := $src.name }}{{- $dname := $dst.name }}
+            {{-   $sengine := $src.engine }}{{-   $dengine := $dst.engine }}
+            {{-   $sport := $src.port | default 5432 }}
+            {{-   $sschema := $src.schema | default (ternary "dbo" "public" (eq $sengine "sqlserver")) }}
+            {{-   $prefix := printf "r%s" $sname }}
+            {{-   $stream := printf "repl-%s-%s" $name $sname }}
+            {{-   $slot := printf "mm_%s_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") $sname }}
+            {{-   $qualifier := ternary $src.database $sschema (or (eq $sengine "mysql") (eq $sengine "mariadb")) }}
+            {{-   $q := list }}{{- range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qualifier $t) }}{{- end }}{{- $include := join "," $q }}
+            {{-   $spwSecret := $src.passwordSecretRef.name }}{{- $spwKey := ($src.passwordSecretRef.key) | default "password" }}
+            {{-   $dpwSecret := $dst.passwordSecretRef.name }}{{- $dpwKey := ($dst.passwordSecretRef.key) | default "password" }}
+            {{-   $dport := $dst.port | default 5432 }}
+            {{-   $dschema := $dst.schema | default (ternary "dbo" "public" (eq $dengine "sqlserver")) }}
+            {{-   $tdsn := "" }}{{- $replApply := "off" }}
+            {{-   if eq $dengine "sqlserver" }}{{ $tdsn = printf "sqlserver://%s:${TARGET_PASSWORD}@%s:%v?database=%s&encrypt=%s" $dst.username $dst.host $dport $dst.database (ternary "true" "disable" ($dst.ssl | default false)) }}{{ $replApply = "on" }}
+            {{-   else if or (eq $dengine "mysql") (eq $dengine "mariadb") }}{{ $tdsn = printf "%s:${TARGET_PASSWORD}@tcp(%s:%v)/%s?parseTime=true" $dst.username $dst.host $dport $dst.database }}
+            {{-   else }}{{ $tdsn = printf "postgres://%s:${TARGET_PASSWORD}@%s:%v/%s?sslmode=%s&options=-c%%20app.replication%%3Don" $dst.username $dst.host $dport $dst.database (ternary "require" "disable" ($dst.ssl | default false)) }}{{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dbz-config-{{ $sname }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-repl-{{ $sname }}-config
+                    namespace: {{ $ns }}
+                  data:
+                    application.properties: |
+                      debezium.sink.type=nats-jetstream
+                      debezium.sink.nats-jetstream.url=nats://nats.nats.svc.cluster.local:4222
+                      debezium.sink.nats-jetstream.create-stream=false
+                      debezium.source.offset.storage.file.filename=/debezium/data/offsets.dat
+                      debezium.source.offset.flush.interval.ms=0
+                      debezium.source.topic.prefix={{ $prefix }}
+                      debezium.source.snapshot.mode=initial
+                      debezium.source.decimal.handling.mode=string
+                      debezium.source.include.schema.changes=false
+                      debezium.transforms=unwrap
+                      debezium.transforms.unwrap.type=io.debezium.transforms.ExtractNewRecordState
+                      debezium.transforms.unwrap.drop.tombstones=false
+                      debezium.transforms.unwrap.delete.handling.mode=rewrite
+                      debezium.format.key=json
+                      debezium.format.value=json
+                      debezium.format.key.schemas.enable=false
+                      debezium.format.value.schemas.enable=false
+                      quarkus.log.console.json=false
+                  {{- if eq $sengine "postgres" }}
+                      debezium.source.connector.class=io.debezium.connector.postgresql.PostgresConnector
+                      debezium.source.plugin.name=pgoutput
+                      debezium.source.slot.name={{ $slot }}
+                      debezium.source.publication.name={{ $slot }}_pub
+                      debezium.source.database.hostname={{ $src.host }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $src.username }}
+                      debezium.source.database.dbname={{ $src.database }}
+                      debezium.source.table.include.list={{ $include }}
+                    {{- if $src.ssl }}
+                      debezium.source.database.sslmode=require
+                    {{- end }}
+                  {{- else if or (eq $sengine "mysql") (eq $sengine "mariadb") }}
+                      debezium.source.connector.class=io.debezium.connector.mysql.MySqlConnector
+                      debezium.source.database.hostname={{ $src.host }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $src.username }}
+                      debezium.source.database.server.id={{ adler32sum (printf "%s-%s" $name $sname) }}
+                      debezium.source.database.include.list={{ $src.database }}
+                      debezium.source.table.include.list={{ $include }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                  {{- else if eq $sengine "sqlserver" }}
+                      debezium.source.connector.class=io.debezium.connector.sqlserver.SqlServerConnector
+                      debezium.source.database.hostname={{ $src.host }}
+                      debezium.source.database.port={{ $sport }}
+                      debezium.source.database.user={{ $src.username }}
+                      debezium.source.database.names={{ $src.database }}
+                      debezium.source.database.encrypt={{ $src.ssl | default false }}
+                      debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
+                      debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                      debezium.source.table.include.list={{ $include }}
+                  {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dbz-{{ $sname }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-repl-{{ $sname }}-dbz
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-repl-{{ $sname }}-dbz, openinfra.dev/replication: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    strategy: { type: Recreate }
+                    selector: { matchLabels: { app: {{ $name }}-repl-{{ $sname }}-dbz } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-dbz } }
+                      spec:
+                        securityContext: { fsGroup: 185 }
+                        initContainers:
+                          - name: ensure-stream
+                            image: natsio/nats-box:latest
+                            command: ["sh","-c","nats stream info {{ $stream }} >/dev/null 2>&1 || nats stream add {{ $stream }} --subjects='{{ $prefix }}.>' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults"]
+                            env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
+                        containers:
+                          - name: debezium
+                            image: quay.io/debezium/server:2.7.3.Final
+                            env:
+                              - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $spwSecret }}, key: {{ $spwKey }} } }
+                            volumeMounts:
+                              - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
+                              - { name: data, mountPath: /debezium/data }
+                        volumes:
+                          - { name: config, configMap: { name: {{ $name }}-repl-{{ $sname }}-config } }
+                          - { name: data, emptyDir: {} }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: mmprep-{{ $sname }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-repl-{{ $sname }}-mmprep
+                    namespace: {{ $ns }}
+                  spec:
+                    backoffLimit: 30
+                    template:
+                      spec:
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: mm-prep
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: mm-prep }
+                              - { name: PREP_ENGINE, value: "{{ $sengine }}" }
+                              - { name: SITE, value: "{{ $sname }}" }
+                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
+                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: TABLES, value: "{{ $include }}" }
+                              - name: PREP_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $spwSecret }}, key: {{ $spwKey }} } }
+                  {{- if eq $sengine "sqlserver" }}
+                              - { name: PREP_DSN, value: "sqlserver://{{ $src.username }}:${PREP_PASSWORD}@{{ $src.host }}:{{ $sport }}?database={{ $src.database }}&encrypt={{ ternary "true" "disable" ($src.ssl | default false) }}" }
+                  {{- else if or (eq $sengine "mysql") (eq $sengine "mariadb") }}
+                              - { name: PREP_DSN, value: "{{ $src.username }}:${PREP_PASSWORD}@tcp({{ $src.host }}:{{ $sport }})/{{ $src.database }}?parseTime=true" }
+                  {{- else }}
+                              - { name: PREP_DSN, value: "postgres://{{ $src.username }}:${PREP_PASSWORD}@{{ $src.host }}:{{ $sport }}/{{ $src.database }}?sslmode={{ ternary "require" "disable" ($src.ssl | default false) }}" }
+                  {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sink-{{ $sname }}-{{ $dname }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink, openinfra.dev/replication: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink } }
+                      spec:
+                        containers:
+                          - name: apply-sink
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: stream }
+                              - { name: TARGET_ENGINE, value: "{{ $dengine }}" }
+                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $dpwSecret }}, key: {{ $dpwKey }} } }
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: STREAM, value: "{{ $stream }}" }
+                              - { name: SUBJECT, value: "{{ $prefix }}.>" }
+                              - { name: DURABLE, value: "{{ $name }}-{{ $sname }}-{{ $dname }}" }
+                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: SKIP_ORIGIN, value: "{{ $dname }}" }
+                              - { name: CONFLICT_COLUMN, value: "{{ $vcol }}" }
+                              - { name: TARGET_SCHEMA, value: "{{ $dschema }}" }
+                              - { name: REPL_APPLY, value: "{{ $replApply }}" }
+                            resources:
+                              requests: { cpu: 50m, memory: 32Mi }
+                              limits: { cpu: "1", memory: 256Mi }
+            {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

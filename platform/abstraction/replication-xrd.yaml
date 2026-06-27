@@ -1,0 +1,99 @@
+# open-infra's bidirectional / multi-master replication: kind: Replication.
+#
+# Two database "sites" kept in sync BOTH ways (each is source and target), like a
+# SymmetricDS / AWS-DMS bidirectional task. The engine is open-infra's own:
+# per-site Debezium captures changes onto NATS JetStream and a per-direction
+# apply-sink applies them to the other site, with:
+#   - loop prevention: an origin-marker column (writes carry their origin site; a
+#     sink drops events that originated at the peer, so changes don't echo/loop),
+#   - conflict resolution: last-write-wins on a Hybrid-Logical-Clock version column
+#     (clock-skew-safe; ties broken by origin),
+#   - safety: capped JetStream streams + dead-lettering in the apply-sink.
+#
+# Sites may be different engines (e.g. siteA: sqlserver, siteB: postgres). The
+# version + origin columns and the per-site stamping are installed by an mm-prep
+# step (Postgres: an HLC trigger; see apply-sink/).
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xreplications.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XReplication
+    plural: xreplications
+  claimNames:
+    kind: Replication
+    plural: replications
+  defaultCompositionRef:
+    name: replication
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [siteA, siteB, tables]
+              properties:
+                siteA: &site
+                  type: object
+                  required: [name, engine, host, database, username, passwordSecretRef]
+                  properties:
+                    name:
+                      type: string
+                      description: "Short site id used as the origin marker (e.g. 'a', 'east'). Must be unique across the pair."
+                    engine:
+                      type: string
+                      enum: [postgres, mysql, mariadb, sqlserver]
+                    host: { type: string }
+                    port: { type: integer, default: 5432 }
+                    database: { type: string }
+                    username: { type: string }
+                    passwordSecretRef:
+                      type: object
+                      required: [name]
+                      properties:
+                        name: { type: string }
+                        key:  { type: string, default: "password" }
+                    schema:
+                      type: string
+                      default: "public"
+                      description: "Schema/namespace of the tables (Postgres: public; SQL Server: dbo)."
+                    ssl: { type: boolean, default: false }
+                siteB: *site
+                tables:
+                  type: array
+                  items: { type: string }
+                  description: "Bare table names replicated both ways. Must exist on both sites with the same PK."
+                versionColumn:
+                  type: string
+                  default: "_mm_version"
+                  description: "HLC version column added by mm-prep and used for last-write-wins."
+                originColumn:
+                  type: string
+                  default: "_mm_origin"
+                  description: "Origin-marker column added by mm-prep and used for loop prevention + LWW tiebreak."
+            status:
+              type: object
+              properties:
+                phase: { type: string }
+                ready: { type: boolean }
+      additionalPrinterColumns:
+        - name: SiteA
+          type: string
+          jsonPath: .spec.siteA.engine
+        - name: SiteB
+          type: string
+          jsonPath: .spec.siteB.engine
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready

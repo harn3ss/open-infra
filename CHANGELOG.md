@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Bidirectional / multi-master replication
+- **`kind: Replication`** — keep two database sites in sync both ways (each is
+  source and target), including across engines (e.g. SQL Server ↔ Postgres). Built
+  on the same Debezium + NATS + apply-sink engine, with **origin-marker loop
+  prevention**, **last-write-wins conflict resolution on a Hybrid Logical Clock**
+  (clock-skew-safe), and capped streams + dead-lettering. An `mm-prep` Job installs
+  the version/origin columns and the per-site stamping (Postgres: an HLC trigger).
+
 ### Database migration (DMS) — re-platformed off Airbyte
 - **`kind: Migration` now runs on open-infra's own engine**: Debezium Server
   captures the source's changes onto NATS JetStream and the new **apply-sink**
