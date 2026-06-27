@@ -30,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ApiError, k8sGet, k8sCreate } from "@/lib/api";
+import { ApiError, k8sGet, k8sCreate, getDataFlowStatus, type DataFlowDirection } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION } from "@/types/k8s";
 import type { DataFlow, K8sObject } from "@/types/k8s";
@@ -180,6 +180,47 @@ function CanvasInner() {
   const node = nodes.find((n) => n.id === selNode);
   const edge = edges.find((e) => e.id === selEdge);
 
+  // ── live per-edge status overlay (only for a deployed flow) ────────────────
+  const siteOf = useMemo(() => new Map(nodes.map((n) => [n.id, (n.data as NodeData).site])), [nodes]);
+  const statusEdges = useMemo(
+    () => edges.map((e) => ({ from: siteOf.get(e.source) ?? e.source, to: siteOf.get(e.target) ?? e.target, type: (e.data as EdgeData).type })),
+    [edges, siteOf],
+  );
+  const statusQ = useQuery({
+    queryKey: ["dataflow-status", namespace, name, JSON.stringify(statusEdges)],
+    queryFn: () => getDataFlowStatus(namespace, name, statusEdges),
+    enabled: editing && statusEdges.length > 0,
+    refetchInterval: 4000,
+  });
+  const legBy = useMemo(() => {
+    const m = new Map<string, DataFlowDirection>();
+    for (const d of statusQ.data?.directions ?? []) m.set(`${d.from}->${d.to}`, d);
+    return m;
+  }, [statusQ.data]);
+  const displayEdges = useMemo(
+    () =>
+      edges.map((e) => {
+        const d = e.data as EdgeData;
+        const sFrom = siteOf.get(e.source) ?? e.source;
+        const sTo = siteOf.get(e.target) ?? e.target;
+        const legs = (d.type === "migration"
+          ? [legBy.get(`${sFrom}->${sTo}`)]
+          : [legBy.get(`${sFrom}->${sTo}`), legBy.get(`${sTo}->${sFrom}`)]
+        ).filter(Boolean) as DataFlowDirection[];
+        let stroke = "#94a3b8"; // slate = unknown / not yet provisioned
+        let label = d.type === "migration" ? "→ migration" : "⇄ replication";
+        if (editing && legs.length) {
+          const lag = Math.max(...legs.map((l) => l.lag));
+          const dead = legs.reduce((s, l) => s + l.deadLetter, 0);
+          const found = legs.every((l) => l.found);
+          stroke = !found ? "#94a3b8" : dead > 0 ? "#ef4444" : lag > 0 ? "#f59e0b" : "#22c55e";
+          label = `${d.type === "migration" ? "→" : "⇄"} lag ${lag}${dead ? ` ⚠${dead}` : ""}`;
+        }
+        return { ...e, label, animated: true, style: { stroke, strokeWidth: 2 }, labelStyle: { fontSize: 11 } };
+      }),
+    [edges, legBy, siteOf, editing],
+  );
+
   function patchNode(p: Partial<NodeData>) {
     setNodes((ns) => ns.map((n) => (n.id === selNode ? { ...n, data: { ...(n.data as NodeData), ...p } } : n)));
   }
@@ -282,9 +323,18 @@ function CanvasInner() {
             </Button>
           ))}
         </div>
+        {editing ? (
+          <div className="absolute right-2 top-2 z-10 flex flex-col gap-0.5 rounded-md border bg-card/90 p-2 text-[10px] backdrop-blur">
+            <span className="font-medium text-muted-foreground">Edge status {statusQ.isFetching ? "• live" : ""}</span>
+            <Legend color="#22c55e" label="in sync" />
+            <Legend color="#f59e0b" label="lagging" />
+            <Legend color="#ef4444" label="dead-letters" />
+            <Legend color="#94a3b8" label="not provisioned" />
+          </div>
+        ) : null}
         <ReactFlow
           nodes={nodes}
-          edges={edges}
+          edges={displayEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
@@ -388,6 +438,15 @@ function CanvasInner() {
         </Button>
       </div>
     </div>
+  );
+}
+
+function Legend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: color }} />
+      <span className="text-muted-foreground">{label}</span>
+    </span>
   );
 }
 
