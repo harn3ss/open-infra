@@ -23,11 +23,19 @@ the product's public contract.
 
 ### Bidirectional / multi-master replication
 - **`kind: Replication`** — keep two database sites in sync both ways (each is
-  source and target), including across engines (e.g. SQL Server ↔ Postgres). Built
-  on the same Debezium + NATS + apply-sink engine, with **origin-marker loop
-  prevention**, **last-write-wins conflict resolution on a Hybrid Logical Clock**
-  (clock-skew-safe), and capped streams + dead-lettering. An `mm-prep` Job installs
-  the version/origin columns and the per-site stamping (Postgres: an HLC trigger).
+  source and target), **across engines** — PostgreSQL, MySQL/MariaDB, and SQL
+  Server can each be source *and* target. Built on the same Debezium + NATS +
+  apply-sink engine, with **origin-marker loop prevention**, **last-write-wins
+  conflict resolution on a Hybrid Logical Clock** (clock-skew-safe; ties broken by
+  origin), and capped streams + dead-lettering.
+- An `mm-prep` Job installs the version/origin columns + a per-site stamping trigger
+  on every engine — Postgres `BEFORE`/HLC, SQL Server `AFTER` (with a nestlevel
+  guard, since it has no `BEFORE`-row triggers), MySQL `BEFORE` — so writes to any
+  engine are auto-stamped with no application changes. The apply path skips its own
+  stamping via a per-engine session flag.
+- For 3+ nodes, compose pairwise links into a mesh or a ring; a
+  **PostgreSQL + SQL Server + MySQL** round-robin was validated end-to-end (a write
+  on any engine reaches the other two; a 3-way conflict converges to the newest).
 
 ### Database migration (DMS) — re-platformed off Airbyte
 - **`kind: Migration` now runs on open-infra's own engine**: Debezium Server

@@ -36,7 +36,8 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **Virtual Machine** (EC2) | Overview (phase/IP/resources), **VNC console**, **Network** (security groups — the firewall; reachable LAN ports follow the rules), disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
 | **Model** (Bedrock) | **Playground** (chat with the model), Overview (endpoint + API key), GPU Monitoring, YAML · create / delete |
 | **Database** (RDS) | Overview (phase/instances/storage), Connectivity (host/port/db/user + connection URI), Monitoring, YAML |
-| **Migration** (DMS) | **New Migration wizard** (source → target → task type → table picker → review), **Run sync**, status · create / delete |
+| **Migration** (DMS) | **New Migration wizard** (source → target → task type → table picker → review), detail page with a live **Capture → Buffer → Apply** pipeline (replication lag, per-table throughput, dead-letter) · create / delete |
+| **Replication** (multi-master) | **New Replication** (two sites + tables), detail page showing **both directions**, each with lag / per-table / dead-letter · create / delete |
 | **Stream** (Kinesis) | **New Stream** (source endpoint + tables), JetStream subjects, status · create / delete |
 | **Bucket** (S3) | Objects — browse folders, **upload / download / delete** · create / delete bucket |
 | **Queue** (SQS) | Overview (messages/size/consumers/subjects), **Publish** a message, **Purge** |
