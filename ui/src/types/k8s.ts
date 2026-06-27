@@ -435,6 +435,43 @@ export interface ReplicationStatus {
 export type Replication = K8sObject<ReplicationSpec, ReplicationStatus>;
 export const REPLICATIONS_PLURAL = "replications";
 
+/* ----- open-infra DataFlow CRD (canvas topology: replication + migration) --- */
+
+export interface DataFlowNode {
+  name?: string;
+  engine?: string; // postgres|mysql|mariadb|sqlserver
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  passwordSecretRef?: MigrationPasswordRef;
+  schema?: string;
+  ssl?: boolean;
+  x?: number; // canvas position
+  y?: number;
+}
+export interface DataFlowEdge {
+  from?: string;
+  to?: string;
+  type?: string; // replication | migration
+  mode?: string; // migration only: full-load | cdc | full-load-and-cdc
+  tables?: string[];
+}
+export interface DataFlowSpec {
+  nodes?: DataFlowNode[];
+  edges?: DataFlowEdge[];
+  tables?: string[];
+  versionColumn?: string;
+  originColumn?: string;
+}
+export interface DataFlowStatus {
+  phase?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type DataFlow = K8sObject<DataFlowSpec, DataFlowStatus>;
+export const DATAFLOWS_PLURAL = "dataflows";
+
 /** A CDC Stream: source DB change log -> NATS JetStream (open-infra's "Kinesis"). */
 export interface StreamSource {
   engine?: string; // postgres|mysql|mariadb|sqlserver|mongodb
