@@ -22,6 +22,7 @@ import { DirectoriesPage } from "@/features/directories/directories-page";
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
 import { MigrationsPage } from "@/features/migrations/migrations-page";
+import { MigrationDetailPage } from "@/features/migrations/migration-detail-page";
 import { StreamsPage } from "@/features/streams/streams-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
@@ -137,6 +138,12 @@ const migrationsRoute = createRoute({
   component: MigrationsPage,
 });
 
+const migrationDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/migrations/$namespace/$name",
+  component: MigrationDetailPage,
+});
+
 const streamsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/streams",
@@ -226,6 +233,7 @@ const routeTree = rootRoute.addChildren([
   securityGroupsRoute,
   securityGroupDetailRoute,
   migrationsRoute,
+  migrationDetailRoute,
   streamsRoute,
   databasesRoute,
   databaseDetailRoute,

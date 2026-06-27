@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRightLeft, Check, Plus, Trash2 } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
@@ -93,6 +94,7 @@ function migStatus(m: Migration): { label: string; tone: StatusTone } {
 export function MigrationsPage() {
   const { scoped } = useNamespace();
   const [newOpen, setNewOpen] = useState(false);
+  const navigate = useNavigate();
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
@@ -209,6 +211,15 @@ export function MigrationsPage() {
         plural="Migrations"
         emptyTitle="No migrations yet"
         emptyDescription="Create one to full-load or continuously sync a source database into a managed Postgres."
+        onRowClick={(m) =>
+          navigate({
+            to: "/migrations/$namespace/$name",
+            params: {
+              namespace: m.metadata.namespace ?? "default",
+              name: m.metadata.name ?? "",
+            },
+          })
+        }
         headerActions={
           <Button onClick={() => setNewOpen(true)}>
             <Plus className="size-4" /> New Migration
