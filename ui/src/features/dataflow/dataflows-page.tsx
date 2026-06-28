@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
-import { Workflow, Plus, Trash2 } from "lucide-react";
+import { Workflow, Plus, Trash2, Wand2 } from "lucide-react";
+import { SetupWizard } from "./setup-wizard";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ function dfStatus(d: DataFlow): { label: string; tone: StatusTone } {
 
 export function DataFlowsPage() {
   const navigate = useNavigate();
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const remove = useMutation({
     mutationFn: async (d: DataFlow) => {
@@ -111,29 +113,38 @@ export function DataFlowsPage() {
   );
 
   return (
-    <ResourceTablePage<DataFlow>
-      icon={<Workflow />}
-      title="Data Flows"
-      description="Design data movement visually: drag database engines onto a canvas, connect them, and deploy. Two-way edges are multi-master replication; one-way edges are migrations. Each node is a database you configure once; the whole topology is one resource."
-      listPath={openinfraPaths.dataflows}
-      columns={columns}
-      search={(d) => [d.metadata.name, d.metadata.namespace]}
-      singular="Data Flow"
-      plural="Data Flows"
-      emptyTitle="No data flows yet"
-      emptyDescription="Open the canvas to drag database engines together into a topology."
-      onRowClick={(d) =>
-        navigate({
-          to: "/dataflows/$namespace/$name",
-          params: { namespace: d.metadata.namespace ?? "default", name: d.metadata.name ?? "" },
-        })
-      }
-      headerActions={
-        <Button onClick={() => navigate({ to: "/dataflows/new" })}>
-          <Plus className="size-4" />
-          New Data Flow
-        </Button>
-      }
-    />
+    <>
+      <ResourceTablePage<DataFlow>
+        icon={<Workflow />}
+        title="Data Flows"
+        description="Keep databases in sync. The guided setup walks you through it — add your databases, say which ones already have data, and it explains exactly what will happen (seed the empty ones, merge the rest, then sync). Or drop into the canvas to design a topology by hand."
+        listPath={openinfraPaths.dataflows}
+        columns={columns}
+        search={(d) => [d.metadata.name, d.metadata.namespace]}
+        singular="Data Flow"
+        plural="Data Flows"
+        emptyTitle="No data flows yet"
+        emptyDescription="Use the guided setup to keep your databases in sync."
+        onRowClick={(d) =>
+          navigate({
+            to: "/dataflows/$namespace/$name",
+            params: { namespace: d.metadata.namespace ?? "default", name: d.metadata.name ?? "" },
+          })
+        }
+        headerActions={
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => navigate({ to: "/dataflows/new" })}>
+              <Plus className="size-4" />
+              Blank canvas
+            </Button>
+            <Button onClick={() => setWizardOpen(true)}>
+              <Wand2 className="size-4" />
+              Set up replication
+            </Button>
+          </div>
+        }
+      />
+      <SetupWizard open={wizardOpen} onOpenChange={setWizardOpen} />
+    </>
   );
 }
