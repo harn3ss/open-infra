@@ -74,9 +74,14 @@ spec:
             {{-   $srcSet = set $srcSet $e.from true }}
             {{-   if eq $e.type "replication" }}{{ $srcSet = set $srcSet $e.to true }}{{ $replSet = set $replSet $e.from true }}{{ $replSet = set $replSet $e.to true }}{{- end }}
             {{- end }}
-            {{- /* ============ per-source-node Debezium capture ============ */}}
+            {{- /* ---- function nodes: input source = the `from` of their incoming pipe edge ---- */}}
+            {{- $fnInput := dict }}
+            {{- range $e := $edges }}
+            {{-   if eq (((index $nmap $e.to).role) | default "database") "function" }}{{ $fnInput = set $fnInput $e.to $e.from }}{{- end }}
+            {{- end }}
+            {{- /* ============ per-source-node Debezium capture (database nodes only) ============ */}}
             {{- range $n := $nodes }}
-            {{- if hasKey $srcSet $n.name }}
+            {{- if and (hasKey $srcSet $n.name) (eq ($n.role | default "database") "database") }}
             {{-   $node := $n.name }}
             {{-   $engine := $n.engine }}
             {{-   $prefix := printf "f.%s.%s" $name $node }}
@@ -228,6 +233,56 @@ spec:
                               - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
                               - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
                               - { name: TABLES, value: "{{ index $inc $node }}" }
+            {{- end }}
+            {{- end }}
+            {{- /* ============ function nodes: the Transform stage (pump: input stream -> function HTTP -> output stream) ============ */}}
+            {{- range $n := $nodes }}
+            {{- if eq ($n.role | default "database") "function" }}
+            {{-   $fn := $n.name }}
+            {{-   $in := index $fnInput $fn }}
+            {{-   $url := $n.functionUrl | default (printf "http://%s.%s.svc.cluster.local" ($n.functionRef | default $fn) $ns) }}
+            {{-   $ostream := printf "flow-%s-%s" $name $fn }}
+            {{-   $oprefix := printf "f.%s.%s" $name $fn }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: pump-{{ $fn }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-{{ $fn }}-pump
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-flow-{{ $fn }}-pump, openinfra.dev/dataflow: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-flow-{{ $fn }}-pump } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $fn }}-pump } }
+                      spec:
+                        initContainers:
+                          - name: ensure-stream
+                            image: natsio/nats-box:latest
+                            command: ["sh","-c","nats stream info {{ $ostream }} >/dev/null 2>&1 || nats stream add {{ $ostream }} --subjects='{{ $oprefix }}.>' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults"]
+                            env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
+                        containers:
+                          - name: pump
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: pump }
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: STREAM, value: "flow-{{ $name }}-{{ $in }}" }
+                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $in }}.>" }
+                              - { name: DURABLE, value: "{{ $name }}-pump-{{ $fn }}" }
+                              - { name: FUNCTION_URL, value: "{{ $url }}" }
+                              - { name: OUTPUT_SUBJECT, value: "{{ $oprefix }}" }
+                            resources:
+                              requests: { cpu: 50m, memory: 32Mi }
+                              limits: { cpu: "1", memory: 256Mi }
             {{- end }}
             {{- end }}
             {{- /* ============ per-edge sinks ============ */}}
@@ -394,6 +449,48 @@ spec:
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }
+            {{-   else if eq $e.type "pipe" }}
+            {{-     if eq (((index $nmap $e.to).role) | default "database") "database" }}
+            {{-       $sn := $e.from }}{{- $dn := $e.to }}
+            {{-       $tdsn := replace "${PW}" "${TARGET_PASSWORD}" (index $dsn $dn) }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: load-{{ $sn }}-{{ $dn }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load, openinfra.dev/dataflow: "{{ $name }}" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load } }
+                      spec:
+                        containers:
+                          - name: apply-sink
+                            image: {{ $img }}
+                            env:
+                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
+                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              - { name: STREAM, value: "flow-{{ $name }}-{{ $sn }}" }
+                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $sn }}.>" }
+                              - { name: DURABLE, value: "{{ $name }}-load-{{ $sn }}-{{ $dn }}" }
+                              - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
+                            resources:
+                              requests: { cpu: 50m, memory: 32Mi }
+                              limits: { cpu: "1", memory: 256Mi }
+            {{-     end }}
             {{-   end }}
             {{- end }}
     - step: ready

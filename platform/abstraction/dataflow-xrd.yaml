@@ -51,9 +51,13 @@ spec:
                       name: { type: string }
                       role:
                         type: string
-                        enum: [database, topic]
+                        enum: [database, topic, function, bucket]
                         default: database
-                        description: "database = a DB endpoint; topic = a message stream apps consume (no connection fields)."
+                        description: "database = a DB endpoint; topic = a message stream apps consume; function = an HTTP transform in the pipeline; bucket = an object-store sink. Non-database roles ignore the connection fields."
+                      functionRef: { type: string, description: "function role: name of a kind: Function in this namespace (resolved to its in-cluster URL)." }
+                      functionUrl: { type: string, description: "function role: explicit HTTP endpoint (overrides functionRef)." }
+                      bucket: { type: string, description: "bucket role: object-store bucket name." }
+                      prefix: { type: string, description: "bucket role: key prefix for written objects." }
                       engine: { type: string, enum: [postgres, mysql, mariadb, sqlserver] }
                       host: { type: string }
                       port: { type: integer, default: 5432 }
@@ -80,8 +84,8 @@ spec:
                       to: { type: string, description: "Target node name (for replication the link is bidirectional)." }
                       type:
                         type: string
-                        enum: [replication, migration, stream]
-                        description: "replication = bidirectional multi-master; migration = one-way from -> to; stream = publish a database's changes to a topic node for apps to consume."
+                        enum: [replication, migration, stream, pipe]
+                        description: "replication = bidirectional multi-master; migration = one-way from -> to; stream = publish a database's changes to a topic; pipe = one-way ETL flow into a function (transform), database (load), or bucket (store)."
                       mode:
                         type: string
                         enum: [full-load, cdc, full-load-and-cdc]

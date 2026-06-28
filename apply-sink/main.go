@@ -15,7 +15,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"bytes"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -131,6 +134,8 @@ func main() {
 		runSchemaSync()
 	case "mm-prep":
 		runMMPrep()
+	case "pump":
+		runPump()
 	default:
 		runStream()
 	}
@@ -353,6 +358,112 @@ func runStream() {
 			}
 		}
 	}
+}
+
+// ===================== PUMP MODE (function transform) =====================
+//
+// runPump is the Transform stage of an ETL chain: consume change events from an
+// upstream subject, POST each to a function over HTTP, and publish the function's
+// returned event to a downstream subject (preserving the <schema>.<table> tail so
+// the next stage routes it). A 204 / empty response drops the event (a filter).
+func runPump() {
+	natsURL := env("NATS_URL", "nats://nats:4222")
+	stream := env("STREAM", "")
+	subject := env("SUBJECT", "")
+	durable := env("DURABLE", "pump")
+	fnURL := env("FUNCTION_URL", "")
+	outPrefix := env("OUTPUT_SUBJECT", "") // e.g. f.<flow>.<fn>
+	maxDeliver := atoiEnv("MAX_DELIVER", 5)
+	if fnURL == "" || outPrefix == "" {
+		log.Fatal("FUNCTION_URL and OUTPUT_SUBJECT are required for pump mode")
+	}
+	nc, err := nats.Connect(natsURL, nats.MaxReconnects(-1), nats.ReconnectWait(2*time.Second))
+	if err != nil {
+		log.Fatalf("nats connect: %v", err)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		log.Fatalf("jetstream: %v", err)
+	}
+	_, _ = js.AddStream(&nats.StreamConfig{
+		Name: "DLQ", Subjects: []string{"dlq.>"},
+		Storage: nats.FileStorage, MaxBytes: 64 * 1024 * 1024, Discard: nats.DiscardOld,
+	})
+	sub, err := js.PullSubscribe(subject, durable,
+		nats.BindStream(stream), nats.AckExplicit(), nats.DeliverAll(), nats.ManualAck())
+	if err != nil {
+		log.Fatalf("subscribe: %v", err)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	log.Printf("pump running: stream=%s subject=%s -> fn=%s -> out=%s.*", stream, subject, fnURL, outPrefix)
+
+	for {
+		msgs, err := sub.Fetch(100, nats.MaxWait(5*time.Second))
+		if err != nil {
+			if err == nats.ErrTimeout {
+				continue
+			}
+			log.Printf("fetch: %v", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		for _, m := range msgs {
+			out, drop, perr := transform(client, fnURL, m.Data)
+			if perr != nil {
+				nd := 1
+				if md, e := m.Metadata(); e == nil {
+					nd = int(md.NumDelivered)
+				}
+				if nd >= maxDeliver {
+					log.Printf("DEAD-LETTER (pump) subj=%s after %d: %v", m.Subject, nd, perr)
+					_, _ = js.Publish("dlq."+m.Subject, m.Data)
+					_ = m.Term()
+				} else {
+					log.Printf("pump error (attempt %d) subj=%s: %v", nd, m.Subject, perr)
+					_ = m.Nak()
+				}
+				continue
+			}
+			if drop {
+				_ = m.Ack() // the function filtered this event out
+				continue
+			}
+			outSubj := outPrefix + "." + lastTwoSeg(m.Subject)
+			if _, err := js.Publish(outSubj, out); err != nil {
+				log.Printf("publish %s: %v", outSubj, err)
+				_ = m.Nak()
+				continue
+			}
+			_ = m.Ack()
+		}
+	}
+}
+
+// transform POSTs the event to the function and returns its body. drop=true when
+// the function returns 204 or an empty body (the event is intentionally filtered).
+func transform(client *http.Client, url string, body []byte) (out []byte, drop bool, err error) {
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNoContent || len(bytes.TrimSpace(b)) == 0 {
+		return nil, true, nil
+	}
+	if resp.StatusCode/100 != 2 {
+		return nil, false, fmt.Errorf("function %s status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return b, false, nil
+}
+
+// lastTwoSeg returns the last two dot-segments of a subject (the <schema>.<table>).
+func lastTwoSeg(subject string) string {
+	p := strings.Split(subject, ".")
+	if len(p) >= 2 {
+		return strings.Join(p[len(p)-2:], ".")
+	}
+	return subject
 }
 
 // apply returns (retryable, err). retryable=true means a transient condition
