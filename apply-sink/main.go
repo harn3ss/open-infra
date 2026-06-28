@@ -515,6 +515,20 @@ func apply(db *sql.DB, engine string, m *nats.Msg) (bool, error) {
 // error it rolls back and the caller falls back to per-message apply so the one
 // bad message can be retried/dead-lettered in isolation.
 func applyBatch(db *sql.DB, engine string, msgs []*nats.Msg) error {
+	var err error
+	// Retry the whole batch on a deadlock/serialization failure (expected when
+	// several mesh sinks write overlapping rows at once); the loser just re-runs.
+	for attempt := 0; attempt < 4; attempt++ {
+		err = tryBatch(db, engine, msgs)
+		if err == nil || !isRetryable(err) {
+			return err
+		}
+		time.Sleep(time.Duration(20*(attempt+1)) * time.Millisecond)
+	}
+	return err
+}
+
+func tryBatch(db *sql.DB, engine string, msgs []*nats.Msg) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -568,9 +582,26 @@ func applyOne(exec sqlExec, db *sql.DB, engine string, m *nats.Msg) (bool, error
 		return true, err // target table may not be created by schema-sync yet
 	}
 	if deleted {
-		return false, execDelete(exec, engine, schema, table, mt, row)
+		e := execDelete(exec, engine, schema, table, mt, row)
+		return isRetryable(e), e
 	}
-	return false, execUpsert(exec, engine, schema, table, mt, row)
+	e := execUpsert(exec, engine, schema, table, mt, row)
+	return isRetryable(e), e
+}
+
+// isRetryable reports whether an apply error is transient and worth retrying
+// rather than dead-lettering: deadlocks / serialization failures / lock-wait
+// timeouts across Postgres (40P01/40001), MySQL (1213/1205) and SQL Server (1205).
+// Concurrent mesh sinks writing overlapping rows deadlock normally; the loser retries.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "deadlock") ||
+		strings.Contains(s, "40p01") || strings.Contains(s, "40001") ||
+		strings.Contains(s, "serializ") || strings.Contains(s, "lock wait timeout") ||
+		strings.Contains(s, "1205") || strings.Contains(s, "1213")
 }
 
 func getMeta(db *sql.DB, engine, schema, table string) (meta, error) {
