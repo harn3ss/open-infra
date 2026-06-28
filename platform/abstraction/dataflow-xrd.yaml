@@ -82,6 +82,10 @@ spec:
                         enum: [full-load, cdc, full-load-and-cdc]
                         default: full-load-and-cdc
                         description: "Migration edges only: full-load / cdc / both."
+                      bootstrap:
+                        type: boolean
+                        default: false
+                        description: "Replication edges: create the target's tables from `from` before syncing (seeds an empty member). Initial rows then load via the CDC snapshot."
                       tables:
                         type: array
                         items: { type: string }
