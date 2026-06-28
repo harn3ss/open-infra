@@ -43,12 +43,17 @@ spec:
               properties:
                 nodes:
                   type: array
-                  description: "Database endpoints on the canvas. `name` is the node id used by edges and as the replication origin marker."
+                  description: "Nodes on the canvas: database endpoints (role: database) or message topics (role: topic). `name` is the node id used by edges and as the replication origin marker."
                   items:
                     type: object
-                    required: [name, engine, host, database, username, passwordSecretRef]
+                    required: [name]
                     properties:
                       name: { type: string }
+                      role:
+                        type: string
+                        enum: [database, topic]
+                        default: database
+                        description: "database = a DB endpoint; topic = a message stream apps consume (no connection fields)."
                       engine: { type: string, enum: [postgres, mysql, mariadb, sqlserver] }
                       host: { type: string }
                       port: { type: integer, default: 5432 }
@@ -63,7 +68,7 @@ spec:
                       schema: { type: string, default: "public", description: "Schema/namespace (Postgres: public; SQL Server: dbo). Ignored for MySQL." }
                       ssl: { type: boolean, default: false }
                       x: { type: integer, default: 0, description: "Canvas position (persisted for the editor)." }
-                      y: { type: integer, default: 0 }
+                      "y": { type: integer, default: 0, description: "Canvas position (persisted). Quoted — unquoted y is YAML boolean true." }
                 edges:
                   type: array
                   description: "Data movement between nodes."
@@ -75,8 +80,8 @@ spec:
                       to: { type: string, description: "Target node name (for replication the link is bidirectional)." }
                       type:
                         type: string
-                        enum: [replication, migration]
-                        description: "replication = bidirectional multi-master; migration = one-way from -> to."
+                        enum: [replication, migration, stream]
+                        description: "replication = bidirectional multi-master; migration = one-way from -> to; stream = publish a database's changes to a topic node for apps to consume."
                       mode:
                         type: string
                         enum: [full-load, cdc, full-load-and-cdc]
