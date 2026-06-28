@@ -233,6 +233,43 @@ spec:
             {{-   $a := index $nmap $e.from }}{{- $b := index $nmap $e.to }}
             {{-   $aSch := index $sch $e.from }}{{- $bSch := index $sch $e.to }}
             {{-   if eq $e.type "replication" }}
+            {{-     if $e.bootstrap }}
+            {{-       $bsdsn := replace "${PW}" "${SOURCE_PASSWORD}" (index $dsn $e.from) }}
+            {{-       $btdsn := replace "${PW}" "${TARGET_PASSWORD}" (index $dsn $e.to) }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bsync-{{ $e.from }}-{{ $e.to }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-flow-{{ $e.from }}-{{ $e.to }}-bsync
+                    namespace: {{ $ns }}
+                  spec:
+                    backoffLimit: 30
+                    template:
+                      spec:
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: schema-sync
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: schema-sync }
+                              - { name: SOURCE_ENGINE, value: "{{ index $eng $e.from }}" }
+                              - { name: SOURCE_DSN, value: "{{ $bsdsn }}" }
+                              - name: SOURCE_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $e.from }}, key: {{ index $seck $e.from }} } }
+                              - { name: TARGET_ENGINE, value: "{{ index $eng $e.to }}" }
+                              - { name: TARGET_DSN, value: "{{ $btdsn }}" }
+                              - name: TARGET_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $e.to }}, key: {{ index $seck $e.to }} } }
+                              - { name: TABLES, value: "{{ index $inc $e.from }}" }
+            {{-     end }}
             {{-     range $dir := (list (dict "s" $e.from "d" $e.to) (dict "s" $e.to "d" $e.from)) }}
             {{-       $sn := $dir.s }}{{- $dn := $dir.d }}
             {{-       $tdsn := replace "${PW}" "${TARGET_PASSWORD}" (index $dsn $dn) }}
