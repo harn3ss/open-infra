@@ -404,8 +404,10 @@ function CanvasInner() {
   const peekNode = nodes.find((n) => n.id === peek);
   const peekData = peekNode?.data as NodeData | undefined;
   const peekName = peekData?.name ?? "";
-  const peekDirs = (statusQ.data?.directions ?? []).filter((d) => d.from === peekName);
-  const peekStream = peekDirs.find((d) => d.found);
+  const allDirs = statusQ.data?.directions ?? [];
+  const peekOut = allDirs.filter((d) => d.from === peekName); // this node's output stream + its consumers
+  const peekIn = allDirs.filter((d) => d.to === peekName); // legs writing INTO this node (sink view)
+  const peekStream = peekOut.find((d) => d.found);
 
   return (
     <div className="flex h-[calc(100vh-9rem)] gap-3">
@@ -600,43 +602,69 @@ function CanvasInner() {
           </DialogHeader>
           {!editing ? (
             <p className="text-sm text-muted-foreground">Deploy the flow to see live metrics.</p>
-          ) : !peekStream ? (
-            <p className="text-sm text-muted-foreground">No live stream for this node yet — it may still be provisioning, or it isn't a data source.</p>
+          ) : !peekStream && !peekIn.length ? (
+            <p className="text-sm text-muted-foreground">No live metrics yet — this step may still be provisioning, or it isn't connected.</p>
           ) : (
             <div className="space-y-4 text-sm">
-              <div className="grid grid-cols-3 gap-2">
-                <Metric label="Captured" value={peekStream.captured.toLocaleString()} />
-                <Metric label="Buffered size" value={formatBytes(peekStream.bytes)} />
-                <Metric label="Tables" value={String((peekStream.tables ?? []).length)} />
-              </div>
-              {peekStream.tables && peekStream.tables.length ? (
+              {/* INBOUND — what this step is applying (the sink view: targets, buckets) */}
+              {peekIn.length ? (
                 <div>
-                  <div className="mb-1 text-xs font-medium text-muted-foreground">Per-table throughput</div>
-                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
-                    {peekStream.tables.slice(0, 8).map((t) => (
-                      <div key={t.subject} className="flex justify-between rounded bg-muted/40 px-2 py-0.5 text-xs">
-                        <code>{t.table}</code><span className="text-muted-foreground">{t.count.toLocaleString()}</span>
+                  <div className="mb-1 text-xs font-medium text-muted-foreground">Incoming — applied into this step</div>
+                  <div className="space-y-1">
+                    {peekIn.map((d) => (
+                      <div key={`in-${d.from}-${d.to}-${d.type}`} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
+                        <span><strong>{d.from}</strong> → <span className="text-muted-foreground">({d.type})</span></span>
+                        <span className="flex gap-3">
+                          <span className={d.deadLetter > 0 ? "text-destructive" : d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>backlog {d.lag.toLocaleString()}</span>
+                          <span className="text-muted-foreground">applying {d.ackPending}</span>
+                          <span className="text-muted-foreground">retries {d.redelivered}</span>
+                          {d.deadLetter > 0 ? <span className="text-destructive">dead {d.deadLetter}</span> : null}
+                        </span>
                       </div>
                     ))}
                   </div>
                 </div>
               ) : null}
-              <div>
-                <div className="mb-1 text-xs font-medium text-muted-foreground">Downstream consumers</div>
-                <div className="space-y-1">
-                  {peekDirs.map((d) => (
-                    <div key={`${d.from}-${d.to}-${d.type}`} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
-                      <span>→ <strong>{d.to}</strong> <span className="text-muted-foreground">({d.type})</span></span>
-                      <span className="flex gap-3">
-                        <span className={d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>lag {d.lag.toLocaleString()}</span>
-                        <span className="text-muted-foreground">in-flight {d.ackPending}</span>
-                        <span className="text-muted-foreground">retries {d.redelivered}</span>
-                        {d.deadLetter > 0 ? <span className="text-destructive">dead {d.deadLetter}</span> : null}
-                      </span>
+
+              {/* OUTBOUND — this step's own change stream (the source view: dbs, functions) */}
+              {peekStream ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    <Metric label="Captured" value={peekStream.captured.toLocaleString()} />
+                    <Metric label="Buffered" value={formatBytes(peekStream.bytes)} />
+                    <Metric label="Tables" value={String((peekStream.tables ?? []).length)} />
+                  </div>
+                  {peekStream.tables && peekStream.tables.length ? (
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">Per-table throughput</div>
+                      <div className="max-h-28 space-y-0.5 overflow-y-auto">
+                        {peekStream.tables.slice(0, 8).map((t) => (
+                          <div key={t.subject} className="flex justify-between rounded bg-muted/40 px-2 py-0.5 text-xs">
+                            <code>{t.table}</code><span className="text-muted-foreground">{t.count.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                  ) : null}
+                  <div>
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">Outgoing — downstream consumers</div>
+                    <div className="space-y-1">
+                      {peekOut.map((d) => (
+                        <div key={`out-${d.from}-${d.to}-${d.type}`} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
+                          <span>→ <strong>{d.to}</strong> <span className="text-muted-foreground">({d.type})</span></span>
+                          <span className="flex gap-3">
+                            <span className={d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>lag {d.lag.toLocaleString()}</span>
+                            <span className="text-muted-foreground">in-flight {d.ackPending}</span>
+                            {d.deadLetter > 0 ? <span className="text-destructive">dead {d.deadLetter}</span> : null}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">This step is a sink — it consumes upstream data and doesn't publish its own change stream.</p>
+              )}
             </div>
           )}
         </DialogContent>
