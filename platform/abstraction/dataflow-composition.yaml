@@ -43,6 +43,7 @@ spec:
             {{- $nodes := $spec.nodes }}
             {{- $edges := $spec.edges }}
             {{- $tables := $spec.tables | default (list) }}
+            {{- $allTables := or (eq (len $tables) 0) (has "*" $tables) }}
             {{- $vcol := $spec.versionColumn | default "_mm_version" }}
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
             {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
@@ -63,9 +64,12 @@ spec:
             {{-   else }}{{ $d = printf "postgres://%s:${PW}@%s:%v/%s?sslmode=%s" $n.username $n.host $p $n.database (ternary "require" "disable" ($n.ssl | default false)) }}
             {{-   end }}
             {{-   $dsn = set $dsn $n.name $d }}
-            {{-   $qual := ternary $n.database $sc (or (eq $n.engine "mysql") (eq $n.engine "mariadb")) }}
-            {{-   $q := list }}{{- range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qual $t) }}{{- end }}
-            {{-   $inc = set $inc $n.name (join "," $q) }}
+            {{-   if $allTables }}{{ $inc = set $inc $n.name "*" }}
+            {{-   else }}
+            {{-     $qual := ternary $n.database $sc (or (eq $n.engine "mysql") (eq $n.engine "mariadb")) }}
+            {{-     $q := list }}{{- range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qual $t) }}{{- end }}
+            {{-     $inc = set $inc $n.name (join "," $q) }}
+            {{-   end }}
             {{-   end }}
             {{- end }}
             {{- /* ---- which nodes are sources (need Debezium) / replication (need mm-prep) ---- */}}
@@ -132,7 +136,11 @@ spec:
                       debezium.source.database.port={{ $sport }}
                       debezium.source.database.user={{ $n.username }}
                       debezium.source.database.dbname={{ $n.database }}
+                    {{- if eq $include "*" }}
+                      debezium.source.table.exclude.list=.*mm_hlc_state
+                    {{- else }}
                       debezium.source.table.include.list={{ $include }}
+                    {{- end }}
                     {{- if $n.ssl }}
                       debezium.source.database.sslmode=require
                     {{- end }}
@@ -143,7 +151,11 @@ spec:
                       debezium.source.database.user={{ $n.username }}
                       debezium.source.database.server.id={{ adler32sum (printf "%s-%s" $name $node) }}
                       debezium.source.database.include.list={{ $n.database }}
+                    {{- if eq $include "*" }}
+                      debezium.source.table.exclude.list=.*mm_hlc_state
+                    {{- else }}
                       debezium.source.table.include.list={{ $include }}
+                    {{- end }}
                       debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
                       debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
                   {{- else if eq $engine "sqlserver" }}
@@ -155,7 +167,11 @@ spec:
                       debezium.source.database.encrypt={{ $n.ssl | default false }}
                       debezium.source.schema.history.internal=io.debezium.storage.file.history.FileSchemaHistory
                       debezium.source.schema.history.internal.file.filename=/debezium/data/schema_history.dat
+                    {{- if eq $include "*" }}
+                      debezium.source.table.exclude.list=.*mm_hlc_state
+                    {{- else }}
                       debezium.source.table.include.list={{ $include }}
+                    {{- end }}
                   {{- end }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
