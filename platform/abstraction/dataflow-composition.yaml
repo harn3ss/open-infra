@@ -50,6 +50,7 @@ spec:
             {{- $nmap := dict }}{{- $eng := dict }}{{- $sch := dict }}{{- $dsn := dict }}{{- $inc := dict }}{{- $sec := dict }}{{- $seck := dict }}
             {{- range $n := $nodes }}
             {{-   $nmap = set $nmap $n.name $n }}
+            {{-   if ne ($n.role | default "database") "topic" }}
             {{-   $eng = set $eng $n.name $n.engine }}
             {{-   $sc := $n.schema | default (ternary "dbo" "public" (eq $n.engine "sqlserver")) }}
             {{-   $sch = set $sch $n.name $sc }}
@@ -65,6 +66,7 @@ spec:
             {{-   $qual := ternary $n.database $sc (or (eq $n.engine "mysql") (eq $n.engine "mariadb")) }}
             {{-   $q := list }}{{- range $t := $tables }}{{ $q = append $q (printf "%s.%s" $qual $t) }}{{- end }}
             {{-   $inc = set $inc $n.name (join "," $q) }}
+            {{-   end }}
             {{- end }}
             {{- /* ---- which nodes are sources (need Debezium) / replication (need mm-prep) ---- */}}
             {{- $srcSet := dict }}{{- $replSet := dict }}
@@ -318,7 +320,7 @@ spec:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }
             {{-     end }}
-            {{-   else }}
+            {{-   else if eq $e.type "migration" }}
             {{-     $sn := $e.from }}{{- $dn := $e.to }}
             {{-     $tdsn := replace "${PW}" "${TARGET_PASSWORD}" (index $dsn $dn) }}
             {{-     $sdsn := replace "${PW}" "${SOURCE_PASSWORD}" (index $dsn $sn) }}
