@@ -356,6 +356,17 @@ func runStream() {
 			time.Sleep(time.Second)
 			continue
 		}
+		// Fast path: apply the whole batch in one transaction (one commit/fsync
+		// for ~100 rows). On any error, fall through to per-message handling so the
+		// single bad message is retried / dead-lettered without blocking the rest.
+		if len(msgs) > 1 {
+			if err := applyBatch(db, engine, msgs); err == nil {
+				for _, m := range msgs {
+					_ = m.Ack()
+				}
+				continue
+			}
+		}
 		for _, m := range msgs {
 			retry, err := apply(db, engine, m)
 			if err == nil {
@@ -496,6 +507,30 @@ func lastTwoSeg(subject string) string {
 // without ever dead-lettering. retryable=false errors are data problems that
 // dead-letter after MAX_DELIVER.
 func apply(db *sql.DB, engine string, m *nats.Msg) (bool, error) {
+	return applyOne(db, db, engine, m)
+}
+
+// applyBatch applies a whole Fetch in ONE transaction (one fsync for the batch,
+// not one per row — the dominant cost). Returns nil on success (ack all); on any
+// error it rolls back and the caller falls back to per-message apply so the one
+// bad message can be retried/dead-lettered in isolation.
+func applyBatch(db *sql.DB, engine string, msgs []*nats.Msg) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, m := range msgs {
+		if _, err := applyOne(tx, db, engine, m); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// applyOne writes one change via exec (a *sql.DB or *sql.Tx); db is used only for
+// (cached) target-table introspection.
+func applyOne(exec sqlExec, db *sql.DB, engine string, m *nats.Msg) (bool, error) {
 	parts := strings.Split(m.Subject, ".")
 	if len(parts) < 2 {
 		return false, fmt.Errorf("subject too short: %s", m.Subject)
@@ -533,9 +568,9 @@ func apply(db *sql.DB, engine string, m *nats.Msg) (bool, error) {
 		return true, err // target table may not be created by schema-sync yet
 	}
 	if deleted {
-		return false, execDelete(db, engine, schema, table, mt, row)
+		return false, execDelete(exec, engine, schema, table, mt, row)
 	}
-	return false, execUpsert(db, engine, schema, table, mt, row)
+	return false, execUpsert(exec, engine, schema, table, mt, row)
 }
 
 func getMeta(db *sql.DB, engine, schema, table string) (meta, error) {
@@ -725,7 +760,13 @@ func presentCols(mt meta, row map[string]any) []string {
 	return cols
 }
 
-func execUpsert(db *sql.DB, engine, schema, table string, mt meta, row map[string]any) error {
+// sqlExec is satisfied by both *sql.DB (autocommit) and *sql.Tx (batched in one
+// transaction), so the apply path can commit one row or a whole Fetch at once.
+type sqlExec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func execUpsert(db sqlExec, engine, schema, table string, mt meta, row map[string]any) error {
 	cols := presentCols(mt, row)
 	if len(cols) == 0 {
 		return fmt.Errorf("no matching columns for %s.%s", schema, table)
@@ -856,7 +897,7 @@ func buildUpsert(engine, schema, table string, cols []string, mt meta) string {
 	}
 }
 
-func execDelete(db *sql.DB, engine, schema, table string, mt meta, row map[string]any) error {
+func execDelete(db sqlExec, engine, schema, table string, mt meta, row map[string]any) error {
 	var where []string
 	var vals []any
 	for i, p := range mt.pk {
