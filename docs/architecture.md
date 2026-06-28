@@ -37,6 +37,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | RDS/Aurora | managed Postgres | **CloudNativePG** | **local NVMe PVs, never CIFS/NFS** |
 | DMS | DB migration + CDC | **Debezium + apply-sink** + Crossplane | `kind: Migration`; full-load / ongoing CDC into a target SQL database — see [migrations.md](migrations.md) |
 | DMS (multi-master) | bidirectional / multi-master replication | **Debezium + apply-sink** (HLC LWW) | `kind: Replication`; sync two+ DBs both ways, across engines — see [replication.md](replication.md) |
+| Glue / Step Functions (data) | visual data-movement pipelines | **drag-and-drop canvas** → Debezium + NATS + apply-sink | `kind: DataFlow`; chain databases / topics / transform functions / buckets; replication, migration, CDC-to-topic & ETL are edge types — see [dataflow.md](dataflow.md) |
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
 | ElastiCache | cache | **Redis** | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |

@@ -1,5 +1,9 @@
 # Migrations (DMS)
 
+> **Part of [Data Flows](dataflow.md).** This is one mode of open-infra's data-movement
+> layer — the same engine, surfaced on its own. The console's **Data Flows** canvas is the
+> unified place to build and observe these visually.
+
 `kind: Migration` is open-infra's Database Migration Service — AWS-DMS-style
 replication: **full-load and/or ongoing CDC** from a source database into a target
 SQL database. Source and target engines may differ (e.g. **SQL Server → Postgres**).

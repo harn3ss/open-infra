@@ -1,5 +1,9 @@
 # Replication (bidirectional / multi-master)
 
+> **Part of [Data Flows](dataflow.md).** This is one mode of open-infra's data-movement
+> layer — the same engine, surfaced on its own. The console's **Data Flows** canvas is the
+> unified place to build and observe these visually.
+
 `kind: Replication` keeps **two database sites in sync both ways** — each is
 source *and* target — like a SymmetricDS / AWS-DMS bidirectional task. Sites may
 be **different engines** (e.g. **SQL Server ↔ PostgreSQL ↔ MySQL**). It runs on

@@ -20,7 +20,8 @@ The sidebar is grouped like a cloud console:
 - **Storage** — Volumes, File Shares.
 - **Identity** — Active Directory.
 - **AI** — Models.
-- **Data** — Databases, Migrations, Streams, Buckets, Queues.
+- **Data** — Databases, **Data Flows**, Streams, Buckets, Queues. (Data Flows is the
+  single data-movement entry — migration and replication are modes within it.)
 - **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity), Network.
 - **Observability** — Monitoring (embedded Grafana dashboards).
 
@@ -36,8 +37,9 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **Virtual Machine** (EC2) | Overview (phase/IP/resources), **VNC console**, **Network** (security groups — the firewall; reachable LAN ports follow the rules), disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
 | **Model** (Bedrock) | **Playground** (chat with the model), Overview (endpoint + API key), GPU Monitoring, YAML · create / delete |
 | **Database** (RDS) | Overview (phase/instances/storage), Connectivity (host/port/db/user + connection URI), Monitoring, YAML |
-| **Migration** (DMS) | **New Migration wizard** (source → target → task type → table picker → review), detail page with a live **Capture → Buffer → Apply** pipeline (replication lag, per-table throughput, dead-letter) · create / delete |
-| **Replication** (multi-master) | **New Replication** (two sites + tables), detail page showing **both directions**, each with lag / per-table / dead-letter · create / delete |
+| **Data Flow** (Glue/Step Functions) | A drag-and-drop **canvas**: palette of databases / topics / transform functions / buckets; connect them into replication (two-way), migration (one-way), stream (to a topic) or pipe (ETL) edges; a guided **Set up replication** wizard; a live per-edge lag/dead-letter overlay; right-click a node for **Configure** or **Peek metrics** (per-step captured / lag / per-table throughput / dead-letters). Deploys one `kind: DataFlow`. See [dataflow.md](dataflow.md) · create / delete |
+| **Migration** (DMS) | one-way DB migration — a mode of Data Flows; the standalone detail page shows a live **Capture → Buffer → Apply** pipeline (lag, per-table throughput, dead-letter) |
+| **Replication** (multi-master) | two-way / multi-master sync — a mode of Data Flows; the standalone detail page shows **both directions** with lag / per-table / dead-letter |
 | **Stream** (Kinesis) | **New Stream** (source endpoint + tables), JetStream subjects, status · create / delete |
 | **Bucket** (S3) | Objects — browse folders, **upload / download / delete** · create / delete bucket |
 | **Queue** (SQS) | Overview (messages/size/consumers/subjects), **Publish** a message, **Purge** |

@@ -40,6 +40,7 @@ The browser is never given a kubeconfig or token.
 | `GET`·`POST` | `/api/functions/{ns}/{name}/routes`·`/invoke` | List a Function's routes / invoke it (the Test tab). |
 | `POST` | `/api/migrations/discover` | DMS wizard: discover a source DB's tables. (A Migration runs continuously — Debezium + apply-sink — so there is no manual sync trigger.) |
 | `GET` | `/api/migrations\|replications/{ns}/{name}/status` | DMS observability: live apply-pipeline status (JetStream lag, per-table counts, dead-letter) the browser can't read from NATS. |
+| `POST` | `/api/dataflows/{ns}/{name}/status` | Data Flows observability: given the topology's edge list, returns per-directed-leg status (lag, in-flight, retries, dead-letters, per-table throughput). Powers the canvas edge overlay + per-node **Peek**. |
 | `*` | `/grafana/*` | Same-origin reverse proxy to in-cluster Grafana (when `GRAFANA_PROXY_TARGET` is set) for iframe embedding. |
 | `GET` | `/*` | The embedded SPA, with history-mode fallback (unknown non-API, non-asset paths → `index.html`). |
 
