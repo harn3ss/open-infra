@@ -20,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -529,12 +530,28 @@ func applyBatch(db *sql.DB, engine string, msgs []*nats.Msg) error {
 }
 
 func tryBatch(db *sql.DB, engine string, msgs []*nats.Msg) error {
+	// Parse first, then apply in a deterministic global order (table + primary key)
+	// so every concurrent sink acquires row locks in the SAME order. Sinks read
+	// different source streams, so without this they touch the same target rows in
+	// different orders and deadlock; ordering converts deadlocks into benign waits.
+	entries := make([]*applyEntry, 0, len(msgs))
+	for _, m := range msgs {
+		e, skip, _, err := parseMsg(db, engine, m)
+		if err != nil {
+			return err // fall back to per-message so the bad one is isolated
+		}
+		if skip {
+			continue
+		}
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].sortkey < entries[j].sortkey })
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	for _, m := range msgs {
-		if _, err := applyOne(tx, db, engine, m); err != nil {
+	for _, e := range entries {
+		if err := e.exec(tx, engine); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -542,51 +559,76 @@ func tryBatch(db *sql.DB, engine string, msgs []*nats.Msg) error {
 	return tx.Commit()
 }
 
+// applyEntry is a parsed, ready-to-apply change with a deterministic sort key.
+type applyEntry struct {
+	schema, table string
+	deleted       bool
+	row           map[string]any
+	mt            meta
+	sortkey       string
+}
+
+func (e *applyEntry) exec(x sqlExec, engine string) error {
+	if e.deleted {
+		return execDelete(x, engine, e.schema, e.table, e.mt, e.row)
+	}
+	return execUpsert(x, engine, e.schema, e.table, e.mt, e.row)
+}
+
 // applyOne writes one change via exec (a *sql.DB or *sql.Tx); db is used only for
 // (cached) target-table introspection.
 func applyOne(exec sqlExec, db *sql.DB, engine string, m *nats.Msg) (bool, error) {
+	e, skip, retryable, err := parseMsg(db, engine, m)
+	if err != nil {
+		return retryable, err
+	}
+	if skip {
+		return false, nil
+	}
+	ex := e.exec(exec, engine)
+	return isRetryable(ex), ex
+}
+
+// parseMsg decodes a change event into an applyEntry. Returns (entry, skip,
+// retryable, err): skip=true for tombstones / origin-echoes (loop prevention,
+// ack+drop); retryable=true when the target table isn't created yet.
+func parseMsg(db *sql.DB, engine string, m *nats.Msg) (*applyEntry, bool, bool, error) {
 	parts := strings.Split(m.Subject, ".")
 	if len(parts) < 2 {
-		return false, fmt.Errorf("subject too short: %s", m.Subject)
+		return nil, false, false, fmt.Errorf("subject too short: %s", m.Subject)
 	}
 	schema := targetSchema(engine, parts[len(parts)-2])
 	table := parts[len(parts)-1]
-
 	dec := json.NewDecoder(strings.NewReader(string(m.Data)))
 	dec.UseNumber()
 	var row map[string]any
 	if err := dec.Decode(&row); err != nil {
-		return false, fmt.Errorf("decode: %w", err)
+		return nil, false, false, fmt.Errorf("decode: %w", err)
 	}
 	if row == nil {
-		return false, nil
+		return nil, true, false, nil
 	}
 	deleted := fmt.Sprint(row["__deleted"]) == "true"
 	delete(row, "__deleted")
-
-	// Bidirectional loop prevention via an origin-marker column. Each direction's
-	// sink drops events that originated at the peer site (so a write doesn't echo
-	// back and loop), and stamps its own SITE on everything it forwards. Upsert
-	// echoes are the loop risk (Postgres emits a WAL event even for no-op updates);
-	// deletes self-terminate (deleting an absent row produces no event).
+	// Loop prevention: drop events that originated at the peer site.
 	if oc := os.Getenv("ORIGIN_COLUMN"); oc != "" {
 		if skip := os.Getenv("SKIP_ORIGIN"); skip != "" && fmt.Sprint(row[oc]) == skip {
-			return false, nil // originated at the peer — don't echo it back (ack + drop)
+			return nil, true, false, nil
 		}
-		// NOTE: the writer stamps the origin (a per-site trigger), not the sink, so
-		// the marker reflects the true last-writer for last-write-wins tiebreaking.
 	}
-
 	mt, err := getMeta(db, engine, schema, table)
 	if err != nil {
-		return true, err // target table may not be created by schema-sync yet
+		return nil, false, true, err // target table may not be created yet
 	}
-	if deleted {
-		e := execDelete(exec, engine, schema, table, mt, row)
-		return isRetryable(e), e
+	var sk strings.Builder
+	sk.WriteString(schema)
+	sk.WriteString(".")
+	sk.WriteString(table)
+	for _, pk := range mt.pk {
+		sk.WriteString("|")
+		sk.WriteString(fmt.Sprint(row[pk]))
 	}
-	e := execUpsert(exec, engine, schema, table, mt, row)
-	return isRetryable(e), e
+	return &applyEntry{schema: schema, table: table, deleted: deleted, row: row, mt: mt, sortkey: sk.String()}, false, false, nil
 }
 
 // isRetryable reports whether an apply error is transient and worth retrying
