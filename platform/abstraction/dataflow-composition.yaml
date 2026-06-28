@@ -183,7 +183,7 @@ spec:
                         initContainers:
                           - name: ensure-stream
                             image: natsio/nats-box:latest
-                            command: ["sh","-c","nats stream info {{ $stream }} >/dev/null 2>&1 || nats stream add {{ $stream }} --subjects='{{ $prefix }}.>' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults"]
+                            command: ["sh","-c","nats stream info {{ $stream }} >/dev/null 2>&1 || nats stream add {{ $stream }} --subjects='{{ $prefix }}.>' --storage=file --replicas=1 --max-bytes=512MB --discard=old --defaults"]
                             env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
                         containers:
                           - name: debezium
@@ -267,7 +267,7 @@ spec:
                         initContainers:
                           - name: ensure-stream
                             image: natsio/nats-box:latest
-                            command: ["sh","-c","nats stream info {{ $ostream }} >/dev/null 2>&1 || nats stream add {{ $ostream }} --subjects='{{ $oprefix }}.>' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults"]
+                            command: ["sh","-c","nats stream info {{ $ostream }} >/dev/null 2>&1 || nats stream add {{ $ostream }} --subjects='{{ $oprefix }}.>' --storage=file --replicas=1 --max-bytes=512MB --discard=old --defaults"]
                             env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
                         containers:
                           - name: pump
