@@ -182,10 +182,20 @@ func handleDataFlowStatus(logger *slog.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 		defer cancel()
 
+		// the apply-side consumer durable depends on the edge type (mirrors the
+		// composition): replication <name>-<s>-<d>, migration <name>-mig-<s>-<d>,
+		// pipe load <name>-load-<s>-<d>; a stream (to a topic) has no managed consumer.
 		leg := func(s, d, typ string) dataFlowDirection {
-			durable := name + "-" + s + "-" + d
-			if typ == "migration" {
+			var durable string
+			switch typ {
+			case "migration":
 				durable = name + "-mig-" + s + "-" + d
+			case "pipe":
+				durable = name + "-load-" + s + "-" + d
+			case "stream":
+				durable = ""
+			default:
+				durable = name + "-" + s + "-" + d
 			}
 			return dataFlowDirection{
 				From: s, To: d, Type: typ,
@@ -198,11 +208,11 @@ func handleDataFlowStatus(logger *slog.Logger) http.HandlerFunc {
 			if e.From == "" || e.To == "" {
 				continue
 			}
-			if e.Type == "migration" {
-				dirs = append(dirs, leg(e.From, e.To, "migration"))
-			} else {
+			if e.Type == "replication" {
 				dirs = append(dirs, leg(e.From, e.To, "replication"))
 				dirs = append(dirs, leg(e.To, e.From, "replication"))
+			} else {
+				dirs = append(dirs, leg(e.From, e.To, e.Type))
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"directions": dirs})
