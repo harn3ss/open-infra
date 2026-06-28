@@ -167,12 +167,23 @@ func runMMPrep() {
 			log.Fatalf("mm-prep exec failed: %v\n  sql: %s", err, q)
 		}
 	}
+	// "*" (or empty) = all tables: discover them, excluding our HLC helper table.
+	var tlist [][2]string
+	if s := strings.TrimSpace(tables); s == "" || s == "*" {
+		tlist, err = discoverTables(db, engine)
+		if err != nil {
+			log.Fatalf("mm-prep discover tables: %v", err)
+		}
+		tlist = dropHelperTables(tlist)
+	} else {
+		tlist = splitTables(tables)
+	}
 	switch driverName(engine) {
 	case "pgx":
 		for _, q := range pgHLCSetup(site, vcol) {
 			exec(q)
 		}
-		for _, t := range splitTables(tables) {
+		for _, t := range tlist {
 			qt := qualified(engine, t[0], t[1])
 			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s bigint`, qt, quoteIdent(engine, vcol)))
 			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s text`, qt, quoteIdent(engine, ocol)))
@@ -188,7 +199,7 @@ func runMMPrep() {
 		// version non-null. MERGE (the apply path) works with AFTER triggers.
 		exec(`IF OBJECT_ID('mm_hlc_state','U') IS NULL CREATE TABLE mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`)
 		exec(`IF NOT EXISTS(SELECT 1 FROM mm_hlc_state) INSERT INTO mm_hlc_state(id) VALUES(1)`)
-		for _, t := range splitTables(tables) {
+		for _, t := range tlist {
 			schema, table := t[0], t[1]
 			qt := qualified(engine, schema, table)
 			qv := quoteIdent(engine, vcol)
@@ -205,7 +216,8 @@ func runMMPrep() {
 				pkjoin = append(pkjoin, fmt.Sprintf("t.%s=i.%s", qp, qp))
 			}
 			if len(pkjoin) == 0 {
-				log.Fatalf("%s.%s has no primary key", schema, table)
+				log.Printf("mm-prep: skip %s.%s (no primary key)", schema, table)
+				continue
 			}
 			trg := "mm_stamp_" + strings.ReplaceAll(table, ".", "_")
 			hlc := `DECLARE @pt bigint,@lc int,@now bigint,@v bigint; SELECT @pt=pt,@lc=lc FROM mm_hlc_state WITH (UPDLOCK,HOLDLOCK) WHERE id=1; SET @now=DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME()); IF @now>@pt BEGIN SET @pt=@now; SET @lc=0; END ELSE SET @lc=@lc+1; UPDATE mm_hlc_state SET pt=@pt,lc=@lc WHERE id=1; SET @v=@pt*65536+@lc;`
@@ -220,7 +232,7 @@ func runMMPrep() {
 		// skip replication-applied writes (the @app_replication session var the sink
 		// sets). version is millisecond-clock based (<<16), comparable to the PG/SQL
 		// Server HLC versions for cross-engine LWW.
-		for _, t := range splitTables(tables) {
+		for _, t := range tlist {
 			table := t[1]
 			qtbl := quoteIdent(engine, table)
 			qv := quoteIdent(engine, vcol)
@@ -249,6 +261,19 @@ func runMMPrep() {
 		log.Fatalf("mm-prep not implemented for engine %s", engine)
 	}
 	log.Printf("mm-prep done (site=%s)", site)
+}
+
+// dropHelperTables removes open-infra's own bookkeeping tables (the HLC state)
+// from a discovered "*" list so they're never stamped or replicated.
+func dropHelperTables(in [][2]string) [][2]string {
+	var out [][2]string
+	for _, t := range in {
+		if t[1] == "mm_hlc_state" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 func splitTables(tables string) [][2]string {
@@ -924,11 +949,12 @@ func runSchemaSync() {
 	log.Printf("schema-sync %s -> %s", srcEngine, tgtEngine)
 
 	var list [][2]string
-	if strings.TrimSpace(tables) == "" {
+	if s := strings.TrimSpace(tables); s == "" || s == "*" {
 		list, err = discoverTables(src, srcEngine)
 		if err != nil {
 			log.Fatalf("discover: %v", err)
 		}
+		list = dropHelperTables(list)
 	} else {
 		for _, t := range strings.Split(tables, ",") {
 			t = strings.TrimSpace(t)
