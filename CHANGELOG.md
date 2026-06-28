@@ -6,6 +6,30 @@ the product's public contract.
 
 ## Unreleased
 
+### Data Flows — visual data-movement (`kind: DataFlow`)
+- **New `kind: DataFlow`** — one resource describing a graph of data-movement nodes
+  (databases, message **topics**, transform **functions**, object-store **buckets**) and
+  edges. Edge types: `replication` (two-way, optional `bootstrap` to seed an empty
+  member), `migration` (one-way, schema auto-create), `stream` (publish CDC to a topic),
+  and `pipe` (one-way ETL into a function/database/bucket). `tables: ["*"]` captures
+  every table. Compiles onto the existing Debezium + NATS + apply-sink engine.
+- **Drag-and-drop console canvas** (Data → Data Flows): palette of engines/topics/
+  functions/buckets, edge types inferred from what you connect, fan-out by connecting one
+  source to many targets, right-click **Configure** or **Peek metrics**, and a guided
+  **Set up replication** wizard that explains the plan and deploys a star topology.
+  Migrations and Replication are now modes within Data Flows (folded out of the sidebar).
+- **Live observability** — per-edge lag/dead-letter overlay + per-node **Peek**
+  (captured / per-table throughput / inbound backlog / retries / dead-letters), via
+  `POST /api/dataflows/{ns}/{name}/status`.
+- **apply-sink** gains `MODE=pump` (the ETL transform stage: stream → HTTP function →
+  stream). Throughput + correctness hardening surfaced by load testing: per-batch
+  transactions (one commit per fetch), deterministic `(table, PK)` apply order to avoid
+  mesh deadlocks, and a 512 MB per-stream reservation. See [docs/dataflow.md](docs/dataflow.md).
+
+### Security
+- Cleared all open Trivy image CVEs: apply-sink Go toolchain 1.22 → 1.26 (43 stdlib CVEs,
+  incl. critical) and `jackc/pgx/v5` 5.5.5 → 5.10.0 (2 critical); console-api crypto/net bumps.
+
 ### Replication console
 - **`kind: Replication` is now a first-class console page** (Data → Replication):
   list, create (both sites + tables), and a detail view showing **both directions**

@@ -52,6 +52,7 @@ CNCF projects — not a reinvention of databases or storage.
 | OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
 | DMS | DB migration + CDC (`kind: Migration`) | Debezium + apply-sink + Crossplane |
 | DMS (multi-master) | bidirectional replication (`kind: Replication`) | Debezium + apply-sink (HLC last-write-wins) |
+| Glue / DMS / Kinesis / Lambda (visual) | data-movement pipelines (`kind: DataFlow`) | drag-and-drop canvas → Debezium + NATS + apply-sink |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Redis |
@@ -114,9 +115,10 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
 
 A **web console** ships with the platform — an AWS-console-style UI over every
 resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
-File Shares, Buckets, Queues, Migrations, Streams, Active Directory, Nodes/GPUs, Monitoring)
+File Shares, Buckets, Queues, Data Flows, Streams, Active Directory, Nodes/GPUs, Monitoring)
 with per-resource detail pages and actions (object browser, model playground, the
-DMS migration wizard, create/delete). See [`docs/console.md`](docs/console.md).
+drag-and-drop **Data Flows** canvas + guided replication wizard, create/delete). See
+[`docs/console.md`](docs/console.md).
 
 See [`docs/architecture.md`](docs/architecture.md) for the full diagram and the
 public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
@@ -152,7 +154,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The ten public
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The eleven public
 abstractions are shipped and verified end-to-end:
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
@@ -180,6 +182,13 @@ abstractions are shipped and verified end-to-end:
 - **`Stream`** — Kinesis-style streaming CDC: a headless Debezium Server publishes a
   source database's row changes as real-time events onto NATS JetStream for
   event-driven consumers. See [`docs/streaming.md`](docs/streaming.md).
+- **`DataFlow`** — a visual data-movement pipeline (open-infra's "Glue + Step
+  Functions for data"): a drag-and-drop console canvas where you chain databases,
+  message topics, transform **functions**, and object-store buckets, then deploy the
+  whole topology as one resource. Replication, migration, CDC-to-topic, and ETL
+  transforms are all just edge types on the same canvas — with a guided setup wizard,
+  live per-edge lag/dead-letter overlay, and right-click **Peek** per-step metrics.
+  See [`docs/dataflow.md`](docs/dataflow.md).
 
 **Reach anything from the LAN.** Every resource takes `expose: true` to get a
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;

@@ -6,7 +6,7 @@ Server](https://debezium.io) captures a source database's changes and publishes
 them to NATS JetStream, and `apply-sink` consumes those change events and writes
 them to the target SQL database. It replaces the previous Airbyte engine.
 
-One static Go binary, three modes (selected by `MODE`):
+One static Go binary, four modes (selected by `MODE`):
 
 ### `MODE=schema-sync` (Migration init step)
 Connects to **both** source and target, introspects the source tables, and
@@ -18,7 +18,7 @@ mapping** (e.g. SQL Server `NVARCHAR(MAX)` → Postgres `text`, `DATETIME2` →
 |-----|---------|
 | `SOURCE_ENGINE` / `SOURCE_DSN` | source engine + DSN |
 | `TARGET_ENGINE` / `TARGET_DSN` | target engine + DSN |
-| `TABLES` | comma-separated `schema.table` list (empty = discover all) |
+| `TABLES` | comma-separated `schema.table` list; empty or `*` = discover all tables |
 
 ### `MODE=mm-prep` (Replication init step)
 Installs the multi-master machinery on one site: adds the version + origin columns
@@ -34,7 +34,7 @@ SQL Server an `AFTER` trigger with a `TRIGGER_NESTLEVEL` guard + HLC (no
 | `SITE` | — | short site id, stamped as the origin marker |
 | `VERSION_COLUMN` | `_mm_version` | HLC version column |
 | `ORIGIN_COLUMN` | `_mm_origin` | origin-marker column |
-| `TABLES` | — | comma-separated `schema.table` list |
+| `TABLES` | — | comma-separated `schema.table` list; `*` = all tables (PK-less tables skipped) |
 
 ### `MODE=stream` (default, long-running)
 Consumes Debezium-unwrapped JSON change events from a JetStream stream and applies
@@ -43,6 +43,12 @@ the subject's last two segments; columns and primary key are discovered by
 introspecting the target. Three upsert dialects: Postgres `ON CONFLICT`, MySQL
 `ON DUPLICATE KEY UPDATE`, SQL Server `MERGE`. Failed messages are retried
 `MAX_DELIVER` times then dead-lettered to `dlq.<subject>` (no poison loops).
+
+For throughput, each fetched batch is applied in **one transaction** (one commit
+per batch, not per row), and rows are applied in a deterministic `(table, primary
+key)` order so concurrent sinks lock rows in the same order — deadlocks/serialization
+failures are retried (not dead-lettered). On any batch error it falls back to
+per-message apply so a single bad row is isolated.
 
 | env | default | meaning |
 |-----|---------|---------|
@@ -67,3 +73,18 @@ introspecting the target. Three upsert dialects: Postgres `ON CONFLICT`, MySQL
 a Secret), so passwords are never baked into manifests.
 
 Engines: `postgres`, `mysql`/`mariadb`, `sqlserver`.
+
+### `MODE=pump` (the Transform stage of a Data Flow)
+The ETL "transform" step of a `kind: DataFlow` function node: consume change events
+from an upstream JetStream stream, **POST each event to an HTTP function**, and publish
+the returned (transformed) event to a downstream stream — preserving the
+`<schema>.<table>` tail so the next stage routes it. A `204`/empty response drops the
+event (a filter). No database connection; it only moves + transforms events.
+
+| env | default | meaning |
+|-----|---------|---------|
+| `NATS_URL` | `nats://nats:4222` | NATS server |
+| `STREAM` / `SUBJECT` | — | upstream stream + subject filter to consume |
+| `DURABLE` | `pump` | durable consumer name |
+| `FUNCTION_URL` | — | HTTP endpoint that receives an event JSON and returns the transformed one |
+| `OUTPUT_SUBJECT` | — | downstream subject prefix (the table tail is appended) |
