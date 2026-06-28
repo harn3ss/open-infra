@@ -28,6 +28,7 @@ import {
   Trash2,
   Save,
   SlidersHorizontal,
+  Activity,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -35,6 +36,13 @@ import { DetailShell } from "@/components/common/detail-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -168,6 +176,7 @@ function CanvasInner() {
   const [selNode, setSelNode] = useState<string | null>(null);
   const [selEdge, setSelEdge] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [peek, setPeek] = useState<string | null>(null);
   const [name, setName] = useState(params.name ?? "");
   const [namespace, setNamespace] = useState(params.namespace ?? "default");
   const [tables, setTables] = useState("");
@@ -391,6 +400,13 @@ function CanvasInner() {
   const nd = node?.data as NodeData | undefined;
   const edgeTypes = edge ? allowedTypes(roleOf(edge.source), roleOf(edge.target)) : [];
 
+  // ── Peek: live metrics for one node step ───────────────────────────────────
+  const peekNode = nodes.find((n) => n.id === peek);
+  const peekData = peekNode?.data as NodeData | undefined;
+  const peekName = peekData?.name ?? "";
+  const peekDirs = (statusQ.data?.directions ?? []).filter((d) => d.from === peekName);
+  const peekStream = peekDirs.find((d) => d.found);
+
   return (
     <div className="flex h-[calc(100vh-9rem)] gap-3">
       <div className="relative flex-1 rounded-md border">
@@ -435,7 +451,10 @@ function CanvasInner() {
         {menu ? (
           <>
             <div className="fixed inset-0 z-20" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
-            <div className="fixed z-30 min-w-36 overflow-hidden rounded-md border bg-popover py-1 text-sm shadow-md" style={{ left: menu.x, top: menu.y }}>
+            <div className="fixed z-30 min-w-40 overflow-hidden rounded-md border bg-popover py-1 text-sm shadow-md" style={{ left: menu.x, top: menu.y }}>
+              <button className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent" onClick={() => { setPeek(menu.id); setMenu(null); }}>
+                <Activity className="size-3.5" /> Peek metrics
+              </button>
               <button className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent" onClick={() => { setSelNode(menu.id); setSelEdge(null); setMenu(null); }}>
                 <SlidersHorizontal className="size-3.5" /> Configure properties
               </button>
@@ -568,8 +587,78 @@ function CanvasInner() {
           <Save className="size-4" /> {saving ? "Deploying…" : editing ? "Update flow" : "Deploy flow"}
         </Button>
       </div>
+
+      {/* Peek: live per-node metrics */}
+      <Dialog open={Boolean(peek)} onOpenChange={(o) => !o && setPeek(null)}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Activity className="size-4" /> {peekName}
+              {peekData ? <span className="text-xs font-normal text-muted-foreground">· {ROLE_META[peekData.role].label}</span> : null}
+            </DialogTitle>
+            <DialogDescription>Live monitoring for this step {statusQ.isFetching ? "· refreshing" : ""}</DialogDescription>
+          </DialogHeader>
+          {!editing ? (
+            <p className="text-sm text-muted-foreground">Deploy the flow to see live metrics.</p>
+          ) : !peekStream ? (
+            <p className="text-sm text-muted-foreground">No live stream for this node yet — it may still be provisioning, or it isn't a data source.</p>
+          ) : (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-3 gap-2">
+                <Metric label="Captured" value={peekStream.captured.toLocaleString()} />
+                <Metric label="Buffered size" value={formatBytes(peekStream.bytes)} />
+                <Metric label="Tables" value={String((peekStream.tables ?? []).length)} />
+              </div>
+              {peekStream.tables && peekStream.tables.length ? (
+                <div>
+                  <div className="mb-1 text-xs font-medium text-muted-foreground">Per-table throughput</div>
+                  <div className="max-h-32 space-y-0.5 overflow-y-auto">
+                    {peekStream.tables.slice(0, 8).map((t) => (
+                      <div key={t.subject} className="flex justify-between rounded bg-muted/40 px-2 py-0.5 text-xs">
+                        <code>{t.table}</code><span className="text-muted-foreground">{t.count.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <div>
+                <div className="mb-1 text-xs font-medium text-muted-foreground">Downstream consumers</div>
+                <div className="space-y-1">
+                  {peekDirs.map((d) => (
+                    <div key={`${d.from}-${d.to}-${d.type}`} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
+                      <span>→ <strong>{d.to}</strong> <span className="text-muted-foreground">({d.type})</span></span>
+                      <span className="flex gap-3">
+                        <span className={d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>lag {d.lag.toLocaleString()}</span>
+                        <span className="text-muted-foreground">in-flight {d.ackPending}</span>
+                        <span className="text-muted-foreground">retries {d.redelivered}</span>
+                        {d.deadLetter > 0 ? <span className="text-destructive">dead {d.deadLetter}</span> : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-lg font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function formatBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 function PaletteBtn({ icon: Icon, accent, label, onClick }: { icon: LucideIcon; accent: string; label: string; onClick: () => void }) {
