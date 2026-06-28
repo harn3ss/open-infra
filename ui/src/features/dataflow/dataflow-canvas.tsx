@@ -12,13 +12,14 @@ import {
   addEdge,
   Handle,
   Position,
+  ConnectionMode,
   type Node,
   type Edge,
   type Connection,
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Database, Plus, Trash2, Save } from "lucide-react";
+import { Database, Plus, Trash2, Save, SlidersHorizontal } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -97,6 +98,7 @@ function CanvasInner() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge<EdgeData>>([]);
   const [selNode, setSelNode] = useState<string | null>(null);
   const [selEdge, setSelEdge] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [name, setName] = useState(params.name ?? "");
   const [namespace, setNamespace] = useState(params.namespace ?? "default");
   const [tables, setTables] = useState("");
@@ -243,6 +245,11 @@ function CanvasInner() {
       setSelEdge(null);
     }
   }
+  function deleteNode(id: string) {
+    setNodes((ns) => ns.filter((n) => n.id !== id));
+    setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
+    if (selNode === id) setSelNode(null);
+  }
 
   async function deploy() {
     setErr(null);
@@ -338,16 +345,40 @@ function CanvasInner() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          connectionMode={ConnectionMode.Loose}
           nodeTypes={RFNODES}
-          onNodeClick={(_, n) => { setSelNode(n.id); setSelEdge(null); }}
-          onEdgeClick={(_, e) => { setSelEdge(e.id); setSelNode(null); }}
-          onPaneClick={() => { setSelNode(null); setSelEdge(null); }}
+          onNodeClick={(_, n) => { setSelNode(n.id); setSelEdge(null); setMenu(null); }}
+          onNodeContextMenu={(e, n) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, id: n.id }); }}
+          onEdgeClick={(_, e) => { setSelEdge(e.id); setSelNode(null); setMenu(null); }}
+          onPaneClick={() => { setSelNode(null); setSelEdge(null); setMenu(null); }}
           fitView
         >
           <Background />
           <Controls />
           <MiniMap pannable zoomable />
         </ReactFlow>
+        {menu ? (
+          <>
+            <div className="fixed inset-0 z-20" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null); }} />
+            <div
+              className="fixed z-30 min-w-36 overflow-hidden rounded-md border bg-popover py-1 text-sm shadow-md"
+              style={{ left: menu.x, top: menu.y }}
+            >
+              <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-accent"
+                onClick={() => { setSelNode(menu.id); setSelEdge(null); setMenu(null); }}
+              >
+                <SlidersHorizontal className="size-3.5" /> Configure properties
+              </button>
+              <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-destructive hover:bg-accent"
+                onClick={() => { deleteNode(menu.id); setMenu(null); }}
+              >
+                <Trash2 className="size-3.5" /> Delete node
+              </button>
+            </div>
+          </>
+        ) : null}
       </div>
 
       {/* inspector */}
