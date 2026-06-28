@@ -32,7 +32,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2 — build the Go BFF with the SPA embedded.
 # ---------------------------------------------------------------------------
-FROM golang:1.25-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 WORKDIR /src
 
 # Module graph first for layer caching (re-downloads only when go.mod/sum change).
