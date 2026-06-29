@@ -559,6 +559,9 @@ spec:
                         owner: app
                         postInitApplicationSQL:
                           - CREATE EXTENSION IF NOT EXISTS pg_stat_statements
+                          # let the app user read ALL query text in Peek (else other roles'
+                          # queries show as "<insufficient privilege>"). Safe: it's our own DB.
+                          - GRANT pg_read_all_stats TO app
                           {{- if $spec.database.vector }}
                           # pgvector: vector similarity search (RAG with Models).
                           - CREATE EXTENSION IF NOT EXISTS vector
