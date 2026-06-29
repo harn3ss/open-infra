@@ -98,7 +98,7 @@ export function ManagedDatabaseDetailPage() {
       const cur = await k8sGet<Application>(p);
       const spec = (cur.spec ?? {}) as Record<string, unknown>;
       const database = { ...((spec.database as Record<string, unknown>) ?? {}), stopped };
-      return k8sReplace<Application>(p, { ...cur, spec: { ...spec, database } } as Application);
+      return k8sReplace<Application>(p, { ...cur, spec: { ...spec, database } } as unknown as Application);
     },
     onSuccess: () => void refetch(),
   });
