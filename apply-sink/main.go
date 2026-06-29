@@ -318,6 +318,11 @@ func runStream() {
 	subject := env("SUBJECT", "cdc.>")
 	durable := env("DURABLE", "gosink")
 	maxDeliver := atoiEnv("MAX_DELIVER", 5)
+	// "transient" errors (e.g. target table not created yet) are retried with a
+	// pause rather than dead-lettered immediately — but NOT forever: a condition
+	// that never resolves (a table that will never exist) would otherwise churn the
+	// consumer and never clear. Give real transients time (paced retries), then park.
+	transientMax := atoiEnv("TRANSIENT_MAX_DELIVER", 60)
 
 	if dsn == "" {
 		log.Fatal("TARGET_DSN is required")
@@ -374,16 +379,23 @@ func runStream() {
 				_ = m.Ack()
 				continue
 			}
-			if retry {
-				// transient (e.g. target table not created by schema-sync yet) —
-				// retry indefinitely, never dead-letter, so we don't drop good rows.
-				log.Printf("retry subj=%s: %v", m.Subject, err)
-				_ = m.Nak()
-				continue
-			}
 			nd := 1
 			if md, e := m.Metadata(); e == nil {
 				nd = int(md.NumDelivered)
+			}
+			if retry {
+				// transient (e.g. target table not created by schema-sync yet): retry
+				// with a pause so a real transient resolves — but cap it so a condition
+				// that never resolves is parked instead of churning the consumer forever.
+				if nd >= transientMax {
+					log.Printf("DEAD-LETTER subj=%s: transient unresolved after %d attempts: %v", m.Subject, nd, err)
+					_, _ = js.Publish("dlq."+m.Subject, m.Data)
+					_ = m.Term()
+				} else {
+					log.Printf("retry (attempt %d) subj=%s: %v", nd, m.Subject, err)
+					_ = m.NakWithDelay(3 * time.Second)
+				}
+				continue
 			}
 			if nd >= maxDeliver {
 				log.Printf("DEAD-LETTER subj=%s after %d attempts: %v", m.Subject, nd, err)
