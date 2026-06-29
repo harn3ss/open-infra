@@ -72,6 +72,10 @@ spec:
                     # workstations can reach it directly. Default false = in-cluster
                     # only (apps connect via the injected URL; admins port-forward).
                     expose: { type: boolean, default: false }
+                    # Stop the database to save resources while keeping its data (like
+                    # RDS stop/start). true => Postgres hibernates (CNPG), MySQL/Mongo
+                    # scale to 0; the PVC(s) are retained. Set back to false to start it.
+                    stopped: { type: boolean, default: false }
                 storage:
                   type: object
                   properties:
