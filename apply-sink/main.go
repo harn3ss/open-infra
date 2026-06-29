@@ -867,11 +867,27 @@ func qualified(engine, schema, table string) string {
 }
 
 func presentCols(mt meta, row map[string]any) []string {
+	ph := env("UNAVAILABLE_PLACEHOLDER", "__debezium_unavailable_value")
 	var cols []string
 	for _, c := range mt.cols {
-		if _, ok := row[c]; ok {
-			cols = append(cols, c)
+		v, ok := row[c]
+		if !ok {
+			continue
 		}
+		// Skip Debezium's unavailable-value sentinel. An unchanged externally-stored
+		// (TOASTed) Postgres column under REPLICA IDENTITY DEFAULT is not in the WAL and
+		// arrives as this placeholder; writing it would CLOBBER the target's real value
+		// with the literal string. Omitting the column leaves the existing value intact —
+		// which is exactly its meaning: unchanged. (Tunable/disable via UNAVAILABLE_PLACEHOLDER.)
+		if ph != "" {
+			if s, isStr := v.(string); isStr && s == ph {
+				continue
+			}
+			if b, isB := v.([]byte); isB && string(b) == ph {
+				continue
+			}
+		}
+		cols = append(cols, c)
 	}
 	return cols
 }
