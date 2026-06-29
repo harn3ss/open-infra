@@ -101,6 +101,10 @@ spec:
                   description: "Tables moved on every edge of this flow (e.g. [\"public.orders\"], or [\"*\"] for all). Scope is per-flow; per-edge table subsets are not yet supported."
                 versionColumn: { type: string, default: "_mm_version" }
                 originColumn: { type: string, default: "_mm_origin" }
+                autoSyncTables:
+                  type: boolean
+                  default: false
+                  description: "Multi-master only: automatically keep the table SET in sync across all members. A table created on ANY member is auto-created on the others (cross-engine) and made multi-master-ready, with no spec edit. Implies capturing all tables."
             status:
               type: object
               properties:
