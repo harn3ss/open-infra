@@ -283,7 +283,7 @@ spec:
             {{-     if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
             {{-       $envk := regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
             {{-       $mdsn := replace "${PW}" (printf "${PW_%s}" $envk) (index $dsn $n.name) }}
-            {{-       $members = append $members (dict "name" $n.name "engine" $n.engine "dsn" $mdsn "site" $n.name) }}
+            {{-       $members = append $members (dict "name" $n.name "engine" $n.engine "dsn" $mdsn "site" $n.name "schema" (index $sch $n.name)) }}
             {{-     end }}
             {{-   end }}
             ---

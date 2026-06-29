@@ -339,6 +339,7 @@ type reconcileMember struct {
 	Engine string `json:"engine"`
 	DSN    string `json:"dsn"`
 	Site   string `json:"site"`
+	Schema string `json:"schema"` // the node's configured schema (public / "" / dbo) — where the sink reads/writes
 	db     *sql.DB
 }
 
@@ -391,6 +392,12 @@ func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped, noPK 
 		}
 		hm := map[string]string{}
 		for _, t := range dropHelperTables(tl) {
+			// Confine to the member's configured home schema. Postgres/SQL Server expose
+			// multiple schemas, so without this we'd pick up cross-engine debris or other
+			// schemas; MySQL/MariaDB are database-scoped already (schema = the database).
+			if d := driverName(m.Engine); (d == "pgx" || d == "sqlserver") && m.Schema != "" && t[0] != m.Schema {
+				continue
+			}
 			hm[t[1]] = t[0]
 			union[t[1]] = true
 		}
@@ -427,13 +434,16 @@ func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped, noPK 
 				log.Printf("reconcile: skipping table %q — no primary key (multi-master requires one)", tbl)
 				break
 			}
-			ts := targetSchema(m.Engine, srcSchema)
-			if err := createTargetTable(m.db, m.Engine, ts, tbl, cols, pk); err != nil {
+			// Create in the TARGET node's configured schema — the same schema the sink and
+			// Debezium use — NOT a mapping of the source's schema (mapping placed MySQL's
+			// 'app' / SQL Server's 'dbo' onto Postgres instead of 'public', so the sink
+			// couldn't find the table).
+			if err := createTargetTable(m.db, m.Engine, m.Schema, tbl, cols, pk); err != nil {
 				log.Printf("reconcile: create %s on %s: %v", tbl, m.Name, err)
 				continue
 			}
 			log.Printf("reconcile: auto-created table %q on %s (from %s, %d cols)", tbl, m.Name, src.Name, len(cols))
-			have[m.Name][tbl] = ts
+			have[m.Name][tbl] = m.Schema
 			delete(prepped, m.Name+"|"+tbl) // force mm-prep of the new table
 		}
 	}
