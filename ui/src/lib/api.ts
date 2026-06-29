@@ -333,17 +333,14 @@ export interface DbStats {
   replication: { slot: string; active: boolean; lagBytes: number }[] | null;
   note?: string;
 }
-export interface DbStatsReq {
-  engine: string;
-  host: string;
-  port: number;
-  database: string;
-  username: string;
-  ssl?: boolean;
-  secret: { namespace: string; name: string; key: string };
-}
-export function getDbStats(req: DbStatsReq): Promise<DbStats> {
-  return request<DbStats>("/db-stats", { method: "POST", body: JSON.stringify(req) });
+// Resolved server-side from the named DataFlow node (host + secret come from the
+// resource, namespace-scoped) — the client passes only a reference, never a host
+// or secret.
+export function getDbStats(namespace: string, name: string, node: string): Promise<DbStats> {
+  return request<DbStats>("/db-stats", {
+    method: "POST",
+    body: JSON.stringify({ namespace, name, node }),
+  });
 }
 /** Per-site (per-direction) pipeline status for a bidirectional Replication. */
 export function getReplicationStatus(

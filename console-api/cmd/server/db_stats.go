@@ -23,18 +23,47 @@ import (
 // timeout), and runs a small per-engine stats bundle. Issue #56: top queries,
 // connections, replication-slot lag. Every sub-query degrades gracefully.
 
+// dbStatsTarget references a database NODE in a deployed DataFlow. The server
+// resolves the node's host + credential Secret FROM the resource itself, scoped to
+// the DataFlow's namespace. The client may NOT pass a free-form host or secret —
+// doing so was an SSRF + cross-namespace secret-exfiltration hole (read any secret,
+// ship it to any host).
+type dbStatsTarget struct {
+	Namespace string `json:"namespace"` // the DataFlow's namespace (== the secret's namespace)
+	Name      string `json:"name"`      // DataFlow name
+	Node      string `json:"node"`      // database node within it
+}
+
+// dbStatsReq is the resolved connection (built server-side from the CR, never from
+// the client).
 type dbStatsReq struct {
-	Engine   string `json:"engine"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	Username string `json:"username"`
-	SSL      bool   `json:"ssl"`
-	Secret   struct {
-		Namespace string `json:"namespace"`
-		Name      string `json:"name"`
-		Key       string `json:"key"`
-	} `json:"secret"`
+	Engine   string
+	Host     string
+	Port     int
+	Database string
+	Username string
+	SSL      bool
+}
+
+// dfResource is the minimal DataFlow CR shape needed to resolve a node.
+type dfResource struct {
+	Spec struct {
+		Nodes []struct {
+			Name              string `json:"name"`
+			Role              string `json:"role"`
+			Engine            string `json:"engine"`
+			Host              string `json:"host"`
+			Port              int    `json:"port"`
+			Database          string `json:"database"`
+			Username          string `json:"username"`
+			Schema            string `json:"schema"`
+			SSL               bool   `json:"ssl"`
+			PasswordSecretRef struct {
+				Name string `json:"name"`
+				Key  string `json:"key"`
+			} `json:"passwordSecretRef"`
+		} `json:"nodes"`
+	} `json:"spec"`
 }
 
 type connStats struct {
@@ -63,36 +92,77 @@ type dbStats struct {
 	Note        string      `json:"note,omitempty"`
 }
 
-func handleDBStats(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleDBStats(cs kubernetes.Interface, host *url.URL, transport http.RoundTripper, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var t dbStatsTarget
+		if err := json.NewDecoder(r.Body).Decode(&t); err != nil || t.Namespace == "" || t.Name == "" || t.Node == "" {
+			writeError(w, http.StatusBadRequest, "namespace, name (data flow) and node are required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+
+		// Resolve the connection FROM the DataFlow CR (read with the SA's own RBAC),
+		// not from the request — so host + secret are whatever the resource declares,
+		// scoped to its namespace. No client-controlled host or secret.
+		u := *host
+		u.Path = fmt.Sprintf("/apis/openinfra.dev/v1/namespaces/%s/dataflows/%s", t.Namespace, t.Name)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		resp, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "could not read the data flow")
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			writeError(w, http.StatusNotFound, "data flow not found")
+			return
+		}
+		var df dfResource
+		if err := json.NewDecoder(resp.Body).Decode(&df); err != nil {
+			writeError(w, http.StatusBadGateway, "could not parse the data flow")
+			return
+		}
+
 		var in dbStatsReq
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Host == "" || in.Database == "" {
-			writeError(w, http.StatusBadRequest, "database connection details required")
+		var secretName, key string
+		found := false
+		for _, n := range df.Spec.Nodes {
+			role := n.Role
+			if role == "" {
+				role = "database"
+			}
+			if n.Name == t.Node && role == "database" {
+				in = dbStatsReq{Engine: n.Engine, Host: n.Host, Port: n.Port, Database: n.Database, Username: n.Username, SSL: n.SSL}
+				secretName = n.PasswordSecretRef.Name
+				key = n.PasswordSecretRef.Key
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(w, http.StatusBadRequest, "no such database node in this data flow")
 			return
 		}
-		if in.Secret.Name == "" || in.Secret.Namespace == "" {
-			writeError(w, http.StatusBadRequest, "credential secret reference required")
-			return
-		}
-		key := in.Secret.Key
 		if key == "" {
 			key = "password"
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
+		if secretName == "" {
+			writeError(w, http.StatusBadRequest, "node has no credential secret")
+			return
+		}
 
-		sec, err := cs.CoreV1().Secrets(in.Secret.Namespace).Get(ctx, in.Secret.Name, metav1.GetOptions{})
+		// The secret is read ONLY from the DataFlow's own namespace.
+		sec, err := cs.CoreV1().Secrets(t.Namespace).Get(ctx, secretName, metav1.GetOptions{})
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "could not read credential secret")
 			return
 		}
 		pw := string(sec.Data[key])
-		// A DataFlow node's host is often a bare Service name (e.g. "postgres"),
-		// which only resolves inside that Service's namespace. The BFF runs elsewhere,
-		// so qualify a dotless hostname with the flow's namespace. IPs and FQDNs
-		// (which contain dots) are left untouched.
-		if !strings.Contains(in.Host, ".") && in.Secret.Namespace != "" {
-			in.Host = in.Host + "." + in.Secret.Namespace + ".svc.cluster.local"
+		// Bare Service host (e.g. "postgres") resolves only inside its namespace; the
+		// BFF runs elsewhere, so qualify a dotless host with the DataFlow's namespace.
+		if !strings.Contains(in.Host, ".") {
+			in.Host = in.Host + "." + t.Namespace + ".svc.cluster.local"
 		}
 		if in.Port == 0 {
 			switch in.Engine {
