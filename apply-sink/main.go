@@ -461,7 +461,12 @@ func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped, noPK 
 func dropHelperTables(in [][2]string) [][2]string {
 	var out [][2]string
 	for _, t := range in {
-		if t[1] == "mm_hlc_state" {
+		schema, table := t[0], t[1]
+		// open-infra's own HLC state, and engine system/CDC artifacts that discovery may
+		// still surface (SQL Server's cdc/sys schemas hold the change tables + metadata,
+		// and the systranschemas marker). None of these are user data.
+		if table == "mm_hlc_state" || table == "systranschemas" ||
+			schema == "cdc" || schema == "sys" {
 			continue
 		}
 		out = append(out, t)
@@ -1435,8 +1440,11 @@ func discoverTables(db *sql.DB, engine string) ([][2]string, error) {
 			out = append(out, [2]string{s, t})
 		}
 	case "sqlserver":
+		// Exclude CDC + system schemas. Once CDC is enabled, the cdc schema fills with
+		// system tables (change_tables, lsn_time_mapping, the per-table *_CT change tables);
+		// these must never be treated as user data to replicate.
 		rows, err := db.Query(`SELECT table_schema, table_name FROM information_schema.tables
-			WHERE table_type='BASE TABLE'`)
+			WHERE table_type='BASE TABLE' AND table_schema NOT IN ('cdc','sys')`)
 		if err != nil {
 			return nil, err
 		}
