@@ -44,6 +44,10 @@ spec:
             {{- $edges := $spec.edges }}
             {{- $tables := $spec.tables | default (list) }}
             {{- $allTables := or (eq (len $tables) 0) (has "*" $tables) }}
+            {{- /* autoSyncTables: keep the table SET in sync across all members automatically.
+                   Implies capture-all CDC so newly-created tables are picked up without a spec edit. */}}
+            {{- $autoSync := $spec.autoSyncTables | default false }}
+            {{- if $autoSync }}{{ $allTables = true }}{{- end }}
             {{- $vcol := $spec.versionColumn | default "_mm_version" }}
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
             {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
@@ -271,6 +275,55 @@ spec:
                               - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
                               - { name: TABLES, value: "{{ index $inc $node }}" }
             {{- end }}
+            {{- end }}
+            {{- /* ============ table-sync reconciler: auto-create + mm-prep tables added on ANY member ============ */}}
+            {{- if and $autoSync (gt (len $replSet) 0) }}
+            {{-   $members := list }}
+            {{-   range $n := $nodes }}
+            {{-     if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
+            {{-       $envk := regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
+            {{-       $mdsn := replace "${PW}" (printf "${PW_%s}" $envk) (index $dsn $n.name) }}
+            {{-       $members = append $members (dict "name" $n.name "engine" $n.engine "dsn" $mdsn "site" $n.name) }}
+            {{-     end }}
+            {{-   end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: reconciler
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-reconciler
+                    namespace: {{ $ns }}
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-flow-reconciler } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-reconciler } }
+                      spec:
+                        containers:
+                          - name: reconciler
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: reconcile }
+                              - { name: MEMBERS, value: {{ toJson $members | quote }} }
+                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
+                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: RECONCILE_INTERVAL, value: "20" }
+                              {{- range $n := $nodes }}
+                              {{-   if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
+                              - name: PW_{{ regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $n.name }}, key: {{ index $seck $n.name }} } }
+                              {{-   end }}
+                              {{- end }}
+                            resources:
+                              requests: { cpu: 50m, memory: 128Mi }
+                              limits: { cpu: 500m, memory: 512Mi }
             {{- end }}
             {{- /* ============ function nodes: the Transform stage (pump: input stream -> function HTTP -> output stream) ============ */}}
             {{- range $n := $nodes }}

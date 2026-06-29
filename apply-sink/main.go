@@ -148,6 +148,8 @@ func main() {
 		runMMPrep()
 	case "pump":
 		runPump()
+	case "reconcile":
+		runReconcile()
 	default:
 		runStream()
 	}
@@ -174,11 +176,6 @@ func runMMPrep() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	exec := func(q string) {
-		if _, err := db.Exec(q); err != nil {
-			log.Fatalf("mm-prep exec failed: %v\n  sql: %s", err, q)
-		}
-	}
 	// "*" (or empty) = all tables: discover them, excluding our HLC helper table.
 	var tlist [][2]string
 	if s := strings.TrimSpace(tables); s == "" || s == "*" {
@@ -190,101 +187,250 @@ func runMMPrep() {
 	} else {
 		tlist = splitTables(tables)
 	}
+	if err := mmPrepSetup(db, engine, site, vcol); err != nil {
+		log.Fatalf("mm-prep setup: %v", err)
+	}
+	for _, t := range tlist {
+		if err := mmPrepTable(db, engine, site, vcol, ocol, t[0], t[1]); err != nil {
+			log.Fatalf("mm-prep %s.%s: %v", t[0], t[1], err)
+		}
+		log.Printf("mm-prep: prepared %s.%s (site=%s)", t[0], t[1], site)
+	}
+	log.Printf("mm-prep done (site=%s)", site)
+}
+
+// mmPrepSetup installs the per-database HLC scaffolding (run once per member, not per
+// table). Shared by the mm-prep Job and the live table-sync reconciler.
+func mmPrepSetup(db *sql.DB, engine, site, vcol string) error {
 	switch driverName(engine) {
 	case "pgx":
 		for _, q := range pgHLCSetup(site, vcol) {
-			exec(q)
-		}
-		for _, t := range tlist {
-			qt := qualified(engine, t[0], t[1])
-			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s bigint`, qt, quoteIdent(engine, vcol)))
-			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s text`, qt, quoteIdent(engine, ocol)))
-			// Backfill pre-existing rows so they carry a real version+origin. Left NULL, the
-			// LWW guard "t.v < EXCLUDED.v" is NULL (never true) for a NULL local version, so a
-			// pre-mm-prep row could NEVER be overwritten by a remote write and would diverge
-			// permanently. SQL Server avoids this with a column DEFAULT; Postgres/MySQL have
-			// none, so we stamp explicitly. WHERE ... IS NULL keeps it idempotent on re-run.
-			exec(fmt.Sprintf(`UPDATE %s SET %s = mm_hlc_tick(), %s = '%s' WHERE %s IS NULL`,
-				qt, quoteIdent(engine, vcol), quoteIdent(engine, ocol), site, quoteIdent(engine, vcol)))
-			exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS mm_stamp_trg ON %s`, qt))
-			exec(fmt.Sprintf(`CREATE TRIGGER mm_stamp_trg BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION mm_stamp()`, qt))
-			log.Printf("mm-prep: prepared %s.%s (site=%s)", t[0], t[1], site)
+			if _, err := db.Exec(q); err != nil {
+				return err
+			}
 		}
 	case "sqlserver":
-		// SQL Server has no BEFORE-row triggers, so stamping uses an AFTER trigger
-		// with a TRIGGER_NESTLEVEL recursion guard. Native writes get an HLC
-		// (version, origin); replication-applied writes (session flag) are skipped
-		// but advance the local HLC (observe). A DEFAULT keeps the pre-trigger
-		// version non-null. MERGE (the apply path) works with AFTER triggers.
-		exec(`IF OBJECT_ID('mm_hlc_state','U') IS NULL CREATE TABLE mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`)
-		exec(`IF NOT EXISTS(SELECT 1 FROM mm_hlc_state) INSERT INTO mm_hlc_state(id) VALUES(1)`)
-		for _, t := range tlist {
-			schema, table := t[0], t[1]
-			qt := qualified(engine, schema, table)
-			qv := quoteIdent(engine, vcol)
-			qo := quoteIdent(engine, ocol)
-			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s bigint DEFAULT (DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME())*65536)`, schema, table, vcol, qt, qv))
-			exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s nvarchar(16) DEFAULT N'%s'`, schema, table, ocol, qt, qo, site))
-			m, ierr := introspectSqlserver(db, schema, table)
-			if ierr != nil {
-				log.Fatalf("mm-prep introspect %s.%s: %v", schema, table, ierr)
+		for _, q := range []string{
+			`IF OBJECT_ID('mm_hlc_state','U') IS NULL CREATE TABLE mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`,
+			`IF NOT EXISTS(SELECT 1 FROM mm_hlc_state) INSERT INTO mm_hlc_state(id) VALUES(1)`,
+		} {
+			if _, err := db.Exec(q); err != nil {
+				return err
 			}
-			var pkjoin []string
-			for _, p := range m.pk {
-				qp := quoteIdent(engine, p)
-				pkjoin = append(pkjoin, fmt.Sprintf("t.%s=i.%s", qp, qp))
-			}
-			if len(pkjoin) == 0 {
-				log.Printf("mm-prep: skip %s.%s (no primary key)", schema, table)
-				continue
-			}
-			trg := "mm_stamp_" + strings.ReplaceAll(table, ".", "_")
-			hlc := `DECLARE @pt bigint,@lc int,@now bigint,@v bigint; SELECT @pt=pt,@lc=lc FROM mm_hlc_state WITH (UPDLOCK,HOLDLOCK) WHERE id=1; SET @now=DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME()); IF @now>@pt BEGIN SET @pt=@now; SET @lc=0; END ELSE SET @lc=@lc+1; UPDATE mm_hlc_state SET pt=@pt,lc=@lc WHERE id=1; SET @v=@pt*65536+@lc;`
-			obs := fmt.Sprintf(`DECLARE @rmax bigint=(SELECT MAX(%s) FROM inserted); UPDATE mm_hlc_state SET pt=CASE WHEN @rmax/65536>pt THEN @rmax/65536 ELSE pt END WHERE id=1;`, qv)
-			body := fmt.Sprintf(`CREATE OR ALTER TRIGGER %s ON %s AFTER INSERT, UPDATE AS BEGIN SET NOCOUNT ON; IF TRIGGER_NESTLEVEL(OBJECT_ID(N'%s')) > 1 RETURN; IF SESSION_CONTEXT(N'app_replication')=N'on' BEGIN %s RETURN; END %s UPDATE t SET %s=@v, %s=N'%s' FROM %s t JOIN inserted i ON %s; END`,
-				trg, qt, trg, obs, hlc, qv, qo, site, qt, strings.Join(pkjoin, " AND "))
-			exec(body)
-			log.Printf("mm-prep: prepared %s.%s + AFTER stamp trigger (site=%s)", schema, table, site)
 		}
 	case "mysql":
-		// MySQL has BEFORE-row triggers. Stamp (version, origin) on native writes;
-		// skip replication-applied writes (the @app_replication session var the sink
-		// sets). version is millisecond-clock based (<<16), comparable to the PG/SQL
-		// Server HLC versions for cross-engine LWW.
-		for _, t := range tlist {
-			table := t[1]
-			qtbl := quoteIdent(engine, table)
-			qv := quoteIdent(engine, vcol)
-			qo := quoteIdent(engine, ocol)
-			ensureCol := func(col, typ string) {
-				var n int
-				if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, col).Scan(&n); err != nil {
-					log.Fatalf("mm-prep check col %s: %v", col, err)
-				}
-				if n == 0 {
-					exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", qtbl, quoteIdent(engine, col), typ))
-				}
+		// no shared scaffolding (clock-based stamping, no HLC state table)
+	default:
+		return fmt.Errorf("mm-prep not implemented for engine %s", engine)
+	}
+	return nil
+}
+
+// mmPrepTable makes ONE table multi-master-ready: version/origin columns, a per-site
+// stamping trigger, and a backfill of pre-existing rows so they aren't NULL-versioned
+// (a NULL local version is never < an incoming version, so the row would freeze under
+// LWW and diverge). Idempotent. Shared by the mm-prep Job and the reconciler.
+func mmPrepTable(db *sql.DB, engine, site, vcol, ocol, schema, table string) error {
+	exec := func(q string) error {
+		if _, err := db.Exec(q); err != nil {
+			return fmt.Errorf("%w\n  sql: %s", err, q)
+		}
+		return nil
+	}
+	switch driverName(engine) {
+	case "pgx":
+		qt := qualified(engine, schema, table)
+		for _, q := range []string{
+			fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s bigint`, qt, quoteIdent(engine, vcol)),
+			fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s text`, qt, quoteIdent(engine, ocol)),
+			fmt.Sprintf(`UPDATE %s SET %s = mm_hlc_tick(), %s = '%s' WHERE %s IS NULL`,
+				qt, quoteIdent(engine, vcol), quoteIdent(engine, ocol), site, quoteIdent(engine, vcol)),
+			fmt.Sprintf(`DROP TRIGGER IF EXISTS mm_stamp_trg ON %s`, qt),
+			fmt.Sprintf(`CREATE TRIGGER mm_stamp_trg BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION mm_stamp()`, qt),
+		} {
+			if err := exec(q); err != nil {
+				return err
 			}
-			ensureCol(vcol, "bigint")
-			ensureCol(ocol, "varchar(16)")
-			// Backfill pre-existing rows so they aren't NULL-versioned (see the Postgres note):
-			// a NULL local version is never < an incoming version, so the row would freeze and
-			// diverge. Stamp existing NULLs before the triggers exist; idempotent on re-run.
-			exec(fmt.Sprintf("UPDATE %s SET %s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, %s = '%s' WHERE %s IS NULL",
-				qtbl, qv, qo, site, qv))
-			stamp := fmt.Sprintf("SET NEW.%s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, NEW.%s = '%s'", qv, qo, site)
-			for _, ev := range []string{"INSERT", "UPDATE"} {
-				trg := quoteIdent(engine, fmt.Sprintf("mm_stamp_%s_%s", table, strings.ToLower(ev[:1])))
-				exec(fmt.Sprintf("DROP TRIGGER IF EXISTS %s", trg))
-				exec(fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s FOR EACH ROW BEGIN IF @app_replication IS NULL THEN %s; END IF; END",
-					trg, ev, qtbl, stamp))
+		}
+	case "sqlserver":
+		// AFTER trigger (no BEFORE-row in SQL Server) with a recursion guard; column
+		// DEFAULTs keep pre-trigger rows non-null.
+		qt := qualified(engine, schema, table)
+		qv := quoteIdent(engine, vcol)
+		qo := quoteIdent(engine, ocol)
+		if err := exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s bigint DEFAULT (DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME())*65536)`, schema, table, vcol, qt, qv)); err != nil {
+			return err
+		}
+		if err := exec(fmt.Sprintf(`IF COL_LENGTH('%s.%s','%s') IS NULL ALTER TABLE %s ADD %s nvarchar(16) DEFAULT N'%s'`, schema, table, ocol, qt, qo, site)); err != nil {
+			return err
+		}
+		m, ierr := introspectSqlserver(db, schema, table)
+		if ierr != nil {
+			return ierr
+		}
+		var pkjoin []string
+		for _, p := range m.pk {
+			qp := quoteIdent(engine, p)
+			pkjoin = append(pkjoin, fmt.Sprintf("t.%s=i.%s", qp, qp))
+		}
+		if len(pkjoin) == 0 {
+			return nil // no primary key: can't stamp deterministically; skip
+		}
+		trg := "mm_stamp_" + strings.ReplaceAll(table, ".", "_")
+		hlc := `DECLARE @pt bigint,@lc int,@now bigint,@v bigint; SELECT @pt=pt,@lc=lc FROM mm_hlc_state WITH (UPDLOCK,HOLDLOCK) WHERE id=1; SET @now=DATEDIFF_BIG(MILLISECOND,'19700101',SYSUTCDATETIME()); IF @now>@pt BEGIN SET @pt=@now; SET @lc=0; END ELSE SET @lc=@lc+1; UPDATE mm_hlc_state SET pt=@pt,lc=@lc WHERE id=1; SET @v=@pt*65536+@lc;`
+		obs := fmt.Sprintf(`DECLARE @rmax bigint=(SELECT MAX(%s) FROM inserted); UPDATE mm_hlc_state SET pt=CASE WHEN @rmax/65536>pt THEN @rmax/65536 ELSE pt END WHERE id=1;`, qv)
+		body := fmt.Sprintf(`CREATE OR ALTER TRIGGER %s ON %s AFTER INSERT, UPDATE AS BEGIN SET NOCOUNT ON; IF TRIGGER_NESTLEVEL(OBJECT_ID(N'%s')) > 1 RETURN; IF SESSION_CONTEXT(N'app_replication')=N'on' BEGIN %s RETURN; END %s UPDATE t SET %s=@v, %s=N'%s' FROM %s t JOIN inserted i ON %s; END`,
+			trg, qt, trg, obs, hlc, qv, qo, site, qt, strings.Join(pkjoin, " AND "))
+		return exec(body)
+	case "mysql":
+		qtbl := quoteIdent(engine, table)
+		qv := quoteIdent(engine, vcol)
+		qo := quoteIdent(engine, ocol)
+		ensureCol := func(col, typ string) error {
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, col).Scan(&n); err != nil {
+				return err
 			}
-			log.Printf("mm-prep: prepared %s + BEFORE stamp triggers (site=%s)", table, site)
+			if n == 0 {
+				return exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", qtbl, quoteIdent(engine, col), typ))
+			}
+			return nil
+		}
+		if err := ensureCol(vcol, "bigint"); err != nil {
+			return err
+		}
+		if err := ensureCol(ocol, "varchar(16)"); err != nil {
+			return err
+		}
+		if err := exec(fmt.Sprintf("UPDATE %s SET %s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, %s = '%s' WHERE %s IS NULL",
+			qtbl, qv, qo, site, qv)); err != nil {
+			return err
+		}
+		stamp := fmt.Sprintf("SET NEW.%s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, NEW.%s = '%s'", qv, qo, site)
+		for _, ev := range []string{"INSERT", "UPDATE"} {
+			trg := quoteIdent(engine, fmt.Sprintf("mm_stamp_%s_%s", table, strings.ToLower(ev[:1])))
+			if err := exec(fmt.Sprintf("DROP TRIGGER IF EXISTS %s", trg)); err != nil {
+				return err
+			}
+			if err := exec(fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s FOR EACH ROW BEGIN IF @app_replication IS NULL THEN %s; END IF; END",
+				trg, ev, qtbl, stamp)); err != nil {
+				return err
+			}
 		}
 	default:
-		log.Fatalf("mm-prep not implemented for engine %s", engine)
+		return fmt.Errorf("mm-prep not implemented for engine %s", engine)
 	}
-	log.Printf("mm-prep done (site=%s)", site)
+	return nil
+}
+
+// member is one database participating in a multi-master flow, used by the reconciler.
+type reconcileMember struct {
+	Name   string `json:"name"`
+	Engine string `json:"engine"`
+	DSN    string `json:"dsn"`
+	Site   string `json:"site"`
+	db     *sql.DB
+}
+
+// runReconcile keeps the table SET in sync across all members of a multi-master flow:
+// a table created on ANY member is auto-created on every other member (cross-engine) and
+// made multi-master-ready (mm-prep), with no user action. Combined with capture-all CDC,
+// the per-edge sinks then replicate it like any other table. (Pre-existing ROWS in a
+// late-added table aren't back-loaded without a Debezium incremental snapshot — a
+// follow-up; create-then-insert syncs fully.)
+func runReconcile() {
+	raw := env("MEMBERS", "")
+	vcol := env("VERSION_COLUMN", "_mm_version")
+	ocol := env("ORIGIN_COLUMN", "_mm_origin")
+	interval := time.Duration(atoiEnv("RECONCILE_INTERVAL", 20)) * time.Second
+	if raw == "" {
+		log.Fatal("MEMBERS required for reconcile mode")
+	}
+	var members []*reconcileMember
+	if err := json.Unmarshal([]byte(raw), &members); err != nil {
+		log.Fatalf("parse MEMBERS: %v", err)
+	}
+	for _, m := range members {
+		db, err := openDB(m.Engine, os.ExpandEnv(m.DSN))
+		if err != nil {
+			log.Fatalf("reconcile open %s: %v", m.Name, err)
+		}
+		m.db = db
+		if err := mmPrepSetup(db, m.Engine, m.Site, vcol); err != nil {
+			log.Printf("reconcile: mm setup %s: %v", m.Name, err)
+		}
+	}
+	log.Printf("reconcile: %d members, interval=%s", len(members), interval)
+	prepped := map[string]bool{} // member|table already mm-prepped (avoid per-cycle churn)
+	for {
+		reconcileOnce(members, vcol, ocol, prepped)
+		time.Sleep(interval)
+	}
+}
+
+func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped map[string]bool) {
+	// 1. discover the table set on each member (keyed by table name; schema is per-engine)
+	have := map[string]map[string]string{} // member -> table -> schema
+	union := map[string]bool{}
+	for _, m := range members {
+		tl, err := discoverTables(m.db, m.Engine)
+		if err != nil {
+			log.Printf("reconcile: discover %s: %v", m.Name, err)
+			continue
+		}
+		hm := map[string]string{}
+		for _, t := range dropHelperTables(tl) {
+			hm[t[1]] = t[0]
+			union[t[1]] = true
+		}
+		have[m.Name] = hm
+	}
+	// 2. create any missing table on each member, introspected from a member that has it
+	for tbl := range union {
+		var src *reconcileMember
+		var srcSchema string
+		for _, m := range members {
+			if s, ok := have[m.Name][tbl]; ok {
+				src, srcSchema = m, s
+				break
+			}
+		}
+		if src == nil {
+			continue
+		}
+		for _, m := range members {
+			if _, ok := have[m.Name][tbl]; ok {
+				continue
+			}
+			cols, pk, err := introspectSourceDDL(src.db, src.Engine, m.Engine, srcSchema, tbl)
+			if err != nil {
+				log.Printf("reconcile: introspect %s from %s: %v", tbl, src.Name, err)
+				continue
+			}
+			ts := targetSchema(m.Engine, srcSchema)
+			if err := createTargetTable(m.db, m.Engine, ts, tbl, cols, pk); err != nil {
+				log.Printf("reconcile: create %s on %s: %v", tbl, m.Name, err)
+				continue
+			}
+			log.Printf("reconcile: auto-created table %q on %s (from %s, %d cols)", tbl, m.Name, src.Name, len(cols))
+			have[m.Name][tbl] = ts
+			delete(prepped, m.Name+"|"+tbl) // force mm-prep of the new table
+		}
+	}
+	// 3. ensure every member's tables are mm-prepped (skip ones already done this run)
+	for _, m := range members {
+		for tbl, sch := range have[m.Name] {
+			key := m.Name + "|" + tbl
+			if prepped[key] {
+				continue
+			}
+			if err := mmPrepTable(m.db, m.Engine, m.Site, vcol, ocol, sch, tbl); err != nil {
+				log.Printf("reconcile: mm-prep %s.%s on %s: %v", sch, tbl, m.Name, err)
+				continue
+			}
+			prepped[key] = true
+		}
+	}
 }
 
 // dropHelperTables removes open-infra's own bookkeeping tables (the HLC state)
