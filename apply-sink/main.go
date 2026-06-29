@@ -211,6 +211,9 @@ func mmPrepSetup(db *sql.DB, engine, site, vcol string) error {
 		}
 	case "sqlserver":
 		for _, q := range []string{
+			// Enable CDC on the database so tables can be captured as a source. Requires a
+			// sysadmin login and a running SQL Agent. Idempotent (guarded on is_cdc_enabled).
+			`IF (SELECT is_cdc_enabled FROM sys.databases WHERE name=DB_NAME())=0 EXEC sys.sp_cdc_enable_db`,
 			`IF OBJECT_ID('mm_hlc_state','U') IS NULL CREATE TABLE mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`,
 			`IF NOT EXISTS(SELECT 1 FROM mm_hlc_state) INSERT INTO mm_hlc_state(id) VALUES(1)`,
 		} {
@@ -281,7 +284,14 @@ func mmPrepTable(db *sql.DB, engine, site, vcol, ocol, schema, table string) err
 		obs := fmt.Sprintf(`DECLARE @rmax bigint=(SELECT MAX(%s) FROM inserted); UPDATE mm_hlc_state SET pt=CASE WHEN @rmax/65536>pt THEN @rmax/65536 ELSE pt END WHERE id=1;`, qv)
 		body := fmt.Sprintf(`CREATE OR ALTER TRIGGER %s ON %s AFTER INSERT, UPDATE AS BEGIN SET NOCOUNT ON; IF TRIGGER_NESTLEVEL(OBJECT_ID(N'%s')) > 1 RETURN; IF SESSION_CONTEXT(N'app_replication')=N'on' BEGIN %s RETURN; END %s UPDATE t SET %s=@v, %s=N'%s' FROM %s t JOIN inserted i ON %s; END`,
 			trg, qt, trg, obs, hlc, qv, qo, site, qt, strings.Join(pkjoin, " AND "))
-		return exec(body)
+		if err := exec(body); err != nil {
+			return err
+		}
+		// Enable CDC on the table so SQL Server captures it as a source. Done AFTER the
+		// columns exist so the capture instance includes _mm_version/_mm_origin. Idempotent
+		// (guarded). Requires a running SQL Agent; removes the previously-manual sp_cdc step.
+		return exec(fmt.Sprintf(`IF NOT EXISTS (SELECT 1 FROM cdc.change_tables ct JOIN sys.tables tt ON ct.source_object_id=tt.object_id JOIN sys.schemas ss ON tt.schema_id=ss.schema_id WHERE ss.name='%s' AND tt.name='%s') EXEC sys.sp_cdc_enable_table @source_schema=N'%s', @source_name=N'%s', @role_name=NULL, @supports_net_changes=0`,
+			schema, table, schema, table))
 	case "mysql":
 		qtbl := quoteIdent(engine, table)
 		qv := quoteIdent(engine, vcol)
@@ -362,13 +372,14 @@ func runReconcile() {
 	}
 	log.Printf("reconcile: %d members, interval=%s", len(members), interval)
 	prepped := map[string]bool{} // member|table already mm-prepped (avoid per-cycle churn)
+	noPK := map[string]bool{}    // tables skipped: multi-master needs a primary key
 	for {
-		reconcileOnce(members, vcol, ocol, prepped)
+		reconcileOnce(members, vcol, ocol, prepped, noPK)
 		time.Sleep(interval)
 	}
 }
 
-func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped map[string]bool) {
+func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped, noPK map[string]bool) {
 	// 1. discover the table set on each member (keyed by table name; schema is per-engine)
 	have := map[string]map[string]string{} // member -> table -> schema
 	union := map[string]bool{}
@@ -387,6 +398,9 @@ func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped map[st
 	}
 	// 2. create any missing table on each member, introspected from a member that has it
 	for tbl := range union {
+		if noPK[tbl] {
+			continue // already known to lack a primary key — can't be multi-master
+		}
 		var src *reconcileMember
 		var srcSchema string
 		for _, m := range members {
@@ -407,6 +421,12 @@ func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped map[st
 				log.Printf("reconcile: introspect %s from %s: %v", tbl, src.Name, err)
 				continue
 			}
+			if len(pk) == 0 {
+				// Multi-master conflict resolution and the apply upsert both require a PK.
+				noPK[tbl] = true
+				log.Printf("reconcile: skipping table %q — no primary key (multi-master requires one)", tbl)
+				break
+			}
 			ts := targetSchema(m.Engine, srcSchema)
 			if err := createTargetTable(m.db, m.Engine, ts, tbl, cols, pk); err != nil {
 				log.Printf("reconcile: create %s on %s: %v", tbl, m.Name, err)
@@ -420,6 +440,9 @@ func reconcileOnce(members []*reconcileMember, vcol, ocol string, prepped map[st
 	// 3. ensure every member's tables are mm-prepped (skip ones already done this run)
 	for _, m := range members {
 		for tbl, sch := range have[m.Name] {
+			if noPK[tbl] {
+				continue
+			}
 			key := m.Name + "|" + tbl
 			if prepped[key] {
 				continue
