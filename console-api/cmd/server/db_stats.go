@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -86,6 +87,13 @@ func handleDBStats(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFun
 			return
 		}
 		pw := string(sec.Data[key])
+		// A DataFlow node's host is often a bare Service name (e.g. "postgres"),
+		// which only resolves inside that Service's namespace. The BFF runs elsewhere,
+		// so qualify a dotless hostname with the flow's namespace. IPs and FQDNs
+		// (which contain dots) are left untouched.
+		if !strings.Contains(in.Host, ".") && in.Secret.Namespace != "" {
+			in.Host = in.Host + "." + in.Secret.Namespace + ".svc.cluster.local"
+		}
 		if in.Port == 0 {
 			switch in.Engine {
 			case "mysql", "mariadb":
