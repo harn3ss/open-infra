@@ -844,12 +844,88 @@ func execUpsert(db sqlExec, engine, schema, table string, mt meta, row map[strin
 	if len(cols) == 0 {
 		return fmt.Errorf("no matching columns for %s.%s", schema, table)
 	}
+	// MySQL/MariaDB: ON DUPLICATE KEY UPDATE evaluates SET assignments left-to-right
+	// and later columns see earlier columns' ALREADY-updated values, so a per-column
+	// LWW IF-guard updates version and origin INCONSISTENTLY (version newer, origin
+	// stale) — which makes mesh peers disagree on origin at equal version and flip-flop
+	// forever (an amplification storm). Postgres (WHERE) and SQL Server (MERGE WHEN
+	// MATCHED AND) evaluate the guard on the pre-update row atomically; MySQL has no
+	// such construct, so apply atomically as insert-or-noop + a guarded UPDATE.
+	if driverName(engine) == "mysql" {
+		return execUpsertMysql(db, engine, schema, table, cols, mt, row)
+	}
 	vals := make([]any, len(cols))
 	for i, c := range cols {
 		vals[i] = coerce(row[c], mt.colType[c])
 	}
 	q := buildUpsert(engine, schema, table, cols, mt)
 	if _, err := db.Exec(q, vals...); err != nil {
+		return err
+	}
+	return nil
+}
+
+// execUpsertMysql applies a row to MySQL/MariaDB in two atomic steps that avoid
+// ON DUPLICATE KEY UPDATE's order-dependent column evaluation:
+//  1. INSERT … ON DUPLICATE KEY UPDATE pk=pk  — inserts a new row, no-ops an existing
+//     one (a no-op ODKU writes no binlog, so it never echoes);
+//  2. UPDATE … SET <all non-PK cols> WHERE <pk> AND <version newer> — the WHERE sees
+//     the pre-update row, so every column moves together only when strictly newer
+//     (0 rows otherwise → no binlog → no echo).
+func execUpsertMysql(db sqlExec, engine, schema, table string, cols []string, mt meta, row map[string]any) error {
+	qt := qualified(engine, schema, table)
+	qcols := make([]string, len(cols))
+	ph := make([]string, len(cols))
+	vals := make([]any, len(cols))
+	for i, c := range cols {
+		qcols[i] = quoteIdent(engine, c)
+		ph[i] = "?"
+		vals[i] = coerce(row[c], mt.colType[c])
+	}
+	// 1. insert-or-noop (no-op on existing PK; emits no binlog)
+	ins := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON DUPLICATE KEY UPDATE %s=%s",
+		qt, strings.Join(qcols, ","), strings.Join(ph, ","),
+		quoteIdent(engine, mt.pk[0]), quoteIdent(engine, mt.pk[0]))
+	if _, err := db.Exec(ins, vals...); err != nil {
+		return err
+	}
+	// 2. guarded UPDATE of existing rows
+	var setCols []string
+	var setVals []any
+	for _, c := range cols {
+		if mt.pkset[c] {
+			continue
+		}
+		setCols = append(setCols, quoteIdent(engine, c)+"=?")
+		setVals = append(setVals, coerce(row[c], mt.colType[c]))
+	}
+	if len(setCols) == 0 {
+		return nil // all-PK table: the insert-or-noop already covered it
+	}
+	var where []string
+	args := append([]any{}, setVals...)
+	for _, p := range mt.pk {
+		where = append(where, quoteIdent(engine, p)+"=?")
+		args = append(args, coerce(row[p], mt.colType[p]))
+	}
+	guard := ""
+	if cc := os.Getenv("CONFLICT_COLUMN"); cc != "" {
+		if _, ok := row[cc]; ok {
+			qcc := quoteIdent(engine, cc)
+			if oc := os.Getenv("ORIGIN_COLUMN"); oc != "" {
+				if _, ok := row[oc]; ok {
+					guard = fmt.Sprintf(" AND (%s < ? OR (%s = ? AND %s < ?))", qcc, qcc, quoteIdent(engine, oc))
+					args = append(args, coerce(row[cc], mt.colType[cc]), coerce(row[cc], mt.colType[cc]), coerce(row[oc], mt.colType[oc]))
+				}
+			}
+			if guard == "" {
+				guard = fmt.Sprintf(" AND %s < ?", qcc)
+				args = append(args, coerce(row[cc], mt.colType[cc]))
+			}
+		}
+	}
+	upd := fmt.Sprintf("UPDATE %s SET %s WHERE %s%s", qt, strings.Join(setCols, ","), strings.Join(where, " AND "), guard)
+	if _, err := db.Exec(upd, args...); err != nil {
 		return err
 	}
 	return nil
