@@ -632,13 +632,21 @@ func parseMsg(db *sql.DB, engine string, m *nats.Msg) (*applyEntry, bool, bool, 
 	if err != nil {
 		return nil, false, true, err // target table may not be created yet
 	}
+	// Length-prefix every component so the sort key is INJECTIVE — a PK value that
+	// contains the delimiter (e.g. a natural key literally "a|b") must not collide with
+	// a different key, or concurrent sinks would order those rows differently and
+	// reintroduce mesh deadlocks. "<len>:<value>" per part is unambiguous regardless of
+	// content.
 	var sk strings.Builder
 	sk.WriteString(schema)
-	sk.WriteString(".")
+	sk.WriteString("\x1f")
 	sk.WriteString(table)
 	for _, pk := range mt.pk {
-		sk.WriteString("|")
-		sk.WriteString(fmt.Sprint(row[pk]))
+		v := fmt.Sprint(row[pk])
+		sk.WriteString("\x1f")
+		sk.WriteString(strconv.Itoa(len(v)))
+		sk.WriteString(":")
+		sk.WriteString(v)
 	}
 	return &applyEntry{schema: schema, table: table, deleted: deleted, row: row, mt: mt, sortkey: sk.String()}, false, false, nil
 }
