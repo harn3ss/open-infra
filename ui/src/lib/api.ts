@@ -342,6 +342,15 @@ export function getDbStats(namespace: string, name: string, node: string): Promi
     body: JSON.stringify({ namespace, name, node }),
   });
 }
+/** Live engine internals for a managed database (the /databases pages). The BFF resolves
+ *  host + credentials from the DB's generated Secret (CNPG `<name>-app` / managed
+ *  `<name>-mysql-app`), namespace-scoped — the client passes only the resource reference. */
+export function getManagedDbStats(namespace: string, name: string): Promise<DbStats> {
+  return request<DbStats>(
+    `/databases/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/stats`,
+    { method: "POST" },
+  );
+}
 /** Per-site (per-direction) pipeline status for a bidirectional Replication. */
 export function getReplicationStatus(
   namespace: string,

@@ -186,22 +186,24 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		// DMS wizard: discover a source's tables (connects to the source DB directly).
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/migrations/discover", handleMigrationDiscover(logger))
-			// DMS observability: live apply-pipeline status (JetStream lag, per-table
-			// counts, dead-letter) the browser can't read from NATS directly.
-			api.With(middleware.Timeout(15*time.Second)).
-				Get("/migrations/{namespace}/{name}/status", handleMigrationStatus(logger))
-			api.With(middleware.Timeout(15*time.Second)).
-				Get("/replications/{namespace}/{name}/status", handleReplicationStatus(logger))
-			// DataFlow canvas: per-edge live status for an arbitrary topology. POST
-			// because the edge list (which the UI already has from the loaded CR) is
-			// the input — the server maps each edge to its stream(s)/durable(s).
-			api.With(middleware.Timeout(15*time.Second)).
-				Post("/dataflows/{namespace}/{name}/status", handleDataFlowStatus(logger))
-			// Live database-engine internals (top queries, connections, replication-slot
-			// lag) for a Data Flow database node / RDS detail page. Reads the node's
-			// credential Secret server-side, connects read-only. (issue #56)
-			api.With(middleware.Timeout(15*time.Second)).
-				Post("/db-stats", handleDBStats(*client.Clientset, client.Host, client.Transport, logger))
+		// DMS observability: live apply-pipeline status (JetStream lag, per-table
+		// counts, dead-letter) the browser can't read from NATS directly.
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/migrations/{namespace}/{name}/status", handleMigrationStatus(logger))
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/replications/{namespace}/{name}/status", handleReplicationStatus(logger))
+		// DataFlow canvas: per-edge live status for an arbitrary topology. POST
+		// because the edge list (which the UI already has from the loaded CR) is
+		// the input — the server maps each edge to its stream(s)/durable(s).
+		api.With(middleware.Timeout(15*time.Second)).
+			Post("/dataflows/{namespace}/{name}/status", handleDataFlowStatus(logger))
+		// Live database-engine internals (top queries, connections, replication-slot
+		// lag) for a Data Flow database node / RDS detail page. Reads the node's
+		// credential Secret server-side, connects read-only. (issue #56)
+		api.With(middleware.Timeout(15*time.Second)).
+			Post("/db-stats", handleDBStats(*client.Clientset, client.Host, client.Transport, logger))
+		api.With(middleware.Timeout(15*time.Second)).
+			Post("/databases/{namespace}/{name}/stats", handleManagedDBStats(*client.Clientset, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

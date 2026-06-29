@@ -16,7 +16,8 @@ import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import { claimHealth } from "@/lib/resource-health";
-import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
+import { k8sDelete, k8sGet, k8sReplace, getManagedDbStats } from "@/lib/api";
+import { DbStatsPanel } from "@/components/common/db-stats-panel";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { Application, K8sObject } from "@/types/k8s";
 
@@ -93,6 +94,17 @@ export function ManagedDatabaseDetailPage() {
   const engineKey = (app?.spec?.database?.engine ?? "mongo") as keyof typeof ENGINES;
   const e = ENGINES[engineKey] ?? ENGINES.mongo;
 
+  // Peek (live engine internals) — only the SQL engines expose stats; MongoDB doesn't.
+  const peekable = engineKey === "mysql";
+  const [peekOpen, setPeekOpen] = useState(false);
+  const peekQ = useQuery({
+    queryKey: ["managed-db-peek", namespace, name],
+    queryFn: () => getManagedDbStats(namespace, name),
+    enabled: peekOpen && peekable,
+    refetchInterval: peekOpen ? 5000 : false,
+    retry: false,
+  });
+
   const { data: secret } = useQuery({
     queryKey: ["managed-db-secret", namespace, name, engineKey],
     enabled: Boolean(app),
@@ -120,14 +132,28 @@ export function ManagedDatabaseDetailPage() {
       subtitle={`${e.label} · ${namespace}`}
       status={health}
     >
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue="overview" onValueChange={(v) => setPeekOpen(v === "peek")}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          {peekable ? <TabsTrigger value="peek">Peek</TabsTrigger> : null}
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+
+        {peekable ? (
+          <TabsContent value="peek" className="pt-4">
+            <Card>
+              <CardContent className="space-y-3 p-4">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Live engine internals {peekQ.isFetching ? "· refreshing" : ""}
+                </span>
+                <DbStatsPanel stats={peekQ.data} loading={peekQ.isFetching} error={peekQ.isError} />
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ) : null}
 
         <TabsContent value="security" className="pt-4">
           <ResourceSecurityTab

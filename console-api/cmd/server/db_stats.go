@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/microsoft/go-mssqldb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -74,9 +76,9 @@ type connStats struct {
 	Max      int `json:"max"`
 }
 type queryStat struct {
-	Query  string  `json:"query"`
-	Calls  int64   `json:"calls"`
-	MeanMs float64 `json:"meanMs"`
+	Query   string  `json:"query"`
+	Calls   int64   `json:"calls"`
+	MeanMs  float64 `json:"meanMs"`
 	TotalMs float64 `json:"totalMs"`
 }
 type replStat struct {
@@ -175,34 +177,113 @@ func handleDBStats(cs kubernetes.Interface, host *url.URL, transport http.RoundT
 			}
 		}
 
-		driver, dsn := statsDSN(in, pw)
-		if driver == "" {
-			writeError(w, http.StatusBadRequest, "unsupported engine")
-			return
-		}
-		db, err := sql.Open(driver, dsn)
+		out, err := collectDBStats(ctx, in, pw)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "could not open connection")
+			writeError(w, http.StatusBadGateway, err.Error())
 			return
-		}
-		defer db.Close()
-		db.SetMaxOpenConns(1)
-		if err := db.PingContext(ctx); err != nil {
-			writeError(w, http.StatusBadGateway, "could not reach the database: "+err.Error())
-			return
-		}
-
-		out := dbStats{Engine: in.Engine, TopQueries: []queryStat{}, Replication: []replStat{}}
-		switch in.Engine {
-		case "postgres":
-			gatherPostgresStats(ctx, db, &out)
-		case "mysql", "mariadb":
-			gatherMysqlStats(ctx, db, &out)
-		case "sqlserver":
-			gatherSqlserverStats(ctx, db, &out)
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// collectDBStats opens a short-lived read-only connection and gathers the engine's live
+// stats. Shared by DataFlow-node Peek and managed-database Peek.
+func collectDBStats(ctx context.Context, in dbStatsReq, pw string) (dbStats, error) {
+	driver, dsn := statsDSN(in, pw)
+	if driver == "" {
+		return dbStats{}, fmt.Errorf("unsupported engine")
+	}
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return dbStats{}, fmt.Errorf("could not open connection")
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		return dbStats{}, fmt.Errorf("could not reach the database: %s", err.Error())
+	}
+	out := dbStats{Engine: in.Engine, TopQueries: []queryStat{}, Replication: []replStat{}}
+	switch in.Engine {
+	case "postgres":
+		gatherPostgresStats(ctx, db, &out)
+	case "mysql", "mariadb":
+		gatherMysqlStats(ctx, db, &out)
+	case "sqlserver":
+		gatherSqlserverStats(ctx, db, &out)
+	}
+	return out, nil
+}
+
+// handleManagedDBStats powers Peek on the /databases pages. The connection is resolved
+// from the managed DB's own generated Secret (CNPG's "<name>-app", or a "<name>-<engine>-app"
+// for the non-CNPG engines), namespace-scoped — never from the client (same rule as
+// handleDBStats: no client-supplied host or secret).
+func handleManagedDBStats(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ns := chi.URLParam(r, "namespace")
+		name := chi.URLParam(r, "name")
+		if ns == "" || name == "" {
+			writeError(w, http.StatusBadRequest, "namespace and name are required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+
+		in, pw, ok := resolveManagedConn(ctx, cs, ns, name)
+		if !ok {
+			writeError(w, http.StatusNotFound, "live stats aren't available for this database (no resolvable PostgreSQL/MySQL credentials)")
+			return
+		}
+		if !strings.Contains(in.Host, ".") {
+			in.Host = in.Host + "." + ns + ".svc.cluster.local"
+		}
+		out, err := collectDBStats(ctx, in, pw)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// resolveManagedConn finds connection details from a managed DB's generated Secret.
+// CNPG Postgres: "<name>-app" with discrete host/port/username/password/dbname keys.
+// Managed MySQL: "<base>-mysql-app" with a DATABASE_URL. Returns ok=false if neither.
+func resolveManagedConn(ctx context.Context, cs kubernetes.Interface, ns, name string) (dbStatsReq, string, bool) {
+	// CNPG Postgres — the cluster is "<app>-db"; its app secret is "<name>-app".
+	if sec, err := cs.CoreV1().Secrets(ns).Get(ctx, name+"-app", metav1.GetOptions{}); err == nil {
+		d := sec.Data
+		if len(d["password"]) > 0 && (len(d["username"]) > 0 || len(d["user"]) > 0) {
+			user := string(d["username"])
+			if user == "" {
+				user = string(d["user"])
+			}
+			port := 5432
+			if p, e := strconv.Atoi(string(d["port"])); e == nil && p > 0 {
+				port = p
+			}
+			h := string(d["host"])
+			if h == "" {
+				h = name + "-rw"
+			}
+			return dbStatsReq{Engine: "postgres", Host: h, Port: port, Database: string(d["dbname"]), Username: user, SSL: true}, string(d["password"]), true
+		}
+	}
+	// Managed MySQL — "<base>-mysql-app" carries a DATABASE_URL.
+	base := strings.TrimSuffix(name, "-mysql")
+	if sec, err := cs.CoreV1().Secrets(ns).Get(ctx, base+"-mysql-app", metav1.GetOptions{}); err == nil {
+		if raw := string(sec.Data["DATABASE_URL"]); raw != "" {
+			if u, e := url.Parse(raw); e == nil && u.User != nil {
+				pw, _ := u.User.Password()
+				port := 3306
+				if p, e := strconv.Atoi(u.Port()); e == nil && p > 0 {
+					port = p
+				}
+				return dbStatsReq{Engine: "mysql", Host: u.Hostname(), Port: port, Database: strings.TrimPrefix(u.Path, "/"), Username: u.User.Username(), SSL: false}, pw, true
+			}
+		}
+	}
+	return dbStatsReq{}, "", false
 }
 
 func statsDSN(in dbStatsReq, pw string) (string, string) {
