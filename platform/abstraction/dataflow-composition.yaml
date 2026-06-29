@@ -53,7 +53,9 @@ spec:
             {{-   $nmap = set $nmap $n.name $n }}
             {{-   if ne ($n.role | default "database") "topic" }}
             {{-   $eng = set $eng $n.name $n.engine }}
-            {{-   $sc := $n.schema | default (ternary "dbo" "public" (eq $n.engine "sqlserver")) }}
+            {{-   $sc := $n.schema | default "public" }}
+            {{-   if eq $n.engine "sqlserver" }}{{ $sc = $n.schema | default "dbo" }}{{- end }}
+            {{-   if or (eq $n.engine "mysql") (eq $n.engine "mariadb") }}{{ $sc = $n.schema | default "" }}{{- end }}
             {{-   $sch = set $sch $n.name $sc }}
             {{-   $sec = set $sec $n.name $n.passwordSecretRef.name }}
             {{-   $seck = set $seck $n.name (($n.passwordSecretRef.key) | default "password") }}
