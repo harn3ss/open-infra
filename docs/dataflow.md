@@ -93,6 +93,19 @@ first, then the initial rows load via the CDC snapshot — so a two-way link can
 **empty** database online and keep it in sync, in one step. (This is what lets the wizard
 handle "DB A has the data, DB B is empty".)
 
+### `autoSyncTables` — keep the table set in sync automatically
+
+For a multi-master flow, set `spec.autoSyncTables: true` and you never manage tables by
+hand: a table created on **any** member is automatically created on every other member
+(cross-engine, with type mapping) and made multi-master-ready (version/origin columns +
+stamping trigger). A per-flow `reconcile` worker holds connections to all members, diffs
+their table sets every ~20s, and reconciles; it also enables SQL Server CDC on new tables.
+Enabling it implies **capture-all CDC** so new tables are picked up without a spec edit.
+
+Caveat: a table created **already full of data** won't back-load its existing rows until a
+Debezium incremental snapshot runs — the common *create-then-insert* flow syncs fully (the
+table is created on peers and new rows replicate). Tables without a primary key are skipped.
+
 ---
 
 ## How the engine works
@@ -126,10 +139,12 @@ event as JSON (the unwrapped row + `op`), and returns the transformed event JSON
 
 ## Observability
 
-- **Live edge overlay** — open a deployed flow and each replication/migration edge is
-  colored by lag: green (in sync), amber (lagging), red (dead-letters), slate (not yet
-  provisioned), with a live lag number. Refreshes every 4s from JetStream (the browser
-  can't read NATS, so the BFF aggregates it).
+- **Live edge overlay** — open a deployed flow and each replication/migration edge shows
+  its health with a live lag number. State is encoded **without relying on colour** (WCAG
+  1.4.1, colour-blind-safe): the line **pattern** is the primary cue — solid = in sync,
+  dashed = lagging, dotted = dead-letters, sparse dots = not provisioned — alongside a shape
+  glyph (✓ / ▲ / ✕ / ○) and an Okabe-Ito palette. Refreshes every 4s from JetStream (the
+  browser can't read NATS, so the BFF aggregates it).
 - **Peek** — right-click any node → **Peek metrics** for that step:
   - *Outbound* (sources): captured messages, buffered size, per-table throughput, and each
     downstream consumer's lag / in-flight / retries / dead-letters.
@@ -143,8 +158,9 @@ Served by `POST /api/dataflows/{ns}/{name}/status` in the console BFF.
 ## Prerequisites
 
 - **CDC enabled** on every source database: Postgres `wal_level=logical`; MySQL/MariaDB
-  binlog (ROW); SQL Server CDC + SQL Agent (per-table `sys.sp_cdc_enable_table` for a
-  SQL Server *source*).
+  binlog (ROW); SQL Server needs the SQL Agent running and a sysadmin login — per-table CDC
+  is then enabled automatically (by `mm-prep` / the auto-sync reconciler), so no manual
+  `sys.sp_cdc_enable_table` is required for managed flows.
 - **A primary key** on every table that's replicated/loaded (required for upsert apply).
 - For replication, participating tables must exist (or use `bootstrap`) and share the same
   primary key across members.
@@ -159,10 +175,18 @@ Served by `POST /api/dataflows/{ns}/{name}/status` in the console BFF.
 - **Topology under sustained load:** prefer a **star / spanning topology** (the wizard's
   default) over a fully-connected mesh. In a full mesh every write propagates via multiple
   paths and amplifies; a star gives each write a single path and converges cleanly.
-- **`*` across a mesh** requires the *same* tables on every member — a table present on
-  only one node can't be applied elsewhere and will stall that leg.
+- **Keeping the table set in sync:** with `autoSyncTables` a table added on one member is
+  created + prepared everywhere automatically. Without it, `*` across a mesh requires the
+  *same* tables on every member — a table present on only one node stalls that leg.
+- **Durability:** Debezium offsets + schema history live on a per-node Longhorn PVC, so a
+  capture-pod restart resumes from its position instead of re-snapshotting the whole source.
+- **Apply safety:** consumers use `AckWait` 2m (a slow batch isn't redelivered mid-
+  transaction); `mm-prep` backfills version/origin on pre-existing rows (a `NULL` version
+  can never win last-write-wins); unchanged TOASTed Postgres columns are never overwritten
+  with Debezium's unavailable-value placeholder.
 - Each capture/transform stream reserves 512 MB (`discard=old`); size JetStream storage for
-  the number of streams (one per source/function node).
+  the number of streams (one per source/function node). A garbage-collector reaps the
+  streams/DLQ of deleted flows.
 
 ## See also
 

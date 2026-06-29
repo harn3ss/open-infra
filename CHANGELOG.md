@@ -25,6 +25,39 @@ the product's public contract.
   stream). Throughput + correctness hardening surfaced by load testing: per-batch
   transactions (one commit per fetch), deterministic `(table, PK)` apply order to avoid
   mesh deadlocks, and a 512 MB per-stream reservation. See [docs/dataflow.md](docs/dataflow.md).
+- **Automatic table sync (`spec.autoSyncTables`)** — for multi-master flows, a table
+  created on *any* member is auto-created on every other member (cross-engine, with type
+  mapping) and made multi-master-ready (version/origin columns + stamping trigger), with no
+  spec edit. A per-flow `reconcile` worker drives it; implies capture-all CDC. Verified
+  across PostgreSQL + MySQL + MariaDB + SQL Server. Caveat: a table created *already full of
+  data* needs a Debezium incremental snapshot to back-load existing rows (create-then-insert
+  syncs fully).
+- **Durability + correctness hardening** (much found by an adversarial review pass and
+  reproduced before fixing): Debezium offsets/schema-history moved from `emptyDir` to a
+  per-node **Longhorn PVC** (a capture-pod restart no longer triggers a full re-snapshot);
+  mm-prep now **backfills** version/origin on pre-existing rows (a `NULL` version could never
+  win last-write-wins → silent divergence); consumer **`AckWait` 2m** (a slow batch is no
+  longer redelivered mid-transaction); unchanged **TOASTed** Postgres columns are no longer
+  clobbered with Debezium's unavailable-value placeholder; SQL Server **CDC auto-enabled**
+  per table for auto-synced sources; injective (length-prefixed) apply sort key; system/CDC
+  schemas excluded from discovery; capture pods given resource limits; an orphan
+  **stream/DLQ garbage-collector** reaps JetStream resources left by deleted flows.
+- **Accessibility** — edge status no longer relies on colour alone (WCAG 1.4.1): line
+  **pattern** (solid = in sync, dashed = lagging, dotted = dead-letters, sparse-dots = not
+  provisioned) + a shape glyph + a colour-blind-safe (Okabe-Ito) palette.
+- Removed the unimplemented per-edge `tables` field from the schema (scope is per-flow).
+
+### Managed databases (RDS) — console + lifecycle
+- **Peek (live engine internals)** on the `/databases` pages — connections, replication-slot
+  / CDC lag, and **top queries**, via `POST /api/databases/{ns}/{name}/stats`. The BFF
+  resolves host + credentials from the database's own generated Secret (namespace-scoped,
+  never client-supplied). PostgreSQL (CNPG) + managed MySQL; MongoDB has no SQL stats.
+- **`pg_stat_statements`** is now preloaded and created on managed Postgres (with
+  `pg_read_all_stats` granted to the app user) so Peek shows real query history. Foreign
+  DataFlow source engines (which we can't modify) gracefully fall back to active queries.
+- **Start/Stop (`spec.database.stopped`)** — RDS-style stop/start that retains data: Postgres
+  hibernates (CNPG), MySQL/Mongo scale to zero, PVCs are kept. A Start/Stop button on the
+  database detail pages toggles it. See [docs/databases.md](docs/databases.md).
 
 ### Security
 - Cleared all open Trivy image CVEs: apply-sink Go toolchain 1.22 → 1.26 (43 stdlib CVEs,

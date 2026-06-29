@@ -170,6 +170,10 @@ abstractions are shipped and verified end-to-end:
 - **`FileShare`** — shared SMB file storage (open-infra's "EFS/FSx"), with a Connect
   helper (Windows `net use` / Linux `mount`).
 - **`Directory`** — managed Active Directory (Samba AD DC) for Windows domain join.
+- **Managed databases (RDS)** — declared by an `Application`'s `database:` block:
+  PostgreSQL (CloudNativePG), MySQL (MariaDB), or MongoDB (FerretDB), with HA,
+  **Start/Stop** (data-retaining hibernation), and a live **Peek** (connections / CDC lag /
+  top queries). See [`docs/databases.md`](docs/databases.md).
 - **`Migration`** — AWS-DMS-style DB migration + CDC on a Debezium + apply-sink engine:
   full-load or continuous sync into a target SQL database, with a console wizard and
   a live status view (lag, per-table throughput, dead-letter). See
@@ -187,8 +191,9 @@ abstractions are shipped and verified end-to-end:
   message topics, transform **functions**, and object-store buckets, then deploy the
   whole topology as one resource. Replication, migration, CDC-to-topic, and ETL
   transforms are all just edge types on the same canvas — with a guided setup wizard,
-  live per-edge lag/dead-letter overlay, and right-click **Peek** per-step metrics.
-  See [`docs/dataflow.md`](docs/dataflow.md).
+  live per-edge lag/dead-letter overlay (colour-blind-safe), and right-click **Peek**
+  per-step metrics. Multi-master flows can **auto-sync their table set** across members
+  (`autoSyncTables`). See [`docs/dataflow.md`](docs/dataflow.md).
 
 **Reach anything from the LAN.** Every resource takes `expose: true` to get a
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;

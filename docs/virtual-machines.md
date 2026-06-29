@@ -68,6 +68,14 @@ Power: the console's **Start/Stop** flips `spec.running`, which the Composition
 maps to KubeVirt `runStrategy` (`Always`/`Halted`). The disk is retained while
 stopped.
 
+Delete: deleting a VM through the console (or `kubectl delete virtualmachines.openinfra.dev
+<name>`) removes the whole stack — the KubeVirt VM, the disk (DataVolume/PVC), and any
+**LAN `LoadBalancer`**, so the pool IP is released. ⚠️ The kind name `VirtualMachine` exists
+in **both** `openinfra.dev` (the claim) and `kubevirt.io` (the composed VM), so a bare
+`kubectl delete vm <name>` is ambiguous and may hit the kubevirt.io VM — which Crossplane
+then recreates (and the LB is *not* released). Always delete via the console or the
+fully-qualified `virtualmachines.openinfra.dev`.
+
 > Web (in-browser) console is intentionally **not** provided — access is native
 > SSH / RDP, so there is no extra in-cluster console dependency to run.
 
