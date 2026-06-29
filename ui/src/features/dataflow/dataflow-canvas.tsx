@@ -72,6 +72,17 @@ const EDGE_GLYPH: Record<EdgeType, string> = { replication: "⇄", migration: "�
 const EDGE_LABEL: Record<EdgeType, string> = { replication: "replication", migration: "migration", stream: "stream", pipe: "pipe" };
 const EDGE_COLOR: Record<EdgeType, string> = { replication: "#3b82f6", migration: "#3b82f6", stream: "#8b5cf6", pipe: "#64748b" };
 
+// Live edge health, encoded with THREE redundant cues so it never relies on color alone
+// (WCAG 1.4.1 / colorblind-safe): a line PATTERN (solid/dashed/dotted), a distinct SHAPE
+// glyph + word, and a colorblind-safe palette (Okabe-Ito — avoids red/green confusion).
+type EdgeState = "synced" | "lag" | "dead" | "pending";
+const EDGE_STATE: Record<EdgeState, { color: string; dash?: string; width: number; glyph: string; word: string }> = {
+  synced:  { color: "#009E73", width: 2, glyph: "✓", word: "in sync" },          // solid, bluish-green
+  lag:     { color: "#E69F00", dash: "8 5", width: 2, glyph: "▲", word: "lag" }, // long dashes, orange
+  dead:    { color: "#D55E00", dash: "2 4", width: 3, glyph: "✕", word: "dead" },// dotted + thick, vermillion
+  pending: { color: "#94a3b8", dash: "1 6", width: 2, glyph: "○", word: "pending" }, // sparse dots, slate
+};
+
 interface NodeData extends Record<string, unknown> {
   role: Role;
   name: string;
@@ -310,8 +321,17 @@ function CanvasInner() {
             const lag = Math.max(...legs.map((l) => l.lag));
             const dead = legs.reduce((s, l) => s + l.deadLetter, 0);
             const found = legs.every((l) => l.found);
-            stroke = !found ? "#94a3b8" : dead > 0 ? "#ef4444" : lag > 0 ? "#f59e0b" : "#22c55e";
-            label = `${EDGE_GLYPH[d.type]} lag ${lag}${dead ? ` ⚠${dead}` : ""}`;
+            const st: EdgeState = !found ? "pending" : dead > 0 ? "dead" : lag > 0 ? "lag" : "synced";
+            const s = EDGE_STATE[st];
+            const detail = st === "dead" ? `dead ${dead}${lag ? ` · lag ${lag}` : ""}` : st === "lag" ? `lag ${lag}` : s.word;
+            // pattern + shape glyph + word carry the state; color is the third (redundant) cue
+            return {
+              ...e,
+              label: `${EDGE_GLYPH[d.type]} ${s.glyph} ${detail}`,
+              animated: true,
+              style: { stroke: s.color, strokeWidth: s.width, strokeDasharray: s.dash },
+              labelStyle: { fontSize: 11 },
+            };
           }
         }
         return { ...e, label, animated: true, style: { stroke, strokeWidth: 2 }, labelStyle: { fontSize: 11 } };
@@ -441,10 +461,10 @@ function CanvasInner() {
         {editing ? (
           <div className="absolute right-2 top-2 z-10 flex flex-col gap-0.5 rounded-md border bg-card/90 p-2 text-[10px] backdrop-blur">
             <span className="font-medium text-muted-foreground">Edge status {statusQ.isFetching ? "• live" : ""}</span>
-            <Legend color="#22c55e" label="in sync" />
-            <Legend color="#f59e0b" label="lagging" />
-            <Legend color="#ef4444" label="dead-letters" />
-            <Legend color="#94a3b8" label="not provisioned" />
+            <Legend color={EDGE_STATE.synced.color} width={EDGE_STATE.synced.width} label="✓ in sync (solid)" />
+            <Legend color={EDGE_STATE.lag.color} dash={EDGE_STATE.lag.dash} width={EDGE_STATE.lag.width} label="▲ lagging (dashed)" />
+            <Legend color={EDGE_STATE.dead.color} dash={EDGE_STATE.dead.dash} width={EDGE_STATE.dead.width} label="✕ dead-letters (dotted)" />
+            <Legend color={EDGE_STATE.pending.color} dash={EDGE_STATE.pending.dash} width={EDGE_STATE.pending.width} label="○ not provisioned" />
           </div>
         ) : null}
         <ReactFlow
@@ -630,10 +650,10 @@ function CanvasInner() {
                       <div key={`in-${d.from}-${d.to}-${d.type}`} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
                         <span><strong>{d.from}</strong> → <span className="text-muted-foreground">({d.type})</span></span>
                         <span className="flex gap-3">
-                          <span className={d.deadLetter > 0 ? "text-destructive" : d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>backlog {d.lag.toLocaleString()}</span>
+                          <span className={d.deadLetter > 0 ? "text-destructive" : d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>{d.deadLetter > 0 ? "✕" : d.lag > 0 ? "▲" : "✓"} backlog {d.lag.toLocaleString()}</span>
                           <span className="text-muted-foreground">applying {d.ackPending}</span>
                           <span className="text-muted-foreground">retries {d.redelivered}</span>
-                          {d.deadLetter > 0 ? <span className="text-destructive">dead {d.deadLetter}</span> : null}
+                          {d.deadLetter > 0 ? <span className="text-destructive">✕ dead {d.deadLetter}</span> : null}
                         </span>
                       </div>
                     ))}
@@ -668,9 +688,9 @@ function CanvasInner() {
                         <div key={`out-${d.from}-${d.to}-${d.type}`} className="flex items-center justify-between rounded border px-2 py-1 text-xs">
                           <span>→ <strong>{d.to}</strong> <span className="text-muted-foreground">({d.type})</span></span>
                           <span className="flex gap-3">
-                            <span className={d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>lag {d.lag.toLocaleString()}</span>
+                            <span className={d.lag > 0 ? "text-amber-600" : "text-emerald-600"}>{d.deadLetter > 0 ? "✕" : d.lag > 0 ? "▲" : "✓"} lag {d.lag.toLocaleString()}</span>
                             <span className="text-muted-foreground">in-flight {d.ackPending}</span>
-                            {d.deadLetter > 0 ? <span className="text-destructive">dead {d.deadLetter}</span> : null}
+                            {d.deadLetter > 0 ? <span className="text-destructive">✕ dead {d.deadLetter}</span> : null}
                           </span>
                         </div>
                       ))}
@@ -766,10 +786,14 @@ function PaletteBtn({ icon: Icon, accent, label, onClick }: { icon: LucideIcon; 
   );
 }
 
-function Legend({ color, label }: { color: string; label: string }) {
+function Legend({ color, dash, width = 2, label }: { color: string; dash?: string; width?: number; label: string }) {
+  // Mirror the real edge: an SVG line so the dash PATTERN shows (not just the color), and a
+  // shape glyph in the label — so the state is legible without relying on color.
   return (
     <span className="flex items-center gap-1.5">
-      <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: color }} />
+      <svg width="20" height="6" aria-hidden="true" className="shrink-0">
+        <line x1="0" y1="3" x2="20" y2="3" stroke={color} strokeWidth={width} strokeDasharray={dash} strokeLinecap="round" />
+      </svg>
       <span className="text-muted-foreground">{label}</span>
     </span>
   );
