@@ -210,6 +210,9 @@ spec:
                             volumeMounts:
                               - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
                               - { name: data, mountPath: /debezium/data }
+                            resources:
+                              requests: { cpu: 100m, memory: 256Mi }
+                              limits: { cpu: "1", memory: 1Gi }
                         volumes:
                           - { name: config, configMap: { name: {{ $name }}-flow-{{ $node }}-config } }
                           - { name: data, emptyDir: {} }
