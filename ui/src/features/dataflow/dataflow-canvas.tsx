@@ -417,18 +417,9 @@ function CanvasInner() {
   const peekStream = peekOut.find((d) => d.found);
   // live database-engine internals for a peeked database node (issue #56)
   const dbStatsQ = useQuery({
-    queryKey: ["db-stats", namespace, peekName, peekData?.host],
-    queryFn: () =>
-      getDbStats({
-        engine: peekData!.engine,
-        host: peekData!.host,
-        port: Number(peekData!.port) || 5432,
-        database: peekData!.database,
-        username: peekData!.username,
-        ssl: peekData!.ssl,
-        secret: { namespace, name: peekData!.secretName, key: peekData!.secretKey || "password" },
-      }),
-    enabled: Boolean(peek) && editing && peekData?.role === "database" && Boolean(peekData?.secretName),
+    queryKey: ["db-stats", namespace, name, peekName],
+    queryFn: () => getDbStats(namespace, name, peekName),
+    enabled: Boolean(peek) && editing && peekData?.role === "database",
     refetchInterval: 5000,
   });
   const dbs = dbStatsQ.data;
