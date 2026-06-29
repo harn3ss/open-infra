@@ -324,6 +324,27 @@ export function getDataFlowStatus(
     { method: "POST", body: JSON.stringify({ edges }) },
   );
 }
+
+/** Live database-engine internals for a DataFlow database node (issue #56). */
+export interface DbStats {
+  engine: string;
+  connections: { active: number; idle: number; idleInTx: number; total: number; max: number };
+  topQueries: { query: string; calls: number; meanMs: number; totalMs: number }[] | null;
+  replication: { slot: string; active: boolean; lagBytes: number }[] | null;
+  note?: string;
+}
+export interface DbStatsReq {
+  engine: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  ssl?: boolean;
+  secret: { namespace: string; name: string; key: string };
+}
+export function getDbStats(req: DbStatsReq): Promise<DbStats> {
+  return request<DbStats>("/db-stats", { method: "POST", body: JSON.stringify(req) });
+}
 /** Per-site (per-direction) pipeline status for a bidirectional Replication. */
 export function getReplicationStatus(
   namespace: string,

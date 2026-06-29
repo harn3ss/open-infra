@@ -50,7 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ApiError, k8sGet, k8sCreate, getDataFlowStatus, type DataFlowDirection } from "@/lib/api";
+import { ApiError, k8sGet, k8sCreate, getDataFlowStatus, getDbStats, type DataFlowDirection } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION } from "@/types/k8s";
 import type { DataFlow } from "@/types/k8s";
@@ -84,6 +84,9 @@ interface NodeData extends Record<string, unknown> {
   password: string; // only used at deploy; never read back
   schema: string;
   ssl: boolean;
+  // credential secret ref (populated on load; used for live Peek db-stats)
+  secretName: string;
+  secretKey: string;
   // function
   functionUrl: string;
   functionRef: string;
@@ -109,6 +112,8 @@ function makeNode(role: Role, seq: number, engine = "postgres"): NodeData {
     password: "",
     schema: "",
     ssl: false,
+    secretName: "",
+    secretKey: "",
     functionUrl: "",
     functionRef: "",
     bucket: "",
@@ -219,6 +224,8 @@ function CanvasInner() {
           password: "",
           schema: n.schema ?? "public",
           ssl: Boolean(n.ssl),
+          secretName: n.passwordSecretRef?.name ?? "",
+          secretKey: n.passwordSecretRef?.key ?? "password",
           functionUrl: (n as { functionUrl?: string }).functionUrl ?? "",
           functionRef: (n as { functionRef?: string }).functionRef ?? "",
           bucket: (n as { bucket?: string }).bucket ?? "",
@@ -408,6 +415,23 @@ function CanvasInner() {
   const peekOut = allDirs.filter((d) => d.from === peekName); // this node's output stream + its consumers
   const peekIn = allDirs.filter((d) => d.to === peekName); // legs writing INTO this node (sink view)
   const peekStream = peekOut.find((d) => d.found);
+  // live database-engine internals for a peeked database node (issue #56)
+  const dbStatsQ = useQuery({
+    queryKey: ["db-stats", namespace, peekName, peekData?.host],
+    queryFn: () =>
+      getDbStats({
+        engine: peekData!.engine,
+        host: peekData!.host,
+        port: Number(peekData!.port) || 5432,
+        database: peekData!.database,
+        username: peekData!.username,
+        ssl: peekData!.ssl,
+        secret: { namespace, name: peekData!.secretName, key: peekData!.secretKey || "password" },
+      }),
+    enabled: Boolean(peek) && editing && peekData?.role === "database" && Boolean(peekData?.secretName),
+    refetchInterval: 5000,
+  });
+  const dbs = dbStatsQ.data;
 
   return (
     <div className="flex h-[calc(100vh-9rem)] gap-3">
@@ -667,6 +691,58 @@ function CanvasInner() {
               )}
             </div>
           )}
+
+          {/* Database engine internals (database nodes only) — issue #56 */}
+          {editing && peekData?.role === "database" ? (
+            <div className="mt-3 space-y-3 border-t pt-3 text-sm">
+              <div className="text-xs font-medium text-muted-foreground">Database engine {dbStatsQ.isFetching ? "· live" : ""}</div>
+              {!dbs ? (
+                <p className="text-xs text-muted-foreground">{dbStatsQ.isError ? "Couldn't reach the database." : "Loading engine stats…"}</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-4 gap-2">
+                    <Metric label="Connections" value={`${dbs.connections.total}${dbs.connections.max ? `/${dbs.connections.max}` : ""}`} />
+                    <Metric label="Active" value={String(dbs.connections.active)} />
+                    <Metric label="Idle" value={String(dbs.connections.idle)} />
+                    <Metric label="Idle in txn" value={String(dbs.connections.idleInTx)} />
+                  </div>
+                  {dbs.replication && dbs.replication.length ? (
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">Replication slots (CDC lag)</div>
+                      <div className="space-y-0.5">
+                        {dbs.replication.map((s) => (
+                          <div key={s.slot} className="flex items-center justify-between rounded bg-muted/40 px-2 py-0.5 text-xs">
+                            <code>{s.slot}</code>
+                            <span className="flex gap-2">
+                              <span className={s.active ? "text-emerald-600" : "text-muted-foreground"}>{s.active ? "active" : "inactive"}</span>
+                              <span className={s.lagBytes > 50_000_000 ? "text-amber-600" : "text-muted-foreground"}>{formatBytes(s.lagBytes)} behind</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {dbs.topQueries && dbs.topQueries.length ? (
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">Top queries</div>
+                      <div className="max-h-40 space-y-1 overflow-y-auto">
+                        {dbs.topQueries.map((q, i) => (
+                          <div key={i} className="rounded border px-2 py-1 text-[11px]">
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>{q.calls ? `${q.calls.toLocaleString()} calls` : "active"}</span>
+                              <span>{q.meanMs ? `${q.meanMs.toFixed(1)} ms avg` : ""}{q.totalMs ? ` · ${(q.totalMs / 1000).toFixed(1)}s total` : ""}</span>
+                            </div>
+                            <code className="mt-0.5 block truncate font-mono" title={q.query}>{q.query}</code>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {dbs.note ? <p className="text-[11px] italic text-muted-foreground">{dbs.note}</p> : null}
+                </>
+              )}
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>
