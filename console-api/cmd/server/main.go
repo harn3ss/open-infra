@@ -69,6 +69,9 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("connected to Kubernetes API", slog.String("host", client.Host.String()))
 
+	// Reap JetStream streams/DLQ orphaned by deleted DataFlows (storage hygiene).
+	startDataFlowGC(client.Host, client.Transport, logger)
+
 	router := newRouter(client, logger)
 
 	srv := &http.Server{
