@@ -14,7 +14,8 @@ import { DbConnectivity } from "@/components/common/db-connectivity";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
-import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
+import { k8sDelete, k8sGet, k8sReplace, getManagedDbStats } from "@/lib/api";
+import { DbStatsPanel } from "@/components/common/db-stats-panel";
 import { cnpgPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { type StatusTone } from "@/lib/format";
 import type { Application, CnpgCluster, K8sObject } from "@/types/k8s";
@@ -75,6 +76,15 @@ export function DatabaseDetailPage() {
     },
     onSuccess: () => void refetchApp(),
   });
+  // Live engine internals ("Peek") — refetched while the tab is open.
+  const [peekOpen, setPeekOpen] = useState(false);
+  const peekQ = useQuery({
+    queryKey: ["database-peek", namespace, name],
+    queryFn: () => getManagedDbStats(namespace, name),
+    enabled: peekOpen,
+    refetchInterval: peekOpen ? 5000 : false,
+    retry: false,
+  });
   const { data: secret } = useQuery({
     queryKey: ["database-secret", namespace, name],
     queryFn: () =>
@@ -102,14 +112,28 @@ export function DatabaseDetailPage() {
       subtitle={`Managed PostgreSQL · ${namespace}`}
       status={phase ? { label: phase, tone: dbTone(phase) } : null}
     >
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue="overview" onValueChange={(v) => setPeekOpen(v === "peek")}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="peek">Peek</TabsTrigger>
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="peek" className="pt-4">
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Live engine internals {peekQ.isFetching ? "· refreshing" : ""}
+                </span>
+              </div>
+              <DbStatsPanel stats={peekQ.data} loading={peekQ.isFetching} error={peekQ.isError} />
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="security" className="pt-4">
           <ResourceSecurityTab
