@@ -544,6 +544,12 @@ spec:
                       topologyKey: kubernetes.io/hostname
                       podAntiAffinityType: required
                     {{- end }}
+                    # pg_stat_statements: query history powering the database "Peek"
+                    # (issue #56 — top running queries). Must be preloaded at server start;
+                    # the extension itself is created in the app database below.
+                    postgresql:
+                      shared_preload_libraries:
+                        - pg_stat_statements
                     storage:
                       size: 5Gi
                       storageClass: local-path   # NEVER CIFS/NFS
@@ -551,11 +557,12 @@ spec:
                       initdb:
                         database: {{ $spec.database.name | default $name }}
                         owner: app
-                        {{- if $spec.database.vector }}
-                        # pgvector: enable vector similarity search (RAG with Models).
                         postInitApplicationSQL:
+                          - CREATE EXTENSION IF NOT EXISTS pg_stat_statements
+                          {{- if $spec.database.vector }}
+                          # pgvector: vector similarity search (RAG with Models).
                           - CREATE EXTENSION IF NOT EXISTS vector
-                        {{- end }}
+                          {{- end }}
             {{- end }}
             {{- end }}
             {{- if and $spec.database $spec.database.expose }}
