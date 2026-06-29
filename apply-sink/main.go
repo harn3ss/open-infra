@@ -56,6 +56,17 @@ func atoiEnv(k string, d int) int {
 	return d
 }
 
+// ackWaitDur is the consumer's redelivery deadline. It must comfortably exceed the
+// worst-case batch apply (100-row transaction + deadlock retries with backoff); the
+// JetStream default of 30s can expire mid-transaction under mesh write contention,
+// causing redelivery + double-apply. Tunable via ACK_WAIT.
+func ackWaitDur() time.Duration {
+	if d, err := time.ParseDuration(env("ACK_WAIT", "")); err == nil && d > 0 {
+		return d
+	}
+	return 2 * time.Minute
+}
+
 func driverName(engine string) string {
 	switch strings.ToLower(engine) {
 	case "postgres", "postgresql", "pgx":
@@ -188,6 +199,13 @@ func runMMPrep() {
 			qt := qualified(engine, t[0], t[1])
 			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s bigint`, qt, quoteIdent(engine, vcol)))
 			exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s text`, qt, quoteIdent(engine, ocol)))
+			// Backfill pre-existing rows so they carry a real version+origin. Left NULL, the
+			// LWW guard "t.v < EXCLUDED.v" is NULL (never true) for a NULL local version, so a
+			// pre-mm-prep row could NEVER be overwritten by a remote write and would diverge
+			// permanently. SQL Server avoids this with a column DEFAULT; Postgres/MySQL have
+			// none, so we stamp explicitly. WHERE ... IS NULL keeps it idempotent on re-run.
+			exec(fmt.Sprintf(`UPDATE %s SET %s = mm_hlc_tick(), %s = '%s' WHERE %s IS NULL`,
+				qt, quoteIdent(engine, vcol), quoteIdent(engine, ocol), site, quoteIdent(engine, vcol)))
 			exec(fmt.Sprintf(`DROP TRIGGER IF EXISTS mm_stamp_trg ON %s`, qt))
 			exec(fmt.Sprintf(`CREATE TRIGGER mm_stamp_trg BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION mm_stamp()`, qt))
 			log.Printf("mm-prep: prepared %s.%s (site=%s)", t[0], t[1], site)
@@ -249,6 +267,11 @@ func runMMPrep() {
 			}
 			ensureCol(vcol, "bigint")
 			ensureCol(ocol, "varchar(16)")
+			// Backfill pre-existing rows so they aren't NULL-versioned (see the Postgres note):
+			// a NULL local version is never < an incoming version, so the row would freeze and
+			// diverge. Stamp existing NULLs before the triggers exist; idempotent on re-run.
+			exec(fmt.Sprintf("UPDATE %s SET %s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, %s = '%s' WHERE %s IS NULL",
+				qtbl, qv, qo, site, qv))
 			stamp := fmt.Sprintf("SET NEW.%s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, NEW.%s = '%s'", qv, qo, site)
 			for _, ev := range []string{"INSERT", "UPDATE"} {
 				trg := quoteIdent(engine, fmt.Sprintf("mm_stamp_%s_%s", table, strings.ToLower(ev[:1])))
@@ -346,7 +369,7 @@ func runStream() {
 		Storage: nats.FileStorage, MaxBytes: 64 * 1024 * 1024, Discard: nats.DiscardOld,
 	})
 	sub, err := js.PullSubscribe(subject, durable,
-		nats.BindStream(stream), nats.AckExplicit(), nats.DeliverAll(), nats.ManualAck())
+		nats.BindStream(stream), nats.AckExplicit(), nats.DeliverAll(), nats.ManualAck(), nats.AckWait(ackWaitDur()))
 	if err != nil {
 		log.Fatalf("subscribe: %v", err)
 	}
@@ -439,7 +462,7 @@ func runPump() {
 		Storage: nats.FileStorage, MaxBytes: 64 * 1024 * 1024, Discard: nats.DiscardOld,
 	})
 	sub, err := js.PullSubscribe(subject, durable,
-		nats.BindStream(stream), nats.AckExplicit(), nats.DeliverAll(), nats.ManualAck())
+		nats.BindStream(stream), nats.AckExplicit(), nats.DeliverAll(), nats.ManualAck(), nats.AckWait(ackWaitDur()))
 	if err != nil {
 		log.Fatalf("subscribe: %v", err)
 	}
