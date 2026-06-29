@@ -325,16 +325,19 @@ function CanvasInner() {
             const s = EDGE_STATE[st];
             const detail = st === "dead" ? `dead ${dead}${lag ? ` · lag ${lag}` : ""}` : st === "lag" ? `lag ${lag}` : s.word;
             // pattern + shape glyph + word carry the state; color is the third (redundant) cue
+            // NOT animated: React Flow animates by forcing a moving dash, which would
+            // override our solid "in sync" pattern (a synced edge would look dashed, like
+            // "lagging"). Static strokeDasharray keeps the pattern exact + matching the legend.
             return {
               ...e,
               label: `${EDGE_GLYPH[d.type]} ${s.glyph} ${detail}`,
-              animated: true,
-              style: { stroke: s.color, strokeWidth: s.width, strokeDasharray: s.dash },
+              animated: false,
+              style: { stroke: s.color, strokeWidth: s.width, strokeDasharray: s.dash ?? "none" },
               labelStyle: { fontSize: 11 },
             };
           }
         }
-        return { ...e, label, animated: true, style: { stroke, strokeWidth: 2 }, labelStyle: { fontSize: 11 } };
+        return { ...e, label, animated: false, style: { stroke, strokeWidth: 2, strokeDasharray: "none" }, labelStyle: { fontSize: 11 } };
       }),
     [edges, legBy, nameOf, editing],
   );
