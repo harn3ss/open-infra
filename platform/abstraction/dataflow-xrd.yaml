@@ -95,14 +95,10 @@ spec:
                         type: boolean
                         default: false
                         description: "Replication edges: create the target's tables from `from` before syncing (seeds an empty member). Initial rows then load via the CDC snapshot."
-                      tables:
-                        type: array
-                        items: { type: string }
-                        description: "Tables for this edge. Empty = use the topology-level tables."
                 tables:
                   type: array
                   items: { type: string }
-                  description: "Default tables replicated/migrated on every edge (override per-edge)."
+                  description: "Tables moved on every edge of this flow (e.g. [\"public.orders\"], or [\"*\"] for all). Scope is per-flow; per-edge table subsets are not yet supported."
                 versionColumn: { type: string, default: "_mm_version" }
                 originColumn: { type: string, default: "_mm_origin" }
             status:
