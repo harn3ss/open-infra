@@ -194,6 +194,11 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 			// the input — the server maps each edge to its stream(s)/durable(s).
 			api.With(middleware.Timeout(15*time.Second)).
 				Post("/dataflows/{namespace}/{name}/status", handleDataFlowStatus(logger))
+			// Live database-engine internals (top queries, connections, replication-slot
+			// lag) for a Data Flow database node / RDS detail page. Reads the node's
+			// credential Secret server-side, connects read-only. (issue #56)
+			api.With(middleware.Timeout(15*time.Second)).
+				Post("/db-stats", handleDBStats(*client.Clientset, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
