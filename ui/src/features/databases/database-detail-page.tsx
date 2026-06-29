@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Database, Eye, EyeOff } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
@@ -76,6 +77,17 @@ export function DatabaseDetailPage() {
     },
     onSuccess: () => void refetchApp(),
   });
+  // Start/Stop: toggle database.stopped on the owning Application (RDS stop/start).
+  const setStopped = useMutation({
+    mutationFn: async (stopped: boolean) => {
+      const p = openinfraPaths.application(namespace, appName);
+      const cur = await k8sGet<Application>(p);
+      const spec = (cur.spec ?? {}) as Record<string, unknown>;
+      const database = { ...((spec.database as Record<string, unknown>) ?? {}), stopped };
+      return k8sReplace<Application>(p, { ...cur, spec: { ...spec, database } } as Application);
+    },
+    onSuccess: () => void refetchApp(),
+  });
   // Live engine internals ("Peek") — refetched while the tab is open.
   const [peekOpen, setPeekOpen] = useState(false);
   const peekQ = useQuery({
@@ -99,6 +111,7 @@ export function DatabaseDetailPage() {
 
   const d = secret?.data ?? {};
   const uri = decode(d["uri"]);
+  const stopped = Boolean(((app?.spec as Record<string, unknown> | undefined)?.database as Record<string, unknown> | undefined)?.stopped);
   const phase = db.status?.phase;
   const ready = db.status?.readyInstances ?? 0;
   const total = db.spec?.instances ?? db.status?.instances ?? 1;
@@ -148,7 +161,20 @@ export function DatabaseDetailPage() {
           <Card>
             <CardContent className="divide-y divide-border p-0">
               <ResourceNameRow kind="database" name={name} namespace={namespace} />
-              <DetailRow label="Status">{phase ?? "—"}</DetailRow>
+              <DetailRow label="Status">{stopped ? "Stopped" : (phase ?? "—")}</DetailRow>
+              <DetailRow label="Power">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">{stopped ? "Stopped — data retained, compute off" : "Running"}</span>
+                  <Button
+                    size="sm"
+                    variant={stopped ? "default" : "outline"}
+                    disabled={setStopped.isPending}
+                    onClick={() => setStopped.mutate(!stopped)}
+                  >
+                    {setStopped.isPending ? "Working…" : stopped ? "Start" : "Stop"}
+                  </Button>
+                </div>
+              </DetailRow>
               <DetailRow label="Instances">
                 {ready}/{total} ready
               </DetailRow>

@@ -5,6 +5,7 @@ import { Database, Eye, EyeOff } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
@@ -90,6 +91,17 @@ export function ManagedDatabaseDetailPage() {
     },
     onSuccess: () => void refetch(),
   });
+  // Start/Stop: toggle database.stopped (RDS stop/start) — scales the engine to 0, keeps the PVC.
+  const setStopped = useMutation({
+    mutationFn: async (stopped: boolean) => {
+      const p = openinfraPaths.application(namespace, name);
+      const cur = await k8sGet<Application>(p);
+      const spec = (cur.spec ?? {}) as Record<string, unknown>;
+      const database = { ...((spec.database as Record<string, unknown>) ?? {}), stopped };
+      return k8sReplace<Application>(p, { ...cur, spec: { ...spec, database } } as Application);
+    },
+    onSuccess: () => void refetch(),
+  });
 
   const engineKey = (app?.spec?.database?.engine ?? "mongo") as keyof typeof ENGINES;
   const e = ENGINES[engineKey] ?? ENGINES.mongo;
@@ -122,6 +134,7 @@ export function ManagedDatabaseDetailPage() {
   const uri = decode(secret?.data?.[e.uriKey]);
   const health = claimHealth(app);
   const ha = Boolean(db?.highAvailability);
+  const stopped = Boolean((db as Record<string, unknown> | undefined)?.stopped);
 
   return (
     <DetailShell
@@ -170,6 +183,19 @@ export function ManagedDatabaseDetailPage() {
               <ResourceNameRow kind="database" name={name} namespace={namespace} />
               <DetailRow label="Engine">
                 <Badge variant="secondary">{e.label}</Badge>
+              </DetailRow>
+              <DetailRow label="Power">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">{stopped ? "Stopped — data retained, compute off" : "Running"}</span>
+                  <Button
+                    size="sm"
+                    variant={stopped ? "default" : "outline"}
+                    disabled={setStopped.isPending}
+                    onClick={() => setStopped.mutate(!stopped)}
+                  >
+                    {setStopped.isPending ? "Working…" : stopped ? "Start" : "Stop"}
+                  </Button>
+                </div>
               </DetailRow>
               <DetailRow label="Database">{db?.name ?? "—"}</DetailRow>
               <DetailRow label="Namespace">{namespace}</DetailRow>

@@ -44,6 +44,9 @@ spec:
             {{- if $spec.database }}{{ $dbEngine = ($spec.database.engine | default "postgres") }}{{- end }}
             {{- $dbName := "" }}
             {{- if $spec.database }}{{ $dbName = ($spec.database.name | default $name) }}{{- end }}
+            {{- /* database.stopped: hibernate/scale-to-zero while keeping the PVC (RDS stop/start) */}}
+            {{- $dbStopped := false }}
+            {{- if $spec.database }}{{ $dbStopped = ($spec.database.stopped | default false) }}{{- end }}
             {{- $dbPass := .observed.composite.resource.metadata.uid | sha256sum | trunc 24 }}
             {{- $dbRootPass := printf "%s-root" .observed.composite.resource.metadata.uid | sha256sum | trunc 24 }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
@@ -347,7 +350,7 @@ spec:
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/name: {{ $name }}-docdb }
                   spec:
-                    replicas: 1
+                    replicas: {{ if $dbStopped }}0{{ else }}1{{ end }}
                     strategy: { type: Recreate }
                     selector: { matchLabels: { app.kubernetes.io/name: {{ $name }}-docdb } }
                     template:
@@ -403,7 +406,7 @@ spec:
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/name: {{ $name }}-mongo }
                   spec:
-                    replicas: {{ if $spec.database.highAvailability }}2{{ else }}1{{ end }}
+                    replicas: {{ if $dbStopped }}0{{ else if $spec.database.highAvailability }}2{{ else }}1{{ end }}
                     selector: { matchLabels: { app.kubernetes.io/name: {{ $name }}-mongo } }
                     template:
                       metadata:
@@ -498,7 +501,7 @@ spec:
                     passwordSecretKeyRef: { name: {{ $name }}-mysql-app, key: password }
                     database: {{ $dbName }}
                     port: 3306
-                    replicas: {{ if $spec.database.highAvailability }}3{{ else }}1{{ end }}
+                    replicas: {{ if $dbStopped }}0{{ else if $spec.database.highAvailability }}3{{ else }}1{{ end }}
                     {{- if $spec.database.highAvailability }}
                     galera:
                       enabled: true
@@ -522,7 +525,14 @@ spec:
                 manifest:
                   apiVersion: postgresql.cnpg.io/v1
                   kind: Cluster
-                  metadata: { name: {{ $name }}-db, namespace: {{ $ns }} }
+                  metadata:
+                    name: {{ $name }}-db
+                    namespace: {{ $ns }}
+                    {{- if $dbStopped }}
+                    # Declarative hibernation: CNPG scales the instances to zero but keeps
+                    # the PVCs. Remove the annotation (stopped=false) to resume.
+                    annotations: { cnpg.io/hibernation: "on" }
+                    {{- end }}
                   spec:
                     {{- if $spec.securityGroups }}
                     # SecurityGroup membership: CNPG propagates inheritedMetadata to
