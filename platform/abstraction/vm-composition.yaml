@@ -72,6 +72,8 @@ spec:
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
             {{- /* highAvailability: root disk on Longhorn (migratable RWX block) + live migration */}}
             {{- $ha := $spec.highAvailability | default false }}
+            {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
+            {{- $adopt := $spec.existingRootClaim | default "" }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via
             #     CDI (registry import for Linux; clone of the golden PVC for Windows).
@@ -95,6 +97,7 @@ spec:
                       openinfra.dev/os: {{ $spec.os }}
                   spec:
                     runStrategy: {{ if $running }}Always{{ else }}Halted{{ end }}
+                    {{- if not $adopt }}
                     dataVolumeTemplates:
                       - metadata:
                           name: {{ $name }}-root
@@ -118,6 +121,7 @@ spec:
                             registry:
                               url: "docker://{{ $profile.image }}"
                             {{- end }}
+                    {{- end }}
                     template:
                       metadata:
                         labels:
@@ -207,8 +211,13 @@ spec:
                           {{- end }}
                         volumes:
                           - name: root
+                            {{- if $adopt }}
+                            persistentVolumeClaim:
+                              claimName: {{ $adopt }}
+                            {{- else }}
                             dataVolume:
                               name: {{ $name }}-root
+                            {{- end }}
                           {{- if $isWin }}
                           - name: sysprep
                             sysprep:

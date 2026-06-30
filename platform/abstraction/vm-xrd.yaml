@@ -100,6 +100,10 @@ spec:
                 # (reschedule + boot) and live-migrates off a drained node with zero downtime.
                 # Default false = local-path NVMe (faster, but pinned to one node).
                 highAvailability: { type: boolean, default: false }
+                # Boot from an EXISTING root PVC instead of cloning a fresh disk from the OS
+                # image. Used to migrate/restore a VM onto a pre-populated disk (e.g. a disk
+                # cloned onto Longhorn). When set, no root DataVolume is provisioned.
+                existingRootClaim: { type: string }
             status:
               type: object
               properties:
