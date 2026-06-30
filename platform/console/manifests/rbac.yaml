@@ -90,6 +90,7 @@ rules:
       - dataflows
       - streams
       - securitygroups
+      - faultinjections
     verbs: [get, list, watch, create, update, patch, delete]
 
   # ── KubeVirt + CDI: read VM/guest/disk status for the Virtual Machines view
