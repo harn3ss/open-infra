@@ -44,6 +44,11 @@ The connection string is injected into the app's pods as `DATABASE_URL` (postgre
 
 Default (`false`) is a single instance — fine for dev.
 
+**Convert on demand:** you can flip `highAvailability` on a *running* database (a toggle on
+the detail page) — no recreate. Postgres scales its CNPG instance count live (adds/removes a
+streaming-replication standby); Mongo scales the proxy tier; MySQL converts the standalone
+MariaDB to a 3-node Galera cluster. (Start the database first if it's stopped.)
+
 ## Storage & durability
 
 Database volumes use **local-path** PVs (local NVMe — never CIFS/NFS) for performance, and

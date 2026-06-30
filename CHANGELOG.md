@@ -58,6 +58,10 @@ the product's public contract.
 - **Start/Stop (`spec.database.stopped`)** — RDS-style stop/start that retains data: Postgres
   hibernates (CNPG), MySQL/Mongo scale to zero, PVCs are kept. A Start/Stop button on the
   database detail pages toggles it. See [docs/databases.md](docs/databases.md).
+- **Convert non-HA ↔ HA on demand** — a High-availability toggle on the database detail pages
+  flips `spec.database.highAvailability` on a running DB without a recreate: Postgres (CNPG)
+  scales the instance count live (adds/removes a streaming-replication standby — verified
+  1→2 in ~30s), Mongo scales the FerretDB proxy tier, MySQL converts to a 3-node Galera.
 
 ### Security
 - Cleared all open Trivy image CVEs: apply-sink Go toolchain 1.22 → 1.26 (43 stdlib CVEs,
