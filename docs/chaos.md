@@ -87,6 +87,43 @@ spec: { type: io-latency, latency: "300ms", volumePath: "/var/lib/postgresql", t
 Observe the impact in the usual places — the database **Peek** tab, the DataFlow per-edge
 overlay, Grafana — and via the Chaos Mesh dashboard (`chaos-mesh` namespace).
 
+## Validation (GameDays run)
+
+These experiments aren't just documented — they've been run against **disposable** resources
+(throwaway namespaces, created and torn down; never against anything in use), with the blast
+radius scoped to those resources. Summary of what was validated:
+
+**Single primitives**
+- *Stateless app* — `pod-kill` a replica → the Deployment recreated it; service stayed at full
+  replica count.
+- *Block storage (Longhorn)* — `pod-kill` a pod holding a Longhorn volume → the replacement pod
+  reattached the volume with its data intact.
+- *Stateful database* — `pod-kill` a database pod → the new pod recovered its data from the
+  persistent volume.
+- *HA Postgres (CloudNativePG)* — `pod-kill` the primary → a standby was promoted to primary in
+  ~15s and the cluster returned to full health, the old primary rejoining as a replica.
+
+**Chained, multi-piece pipelines (Data Flows)**
+- *9-piece mixed topology* — a 3-engine multi-master core (PostgreSQL + MySQL + MariaDB) plus a
+  one-way migration spoke and a stream to a topic. Under **concurrent** faults (capture-pod
+  kill + a member network-partition + an apply-sink kill) with writes flowing throughout, all
+  members **converged** (last-write-wins resolved a cross-member conflict; the migration spoke
+  stayed in sync).
+- *4-engine migration relay* — PostgreSQL → MySQL → MariaDB → SQL Server, where one write
+  cascades through every engine. Killing a **mid-chain** capture and the **last-hop** sink at
+  once, while writing at the source, the cascade self-healed and every engine ended consistent.
+
+**Fault types** — pod kill/failure, network latency/loss/partition, CPU/memory stress, clock
+skew, and disk-IO latency have all been exercised.
+
+**Chaos found (and we fixed) a real bug.** A `clock-skew` experiment on a multi-master member
+revealed that the MySQL/MariaDB change-stamping lacked a *monotonic* clock guard (which
+PostgreSQL and SQL Server already had): a backwards wall-clock produced a lower version, so the
+write lost last-write-wins and silently diverged. The stamping was changed to a monotonic
+hybrid logical clock, and re-running the **same** experiment confirmed the fix (the version
+advanced instead of going backwards, and the write converged). That loop — *inject → observe →
+fix → re-inject* — is the point of keeping these experiments around.
+
 ## See also
 
 - [`databases.md`](databases.md) — managed DB HA / failover the experiments exercise
