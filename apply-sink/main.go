@@ -222,7 +222,17 @@ func mmPrepSetup(db *sql.DB, engine, site, vcol string) error {
 			}
 		}
 	case "mysql":
-		// no shared scaffolding (clock-based stamping, no HLC state table)
+		// HLC state, so the stamping trigger is MONOTONIC (a backward wall clock — NTP
+		// step, clock skew — bumps the logical counter instead of going backwards, which
+		// would make writes lose last-write-wins). Mirrors Postgres/SQL Server.
+		for _, q := range []string{
+			`CREATE TABLE IF NOT EXISTS mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`,
+			`INSERT IGNORE INTO mm_hlc_state(id) VALUES(1)`,
+		} {
+			if _, err := db.Exec(q); err != nil {
+				return err
+			}
+		}
 	default:
 		return fmt.Errorf("mm-prep not implemented for engine %s", engine)
 	}
@@ -316,14 +326,26 @@ func mmPrepTable(db *sql.DB, engine, site, vcol, ocol, schema, table string) err
 			qtbl, qv, qo, site, qv)); err != nil {
 			return err
 		}
-		stamp := fmt.Sprintf("SET NEW.%s = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED)*65536, NEW.%s = '%s'", qv, qo, site)
+		// Monotonic HLC: a native write advances max(stored, clock) and stamps version+origin;
+		// a replication-applied write (@app_replication set) is skipped but OBSERVES the
+		// remote version so the local clock can't fall behind. DECLAREs must lead the block.
+		body := "BEGIN " +
+			"DECLARE cpt BIGINT; DECLARE clc INT; DECLARE nowms BIGINT; DECLARE npt BIGINT; DECLARE nlc INT; " +
+			"IF @app_replication IS NULL THEN " +
+			"  SET nowms = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED); " +
+			"  SELECT pt,lc INTO cpt,clc FROM mm_hlc_state WHERE id=1 FOR UPDATE; " +
+			"  IF nowms > cpt THEN SET npt=nowms; SET nlc=0; ELSE SET npt=cpt; SET nlc=clc+1; END IF; " +
+			"  UPDATE mm_hlc_state SET pt=npt, lc=nlc WHERE id=1; " +
+			fmt.Sprintf("  SET NEW.%s = npt*65536+nlc, NEW.%s = '%s'; ", qv, qo, site) +
+			"ELSE " +
+			fmt.Sprintf("  UPDATE mm_hlc_state SET pt = GREATEST(pt, FLOOR(NEW.%s/65536)) WHERE id=1; ", qv) +
+			"END IF; END"
 		for _, ev := range []string{"INSERT", "UPDATE"} {
 			trg := quoteIdent(engine, fmt.Sprintf("mm_stamp_%s_%s", table, strings.ToLower(ev[:1])))
 			if err := exec(fmt.Sprintf("DROP TRIGGER IF EXISTS %s", trg)); err != nil {
 				return err
 			}
-			if err := exec(fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s FOR EACH ROW BEGIN IF @app_replication IS NULL THEN %s; END IF; END",
-				trg, ev, qtbl, stamp)); err != nil {
+			if err := exec(fmt.Sprintf("CREATE TRIGGER %s BEFORE %s ON %s FOR EACH ROW %s", trg, ev, qtbl, body)); err != nil {
 				return err
 			}
 		}
