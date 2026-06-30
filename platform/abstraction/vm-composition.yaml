@@ -70,6 +70,8 @@ spec:
                    keeps the user's diskSize — cloud-init grows the rootfs to fit. */}}
             {{- if $isWin }}{{- $disk = "70Gi" }}{{- end }}
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
+            {{- /* highAvailability: root disk on Longhorn (migratable RWX block) + live migration */}}
+            {{- $ha := $spec.highAvailability | default false }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via
             #     CDI (registry import for Linux; clone of the golden PVC for Windows).
@@ -98,11 +100,14 @@ spec:
                           name: {{ $name }}-root
                         spec:
                           storage:
-                            accessModes: [ReadWriteOnce]
+                            accessModes: [{{ if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+                            {{- if $ha }}
+                            volumeMode: Block   # raw block is required for live-migratable Longhorn
+                            {{- end }}
                             resources:
                               requests:
                                 storage: {{ $disk }}
-                            storageClassName: local-path
+                            storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                           source:
                             {{- if $isWin }}
                             # Clone the per-version golden image (build via kind: VmImage).
@@ -124,6 +129,11 @@ spec:
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
                       spec:
+                        {{- if $ha }}
+                        # Drain a node -> live-migrate this VM off it (zero downtime) instead
+                        # of killing it. Requires the migratable RWX block root disk above.
+                        evictionStrategy: LiveMigrate
+                        {{- end }}
                         {{- if $bridge }}
                         # Bridge VMs must land where the macvlan parent NIC exists
                         # (label those nodes openinfra.dev/vm-lan=true).

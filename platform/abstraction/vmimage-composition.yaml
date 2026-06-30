@@ -64,7 +64,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: 9Gi } }
-                      storageClassName: local-path
+                      storageClassName: longhorn
             ---
             # --- virtio-win drivers ISO ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -83,7 +83,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: 1Gi } }
-                      storageClassName: local-path
+                      storageClassName: longhorn
             ---
             # --- The golden disk (blank now; the installer writes + syspreps it).
             #     Standalone so it survives after the installer VM stops. ---
@@ -106,7 +106,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: {{ $disk }} } }
-                      storageClassName: local-path
+                      storageClassName: longhorn
             ---
             # --- Sysprep ConfigMap: the unattended answer file (KubeVirt mounts it
             #     as the autounattend CD). Edition + virtio driver path per version.
