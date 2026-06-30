@@ -1,0 +1,22 @@
+# Longhorn StorageClass for LIVE-MIGRATABLE VM root disks (KubeVirt).
+# The `migratable: "true"` parameter lets a Longhorn volume be attached to two
+# nodes at once during a live migration handoff. Used by kind: VirtualMachine
+# when spec.highAvailability=true, together with volumeMode: Block + RWX on the
+# PVC (set by the VM composition). Replicated (2x) so the VM also survives a node
+# loss via reschedule. Not the default class — VMs opt in.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-migratable
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "30"
+  migratable: "true"
+  disableRevisionCounter: "true"
+  dataLocality: "disabled"

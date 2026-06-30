@@ -94,6 +94,12 @@ spec:
                 # when stopped. Kept in spec (not a subresource) so it stays GitOps-
                 # clean and the provider doesn't fight power changes.
                 running:  { type: boolean, default: true }
+                # Node-independent storage + live migration. When true the root disk is
+                # provisioned on Longhorn (migratable RWX block, replicated across nodes)
+                # and the VM gets evictionStrategy: LiveMigrate, so it survives a node loss
+                # (reschedule + boot) and live-migrates off a drained node with zero downtime.
+                # Default false = local-path NVMe (faster, but pinned to one node).
+                highAvailability: { type: boolean, default: false }
             status:
               type: object
               properties:
