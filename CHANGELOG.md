@@ -63,6 +63,23 @@ the product's public contract.
   scales the instance count live (adds/removes a streaming-replication standby — verified
   1→2 in ~30s), Mongo scales the FerretDB proxy tier, MySQL converts to a 3-node Galera.
 
+### Chaos engineering (`kind: FaultInjection`) — Fault Injection Simulator
+- **Chaos Mesh** installed declaratively (Argo app, k3s containerd socket wired) + a
+  **`kind: FaultInjection`** abstraction that compiles a small curated spec to a Chaos Mesh
+  experiment with the **blast radius enforced** (always namespace + label-selector scoped,
+  time-boxed). Types: pod-kill/pod-failure, network latency/loss/partition, cpu/memory stress,
+  clock-skew, io-latency. A **console page** (Observability → Chaos) lists/creates/deletes
+  experiments. See [docs/chaos.md](docs/chaos.md).
+- **GameDays run** against disposable resources: validated Longhorn volume durability, MariaDB
+  stateful recovery, CNPG HA failover, a 9-piece mixed mesh+migration+stream pipeline (converged
+  under concurrent capture-kill + partition + sink-kill), and a 4-engine migration relay chain
+  (recovered from a mid-chain capture+sink kill).
+- **Chaos found a real bug (T6) — now fixed** (commit 2f858fc): a `clock-skew` experiment showed
+  MySQL/MariaDB stamping had no monotonic HLC guard, so a backward clock produced a lower
+  `_mm_version` → the write lost last-write-wins and silently diverged. MySQL/MariaDB now use a
+  monotonic `mm_hlc_state` HLC (+ observe remote versions) like Postgres/SQL Server; re-running
+  the same experiment, the version advanced +1 (not backward) and the write converged.
+
 ### Security
 - Cleared all open Trivy image CVEs: apply-sink Go toolchain 1.22 → 1.26 (43 stdlib CVEs,
   incl. critical) and `jackc/pgx/v5` 5.5.5 → 5.10.0 (2 critical); console-api crypto/net bumps.
