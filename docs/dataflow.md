@@ -114,8 +114,10 @@ DataFlow compiles onto the same Debezium + NATS JetStream + apply-sink engine as
 Replication and Stream:
 
 - **Per source node** → a Debezium connector captures changes onto a capped JetStream
-  stream `flow-<name>-<node>` (subjects `f.<name>.<node>.>`). Both database nodes *and*
-  function nodes publish such a stream, so stages compose.
+  stream `flow-<ns>-<name>-<node>` (subjects `f.<ns>-<name>.<node>.>`). The namespace is part
+  of every NATS name (streams are cluster-global, unlike namespaced k8s objects), so two flows
+  with the same name in different namespaces never collide. Both database nodes *and* function
+  nodes publish such a stream, so stages compose.
 - **Per replication node** → an `mm-prep` job installs the version + origin columns and a
   per-site stamping trigger (Hybrid Logical Clock; see [`replication.md`](replication.md)).
 - **Per replication edge** → two `apply-sink` workers (one each way) with origin-marker
@@ -127,7 +129,7 @@ Replication and Stream:
   event to the function's own stream for the next stage. A `204`/empty response drops the
   event (a filter).
 - **Per stream edge** → nothing extra: the source's stream *is* the topic; consumers read
-  `f.<name>.<node>.>`.
+  `f.<ns>-<name>.<node>.>`.
 
 ### Function contract
 
