@@ -18,7 +18,7 @@ spec:
       recurse: true
       # Pick up only the component Application manifests (one level per area).
       # Raw CRs (e.g. abstraction/config/*) are synced by their own child app.
-      include: '{networking,storage,data,observability,security,abstraction,console,gpu,serverless,backup}/*.yaml'
+      include: '{networking,storage,data,observability,security,abstraction,console,gpu,serverless,backup,resilience}/*.yaml'
       # Nested manifests/ dirs are deployed by their own child app (e.g. the
       # console), not applied directly by the root app. install.sh rewrites this
       # glob to also drop disabled components and the unused MinIO variant
