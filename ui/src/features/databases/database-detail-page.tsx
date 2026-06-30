@@ -88,6 +88,18 @@ export function DatabaseDetailPage() {
     },
     onSuccess: () => void refetchApp(),
   });
+  // Convert non-HA <-> HA on demand: toggle database.highAvailability. CNPG scales the
+  // instance count live (adds/removes a streaming-replication standby) — no recreate.
+  const setHA = useMutation({
+    mutationFn: async (highAvailability: boolean) => {
+      const p = openinfraPaths.application(namespace, appName);
+      const cur = await k8sGet<Application>(p);
+      const spec = (cur.spec ?? {}) as Record<string, unknown>;
+      const database = { ...((spec.database as Record<string, unknown>) ?? {}), highAvailability };
+      return k8sReplace<Application>(p, { ...cur, spec: { ...spec, database } } as unknown as Application);
+    },
+    onSuccess: () => void refetchApp(),
+  });
   // Live engine internals ("Peek") — refetched while the tab is open.
   const [peekOpen, setPeekOpen] = useState(false);
   const peekQ = useQuery({
@@ -111,7 +123,9 @@ export function DatabaseDetailPage() {
 
   const d = secret?.data ?? {};
   const uri = decode(d["uri"]);
-  const stopped = Boolean(((app?.spec as Record<string, unknown> | undefined)?.database as Record<string, unknown> | undefined)?.stopped);
+  const dbSpec = (app?.spec as Record<string, unknown> | undefined)?.database as Record<string, unknown> | undefined;
+  const stopped = Boolean(dbSpec?.stopped);
+  const ha = Boolean(dbSpec?.highAvailability);
   const phase = db.status?.phase;
   const ready = db.status?.readyInstances ?? 0;
   const total = db.spec?.instances ?? db.status?.instances ?? 1;
@@ -177,6 +191,20 @@ export function DatabaseDetailPage() {
               </DetailRow>
               <DetailRow label="Instances">
                 {ready}/{total} ready
+              </DetailRow>
+              <DetailRow label="High availability">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">{ha ? "On · primary + standby (auto-failover)" : "Off · single instance"}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={setHA.isPending || stopped}
+                    onClick={() => setHA.mutate(!ha)}
+                    title={stopped ? "Start the database first" : undefined}
+                  >
+                    {setHA.isPending ? "Working…" : ha ? "Make single-instance" : "Convert to HA"}
+                  </Button>
+                </div>
               </DetailRow>
               <DetailRow label="Storage">
                 {db.spec?.storage?.size ?? "—"} (
