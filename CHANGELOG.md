@@ -46,6 +46,13 @@ the product's public contract.
   **pattern** (solid = in sync, dashed = lagging, dotted = dead-letters, sparse-dots = not
   provisioned) + a shape glyph + a colour-blind-safe (Okabe-Ito) palette.
 - Removed the unimplemented per-edge `tables` field from the schema (scope is per-flow).
+- **Namespace-qualified NATS names** — streams/subjects/durables are now `<ns>-<name>`-scoped
+  (they're cluster-global, unlike k8s objects), so two DataFlows with the same name in different
+  namespaces can no longer share streams (cross-tenant cross-feed). Composition + GC + status BFF
+  updated in lockstep.
+- **Cross-engine DATE coercion** — a Debezium DATE (days since epoch) applied to a column the
+  target introspects as `timestamp` is no longer misread as seconds (1970); small temporal
+  integers are now treated as days.
 
 ### Managed databases (RDS) — console + lifecycle
 - **Peek (live engine internals)** on the `/databases` pages — connections, replication-slot
