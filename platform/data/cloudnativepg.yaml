@@ -14,7 +14,7 @@ spec:
   source:
     repoURL: https://cloudnative-pg.github.io/charts
     chart: cloudnative-pg
-    targetRevision: 0.22.1
+    targetRevision: 0.23.2   # operator 1.25.1 (single-minor step from 1.24.1; unlocks synchronous.dataDurability)
     helm:
       values: |
         crds:
