@@ -2,7 +2,7 @@
 # For a graph of database nodes + edges it renders, using the same Debezium + NATS
 # + apply-sink engine as Migration/Replication:
 #   - per SOURCE node: a Debezium connector capturing that node's changes onto a
-#     capped JetStream stream (flow-<name>-<node>, subjects f.<name>.<node>.>),
+#     capped JetStream stream (flow-<ns>-<name>-<node>, subjects f.<ns>-<name>.<node>.>),
 #   - per REPLICATION node: an mm-prep Job (version/origin columns + stamping trigger),
 #   - per REPLICATION edge a<->b: two apply-sinks (a->b and b->a) with origin-marker
 #     loop prevention + HLC last-write-wins,

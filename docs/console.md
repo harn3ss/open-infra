@@ -23,7 +23,7 @@ The sidebar is grouped like a cloud console:
 - **Data** — Databases, **Data Flows**, Streams, Buckets, Queues. (Data Flows is the
   single data-movement entry — migration and replication are modes within it.)
 - **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity), Network.
-- **Observability** — Monitoring (embedded Grafana dashboards).
+- **Observability** — Monitoring (embedded Grafana dashboards), **Chaos** (fault injection).
 
 ## Resource views & detail pages
 
@@ -47,6 +47,7 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **File Share** (EFS/FSx) | Overview, **Connect** (Windows `net use` / Linux `mount`), YAML · create / delete |
 | **Active Directory** (Directory Service) | Overview (domain/realm/DC), **Join** instructions, YAML · create / delete |
 | **Node** | CPU/memory/pod capacity, **GPU** (count + model), conditions, YAML |
+| **Chaos** (FIS) | List/create/delete `kind: FaultInjection` experiments (type, blast-radius target, duration, status); blast radius shown before you launch. See [chaos.md](chaos.md) · create / delete |
 
 ## How it works
 

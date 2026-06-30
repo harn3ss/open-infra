@@ -64,11 +64,14 @@ flag) so replicated rows keep the original site's `(version, origin)`:
 |--------|---------|-----------|
 | PostgreSQL | `BEFORE INSERT/UPDATE` + a Hybrid Logical Clock | `app.replication` GUC (DSN `options=-c`) |
 | SQL Server | `AFTER INSERT/UPDATE` (no `BEFORE`-row triggers) with a `TRIGGER_NESTLEVEL` recursion guard, HLC | `SESSION_CONTEXT('app_replication')` |
-| MySQL / MariaDB | `BEFORE INSERT/UPDATE`, ms-clock version | `@app_replication` session var |
+| MySQL / MariaDB | `BEFORE INSERT/UPDATE` + a Hybrid Logical Clock (`mm_hlc_state`) | `@app_replication` session var |
 
 So a write to **any** engine is auto-stamped — no application changes required.
-(Postgres and SQL Server advance a true HLC, including on apply; MySQL uses a
-millisecond wall-clock version, comparable for cross-engine LWW.)
+**All** engines advance a true, *monotonic* HLC (a shared `mm_hlc_state` row: the version is
+`max(stored, wall-clock)` with a logical counter, and apply-side writes *observe* the remote
+version) — so a backwards wall-clock (NTP step / skew) can never make a version go backwards
+and silently lose last-write-wins. (This was hardened after a clock-skew chaos experiment caught
+MySQL/MariaDB lacking the guard; see [`chaos.md`](chaos.md).)
 
 ## Topology
 
