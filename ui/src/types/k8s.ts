@@ -374,6 +374,38 @@ export interface DirectoryStatus {
 export type Directory = K8sObject<DirectorySpec, DirectoryStatus>;
 export const DIRECTORIES_PLURAL = "directories";
 
+// kind: FaultInjection — chaos engineering ("Fault Injection Simulator").
+export type FaultInjectionType =
+  | "pod-kill"
+  | "pod-failure"
+  | "network-latency"
+  | "network-loss"
+  | "network-partition"
+  | "stress-cpu"
+  | "stress-memory"
+  | "clock-skew"
+  | "io-latency";
+export interface FaultInjectionSpec {
+  type: FaultInjectionType;
+  target: { namespace?: string; labelSelector: Record<string, string> };
+  mode?: "one" | "all" | "fixed-percent";
+  value?: string;
+  duration?: string;
+  latency?: string;
+  loss?: string;
+  direction?: "to" | "from" | "both";
+  cpuWorkers?: number;
+  cpuLoad?: number;
+  memory?: string;
+  timeOffset?: string;
+  volumePath?: string;
+}
+export interface FaultInjectionStatus {
+  phase?: string;
+}
+export type FaultInjection = K8sObject<FaultInjectionSpec, FaultInjectionStatus>;
+export const FAULTINJECTIONS_PLURAL = "faultinjections";
+
 /* ----- open-infra Migration CRD (DMS — Debezium + apply-sink engine) ------- */
 
 export interface MigrationPasswordRef {

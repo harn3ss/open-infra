@@ -1,4 +1,5 @@
 import {
+  Bomb,
   BrainCircuit,
   Boxes,
   Building2,
@@ -58,4 +59,5 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Network", to: "/network", icon: Globe, matchPrefix: true, section: "Cluster" },
 
   { label: "Monitoring", to: "/monitoring", icon: LineChart, section: "Observability" },
+  { label: "Chaos", to: "/chaos", icon: Bomb, matchPrefix: true, section: "Observability" },
 ];
