@@ -65,6 +65,7 @@ CNCF projects — not a reinvention of databases or storage.
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | Secrets Manager | secrets | Sealed Secrets |
 | AWS Backup | backup/DR | Velero |
+| Fault Injection Simulator | chaos engineering (`kind: FaultInjection`) | Chaos Mesh |
 
 Full mapping and rationale: [`docs/architecture.md`](docs/architecture.md).
 
@@ -170,6 +171,11 @@ abstractions are shipped and verified end-to-end:
 - **`FileShare`** — shared SMB file storage (open-infra's "EFS/FSx"), with a Connect
   helper (Windows `net use` / Linux `mount`).
 - **`Directory`** — managed Active Directory (Samba AD DC) for Windows domain join.
+- **`FaultInjection`** — chaos engineering (open-infra's "Fault Injection Simulator"):
+  declare a fault (pod-kill, network partition/latency/loss, CPU/memory stress, clock skew,
+  IO latency) scoped to a namespace + label selector; it compiles to a blast-radius-enforced
+  Chaos Mesh experiment. Ships a curated library that validates the platform's own resilience
+  (CNPG failover, CDC offset durability, mesh convergence). See [`docs/chaos.md`](docs/chaos.md).
 - **Managed databases (RDS)** — declared by an `Application`'s `database:` block:
   PostgreSQL (CloudNativePG), MySQL (MariaDB), or MongoDB (FerretDB), with HA,
   **Start/Stop** (data-retaining hibernation), and a live **Peek** (connections / CDC lag /

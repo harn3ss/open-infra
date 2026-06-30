@@ -54,6 +54,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | VPC | network isolation | namespaces + **NetworkPolicy** | the Application composition authors per-app NetworkPolicies; **Cilium** enforces them |
 | VPC Security Groups | host firewall | **Cilium NetworkPolicy** | `kind: SecurityGroup`; reusable rule sets (CIDR / SG / namespace, ingress + egress) attached to apps/functions/VMs — see [security-groups.md](security-groups.md) |
 | AWS Backup | backup/DR | **Velero** → MinIO/NAS | |
+| Fault Injection Simulator | chaos engineering | **Chaos Mesh** | `kind: FaultInjection`; blast-radius-scoped pod/network/stress/clock/IO faults — see [chaos.md](chaos.md) |
 | Cost Explorer | usage/billing | *(planned)* | a "what AWS would've charged" panel (Kubecost/Grafana) — not yet built |
 
 ## The `Application` abstraction (the product)
