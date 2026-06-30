@@ -1,0 +1,45 @@
+# Chaos Mesh — fault injection ("AWS Fault Injection Simulator"). Installs the operator
+# (controller + per-node chaos-daemon + dashboard) only; experiments are declared via the
+# `kind: FaultInjection` abstraction (Crossplane), which compiles to Chaos Mesh CRDs with a
+# enforced, namespace-scoped blast radius.
+#
+# k3s uses containerd at a non-default socket — chaos-daemon MUST point at it or PodChaos
+# (container kill) silently no-ops.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chaos-mesh
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.chaos-mesh.org
+    chart: chaos-mesh
+    targetRevision: 2.7.2
+    helm:
+      values: |
+        chaosDaemon:
+          runtime: containerd
+          socketPath: /run/k3s/containerd/containerd.sock
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+        controllerManager:
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+        dashboard:
+          # require a ServiceAccount token to act (no anonymous chaos from the dashboard)
+          securityMode: true
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+        dnsServer:
+          create: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: chaos-mesh
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    # ServerSideApply: the Chaos Mesh CRDs exceed the 256KB client-side annotation limit.
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

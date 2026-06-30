@@ -1,0 +1,115 @@
+# The compiler for kind: FaultInjection -> a Chaos Mesh experiment, with the blast radius
+# ENFORCED: the experiment is always scoped to a single namespace + the user's label
+# selector and time-boxed by `duration`. The user never writes raw Chaos Mesh CRDs.
+#
+# `type` maps to a Chaos Mesh kind; the field names selector/mode/value/duration are common
+# across PodChaos/NetworkChaos/StressChaos/TimeChaos/IOChaos, so only the per-type "head"
+# (action + knobs) varies.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: faultinjection
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XFaultInjection
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $claimNs := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $type := $spec.type }}
+            {{- $ns := $spec.target.namespace | default $claimNs }}
+            {{- $mode := $spec.mode | default "one" }}
+            {{- $dur := $spec.duration | default "60s" }}
+            {{- /* type -> Chaos Mesh kind */}}
+            {{- $ckind := "PodChaos" }}
+            {{- if or (eq $type "network-latency") (eq $type "network-loss") (eq $type "network-partition") }}{{ $ckind = "NetworkChaos" }}{{ end }}
+            {{- if or (eq $type "stress-cpu") (eq $type "stress-memory") }}{{ $ckind = "StressChaos" }}{{ end }}
+            {{- if eq $type "clock-skew" }}{{ $ckind = "TimeChaos" }}{{ end }}
+            {{- if eq $type "io-latency" }}{{ $ckind = "IOChaos" }}{{ end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: chaos
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: chaos-mesh.org/v1alpha1
+                  kind: {{ $ckind }}
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                  spec:
+                    {{- /* ---- per-type head ---- */}}
+                    {{- if eq $type "pod-kill" }}
+                    action: pod-kill
+                    {{- else if eq $type "pod-failure" }}
+                    action: pod-failure
+                    {{- else if eq $type "network-latency" }}
+                    action: delay
+                    direction: {{ $spec.direction | default "to" }}
+                    delay:
+                      latency: {{ $spec.latency | default "200ms" | quote }}
+                    {{- else if eq $type "network-loss" }}
+                    action: loss
+                    direction: {{ $spec.direction | default "to" }}
+                    loss:
+                      loss: {{ $spec.loss | default "50" | quote }}
+                      correlation: "0"
+                    {{- else if eq $type "network-partition" }}
+                    action: partition
+                    direction: {{ $spec.direction | default "to" }}
+                    {{- else if eq $type "stress-cpu" }}
+                    stressors:
+                      cpu:
+                        workers: {{ $spec.cpuWorkers | default 1 }}
+                        load: {{ $spec.cpuLoad | default 80 }}
+                    {{- else if eq $type "stress-memory" }}
+                    stressors:
+                      memory:
+                        workers: 1
+                        size: {{ $spec.memory | default "256MB" | quote }}
+                    {{- else if eq $type "clock-skew" }}
+                    timeOffset: {{ $spec.timeOffset | default "+5m" | quote }}
+                    {{- else if eq $type "io-latency" }}
+                    action: latency
+                    volumePath: {{ $spec.volumePath | default "/data" | quote }}
+                    delay: {{ $spec.latency | default "200ms" | quote }}
+                    percent: 100
+                    {{- end }}
+                    {{- /* ---- common tail (same field names across all chaos kinds) ---- */}}
+                    mode: {{ $mode }}
+                    {{- if eq $mode "fixed-percent" }}
+                    value: {{ $spec.value | default "50" | quote }}
+                    {{- end }}
+                    {{- if ne $type "pod-kill" }}
+                    duration: {{ $dur | quote }}
+                    {{- end }}
+                    selector:
+                      namespaces:
+                        - {{ $ns }}
+                      labelSelectors:
+                        {{- range $k, $v := $spec.target.labelSelector }}
+                        {{ $k }}: {{ $v | quote }}
+                        {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

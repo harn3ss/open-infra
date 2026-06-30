@@ -1,0 +1,81 @@
+# open-infra's chaos engineering: kind: FaultInjection — the "AWS Fault Injection
+# Simulator" path. A FaultInjection compiles to a Chaos Mesh experiment, but with the
+# blast radius ENFORCED: every experiment is scoped to a namespace + label selector (no
+# cluster-wide chaos), is time-boxed by `duration`, and the user only ever writes the
+# small, curated spec below — never raw Chaos Mesh CRDs.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xfaultinjections.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XFaultInjection
+    plural: xfaultinjections
+  claimNames:
+    kind: FaultInjection   # what users write
+    plural: faultinjections
+  defaultCompositionRef:
+    name: faultinjection
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [type, target]
+              properties:
+                # The fault to inject. Maps to a Chaos Mesh experiment kind.
+                type:
+                  type: string
+                  enum:
+                    - pod-kill          # PodChaos  — kill matching pods (test failover/restart)
+                    - pod-failure       # PodChaos  — make pods unavailable for `duration`
+                    - network-latency   # NetworkChaos — add delay
+                    - network-loss      # NetworkChaos — drop a % of packets
+                    - network-partition # NetworkChaos — cut the target off
+                    - stress-cpu        # StressChaos
+                    - stress-memory     # StressChaos
+                    - clock-skew        # TimeChaos — shift the clock (exercises HLC/LWW)
+                    - io-latency        # IOChaos — slow disk I/O
+                # Blast radius — REQUIRED. Chaos only ever touches pods matching this
+                # selector in this namespace (defaults to the FaultInjection's namespace).
+                target:
+                  type: object
+                  required: [labelSelector]
+                  properties:
+                    namespace: { type: string, description: "Defaults to the FaultInjection's namespace." }
+                    labelSelector:
+                      type: object
+                      additionalProperties: { type: string }
+                      description: "Pod labels to target, e.g. {app: pg}."
+                # How many of the matched pods to hit.
+                mode:
+                  type: string
+                  enum: [one, all, fixed-percent]
+                  default: one
+                value: { type: string, description: "For mode=fixed-percent, e.g. \"50\"." }
+                # How long the fault lasts (ignored by the instantaneous pod-kill).
+                duration: { type: string, default: "60s" }
+                # ---- type-specific knobs (sensible defaults) ----
+                latency: { type: string, default: "200ms", description: "network-latency / io-latency delay." }
+                loss: { type: string, default: "50", description: "network-loss packet-loss percent." }
+                direction: { type: string, enum: [to, from, both], default: to, description: "network chaos direction." }
+                cpuWorkers: { type: integer, default: 1, description: "stress-cpu worker threads." }
+                cpuLoad: { type: integer, default: 80, description: "stress-cpu load percent per worker." }
+                memory: { type: string, default: "256MB", description: "stress-memory size to consume." }
+                timeOffset: { type: string, default: "+5m", description: "clock-skew offset, e.g. +5m or -1h." }
+                volumePath: { type: string, default: "/data", description: "io-latency: mount path to slow." }
+            status:
+              type: object
+              properties:
+                phase: { type: string }
