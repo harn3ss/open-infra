@@ -102,6 +102,18 @@ export function ManagedDatabaseDetailPage() {
     },
     onSuccess: () => void refetch(),
   });
+  // Convert non-HA <-> HA on demand: mongo scales the FerretDB proxy tier; mysql converts
+  // the standalone MariaDB to a 3-node Galera cluster.
+  const setHA = useMutation({
+    mutationFn: async (highAvailability: boolean) => {
+      const p = openinfraPaths.application(namespace, name);
+      const cur = await k8sGet<Application>(p);
+      const spec = (cur.spec ?? {}) as Record<string, unknown>;
+      const database = { ...((spec.database as Record<string, unknown>) ?? {}), highAvailability };
+      return k8sReplace<Application>(p, { ...cur, spec: { ...spec, database } } as unknown as Application);
+    },
+    onSuccess: () => void refetch(),
+  });
 
   const engineKey = (app?.spec?.database?.engine ?? "mongo") as keyof typeof ENGINES;
   const e = ENGINES[engineKey] ?? ENGINES.mongo;
@@ -201,11 +213,24 @@ export function ManagedDatabaseDetailPage() {
               <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Application">{name}</DetailRow>
               <DetailRow label="High availability">
-                {ha
-                  ? engineKey === "mongo"
-                    ? "On · 2 FerretDB replicas (proxy tier)"
-                    : "On · Galera 3-node cluster"
-                  : "Off (single instance)"}
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">
+                    {ha
+                      ? engineKey === "mongo"
+                        ? "On · 2 FerretDB replicas (proxy tier)"
+                        : "On · Galera 3-node cluster"
+                      : "Off (single instance)"}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={setHA.isPending || stopped}
+                    onClick={() => setHA.mutate(!ha)}
+                    title={stopped ? "Start the database first" : engineKey === "mysql" ? "Converts the standalone MariaDB to a 3-node Galera cluster" : undefined}
+                  >
+                    {setHA.isPending ? "Working…" : ha ? "Make single-instance" : "Convert to HA"}
+                  </Button>
+                </div>
               </DetailRow>
               <DetailRow label={e.uriLabel}>
                 <span className="flex items-center gap-1">
