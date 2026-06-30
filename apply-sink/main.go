@@ -1352,8 +1352,14 @@ func coerce(v any, colType string) any {
 					return time.UnixMicro(i).UTC()
 				case i >= 1e12:
 					return time.UnixMilli(i).UTC()
+				case i >= 1e5:
+					return time.Unix(i, 0).UTC() // seconds (>= ~1973)
 				default:
-					return time.Unix(i, 0).UTC()
+					// Small value in a temporal column = days since epoch (a Debezium DATE).
+					// This matters cross-engine: a DATE (e.g. ~20000 days) landing in a column
+					// the target introspects as "timestamp" (e.g. SQL Server DATE -> PG timestamp)
+					// would otherwise be read as ~20000 *seconds* (1970) instead of the real date.
+					return time.Unix(i*86400, 0).UTC()
 				}
 			}
 		}
