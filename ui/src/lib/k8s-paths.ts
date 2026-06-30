@@ -14,6 +14,7 @@ import {
   VOLUMES_PLURAL,
   FILESHARES_PLURAL,
   DIRECTORIES_PLURAL,
+  FAULTINJECTIONS_PLURAL,
   MIGRATIONS_PLURAL,
   REPLICATIONS_PLURAL,
   DATAFLOWS_PLURAL,
@@ -84,6 +85,9 @@ export const openinfraPaths = {
   directories: (ns?: string) => `${oiGV}${nsSegment(ns)}/${DIRECTORIES_PLURAL}`,
   directory: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${DIRECTORIES_PLURAL}/${name}`,
+  faultinjections: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FAULTINJECTIONS_PLURAL}`,
+  faultinjection: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${FAULTINJECTIONS_PLURAL}/${name}`,
   migrations: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MIGRATIONS_PLURAL}`,
   migration: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${MIGRATIONS_PLURAL}/${name}`,
