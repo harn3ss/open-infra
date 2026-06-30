@@ -114,7 +114,8 @@ func liveDataFlows(ctx context.Context, host *url.URL, transport http.RoundTripp
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Name      string `json:"name"`
+				Namespace string `json:"namespace"`
 			} `json:"metadata"`
 			Spec struct {
 				Nodes []struct {
@@ -129,9 +130,11 @@ func liveDataFlows(ctx context.Context, host *url.URL, transport http.RoundTripp
 	live = map[string]bool{}
 	expected = map[string]bool{}
 	for _, it := range list.Items {
-		live[it.Metadata.Name] = true
+		// NATS names are namespace-qualified (<ns>-<name>); see the composition.
+		fqd := it.Metadata.Namespace + "-" + it.Metadata.Name
+		live[fqd] = true
 		for _, n := range it.Spec.Nodes {
-			expected["flow-"+it.Metadata.Name+"-"+n.Name] = true
+			expected["flow-"+fqd+"-"+n.Name] = true
 		}
 	}
 	return live, expected, nil

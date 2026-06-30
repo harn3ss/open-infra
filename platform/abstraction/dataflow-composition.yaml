@@ -40,6 +40,11 @@ spec:
             {{- $labels := $xr.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- /* NATS streams/subjects/durables are CLUSTER-GLOBAL (not namespaced like k8s
+                   objects), so they MUST be qualified by namespace or two same-named DataFlows
+                   in different namespaces would share streams = cross-tenant cross-feed. The
+                   flow token below is used for every NATS name; k8s object names keep $name. */}}
+            {{- $fqd := printf "%s-%s" $ns $name }}
             {{- $nodes := $spec.nodes }}
             {{- $edges := $spec.edges }}
             {{- $tables := $spec.tables | default (list) }}
@@ -92,9 +97,9 @@ spec:
             {{- if and (hasKey $srcSet $n.name) (eq ($n.role | default "database") "database") }}
             {{-   $node := $n.name }}
             {{-   $engine := $n.engine }}
-            {{-   $prefix := printf "f.%s.%s" $name $node }}
-            {{-   $stream := printf "flow-%s-%s" $name $node }}
-            {{-   $slot := printf "df_%s_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") $node }}
+            {{-   $prefix := printf "f.%s.%s" $fqd $node }}
+            {{-   $stream := printf "flow-%s-%s" $fqd $node }}
+            {{-   $slot := printf "df_%s_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $fqd "_") $node | trunc 63 }}
             {{-   $include := index $inc $node }}
             {{-   $sport := $n.port | default 5432 }}
             ---
@@ -331,8 +336,8 @@ spec:
             {{-   $fn := $n.name }}
             {{-   $in := index $fnInput $fn }}
             {{-   $url := $n.functionUrl | default (printf "http://%s.%s.svc.cluster.local" ($n.functionRef | default $fn) $ns) }}
-            {{-   $ostream := printf "flow-%s-%s" $name $fn }}
-            {{-   $oprefix := printf "f.%s.%s" $name $fn }}
+            {{-   $ostream := printf "flow-%s-%s" $fqd $fn }}
+            {{-   $oprefix := printf "f.%s.%s" $fqd $fn }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -365,9 +370,9 @@ spec:
                             env:
                               - { name: MODE, value: pump }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $name }}-{{ $in }}" }
-                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $in }}.>" }
-                              - { name: DURABLE, value: "{{ $name }}-pump-{{ $fn }}" }
+                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $in }}" }
+                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $in }}.>" }
+                              - { name: DURABLE, value: "{{ $fqd }}-pump-{{ $fn }}" }
                               - { name: FUNCTION_URL, value: "{{ $url }}" }
                               - { name: OUTPUT_SUBJECT, value: "{{ $oprefix }}" }
                             resources:
@@ -453,9 +458,9 @@ spec:
                               - name: TARGET_PASSWORD
                                 valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $name }}-{{ $sn }}" }
-                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $sn }}.>" }
-                              - { name: DURABLE, value: "{{ $name }}-{{ $sn }}-{{ $dn }}" }
+                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $sn }}" }
+                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $sn }}.>" }
+                              - { name: DURABLE, value: "{{ $fqd }}-{{ $sn }}-{{ $dn }}" }
                               - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
                               - { name: SKIP_ORIGIN, value: "{{ $dn }}" }
                               - { name: CONFLICT_COLUMN, value: "{{ $vcol }}" }
@@ -532,9 +537,9 @@ spec:
                               - name: TARGET_PASSWORD
                                 valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $name }}-{{ $sn }}" }
-                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $sn }}.>" }
-                              - { name: DURABLE, value: "{{ $name }}-mig-{{ $sn }}-{{ $dn }}" }
+                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $sn }}" }
+                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $sn }}.>" }
+                              - { name: DURABLE, value: "{{ $fqd }}-mig-{{ $sn }}-{{ $dn }}" }
                               - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
@@ -573,9 +578,9 @@ spec:
                               - name: TARGET_PASSWORD
                                 valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $name }}-{{ $sn }}" }
-                              - { name: SUBJECT, value: "f.{{ $name }}.{{ $sn }}.>" }
-                              - { name: DURABLE, value: "{{ $name }}-load-{{ $sn }}-{{ $dn }}" }
+                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $sn }}" }
+                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $sn }}.>" }
+                              - { name: DURABLE, value: "{{ $fqd }}-load-{{ $sn }}-{{ $dn }}" }
                               - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }

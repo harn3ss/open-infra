@@ -161,6 +161,8 @@ type dataFlowDirection struct {
 func handleDataFlowStatus(logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := chi.URLParam(r, "name")
+		// NATS names are namespace-qualified (<ns>-<name>) — mirrors the composition.
+		fqd := chi.URLParam(r, "namespace") + "-" + name
 		var body struct {
 			Edges []dataFlowEdgeReq `json:"edges"`
 		}
@@ -189,17 +191,17 @@ func handleDataFlowStatus(logger *slog.Logger) http.HandlerFunc {
 			var durable string
 			switch typ {
 			case "migration":
-				durable = name + "-mig-" + s + "-" + d
+				durable = fqd + "-mig-" + s + "-" + d
 			case "pipe":
-				durable = name + "-load-" + s + "-" + d
+				durable = fqd + "-load-" + s + "-" + d
 			case "stream":
 				durable = ""
 			default:
-				durable = name + "-" + s + "-" + d
+				durable = fqd + "-" + s + "-" + d
 			}
 			return dataFlowDirection{
 				From: s, To: d, Type: typ,
-				pipelineStatus: gatherPipeline(ctx, js, "flow-"+name+"-"+s, durable, "f."+name+"."+s),
+				pipelineStatus: gatherPipeline(ctx, js, "flow-"+fqd+"-"+s, durable, "f."+fqd+"."+s),
 			}
 		}
 
