@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { FolderTree, Plus, Plug, Trash2 } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { FolderTree, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
-import { CopyButton } from "@/components/common/copy-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete, k8sGet } from "@/lib/api";
+import { ApiError, k8sCreate } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -41,14 +41,6 @@ const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 type SvcStatus = K8sObject<unknown, { loadBalancer?: { ingress?: { ip?: string }[] } }>;
 
-function decode(v?: string): string {
-  if (!v) return "";
-  try {
-    return atob(v);
-  } catch {
-    return "";
-  }
-}
 
 function fsStatus(f: FileShare): { label: string; tone: StatusTone } {
   const ready = (f.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
@@ -60,8 +52,8 @@ function fsStatus(f: FileShare): { label: string; tone: StatusTone } {
 
 export function FileSharesPage() {
   const { scoped } = useNamespace();
+  const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
-  const [connect, setConnect] = useState<{ share: FileShare; ip?: string } | null>(null);
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
@@ -82,10 +74,6 @@ export function FileSharesPage() {
   const lanIp = (f: FileShare) =>
     ipByName.get(`${f.metadata.namespace}/${f.metadata.name}`);
 
-  const remove = useMutation({
-    mutationFn: (f: FileShare) =>
-      k8sDelete(openinfraPaths.fileshare(f.metadata.namespace ?? "default", f.metadata.name ?? "")),
-  });
 
   const columns = useMemo<ColumnDef<FileShare, unknown>[]>(
     () => [
@@ -145,35 +133,8 @@ export function FileSharesPage() {
         ),
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setConnect({ share: row.original, ip: lanIp(row.original) })}
-              title="Connection details"
-            >
-              <Plug className="size-4" /> Connect
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => remove.mutate(row.original)}
-              disabled={remove.isPending}
-              title="Delete this share"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 150,
-      },
     ],
-    [ipByName, remove],
+    [ipByName],
   );
 
   return (
@@ -184,6 +145,15 @@ export function FileSharesPage() {
         description="Shared SMB file storage — open-infra's FSx. Mount from Windows (net use) or Linux (mount -t cifs); multiple machines can share one. Backed by Longhorn."
         listPath={openinfraPaths.fileshares}
         columns={columns}
+        onRowClick={(f) =>
+          navigate({
+            to: "/fileshares/$namespace/$name",
+            params: {
+              namespace: f.metadata.namespace ?? "default",
+              name: f.metadata.name ?? "",
+            },
+          })
+        }
         search={(f) => [f.metadata.name, f.metadata.namespace, f.spec?.size]}
         singular="File Share"
         plural="File Shares"
@@ -201,77 +171,11 @@ export function FileSharesPage() {
         namespaces={namespaces}
         defaultNamespace={scoped}
       />
-      <ConnectDialog connect={connect} onClose={() => setConnect(null)} />
     </>
   );
 }
 
-function ConnectDialog({
-  connect,
-  onClose,
-}: {
-  connect: { share: FileShare; ip?: string } | null;
-  onClose: () => void;
-}) {
-  const share = connect?.share;
-  const ns = share?.metadata.namespace ?? "default";
-  const name = share?.metadata.name ?? "";
-  const { data: secret } = useQuery({
-    queryKey: ["fileshare-secret", ns, name],
-    enabled: Boolean(share),
-    queryFn: () =>
-      k8sGet<K8sObject & { data?: Record<string, string> }>(
-        `/api/v1/namespaces/${ns}/secrets/${name}-fileshare`,
-      ),
-    retry: false,
-  });
-  const user = decode(secret?.data?.USERNAME) || "openinfra";
-  const pass = decode(secret?.data?.PASSWORD);
-  const host = connect?.ip ?? `${name}.${ns}.svc.cluster.local`;
-  const winCmd = `net use Z: \\\\${host}\\${name} /user:${user} ${pass}`;
-  const linCmd = `sudo mount -t cifs //${host}/${name} /mnt -o username=${user},password=${pass}`;
 
-  return (
-    <Dialog open={Boolean(share)} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Mount {name}</DialogTitle>
-          <DialogDescription>
-            {connect?.ip
-              ? "Reachable on the LAN at the address below."
-              : "LAN IP pending — using the in-cluster name for now."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="min-w-0 space-y-3 text-sm">
-          <Row label="Username" value={user} />
-          <Row label="Password" value={pass || "—"} />
-          <Row label="Windows (net use)" value={winCmd} />
-          <Row label="Linux (mount -t cifs)" value={linCmd} />
-        </div>
-        <DialogFooter>
-          <Button onClick={onClose}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 space-y-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      <div className="flex min-w-0 items-center gap-1">
-        <code
-          title={value}
-          className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-xs"
-        >
-          {value}
-        </code>
-        <CopyButton value={value} />
-      </div>
-    </div>
-  );
-}
 
 function NewFileShareDialog({
   open,

@@ -23,12 +23,12 @@ import { ChaosPage } from "@/features/chaos/chaos-page";
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
 import {
-  FileShareDetailPage,
-  DirectoryDetailPage,
   StreamDetailPage,
   FaultInjectionDetailPage,
 } from "@/features/detail/simple-detail-pages";
 import { VolumeDetailPage } from "@/features/volumes/volume-detail-page";
+import { FileShareDetailPage } from "@/features/fileshares/fileshare-detail-page";
+import { DirectoryDetailPage } from "@/features/directories/directory-detail-page";
 import { MigrationsPage } from "@/features/migrations/migrations-page";
 import { MigrationDetailPage } from "@/features/migrations/migration-detail-page";
 import { ReplicationsPage } from "@/features/migrations/replications-page";

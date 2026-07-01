@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { Building2, Plus, Plug, Trash2 } from "lucide-react";
+import { useMutation } from "@tanstack/react-query";
+import { Building2, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
-import { CopyButton } from "@/components/common/copy-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete, k8sGet } from "@/lib/api";
+import { ApiError, k8sCreate } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -47,14 +47,6 @@ type SvcStatus = K8sObject<
   { loadBalancer?: { ingress?: { ip?: string }[] } }
 >;
 
-function decode(v?: string): string {
-  if (!v) return "";
-  try {
-    return atob(v);
-  } catch {
-    return "";
-  }
-}
 
 function dirStatus(d: Directory): { label: string; tone: StatusTone } {
   const ready = (d.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
@@ -66,8 +58,8 @@ function dirStatus(d: Directory): { label: string; tone: StatusTone } {
 
 export function DirectoriesPage() {
   const { scoped } = useNamespace();
+  const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
-  const [join, setJoin] = useState<{ dir: Directory; ip?: string } | null>(null);
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
@@ -89,10 +81,6 @@ export function DirectoriesPage() {
   const dcIp = (d: Directory) =>
     ipByName.get(`${d.metadata.namespace}/${d.metadata.name}`);
 
-  const remove = useMutation({
-    mutationFn: (d: Directory) =>
-      k8sDelete(openinfraPaths.directory(d.metadata.namespace ?? "default", d.metadata.name ?? "")),
-  });
 
   const columns = useMemo<ColumnDef<Directory, unknown>[]>(
     () => [
@@ -154,35 +142,8 @@ export function DirectoriesPage() {
         ),
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setJoin({ dir: row.original, ip: dcIp(row.original) })}
-              title="How to join this domain"
-            >
-              <Plug className="size-4" /> Join
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => remove.mutate(row.original)}
-              disabled={remove.isPending}
-              title="Delete this directory"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 130,
-      },
     ],
-    [ipByName, remove],
+    [ipByName],
   );
 
   return (
@@ -193,6 +154,15 @@ export function DirectoriesPage() {
         description="Managed Active Directory domains — open-infra's Directory Service (Samba AD DC, the open-source path; no Microsoft licensing). Windows and Linux machines domain-join it — click Join for the per-machine steps."
         listPath={openinfraPaths.directories}
         columns={columns}
+        onRowClick={(d) =>
+          navigate({
+            to: "/directories/$namespace/$name",
+            params: {
+              namespace: d.metadata.namespace ?? "default",
+              name: d.metadata.name ?? "",
+            },
+          })
+        }
         search={(d) => [d.metadata.name, d.metadata.namespace, d.spec?.domain]}
         singular="Directory"
         plural="Directories"
@@ -210,83 +180,11 @@ export function DirectoriesPage() {
         namespaces={namespaces}
         defaultNamespace={scoped}
       />
-      <JoinDialog join={join} onClose={() => setJoin(null)} />
     </>
   );
 }
 
-function JoinDialog({
-  join,
-  onClose,
-}: {
-  join: { dir: Directory; ip?: string } | null;
-  onClose: () => void;
-}) {
-  const dir = join?.dir;
-  const ns = dir?.metadata.namespace ?? "default";
-  const name = dir?.metadata.name ?? "";
-  const { data: secret } = useQuery({
-    queryKey: ["directory-secret", ns, name],
-    enabled: Boolean(dir),
-    queryFn: () =>
-      k8sGet<K8sObject & { data?: Record<string, string> }>(
-        `/api/v1/namespaces/${ns}/secrets/${name}-directory`,
-      ),
-    retry: false,
-  });
-  const domain = dir?.spec?.domain ?? decode(secret?.data?.DOMAIN);
-  const netbios = decode(secret?.data?.NETBIOS) || domain.split(".")[0]?.toUpperCase();
-  const user = decode(secret?.data?.ADMIN_USER) || "Administrator";
-  const pass = decode(secret?.data?.ADMIN_PASSWORD);
-  const dc = join?.ip ?? "<DC address>";
-  // Windows: point DNS at the DC, then join (rename + join atomically).
-  const winCmd = `netsh interface ip set dns name="Ethernet" static ${dc}; Add-Computer -DomainName ${domain} -Credential (New-Object System.Management.Automation.PSCredential("${netbios}\\${user}",(ConvertTo-SecureString "${pass}" -AsPlainText -Force))) -Restart`;
-  // Linux: realmd join.
-  const linCmd = `echo "${pass}" | sudo realm join --user=${user} ${domain}`;
 
-  return (
-    <Dialog open={Boolean(dir)} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Join {domain}</DialogTitle>
-          <DialogDescription>
-            {join?.ip
-              ? "Point the machine's DNS at the DC, then join with the admin credentials below."
-              : "DC address pending — give it a moment to get an IP."}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="min-w-0 space-y-3 text-sm">
-          <Row label="Domain" value={domain} />
-          <Row label="DC address (use as the client's DNS)" value={dc} />
-          <Row label="Admin user" value={`${netbios}\\${user}`} />
-          <Row label="Admin password" value={pass || "—"} />
-          <Row label="Windows (PowerShell, admin)" value={winCmd} />
-          <Row label="Linux (realmd)" value={linCmd} />
-        </div>
-        <DialogFooter>
-          <Button onClick={onClose}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0 space-y-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      <div className="flex min-w-0 items-center gap-1">
-        <code
-          title={value}
-          className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-xs"
-        >
-          {value}
-        </code>
-        <CopyButton value={value} />
-      </div>
-    </div>
-  );
-}
 
 function NewDirectoryDialog({
   open,
