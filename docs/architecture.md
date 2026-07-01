@@ -91,7 +91,11 @@ Details: [`docs/serverless.md`](serverless.md).
 
 ## Storage tiering (read this twice)
 
-- **Fast local NVMe (RWO)** via k3s `local-path` for **databases**.
+- **Fast local NVMe (RWO)** via k3s `local-path` for **databases** and, by default, **VM root
+  disks** — fastest, but node-pinned (HA for DBs comes from replication, not the storage layer).
+- **Replicated Longhorn** for `kind: Volume`, VM **golden images**, and **HA VM root disks**
+  (`spec.highAvailability` → `longhorn-migratable`, RWX block, for node-loss recovery + live
+  migration). Longhorn survives a node loss; local-path does not.
 - **NAS-backed RWX** (SMB/NFS subdir provisioner) for shared/bulk volumes only.
 - **Never put a database on CIFS/NFS** — corruption and latency hell.
 
