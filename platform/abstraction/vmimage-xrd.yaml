@@ -50,6 +50,10 @@ spec:
                 # but can change; this is the escape hatch).
                 sourceUrl: { type: string, description: "Override eval-ISO URL" }
                 diskSize:  { type: string, default: "64Gi", description: "Golden disk size" }
+                # Adopt an existing PVC as the golden (clone it) instead of building from ISO.
+                # Used to migrate an already-built golden to a new storage class; skips the
+                # ISO/virtio/sysprep/installer build steps.
+                existingGoldenClaim: { type: string }
             status:
               type: object
               properties:
