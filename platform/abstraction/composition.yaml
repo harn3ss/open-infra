@@ -528,11 +528,11 @@ spec:
                   metadata:
                     name: {{ $name }}-db
                     namespace: {{ $ns }}
-                    {{- if $dbStopped }}
-                    # Declarative hibernation: CNPG scales the instances to zero but keeps
-                    # the PVCs. Remove the annotation (stopped=false) to resume.
-                    annotations: { cnpg.io/hibernation: "on" }
-                    {{- end }}
+                    # Declarative hibernation: on -> CNPG scales instances to zero (PVCs kept);
+                    # off -> resume. ALWAYS set it (not just when stopped) — omitting the
+                    # annotation does NOT reliably clear an existing "on", so Start (stopped=false)
+                    # must explicitly write "off" to un-hibernate.
+                    annotations: { cnpg.io/hibernation: "{{ if $dbStopped }}on{{ else }}off{{ end }}" }
                   spec:
                     {{- if $spec.securityGroups }}
                     # SecurityGroup membership: CNPG propagates inheritedMetadata to
