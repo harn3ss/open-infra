@@ -327,6 +327,7 @@ export const VMIMAGES_CRD_NAME = "vmimages.openinfra.dev";
 export interface VolumeSpec {
   size?: string;
   source?: { snapshot?: string };
+  migratable?: boolean;
 }
 export interface VolumeStatus {
   phase?: string;
