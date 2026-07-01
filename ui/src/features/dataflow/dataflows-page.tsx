@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
-import { useMutation } from "@tanstack/react-query";
-import { Workflow, Plus, Trash2, Wand2 } from "lucide-react";
+
+import { Workflow, Plus, Wand2 } from "lucide-react";
 import { SetupWizard } from "./setup-wizard";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
-import { k8sDelete } from "@/lib/api";
-import { openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
+
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { age, type StatusTone } from "@/lib/format";
 import type { DataFlow } from "@/types/k8s";
 
@@ -25,14 +25,6 @@ export function DataFlowsPage() {
   const navigate = useNavigate();
   const [wizardOpen, setWizardOpen] = useState(false);
 
-  const remove = useMutation({
-    mutationFn: async (d: DataFlow) => {
-      const ns = d.metadata.namespace ?? "default";
-      const name = d.metadata.name ?? "";
-      await k8sDelete(openinfraPaths.dataflow(ns, name));
-      await k8sDelete(resourcePaths.secret(ns, `${name}-creds`)).catch(() => {});
-    },
-  });
 
   const columns = useMemo<ColumnDef<DataFlow, unknown>[]>(
     () => [
@@ -86,30 +78,8 @@ export function DataFlowsPage() {
         cell: ({ row }) => <span className="text-muted-foreground">{age(row.original.metadata.creationTimestamp)}</span>,
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={(e) => {
-                e.stopPropagation();
-                remove.mutate(row.original);
-              }}
-              disabled={remove.isPending}
-              title="Delete this data flow (and its credential secret)"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 60,
-      },
     ],
-    [remove],
+    [],
   );
 
   return (
