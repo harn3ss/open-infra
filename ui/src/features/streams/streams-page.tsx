@@ -1,7 +1,8 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
-import { Radio, Plus, Trash2 } from "lucide-react";
+import { Radio, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
@@ -24,8 +25,8 @@ import {
 } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
-import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
+import { ApiError, k8sCreate } from "@/lib/api";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import {
@@ -79,6 +80,7 @@ function streamStatus(s: Stream): { label: string; tone: StatusTone } {
 
 export function StreamsPage() {
   const { scoped } = useNamespace();
+  const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
@@ -87,14 +89,6 @@ export function StreamsPage() {
     .filter((n): n is string => Boolean(n))
     .sort((a, b) => a.localeCompare(b));
 
-  const remove = useMutation({
-    mutationFn: async (s: Stream) => {
-      const ns = s.metadata.namespace ?? "default";
-      const name = s.metadata.name ?? "";
-      await k8sDelete(openinfraPaths.stream(ns, name));
-      await k8sDelete(resourcePaths.secret(ns, `${name}-stream-creds`)).catch(() => {});
-    },
-  });
 
   const columns = useMemo<ColumnDef<Stream, unknown>[]>(
     () => [
@@ -157,27 +151,8 @@ export function StreamsPage() {
         ),
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => remove.mutate(row.original)}
-              disabled={remove.isPending}
-              title="Delete this stream"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 60,
-      },
     ],
-    [remove],
+    [],
   );
 
   return (
@@ -188,6 +163,15 @@ export function StreamsPage() {
         description="Change-data-capture streams — open-infra's 'Kinesis'. A Stream taps a source database's change log (Debezium) and publishes every row change as a real-time event onto NATS JetStream (subjects cdc.<name>.<schema>.<table>), where apps, Functions, and sinks subscribe."
         listPath={openinfraPaths.streams}
         columns={columns}
+        onRowClick={(s) =>
+          navigate({
+            to: "/streams/$namespace/$name",
+            params: {
+              namespace: s.metadata.namespace ?? "default",
+              name: s.metadata.name ?? "",
+            },
+          })
+        }
         search={(s) => [s.metadata.name, s.metadata.namespace, s.spec?.source?.engine, s.spec?.source?.host]}
         singular="Stream"
         plural="Streams"
