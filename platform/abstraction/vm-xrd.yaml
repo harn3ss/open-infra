@@ -104,6 +104,11 @@ spec:
                 # image. Used to migrate/restore a VM onto a pre-populated disk (e.g. a disk
                 # cloned onto Longhorn). When set, no root DataVolume is provisioned.
                 existingRootClaim: { type: string }
+                # Guest CPU model. Empty = host-model (best perf, but pins the VM to its node's
+                # CPU). For live migration / node-loss recovery across heterogeneous CPUs, set
+                # the newest model common to all nodes (e.g. Broadwell-noTSX). HA VMs default to
+                # Nehalem if unset.
+                cpuModel: { type: string }
             status:
               type: object
               properties:
