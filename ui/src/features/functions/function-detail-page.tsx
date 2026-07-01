@@ -212,13 +212,21 @@ export function FunctionDetailPage() {
       status={claimHealth(fn)}
     >
       <Tabs defaultValue="test">
-        <TabsList>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList>
           <TabsTrigger value="test">Test</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+            <DangerZone inline
+        resourceLabel="Function"
+        resourceName={name}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
+          </div>
 
         <TabsContent value="security" className="pt-4">
           <ResourceSecurityTab
@@ -306,12 +314,6 @@ export function FunctionDetailPage() {
         </TabsContent>
       </Tabs>
 
-      <DangerZone
-        resourceLabel="Function"
-        resourceName={name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
-      />
     </DetailShell>
   );
 }

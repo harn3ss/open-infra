@@ -58,11 +58,22 @@ export function ApplicationDetailPage() {
       subtitle={`Application · ${namespace}`}
     >
       <Tabs defaultValue="overview">
-        <TabsList>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+            <DangerZone inline
+        resourceLabel="Application"
+        resourceName={name}
+        deleting={del.isPending}
+        onConfirm={() => del.mutate()}
+        confirmDescription={
+          <>Permanently delete application <span className="font-medium text-foreground">{name}</span> and its resources. This cannot be undone.</>
+        }
+      />
+          </div>
 
         <TabsContent value="overview" className="pt-4">
           <Card>
@@ -100,15 +111,6 @@ export function ApplicationDetailPage() {
         </TabsContent>
       </Tabs>
 
-      <DangerZone
-        resourceLabel="Application"
-        resourceName={name}
-        deleting={del.isPending}
-        onConfirm={() => del.mutate()}
-        confirmDescription={
-          <>Permanently delete application <span className="font-medium text-foreground">{name}</span> and its resources. This cannot be undone.</>
-        }
-      />
     </DetailShell>
   );
 }

@@ -177,12 +177,27 @@ export function ModelDetailPage() {
       status={health}
     >
       <Tabs defaultValue="playground">
-        <TabsList>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <TabsList>
           <TabsTrigger value="playground">Playground</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
         </TabsList>
+            <DangerZone inline
+        resourceLabel="Model"
+        resourceName={name}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
+          <>
+            Permanently delete{" "}
+            <span className="font-medium text-foreground">{name}</span> and its
+            GPU-backed endpoint. This cannot be undone.
+          </>
+        }
+      />
+          </div>
 
         <TabsContent value="playground" className="pt-4">
           <Playground namespace={namespace} name={name} />
@@ -297,19 +312,6 @@ export function ModelDetailPage() {
         </TabsContent>
       </Tabs>
 
-      <DangerZone
-        resourceLabel="Model"
-        resourceName={name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
-        confirmDescription={
-          <>
-            Permanently delete{" "}
-            <span className="font-medium text-foreground">{name}</span> and its
-            GPU-backed endpoint. This cannot be undone.
-          </>
-        }
-      />
     </DetailShell>
   );
 }
