@@ -2,44 +2,21 @@ import { useMemo, useState, type ReactNode } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowRightLeft, Check, Plus, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import {
-  ApiError,
-  k8sCreate,
-  k8sDelete,
-  discoverTables,
-} from "@/lib/api";
-import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
+import { ApiError, k8sCreate, discoverTables } from "@/lib/api";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import {
-  OPENINFRA_GROUP,
-  OPENINFRA_VERSION,
-  type Migration,
-  type K8sObject,
-} from "@/types/k8s";
+import { OPENINFRA_GROUP, OPENINFRA_VERSION, type Migration, type K8sObject } from "@/types/k8s";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 const SOURCE_ENGINES = ["postgres", "mysql", "mariadb", "sqlserver"];
@@ -102,15 +79,6 @@ export function MigrationsPage() {
     .filter((n): n is string => Boolean(n))
     .sort((a, b) => a.localeCompare(b));
 
-  const remove = useMutation({
-    mutationFn: async (m: Migration) => {
-      const ns = m.metadata.namespace ?? "default";
-      const name = m.metadata.name ?? "";
-      await k8sDelete(openinfraPaths.migration(ns, name));
-      // Best-effort cleanup of the wizard-created credential Secret.
-      await k8sDelete(resourcePaths.secret(ns, `${name}-creds`)).catch(() => {});
-    },
-  });
 
   const columns = useMemo<ColumnDef<Migration, unknown>[]>(
     () => [
@@ -175,30 +143,8 @@ export function MigrationsPage() {
         ),
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={(e) => {
-                e.stopPropagation();
-                remove.mutate(row.original);
-              }}
-              disabled={remove.isPending}
-              title="Delete this migration (and its credential secret)"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 80,
-      },
     ],
-    [remove],
+    [],
   );
 
   return (

@@ -2,31 +2,18 @@ import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
-import { Repeat, Plus, Trash2 } from "lucide-react";
+import { Repeat, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
-import { corePaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
+import { ApiError, k8sCreate } from "@/lib/api";
+import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age, type StatusTone } from "@/lib/format";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION } from "@/types/k8s";
 import type { Replication, K8sObject } from "@/types/k8s";
@@ -49,14 +36,6 @@ export function ReplicationsPage() {
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
 
-  const remove = useMutation({
-    mutationFn: async (r: Replication) => {
-      const ns = r.metadata.namespace ?? "default";
-      const name = r.metadata.name ?? "";
-      await k8sDelete(openinfraPaths.replication(ns, name));
-      await k8sDelete(resourcePaths.secret(ns, `${name}-creds`)).catch(() => {});
-    },
-  });
 
   const columns = useMemo<ColumnDef<Replication, unknown>[]>(
     () => [
@@ -112,30 +91,8 @@ export function ReplicationsPage() {
         ),
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={(e) => {
-                e.stopPropagation();
-                remove.mutate(row.original);
-              }}
-              disabled={remove.isPending}
-              title="Delete this replication (and its credential secret)"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 60,
-      },
     ],
-    [remove],
+    [],
   );
 
   return (
