@@ -232,25 +232,11 @@ export function BucketDetailPage() {
       subtitle="Object storage bucket (MinIO / S3)"
     >
       <Tabs defaultValue="objects">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
+        <TabsList>
           <TabsTrigger value="objects">Objects</TabsTrigger>
           <TabsTrigger value="properties">Properties</TabsTrigger>
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
-            <DangerZone inline
-        resourceLabel="Bucket"
-        resourceName={bucket}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
-        confirmDescription={
-          <>
-            Permanently delete bucket{" "}
-            <span className="font-medium text-foreground">{bucket}</span> and all
-            its objects. This cannot be undone.
-          </>
-        }
-      />
-          </div>
         <TabsContent value="objects" className="pt-4">
           <ObjectsTab bucket={bucket} />
         </TabsContent>
@@ -289,6 +275,21 @@ export function BucketDetailPage() {
               </DetailRow>
             </CardContent>
           </Card>
+        </TabsContent>
+      <TabsContent value="danger" className="pt-4">
+<DangerZone
+        resourceLabel="Bucket"
+        resourceName={bucket}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
+          <>
+            Permanently delete bucket{" "}
+            <span className="font-medium text-foreground">{bucket}</span> and all
+            its objects. This cannot be undone.
+          </>
+        }
+      />
         </TabsContent>
       </Tabs>
 
