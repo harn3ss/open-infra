@@ -38,6 +38,14 @@ spec:
                 size:
                   type: string
                   description: "Volume size, e.g. 50Gi (expandable later)."
+                migratable:
+                  type: boolean
+                  default: false
+                  description: >-
+                    RWX block on the longhorn-migratable class so this volume can attach to a
+                    live-migratable (highAvailability) VM without blocking its live migration.
+                    Default false = RWO (fine for normal VMs; blocks live migration if attached
+                    to an HA VM).
                 source:
                   type: object
                   description: "Optional: restore a new volume from a snapshot."

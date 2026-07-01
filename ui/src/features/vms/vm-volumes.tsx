@@ -67,6 +67,11 @@ export function VmVolumesTab({
   const qc = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const running = vmi?.status?.phase === "Running";
+  // A live-migratable (highAvailability) VM requires ALL disks be shared (RWX). Attaching a
+  // plain RWO volume disables its live migration, so we steer/warn in the attach dialog.
+  const haVm =
+    (vmi?.spec as { evictionStrategy?: string } | undefined)?.evictionStrategy ===
+    "LiveMigrate";
 
   const volumesQuery = useQuery({
     queryKey: ["volumes", namespace],
@@ -332,6 +337,7 @@ export function VmVolumesTab({
         onOpenChange={setDialogOpen}
         namespace={namespace}
         available={available}
+        haVm={haVm}
         onAttach={(vol) => attach.mutate(vol)}
         onDone={() => setDialogOpen(false)}
       />
@@ -344,6 +350,7 @@ function AttachDialog({
   onOpenChange,
   namespace,
   available,
+  haVm,
   onAttach,
   onDone,
 }: {
@@ -351,6 +358,7 @@ function AttachDialog({
   onOpenChange: (o: boolean) => void;
   namespace: string;
   available: Volume[];
+  haVm: boolean;
   onAttach: (vol: string) => void;
   onDone: () => void;
 }) {
@@ -358,6 +366,8 @@ function AttachDialog({
   const [name, setName] = useState("");
   const [size, setSize] = useState("20Gi");
   const [pick, setPick] = useState("");
+  // On an HA VM, default new volumes to migratable so they don't break live migration.
+  const [migratable, setMigratable] = useState(haVm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -365,9 +375,16 @@ function AttachDialog({
     setName("");
     setSize("20Gi");
     setPick("");
+    setMigratable(haVm);
     setError(null);
     setBusy(false);
   };
+
+  // Would this attach break the VM's live migration? (HA VM + a non-shared volume.)
+  const pickedVol = available.find((v) => v.metadata.name === pick);
+  const breaksMigration =
+    haVm &&
+    (mode === "new" ? !migratable : !!pickedVol && !pickedVol.spec?.migratable);
 
   const submit = async () => {
     setError(null);
@@ -383,7 +400,7 @@ function AttachDialog({
           apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
           kind: "Volume",
           metadata: { name, namespace },
-          spec: { size: size || "20Gi" },
+          spec: { size: size || "20Gi", migratable },
         } as K8sObject);
         await waitBound(namespace, name);
         onAttach(name);
@@ -440,26 +457,43 @@ function AttachDialog({
         </div>
 
         {mode === "new" ? (
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="vol-name">Name</Label>
-              <Input
-                id="vol-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="data-disk"
-                autoFocus
-              />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="vol-name">Name</Label>
+                <Input
+                  id="vol-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="data-disk"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="vol-size">Size</Label>
+                <Input
+                  id="vol-size"
+                  value={size}
+                  onChange={(e) => setSize(e.target.value)}
+                  placeholder="20Gi"
+                />
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="vol-size">Size</Label>
-              <Input
-                id="vol-size"
-                value={size}
-                onChange={(e) => setSize(e.target.value)}
-                placeholder="20Gi"
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={migratable}
+                onChange={(e) => setMigratable(e.target.checked)}
               />
-            </div>
+              <span>
+                Live-migratable (RWX block)
+                <span className="block text-xs text-muted-foreground">
+                  Required to attach to a high-availability VM without disabling its live
+                  migration. Slightly more overhead than a plain RWO volume.
+                </span>
+              </span>
+            </label>
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -478,6 +512,18 @@ function AttachDialog({
             </Select>
           </div>
         )}
+
+        {breaksMigration ? (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+            <strong>This VM is high-availability (live-migratable).</strong> Attaching a
+            non-migratable (RWO) volume will <strong>disable its live migration</strong> — it can
+            still recover on a node loss (with a reboot), but you won't be able to drain its node
+            without downtime.{" "}
+            {mode === "new"
+              ? "Tick “Live-migratable” above to keep live migration."
+              : "Pick a migratable volume, or create a new live-migratable one."}
+          </div>
+        ) : null}
 
         {error ? (
           <p className="text-sm text-destructive">{error}</p>

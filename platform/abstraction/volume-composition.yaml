@@ -32,6 +32,8 @@ spec:
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $size := $spec.size | default "10Gi" }}
+            {{- /* migratable -> RWX block on longhorn-migratable (attachable to a live-migratable VM) */}}
+            {{- $migratable := $spec.migratable | default false }}
             ---
             # The volume itself: a Longhorn PVC (RWO, snapshot-capable). When
             # spec.source.snapshot is set, restore the data from that snapshot.
@@ -51,13 +53,15 @@ spec:
                     labels:
                       openinfra.dev/volume: "true"
                   spec:
-                    accessModes: [ReadWriteOnce]
+                    # migratable -> RWX so it can attach to a live-migratable (HA) VM without
+                    # blocking its live migration; otherwise RWO (single-attach).
+                    accessModes: [{{ if $migratable }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
                     # Block mode is required for reliable KubeVirt hotplug — a
                     # Filesystem-mode volume attaches to the node but never reaches
                     # the guest (validated: Filesystem stalls at AttachedToNode;
                     # Block reaches Ready and the guest sees the raw disk).
                     volumeMode: Block
-                    storageClassName: longhorn
+                    storageClassName: {{ if $migratable }}longhorn-migratable{{ else }}longhorn{{ end }}
                     resources:
                       requests:
                         storage: {{ $size }}
