@@ -31,32 +31,34 @@ import (
 var (
 	minioMu     sync.Mutex
 	minioCached *minio.Client
+	minioCreds  string // rootUser\x00rootPassword the cached client was built with
 )
 
 func minioClient(cs kubernetes.Interface) (*minio.Client, error) {
-	minioMu.Lock()
-	defer minioMu.Unlock()
-	if minioCached != nil {
-		return minioCached, nil
-	}
 	ns := getenv("MINIO_SECRET_NAMESPACE", "minio")
 	name := getenv("MINIO_SECRET_NAME", "minio")
+	// Always re-read the secret so a MinIO credential rotation self-heals: we rebuild
+	// the client whenever the creds change (previously the client was cached forever, so
+	// a rotation 502'd the Buckets page until the console was restarted).
 	sec, err := cs.CoreV1().Secrets(ns).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
+	user, pass := string(sec.Data["rootUser"]), string(sec.Data["rootPassword"])
+	key := user + "\x00" + pass
+	minioMu.Lock()
+	defer minioMu.Unlock()
+	if minioCached != nil && minioCreds == key {
+		return minioCached, nil
+	}
 	cl, err := minio.New(getenv("MINIO_ENDPOINT", "minio.minio.svc.cluster.local:9000"), &minio.Options{
-		Creds: credentials.NewStaticV4(
-			string(sec.Data["rootUser"]),
-			string(sec.Data["rootPassword"]),
-			"",
-		),
+		Creds:  credentials.NewStaticV4(user, pass, ""),
 		Secure: getenv("MINIO_SECURE", "") == "true",
 	})
 	if err != nil {
 		return nil, err
 	}
-	minioCached = cl // cache only on success so a transient failure can retry
+	minioCached, minioCreds = cl, key // rebuild only when the creds change
 	return cl, nil
 }
 
