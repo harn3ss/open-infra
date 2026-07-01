@@ -36,6 +36,8 @@ spec:
             {{- $pass := printf "%s-smbpass" .observed.composite.resource.metadata.uid | sha256sum | trunc 20 }}
             {{- /* expose defaults true (hasKey check: Sprig default treats false as empty) */}}
             {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
+            {{- /* lanAccess: bind SMB 445 as a hostPort on a storage node so masquerade VMs can mount by node IP */}}
+            {{- $lanAccess := $spec.lanAccess | default false }}
             ---
             # Backing storage for the share (Longhorn, served by Samba).
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -81,6 +83,11 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-smb } }
                       spec:
+                        {{- if $lanAccess }}
+                        # hostPort 445 needs a stable node reachable by IP; pin to a storage
+                        # node (labeled openinfra.dev/storage=true — never the GPU/VM node).
+                        nodeSelector: { openinfra.dev/storage: "true" }
+                        {{- end }}
                         containers:
                           - name: samba
                             image: dperson/samba
@@ -93,7 +100,7 @@ spec:
                               - "-g"
                               - "server min protocol = SMB2"
                             ports:
-                              - { containerPort: 445, name: smb }
+                              - { containerPort: 445, name: smb{{ if $lanAccess }}, hostPort: 445{{ end }} }
                             securityContext:
                               capabilities:
                                 add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
