@@ -84,23 +84,13 @@ export function SecurityGroupDetailPage() {
       }
     >
       <Tabs defaultValue="inbound">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
+        <TabsList>
           <TabsTrigger value="inbound">Inbound rules</TabsTrigger>
           <TabsTrigger value="outbound">Outbound rules</TabsTrigger>
           <TabsTrigger value="usedby">Used by ({usedBy.length})</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
-            <DangerZone inline
-        resourceLabel="Security Group"
-        resourceName={name}
-        deleting={del.isPending}
-        onConfirm={() => del.mutate()}
-        confirmDescription={
-          <>Permanently delete security group <span className="font-medium text-foreground">{name}</span> and its NetworkPolicy. Detach it from resources first.</>
-        }
-      />
-          </div>
 
         <TabsContent value="inbound" className="pt-4">
           <RuleTable rules={ingress} peerKey="from" peerHeader="Source"
@@ -140,6 +130,17 @@ export function SecurityGroupDetailPage() {
 
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={sg} />
+        </TabsContent>
+      <TabsContent value="danger" className="pt-4">
+<DangerZone
+        resourceLabel="Security Group"
+        resourceName={name}
+        deleting={del.isPending}
+        onConfirm={() => del.mutate()}
+        confirmDescription={
+          <>Permanently delete security group <span className="font-medium text-foreground">{name}</span> and its NetworkPolicy. Detach it from resources first.</>
+        }
+      />
         </TabsContent>
       </Tabs>
 
