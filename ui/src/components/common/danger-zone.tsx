@@ -16,6 +16,7 @@ export function DangerZone({
   deleting,
   description,
   confirmDescription,
+  inline,
 }: {
   /** Human label, e.g. "Model", "Database". */
   resourceLabel: string;
@@ -27,8 +28,51 @@ export function DangerZone({
   description?: ReactNode;
   /** Optional override for the confirm dialog body. */
   confirmDescription?: ReactNode;
+  /**
+   * Compact form: just a destructive button (+ confirm dialog), no Card. For
+   * placing the delete action in the detail page's tab-bar row instead of a
+   * full-width block at the bottom of a tab.
+   */
+  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const dialog = (
+    <ConfirmDialog
+      open={open}
+      onOpenChange={setOpen}
+      title={`Delete ${resourceLabel}?`}
+      description={
+        confirmDescription ?? (
+          <>
+            Permanently delete{" "}
+            <span className="font-medium text-foreground">{resourceName}</span>.
+            This cannot be undone.
+          </>
+        )
+      }
+      confirmLabel="Delete"
+      loading={deleting}
+      onConfirm={onConfirm}
+    />
+  );
+
+  if (inline) {
+    return (
+      <>
+        <Button
+          variant="outline"
+          size="sm"
+          className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => setOpen(true)}
+        >
+          <Trash2 className="size-4" />
+          Delete {resourceLabel}
+        </Button>
+        {dialog}
+      </>
+    );
+  }
+
   return (
     <Card className="border-destructive/40">
       <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
@@ -44,23 +88,7 @@ export function DangerZone({
           Delete {resourceLabel}
         </Button>
       </CardContent>
-      <ConfirmDialog
-        open={open}
-        onOpenChange={setOpen}
-        title={`Delete ${resourceLabel}?`}
-        description={
-          confirmDescription ?? (
-            <>
-              Permanently delete{" "}
-              <span className="font-medium text-foreground">{resourceName}</span>.
-              This cannot be undone.
-            </>
-          )
-        }
-        confirmLabel="Delete"
-        loading={deleting}
-        onConfirm={onConfirm}
-      />
+      {dialog}
     </Card>
   );
 }
