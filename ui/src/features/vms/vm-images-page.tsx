@@ -31,11 +31,15 @@ function buildState(
   golden: Pvc | undefined,
 ): { label: string; tone: StatusTone; state: "none" | "building" | "ready" } {
   const ps = installer?.status?.printableStatus;
-  // Ready ONLY when the installer ran to completion (sysprep -> Stopped) and the
-  // golden disk is bound. A blank golden PVC is Bound the instant it's created,
-  // so "golden Bound" alone is NOT readiness (that showed a torn-down/incomplete
-  // build as "Ready" and would clone an empty disk).
-  const built = ps === "Stopped" && golden?.status?.phase === "Bound";
+  // An adopted golden (spec.existingGoldenClaim) is CLONED, not built: no installer
+  // VM runs, and CDI keeps the target PVC Pending until the clone completes — so
+  // "golden Bound" alone IS readiness for it. A built golden needs the installer VM
+  // to have run to completion (sysprep -> Stopped), because a blank golden PVC binds
+  // the instant it's created (Bound alone would be a torn-down/empty build).
+  const adopted = !!(claim?.spec as { existingGoldenClaim?: string } | undefined)
+    ?.existingGoldenClaim;
+  const built =
+    golden?.status?.phase === "Bound" && (adopted || ps === "Stopped");
   if (built) return { label: "Ready", tone: "success", state: "ready" };
   if (claim || installer)
     return {
