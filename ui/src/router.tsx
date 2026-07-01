@@ -22,6 +22,13 @@ import { DirectoriesPage } from "@/features/directories/directories-page";
 import { ChaosPage } from "@/features/chaos/chaos-page";
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
+import {
+  VolumeDetailPage,
+  FileShareDetailPage,
+  DirectoryDetailPage,
+  StreamDetailPage,
+  FaultInjectionDetailPage,
+} from "@/features/detail/simple-detail-pages";
 import { MigrationsPage } from "@/features/migrations/migrations-page";
 import { MigrationDetailPage } from "@/features/migrations/migration-detail-page";
 import { ReplicationsPage } from "@/features/migrations/replications-page";
@@ -131,6 +138,27 @@ const chaosRoute = createRoute({
   component: ChaosPage,
 });
 
+const volumeDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/volumes/$namespace/$name",
+  component: VolumeDetailPage,
+});
+const fileShareDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/fileshares/$namespace/$name",
+  component: FileShareDetailPage,
+});
+const directoryDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/directories/$namespace/$name",
+  component: DirectoryDetailPage,
+});
+const faultInjectionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/chaos/$namespace/$name",
+  component: FaultInjectionDetailPage,
+});
+
 const securityGroupsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/security-groups",
@@ -189,6 +217,12 @@ const streamsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/streams",
   component: StreamsPage,
+});
+
+const streamDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/streams/$namespace/$name",
+  component: StreamDetailPage,
 });
 
 const databasesRoute = createRoute({
@@ -269,9 +303,13 @@ const routeTree = rootRoute.addChildren([
   vmImagesRoute,
   vmDetailRoute,
   volumesRoute,
+  volumeDetailRoute,
   fileSharesRoute,
+  fileShareDetailRoute,
   directoriesRoute,
+  directoryDetailRoute,
   chaosRoute,
+  faultInjectionDetailRoute,
   securityGroupsRoute,
   securityGroupDetailRoute,
   migrationsRoute,
@@ -282,6 +320,7 @@ const routeTree = rootRoute.addChildren([
   dataflowNewRoute,
   dataflowDetailRoute,
   streamsRoute,
+  streamDetailRoute,
   databasesRoute,
   databaseDetailRoute,
   managedDbDetailRoute,

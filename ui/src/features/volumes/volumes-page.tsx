@@ -213,6 +213,7 @@ function NewVolumeDialog({
   const [name, setName] = useState("");
   const [size, setSize] = useState("20Gi");
   const [namespace, setNamespace] = useState(defaultNamespace ?? "default");
+  const [migratable, setMigratable] = useState(false);
 
   const create = useMutation({
     mutationFn: () =>
@@ -220,11 +221,12 @@ function NewVolumeDialog({
         apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
         kind: "Volume",
         metadata: { name, namespace },
-        spec: { size: size || "20Gi" },
+        spec: { size: size || "20Gi", migratable },
       } as K8sObject),
     onSuccess: () => {
       setName("");
       setSize("20Gi");
+      setMigratable(false);
       onOpenChange(false);
     },
   });
@@ -258,6 +260,21 @@ function NewVolumeDialog({
               </SelectContent>
             </Select>
           </div>
+          <label className="col-span-2 flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={migratable}
+              onChange={(e) => setMigratable(e.target.checked)}
+            />
+            <span>
+              High-availability (live-migratable)
+              <span className="block text-xs text-muted-foreground">
+                RWX block on Longhorn so it can attach to a live-migratable (HA) VM without
+                blocking its live migration. Default is a standard RWO volume.
+              </span>
+            </span>
+          </label>
         </div>
         {create.error ? (
           <p className="text-sm text-destructive">
