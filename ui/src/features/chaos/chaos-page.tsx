@@ -1,42 +1,23 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
-import { Bomb, Plus, Trash2 } from "lucide-react";
+import { Bomb, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
+import { ApiError, k8sCreate } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import {
-  OPENINFRA_GROUP,
-  OPENINFRA_VERSION,
-  type Condition,
-  type FaultInjection,
-  type FaultInjectionType,
-  type K8sObject,
-} from "@/types/k8s";
+import { OPENINFRA_GROUP, OPENINFRA_VERSION, type Condition, type FaultInjection, type FaultInjectionType, type K8sObject } from "@/types/k8s";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -73,6 +54,7 @@ function targetSummary(f: FaultInjection): string {
 
 export function ChaosPage() {
   const { scoped } = useNamespace();
+  const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
@@ -81,10 +63,6 @@ export function ChaosPage() {
     .filter((n): n is string => Boolean(n))
     .sort((a, b) => a.localeCompare(b));
 
-  const remove = useMutation({
-    mutationFn: (f: FaultInjection) =>
-      k8sDelete(openinfraPaths.faultinjection(f.metadata.namespace ?? "default", f.metadata.name ?? "")),
-  });
 
   const columns = useMemo<ColumnDef<FaultInjection, unknown>[]>(
     () => [
@@ -144,27 +122,8 @@ export function ChaosPage() {
         cell: ({ row }) => <span className="text-muted-foreground">{age(row.original.metadata.creationTimestamp)}</span>,
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => remove.mutate(row.original)}
-              disabled={remove.isPending}
-              title="Delete this experiment"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 80,
-      },
     ],
-    [remove],
+    [],
   );
 
   return (
@@ -175,6 +134,15 @@ export function ChaosPage() {
         description="Fault injection — open-infra's Fault Injection Simulator (Chaos Mesh). Inject pod kills, network faults, resource stress, clock skew, or disk-IO latency to prove the platform's resilience. Every experiment is scoped to a namespace + label selector (blast radius enforced) and time-boxed."
         listPath={openinfraPaths.faultinjections}
         columns={columns}
+        onRowClick={(f) =>
+          navigate({
+            to: "/chaos/$namespace/$name",
+            params: {
+              namespace: f.metadata.namespace ?? "default",
+              name: f.metadata.name ?? "",
+            },
+          })
+        }
         search={(f) => [f.metadata.name, f.metadata.namespace, f.spec?.type, targetSummary(f)]}
         singular="Fault Injection"
         plural="Fault Injections"
