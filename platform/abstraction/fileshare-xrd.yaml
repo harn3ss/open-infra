@@ -42,6 +42,14 @@ spec:
                   type: boolean
                   default: true
                   description: "Get a LAN IP (SMB 445) so VMs/desktops can mount it. On by default — a share you can't reach isn't useful."
+                lanAccess:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Also bind SMB 445 as a hostPort on a storage node, so masquerade VMs (which
+                    can't reach ClusterIP/LoadBalancer service IPs) can mount it at
+                    \\<node-ip>\<share>. Pins the Samba pod to a storage node. One 445 host-share
+                    per node.
             status:
               type: object
               properties:
