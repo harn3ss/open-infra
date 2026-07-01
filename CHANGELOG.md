@@ -69,6 +69,29 @@ the product's public contract.
   flips `spec.database.highAvailability` on a running DB without a recreate: Postgres (CNPG)
   scales the instance count live (adds/removes a streaming-replication standby — verified
   1→2 in ~30s), Mongo scales the FerretDB proxy tier, MySQL converts to a 3-node Galera.
+- **CNPG operator upgraded 1.24.1 → 1.25.1** (Helm chart `0.22.1` → `0.23.2`) — online, no
+  Postgres restart. 1.25 unlocks `spec.postgresql.synchronous.dataDurability`, so an HA Postgres
+  can run **synchronous** replication that stays available when a standby is down (zero data loss
+  while both are up, auto-degrades to async otherwise) instead of the pre-1.25 write-freeze. HA
+  failover was validated end-to-end (primary node lost → standby promoted in ~4s, a
+  primary-selecting LoadBalancer endpoint follows the new primary; zero data loss).
+
+### Virtual machines — node-independent storage & live migration
+- **`spec.highAvailability`** on `kind: VirtualMachine` provisions the root disk on **Longhorn**
+  as a migratable RWX block volume (new **`longhorn-migratable`** StorageClass) and sets
+  `evictionStrategy: LiveMigrate` — so the VM survives a node loss (reschedule + boot from a
+  replica) and **live-migrates** off a drained node with zero downtime. Default stays local-path
+  NVMe (faster, but node-pinned). Verified: a Windows VM live-migrated between nodes, running.
+- **`spec.cpuModel`** — pin a guest CPU model every node supports so migration/reschedule works on
+  a cluster with **heterogeneous CPUs** (`host-model`, the default, ties a VM to its node's exact
+  CPU). HA VMs default to `Nehalem`.
+- **`spec.existingRootClaim`** — boot from a pre-existing PVC instead of cloning the OS image
+  (disk migration / restore); no root DataVolume is provisioned.
+- **Golden images now live on Longhorn** (were node-pinned local-path, blocking provisioning when
+  that node was down), and **`spec.existingGoldenClaim`** on `kind: VmImage` adopts/clones an
+  existing golden so a built image can move to a new storage class without reinstalling. The VM
+  Images page shows an adopted (cloned) golden as **Ready** once its PVC binds (no installer VM
+  runs). See [docs/virtual-machines.md](docs/virtual-machines.md).
 
 ### Chaos engineering (`kind: FaultInjection`) — Fault Injection Simulator
 - **Chaos Mesh** installed declaratively (Argo app, k3s containerd socket wired) + a
@@ -135,6 +158,12 @@ the product's public contract.
 - **Airbyte and `provider-terraform` are removed entirely** — a much lighter stack
   (no Temporal / workers / second Postgres). The apply-sink image is Trivy-scanned
   and cosign-signed by CI like the console.
+
+### Fixes
+- **Buckets page self-heals on MinIO credential rotation** — the console cached its MinIO client
+  forever, so a MinIO restart with rotated root credentials 502'd the Buckets page until the
+  console was restarted. It now re-reads the secret and rebuilds the client whenever the creds
+  change (cache keyed by the credentials).
 
 ## v1.0.0 — 2026-06-23
 

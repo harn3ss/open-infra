@@ -37,7 +37,13 @@ The connection string is injected into the app's pods as `DATABASE_URL` (postgre
 `highAvailability: true` gives a replicated, self-healing topology (needs ≥2 nodes):
 
 - **postgres** → CNPG runs a primary + standby with streaming replication and automatic
-  failover (instances spread across nodes via anti-affinity).
+  failover (instances spread across nodes via anti-affinity). Failover promotes the standby in
+  seconds; a LoadBalancer service selecting `cnpg.io/instanceRole=primary` follows the new
+  primary, so a stable endpoint keeps working. Replication is **async** by default (a hard
+  primary loss can drop the last un-streamed commits); for **zero-data-loss** failover set
+  CNPG's `spec.postgresql.synchronous` with `dataDurability: preferred` (needs the operator
+  ≥ 1.25, which the platform now ships) — it stays available if a standby is down instead of
+  blocking writes.
 - **mysql** → a 3-node Galera cluster (synchronous, multi-primary).
 - **mongo** → the stateless FerretDB proxy tier scales out; storage-tier HA is a tracked
   follow-up.
