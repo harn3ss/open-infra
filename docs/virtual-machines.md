@@ -54,6 +54,58 @@ The catalog lives in two places that must stay in sync: the XRD enum
 (`platform/abstraction/vm-composition.yaml`). The console mirrors it in
 `ui/src/features/vms/vm-shared.ts`.
 
+## High availability & live migration
+
+By default a VM's root disk is `local-path` (local NVMe) — fast, but **pinned to one
+node**: if that node dies the VM can't restart elsewhere. Set `highAvailability: true`
+to make the VM **node-independent**:
+
+```yaml
+spec:
+  os: windows-server-2019
+  highAvailability: true      # root disk on Longhorn (migratable RWX block) + LiveMigrate
+  cpuModel: Broadwell-noTSX   # a CPU model ALL nodes support (see below)
+```
+
+What it does:
+- Root disk is provisioned on **Longhorn** as a **migratable RWX block** volume (the
+  `longhorn-migratable` StorageClass, replicated across nodes) instead of `local-path`.
+- The VM gets `evictionStrategy: LiveMigrate`, so:
+  - **Node dies** → the VM reschedules onto another node and boots from a Longhorn replica.
+  - **Node drained** (planned maintenance) → the running VM **live-migrates** off it with
+    zero downtime (`kubectl drain`, or a `VirtualMachineInstanceMigration`).
+
+### `cpuModel` — required for portability on mixed-CPU clusters
+
+Live migration and node-loss reschedule both need a target node whose CPU can run the
+guest. The default (`host-model`) pins the VM to its source node's exact CPU — fine on a
+uniform cluster, but on a cluster with **different CPUs per node** it blocks all movement.
+Set `cpuModel` to the **newest model every node supports**. Find it with:
+
+```sh
+# intersection of cpu-model.node.kubevirt.io/* labels across your nodes
+kubectl get nodes -o json | jq -r '...'   # newest common model, e.g. Broadwell-noTSX
+```
+
+HA VMs default to `Nehalem` (a universally-safe baseline) if `cpuModel` is unset.
+Changing a running VM's CPU model requires a reboot, and Windows may re-detect hardware
+(possible reactivation) — back up first.
+
+### `existingRootClaim` — adopt a pre-existing disk (migration / restore)
+
+Boot from an existing PVC instead of cloning a fresh disk from the image:
+
+```yaml
+spec: { existingRootClaim: my-restored-disk }   # no root DataVolume is provisioned
+```
+
+Used to migrate a VM onto a disk cloned to a new storage class (e.g. `local-path` →
+Longhorn) without reinstalling. To migrate an existing VM's disk: clone it to a
+`longhorn-migratable` block PVC, then set `highAvailability: true` + `existingRootClaim`
++ `cpuModel`. (When adopting a claim-managed VM's disk, orphan the old DataVolume first so
+it isn't garbage-collected, and apply the volume swap + template removal atomically —
+KubeVirt's webhook rejects a dataVolumeTemplate that's no longer referenced.)
+
 ## Access
 
 - **Linux** — SSH as `openinfra`. Your `sshKey` is installed via cloud-init; a
@@ -188,6 +240,12 @@ The `VmImage` Composition (`platform/abstraction/vmimage-composition.yaml`):
 The VM Images page shows progress (Building → Ready); when Ready, that version
 becomes selectable in **New VM** (it's greyed out until then). A build downloads
 ~5 GB and runs an unattended install — 20–40 minutes.
+
+Goldens are stored on **Longhorn** (replicated), so provisioning a Windows VM —
+which clones `<os>-golden` — doesn't depend on any single node being up. To move an
+already-built golden to a different storage class without rebuilding, clone it to a
+new PVC and set `existingGoldenClaim: <that-pvc>` on the `VmImage` — it adopts the
+clone and skips the ISO/installer steps.
 
 ## Desktops & workspaces
 
