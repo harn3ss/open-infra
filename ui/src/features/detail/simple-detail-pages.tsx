@@ -1,29 +1,9 @@
-import { Bomb, FolderOpen, HardDrive, Network, Radio } from "lucide-react";
+import { Bomb, FolderOpen, Network, Radio } from "lucide-react";
 import { makeSimpleDetailPage } from "@/components/common/generic-detail-page";
 import { openinfraPaths } from "@/lib/k8s-paths";
 
 // spec is untyped on the generic object; read fields through a narrow cast.
 const spec = (o: { spec?: unknown }) => (o.spec ?? {}) as Record<string, unknown>;
-
-export const VolumeDetailPage = makeSimpleDetailPage({
-  kindLabel: "Volume",
-  backTo: "/volumes",
-  backLabel: "Volumes",
-  queryKey: "volume",
-  icon: <HardDrive className="size-5" />,
-  getPath: openinfraPaths.volume,
-  deletePath: openinfraPaths.volume,
-  fields: [
-    { label: "Size", value: (o) => String(spec(o).size ?? "—") },
-    {
-      label: "Type",
-      value: (o) =>
-        spec(o).migratable
-          ? "HA — RWX block, live-migratable"
-          : "Standard — RWO",
-    },
-  ],
-});
 
 export const FileShareDetailPage = makeSimpleDetailPage({
   kindLabel: "File Share",
