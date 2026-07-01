@@ -74,6 +74,8 @@ spec:
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
+            {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
+            {{- $cpuModel := $spec.cpuModel | default "" }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via
             #     CDI (registry import for Linux; clone of the golden PVC for Windows).
@@ -151,6 +153,15 @@ spec:
                         domain:
                           cpu:
                             cores: {{ $cpu }}
+                            {{- if $cpuModel }}
+                            model: {{ $cpuModel }}
+                            {{- else if $ha }}
+                            # Live migration/reschedule needs a CPU model every target node
+                            # supports; host-model (default) pins the VM to its source node.
+                            # Nehalem is a universally-safe baseline; override per cluster with
+                            # spec.cpuModel (e.g. the newest model common to all nodes).
+                            model: Nehalem
+                            {{- end }}
                           resources:
                             requests:
                               memory: {{ $memory }}
