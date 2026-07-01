@@ -1,15 +1,13 @@
 import { useMemo, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
-import { useMutation } from "@tanstack/react-query";
-import { Shield, Plus, Pencil, Trash2 } from "lucide-react";
+import { Shield, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { StatusBadge } from "@/components/common/status-badge";
 import { NewSecurityGroupDialog } from "./new-security-group-dialog";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { k8sDelete } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -53,6 +51,7 @@ function sgStatus(sg: SecurityGroup): { label: string; tone: StatusTone } {
 
 export function SecurityGroupsPage() {
   const { scoped } = useNamespace();
+  const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
   const [editing, setEditing] = useState<SecurityGroup | null>(null);
 
@@ -61,13 +60,6 @@ export function SecurityGroupsPage() {
     .map((n) => n.metadata.name)
     .filter((n): n is string => Boolean(n))
     .sort((a, b) => a.localeCompare(b));
-
-  const remove = useMutation({
-    mutationFn: (sg: SecurityGroup) =>
-      k8sDelete(
-        openinfraPaths.securitygroup(sg.metadata.namespace ?? "default", sg.metadata.name ?? ""),
-      ),
-  });
 
   const columns = useMemo<ColumnDef<SecurityGroup, unknown>[]>(
     () => [
@@ -139,38 +131,8 @@ export function SecurityGroupsPage() {
         ),
         size: 70,
       },
-      {
-        id: "actions",
-        header: "",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <span className="flex justify-end gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setEditing(row.original);
-                setNewOpen(true);
-              }}
-              title="Edit rules"
-            >
-              <Pencil className="size-4" />
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => remove.mutate(row.original)}
-              disabled={remove.isPending}
-              title="Delete this security group"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </span>
-        ),
-        size: 110,
-      },
     ],
-    [remove],
+    [],
   );
 
   return (
@@ -181,6 +143,15 @@ export function SecurityGroupsPage() {
         description="Reusable firewall rule sets — open-infra's Security Groups. Attach one to an Application, Function, or Virtual Machine (securityGroups: [...]) to control its inbound/outbound traffic. Enforced by Cilium."
         listPath={openinfraPaths.securitygroups}
         columns={columns}
+        onRowClick={(sg) =>
+          navigate({
+            to: "/security-groups/$namespace/$name",
+            params: {
+              namespace: sg.metadata.namespace ?? "default",
+              name: sg.metadata.name ?? "",
+            },
+          })
+        }
         search={(sg) => [sg.metadata.name, sg.metadata.namespace]}
         singular="Security Group"
         plural="Security Groups"
