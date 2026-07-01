@@ -158,29 +158,15 @@ export function ManagedDatabaseDetailPage() {
       status={health}
     >
       <Tabs defaultValue="overview" onValueChange={(v) => setPeekOpen(v === "peek")}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           {peekable ? <TabsTrigger value="peek">Peek</TabsTrigger> : null}
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
-            <DangerZone inline
-        resourceLabel="Database"
-        resourceName={db?.name ?? name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
-        confirmDescription={
-          <>
-            Permanently delete the application{" "}
-            <span className="font-medium text-foreground">{name}</span> and its{" "}
-            {e.label} database. This cannot be undone.
-          </>
-        }
-      />
-          </div>
 
         {peekable ? (
           <TabsContent value="peek" className="pt-4">
@@ -300,6 +286,21 @@ export function ManagedDatabaseDetailPage() {
 
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={app} />
+        </TabsContent>
+      <TabsContent value="danger" className="pt-4">
+<DangerZone
+        resourceLabel="Database"
+        resourceName={db?.name ?? name}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
+          <>
+            Permanently delete the application{" "}
+            <span className="font-medium text-foreground">{name}</span> and its{" "}
+            {e.label} database. This cannot be undone.
+          </>
+        }
+      />
         </TabsContent>
       </Tabs>
 

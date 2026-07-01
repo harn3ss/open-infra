@@ -151,8 +151,7 @@ export function VmDetailPage() {
       }
     >
       <Tabs defaultValue="overview">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList>
+        <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="access">Access</TabsTrigger>
           <TabsTrigger value="network">Network</TabsTrigger>
@@ -160,21 +159,8 @@ export function VmDetailPage() {
           <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
-            <DangerZone inline
-        resourceLabel="Virtual Machine"
-        resourceName={name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
-        confirmDescription={
-          <>
-            Permanently delete the VM{" "}
-            <span className="font-medium text-foreground">{name}</span> and its
-            disk. This cannot be undone.
-          </>
-        }
-      />
-          </div>
 
         <TabsContent value="overview" className="pt-4">
           <Card>
@@ -323,6 +309,21 @@ export function VmDetailPage() {
 
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={vm} />
+        </TabsContent>
+      <TabsContent value="danger" className="pt-4">
+<DangerZone
+        resourceLabel="Virtual Machine"
+        resourceName={name}
+        deleting={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+        confirmDescription={
+          <>
+            Permanently delete the VM{" "}
+            <span className="font-medium text-foreground">{name}</span> and its
+            disk. This cannot be undone.
+          </>
+        }
+      />
         </TabsContent>
       </Tabs>
 
