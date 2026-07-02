@@ -19,7 +19,12 @@ permissions:
   id-token: write # cosign keyless signing (Sigstore OIDC)
 
 jobs:
+  # Gate: no image is built or signed unless the full test suite passes on this ref.
+  test:
+    uses: ./.github/workflows/test.yml
+
   package:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
