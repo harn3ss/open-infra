@@ -245,7 +245,10 @@ reconstruct.
 pure CDC logic (driver dialects, cross-engine type mapping, the temporal-coercion
 rules that decide how a `DATE`/`timestamp` value lands in another engine),
 composition rendering (so, e.g., "Start" always un-hibernates a database), and the
-MySQL HLC's monotonicity under a backward wall clock. **Not yet automated:**
+MySQL HLC's monotonicity under a backward wall clock. These are an **enforced gate**,
+not advisory: the release and both image-build workflows run the suite as a required
+job, so no image is built, signed, or pushed unless it passes on that ref (verified by
+a live red build — see [docs/ci.md](docs/ci.md)). **Not yet automated:**
 unattended fault orchestration for the convergence harness (partition / kill / skew
 are applied by hand today), and incremental-snapshot back-load of rows added to a
 table *after* a flow starts (create-then-insert syncs fully; back-loading a
