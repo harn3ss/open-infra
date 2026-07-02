@@ -234,18 +234,22 @@ Hybrid-Logical-Clock last-write-wins conflict resolution. This is the most capab
 part of open-infra and the least forgiving: a conflict-resolution bug is not a
 crash you notice — it's a **silently lost or diverged write** you may find weeks
 later. Correctness here rests today on design + hand testing + a growing automated
-suite — **not yet** on an end-to-end convergence / anti-entropy chaos harness.
-Until that lands: use it, keep an authoritative source, and don't make multi-master
-the system of record for data you can't reconstruct.
+suite, including a [convergence harness](docs/convergence-harness.md) that drives
+concurrent/conflicting writes and asserts every member ends identical with zero lost
+writes — though injecting the fault (partition / node loss) is still driven by hand,
+**not yet** a one-command run. Until that's automated: use it, keep an authoritative
+source, and don't make multi-master the system of record for data you can't
+reconstruct.
 
 **What's tested, concretely** (`.github/workflows/test.yml`, `go test`): the
 pure CDC logic (driver dialects, cross-engine type mapping, the temporal-coercion
 rules that decide how a `DATE`/`timestamp` value lands in another engine),
 composition rendering (so, e.g., "Start" always un-hibernates a database), and the
 MySQL HLC's monotonicity under a backward wall clock. **Not yet automated:**
-end-to-end convergence under partition / node loss, and incremental-snapshot
-back-load of rows added to a table *after* a flow starts (create-then-insert syncs
-fully; back-loading a pre-populated, late-added table is a known gap).
+unattended fault orchestration for the convergence harness (partition / kill / skew
+are applied by hand today), and incremental-snapshot back-load of rows added to a
+table *after* a flow starts (create-then-insert syncs fully; back-loading a
+pre-populated, late-added table is a known gap).
 
 **One maintainer, one cluster.** open-infra is built and validated by one person on
 one live cluster. The direction of travel is to make correctness *mechanical*
