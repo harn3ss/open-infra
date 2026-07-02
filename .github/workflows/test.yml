@@ -32,7 +32,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: test-${{ github.ref }}
+  # Include github.workflow so the reusable calls (release/build-*) and the standalone
+  # run get distinct groups — otherwise they share one group and cancel each other.
+  group: test-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
