@@ -156,7 +156,8 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
 + Loki, Sealed Secrets, Knative, Velero, KubeVirt). The eleven public
-abstractions are shipped and verified end-to-end:
+abstractions are shipped and exercised on that cluster — but **maturity varies by
+capability** (see [Maturity & guarantees](#maturity--guarantees)):
 
 - **`Application`** — Deployment/Service/Ingress/HPA, plus managed databases
   (Postgres / MySQL / MongoDB), object storage, and queues — with per-app
@@ -204,12 +205,55 @@ abstractions are shipped and verified end-to-end:
 **Reach anything from the LAN.** Every resource takes `expose: true` to get a
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;
 Functions are LAN-reachable via the Knative gateway (`expose: false` makes them
-cluster-local). VMs can also go fully on-LAN with `network: bridge` (a real DHCP
-lease, no NAT).
+cluster-local). VMs reach in-cluster services (databases, file shares) through their
+host node at `<nodeIP>:<nodePort>`; a fully on-LAN VM mode (`network: bridge`, a real
+DHCP lease) is **experimental and not currently working** on the reference cluster —
+see [Maturity & guarantees](#maturity--guarantees).
 
 > **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap
 > (Bitnami purged its public versioned tags in Aug 2025); migrating off Bitnami
 > is tracked for v1.
+
+---
+
+## Maturity & guarantees
+
+open-infra spans two kinds of thing, and they don't carry the same risk. Read this
+before you point it at data you can't afford to lose.
+
+**Stable — the PaaS surface.** `Application` (Deployment/Service/Ingress/HPA),
+`Model`, `Function`, `VirtualMachine`, `Volume`, `FileShare`, `Directory`, and
+managed databases (Postgres / MySQL / Mongo, including HA and Start/Stop) are the
+day-to-day surface. A failure here is a restart or a rollback — the homelab-PaaS
+promise. These run continuously on the reference cluster.
+
+**Experimental — the distributed-systems primitives.** `Replication`
+(bidirectional / multi-master), cross-engine `Migration`, and multi-master
+`DataFlow` ride a change-data-capture engine (Debezium → NATS → apply-sink) with
+Hybrid-Logical-Clock last-write-wins conflict resolution. This is the most capable
+part of open-infra and the least forgiving: a conflict-resolution bug is not a
+crash you notice — it's a **silently lost or diverged write** you may find weeks
+later. Correctness here rests today on design + hand testing + a growing automated
+suite — **not yet** on an end-to-end convergence / anti-entropy chaos harness.
+Until that lands: use it, keep an authoritative source, and don't make multi-master
+the system of record for data you can't reconstruct.
+
+**What's tested, concretely** (`.github/workflows/test.yml`, `go test`): the
+pure CDC logic (driver dialects, cross-engine type mapping, the temporal-coercion
+rules that decide how a `DATE`/`timestamp` value lands in another engine),
+composition rendering (so, e.g., "Start" always un-hibernates a database), and the
+MySQL HLC's monotonicity under a backward wall clock. **Not yet automated:**
+end-to-end convergence under partition / node loss, and incremental-snapshot
+back-load of rows added to a table *after* a flow starts (create-then-insert syncs
+fully; back-loading a pre-populated, late-added table is a known gap).
+
+**One maintainer, one cluster.** open-infra is built and validated by one person on
+one live cluster. The direction of travel is to make correctness *mechanical*
+(tests, CI, chaos-as-verification) rather than attention-dependent — calibrate trust
+accordingly, especially for the experimental tier.
+
+From **v2.0.0** the changelog states each capability's tier explicitly, and breaking
+changes to the stable surface get a major-version bump.
 
 ---
 
