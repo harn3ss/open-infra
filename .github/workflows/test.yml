@@ -26,6 +26,7 @@ on:
       - "platform/abstraction/**"
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
+  workflow_call: {} # callable as a required gate by the build/release workflows
 
 permissions:
   contents: read
