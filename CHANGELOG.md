@@ -4,6 +4,19 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
+## Unreleased
+
+### CI
+- **The test suite now gates image build + release** (it was advisory — tests ran but
+  nothing consumed the result, so a tag could ship signed images with red tests).
+  `test.yml` is now a reusable workflow that `release.yml`, `build-console.yml`, and
+  `build-apply-sink.yml` each run as a required `test` job the build/package job
+  `needs:` — no image is built, signed, or pushed unless `go test -race` + `vet` pass
+  on that ref, regardless of where a tag points (branch protection alone wouldn't
+  suffice, since tags can target any commit). Verified with a live red build (a
+  deliberately failing test → `build` skipped, no image shipped). See
+  [docs/ci.md](docs/ci.md).
+
 ## v2.0.0 — 2026-07-02
 
 Multi-master data movement (`kind: DataFlow`), node-independent VMs with live
