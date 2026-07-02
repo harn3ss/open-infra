@@ -1,15 +1,17 @@
-# Cut a versioned, signed release of the console image.
+# Cut a versioned, signed release of the console + apply-sink images.
 #
-# Triggered by pushing a semver tag (e.g. v1.0.0). Builds the console image and
-# publishes it to GHCR tagged with the version (1.0.0, 1.0, latest), then
-# cosign-signs it (keyless, Sigstore). The day-to-day `build-console` workflow
-# only emits latest/sha on pushes to main; this one produces the release package.
+# Triggered by pushing a semver tag (e.g. v1.0.0), or manually (workflow_dispatch)
+# against an existing tag to (re)build a release. Each image is published to GHCR
+# tagged with the version (1.0.0, 1.0, latest) and cosign-signed (keyless, Sigstore).
+# The day-to-day build-* workflows only emit latest/sha on pushes to main; this one
+# produces the version-pinned release packages for reproducible deploys.
 name: release
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {} # dispatch against a tag ref to (re)build that release
 
 permissions:
   contents: read
@@ -19,6 +21,17 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: open-infra-console
+            context: .
+            file: console-api/Dockerfile
+          - image: open-infra-apply-sink
+            context: apply-sink
+            file: apply-sink/Dockerfile
+    name: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +48,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/open-infra-console
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           # v1.0.0 -> 1.0.0, 1.0, latest
           tags: |
             type=semver,pattern={{version}}
@@ -46,13 +59,13 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: console-api/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -60,4 +73,4 @@ jobs:
       - name: Sign the image (keyless, Sigstore)
         run: |
           cosign sign --yes \
-            ghcr.io/${{ github.repository_owner }}/open-infra-console@${{ steps.build.outputs.digest }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
