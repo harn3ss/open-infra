@@ -66,7 +66,43 @@ func TestManagedDB_HAInstancesAndAntiAffinity(t *testing.T) {
 	}
 }
 
+// TestFileShare_NodeIPExternalIPs guards the masquerade-VM escape hatch: when a
+// FileShare sets spec.nodeIP, the Service must also bind SMB 445 on that node IP
+// (externalIPs) so a NAT'd VM can mount it; without nodeIP it must not.
+func TestFileShare_NodeIPExternalIPs(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/fileshare-composition.yaml")
+
+	// 192.0.2.0/24 is the RFC 5737 documentation range — never a real site IP.
+	with := render(t, tmpl, fileshareCtx("192.0.2.50"))
+	if !strings.Contains(with, "externalIPs: [192.0.2.50]") {
+		t.Errorf("nodeIP set must render externalIPs; got:\n%s", grepCtx(with, "type:"))
+	}
+	without := render(t, tmpl, fileshareCtx(""))
+	if strings.Contains(without, "externalIPs") {
+		t.Errorf("no nodeIP must not render externalIPs; got:\n%s", grepCtx(without, "type:"))
+	}
+}
+
 // ---- helpers ----
+
+func fileshareCtx(nodeIP string) map[string]any {
+	spec := map[string]any{"size": "100Gi", "expose": true}
+	if nodeIP != "" {
+		spec["nodeIP"] = nodeIP
+	}
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000fs",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "iis-work",
+					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}},
+	}
+}
 
 // dbCtx builds the minimal .observed.composite.resource context that reaches the
 // managed-Postgres branch (spec.database.engine defaults to postgres). No image =>
@@ -202,6 +238,10 @@ func sprigLite() template.FuncMap {
 			return d
 		},
 		"list": func(v ...any) []any { return v },
+		"hasKey": func(m map[string]any, k string) bool {
+			_, ok := m[k]
+			return ok
+		},
 		"append": func(list any, v any) []any {
 			var out []any
 			if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice {

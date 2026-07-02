@@ -36,6 +36,8 @@ spec:
             {{- $pass := printf "%s-smbpass" .observed.composite.resource.metadata.uid | sha256sum | trunc 20 }}
             {{- /* expose defaults true (hasKey check: Sprig default treats false as empty) */}}
             {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
+            {{- /* nodeIP: bind SMB 445 on a node IP too, so masquerade VMs can mount it */}}
+            {{- $nodeIP := $spec.nodeIP | default "" }}
             ---
             # Backing storage for the share (Longhorn, served by Samba).
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -120,6 +122,11 @@ spec:
                     namespace: {{ $ns }}
                   spec:
                     type: {{ if $expose }}LoadBalancer{{ else }}ClusterIP{{ end }}
+                    {{- if $nodeIP }}
+                    # Also answer SMB 445 on this node's LAN IP so masquerade VMs
+                    # (which can't reach a MetalLB VIP) can mount \\<nodeIP>\<name>.
+                    externalIPs: [{{ $nodeIP }}]
+                    {{- end }}
                     selector: { app: {{ $name }}-smb }
                     ports:
                       - { name: smb, port: 445, targetPort: 445 }
@@ -144,7 +151,7 @@ spec:
                     USERNAME: {{ $user }}
                     PASSWORD: {{ $pass }}
                     HOST: {{ $name }}.{{ $ns }}.svc.cluster.local
-                    ACCESS: 'net use Z: \\HOST\{{ $name }} /user:{{ $user }} {{ $pass }}  (HOST = LAN IP when exposed)'
+                    ACCESS: 'net use Z: \\HOST\{{ $name }} /user:{{ $user }} {{ $pass }}  (HOST = the LAN IP when exposed{{ if $nodeIP }}, or {{ $nodeIP }} from a masquerade VM{{ end }})'
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

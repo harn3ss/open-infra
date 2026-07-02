@@ -42,6 +42,9 @@ spec:
                   type: boolean
                   default: true
                   description: "Get a LAN IP (SMB 445) so VMs/desktops can mount it. On by default — a share you can't reach isn't useful."
+                nodeIP:
+                  type: string
+                  description: "Optional: also answer SMB 445 on this cluster node's LAN IP (Service externalIPs). Masquerade-networked VMs can't reach the MetalLB LAN IP, but they can reach a node IP — so this lets such a VM mount the share at \\\\<nodeIP>\\<name>. Use a stable, always-on node."
             status:
               type: object
               properties:
