@@ -1,0 +1,64 @@
+# Stage A — fast unit & composition-render tests. Runs on every push/PR that
+# touches Go code or the abstraction compositions, as the correctness gate before
+# the build-* image workflows. No cluster, no DB: pure-Go unit tests (apply-sink
+# coercion/dialect logic), the console-api handlers, and the composition-render
+# assertions that guard template logic (e.g. the CNPG hibernation annotation).
+#
+# The MySQL/Postgres HLC *integration* tests are tagged `integration` and are NOT
+# run here (they need a live database) — run them locally with, e.g.:
+#   MYSQL_TEST_DSN=... go test -tags integration ./... (in apply-sink/)
+name: test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apply-sink/**"
+      - "console-api/**"
+      - "test/**"
+      - "platform/abstraction/**"
+      - ".github/workflows/test.yml"
+  pull_request:
+    paths:
+      - "apply-sink/**"
+      - "console-api/**"
+      - "test/**"
+      - "platform/abstraction/**"
+      - ".github/workflows/test.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - apply-sink # pure-Go CDC apply logic (coerce, dialects, table parsing)
+          - console-api # BFF handlers (crd, proxy)
+          - test/render # composition-render assertions (hibernation, HA)
+    name: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          # go.mod (not go.sum) as the cache key: test/render is stdlib-only and has
+          # no go.sum, and go.mod changes are what invalidate the module cache anyway.
+          cache-dependency-path: ${{ matrix.module }}/go.mod
+
+      - name: go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: go test -race
+        working-directory: ${{ matrix.module }}
+        run: go test -race -count=1 ./...
