@@ -4,7 +4,64 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
-## Unreleased
+## v2.0.0 — 2026-07-02
+
+Multi-master data movement (`kind: DataFlow`), node-independent VMs with live
+migration, and chaos engineering — plus, new in this release, the project's first
+**correctness gate** (CI + tests, incl. a multi-master convergence harness) and
+**honest maturity tiers**. The major bump reflects the breaking changes below
+(chiefly the migration engine re-platform off Airbyte).
+
+### ⚠️ Breaking changes
+- **Airbyte and `provider-terraform` are removed; `kind: Migration` is re-platformed**
+  onto open-infra's own Debezium + apply-sink engine. Migrations are now **continuous
+  by default** (the manual "sync" trigger is gone) and `target.engine` accepts
+  `postgres` / `mysql` / `sqlserver` (was Postgres-only). Airbyte-backed Migrations
+  from v1.x must be recreated.
+- **NATS names are namespace-qualified** (`<ns>-<name>` for streams / subjects /
+  durables). Streams and consumers from older flows have different names — recreate
+  flows (the orphan GC reaps the old ones); two same-named flows in different
+  namespaces no longer share a stream.
+- **`kind: DataFlow`: the per-edge `tables` field is removed** (scope is per-flow).
+  Move any per-edge `tables` up to the flow level.
+- **Console: list pages no longer have inline "fast-delete."** A row opens a detail
+  page; destructive actions live in a red **Danger Zone** tab. No API change — a
+  muscle-memory change.
+
+### Maturity & guarantees (new — see [README](README.md#maturity--guarantees))
+open-infra now states each capability's tier explicitly, because the two audiences it
+serves have very different tolerance for failure:
+- **Stable:** `Application`, `Model`, `Function`, `VirtualMachine`, `Volume`,
+  `FileShare`, `Directory`, and managed databases (Postgres / MySQL / Mongo, incl. HA
+  and Start/Stop). Failure here is a restart or rollback.
+- **Experimental:** `Replication` (multi-master), cross-engine `Migration`, and
+  multi-master `DataFlow` — the Debezium → NATS → apply-sink + HLC last-write-wins
+  path. A conflict-resolution bug here is a **silent lost/diverged write**, not a
+  crash. Use it, but keep an authoritative source until convergence is automatically
+  tested end-to-end (see Known limitations).
+
+### Testing, CI & correctness (new)
+- **Stage A CI** (`.github/workflows/test.yml`) — `go vet` + `go test -race` across
+  `apply-sink`, `console-api`, and a new `test/render` module, on every push/PR that
+  touches Go or the compositions. The correctness gate the project previously lacked.
+- **apply-sink unit tests** for the pure CDC logic — driver dialects, cross-engine
+  type mapping, and the temporal-coercion buckets behind the cross-engine `DATE` fix.
+- **MySQL HLC integration test** (build-tag `integration`) proving the Hybrid Logical
+  Clock stays monotonic across a backward wall-clock jump (the T6 fix, now guarded).
+- **Composition-render tests** (`test/render`, stdlib only) that assert template logic
+  directly — e.g. "Start" always writes `cnpg.io/hibernation: "off"`, and HA renders
+  `instances: 2` + required anti-affinity. Proven to catch the hibernation regression
+  that once shipped.
+- **Multi-master convergence harness** (`apply-sink`, build-tag `convergence`;
+  [docs/convergence-harness.md](docs/convergence-harness.md)) — drives concurrent and
+  deliberately conflicting writes across a running flow, then asserts every member ends
+  byte-identical with zero lost writes. Run it under a `kind: FaultInjection`
+  (partition / kill / skew) to prove convergence survives partition and node loss.
+
+### Storage — FileShare node access
+- **`spec.nodeIP` on `kind: FileShare`** — also answer SMB 445 on that node's LAN IP
+  (Service `externalIPs`), so a masquerade-networked VM (which can't reach a MetalLB
+  VIP) can mount `\\<nodeIP>\<name>`. Off unless set; existing shares are unchanged.
 
 ### Data Flows — visual data-movement (`kind: DataFlow`)
 - **New `kind: DataFlow`** — one resource describing a graph of data-movement nodes
@@ -164,6 +221,20 @@ the product's public contract.
   forever, so a MinIO restart with rotated root credentials 502'd the Buckets page until the
   console was restarted. It now re-reads the secret and rebuilds the client whenever the creds
   change (cache keyed by the credentials).
+
+### Known limitations
+- **Multi-master convergence** is verified by a harness, but injecting the fault
+  (partition / kill / skew) is still driven by hand — not yet a single-command run.
+- **Incremental back-load** — a table added to a flow that is *already full of data*
+  needs a Debezium incremental snapshot to back-load existing rows (create-then-insert
+  syncs fully).
+- **VM `network: bridge` is experimental and not currently working** — a macvlan
+  sub-interface can't be a KubeVirt bridge port, so a bridged VM crash-loops. VMs reach
+  in-cluster services via `<nodeIP>:<nodePort>` (or a FileShare's `nodeIP`); a working
+  bridge (macvtap) is planned. The `install.sh` vmLan block installs this plumbing and
+  still carries an over-broad path-remap `sed` to fix.
+- **Redis** pins Bitnami's legacy image mirror as a stopgap (Bitnami purged its public
+  versioned tags in Aug 2025); migrating off Bitnami is tracked.
 
 ## v1.0.0 — 2026-06-23
 
