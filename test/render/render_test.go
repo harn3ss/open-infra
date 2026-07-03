@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"text/template"
@@ -83,7 +84,46 @@ func TestFileShare_NodeIPExternalIPs(t *testing.T) {
 	}
 }
 
+// TestSecurityGroup_AlwaysAllowsConsole guards the invariant that any ingress-restricted
+// SecurityGroup still lets the console (open-infra-console) reach the workload — else a
+// user's SG silently breaks console features like DB Peek (a real prod incident).
+func TestSecurityGroup_AlwaysAllowsConsole(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/securitygroup-composition.yaml")
+
+	// An ingress-restricted SG (e.g. on a DB) must always allow the console namespace.
+	withIngress := render(t, tmpl, sgCtx(true))
+	if !strings.Contains(withIngress, "open-infra-console") {
+		t.Errorf("ingress-restricted SG must allow the console namespace (Peek); got:\n%s", grepCtx(withIngress, "ingress"))
+	}
+	// With no ingress rules the pod isn't ingress-restricted, so nothing is injected.
+	noIngress := render(t, tmpl, sgCtx(false))
+	if strings.Contains(noIngress, "open-infra-console") {
+		t.Errorf("SG with no ingress must not inject a console allow (pod not ingress-restricted)")
+	}
+}
+
 // ---- helpers ----
+
+func sgCtx(withIngress bool) map[string]any {
+	spec := map[string]any{}
+	if withIngress {
+		spec["ingress"] = []any{
+			map[string]any{"from": []any{map[string]any{"namespace": "default"}}, "protocol": "TCP"},
+		}
+	}
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000sg",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "dbtest",
+					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}},
+	}
+}
 
 func fileshareCtx(nodeIP string) map[string]any {
 	spec := map[string]any{"size": "100Gi", "expose": true}
@@ -242,6 +282,24 @@ func sprigLite() template.FuncMap {
 			_, ok := m[k]
 			return ok
 		},
+		"set": func(d map[string]any, k string, v any) map[string]any {
+			if d == nil {
+				d = map[string]any{}
+			}
+			d[k] = v
+			return d
+		},
+		// Minimal, substring-faithful (not a full YAML marshaller): every scalar value
+		// appears in the output, which is all the render assertions check.
+		"toYaml": func(v any) string { return toYAMLish(v) },
+		"nindent": func(n int, s string) string {
+			pad := strings.Repeat(" ", n)
+			lines := strings.Split(s, "\n")
+			for i := range lines {
+				lines[i] = pad + lines[i]
+			}
+			return "\n" + strings.Join(lines, "\n")
+		},
 		"append": func(list any, v any) []any {
 			var out []any
 			if rv := reflect.ValueOf(list); rv.Kind() == reflect.Slice {
@@ -262,6 +320,35 @@ func sprigLite() template.FuncMap {
 			}
 			return strings.Join(parts, sep)
 		},
+	}
+}
+
+// toYAMLish recursively renders a value so every scalar (incl. nested map values like
+// "open-infra-console") appears in the output. Not valid nested YAML — enough for the
+// substring-based render assertions, deterministic via sorted keys.
+func toYAMLish(v any) string {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+": "+toYAMLish(t[k]))
+		}
+		return strings.Join(parts, "\n")
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, item := range t {
+			parts = append(parts, "- "+toYAMLish(item))
+		}
+		return strings.Join(parts, "\n")
+	case string:
+		return t
+	default:
+		return fmt.Sprint(v)
 	}
 }
 
