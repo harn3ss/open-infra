@@ -59,6 +59,16 @@ spec:
               {{- end }}
               {{- $ingressRules = append $ingressRules $r }}
             {{- end }}
+            {{- /* Always let the console (the trusted management plane, namespace
+                   open-infra-console) reach SG-gated workloads, so console features
+                   like DB Peek can't be silently broken by a user's SG. Only when
+                   ingress is restricted; mirrors the auto-DNS egress below. A user's
+                   own `0.0.0.0/0` ipBlock does NOT cover this — Cilium matches
+                   in-cluster sources by identity, not CIDR. */}}
+            {{- if $defIngress }}
+              {{- $console := dict "from" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "open-infra-console")))) }}
+              {{- $ingressRules = append $ingressRules $console }}
+            {{- end }}
             {{- /* build egress rules + auto DNS */}}
             {{- $egressRules := list }}
             {{- range $rule := ($spec.egress | default list) }}
