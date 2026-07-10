@@ -58,7 +58,10 @@ spec:
                     #             Mongo wire protocol, injects MONGODB_URI). Apache-2.0.
                     # mysql    -> MariaDB (relational, MySQL wire protocol, injects
                     #             DATABASE_URL). GPLv2.
-                    engine: { type: string, enum: [postgres, mongo, mysql], default: postgres }
+                    # babelfish -> Babelfish for PostgreSQL (SQL-Server-compatible:
+                    #             TDS 1433 + T-SQL, backed by Postgres). Point unmodified
+                    #             SQL Server apps at it. EXPERIMENTAL, single-instance.
+                    engine: { type: string, enum: [postgres, mongo, mysql, babelfish], default: postgres }
                     name:   { type: string }
                     # postgres: primary + standby on separate nodes with automatic
                     # failover (CloudNativePG). mongo: scales the stateless FerretDB

@@ -48,6 +48,7 @@ CNCF projects — not a reinvention of databases or storage.
 | EBS | block volumes (`kind: Volume`) | Longhorn |
 | EFS / FSx | shared file storage (`kind: FileShare`) | Samba (SMB) on Longhorn |
 | RDS | managed SQL (`engine: postgres`/`mysql`) | CloudNativePG / MariaDB |
+| RDS (SQL Server–compatible) | drop-in for SQL Server apps (`engine: babelfish`) | Babelfish for PostgreSQL (TDS 1433 + T-SQL) |
 | DynamoDB | document store (`engine: mongo`) | FerretDB on DocumentDB-Postgres |
 | OpenSearch Vector | vector search (`database.vector: true`) | pgvector |
 | DMS | DB migration + CDC (`kind: Migration`) | Debezium + apply-sink + Crossplane |

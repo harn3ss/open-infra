@@ -102,6 +102,36 @@ func TestSecurityGroup_AlwaysAllowsConsole(t *testing.T) {
 	}
 }
 
+// TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
+// a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
+// must NOT fall through to the CNPG Postgres path.
+func TestManagedDB_BabelfishEngine(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	ctx := map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"database": map[string]any{"engine": "babelfish", "name": "appdb"},
+			},
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000bf",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "sqlapp",
+					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}},
+	}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{"SQLSERVER_URL", "kind: StatefulSet", "babelfishpg@sha256:", "/start.sh", `port: 1433`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("babelfish render missing %q; got:\n%s", want, grepCtx(out, "babelfish"))
+		}
+	}
+	if strings.Contains(out, "postgresql.cnpg.io/v1") {
+		t.Errorf("babelfish engine must not render a CNPG Cluster (should not fall through to Postgres)")
+	}
+}
+
 // ---- helpers ----
 
 func sgCtx(withIngress bool) map[string]any {
