@@ -512,6 +512,121 @@ spec:
                     resources:
                       requests: { cpu: 100m, memory: 256Mi }
                       limits: { cpu: "2", memory: 1Gi }
+            {{- else if eq $dbEngine "babelfish" }}
+            {{- /* Babelfish for PostgreSQL — SQL-Server-compatible managed DB (TDS 1433 +
+                   T-SQL, backed by PG 17). EXPERIMENTAL. Not a CNPG image, so it runs as a
+                   plain StatefulSet on Longhorn (node-independent), single instance for v1;
+                   back it up with Velero. The password is injected from the Secret via env at
+                   first-boot init (start.sh -p), never baked into the pod args. */}}
+            {{- $bfPass := printf "Bbf%s9x" (printf "%s-bf" .observed.composite.resource.metadata.uid | sha256sum | trunc 18) }}
+            {{- $bfImg := "jonathanpotts/babelfishpg@sha256:8822d2bdc4e78b33f4b3dc576509799aada78b90220b5fc3ee3dfe210cfbc423" }}
+            ---
+            # Connection secret — SQL Server (TDS) + native Postgres endpoints.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: babelfish-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $name }}-babelfish, namespace: {{ $ns }} }
+                  stringData:
+                    ENGINE: babelfish
+                    HOST: {{ $name }}-babelfish.{{ $ns }}.svc.cluster.local
+                    TDS_PORT: "1433"
+                    PG_PORT: "5432"
+                    USERNAME: appuser
+                    PASSWORD: "{{ $bfPass }}"
+                    DATABASE: "{{ $dbName }}"
+                    # Point unmodified SQL Server / T-SQL apps here (TDS wire protocol):
+                    SQLSERVER_URL: "Server={{ $name }}-babelfish.{{ $ns }}.svc.cluster.local,1433;Database={{ $dbName }};User Id=appuser;Password={{ $bfPass }};Encrypt=optional;TrustServerCertificate=true"
+                    # Same data over the native Postgres wire protocol:
+                    DATABASE_URL: "postgres://appuser:{{ $bfPass }}@{{ $name }}-babelfish.{{ $ns }}.svc.cluster.local:5432/{{ $dbName }}"
+            ---
+            # Babelfish server — StatefulSet on Longhorn, single instance. Stop => replicas 0.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: babelfish
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: StatefulSet
+                  metadata:
+                    name: {{ $name }}-babelfish
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}-babelfish, openinfra.dev/managed-db: babelfish }
+                  spec:
+                    serviceName: {{ $name }}-babelfish
+                    replicas: {{ if $dbStopped }}0{{ else }}1{{ end }}
+                    selector: { matchLabels: { app: {{ $name }}-babelfish } }
+                    template:
+                      metadata:
+                        labels:
+                          app: {{ $name }}-babelfish
+                          {{- range $sg := ($spec.securityGroups | default list) }}
+                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
+                      spec:
+                        securityContext: { fsGroup: 1000 }
+                        # Postgres refuses a root-owned data dir; chown the Longhorn PVC first.
+                        initContainers:
+                          - name: fix-perms
+                            image: {{ $bfImg }}
+                            command: ["sh", "-c", "chown -R postgres:postgres /var/lib/babelfish/data && chmod 700 /var/lib/babelfish/data"]
+                            securityContext: { runAsUser: 0 }
+                            volumeMounts:
+                              - { name: data, mountPath: /var/lib/babelfish/data }
+                        containers:
+                          - name: babelfish
+                            image: {{ $bfImg }}
+                            # start.sh inits on first boot (login + db via -p), then execs postgres.
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'exec /start.sh -u appuser -p "$BF_PASS" -d "$BF_DB" -m single-db'
+                            env:
+                              - name: BF_PASS
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-babelfish, key: PASSWORD } }
+                              - name: BF_DB
+                                value: "{{ $dbName }}"
+                            ports:
+                              - { containerPort: 1433, name: tds }
+                              - { containerPort: 5432, name: pg }
+                            volumeMounts:
+                              - { name: data, mountPath: /var/lib/babelfish/data }
+                            resources:
+                              requests: { cpu: 250m, memory: 512Mi }
+                              limits: { cpu: "2", memory: 2Gi }
+                    volumeClaimTemplates:
+                      - metadata: { name: data }
+                        spec:
+                          accessModes: [ReadWriteOnce]
+                          storageClassName: longhorn   # node-independent; back up with Velero
+                          resources: { requests: { storage: 10Gi } }
+            ---
+            # Service — SQL Server (1433) + Postgres (5432). expose => LAN LoadBalancer.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: babelfish-svc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata: { name: {{ $name }}-babelfish, namespace: {{ $ns }} }
+                  spec:
+                    type: {{ if $spec.database.expose }}LoadBalancer{{ else }}ClusterIP{{ end }}
+                    selector: { app: {{ $name }}-babelfish }
+                    ports:
+                      - { name: tds, port: 1433, targetPort: 1433 }
+                      - { name: pg, port: 5432, targetPort: 5432 }
             {{- else }}
             ---
             # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---
