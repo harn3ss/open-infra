@@ -31,6 +31,24 @@ The connection string is injected into the app's pods as `DATABASE_URL` (postgre
 | `postgres` | **CloudNativePG** (CNPG) | PostgreSQL | The default. `vector: true` adds pgvector. |
 | `mysql` | **MariaDB** | MySQL | `highAvailability` → 3-node Galera (synchronous). |
 | `mongo` | **FerretDB** on DocumentDB-Postgres | MongoDB | Document store; stateless proxy over a Postgres backend. |
+| `babelfish` | **Babelfish for PostgreSQL** | **TDS (SQL Server)** + PostgreSQL | **Experimental.** SQL-Server-compatible: point unmodified T-SQL apps at TDS `1433`. Single-instance StatefulSet on Longhorn (not CNPG), backed up via Velero. |
+
+### `babelfish` — SQL-Server-compatible (experimental)
+
+`engine: babelfish` runs [Babelfish for PostgreSQL](https://babelfishpg.org), which makes
+Postgres speak the SQL Server wire protocol (**TDS**, port `1433`) and **T-SQL**, so an
+application written for Microsoft SQL Server connects with no code changes. The same data
+is also reachable over the native Postgres protocol on `5432`.
+
+The connection secret (`<app>-babelfish`) carries both endpoints — `SQLSERVER_URL`
+(`Server=…,1433;…`) for the SQL Server driver and `DATABASE_URL` for Postgres clients.
+
+Caveats (why it's experimental): it's a **community image** on a *patched* Postgres, so it
+runs as a **single-instance StatefulSet on Longhorn**, not under the CloudNativePG operator —
+there is **no streaming-replication HA** yet (durability is Longhorn + Velero), and Babelfish
+covers a large but **not complete** subset of T-SQL (check your codebase with *Babelfish
+Compass* first). The image's TDS listener has no TLS, so clients must not force encryption
+(`Encrypt=optional`). Start/Stop works (scales the StatefulSet to 0, keeps the PVC).
 
 ## High availability
 
