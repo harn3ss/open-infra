@@ -581,7 +581,9 @@ spec:
                             command: ["sh", "-c", "chown -R postgres:postgres /var/lib/babelfish/data && chmod 700 /var/lib/babelfish/data"]
                             securityContext: { runAsUser: 0 }
                             volumeMounts:
-                              - { name: data, mountPath: /var/lib/babelfish/data }
+                              # subPath so PGDATA is a clean subdir below the ext4 lost+found
+                              # (Longhorn volumes are ext4; initdb refuses a non-empty dir).
+                              - { name: data, mountPath: /var/lib/babelfish/data, subPath: pgdata }
                         containers:
                           - name: babelfish
                             image: {{ $bfImg }}
@@ -598,7 +600,9 @@ spec:
                               - { containerPort: 1433, name: tds }
                               - { containerPort: 5432, name: pg }
                             volumeMounts:
-                              - { name: data, mountPath: /var/lib/babelfish/data }
+                              # subPath so PGDATA is a clean subdir below the ext4 lost+found
+                              # (Longhorn volumes are ext4; initdb refuses a non-empty dir).
+                              - { name: data, mountPath: /var/lib/babelfish/data, subPath: pgdata }
                             resources:
                               requests: { cpu: 250m, memory: 512Mi }
                               limits: { cpu: "2", memory: 2Gi }
