@@ -43,12 +43,17 @@ is also reachable over the native Postgres protocol on `5432`.
 The connection secret (`<app>-babelfish`) carries both endpoints — `SQLSERVER_URL`
 (`Server=…,1433;…`) for the SQL Server driver and `DATABASE_URL` for Postgres clients.
 
-Caveats (why it's experimental): it's a **community image** on a *patched* Postgres, so it
-runs as a **single-instance StatefulSet on Longhorn**, not under the CloudNativePG operator —
-there is **no streaming-replication HA** yet (durability is Longhorn + Velero), and Babelfish
-covers a large but **not complete** subset of T-SQL (check your codebase with *Babelfish
-Compass* first). The image's TDS listener has no TLS, so clients must not force encryption
-(`Encrypt=optional`). Start/Stop works (scales the StatefulSet to 0, keeps the PVC).
+The TDS + Postgres listeners are **TLS-encrypted** (a cert-manager cert from the LAN CA is
+issued + mounted, and the listener enables `ssl`), so clients connect with
+`Encrypt=mandatory;TrustServerCertificate=true` — verified with `encrypt_option = TRUE`.
+
+Caveats (why it's experimental): it runs as a **single-instance StatefulSet on Longhorn**, not
+under the CloudNativePG operator — there is **no streaming-replication HA** yet (durability is
+Longhorn + Velero), and Babelfish covers a large but **not complete** subset of T-SQL (check
+your codebase with *Babelfish Compass* first). Start/Stop works (scales the StatefulSet to 0,
+keeps the PVC). The image is open-infra's own (`ghcr.io/…/open-infra-babelfish`, cosign-signed),
+built from a pinned community base — building the patched Postgres fully from source is a
+tracked follow-up.
 
 ## High availability
 
