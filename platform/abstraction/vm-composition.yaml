@@ -63,12 +63,17 @@ spec:
             {{- /* Extra TCP ports to publish on the VM's LAN IP (the masquerade NIC
                    forwards all ports to the guest; the Service just advertises these). */}}
             {{- $ports := $spec.ports | default (list) }}
-            {{- /* Windows root disk is FIXED at 70Gi and NOT user-selectable: a
-                   generalized image's C: can't be reliably auto-grown, so a larger
-                   root would only strand unallocated space. Extra Windows storage is
-                   added as separate attachable volumes (EBS-style, issue #53). Linux
-                   keeps the user's diskSize — cloud-init grows the rootfs to fit. */}}
-            {{- if $isWin }}{{- $disk = "70Gi" }}{{- end }}
+            {{- /* Windows root disk is FIXED and NOT user-selectable: a generalized
+                   image's C: can't be reliably auto-grown, so a larger root would only
+                   strand unallocated space. Extra Windows storage is added as separate
+                   attachable volumes (EBS-style, issue #53). Linux keeps the user's
+                   diskSize — cloud-init grows the rootfs to fit.
+                   CRITICAL: this MUST be >= the golden image PVC's size — CDI refuses to
+                   clone a source into a smaller target (ErrIncompatiblePVC) and the DV
+                   wedges in CloneScheduled forever. The windows-*-golden images are
+                   ~95.4Gi, so 100Gi clears them with headroom. Bump this if a future
+                   golden rebuild grows past 100Gi. */}}
+            {{- if $isWin }}{{- $disk = "100Gi" }}{{- end }}
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
             {{- /* highAvailability: root disk on Longhorn (migratable RWX block) + live migration */}}
             {{- $ha := $spec.highAvailability | default false }}

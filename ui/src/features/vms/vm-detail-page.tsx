@@ -15,9 +15,21 @@ import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
-import { kubevirtPaths, openinfraPaths, resourcePaths } from "@/lib/k8s-paths";
-import type { K8sObject, VirtualMachine, Vmi } from "@/types/k8s";
-import { osFamily, osLabel, vmIp, vmStatus } from "./vm-shared";
+import {
+  cdiPaths,
+  kubevirtPaths,
+  openinfraPaths,
+  resourcePaths,
+} from "@/lib/k8s-paths";
+import type { DataVolume, K8sObject, VirtualMachine, Vmi } from "@/types/k8s";
+import {
+  WINDOWS_ROOT_DISK,
+  osFamily,
+  osLabel,
+  rootDvName,
+  vmIp,
+  vmStatus,
+} from "./vm-shared";
 import { VmVolumesTab } from "./vm-volumes";
 import { VmNetworkTab } from "./vm-network";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
@@ -55,6 +67,15 @@ export function VmDetailPage() {
   const { data: vmi } = useQuery({
     queryKey: ["vmi", namespace, name],
     queryFn: () => k8sGet<Vmi>(kubevirtPaths.vmi(namespace, name)),
+    refetchInterval: 5000,
+    retry: false,
+  });
+
+  // Root-disk DataVolume — surfaces clone/import progress + failures on status.
+  const { data: rootDv } = useQuery({
+    queryKey: ["vm-root-dv", namespace, name],
+    queryFn: () =>
+      k8sGet<DataVolume>(cdiPaths.datavolume(namespace, rootDvName(name))),
     refetchInterval: 5000,
     retry: false,
   });
@@ -112,7 +133,7 @@ export function VmDetailPage() {
   const family = osFamily(spec?.os);
   const isWin = family === "windows";
   const running = spec?.running !== false;
-  const status = vmStatus(vm, vmi);
+  const status = vmStatus(vm, vmi, rootDv);
   const ip = vmIp(vmi);
   const lanIp = lanSvc?.status?.loadBalancer?.ingress?.[0]?.ip;
 
@@ -172,9 +193,14 @@ export function VmDetailPage() {
               <DetailRow label="Size">
                 <span className="font-mono text-xs">
                   {spec?.cpu ?? 2} vCPU · {spec?.memory ?? "2Gi"} RAM ·{" "}
-                  {spec?.diskSize ?? "20Gi"} disk
+                  {isWin ? `${WINDOWS_ROOT_DISK} (fixed)` : spec?.diskSize ?? "20Gi"} disk
                 </span>
               </DetailRow>
+              {status.detail ? (
+                <DetailRow label="Disk status">
+                  <span className="text-xs text-destructive">{status.detail}</span>
+                </DetailRow>
+              ) : null}
               <DetailRow label="Power">{running ? "On" : "Off (disk retained)"}</DetailRow>
               <DetailRow label="IP address">
                 {ip ? <code className="text-xs">{ip}</code> : "—"}

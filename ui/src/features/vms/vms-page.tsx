@@ -7,11 +7,16 @@ import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { corePaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
+import { cdiPaths, corePaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
-import { type K8sObject, type VirtualMachine, type Vmi } from "@/types/k8s";
+import {
+  type DataVolume,
+  type K8sObject,
+  type VirtualMachine,
+  type Vmi,
+} from "@/types/k8s";
 import { NewVmDialog } from "./new-vm-dialog";
-import { osLabel, vmIp, vmKey, vmStatus } from "./vm-shared";
+import { osLabel, rootDvName, vmIp, vmKey, vmStatus } from "./vm-shared";
 
 export function VmsPage() {
   const navigate = useNavigate();
@@ -26,6 +31,18 @@ export function VmsPage() {
       m.set(vmKey(v.metadata.namespace, v.metadata.name), v);
     return m;
   }, [vmiWatch.items]);
+
+  // Root-disk DataVolumes, so a stuck/failed clone surfaces as an error on the
+  // VM's status instead of an endless "Provisioning". Keyed by ns/<vm>-root.
+  const dvWatch = useK8sWatch<DataVolume>(cdiPaths.datavolumes(scoped));
+  const dvByKey = useMemo(() => {
+    const m = new Map<string, DataVolume>();
+    for (const d of dvWatch.items)
+      m.set(vmKey(d.metadata.namespace, d.metadata.name), d);
+    return m;
+  }, [dvWatch.items]);
+  const rootDvFor = (vm: VirtualMachine) =>
+    dvByKey.get(vmKey(vm.metadata.namespace, rootDvName(vm.metadata.name)));
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = nsWatch.items
@@ -102,6 +119,7 @@ export function VmsPage() {
           vmStatus(
             vm,
             vmiByKey.get(vmKey(vm.metadata.namespace, vm.metadata.name)),
+            rootDvFor(vm),
           ).label,
         cell: ({ row }) => {
           const s = vmStatus(
@@ -109,8 +127,13 @@ export function VmsPage() {
             vmiByKey.get(
               vmKey(row.original.metadata.namespace, row.original.metadata.name),
             ),
+            rootDvFor(row.original),
           );
-          return <StatusBadge status={s.label} tone={s.tone} />;
+          return (
+            <span title={s.detail}>
+              <StatusBadge status={s.label} tone={s.tone} />
+            </span>
+          );
         },
         size: 140,
       },
@@ -126,7 +149,8 @@ export function VmsPage() {
         size: 80,
       },
     ],
-    [vmiByKey],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vmiByKey, dvByKey],
   );
 
   return (
