@@ -23,8 +23,9 @@ the product's public contract.
   unmodified SQL Server / T-SQL apps at it with no code changes; the connection secret carries both a
   `SQLSERVER_URL` and a native-Postgres `DATABASE_URL`. The TDS + Postgres listeners are
   **TLS-encrypted** (cert-manager cert; `Encrypt=mandatory`, verified `encrypt_option=TRUE`), it runs
-  on **open-infra's own cosign-signed image** (`ghcr.io/…/open-infra-babelfish`, built from a pinned
-  community base via `build-babelfish.yml`), and it's a selectable engine in the console's **New
+  on **open-infra's own cosign-signed image** (`ghcr.io/…/open-infra-babelfish` — patched Postgres +
+  extensions **built from source** via `build-babelfish.yml`, `apt upgrade`d to 0 fixable CVEs), and
+  it's a selectable engine in the console's **New
   Database** dialog. **Experimental**: single-instance StatefulSet on Longhorn (not CNPG — no
   streaming HA yet; durability via Longhorn + Velero), and it covers a large-but-incomplete T-SQL
   subset (run *Babelfish Compass* first). Start/Stop supported. Validated end-to-end (T-SQL over

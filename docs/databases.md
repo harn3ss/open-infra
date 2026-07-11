@@ -51,9 +51,9 @@ Caveats (why it's experimental): it runs as a **single-instance StatefulSet on L
 under the CloudNativePG operator — there is **no streaming-replication HA** yet (durability is
 Longhorn + Velero), and Babelfish covers a large but **not complete** subset of T-SQL (check
 your codebase with *Babelfish Compass* first). Start/Stop works (scales the StatefulSet to 0,
-keeps the PVC). The image is open-infra's own (`ghcr.io/…/open-infra-babelfish`, cosign-signed),
-built from a pinned community base — building the patched Postgres fully from source is a
-tracked follow-up.
+keeps the PVC). The image is open-infra's own (`ghcr.io/…/open-infra-babelfish`) — the patched
+Postgres + Babelfish extensions **built from source** (`babelfish/Dockerfile`), Trivy-scanned +
+cosign-signed by CI, with OS packages patched (`apt upgrade`) so it carries **0 fixable CVEs**.
 
 ## High availability
 
