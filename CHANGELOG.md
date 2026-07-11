@@ -21,11 +21,15 @@ the product's public contract.
 - **New `engine: babelfish`** on an `Application`'s `database:` block — a **SQL-Server-compatible**
   managed database via Babelfish for PostgreSQL (TDS `1433` + T-SQL, backed by PostgreSQL 17). Point
   unmodified SQL Server / T-SQL apps at it with no code changes; the connection secret carries both a
-  `SQLSERVER_URL` and a native-Postgres `DATABASE_URL`. **Experimental**: a community image on a
-  patched Postgres, so it runs as a single-instance StatefulSet on Longhorn (not CNPG — no streaming
-  HA yet; durability via Longhorn + Velero), covers a large-but-incomplete T-SQL subset, and its TDS
-  listener is non-TLS (`Encrypt=optional`). Start/Stop supported. Validated end-to-end (T-SQL over
-  TDS through `sqlcmd`). See [docs/databases.md](docs/databases.md#babelfish--sql-server-compatible-experimental).
+  `SQLSERVER_URL` and a native-Postgres `DATABASE_URL`. The TDS + Postgres listeners are
+  **TLS-encrypted** (cert-manager cert; `Encrypt=mandatory`, verified `encrypt_option=TRUE`), it runs
+  on **open-infra's own cosign-signed image** (`ghcr.io/…/open-infra-babelfish`, built from a pinned
+  community base via `build-babelfish.yml`), and it's a selectable engine in the console's **New
+  Database** dialog. **Experimental**: single-instance StatefulSet on Longhorn (not CNPG — no
+  streaming HA yet; durability via Longhorn + Velero), and it covers a large-but-incomplete T-SQL
+  subset (run *Babelfish Compass* first). Start/Stop supported. Validated end-to-end (T-SQL over
+  encrypted TDS via `sqlcmd`, through the composition-generated credentials). See
+  [docs/databases.md](docs/databases.md#babelfish--sql-server-compatible-experimental).
 
 ## v2.0.0 — 2026-07-02
 
