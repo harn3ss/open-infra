@@ -10,6 +10,7 @@ import { CopyButton } from "@/components/common/copy-button";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
+import { AdExplorer } from "./ad-explorer";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { Directory, K8sObject } from "@/types/k8s";
@@ -86,6 +87,7 @@ export function DirectoryDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="explorer">Explorer</TabsTrigger>
           <TabsTrigger value="join">Join</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger
@@ -113,6 +115,18 @@ export function DirectoryDetailPage() {
               <DetailRow label="Status">{ready ? "Ready" : "Provisioning"}</DetailRow>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="explorer" className="pt-4">
+          {ready ? (
+            <AdExplorer namespace={namespace} name={name} />
+          ) : (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                The directory is still provisioning — the Explorer opens once it's Ready.
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="join" className="pt-4">

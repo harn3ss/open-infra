@@ -415,6 +415,35 @@ export function invokeFunction(
   );
 }
 
+/** Read-only AD Explorer (kind: Directory). The BFF binds to the DC with the
+ *  directory's own admin creds (server-side) and runs an LDAP search. */
+export interface LdapEntry {
+  dn: string;
+  attributes: Record<string, string[]>;
+}
+export interface LdapSearchResult {
+  baseDN: string;
+  domain: string;
+  entries: LdapEntry[];
+}
+export interface LdapSearchReq {
+  baseDN?: string;
+  filter?: string;
+  scope?: "base" | "one" | "sub";
+  attributes?: string[];
+  sizeLimit?: number;
+}
+export function directoryLdap(
+  namespace: string,
+  name: string,
+  req: LdapSearchReq,
+): Promise<LdapSearchResult> {
+  return request<LdapSearchResult>(
+    `/directories/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/ldap`,
+    { method: "POST", body: JSON.stringify(req) },
+  );
+}
+
 export interface FunctionRoute {
   path: string;
   methods: string[];
