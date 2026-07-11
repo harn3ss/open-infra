@@ -72,6 +72,10 @@ func run(logger *slog.Logger) error {
 	// Reap JetStream streams/DLQ orphaned by deleted DataFlows (storage hygiene).
 	startDataFlowGC(client.Host, client.Transport, logger)
 
+	// Keep running VMs' launcher-pod SecurityGroup labels in sync with their spec,
+	// so editing a VM's securityGroups takes effect live — no restart (like AWS).
+	startSGSync(client.Host, client.Transport, logger)
+
 	router := newRouter(client, logger)
 
 	srv := &http.Server{

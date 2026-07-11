@@ -29,6 +29,13 @@ rules:
       - persistentvolumeclaims
     verbs: [get, list, watch]
 
+  # ── SG-sync reconciler: patch a running VM launcher pod's openinfra.dev/sg-*
+  #    labels to match its spec.securityGroups, so security-group edits apply
+  #    live without a VM restart. Scoped to pods/patch. ────────────────────────
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [patch]
+
   # ── Apps: read higher-level workload objects ───────────────────────────────
   - apiGroups: [apps]
     resources:
