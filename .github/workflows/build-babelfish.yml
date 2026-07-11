@@ -74,6 +74,10 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: "true"
+          # Keep the SARIF (Security tab) in sync with the triage policy above —
+          # otherwise trivy-action uploads every severity, flooding it with medium/low
+          # base-image CVEs. Fully eliminating those is the from-source-image follow-up.
+          limit-severities-for-sarif: "true"
         env:
           TRIVY_CACHE_DIR: .trivycache
 

@@ -78,6 +78,8 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: "true"
+          # Match the SARIF (Security tab) to the triage policy above.
+          limit-severities-for-sarif: "true"
         env:
           # Cache the vuln DB across runs; avoids rate-limited DB pulls.
           TRIVY_CACHE_DIR: .trivycache
