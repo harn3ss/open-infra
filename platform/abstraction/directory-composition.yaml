@@ -152,6 +152,13 @@ spec:
                               failureThreshold: 30
                             volumeMounts:
                               - { name: data, mountPath: /var/lib/samba }
+                              # sambacc guards re-provision on the existence of /etc/samba/smb.conf
+                              # (addc.py _provisioned marker). /etc/samba is on the container's
+                              # ephemeral overlay, so every pod roll lost the marker and sambacc
+                              # RE-PROVISIONED a fresh domain over the persisted DB. Persist it on
+                              # the PVC (subPath) so a rolled pod sees "already provisioned" and
+                              # just serves — non-destructive restarts.
+                              - { name: data, mountPath: /etc/samba, subPath: etc-samba }
                               - { name: config, mountPath: /etc/sambacc }
                         volumes:
                           - name: config
