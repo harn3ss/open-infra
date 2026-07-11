@@ -206,7 +206,7 @@ spec:
                                       done
                                     done
                                   fi
-                                  sleep 300
+                                  sleep 60
                                 done
                             env:
                               - { name: VIP, value: "{{ $vip }}" }
