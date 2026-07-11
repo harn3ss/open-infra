@@ -86,7 +86,15 @@ spec:
                           "dc1": {
                             "instance_features": ["addc"],
                             "instance_name": "DC1",
-                            "domain_settings": "dom"
+                            "domain_settings": "dom",
+                            "globals": ["default"]
+                          }
+                        },
+                        "globals": {
+                          "default": {
+                            "options": {
+                              "rpc server dynamic port range": "49152-49164"
+                            }
                           }
                         },
                         "domain_settings": {
@@ -139,12 +147,18 @@ spec:
                               - { containerPort: 88, protocol: UDP }
                               - { containerPort: 389, protocol: TCP }
                               - { containerPort: 389, protocol: UDP }   # CLDAP — DC locator (samba-tool gpo, Windows DC location)
+                              - { containerPort: 135, protocol: TCP }    # RPC endpoint mapper (Windows domain join / mgmt)
                               - { containerPort: 445, protocol: TCP }
                               - { containerPort: 464, protocol: TCP }
                               - { containerPort: 464, protocol: UDP }
                               - { containerPort: 636, protocol: TCP }   # LDAPS (encrypted LDAP — required for password writes)
                               - { containerPort: 3268, protocol: TCP }  # Global Catalog
                               - { containerPort: 3269, protocol: TCP }  # Global Catalog over SSL
+                              {{- /* pinned dynamic RPC range (matches smb.conf "rpc server dynamic port
+                                     range"): the epmapper hands a client one of these to finish the join. */}}
+                              {{- range $i := until 13 }}
+                              - { containerPort: {{ add 49152 $i }}, protocol: TCP }
+                              {{- end }}
                             readinessProbe:
                               tcpSocket: { port: 389 }
                               initialDelaySeconds: 30
@@ -200,11 +214,16 @@ spec:
                       - { name: ldap, port: 389, targetPort: 389, protocol: TCP }
                       - { name: cldap, port: 389, targetPort: 389, protocol: UDP }
                       - { name: smb, port: 445, targetPort: 445, protocol: TCP }
+                      - { name: epmapper, port: 135, targetPort: 135, protocol: TCP }
                       - { name: kpasswd-tcp, port: 464, targetPort: 464, protocol: TCP }
                       - { name: kpasswd-udp, port: 464, targetPort: 464, protocol: UDP }
                       - { name: ldaps, port: 636, targetPort: 636, protocol: TCP }
                       - { name: gc, port: 3268, targetPort: 3268, protocol: TCP }
                       - { name: gc-ssl, port: 3269, targetPort: 3269, protocol: TCP }
+                      {{- /* pinned dynamic RPC range for the machine-account RPC (135 -> one of these) */}}
+                      {{- range $i := until 13 }}
+                      - { name: rpc-{{ add 49152 $i }}, port: {{ add 49152 $i }}, targetPort: {{ add 49152 $i }}, protocol: TCP }
+                      {{- end }}
             ---
             # Connection secret: the domain + admin credentials, for the console and
             # for the VM composition's auto-join. The live DC IP is read from the
