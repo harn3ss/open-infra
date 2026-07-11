@@ -1,5 +1,7 @@
 import {
   APPLICATIONS_PLURAL,
+  CDI_GROUP,
+  CDI_VERSION,
   CNPG_CLUSTERS_PLURAL,
   CNPG_GROUP,
   CNPG_VERSION,
@@ -125,6 +127,14 @@ export const kubevirtPaths = {
     `/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachines/${vm}/addvolume`,
   removeVolume: (ns: string, vm: string) =>
     `/apis/subresources.kubevirt.io/v1/namespaces/${ns}/virtualmachines/${vm}/removevolume`,
+};
+
+// CDI DataVolumes — read-only, for VM root-disk import/clone status.
+const cdiGV = `/apis/${CDI_GROUP}/${CDI_VERSION}`;
+export const cdiPaths = {
+  datavolumes: (ns?: string) => `${cdiGV}${nsSegment(ns)}/datavolumes`,
+  datavolume: (ns: string, name: string) =>
+    `${cdiGV}/namespaces/${ns}/datavolumes/${name}`,
 };
 
 // CSI VolumeSnapshots (snapshot.storage.k8s.io) — snapshot/restore Volumes.

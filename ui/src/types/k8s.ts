@@ -306,6 +306,19 @@ export interface KubevirtVmStatus {
 }
 export type KubevirtVm = K8sObject<unknown, KubevirtVmStatus>;
 
+// CDI DataVolume — the root disk being imported (Linux) or cloned from a golden
+// (Windows). Read-only, to surface clone/import progress and failures on the VM
+// status (a doomed clone otherwise looks like an endless "Provisioning").
+export const CDI_GROUP = "cdi.kubevirt.io";
+export const CDI_VERSION = "v1beta1";
+export interface DataVolumeStatus {
+  // Pending | (Import|Clone)Scheduled | (Import|Clone)InProgress | Succeeded | Failed …
+  phase?: string;
+  progress?: string; // e.g. "45.0%" or "N/A"
+  conditions?: Condition[];
+}
+export type DataVolume = K8sObject<unknown, DataVolumeStatus>;
+
 /* ---------------------- open-infra VmImage CRD (AMI builder) -------------- */
 
 export interface VmImageSpec {

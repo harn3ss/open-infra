@@ -187,7 +187,8 @@ export function NewVmDialog({
         os,
         cpu: Number(cpu) || 2,
         memory: memory || "2Gi",
-        // Linux only: the composition fixes the Windows root at 70Gi regardless.
+        // Linux only: the composition fixes the Windows root disk regardless
+        // (WINDOWS_ROOT_DISK, sized to clear the golden image).
         ...(!isWindows ? { diskSize: diskSize || "20Gi" } : {}),
         ...(sshKey.trim() && !isWindows ? { sshKey: sshKey.trim() } : {}),
         // Derive network + expose from the single access choice.
