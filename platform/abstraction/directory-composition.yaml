@@ -138,6 +138,7 @@ spec:
                               - { containerPort: 88, protocol: TCP }
                               - { containerPort: 88, protocol: UDP }
                               - { containerPort: 389, protocol: TCP }
+                              - { containerPort: 389, protocol: UDP }   # CLDAP — DC locator (samba-tool gpo, Windows DC location)
                               - { containerPort: 445, protocol: TCP }
                               - { containerPort: 464, protocol: TCP }
                               - { containerPort: 464, protocol: UDP }
@@ -190,6 +191,7 @@ spec:
                       - { name: kerberos-tcp, port: 88, targetPort: 88, protocol: TCP }
                       - { name: kerberos-udp, port: 88, targetPort: 88, protocol: UDP }
                       - { name: ldap, port: 389, targetPort: 389, protocol: TCP }
+                      - { name: cldap, port: 389, targetPort: 389, protocol: UDP }
                       - { name: smb, port: 445, targetPort: 445, protocol: TCP }
                       - { name: kpasswd-tcp, port: 464, targetPort: 464, protocol: TCP }
                       - { name: kpasswd-udp, port: 464, targetPort: 464, protocol: UDP }
