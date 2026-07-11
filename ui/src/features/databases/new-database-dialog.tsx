@@ -155,6 +155,7 @@ export function NewDatabaseDialog({
                 <SelectItem value="postgres">PostgreSQL (relational)</SelectItem>
                 <SelectItem value="mysql">MySQL / MariaDB (relational)</SelectItem>
                 <SelectItem value="mongo">MongoDB / FerretDB (document)</SelectItem>
+                <SelectItem value="babelfish">SQL Server–compatible · Babelfish (experimental)</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -163,16 +164,19 @@ export function NewDatabaseDialog({
             <label className="flex h-9 items-center gap-2 text-sm">
               <input
                 type="checkbox"
-                checked={ha}
+                checked={ha && engine !== "babelfish"}
+                disabled={engine === "babelfish"}
                 onChange={(e) => setHa(e.target.checked)}
-                className="size-4 accent-primary"
+                className="size-4 accent-primary disabled:opacity-50"
               />
               <span className="text-muted-foreground">
-                {engine === "mongo"
-                  ? "2 FerretDB replicas (proxy tier)"
-                  : engine === "mysql"
-                    ? "Galera 3-node cluster (synchronous)"
-                    : "Primary + standby, auto-failover"}
+                {engine === "babelfish"
+                  ? "Single instance (experimental — no HA yet)"
+                  : engine === "mongo"
+                    ? "2 FerretDB replicas (proxy tier)"
+                    : engine === "mysql"
+                      ? "Galera 3-node cluster (synchronous)"
+                      : "Primary + standby, auto-failover"}
               </span>
             </label>
           </div>

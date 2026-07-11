@@ -122,7 +122,7 @@ func TestManagedDB_BabelfishEngine(t *testing.T) {
 		}}},
 	}
 	out := render(t, tmpl, ctx)
-	for _, want := range []string{"SQLSERVER_URL", "kind: StatefulSet", "babelfishpg@sha256:", "/start.sh", `port: 1433`} {
+	for _, want := range []string{"SQLSERVER_URL", "kind: StatefulSet", "open-infra-babelfish", "/start.sh", `port: 1433`, "kind: Certificate", "BABELFISH_TLS_DIR"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("babelfish render missing %q; got:\n%s", want, grepCtx(out, "babelfish"))
 		}
