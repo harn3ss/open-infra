@@ -141,6 +141,9 @@ spec:
                               - { containerPort: 445, protocol: TCP }
                               - { containerPort: 464, protocol: TCP }
                               - { containerPort: 464, protocol: UDP }
+                              - { containerPort: 636, protocol: TCP }   # LDAPS (encrypted LDAP — required for password writes)
+                              - { containerPort: 3268, protocol: TCP }  # Global Catalog
+                              - { containerPort: 3269, protocol: TCP }  # Global Catalog over SSL
                             readinessProbe:
                               tcpSocket: { port: 389 }
                               initialDelaySeconds: 30
@@ -190,6 +193,9 @@ spec:
                       - { name: smb, port: 445, targetPort: 445, protocol: TCP }
                       - { name: kpasswd-tcp, port: 464, targetPort: 464, protocol: TCP }
                       - { name: kpasswd-udp, port: 464, targetPort: 464, protocol: UDP }
+                      - { name: ldaps, port: 636, targetPort: 636, protocol: TCP }
+                      - { name: gc, port: 3268, targetPort: 3268, protocol: TCP }
+                      - { name: gc-ssl, port: 3269, targetPort: 3269, protocol: TCP }
             ---
             # Connection secret: the domain + admin credentials, for the console and
             # for the VM composition's auto-join. The live DC IP is read from the
