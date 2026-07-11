@@ -56,6 +56,17 @@ const ENGINES = {
     port: 3306,
     scheme: "mysql",
   },
+  babelfish: {
+    label: "SQL Server (Babelfish) · experimental",
+    secretSuffix: "-babelfish",
+    uriKey: "SQLSERVER_URL",
+    uriLabel: "Connection (SQLSERVER_URL · TDS 1433)",
+    consume: "SQLSERVER_URL — any SQL Server driver (Encrypt=optional)",
+    podRe: "babelfish",
+    svcSuffix: "-babelfish",
+    port: 1433,
+    scheme: "sqlserver",
+  },
 } as const;
 
 /**

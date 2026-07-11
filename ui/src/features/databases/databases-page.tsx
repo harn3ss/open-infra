@@ -20,12 +20,13 @@ import type { Application, K8sObject } from "@/types/k8s";
 function engineLabel(engine?: string): string {
   if (engine === "mongo") return "MongoDB (FerretDB)";
   if (engine === "mysql") return "MySQL (MariaDB)";
+  if (engine === "babelfish") return "SQL Server (Babelfish)";
   return "PostgreSQL";
 }
 
 /** Engines without a CloudNativePG Cluster CR use the managed-db detail page. */
 function isManagedEngine(engine?: string): boolean {
-  return engine === "mongo" || engine === "mysql";
+  return engine === "mongo" || engine === "mysql" || engine === "babelfish";
 }
 
 export function DatabasesPage() {

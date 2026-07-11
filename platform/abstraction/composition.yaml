@@ -519,7 +519,9 @@ spec:
                    back it up with Velero. The password is injected from the Secret via env at
                    first-boot init (start.sh -p), never baked into the pod args. */}}
             {{- $bfPass := printf "Bbf%s9x" (printf "%s-bf" .observed.composite.resource.metadata.uid | sha256sum | trunc 18) }}
-            {{- $bfImg := "jonathanpotts/babelfishpg@sha256:8822d2bdc4e78b33f4b3dc576509799aada78b90220b5fc3ee3dfe210cfbc423" }}
+            {{- /* our first-party signed image (built FROM the pinned community base + our
+                   TLS-capable start.sh); see babelfish/ + build-babelfish.yml */}}
+            {{- $bfImg := "ghcr.io/harn3ss/open-infra-babelfish:latest" }}
             ---
             # Connection secret — SQL Server (TDS) + native Postgres endpoints.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -541,10 +543,32 @@ spec:
                     USERNAME: appuser
                     PASSWORD: "{{ $bfPass }}"
                     DATABASE: "{{ $dbName }}"
-                    # Point unmodified SQL Server / T-SQL apps here (TDS wire protocol):
-                    SQLSERVER_URL: "Server={{ $name }}-babelfish.{{ $ns }}.svc.cluster.local,1433;Database={{ $dbName }};User Id=appuser;Password={{ $bfPass }};Encrypt=optional;TrustServerCertificate=true"
+                    # Point unmodified SQL Server / T-SQL apps here (TDS wire protocol).
+                    # TLS is on (cert-manager); TrustServerCertificate since it's the LAN CA.
+                    SQLSERVER_URL: "Server={{ $name }}-babelfish.{{ $ns }}.svc.cluster.local,1433;Database={{ $dbName }};User Id=appuser;Password={{ $bfPass }};Encrypt=mandatory;TrustServerCertificate=true"
                     # Same data over the native Postgres wire protocol:
                     DATABASE_URL: "postgres://appuser:{{ $bfPass }}@{{ $name }}-babelfish.{{ $ns }}.svc.cluster.local:5432/{{ $dbName }}"
+            ---
+            # TLS cert for the TDS + Postgres listeners (cert-manager, the LAN CA).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: babelfish-cert
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: cert-manager.io/v1
+                  kind: Certificate
+                  metadata: { name: {{ $name }}-babelfish-tls, namespace: {{ $ns }} }
+                  spec:
+                    secretName: {{ $name }}-babelfish-tls
+                    duration: 8760h
+                    dnsNames:
+                      - {{ $name }}-babelfish
+                      - {{ $name }}-babelfish.{{ $ns }}.svc
+                      - {{ $name }}-babelfish.{{ $ns }}.svc.cluster.local
+                    issuerRef: { name: openinfra-issuer, kind: ClusterIssuer }
             ---
             # Babelfish server — StatefulSet on Longhorn, single instance. Stop => replicas 0.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -596,6 +620,8 @@ spec:
                                 valueFrom: { secretKeyRef: { name: {{ $name }}-babelfish, key: PASSWORD } }
                               - name: BF_DB
                                 value: "{{ $dbName }}"
+                              - name: BABELFISH_TLS_DIR   # start.sh enables ssl when this cert exists
+                                value: /certs
                             ports:
                               - { containerPort: 1433, name: tds }
                               - { containerPort: 5432, name: pg }
@@ -603,9 +629,13 @@ spec:
                               # subPath so PGDATA is a clean subdir below the ext4 lost+found
                               # (Longhorn volumes are ext4; initdb refuses a non-empty dir).
                               - { name: data, mountPath: /var/lib/babelfish/data, subPath: pgdata }
+                              - { name: tls, mountPath: /certs, readOnly: true }
                             resources:
                               requests: { cpu: 250m, memory: 512Mi }
                               limits: { cpu: "2", memory: 2Gi }
+                        volumes:
+                          - name: tls
+                            secret: { secretName: {{ $name }}-babelfish-tls, defaultMode: 0640 }
                     volumeClaimTemplates:
                       - metadata: { name: data }
                         spec:
