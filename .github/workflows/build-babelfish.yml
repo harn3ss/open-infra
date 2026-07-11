@@ -1,0 +1,93 @@
+# Build open-infra's first-party Babelfish image and push it to GHCR.
+#
+# Babelfish for PostgreSQL is the SQL-Server-compatible managed-DB engine
+# (`database: { engine: babelfish }`). This layers our own start.sh (TLS-capable)
+# onto the pinned community base and gives us a signed, scanned image in our own
+# registry — same supply-chain treatment as the console + apply-sink images.
+name: build-babelfish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "babelfish/**"
+      - ".github/workflows/build-babelfish.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # cosign keyless signing (Sigstore OIDC)
+  security-events: write # upload Trivy results to the Security tab
+
+concurrency:
+  group: build-babelfish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Gate: don't build/push unless the test suite passes on this ref.
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/open-infra-babelfish
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: babelfish
+          file: babelfish/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- Supply chain: scan + sign the pushed image ---
+      - name: Trivy vulnerability scan (SARIF)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-babelfish@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: "true"
+        env:
+          TRIVY_CACHE_DIR: .trivycache
+
+      - name: Upload Trivy results to the Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-babelfish
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless, Sigstore)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/open-infra-babelfish@${{ steps.build.outputs.digest }}
