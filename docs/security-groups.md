@@ -80,6 +80,13 @@ Add `securityGroups: [<name>, …]` to an `Application`, `Function`, or
 `openinfra.dev/sg-<name>=""`, and the SG's NetworkPolicy selects that label —
 so attaching/detaching is just editing the list.
 
+**Changes apply live — no restart.** Like EC2, editing a *running* resource's
+`securityGroups` takes effect within seconds. For Apps/Functions the Deployment
+rolls; for **VMs** the launcher pod's labels are reconciled in place (a KubeVirt
+launcher pod is only label-stamped at creation, so a background reconciler in the
+console backend keeps a running VM's `openinfra.dev/sg-*` labels in sync with its
+spec — the CNI then enforces the new rules without a reboot).
+
 ```yaml
 kind: VirtualMachine
 spec:
