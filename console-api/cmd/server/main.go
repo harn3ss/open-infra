@@ -204,6 +204,10 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 			Post("/db-stats", handleDBStats(*client.Clientset, client.Host, client.Transport, logger))
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/databases/{namespace}/{name}/stats", handleManagedDBStats(*client.Clientset, logger))
+		// Read-only AD Explorer for kind: Directory — LDAP search only, creds resolved
+		// from the directory's own Secret server-side (never client-supplied).
+		api.With(middleware.Timeout(15*time.Second)).
+			Post("/directories/{namespace}/{name}/ldap", handleDirectoryLDAP(*client.Clientset, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
