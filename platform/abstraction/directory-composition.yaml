@@ -59,6 +59,13 @@ spec:
             {{- $dcip := "" }}
             {{- $svc := index (.observed.resources | default dict) "service" }}
             {{- if $svc }}{{- with $svc.resource.status }}{{- with .atProvider }}{{- $dcip = (.manifest.spec.clusterIP | default "") }}{{- end }}{{- end }}{{- end }}
+            {{- /* The LoadBalancer VIP, read back once MetalLB assigns it. The DC
+                   auto-registers its ephemeral POD IP in AD DNS (dc1 A -> 10.42.x),
+                   which no LAN client can reach and which changes on every roll; a
+                   sidecar rewrites dc1/@ to this VIP so real clients resolve to a
+                   reachable, stable address. Empty until the VIP exists. */}}
+            {{- $vip := "" }}
+            {{- if $svc }}{{- with $svc.resource.status }}{{- with .atProvider }}{{- with .manifest.status }}{{- with .loadBalancer }}{{- with .ingress }}{{- if gt (len .) 0 }}{{- $vip = ((index . 0).ip | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             ---
             # sambacc config: declaratively provisions the domain. The whole config
             # lives in a Secret (not a ConfigMap) so the admin password never lands
@@ -174,6 +181,40 @@ spec:
                               # just serves — non-destructive restarts.
                               - { name: data, mountPath: /etc/samba, subPath: etc-samba }
                               - { name: config, mountPath: /etc/sambacc }
+                          {{- if $vip }}
+                          # dns-vip: the DC auto-registers its ephemeral POD IP in AD DNS
+                          # (dc1 / apex A -> 10.42.x), which no LAN client can reach and which
+                          # changes every roll. Rewrite dc1 + the domain apex A records to the
+                          # LoadBalancer VIP so clients resolve to a reachable, stable address.
+                          # Idempotent; re-checks every 5m in case Samba re-registers the pod IP.
+                          # Talks to the DC over localhost (same pod netns). Only rendered once
+                          # the VIP exists, so it never fights a not-yet-assigned address.
+                          - name: dns-vip
+                            image: quay.io/samba.org/samba-ad-server:v0.9
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                AUTH="Administrator%$ADMIN_PASSWORD"
+                                echo "dns-vip: reconciling dc1/apex A -> $VIP"
+                                while true; do
+                                  if samba-tool dns query 127.0.0.1 "$DOMAIN" @ A -U "$AUTH" >/dev/null 2>&1; then
+                                    for NAME in dc1 @; do
+                                      IPS=$(samba-tool dns query 127.0.0.1 "$DOMAIN" "$NAME" A -U "$AUTH" 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)
+                                      echo "$IPS" | grep -qx "$VIP" || samba-tool dns add 127.0.0.1 "$DOMAIN" "$NAME" A "$VIP" -U "$AUTH" >/dev/null 2>&1 || true
+                                      for ip in $IPS; do
+                                        [ "$ip" = "$VIP" ] || samba-tool dns delete 127.0.0.1 "$DOMAIN" "$NAME" A "$ip" -U "$AUTH" >/dev/null 2>&1 || true
+                                      done
+                                    done
+                                  fi
+                                  sleep 300
+                                done
+                            env:
+                              - { name: VIP, value: "{{ $vip }}" }
+                              - { name: DOMAIN, value: "{{ $domain }}" }
+                              - name: ADMIN_PASSWORD
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $name }}-directory, key: ADMIN_PASSWORD }
+                          {{- end }}
                         volumes:
                           - name: config
                             secret: { secretName: {{ $name }}-dc-secret }
