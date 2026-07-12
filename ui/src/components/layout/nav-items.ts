@@ -13,6 +13,7 @@ import {
   Monitor,
   Network,
   Radio,
+  Search,
   Send,
   Server,
   Workflow,
@@ -48,6 +49,7 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "AI" },
 
+  { label: "Query", to: "/queries", icon: Search, matchPrefix: true, section: "Data" },
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },
   { label: "Data Flows", to: "/dataflows", icon: Workflow, matchPrefix: true, section: "Data" },
   { label: "Streams", to: "/streams", icon: Radio, matchPrefix: true, section: "Data" },

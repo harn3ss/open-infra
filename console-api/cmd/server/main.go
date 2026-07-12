@@ -212,6 +212,10 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		// from the directory's own Secret server-side (never client-supplied).
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/directories/{namespace}/{name}/ldap", handleDirectoryLDAP(*client.Clientset, logger))
+		// Athena: read a kind: Query's state + result rows from MinIO (the query
+		// engine writes results there; the console never runs SQL itself).
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/queries/{namespace}/{name}/result", handleQueryResult(*client.Clientset, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

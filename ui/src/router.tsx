@@ -19,6 +19,7 @@ import { VmImagesPage } from "@/features/vms/vm-images-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
+import { QueriesPage } from "@/features/queries/queries-page";
 import { ChaosPage } from "@/features/chaos/chaos-page";
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
@@ -130,6 +131,12 @@ const directoriesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/directories",
   component: DirectoriesPage,
+});
+
+const queriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/queries",
+  component: QueriesPage,
 });
 
 const chaosRoute = createRoute({
@@ -308,6 +315,7 @@ const routeTree = rootRoute.addChildren([
   fileShareDetailRoute,
   directoriesRoute,
   directoryDetailRoute,
+  queriesRoute,
   chaosRoute,
   faultInjectionDetailRoute,
   securityGroupsRoute,
