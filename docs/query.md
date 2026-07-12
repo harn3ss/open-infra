@@ -1,41 +1,48 @@
-# Query (Athena)
+# Query (Athena + Glue)
 
-> AWS equivalent: **Athena** — serverless, interactive SQL over data in object
-> storage, with no database to load into.
+> AWS equivalent: **Athena** (serverless SQL over object storage) + **Glue Data
+> Catalog** (the metastore of databases/tables).
 
-`kind: Query` runs SQL over your **data lake** (MinIO — open-infra's S3) and writes
-the results to an output location. There's no server to provision and nothing to
-ingest first: you point SQL at files in a bucket and get results back. It's in the
-console under **Data → Query** as a SQL editor with query history.
+`kind: Query` runs SQL over your **data lake** (MinIO — open-infra's S3), with no
+database to load into. It's in the console under **Data → Query** as an editor with
+query history. There is **one `kind: Query`**; you pick the engine by what you want
+to do:
+
+| Engine (`spec.engine`) | Console label | For | Cost |
+|---|---|---|---|
+| **`duckdb`** (default) | *Lake files — serverless* | ad-hoc SQL over files by path (`read_parquet('s3://…')`) | serverless — a pod per query, **$0 idle** |
+| **`trino`** | *Catalog & federation* | `database.table` querying + joins across sources | a coordinator that **idle-stops when unused** |
+
+Both write results to the same place in the same format, so the console reads either
+identically.
 
 ## How it works
 
 A query is an **execution** (Athena's `StartQueryExecution` model): you submit SQL,
-the platform runs it once in a throwaway engine pod against MinIO, and writes the
-results (CSV) plus a small `metadata.json` (state, row count, run time) to the output
-location. The console reads those back to show state + results — the browser never
-runs SQL itself.
+the platform runs it once in a throwaway engine pod, and writes the results (CSV) plus
+an `<id>.metadata.json` (state / row count / run time) to the output location. The
+console reads those back — the browser never runs SQL itself.
 
-- **Engine (Phase 1): DuckDB** — single-node, schema-on-read. Query bucket paths
-  directly, e.g. `read_parquet('s3://bucket/*.parquet')`. Parquet, CSV, and JSON.
-- **Serverless per query** — one Kubernetes Job per run; it executes and exits. No
-  always-on cluster.
-- Results land in the `query-results` bucket (configurable) under the key
-  `<namespace>/<name>.csv` (+ `.metadata.json`).
+- **DuckDB** (schema-on-read): query bucket paths directly. Parquet, CSV, JSON.
+- **Trino** (catalog): query **Iceberg** tables (`iceberg.<schema>.<table>`) managed
+  by the shared **Iceberg REST catalog** — open-infra's Glue Data Catalog. Table data
+  is Apache Iceberg on MinIO. Trino also federates across other connected sources.
+- Results land in the `query-results` bucket under `<namespace>/<name>.csv`.
 
 ## Usage
 
 ### Console — **Data → Query**
 
-An Athena-style three-pane editor:
+An Athena-style editor: a real SQL code editor (highlighting, gutter, **⌘/Ctrl+Enter**,
+run-the-selection-else-all), a left **Data** panel, a resizable results grid (stats
+line + Download CSV), tabbed queries, and **Recent queries** history. Per tab, a small
+**engine picker** switches DuckDB ↔ Trino:
 
-- Write SQL and **Run** — or **⌘/Ctrl+Enter**. Selecting text runs only the
-  selection; otherwise the whole statement runs. A trailing `;` is fine.
-- The left **Data** panel browses buckets; click a `.parquet` / `.csv` / `.json`
-  file to insert a `read_parquet('s3://…')` snippet at the cursor.
-- Results appear below with a stats line (state · run time · rows) and a
-  **Download CSV** button. Multiple query tabs are supported.
-- **Recent queries** lists past executions; click one to reopen its SQL.
+- **DuckDB** → the Data panel browses **buckets → files**; click a `.parquet`/`.csv`
+  to insert `read_parquet('s3://…')`.
+- **Trino** → the Data panel browses the **catalog → schemas → tables**; click a table
+  to insert `iceberg.<schema>.<table>`. (The tree reads the always-on REST catalog, so
+  it works even while Trino is idle-stopped.)
 
 ### Declaratively (`kind: Query`)
 
@@ -44,37 +51,42 @@ apiVersion: openinfra.dev/v1
 kind: Query
 metadata: { name: top-regions, namespace: team-a }
 spec:
-  sql: |
-    SELECT region, sum(amount) AS total
-    FROM read_parquet('s3://query-data/sales.parquet')
-    GROUP BY region ORDER BY total DESC
+  engine: trino                 # duckdb (default) | trino
+  sql: SELECT region, sum(amount) AS total FROM iceberg.demo.sales GROUP BY region
   outputBucket: query-results   # optional (default); created if missing
 ```
 
 Results are written to `s3://query-results/team-a/top-regions.csv` (+ a
-`.metadata.json` with the state/stats).
+`.metadata.json`).
 
-## Querying the lake
+## The lakehouse (Trino engine)
 
-DuckDB reads directly from MinIO by path — schema-on-read, so there's no catalog to
-register tables in Phase 1; you reference files by path:
+The Trino side is a small **Iceberg lakehouse**, deployed under the `lakehouse`
+namespace:
 
-- `read_parquet('s3://bucket/events/*.parquet')` — Parquet (globs supported)
-- `read_csv_auto('s3://bucket/data.csv')` — CSV with schema inference
-- `read_json_auto('s3://bucket/data.json')` — JSON
+- **`iceberg-rest`** — an Iceberg REST catalog (the Glue Data Catalog): databases,
+  tables, and schemas. Its own metadata persists in SQLite on Longhorn; table data is
+  Iceberg on `s3://lakehouse/warehouse` (MinIO).
+- **`trino`** — a single-node coordinator wired to that catalog + MinIO. It ships
+  **`replicas: 0`** and is **idle-stopped**: the console's autostop reconciler scales
+  it to 1 when an `engine: trino` query appears and back to 0 after ~10 min idle, so
+  the warehouse engine costs nothing at rest. The first query after idle takes a
+  one-time cold-start; DuckDB queries never touch it.
+
+Create tables from data you already have, e.g. via Trino:
+`CREATE TABLE iceberg.demo.sales AS SELECT * FROM read_parquet('s3://…')`.
 
 ## Notes & limits
 
-- **Phase 1 is single-node DuckDB** — great for interactive analytics over the lake.
-  For very large or multi-source federation, **Phase 2** swaps the engine for
-  **Trino** and adds a **`kind: Catalog`** (the Glue equivalent) so you can query
-  `database.table` with catalog-driven autocomplete — *without changing the
-  `kind: Query` contract*.
 - **Credentials:** query Jobs run in the `minio` namespace with the MinIO root
-  credentials (same pattern as the app bucket-setup). Per-namespace scoped
-  credentials / workgroups are a tracked follow-up.
-- The engine image (`ghcr.io/…/open-infra-query`) is open-infra's own — a static
-  DuckDB + the S3/parquet extensions, Trivy-scanned + cosign-signed by CI.
+  credentials (like the app bucket-setup); the lakehouse services get them from a
+  `lakehouse/minio-creds` secret. Per-namespace scoped credentials / workgroups are a
+  tracked follow-up.
+- **Engine images/services** are open-infra's own or pinned upstream, in the platform:
+  `open-infra-query` (DuckDB + Trino REST client, Trivy-scanned + cosign-signed),
+  `tabulario/iceberg-rest`, `trinodb/trino`.
+- **Dialects differ** (DuckDB SQL vs Trino/ANSI) — the engine picker keeps each tab on
+  one dialect so a query isn't silently run on the wrong one.
 
 ## See also
 
