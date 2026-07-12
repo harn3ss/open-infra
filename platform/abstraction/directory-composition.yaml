@@ -100,7 +100,8 @@ spec:
                         "globals": {
                           "default": {
                             "options": {
-                              "rpc server dynamic port range": "49152-49164"
+                              "rpc server dynamic port range": "49152-49164",
+                              "server services": "-dnsupdate"
                             }
                           }
                         },
@@ -216,9 +217,11 @@ spec:
                             env:
                               - { name: VIP, value: "{{ $vip }}" }
                               - { name: DOMAIN, value: "{{ $domain }}" }
-                              # host records a client may resolve the DC as: the friendly name and
-                              # the StatefulSet pod-hostname node (both are SRV targets).
-                              - { name: NODES, value: "dc1 {{ $name }}-dc-0" }
+                              # every zone node the DC registers its own IP under: the friendly
+                              # name + pod-hostname node (SRV targets), and the DNS-partition
+                              # locator records (DomainDnsZones/ForestDnsZones). All must resolve
+                              # to the reachable VIP, not the pod IP.
+                              - { name: NODES, value: "dc1 {{ $name }}-dc-0 DomainDnsZones ForestDnsZones" }
                               - name: ADMIN_PASSWORD
                                 valueFrom:
                                   secretKeyRef: { name: {{ $name }}-directory, key: ADMIN_PASSWORD }
