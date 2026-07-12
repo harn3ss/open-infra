@@ -489,3 +489,13 @@ export function queryResult(
     `/queries/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/result${q}`,
   );
 }
+
+export interface CatalogSchema {
+  schema: string;
+  tables: string[];
+}
+
+/** The Iceberg catalog (schemas → tables) for the Trino-engine Data tree. */
+export function listCatalogTables(): Promise<CatalogSchema[]> {
+  return request<CatalogSchema[]>("/catalog/tables");
+}

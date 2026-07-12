@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  ChevronRight,
   Database,
   Download,
   FileText,
@@ -9,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Table2,
   X,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
@@ -22,6 +24,7 @@ import {
   k8sCreate,
   listBucketObjects,
   listBuckets,
+  listCatalogTables,
   queryResult,
   type QueryResult,
 } from "@/lib/api";
@@ -142,7 +145,10 @@ export function QueriesPage() {
         {/* ── Editor: three-pane IDE ── */}
         <TabsContent value="editor" className="min-h-0 flex-1">
           <div className="flex h-full min-h-0 overflow-hidden rounded-lg border border-border bg-background">
-            <DataPanel onInsert={(s) => editorRef.current?.insert(s)} />
+            <DataPanel
+              engine={active.engine}
+              onInsert={(s) => editorRef.current?.insert(s)}
+            />
             <div className="flex min-w-0 flex-1 flex-col">
               <QueryTabBar
                 tabs={tabs}
@@ -177,7 +183,29 @@ export function QueriesPage() {
 
 /* ------------------------------- Data panel ------------------------------- */
 
-function DataPanel({ onInsert }: { onInsert: (snippet: string) => void }) {
+function DataPanel({
+  engine,
+  onInsert,
+}: {
+  engine: Engine;
+  onInsert: (snippet: string) => void;
+}) {
+  return (
+    <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/20">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+        <Database className="size-3.5" /> {engine === "trino" ? "Catalog" : "Data"}
+      </div>
+      {engine === "trino" ? (
+        <CatalogTree onInsert={onInsert} />
+      ) : (
+        <BucketTree onInsert={onInsert} />
+      )}
+    </aside>
+  );
+}
+
+// DuckDB: browse buckets → queryable files; click to insert read_parquet('s3://…').
+function BucketTree({ onInsert }: { onInsert: (snippet: string) => void }) {
   const [bucket, setBucket] = useState<string>("");
   const [filter, setFilter] = useState("");
 
@@ -203,10 +231,7 @@ function DataPanel({ onInsert }: { onInsert: (snippet: string) => void }) {
   };
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-muted/20">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
-        <Database className="size-3.5" /> Data
-      </div>
+    <>
       <div className="space-y-2 p-2">
         <select
           value={bucket}
@@ -226,7 +251,7 @@ function DataPanel({ onInsert }: { onInsert: (snippet: string) => void }) {
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter tables…"
+              placeholder="Filter files…"
               className="w-full rounded-md border border-border bg-background py-1 pl-7 pr-2 text-xs outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
@@ -251,7 +276,61 @@ function DataPanel({ onInsert }: { onInsert: (snippet: string) => void }) {
           ))
         )}
       </div>
-    </aside>
+    </>
+  );
+}
+
+// Trino: browse the Iceberg catalog (schemas → tables) from the always-on REST
+// catalog; click a table to insert iceberg.<schema>.<table>.
+function CatalogTree({ onInsert }: { onInsert: (snippet: string) => void }) {
+  const cat = useQuery({
+    queryKey: ["catalog-tables"],
+    queryFn: listCatalogTables,
+    refetchInterval: 15000,
+  });
+  const [open, setOpen] = useState<Record<string, boolean>>({ demo: true });
+  const schemas = cat.data ?? [];
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto p-1">
+      {schemas.length === 0 ? (
+        <div className="p-2 text-xs text-muted-foreground">
+          {cat.isLoading
+            ? "Loading…"
+            : "No tables yet — create one with a Trino CREATE TABLE."}
+        </div>
+      ) : (
+        schemas.map((s) => (
+          <div key={s.schema}>
+            <button
+              onClick={() =>
+                setOpen((o) => ({ ...o, [s.schema]: !o[s.schema] }))
+              }
+              className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-xs hover:bg-muted"
+            >
+              <ChevronRight
+                className={`size-3 shrink-0 transition-transform ${open[s.schema] ? "rotate-90" : ""}`}
+              />
+              <Database className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{s.schema}</span>
+            </button>
+            {open[s.schema]
+              ? s.tables.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => onInsert(`iceberg.${s.schema}.${t}`)}
+                    title={`Insert iceberg.${s.schema}.${t}`}
+                    className="flex w-full items-center gap-2 truncate rounded px-2 py-1 pl-8 text-left text-xs hover:bg-muted"
+                  >
+                    <Table2 className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{t}</span>
+                  </button>
+                ))
+              : null}
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
