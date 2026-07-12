@@ -24,7 +24,45 @@ SETUP="LOAD httpfs; LOAD parquet; LOAD json;
 CREATE SECRET minio (TYPE S3, KEY_ID '${S3_ACCESS_KEY}', SECRET '${S3_SECRET_KEY}',
   ENDPOINT '${S3_ENDPOINT}', USE_SSL false, URL_STYLE 'path');"
 
-sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
+write_fail() { # $1 = error text (already quote-safe)
+  duckdb -c "${SETUP} COPY (SELECT 'FAILED' AS state, '$1' AS error) TO '${META}' (FORMAT JSON, ARRAY false);" 2>/dev/null || true
+}
+
+# ── engine=trino: run against the Trino coordinator (catalog + federation) instead
+#    of DuckDB. Same result contract (CSV + metadata.json to OUTPUT_S3), so the
+#    console reads it identically. Trino may be idle-stopped, so wait for it to come
+#    up first (the autostop reconciler scales it to 1 when a trino query appears).
+if [ "${ENGINE:-duckdb}" = "trino" ]; then
+  : "${TRINO_URL:?TRINO_URL is required for engine=trino}"
+  echo "waiting for Trino at ${TRINO_URL} (may be scaling up from idle)…"
+  ready=0
+  for _ in $(seq 1 90); do
+    if curl -sf "${TRINO_URL}/v1/info" >/dev/null 2>&1; then ready=1; break; fi
+    sleep 3
+  done
+  if [ "$ready" != 1 ]; then
+    write_fail "Trino did not become ready in time"
+    echo "Trino not ready" >&2
+    exit 1
+  fi
+  start=$(date +%s%3N)
+  if python3 /usr/local/bin/trino_query.py "$SQL" > /tmp/tout.csv 2>/tmp/err; then
+    end=$(date +%s%3N)
+    rows=$(($(wc -l < /tmp/tout.csv) - 1))
+    [ "$rows" -lt 0 ] && rows=0
+    # re-emit through DuckDB to land the result at OUTPUT_S3 (reuses the S3 secret).
+    [ -s /tmp/tout.csv ] && duckdb -c "${SETUP} COPY (SELECT * FROM read_csv_auto('/tmp/tout.csv', ALL_VARCHAR=true, header=true)) TO '${OUTPUT_S3}' (FORMAT CSV, HEADER);" 2>/dev/null || true
+    duckdb -c "${SETUP} COPY (SELECT 'SUCCEEDED' AS state, CAST(${rows} AS BIGINT) AS row_count,
+      CAST($((end - start)) AS BIGINT) AS execution_time_ms, '${OUTPUT_S3}' AS result_location)
+      TO '${META}' (FORMAT JSON, ARRAY false);" 2>/dev/null || true
+    echo "trino query SUCCEEDED: ${rows} rows in $((end - start))ms -> ${OUTPUT_S3}"
+    exit 0
+  else
+    write_fail "$(head -c 800 /tmp/err | tr -d "'\"\\\\" | tr '\n' ' ')"
+    echo "trino query FAILED: $(head -c 800 /tmp/err)" >&2
+    exit 1
+  fi
+fi
 
 start=$(date +%s%3N)
 if duckdb -c "${SETUP} COPY (${SQL}) TO '${OUTPUT_S3}' (FORMAT CSV, HEADER);" 2>/tmp/err; then
