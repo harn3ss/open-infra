@@ -1,17 +1,15 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/csv"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/minio/minio-go/v7"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -24,11 +22,18 @@ import (
 
 const queryPreviewRows = 1000
 
-// queryID must match the composition's derivation exactly:
-// q-<name>-<first8(hex(sha256("<ns>/<name>")))>.
-func queryID(ns, name string) string {
-	sum := sha256.Sum256([]byte(ns + "/" + name))
-	return fmt.Sprintf("q-%s-%s", name, hex.EncodeToString(sum[:])[:8])
+// resultKey is the object key prefix the composition writes results under:
+// "<ns>/<name>" (→ .csv + .metadata.json). Plain concat, identical on both sides.
+func resultKey(ns, name string) string { return ns + "/" + name }
+
+// jobName mirrors the composition's Job name for the run (used only as a fallback
+// to detect a failed run when no metadata was written).
+func jobName(ns, name string) string {
+	n := "q-" + ns + "-" + name
+	if len(n) > 63 {
+		n = n[:63]
+	}
+	return n
 }
 
 type queryResultResp struct {
@@ -50,7 +55,7 @@ func handleQueryResult(cs kubernetes.Interface, logger *slog.Logger) http.Handle
 		if bucket == "" {
 			bucket = "query-results"
 		}
-		qid := queryID(ns, name)
+		key := resultKey(ns, name)
 
 		cl, err := minioClient(cs)
 		if err != nil {
@@ -60,7 +65,7 @@ func handleQueryResult(cs kubernetes.Interface, logger *slog.Logger) http.Handle
 
 		// Default to RUNNING until the metadata.json exists (query hasn't finished).
 		res := queryResultResp{State: "RUNNING"}
-		if obj, err := cl.GetObject(r.Context(), bucket, qid+".metadata.json", minio.GetObjectOptions{}); err == nil {
+		if obj, err := cl.GetObject(r.Context(), bucket, key+".metadata.json", minio.GetObjectOptions{}); err == nil {
 			if b, err := io.ReadAll(io.LimitReader(obj, 1<<20)); err == nil && len(b) > 0 {
 				var meta struct {
 					State           string `json:"state"`
@@ -80,8 +85,21 @@ func handleQueryResult(cs kubernetes.Interface, logger *slog.Logger) http.Handle
 			_ = obj.Close()
 		}
 
+		// Fallback: if there's no metadata yet, the run may have crashed before
+		// writing it — surface a failed run Job so the UI never spins forever.
+		if res.State == "RUNNING" {
+			if job, err := cs.BatchV1().Jobs("minio").Get(r.Context(), jobName(ns, name), metav1.GetOptions{}); err == nil {
+				for _, c := range job.Status.Conditions {
+					if c.Type == "Failed" && c.Status == "True" {
+						res.State = "FAILED"
+						res.Error = "query run failed before writing results — check the query engine logs"
+					}
+				}
+			}
+		}
+
 		if res.State == "SUCCEEDED" {
-			if obj, err := cl.GetObject(r.Context(), bucket, qid+".csv", minio.GetObjectOptions{}); err == nil {
+			if obj, err := cl.GetObject(r.Context(), bucket, key+".csv", minio.GetObjectOptions{}); err == nil {
 				rd := csv.NewReader(obj)
 				rd.FieldsPerRecord = -1
 				for n := 0; ; n++ {

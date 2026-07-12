@@ -11,6 +11,11 @@ set -uo pipefail
 : "${OUTPUT_S3:?OUTPUT_S3 is required (s3://bucket/<query-id>.csv)}"
 : "${S3_ENDPOINT:?}" "${S3_ACCESS_KEY:?}" "${S3_SECRET_KEY:?}"
 
+# The query is wrapped as COPY (<sql>) TO … — an editor's trailing ';' would land
+# inside the parens and be a parse error. Strip trailing whitespace/semicolons so a
+# normal "SELECT … ;" just works.
+SQL=$(printf '%s' "$SQL" | sed 's/[[:space:];]*$//')
+
 META="${OUTPUT_S3%.csv}.metadata.json"
 
 # httpfs/parquet/json are baked into the image; LOAD is offline. A DuckDB SECRET
@@ -32,7 +37,9 @@ if duckdb -c "${SETUP} COPY (${SQL}) TO '${OUTPUT_S3}' (FORMAT CSV, HEADER);" 2>
     TO '${META}' (FORMAT JSON, ARRAY false);" 2>/dev/null || true
   echo "query SUCCEEDED: ${rows:-?} rows in $((end - start))ms -> ${OUTPUT_S3}"
 else
-  err=$(sql_escape "$(head -c 4000 /tmp/err | tr '\n' ' ')")
+  # Strip quotes/backslashes + cap length so the error text can't break the
+  # metadata COPY (it must always write, or the console spins on RUNNING forever).
+  err=$(head -c 800 /tmp/err | tr -d "'\"\\\\" | tr '\n' ' ')
   duckdb -c "${SETUP} COPY (SELECT 'FAILED' AS state, '${err}' AS error)
     TO '${META}' (FORMAT JSON, ARRAY false);" 2>/dev/null || true
   echo "query FAILED: $(head -c 4000 /tmp/err)" >&2
