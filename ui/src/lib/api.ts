@@ -464,3 +464,28 @@ export function getFunctionRoutes(
     `/functions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/routes`,
   );
 }
+
+/* ------------------------------ Query (Athena) --------------------------- */
+
+export interface QueryResult {
+  state: "RUNNING" | "SUCCEEDED" | "FAILED";
+  rowCount: number;
+  executionTimeMs: number;
+  error?: string;
+  resultLocation?: string;
+  columns?: string[];
+  rows?: string[][];
+  truncated?: boolean;
+}
+
+/** Read a kind: Query's state + result rows (from MinIO, via the BFF). */
+export function queryResult(
+  namespace: string,
+  name: string,
+  bucket?: string,
+): Promise<QueryResult> {
+  const q = bucket ? `?bucket=${encodeURIComponent(bucket)}` : "";
+  return request<QueryResult>(
+    `/queries/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/result${q}`,
+  );
+}

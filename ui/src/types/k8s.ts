@@ -349,6 +349,15 @@ export interface VolumeStatus {
 export type Volume = K8sObject<VolumeSpec, VolumeStatus>;
 export const VOLUMES_PLURAL = "volumes";
 
+/* ---------------------- open-infra Query CRD (Athena) --------------------- */
+
+export interface QuerySpec {
+  sql: string;
+  outputBucket?: string;
+}
+export type Query = K8sObject<QuerySpec, { phase?: string }>;
+export const QUERIES_PLURAL = "queries";
+
 /* CSI VolumeSnapshot (snapshot.storage.k8s.io) — snapshots of a Volume's PVC. */
 export interface VolumeSnapshotSpec {
   source?: { persistentVolumeClaimName?: string };

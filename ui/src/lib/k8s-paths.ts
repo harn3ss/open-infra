@@ -14,6 +14,7 @@ import {
   VIRTUALMACHINES_PLURAL,
   VMIMAGES_PLURAL,
   VOLUMES_PLURAL,
+  QUERIES_PLURAL,
   FILESHARES_PLURAL,
   DIRECTORIES_PLURAL,
   FAULTINJECTIONS_PLURAL,
@@ -87,6 +88,9 @@ export const openinfraPaths = {
   directories: (ns?: string) => `${oiGV}${nsSegment(ns)}/${DIRECTORIES_PLURAL}`,
   directory: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${DIRECTORIES_PLURAL}/${name}`,
+  queries: (ns?: string) => `${oiGV}${nsSegment(ns)}/${QUERIES_PLURAL}`,
+  query: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${QUERIES_PLURAL}/${name}`,
   faultinjections: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FAULTINJECTIONS_PLURAL}`,
   faultinjection: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${FAULTINJECTIONS_PLURAL}/${name}`,
