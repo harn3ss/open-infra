@@ -195,10 +195,15 @@ spec:
                             args:
                               - |
                                 AUTH="Administrator%$ADMIN_PASSWORD"
-                                echo "dns-vip: reconciling dc1/apex A -> $VIP"
+                                # The DC registers SRV records that target BOTH its friendly name
+                                # (dc1) AND its pod-hostname node (<name>-dc-0), and it appends its
+                                # pod IP to the latter on every roll (accumulating stale, unreachable
+                                # A records that clients round-robin onto). Reconcile every host node
+                                # a client can be sent to -> the VIP.
+                                echo "dns-vip: reconciling $NODES A -> $VIP"
                                 while true; do
                                   if samba-tool dns query 127.0.0.1 "$DOMAIN" @ A -U "$AUTH" >/dev/null 2>&1; then
-                                    for NAME in dc1 @; do
+                                    for NAME in $NODES; do
                                       IPS=$(samba-tool dns query 127.0.0.1 "$DOMAIN" "$NAME" A -U "$AUTH" 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || true)
                                       echo "$IPS" | grep -qx "$VIP" || samba-tool dns add 127.0.0.1 "$DOMAIN" "$NAME" A "$VIP" -U "$AUTH" >/dev/null 2>&1 || true
                                       for ip in $IPS; do
@@ -211,6 +216,9 @@ spec:
                             env:
                               - { name: VIP, value: "{{ $vip }}" }
                               - { name: DOMAIN, value: "{{ $domain }}" }
+                              # host records a client may resolve the DC as: the friendly name and
+                              # the StatefulSet pod-hostname node (both are SRV targets).
+                              - { name: NODES, value: "dc1 {{ $name }}-dc-0" }
                               - name: ADMIN_PASSWORD
                                 valueFrom:
                                   secretKeyRef: { name: {{ $name }}-directory, key: ADMIN_PASSWORD }
