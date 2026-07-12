@@ -54,6 +54,7 @@ CNCF projects — not a reinvention of databases or storage.
 | DMS | DB migration + CDC (`kind: Migration`) | Debezium + apply-sink + Crossplane |
 | DMS (multi-master) | bidirectional replication (`kind: Replication`) | Debezium + apply-sink (HLC last-write-wins) |
 | Glue / DMS / Kinesis / Lambda (visual) | data-movement pipelines (`kind: DataFlow`) | drag-and-drop canvas → Debezium + NATS + apply-sink |
+| Athena | serverless SQL over the lake (`kind: Query`) | DuckDB over MinIO (Trino + `kind: Catalog` planned) |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Redis |
@@ -202,6 +203,12 @@ capability** (see [Maturity & guarantees](#maturity--guarantees)):
   live per-edge lag/dead-letter overlay (colour-blind-safe), and right-click **Peek**
   per-step metrics. Multi-master flows can **auto-sync their table set** across members
   (`autoSyncTables`). See [`docs/dataflow.md`](docs/dataflow.md).
+- **`Query`** — open-infra's **Athena**: serverless SQL over the data lake with no
+  database to load into. Point SQL at files in a bucket (`read_parquet('s3://…')`)
+  and get results back; the console has an Athena-style editor (code editor, a
+  bucket/file tree, results grid, query history). Each query runs once in a
+  throwaway DuckDB pod and writes results to an output location. See
+  [`docs/query.md`](docs/query.md).
 
 **Reach anything from the LAN.** Every resource takes `expose: true` to get a
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;
