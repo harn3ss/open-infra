@@ -358,6 +358,7 @@ export const VOLUMES_PLURAL = "volumes";
 
 export interface QuerySpec {
   sql: string;
+  engine?: "duckdb" | "trino";
   outputBucket?: string;
 }
 export type Query = K8sObject<QuerySpec, { phase?: string }>;
