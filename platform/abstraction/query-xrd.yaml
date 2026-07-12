@@ -1,0 +1,62 @@
+# open-infra's "Athena": kind: Query — serverless SQL over the data lake (MinIO),
+# no database to load into. You submit a query (the SQL + where results go); the
+# platform runs it once in a throwaway engine pod and writes the results to an
+# output location, exactly like Athena's StartQueryExecution → output location.
+# The console reads state/stats/results back (GetQueryExecution / GetQueryResults).
+#
+# Phase 1 engine is DuckDB (single-node, schema-on-read: query bucket paths like
+# read_parquet('s3://bucket/*.parquet') directly). Phase 2 swaps in Trino + a
+# kind: Catalog (Glue) for distributed, multi-source, database.table querying —
+# WITHOUT changing this contract.
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xqueries.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XQuery
+    plural: xqueries
+  claimNames:
+    kind: Query      # what users write
+    plural: queries
+  defaultCompositionRef:
+    name: query
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [sql]
+              properties:
+                sql:
+                  type: string
+                  description: >-
+                    The SQL to execute (DuckDB dialect in Phase 1). Read lake data by path,
+                    e.g. SELECT * FROM read_parquet('s3://my-bucket/events/*.parquet').
+                outputBucket:
+                  type: string
+                  default: query-results
+                  description: >-
+                    MinIO bucket the results (CSV) + a <id>.metadata.json are written to —
+                    Athena's "output location". Created if it doesn't exist.
+            status:
+              type: object
+              properties:
+                # Athena parlance: queryExecutionId + the result output location. The live
+                # state (QUEUED/RUNNING/SUCCEEDED/FAILED) + stats are read by the console
+                # from the run Job + the result metadata.json (GetQueryExecution).
+                queryId:        { type: string }
+                resultLocation: { type: string }
+                phase:          { type: string }
