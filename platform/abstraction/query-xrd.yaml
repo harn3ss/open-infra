@@ -43,8 +43,17 @@ spec:
                 sql:
                   type: string
                   description: >-
-                    The SQL to execute (DuckDB dialect in Phase 1). Read lake data by path,
-                    e.g. SELECT * FROM read_parquet('s3://my-bucket/events/*.parquet').
+                    The SQL to execute. With engine=duckdb, read lake data by path, e.g.
+                    SELECT * FROM read_parquet('s3://my-bucket/events/*.parquet'). With
+                    engine=trino, query catalog tables, e.g. SELECT * FROM iceberg.demo.sales.
+                engine:
+                  type: string
+                  enum: [duckdb, trino]
+                  default: duckdb
+                  description: >-
+                    Query engine. duckdb = serverless, single-node, schema-on-read over lake
+                    files ($0 idle). trino = the warehouse engine for catalog database.table
+                    querying + cross-source federation (idle-stops when unused).
                 outputBucket:
                   type: string
                   default: query-results
