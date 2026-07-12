@@ -1,0 +1,75 @@
+# The Iceberg REST catalog — open-infra's "Glue Data Catalog": the shared metastore
+# of databases/tables/schemas that kind: Query (Trino), DataFlow, and Lake Formation
+# (#24) all read from. Tables are Apache Iceberg on MinIO (open-infra's S3); the
+# catalog's own bookkeeping persists in a small SQLite DB on a Longhorn PVC.
+#
+# The `minio-creds` secret (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) is created at
+# install time from the MinIO root secret — it is NOT committed here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iceberg-rest
+  namespace: lakehouse
+  labels: { app: iceberg-rest }
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # single writer to the SQLite catalog on a RWO PVC
+  selector: { matchLabels: { app: iceberg-rest } }
+  template:
+    metadata: { labels: { app: iceberg-rest } }
+    spec:
+      # Longhorn PVCs mount root-owned; make /data writable for the catalog process.
+      initContainers:
+        - name: fix-perms
+          image: busybox:1.36
+          command: ["sh", "-c", "chmod 0777 /data"]
+          securityContext: { runAsUser: 0 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      containers:
+        - name: rest
+          image: tabulario/iceberg-rest:1.6.0
+          ports: [{ containerPort: 8181 }]
+          env:
+            # Warehouse root + S3 (MinIO) file IO.
+            - { name: CATALOG_WAREHOUSE, value: "s3://lakehouse/warehouse" }
+            - { name: CATALOG_IO__IMPL, value: "org.apache.iceberg.aws.s3.S3FileIO" }
+            - { name: CATALOG_S3_ENDPOINT, value: "http://minio.minio.svc.cluster.local:9000" }
+            - { name: CATALOG_S3_PATH__STYLE__ACCESS, value: "true" }
+            - { name: AWS_REGION, value: "us-east-1" }
+            # Persist the catalog's metadata (namespaces/tables → metadata pointers) in
+            # SQLite on the PVC so it survives restarts.
+            - { name: CATALOG_URI, value: "jdbc:sqlite:/data/catalog.db" }
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: minio-creds, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: minio-creds, key: AWS_SECRET_ACCESS_KEY } }
+          readinessProbe:
+            httpGet: { path: /v1/config, port: 8181 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: iceberg-catalog-data }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iceberg-catalog-data
+  namespace: lakehouse
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources: { requests: { storage: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iceberg-rest
+  namespace: lakehouse
+  labels: { app: iceberg-rest }
+spec:
+  selector: { app: iceberg-rest }
+  ports:
+    - { name: rest, port: 8181, targetPort: 8181 }
