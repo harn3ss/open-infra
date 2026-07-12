@@ -220,6 +220,10 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		// engine writes results there; the console never runs SQL itself).
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/queries/{namespace}/{name}/result", handleQueryResult(*client.Clientset, logger))
+		// Iceberg catalog (schemas → tables) for the Query editor's Data tree when
+		// the Trino engine is selected. Read from the always-on REST catalog.
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/catalog/tables", handleCatalogTables(logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
