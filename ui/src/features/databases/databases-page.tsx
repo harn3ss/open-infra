@@ -29,6 +29,13 @@ function isManagedEngine(engine?: string): boolean {
   return engine === "mongo" || engine === "mysql" || engine === "babelfish";
 }
 
+// A stopped database is healthy (Ready) but paused — surface "Stopped" like the VM
+// page does for a halted VM, rather than a misleading "Ready".
+function dbStatus(a: Application): ReturnType<typeof claimHealth> {
+  if (a.spec?.database?.stopped) return { label: "Stopped", tone: "muted" };
+  return claimHealth(a);
+}
+
 export function DatabasesPage() {
   const navigate = useNavigate();
   const { scoped } = useNamespace();
@@ -99,9 +106,9 @@ export function DatabasesPage() {
       {
         id: "status",
         header: "Status",
-        accessorFn: (a) => claimHealth(a).label,
+        accessorFn: (a) => dbStatus(a).label,
         cell: ({ row }) => {
-          const h = claimHealth(row.original);
+          const h = dbStatus(row.original);
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
         size: 150,
