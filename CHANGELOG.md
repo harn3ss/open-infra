@@ -6,6 +6,37 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.3.0 — 2026-07-12
+
+### Analytics
+- **The lakehouse — Trino + an Iceberg REST catalog (Athena's Glue half).** Phase 2
+  of `kind: Query` lands as a second **engine**, not a second kind. The same
+  `kind: Query` now takes `spec.engine: duckdb | trino` (default `duckdb`):
+  - **`duckdb`** — the serverless, schema-on-read path from v2.2.0: query files by
+    path (`read_parquet('s3://…')`), a pod per query, **$0 at idle**.
+  - **`trino`** — a single-node **Trino** coordinator wired to a shared **Iceberg
+    REST catalog** (open-infra's **Glue Data Catalog**) over MinIO, for
+    `database.table` querying and cross-source joins. Both engines write the *same*
+    result contract (`<ns>/<name>.csv` + `.metadata.json`), so the console reads
+    either identically.
+- **Trino idle-stop.** The lakehouse coordinator ships `replicas: 0`; a console
+  autostop reconciler scales it 0↔1 based on the newest `engine: trino` query and
+  scales back after ~10 min idle — the warehouse engine costs nothing at rest, and
+  DuckDB queries never touch it.
+- **Engine picker + catalog-aware Data tree in the console.** Each query tab has a
+  small engine picker (**DuckDB** *— lake files, serverless* / **Trino** *— catalog &
+  federation*). The Data panel follows it: buckets→files for DuckDB (insert
+  `read_parquet(...)`), or **catalog → schemas → tables** for Trino (insert
+  `iceberg.<schema>.<table>`). The catalog tree reads the always-on REST catalog, so
+  it browses even while Trino is idle-stopped. Validated end-to-end (both engines →
+  same result contract → console; idle-stop scaled 1→0 automatically).
+  See [docs/query.md](docs/query.md).
+
+### Console
+- **Databases show *Stopped* when paused, like VMs.** A database whose claim is
+  stopped now reports `Stopped` in the Databases list Status column instead of an
+  unhealthy/unknown state.
+
 ## v2.2.0 — 2026-07-12
 
 ### Analytics

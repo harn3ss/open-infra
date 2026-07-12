@@ -54,7 +54,7 @@ CNCF projects — not a reinvention of databases or storage.
 | DMS | DB migration + CDC (`kind: Migration`) | Debezium + apply-sink + Crossplane |
 | DMS (multi-master) | bidirectional replication (`kind: Replication`) | Debezium + apply-sink (HLC last-write-wins) |
 | Glue / DMS / Kinesis / Lambda (visual) | data-movement pipelines (`kind: DataFlow`) | drag-and-drop canvas → Debezium + NATS + apply-sink |
-| Athena | serverless SQL over the lake (`kind: Query`) | DuckDB over MinIO (Trino + `kind: Catalog` planned) |
+| Athena + Glue | serverless SQL over the lake (`kind: Query`) | DuckDB (files) or Trino + an Iceberg REST catalog (tables), on MinIO |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Redis |
