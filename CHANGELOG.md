@@ -6,6 +6,27 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.2.0 — 2026-07-12
+
+### Analytics
+- **New `kind: Query` — open-infra's Athena.** Serverless SQL over the data lake
+  (MinIO), with no database to load into: point SQL at files in a bucket
+  (`read_parquet('s3://…')`) and get results back. Each query is an *execution*
+  (Athena's `StartQueryExecution` model) — it runs once in a throwaway **DuckDB** pod
+  (a first-party, Trivy-scanned + cosign-signed `open-infra-query` image, extensions
+  preloaded) against MinIO and writes the results (CSV) plus an `<id>.metadata.json`
+  (state / row count / run time) to an output location; the console reads those back
+  (the browser never runs SQL itself). The console **Data → Query** page is an
+  Athena-style three-pane editor: a real SQL **code editor** (CodeMirror — syntax
+  highlighting, gutter, **⌘/Ctrl+Enter**, run-the-selection-else-all), a left **Data**
+  tree that browses buckets/files and inserts `read_parquet(...)` snippets, a
+  **resizable results grid** (stats line + Download CSV), tabbed queries, and a
+  **Recent queries** history — all rendered in the console's own theme. Phase 2 will
+  swap the engine for **Trino** + a **`kind: Catalog`** (Glue equivalent) for
+  distributed, `database.table` querying *without changing the `kind: Query`
+  contract*. Validated end-to-end (claim → serverless Job → DuckDB → results in
+  MinIO → console). See [docs/query.md](docs/query.md).
+
 ## v2.1.0 — 2026-07-11
 
 ### CI
