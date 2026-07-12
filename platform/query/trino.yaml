@@ -1,0 +1,102 @@
+# Trino — the distributed SQL engine behind kind: Query (Phase 2). A single-node
+# coordinator (also a worker) for this homelab, wired to the Iceberg REST catalog
+# (the Glue Data Catalog) with data on MinIO. This replaces the per-query DuckDB pod
+# with real database.table querying + federation, without changing kind: Query.
+#
+# S3 credentials come from the lakehouse/minio-creds secret via ${ENV:...} config
+# substitution, so they never land in a ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-etc
+  namespace: lakehouse
+data:
+  config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=true
+    http-server.http.port=8080
+    discovery.uri=http://localhost:8080
+    query.max-memory=1GB
+    query.max-memory-per-node=1GB
+  node.properties: |
+    node.environment=lakehouse
+    node.data-dir=/data/trino
+  jvm.config: |
+    -server
+    -Xmx2G
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExitOnOutOfMemoryError
+    -Djdk.attach.allowAttachSelf=true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-catalog
+  namespace: lakehouse
+data:
+  iceberg.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://iceberg-rest.lakehouse.svc.cluster.local:8181
+    iceberg.rest-catalog.warehouse=s3://lakehouse/warehouse
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.minio.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.region=us-east-1
+    s3.aws-access-key=${ENV:AWS_ACCESS_KEY_ID}
+    s3.aws-secret-key=${ENV:AWS_SECRET_ACCESS_KEY}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino
+  namespace: lakehouse
+  labels: { app: trino }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: trino } }
+  template:
+    metadata: { labels: { app: trino } }
+    spec:
+      containers:
+        - name: trino
+          image: trinodb/trino:468
+          ports: [{ containerPort: 8080 }]
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: minio-creds, key: AWS_ACCESS_KEY_ID } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: minio-creds, key: AWS_SECRET_ACCESS_KEY } }
+          resources:
+            requests: { cpu: "500m", memory: 2Gi }
+            limits: { memory: 4Gi }
+          readinessProbe:
+            httpGet: { path: /v1/info, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          volumeMounts:
+            - { name: etc, mountPath: /etc/trino/config.properties, subPath: config.properties }
+            - { name: etc, mountPath: /etc/trino/node.properties, subPath: node.properties }
+            - { name: etc, mountPath: /etc/trino/jvm.config, subPath: jvm.config }
+            - { name: catalog, mountPath: /etc/trino/catalog }
+            - { name: data, mountPath: /data/trino }
+      volumes:
+        - name: etc
+          configMap: { name: trino-etc }
+        - name: catalog
+          configMap: { name: trino-catalog }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trino
+  namespace: lakehouse
+  labels: { app: trino }
+spec:
+  selector: { app: trino }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
