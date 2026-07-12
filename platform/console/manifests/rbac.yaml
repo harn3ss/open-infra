@@ -36,6 +36,12 @@ rules:
     resources: [pods]
     verbs: [patch]
 
+  # ── Trino idle-stop: scale the lakehouse Trino Deployment 0↔1 based on recent
+  #    engine=trino query activity. Scoped to deployments/patch. ───────────────
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [patch]
+
   # ── Apps: read higher-level workload objects ───────────────────────────────
   - apiGroups: [apps]
     resources:

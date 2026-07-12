@@ -39,10 +39,19 @@ function toneFor(state?: string): StatusTone {
   return "warning";
 }
 
+type Engine = "duckdb" | "trino";
+
+// Capability-labeled, not raw engine names — users pick by what they want to do.
+const ENGINES: { value: Engine; label: string; hint: string }[] = [
+  { value: "duckdb", label: "Lake files — serverless", hint: "read_parquet('s3://…') · $0 idle" },
+  { value: "trino", label: "Catalog & federation", hint: "database.table · joins across sources" },
+];
+
 interface QueryTab {
   id: number;
   name: string;
   sql: string;
+  engine: Engine;
   crName: string | null; // the kind: Query created for this tab's last run
 }
 
@@ -53,7 +62,7 @@ export function QueriesPage() {
   const ns = scoped || "default";
 
   const [tabs, setTabs] = useState<QueryTab[]>([
-    { id: 1, name: "Query 1", sql: DEFAULT_SQL, crName: null },
+    { id: 1, name: "Query 1", sql: DEFAULT_SQL, engine: "duckdb", crName: null },
   ]);
   const [activeId, setActiveId] = useState(1);
   const active = tabs.find((t) => t.id === activeId) ?? tabs[0]!;
@@ -64,14 +73,14 @@ export function QueriesPage() {
 
   const addTab = () => {
     const id = ++tabSeq;
-    setTabs((ts) => [...ts, { id, name: `Query ${id}`, sql: "", crName: null }]);
+    setTabs((ts) => [...ts, { id, name: `Query ${id}`, sql: "", engine: "duckdb", crName: null }]);
     setActiveId(id);
   };
   const closeTab = (id: number) => {
     setTabs((ts) => {
       const next = ts.filter((t) => t.id !== id);
       if (id === activeId && next[0]) setActiveId(next[0].id);
-      return next.length ? next : [{ id: 1, name: "Query 1", sql: "", crName: null }];
+      return next.length ? next : [{ id: 1, name: "Query 1", sql: "", engine: "duckdb", crName: null }];
     });
   };
 
@@ -94,7 +103,7 @@ export function QueriesPage() {
         apiVersion: "openinfra.dev/v1",
         kind: "Query",
         metadata: { name, namespace: ns },
-        spec: { sql },
+        spec: { sql, engine: active.engine },
       });
       return name;
     },
@@ -110,9 +119,9 @@ export function QueriesPage() {
   });
   const res = result.data;
 
-  const openInTab = (sql: string, crName: string) => {
+  const openInTab = (sql: string, crName: string, engine: Engine) => {
     const id = ++tabSeq;
-    setTabs((ts) => [...ts, { id, name: `Query ${id}`, sql, crName }]);
+    setTabs((ts) => [...ts, { id, name: `Query ${id}`, sql, engine, crName }]);
     setActiveId(id);
   };
 
@@ -151,6 +160,7 @@ export function QueriesPage() {
                 onChange={(sql) => patchActive({ sql })}
                 onRun={(sql) => run.mutate(sql)}
                 onClear={() => patchActive({ sql: "" })}
+                onEngineChange={(engine) => patchActive({ engine })}
               />
             </div>
           </div>
@@ -302,6 +312,7 @@ function EditorAndResults({
   onChange,
   onRun,
   onClear,
+  onEngineChange,
 }: {
   tab: QueryTab;
   res?: QueryResult;
@@ -310,6 +321,7 @@ function EditorAndResults({
   onChange: (sql: string) => void;
   onRun: (sql: string) => void;
   onClear: () => void;
+  onEngineChange: (engine: Engine) => void;
 }) {
   const [topPct, setTopPct] = useState(58);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -361,6 +373,18 @@ function EditorAndResults({
           Clear
         </Button>
         <span className="text-[11px] text-muted-foreground">⌘⏎ to run</span>
+        <select
+          value={tab.engine}
+          onChange={(e) => onEngineChange(e.target.value as Engine)}
+          title={ENGINES.find((x) => x.value === tab.engine)?.hint}
+          className="rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-ring"
+        >
+          {ENGINES.map((x) => (
+            <option key={x.value} value={x.value}>
+              {x.label}
+            </option>
+          ))}
+        </select>
         <div className="flex-1" />
         {res?.state === "SUCCEEDED" && res.rows?.length ? (
           <Button size="sm" variant="ghost" onClick={() => downloadCsv(tab.name, res)}>
@@ -467,7 +491,7 @@ function RecentQueries({
 }: {
   queries: Query[];
   ns: string;
-  onOpen: (sql: string, crName: string) => void;
+  onOpen: (sql: string, crName: string, engine: Engine) => void;
 }) {
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-background">
@@ -498,7 +522,7 @@ function RecentQueries({
                 <td className="border-b border-border p-2">
                   <button
                     onClick={() =>
-                      onOpen(q.spec?.sql ?? "", q.metadata.name ?? "")
+                      onOpen(q.spec?.sql ?? "", q.metadata.name ?? "", (q.spec?.engine ?? "duckdb") as Engine)
                     }
                     title={q.spec?.sql}
                     className="max-w-[560px] truncate font-mono text-xs text-primary hover:underline"

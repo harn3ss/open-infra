@@ -76,6 +76,10 @@ func run(logger *slog.Logger) error {
 	// so editing a VM's securityGroups takes effect live — no restart (like AWS).
 	startSGSync(client.Host, client.Transport, logger)
 
+	// Idle-stop the Trino coordinator (kind: Query's "Catalog" engine): scale to 0
+	// when no engine=trino query has run recently, up to 1 when one appears.
+	startTrinoAutostop(client.Host, client.Transport, *client.Clientset, logger)
+
 	router := newRouter(client, logger)
 
 	srv := &http.Server{
