@@ -6,6 +6,8 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.1.0 — 2026-07-11
+
 ### CI
 - **The test suite now gates image build + release** (it was advisory — tests ran but
   nothing consumed the result, so a tag could ship signed images with red tests).
@@ -31,6 +33,45 @@ the product's public contract.
   subset (run *Babelfish Compass* first). Start/Stop supported. Validated end-to-end (T-SQL over
   encrypted TDS via `sqlcmd`, through the composition-generated credentials). See
   [docs/databases.md](docs/databases.md#babelfish--sql-server-compatible-experimental).
+
+### Active Directory (`kind: Directory`)
+- **Windows domain join now works end-to-end.** The DC exposes the full standard AD port
+  surface — **LDAPS `636`** + **Global Catalog `3268`/`3269`**, **CLDAP `389/UDP`** (the
+  DC-locator ping Windows and `samba-tool gpo` require), and the **RPC endpoint mapper `135`
+  + a pinned dynamic RPC range `49152-49164`** (machine-account creation) — rather than only
+  the TCP LDAP/SMB/Kerberos basics. The RPC range is pinned in Samba (sambacc globals) so it's
+  forwardable through the LoadBalancer.
+- **The DC advertises its LoadBalancer VIP in AD DNS, not its pod IP.** It previously
+  self-registered its ephemeral pod IP (unreachable from the LAN, re-registered on every roll)
+  across five zone nodes (`@`, `dc1`, the pod-hostname node, `DomainDnsZones`, `ForestDnsZones`),
+  so clients round-robined onto dead addresses. A `dns-vip` sidecar reconciles all of them to
+  the VIP, and Samba's `dnsupdate` task is disabled so it never re-registers a pod IP — clients
+  resolve the DC to a reachable, stable address with no per-client hosts-file pins.
+- **Pod rolls are non-destructive.** The re-provision guard (`/etc/samba/smb.conf`) is persisted
+  on the PVC, so a rolled or rescheduled DC serves the existing domain instead of re-provisioning
+  a blank one over it (which had silently wiped imported users / OUs / GPOs).
+
+### Console
+- **Read-only AD Explorer** for `kind: Directory` — browse the DC's LDAP tree (OUs, groups,
+  users, attributes) and search the directory over LDAPS, from the Directory detail page.
+- **VM provisioning failures are visible.** The Virtual Machines views read the root disk's
+  CDI DataVolume, so a stuck or failed clone shows a red **Disk error** with the reason (or a
+  live **Cloning disk 45%** progress) instead of an indefinite "Provisioning" spinner.
+
+### Networking
+- **SecurityGroup changes apply to running VMs live — no restart** (matching the EC2 model).
+  Editing a VM's `securityGroups` is reconciled onto the running launcher pod within seconds by
+  a background reconciler in the console backend; previously the change only took effect on the
+  next VM restart, because KubeVirt stamps pod labels only at creation.
+
+### Virtual machines
+- **Windows VMs provision reliably.** The fixed Windows root disk is floored above the golden
+  image size — CDI refuses to clone a source into a smaller target, which wedged Windows VMs in
+  `CloneScheduled` indefinitely. Paired with the console Disk-error surfacing above.
+
+### Security
+- Bumped `github.com/Azure/go-ntlmssp` (CVE-2026-32952 — a malicious NTLM challenge could panic
+  the process) in the console backend; a transitive dependency of the new LDAP client.
 
 ## v2.0.0 — 2026-07-02
 
