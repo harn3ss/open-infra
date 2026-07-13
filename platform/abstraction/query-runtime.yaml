@@ -65,12 +65,20 @@ spec:
     spec:
       serviceAccountName: query-iam-setup
       restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        # Bring `mc` in OFFLINE (copied from the minio/mc image) rather than curl-ing
+        # it at run time — a hung download must never block the platform sync.
+        - name: fetch-mc
+          image: minio/mc:latest
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
       containers:
         - name: setup
-          # alpine/k8s carries kubectl + curl; we fetch the MinIO admin client (mc)
-          # since only mc can mint scoped users/policies (the aws CLI cannot).
-          image: alpine/k8s:1.30.0
+          image: alpine/k8s:1.30.0   # kubectl (native); mc from the shared volume
           command: [/bin/sh, -c]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
           env:
             - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
             - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
@@ -83,13 +91,13 @@ spec:
             - |
               set -eu
               [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
-              curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-              chmod +x /usr/local/bin/mc
-              mc alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+              echo "minting scoped query identity…"
+              MC=/mc/mc
+              "$MC" alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
 
               # buckets: the result bucket + every readable bucket (idempotent)
-              mc mb --ignore-existing "m/$RESULT_BUCKET" >/dev/null
-              for b in $READ_BUCKETS; do mc mb --ignore-existing "m/$b" >/dev/null; done
+              "$MC" mb --ignore-existing "m/$RESULT_BUCKET" >/dev/null
+              for b in $READ_BUCKETS; do "$MC" mb --ignore-existing "m/$b" >/dev/null; done
 
               # least-privilege policy: read the allow-list, read+write the result bucket
               READ_RES=""
@@ -104,16 +112,16 @@ spec:
                   "Resource": ["arn:aws:s3:::$RESULT_BUCKET/*"] }
               ] }
               EOF
-              mc admin policy create m openinfra-query /tmp/policy.json 2>/dev/null \
-                || mc admin policy update m openinfra-query /tmp/policy.json 2>/dev/null || true
+              "$MC" admin policy create m openinfra-query /tmp/policy.json 2>/dev/null \
+                || "$MC" admin policy update m openinfra-query /tmp/policy.json 2>/dev/null || true
 
               # scoped user: reuse the secret key if the k8s secret already exists
               # (stable creds across reruns), else generate one.
               AK="openinfra-query-runner"
               SK=$(kubectl get secret query-runner-s3 -n minio -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d || true)
               [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
-              mc admin user add m "$AK" "$SK" >/dev/null 2>&1 || mc admin user add m "$AK" "$SK" >/dev/null
-              mc admin policy attach m openinfra-query --user "$AK" >/dev/null 2>&1 || true
+              "$MC" admin user add m "$AK" "$SK" >/dev/null 2>&1 || "$MC" admin user add m "$AK" "$SK" >/dev/null
+              "$MC" admin policy attach m openinfra-query --user "$AK" >/dev/null 2>&1 || true
 
               kubectl create secret generic query-runner-s3 -n minio \
                 --from-literal=accessKey="$AK" --from-literal=secretKey="$SK" \
