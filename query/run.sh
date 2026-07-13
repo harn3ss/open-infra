@@ -19,10 +19,17 @@ SQL=$(printf '%s' "$SQL" | sed 's/[[:space:];]*$//')
 META="${OUTPUT_S3%.csv}.metadata.json"
 
 # httpfs/parquet/json are baked into the image; LOAD is offline. A DuckDB SECRET
-# carries the MinIO creds (path-style, plaintext HTTP inside the cluster).
-SETUP="LOAD httpfs; LOAD parquet; LOAD json;
+# carries the MinIO creds (path-style, plaintext HTTP inside the cluster). temp/spill
+# goes to /tmp — the only writable path under the read-only root filesystem.
+SETUP="SET temp_directory='/tmp'; LOAD httpfs; LOAD parquet; LOAD json;
 CREATE SECRET minio (TYPE S3, KEY_ID '${S3_ACCESS_KEY}', SECRET '${S3_SECRET_KEY}',
   ENDPOINT '${S3_ENDPOINT}', USE_SSL false, URL_STYLE 'path');"
+
+# Sandbox applied to the UNTRUSTED user SQL only: block all local-filesystem access
+# (so a query can't read /etc/passwd or /proc/self/environ to exfiltrate the pod's
+# env/creds, nor read/write arbitrary local files) and lock the configuration so a
+# SQL breakout of the COPY(...) wrapper can't re-enable it. S3 (httpfs) still works.
+SECURE="SET disabled_filesystems='LocalFileSystem'; SET lock_configuration=true;"
 
 write_fail() { # $1 = error text (already quote-safe)
   duckdb -c "${SETUP} COPY (SELECT 'FAILED' AS state, '$1' AS error) TO '${META}' (FORMAT JSON, ARRAY false);" 2>/dev/null || true
@@ -65,7 +72,7 @@ if [ "${ENGINE:-duckdb}" = "trino" ]; then
 fi
 
 start=$(date +%s%3N)
-if duckdb -c "${SETUP} COPY (${SQL}) TO '${OUTPUT_S3}' (FORMAT CSV, HEADER);" 2>/tmp/err; then
+if duckdb -c "${SETUP} ${SECURE} COPY (${SQL}) TO '${OUTPUT_S3}' (FORMAT CSV, HEADER);" 2>/tmp/err; then
   end=$(date +%s%3N)
   # count the result rows; grep the pure-digit line so the CREATE SECRET success
   # line in SETUP can't leak into the value.

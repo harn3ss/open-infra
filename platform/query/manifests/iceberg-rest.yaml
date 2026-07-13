@@ -20,16 +20,20 @@ spec:
   template:
     metadata: { labels: { app: iceberg-rest } }
     spec:
-      # Longhorn PVCs mount root-owned; make /data writable for the catalog process.
-      initContainers:
-        - name: fix-perms
-          image: busybox:1.36
-          command: ["sh", "-c", "chmod 0777 /data"]
-          securityContext: { runAsUser: 0 }
-          volumeMounts: [{ name: data, mountPath: /data }]
+      # Run non-root; fsGroup makes the Longhorn PVC group-writable for the catalog
+      # process (SQLite at /data/catalog.db), so no root chmod init is needed.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: rest
           image: tabulario/iceberg-rest:1.6.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
           ports: [{ containerPort: 8181 }]
           env:
             # Warehouse root + S3 (MinIO) file IO.

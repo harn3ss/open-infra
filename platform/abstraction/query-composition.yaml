@@ -3,9 +3,12 @@
 #   - ensures the output bucket exists (aws cli against MinIO), then
 #   - runs the SQL in a throwaway DuckDB pod (our first-party open-infra-query
 #     image), writing results (CSV) + an <id>.metadata.json to the output location.
-# The Job runs in the `minio` namespace so it can read the MinIO root secret via
-# env (same pattern as the app bucket-setup). Multi-tenant hardening — per-namespace
-# scoped S3 creds / workgroups — is a follow-up; today all queries use the root creds.
+# The Job runs in the `minio` namespace and uses a LEAST-PRIVILEGE S3 identity
+# (secret query-runner-s3, minted by query-runtime.yaml) that can read only an
+# allow-list of buckets and write only to query-results — never the MinIO root creds.
+# It runs non-root, read-only-rootfs, no service-account token, and inside a
+# NetworkPolicy that permits egress only to DNS + MinIO + Trino (query-runtime.yaml).
+# Per-namespace creds / workgroups remain a further refinement.
 #
 # The console derives the queryId (= Job name) + result location and reads the live
 # state/stats from the Job + metadata.json (GetQueryExecution). Readiness follows the
@@ -74,26 +77,31 @@ spec:
                       metadata: { labels: { openinfra.dev/query: "true" } }
                       spec:
                         restartPolicy: Never
-                        initContainers:
-                          # ensure the output bucket exists (idempotent).
-                          - name: ensure-bucket
-                            image: alpine/k8s:1.30.0
-                            command: ["/bin/sh", "-c"]
-                            args:
-                              - aws --endpoint-url http://{{ $minioEP }} s3 mb s3://{{ $bucket }} 2>/dev/null || true
-                            env:
-                              - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
-                              - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
-                              - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+                        # No cluster API access from the query sandbox.
+                        automountServiceAccountToken: false
+                        # Non-root, seccomp-confined. The result bucket is pre-created by
+                        # the query-iam-setup Job, so no root-cred bucket-maker init here.
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 65532
+                          runAsGroup: 65532
+                          fsGroup: 65532
+                          seccompProfile: { type: RuntimeDefault }
                         containers:
                           - name: query
                             image: {{ $img }}
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              readOnlyRootFilesystem: true
+                              capabilities: { drop: [ALL] }
                             env:
                               - { name: SQL, value: {{ $spec.sql | quote }} }
                               - { name: OUTPUT_S3, value: {{ $out | quote }} }
                               - { name: S3_ENDPOINT, value: {{ $minioEP | quote }} }
-                              - { name: S3_ACCESS_KEY, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
-                              - { name: S3_SECRET_KEY, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+                              # Least-privilege query identity (read allow-list + write
+                              # query-results only) — NOT the MinIO root creds.
+                              - { name: S3_ACCESS_KEY, valueFrom: { secretKeyRef: { name: query-runner-s3, key: accessKey } } }
+                              - { name: S3_SECRET_KEY, valueFrom: { secretKeyRef: { name: query-runner-s3, key: secretKey } } }
                               - { name: ENGINE, value: {{ $engine | quote }} }
                               {{- if eq $engine "trino" }}
                               # the warehouse engine (catalog + federation); the runner waits for
@@ -101,6 +109,11 @@ spec:
                               - { name: TRINO_URL, value: "http://trino.lakehouse.svc.cluster.local:8080" }
                               - { name: TRINO_CATALOG, value: "iceberg" }
                               {{- end }}
+                            volumeMounts:
+                              - { name: tmp, mountPath: /tmp }
+                        volumes:
+                          # RO rootfs — the runner's scratch (DuckDB temp, trino CSV) lives here.
+                          - { name: tmp, emptyDir: {} }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

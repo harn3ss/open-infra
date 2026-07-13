@@ -6,6 +6,31 @@ the product's public contract.
 
 ## Unreleased
 
+### Security
+- **`kind: Query` is no longer root over all of object storage (hardening).** The query
+  Job previously ran with the **MinIO root** credentials — any user who could submit a
+  Query had full read/write to *every* bucket (Velero/Longhorn/CNPG backups, golden VM
+  images, every app bucket), with no network sandbox and running as root. Fixed on five
+  fronts:
+  - **Least-privilege S3 identity.** A new `query-runtime.yaml` mints a scoped MinIO
+    user + policy that can **read only an allow-list of buckets** (`query-data`,
+    `lakehouse`, `query-results`) and **write only to `query-results`**; the composition
+    uses it instead of root. Verified: the query identity reads `query-results` but gets
+    `AccessDenied` on `longhorn`/`velero`. The lakehouse (Trino/iceberg) likewise moved
+    off a root-copy secret to a user scoped to `s3://lakehouse` only.
+  - **Network sandbox.** A `NetworkPolicy` on query pods permits egress only to DNS +
+    MinIO + Trino, so `httpfs` can't exfiltrate to an external URL and SQL can't SSRF
+    cluster services / the metadata endpoint.
+  - **Pod hardening.** Query pods run `runAsNonRoot` (uid 65532), `readOnlyRootFilesystem`,
+    all capabilities dropped, `automountServiceAccountToken: false`, seccomp
+    `RuntimeDefault`; the image ships a non-root `USER`. iceberg-rest moved off root
+    (uid 1000 + `fsGroup`, no chmod-0777 init) — validated Ready as non-root.
+  - **DuckDB confinement.** The runner disables local-filesystem access and locks
+    configuration for the untrusted user SQL, so a query can't read `/etc/passwd` or
+    `/proc/self/environ` (env/cred exfil) or re-enable it via a COPY-wrapper breakout;
+    S3 still works.
+  - Follow-ups: per-namespace query identities/workgroups, and Trino pod hardening.
+
 ### Analytics
 - **The lakehouse is now installed by GitOps.** The Trino + Iceberg REST catalog
   manifests moved under `platform/query/manifests/` behind a child Argo `Application`
