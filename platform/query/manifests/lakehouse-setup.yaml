@@ -70,10 +70,19 @@ spec:
     spec:
       serviceAccountName: lakehouse-setup
       restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        # mc offline from the minio/mc image — no runtime download to hang the sync.
+        - name: fetch-mc
+          image: minio/mc:latest
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
       containers:
         - name: setup
-          image: alpine/k8s:1.30.0
+          image: alpine/k8s:1.30.0   # kubectl (native); mc from the shared volume
           command: [/bin/sh, -c]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
           env:
             - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
             - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
@@ -82,12 +91,12 @@ spec:
             - |
               set -eu
               [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
-              curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-              chmod +x /usr/local/bin/mc
-              mc alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+              echo "minting scoped lakehouse identity…"
+              MC=/mc/mc
+              "$MC" alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
 
               # 1. the Iceberg warehouse bucket (s3://lakehouse/warehouse lives under it)
-              mc mb --ignore-existing m/lakehouse >/dev/null
+              "$MC" mb --ignore-existing m/lakehouse >/dev/null
 
               # 2. least-privilege policy: read+write ONLY the lakehouse bucket
               cat > /tmp/policy.json <<'EOF'
@@ -97,15 +106,15 @@ spec:
                   "Resource": ["arn:aws:s3:::lakehouse","arn:aws:s3:::lakehouse/*"] }
               ] }
               EOF
-              mc admin policy create m openinfra-lakehouse /tmp/policy.json 2>/dev/null \
-                || mc admin policy update m openinfra-lakehouse /tmp/policy.json 2>/dev/null || true
+              "$MC" admin policy create m openinfra-lakehouse /tmp/policy.json 2>/dev/null \
+                || "$MC" admin policy update m openinfra-lakehouse /tmp/policy.json 2>/dev/null || true
 
               # 3. scoped user (stable key across reruns) -> lakehouse/minio-creds
               AK="openinfra-lakehouse"
               SK=$(kubectl get secret minio-creds -n lakehouse -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || true)
               [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
-              mc admin user add m "$AK" "$SK" >/dev/null 2>&1 || mc admin user add m "$AK" "$SK" >/dev/null
-              mc admin policy attach m openinfra-lakehouse --user "$AK" >/dev/null 2>&1 || true
+              "$MC" admin user add m "$AK" "$SK" >/dev/null 2>&1 || "$MC" admin user add m "$AK" "$SK" >/dev/null
+              "$MC" admin policy attach m openinfra-lakehouse --user "$AK" >/dev/null 2>&1 || true
 
               kubectl create namespace lakehouse --dry-run=client -o yaml | kubectl apply -f -
               kubectl create secret generic minio-creds -n lakehouse \
