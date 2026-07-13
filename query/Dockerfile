@@ -23,11 +23,19 @@ RUN apt-get update && apt-get upgrade -y \
     && apt-get purge -y unzip && apt-get autoremove -y \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Preload the extensions the runner LOADs (offline at query time).
-RUN mkdir -p "$HOME" && duckdb -c "INSTALL httpfs; INSTALL parquet; INSTALL json;"
+# Preload the extensions the runner LOADs (offline at query time). Make $HOME
+# world-readable so the pod can run as an arbitrary non-root uid with a read-only
+# root filesystem and still LOAD the baked extensions.
+RUN mkdir -p "$HOME" && duckdb -c "INSTALL httpfs; INSTALL parquet; INSTALL json;" \
+    && chmod -R a+rX "$HOME"
 
 COPY run.sh /usr/local/bin/run.sh
 COPY trino_query.py /usr/local/bin/trino_query.py
 RUN chmod 0755 /usr/local/bin/run.sh /usr/local/bin/trino_query.py
+
+# Drop root. The composition also enforces runAsNonRoot/uid 65532 + readOnlyRootFilesystem;
+# the runner's only writable path is /tmp (an emptyDir), which is the WORKDIR.
+WORKDIR /tmp
+USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/run.sh"]

@@ -1,0 +1,156 @@
+# Runtime prerequisites + sandbox for kind: Query (the Athena data plane). This is
+# the security boundary the query Job runs inside — it must exist wherever Query is
+# usable, so it lives with the base abstraction (NOT gated behind the lakehouse).
+#
+# It does two things:
+#   1. P0 — least-privilege S3 identity. A one-shot Job (admin, root creds) mints a
+#      scoped MinIO user `openinfra-query-runner` whose policy grants READ only on an
+#      allow-list of queryable buckets and WRITE only to query-results/. The query
+#      composition uses THIS identity instead of the MinIO root creds, so a query can
+#      no longer read/overwrite Velero/Longhorn/CNPG backups, golden VM images, or any
+#      app bucket. Creds land in secret `query-runner-s3` (minio ns); none committed.
+#   2. P1 — network sandbox. A NetworkPolicy on the query pods (openinfra.dev/query=true)
+#      that permits egress ONLY to DNS + MinIO + Trino and denies everything else, so
+#      httpfs can't exfiltrate to an external URL and SQL can't SSRF cluster services.
+#
+# To expose more buckets to Query, add them to READ_BUCKETS below (the allow-list).
+# Synced by the root app with the abstraction component (sync-wave 2, before the
+# composition at wave 3).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: query-iam-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: query-iam-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: query-iam-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: query-iam-setup
+subjects:
+  - kind: ServiceAccount
+    name: query-iam-setup
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: query-iam-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: query-iam-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          # alpine/k8s carries kubectl + curl; we fetch the MinIO admin client (mc)
+          # since only mc can mint scoped users/policies (the aws CLI cannot).
+          image: alpine/k8s:1.30.0
+          command: [/bin/sh, -c]
+          env:
+            - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            # The read allow-list — the ONLY buckets a query can read. Add buckets here
+            # to expose them to Query. query-results is read+write (results land there).
+            - { name: READ_BUCKETS, value: "query-data lakehouse" }
+            - { name: RESULT_BUCKET, value: "query-results" }
+            - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+          args:
+            - |
+              set -eu
+              [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
+              curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+              chmod +x /usr/local/bin/mc
+              mc alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+
+              # buckets: the result bucket + every readable bucket (idempotent)
+              mc mb --ignore-existing "m/$RESULT_BUCKET" >/dev/null
+              for b in $READ_BUCKETS; do mc mb --ignore-existing "m/$b" >/dev/null; done
+
+              # least-privilege policy: read the allow-list, read+write the result bucket
+              READ_RES=""
+              for b in $READ_BUCKETS; do
+                READ_RES="$READ_RES \"arn:aws:s3:::$b\", \"arn:aws:s3:::$b/*\","
+              done
+              cat > /tmp/policy.json <<EOF
+              { "Version": "2012-10-17", "Statement": [
+                { "Effect": "Allow", "Action": ["s3:GetObject","s3:ListBucket"],
+                  "Resource": [ ${READ_RES} "arn:aws:s3:::$RESULT_BUCKET", "arn:aws:s3:::$RESULT_BUCKET/*" ] },
+                { "Effect": "Allow", "Action": ["s3:PutObject","s3:DeleteObject"],
+                  "Resource": ["arn:aws:s3:::$RESULT_BUCKET/*"] }
+              ] }
+              EOF
+              mc admin policy create m openinfra-query /tmp/policy.json 2>/dev/null \
+                || mc admin policy update m openinfra-query /tmp/policy.json 2>/dev/null || true
+
+              # scoped user: reuse the secret key if the k8s secret already exists
+              # (stable creds across reruns), else generate one.
+              AK="openinfra-query-runner"
+              SK=$(kubectl get secret query-runner-s3 -n minio -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d || true)
+              [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              mc admin user add m "$AK" "$SK" >/dev/null 2>&1 || mc admin user add m "$AK" "$SK" >/dev/null
+              mc admin policy attach m openinfra-query --user "$AK" >/dev/null 2>&1 || true
+
+              kubectl create secret generic query-runner-s3 -n minio \
+                --from-literal=accessKey="$AK" --from-literal=secretKey="$SK" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+              echo "query-runner IAM ready (read: $READ_BUCKETS $RESULT_BUCKET; write: $RESULT_BUCKET)"
+---
+# P1 — the query pod network sandbox. Selects every query Job pod and permits egress
+# ONLY to DNS, MinIO (results + lake reads), and Trino (engine=trino). Everything else
+# — external hosts (httpfs exfil), the metadata endpoint, and other cluster services
+# (SSRF) — is denied by the default-deny that an Egress policy imposes.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: query-egress
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  podSelector:
+    matchLabels:
+      openinfra.dev/query: "true"
+  policyTypes: [Egress]
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { k8s-app: kube-dns } }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # MinIO (S3) — same namespace
+    - to:
+        - podSelector: { matchLabels: { app: minio } }
+      ports:
+        - { protocol: TCP, port: 9000 }
+    # Trino coordinator (engine=trino) — lakehouse namespace
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: lakehouse } }
+      ports:
+        - { protocol: TCP, port: 8080 }
