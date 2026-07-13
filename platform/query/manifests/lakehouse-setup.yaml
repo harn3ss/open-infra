@@ -1,0 +1,96 @@
+# Bootstrap the lakehouse (Trino + Iceberg REST catalog) without committing any secret:
+# a one-shot Job, run in the `minio` namespace where the MinIO root secret lives, that
+#   1. ensures the `lakehouse` bucket exists on MinIO (the Iceberg warehouse root), and
+#   2. copies the MinIO root credentials into lakehouse/minio-creds (AWS_* key names)
+#      that iceberg-rest and trino reference.
+# alpine/k8s carries both `aws` and `kubectl`, so one image covers S3 + the API.
+# Idempotent (kubectl apply / mb-if-missing) and it retries until the MinIO secret
+# exists. Runs as an Argo Sync hook at an earlier sync-wave than the catalog/engine
+# Deployments, so the secret is present before they start.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lakehouse
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lakehouse-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lakehouse-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lakehouse-setup
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lakehouse-setup
+subjects:
+  - kind: ServiceAccount
+    name: lakehouse-setup
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lakehouse-setup
+  namespace: minio
+  annotations:
+    # Sync hook at wave 2: Argo waits for it to complete before the wave-3
+    # catalog/engine Deployments apply, so lakehouse/minio-creds already exists.
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: lakehouse-setup
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: alpine/k8s:1.30.0
+          command: [/bin/sh, -c]
+          env:
+            - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+          args:
+            - |
+              set -e
+              [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ] || {
+                echo "waiting for MinIO secret…"; exit 1; }
+
+              # 1. the Iceberg warehouse bucket (s3://lakehouse/warehouse lives under it)
+              aws --endpoint-url http://minio.minio.svc.cluster.local:9000 \
+                s3 mb s3://lakehouse 2>/dev/null || true
+
+              # 2. the lakehouse namespace + minio-creds secret the catalog/engine read
+              kubectl create namespace lakehouse \
+                --dry-run=client -o yaml | kubectl apply -f -
+              kubectl create secret generic minio-creds -n lakehouse \
+                --from-literal=AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+                --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              echo "lakehouse bootstrap ready"

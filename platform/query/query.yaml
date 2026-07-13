@@ -1,0 +1,40 @@
+# The lakehouse — Trino + the Iceberg REST catalog (open-infra's "Glue"), the Trino
+# engine behind kind: Query. Raw manifests live in platform/query/manifests/:
+#   - lakehouse-setup.yaml  bootstraps the lakehouse bucket + minio-creds secret
+#   - iceberg-rest.yaml     the Iceberg REST catalog (metastore) on Longhorn + MinIO
+#   - trino.yaml            single-node Trino coordinator (ships stopped; idle-stopped)
+# DuckDB queries need none of this — they run in the minio namespace against MinIO
+# directly. Toggle the whole lakehouse off with config.yaml `components.lakehouse:
+# false` (install.sh then excludes query/*). Sync-wave 5: after MinIO + Longhorn.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: lakehouse
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:harn3ss/open-infra.git
+    targetRevision: HEAD
+    path: platform/query/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: lakehouse
+  # Trino's replica count is owned by the console's trino-autostop reconciler (0↔1 on
+  # demand). Without this, selfHeal would fight it back to the git value (0) every time
+  # it scaled up. Same rationale as ignoring replicas on an HPA-managed Deployment.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: trino
+      namespace: lakehouse
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -6,6 +6,17 @@ the product's public contract.
 
 ## Unreleased
 
+### Analytics
+- **The lakehouse is now installed by GitOps.** The Trino + Iceberg REST catalog
+  manifests moved under `platform/query/manifests/` behind a child Argo `Application`
+  (`platform/query/query.yaml`), and `query` was added to the app-of-apps include
+  glob — so `install.sh` brings the whole lakehouse up on a fresh cluster instead of
+  it needing hand-applied resources. A one-shot `lakehouse-setup` Job (Sync hook,
+  earlier sync-wave) creates the `lakehouse` bucket on MinIO and copies the MinIO root
+  credentials into `lakehouse/minio-creds` — no secret is committed. Toggle it off with
+  `components.lakehouse: false`. Argo `ignoreDifferences` on the Trino Deployment's
+  replicas so selfHeal doesn't fight the idle-stop reconciler.
+
 ## v2.3.0 — 2026-07-12
 
 ### Analytics

@@ -11,6 +11,8 @@ metadata:
   name: iceberg-rest
   namespace: lakehouse
   labels: { app: iceberg-rest }
+  annotations:
+    argocd.argoproj.io/sync-wave: "3" # after lakehouse-setup (bucket + minio-creds)
 spec:
   replicas: 1
   strategy: { type: Recreate } # single writer to the SQLite catalog on a RWO PVC
