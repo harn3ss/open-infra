@@ -109,6 +109,7 @@ components:
   crossplane: true             # the Application/Model/Function abstraction engine
   console: true                # the web console (UI for everything)
   serverless: true             # Knative — kind: Function, scale-to-zero
+  lakehouse: true              # Trino + Iceberg REST catalog (the kind: Query "trino" engine + Glue); heavy — DuckDB Query needs none of it
   gpu: true                    # NVIDIA device plugin + DCGM metrics (GPU nodes only)
   velero: true                 # scheduled backups → MinIO (node-agent fs backups)
   virtualization: true         # KubeVirt + CDI — kind: VirtualMachine (EC2-style VMs); needs /dev/kvm
