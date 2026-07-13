@@ -53,6 +53,8 @@ metadata:
   name: trino
   namespace: lakehouse
   labels: { app: trino }
+  annotations:
+    argocd.argoproj.io/sync-wave: "3" # after lakehouse-setup (bucket + minio-creds)
 spec:
   # Starts stopped; the console's trino-autostop reconciler scales this 0↔1 on demand
   # based on recent engine=trino query activity, so idle Trino costs nothing.
