@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: partition
-        options: [partition]
+        options: [partition, clockskew]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -44,6 +44,7 @@ jobs:
           chmod +x chaos/*.sh
           case "${{ github.event.inputs.scenario || 'partition' }}" in
             partition) ./chaos/scenario-partition.sh ;;
+            clockskew) ./chaos/scenario-clockskew.sh ;;
             *) echo "unknown scenario"; exit 2 ;;
           esac
 
