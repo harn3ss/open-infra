@@ -17,7 +17,7 @@ NS="${CHAOS_SANDBOX_NS:-chaos-sandbox}"
 KEEP="${CHAOS_KEEP:-0}"                 # 1 = leave the sandbox up for debugging
 export CONV_TIMEOUT="${CONV_TIMEOUT:-300s}"   # must exceed fault duration + heal + settle
 export CONV_SETTLE="${CONV_SETTLE:-15s}"
-export CONV_CREATE="${CONV_CREATE:-1}"
+export CONV_CREATE="${CONV_CREATE:-false}"   # we seed the table below; the engine's mm-prep owns the mm columns
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"
 
@@ -37,9 +37,19 @@ log "provisioning sandbox members"
 kubectl apply -f "$HERE/sandbox/members.yaml"
 kubectl -n "$NS" rollout status statefulset/pg-a --timeout=120s
 kubectl -n "$NS" rollout status statefulset/pg-b --timeout=120s
+
+# The table must exist BEFORE the mesh: the engine's mm-prep installs the version/origin
+# columns + triggers onto it, and it CrashLoops if the table is missing. The harness then
+# writes into it (it does NOT create it — CONV_CREATE=false).
+log "seeding conv_test on both members"
+for m in pg-a pg-b; do
+  kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app \
+    -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);"
+done
+
 log "starting the multi-master mesh (Replication engine)"
 kubectl apply -f "$HERE/sandbox/mesh.yaml"
-# give the engine a moment to install mm-prep + connectors before we write
+# wait for the engine's mm-prep to finish installing triggers before we write
 sleep "${MESH_WARMUP:-45}"
 
 # Start from a clean table (the harness inserts fresh keys; leftover rows from a prior
