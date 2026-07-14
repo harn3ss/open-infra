@@ -66,6 +66,7 @@ CNCF projects — not a reinvention of databases or storage.
 | Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
+| Cost Explorer | "what AWS would've charged" | console panel pricing live capacity vs AWS list rates |
 | Secrets Manager | secrets | Sealed Secrets |
 | AWS Backup | backup/DR | Velero |
 | Fault Injection Simulator | chaos engineering (`kind: FaultInjection`) | Chaos Mesh |

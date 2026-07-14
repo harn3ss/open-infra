@@ -499,3 +499,44 @@ export interface CatalogSchema {
 export function listCatalogTables(): Promise<CatalogSchema[]> {
   return request<CatalogSchema[]>("/catalog/tables");
 }
+
+// --- Cost Explorer ----------------------------------------------------------
+
+export interface CostCategory {
+  category: string;
+  monthly: number;
+  detail: string;
+}
+export interface CostByNamespace {
+  namespace: string;
+  vcpu: number;
+  memoryGiB: number;
+  monthly: number;
+}
+export interface CostResponse {
+  currency: string;
+  youPay: number;
+  monthlyAWS: number;
+  yearlyAWS: number;
+  categories: CostCategory[];
+  byNamespace: CostByNamespace[];
+  totals: {
+    nodes: number;
+    vcpu: number;
+    memoryGiB: number;
+    gpu: number;
+    storageGiB: number;
+    loadBalancers: number;
+  };
+  prices: {
+    vcpuHour: number;
+    gbHour: number;
+    gpuHour: number;
+    ebsGbMonth: number;
+    lbMonth: number;
+  };
+}
+
+export function getCost(): Promise<CostResponse> {
+  return request<CostResponse>("/cost");
+}

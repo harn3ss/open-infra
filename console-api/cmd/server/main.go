@@ -225,6 +225,11 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/catalog/tables", handleCatalogTables(logger))
 
+		// Cost Explorer — "what AWS would have charged": price live cluster capacity
+		// (nodes/PVCs/LBs/GPUs) against AWS list rates. Read-only estimate.
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/cost", handleCost(*client.Clientset, logger))
+
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
 

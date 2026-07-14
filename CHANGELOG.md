@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Billing
+- **New Cost Explorer — "what AWS would've charged."** The last unbuilt AWS-equivalent
+  ships: a console **Billing → Cost Explorer** page that prices your live cluster
+  (node vCPU/memory, GPUs, PVC storage, LoadBalancers) against AWS public on-demand
+  list rates and shows the monthly/annual estimate next to your actual cost ($0). A
+  read-only BFF endpoint (`/api/cost`) computes it from cluster state — compute at
+  Fargate rates, GPU at g4dn class, EBS gp3, ALB base — plus a by-namespace compute
+  breakdown. Rates are overridable via `COST_*` env. See [docs/cost.md](docs/cost.md).
+
 ### Security
 - **`kind: Query` is no longer root over all of object storage (hardening).** The query
   Job previously ran with the **MinIO root** credentials — any user who could submit a

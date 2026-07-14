@@ -5,6 +5,7 @@ import {
   Building2,
   Database,
   Disc3,
+  DollarSign,
   FolderTree,
   Globe,
   HardDrive,
@@ -62,4 +63,6 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Monitoring", to: "/monitoring", icon: LineChart, section: "Observability" },
   { label: "Chaos", to: "/chaos", icon: Bomb, matchPrefix: true, section: "Observability" },
+
+  { label: "Cost Explorer", to: "/cost", icon: DollarSign, section: "Billing" },
 ];
