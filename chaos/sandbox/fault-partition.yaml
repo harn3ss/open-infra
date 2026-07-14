@@ -10,6 +10,9 @@ spec:
   type: network-partition
   target:
     labelSelector: { app: pg, site: b }
+  # Cut the mesh (A↔B) specifically, not B from the world — so the harness can still
+  # write to BOTH sides while their replication is severed. Both remain reachable.
+  partitionPeer: { app: pg, site: a }
   mode: all
   direction: both
   duration: 90s

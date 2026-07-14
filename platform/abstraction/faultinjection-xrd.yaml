@@ -70,6 +70,14 @@ spec:
                 latency: { type: string, default: "200ms", description: "network-latency / io-latency delay." }
                 loss: { type: string, default: "50", description: "network-loss packet-loss percent." }
                 direction: { type: string, enum: [to, from, both], default: to, description: "network chaos direction." }
+                partitionPeer:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: >-
+                    network-partition only: the OTHER side of the cut — pod labels the
+                    target is partitioned from (e.g. {app: pg, site: a}). Both sides stay
+                    reachable by outside clients; only traffic BETWEEN the two sets is cut.
+                    Omit to isolate the target from everything.
                 cpuWorkers: { type: integer, default: 1, description: "stress-cpu worker threads." }
                 cpuLoad: { type: integer, default: 80, description: "stress-cpu load percent per worker." }
                 memory: { type: string, default: "256MB", description: "stress-memory size to consume." }

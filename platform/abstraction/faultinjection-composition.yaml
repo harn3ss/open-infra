@@ -110,6 +110,20 @@ spec:
                         {{- range $k, $v := $spec.target.labelSelector }}
                         {{ $k }}: {{ $v | quote }}
                         {{- end }}
+                    {{- /* Peer-scoped partition: cut traffic only BETWEEN the target and
+                           the peer set (same namespace), leaving both reachable by outside
+                           clients. Chaos Mesh's `target` block is the second side. */}}
+                    {{- if and (eq $type "network-partition") $spec.partitionPeer }}
+                    target:
+                      mode: all
+                      selector:
+                        namespaces:
+                          - {{ $ns }}
+                        labelSelectors:
+                          {{- range $k, $v := $spec.partitionPeer }}
+                          {{ $k }}: {{ $v | quote }}
+                          {{- end }}
+                    {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
