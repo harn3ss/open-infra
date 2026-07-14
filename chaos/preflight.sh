@@ -16,15 +16,17 @@ FILE="${1:?usage: preflight.sh <faultinjection.yaml>}"
 # Parse the manifest (namespace + target) without assuming yq is installed. Pipe-
 # delimited (a non-whitespace IFS) so an empty target.namespace field is preserved —
 # whitespace delimiters collapse consecutive separators and would drop it.
-IFS='|' read -r FI_NS TGT_NS SEL < <(python3 - "$FILE" <<'PY'
+IFS='|' read -r FI_NS TGT_NS SEL PEER < <(python3 - "$FILE" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1]))
 meta = d.get("metadata", {}) or {}
 spec = d.get("spec", {}) or {}
 tgt = spec.get("target", {}) or {}
 labels = tgt.get("labelSelector", {}) or {}
+peer = spec.get("partitionPeer", {}) or {}
 sel = ",".join(f"{k}={v}" for k, v in labels.items())
-print("|".join([meta.get("namespace", ""), tgt.get("namespace", ""), sel or "<none>"]))
+psel = ",".join(f"{k}={v}" for k, v in peer.items())
+print("|".join([meta.get("namespace", ""), tgt.get("namespace", ""), sel or "<none>", psel or "<none>"]))
 PY
 )
 
@@ -53,6 +55,18 @@ fi
 INSANDBOX="$(kubectl get pods -n "$SANDBOX" -l "$SEL" -o name 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$INSANDBOX" = "0" ]; then
   echo "preflight: WARNING — selector matches 0 pods in $SANDBOX (fault will be a no-op; possible typo)" >&2
+fi
+
+# The partition peer (other side of the cut) must also be sandbox-only.
+if [ "$PEER" != "<none>" ]; then
+  PEER_OUTSIDE="$(kubectl get pods -A -l "$PEER" \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+    | grep -v "^${SANDBOX}/" || true)"
+  if [ -n "$PEER_OUTSIDE" ]; then
+    echo "$PEER_OUTSIDE" | sed 's/^/  offending peer: /' >&2
+    abort "partitionPeer '$PEER' matches pod(s) OUTSIDE '$SANDBOX' (above)"
+  fi
+  echo "preflight: partitionPeer '$PEER' contained to $SANDBOX."
 fi
 
 echo "preflight OK: fault is contained to $SANDBOX ($INSANDBOX matching pod(s))."
