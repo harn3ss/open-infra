@@ -44,9 +44,10 @@ There is one real cluster, so containment is built **before** any fault
    crashes), and a **pre-flight guard** ([chaos/preflight.sh](../chaos/preflight.sh))
    resolves the selector and **aborts if it matches any pod outside the sandbox**.
 
-> **`clock-skew` is deliberately excluded** from the real-fault set (Chaos Mesh TimeChaos
-> is too invasive). Scenario 2 will instead force a backward clock via a test-only
-> injectable time source in the HLC read path — safer *and* a better T6 regression.
+> **`clock-skew` uses no real clock skew** (Chaos Mesh TimeChaos is too invasive). The HLC
+> physical-clock read has an injectable offset — `mm_hlc_state.clk_off` (default 0, so
+> production is untouched). Scenario 2 sets it backward and asserts the stamped version
+> still increases. Safer than skewing a real clock, and a more reliable T6 regression.
 
 ## Architecture
 
@@ -66,7 +67,7 @@ GitHub (nightly schedule) ─► self-hosted runner on the validation cluster
 Each is one `FaultInjection` + one harness run, and a release gate once green:
 
 1. **`multimaster-partition`** — cut a site off mid-write; assert re-convergence. *(shipped + validated live: a real ~90s diverge-then-converge)*
-2. **`clock-skew`** — the T6 regression, via injectable time source (not TimeChaos).
+2. **`clock-skew`** — the T6 regression via an injectable clock offset (not TimeChaos). *(shipped + validated live: HLC stayed monotonic — Δ=1 — under a −1h backward clock instead of dropping ~2.4×10¹¹)*
 3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive.
 4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion.
 5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive.

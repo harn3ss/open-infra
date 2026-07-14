@@ -25,7 +25,12 @@ the product's public contract.
   the mesh is *pod-mediated* (a member↔member partition injects nothing) and drove a
   platform enhancement — `kind: FaultInjection` gained **`partitionPeer`** for
   peer-scoped network-partitions (cut A↔B while both stay reachable by outside clients).
-  See [docs/chaos-suite.md](docs/chaos-suite.md).
+  **Scenario 2 (`clock-skew`, the T6 regression) also validated live**: rather than real
+  TimeChaos, the HLC physical-clock read gained an injectable offset (`mm_hlc_state.clk_off`,
+  default 0 — production untouched; Postgres already had a session-GUC hook, now
+  generalized and added to MySQL, which T6 hit). Forcing the clock −1h backward, the HLC
+  stayed monotonic (Δ=1) instead of stamping a ~2.4×10¹¹-lower version that would silently
+  lose last-write-wins. See [docs/chaos-suite.md](docs/chaos-suite.md).
 
 ## v2.4.0 — 2026-07-14
 

@@ -1,0 +1,47 @@
+# Nightly Chaos Suite — Scenario 2 (clock-skew / T6) disposable MySQL member.
+# A throwaway MySQL 8 in the sandbox; the focused T6 regression installs mm-prep on it
+# and drives the injectable clk_off backward. native_password so go-sql-driver connects
+# over plain TCP; log_bin_trust_function_creators so the stamping triggers install.
+apiVersion: v1
+kind: Secret
+metadata: { name: pg-creds, namespace: chaos-sandbox }
+stringData: { password: chaosbox }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: my-b, namespace: chaos-sandbox, labels: { app: db, engine: mysql, site: b } }
+spec:
+  selector: { app: db, engine: mysql, site: b }
+  ports: [{ port: 3306, targetPort: 3306 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: my-b, namespace: chaos-sandbox, labels: { app: db, engine: mysql, site: b } }
+spec:
+  serviceName: my-b
+  replicas: 1
+  selector: { matchLabels: { app: db, engine: mysql, site: b } }
+  template:
+    metadata: { labels: { app: db, engine: mysql, site: b } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          args:
+            - "--server-id=2"
+            - "--default-authentication-plugin=mysql_native_password"
+            - "--log-bin-trust-function-creators=1"
+          env:
+            - { name: MYSQL_ROOT_PASSWORD, valueFrom: { secretKeyRef: { name: pg-creds, key: password } } }
+            - { name: MYSQL_DATABASE, value: app }
+          ports: [{ containerPort: 3306 }]
+          resources: { requests: { cpu: 200m, memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
+          readinessProbe:
+            exec: { command: [sh, -c, "mysqladmin ping -h127.0.0.1 -uroot -p$MYSQL_ROOT_PASSWORD --silent"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts: [{ name: data, mountPath: /var/lib/mysql }]
+      volumes: [{ name: data, emptyDir: {} }] # ephemeral — sandbox
