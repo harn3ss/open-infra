@@ -78,10 +78,22 @@ Create tables from data you already have, e.g. via Trino:
 
 ## Notes & limits
 
-- **Credentials:** query Jobs run in the `minio` namespace with the MinIO root
-  credentials (like the app bucket-setup); the lakehouse services get them from a
-  `lakehouse/minio-creds` secret. Per-namespace scoped credentials / workgroups are a
-  tracked follow-up.
+- **Security / sandbox.** A query runs untrusted SQL, so the Job is confined like
+  Athena — it can touch permitted data and nothing else:
+  - **Least-privilege S3, not root.** The Job uses a scoped MinIO identity
+    (`query-runner-s3`) that can **read only an allow-list of buckets**
+    (`query-data`, `lakehouse`, `query-results` by default) and **write only to
+    `query-results`** — never the MinIO root creds. It cannot read or overwrite
+    backups, VM images, or other apps' buckets. Add buckets to the allow-list via
+    `READ_BUCKETS` in `platform/abstraction/query-runtime.yaml`.
+  - **Network-sandboxed.** A NetworkPolicy allows egress only to DNS, MinIO, and
+    Trino, so `httpfs` can't reach an external URL and SQL can't SSRF cluster
+    services.
+  - **Hardened pod.** Non-root, read-only root filesystem, all capabilities dropped,
+    no service-account token; the runner also disables DuckDB's local-filesystem
+    access for the user SQL (no reading `/etc/passwd` or the pod's env).
+  - **Follow-up:** the scoped identity is currently platform-wide, not per-namespace —
+    true per-tenant isolation (a workgroup per team) is still to come.
 - **Engine images/services** are open-infra's own or pinned upstream, in the platform:
   `open-infra-query` (DuckDB + Trino REST client, Trivy-scanned + cosign-signed),
   `tabulario/iceberg-rest`, `trinodb/trino`.
