@@ -48,6 +48,7 @@ import { WorkloadsPage } from "@/features/workloads/workloads-page";
 import { NodesPage } from "@/features/nodes/nodes-page";
 import { NetworkPage } from "@/features/network/network-page";
 import { MonitoringPage } from "@/features/monitoring/monitoring-page";
+import { CostPage } from "@/features/cost/cost-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -298,6 +299,12 @@ const monitoringRoute = createRoute({
   component: MonitoringPage,
 });
 
+const costRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/cost",
+  component: CostPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
@@ -340,6 +347,7 @@ const routeTree = rootRoute.addChildren([
   nodesRoute,
   networkRoute,
   monitoringRoute,
+  costRoute,
 ]);
 
 export const router = createRouter({
