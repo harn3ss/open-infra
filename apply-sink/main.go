@@ -226,12 +226,17 @@ func mmPrepSetup(db *sql.DB, engine, site, vcol string) error {
 		// step, clock skew — bumps the logical counter instead of going backwards, which
 		// would make writes lose last-write-wins). Mirrors Postgres/SQL Server.
 		for _, q := range []string{
-			`CREATE TABLE IF NOT EXISTS mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`,
+			`CREATE TABLE IF NOT EXISTS mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0, clk_off bigint NOT NULL DEFAULT 0)`,
 			`INSERT IGNORE INTO mm_hlc_state(id) VALUES(1)`,
 		} {
 			if _, err := db.Exec(q); err != nil {
 				return err
 			}
+		}
+		// clk_off: injectable physical-clock offset (see the Postgres note). MySQL has no
+		// ADD COLUMN IF NOT EXISTS, so add it best-effort for pre-existing state tables.
+		if _, err := db.Exec(`ALTER TABLE mm_hlc_state ADD COLUMN clk_off bigint NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "Duplicate column") {
+			return err
 		}
 	default:
 		return fmt.Errorf("mm-prep not implemented for engine %s", engine)
@@ -330,10 +335,10 @@ func mmPrepTable(db *sql.DB, engine, site, vcol, ocol, schema, table string) err
 		// a replication-applied write (@app_replication set) is skipped but OBSERVES the
 		// remote version so the local clock can't fall behind. DECLAREs must lead the block.
 		body := "BEGIN " +
-			"DECLARE cpt BIGINT; DECLARE clc INT; DECLARE nowms BIGINT; DECLARE npt BIGINT; DECLARE nlc INT; " +
+			"DECLARE cpt BIGINT; DECLARE clc INT; DECLARE coff BIGINT; DECLARE nowms BIGINT; DECLARE npt BIGINT; DECLARE nlc INT; " +
 			"IF @app_replication IS NULL THEN " +
-			"  SET nowms = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS UNSIGNED); " +
-			"  SELECT pt,lc INTO cpt,clc FROM mm_hlc_state WHERE id=1 FOR UPDATE; " +
+			"  SELECT pt,lc,clk_off INTO cpt,clc,coff FROM mm_hlc_state WHERE id=1 FOR UPDATE; " +
+			"  SET nowms = CAST(UNIX_TIMESTAMP(NOW(3))*1000 AS SIGNED) + coff; " +
 			"  IF nowms > cpt THEN SET npt=nowms; SET nlc=0; ELSE SET npt=cpt; SET nlc=clc+1; END IF; " +
 			"  UPDATE mm_hlc_state SET pt=npt, lc=nlc WHERE id=1; " +
 			fmt.Sprintf("  SET NEW.%s = npt*65536+nlc, NEW.%s = '%s'; ", qv, qo, site) +
@@ -527,9 +532,13 @@ func splitTables(tables string) [][2]string {
 // for a Postgres site. The stamp function bakes in this site's id + version col.
 func pgHLCSetup(site, vcol string) []string {
 	return []string{
-		`CREATE TABLE IF NOT EXISTS mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0)`,
+		`CREATE TABLE IF NOT EXISTS mm_hlc_state(id int primary key, pt bigint NOT NULL DEFAULT 0, lc int NOT NULL DEFAULT 0, clk_off bigint NOT NULL DEFAULT 0)`,
+		// clk_off: a persistent, injectable physical-clock offset (ms). Default 0 = no
+		// effect. Chaos/tests set it (e.g. negative to simulate a backward clock) to
+		// exercise HLC monotonicity deterministically, without skewing any real clock.
+		`ALTER TABLE mm_hlc_state ADD COLUMN IF NOT EXISTS clk_off bigint NOT NULL DEFAULT 0`,
 		`INSERT INTO mm_hlc_state(id) VALUES (1) ON CONFLICT DO NOTHING`,
-		`CREATE OR REPLACE FUNCTION mm_phys_ms() RETURNS bigint AS $f$ SELECT (floor(extract(epoch from clock_timestamp())*1000) + coalesce(current_setting('app.clock_skew_ms', true),'0')::bigint)::bigint; $f$ LANGUAGE sql`,
+		`CREATE OR REPLACE FUNCTION mm_phys_ms() RETURNS bigint AS $f$ SELECT (floor(extract(epoch from clock_timestamp())*1000) + coalesce(current_setting('app.clock_skew_ms', true),'0')::bigint + coalesce((SELECT clk_off FROM mm_hlc_state WHERE id=1),0))::bigint; $f$ LANGUAGE sql`,
 		`CREATE OR REPLACE FUNCTION mm_hlc_tick() RETURNS bigint AS $f$ DECLARE p bigint; l int; n bigint; BEGIN SELECT pt,lc INTO p,l FROM mm_hlc_state WHERE id=1 FOR UPDATE; n:=mm_phys_ms(); IF n>p THEN p:=n; l:=0; ELSE l:=l+1; END IF; UPDATE mm_hlc_state SET pt=p,lc=l WHERE id=1; RETURN p*65536+l; END; $f$ LANGUAGE plpgsql`,
 		`CREATE OR REPLACE FUNCTION mm_hlc_observe(rv bigint) RETURNS void AS $f$ DECLARE p bigint; l int; n bigint; rp bigint; rl int; np bigint; nl int; BEGIN IF rv IS NULL THEN RETURN; END IF; SELECT pt,lc INTO p,l FROM mm_hlc_state WHERE id=1 FOR UPDATE; n:=mm_phys_ms(); rp:=rv/65536; rl:=(rv%65536)::int; np:=greatest(p,rp,n); IF np=p AND np=rp THEN nl:=greatest(l,rl)+1; ELSIF np=p THEN nl:=l+1; ELSIF np=rp THEN nl:=rl+1; ELSE nl:=0; END IF; UPDATE mm_hlc_state SET pt=np,lc=nl WHERE id=1; END; $f$ LANGUAGE plpgsql`,
 		fmt.Sprintf(`CREATE OR REPLACE FUNCTION mm_stamp() RETURNS trigger AS $f$ BEGIN IF current_setting('app.replication', true)='on' THEN PERFORM mm_hlc_observe(NEW.%s); RETURN NEW; END IF; NEW.%s:=mm_hlc_tick(); NEW.%s:='%s'; RETURN NEW; END; $f$ LANGUAGE plpgsql`,
