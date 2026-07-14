@@ -1,0 +1,57 @@
+# Nightly Chaos Suite (design §4, §6). Runs on the self-hosted runner ON the validation
+# cluster — zero GitHub-hosted minutes. Each night it partitions a disposable multi-master
+# mesh and proves it re-converges. A red run is a RELEASE BLOCKER, same philosophy as the
+# `needs: test` gate.
+#
+# Requires a self-hosted runner labelled `openinfra-chaos` with kubectl + Go and a
+# kubeconfig for the cluster. Until one is registered this workflow simply queues (it never
+# runs against anything real, and the pre-flight guard + sandbox RBAC bound it if it does).
+name: nightly-chaos
+
+on:
+  schedule:
+    - cron: "17 8 * * *" # ~nightly, off the top of the hour
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "scenario to run"
+        type: choice
+        default: partition
+        options: [partition]
+      keep:
+        description: "keep the sandbox up after the run (debug)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: nightly-chaos
+  cancel-in-progress: false
+
+jobs:
+  chaos:
+    runs-on: [self-hosted, openinfra-chaos]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scenario — ${{ github.event.inputs.scenario || 'partition' }}
+        env:
+          KUBECONFIG: ${{ env.KUBECONFIG }}
+          CHAOS_KEEP: ${{ github.event.inputs.keep == 'true' && '1' || '0' }}
+          # seed is logged by the run and re-runnable via workflow_dispatch
+        run: |
+          chmod +x chaos/*.sh
+          case "${{ github.event.inputs.scenario || 'partition' }}" in
+            partition) ./chaos/scenario-partition.sh ;;
+            *) echo "unknown scenario"; exit 2 ;;
+          esac
+
+      - name: Retain artifacts on red
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-artifacts-${{ github.run_id }}
+          path: |
+            chaos/artifacts/**
+          if-no-files-found: ignore
+          retention-days: 30

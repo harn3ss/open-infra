@@ -1,0 +1,15 @@
+# Scenario 1 — multimaster-partition (design §5). Cut site B off the mesh mid-write.
+# Blast radius: chaos-sandbox only (composition scopes the Chaos Mesh selector to this
+# namespace; the pre-flight guard proves the selector matches nothing outside it).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-partition
+  namespace: chaos-sandbox
+spec:
+  type: network-partition
+  target:
+    labelSelector: { app: pg, site: b }
+  mode: all
+  direction: both
+  duration: 90s

@@ -6,6 +6,21 @@ the product's public contract.
 
 ## Unreleased
 
+### Reliability
+- **Nightly Chaos Suite — the containment foundation.** The road from *"convergence is
+  hand-tested"* to *"convergence is proven nightly, or the release is blocked."* This
+  lands the safety model first (design §3): a disposable `chaos-sandbox` namespace with a
+  `ResourceQuota` + `LimitRange` + a low non-preempting `PriorityClass` (sandbox pods
+  evict first under pressure), and a `chaos-runner` ServiceAccount whose write authority
+  is scoped to the sandbox **only** — "runner creds = chaos creds", so a fat-fingered
+  fault selector is *rejected by the API server*, not merely discouraged. A **pre-flight
+  guard** resolves a fault's selector and aborts if it could reach any pod outside the
+  sandbox. All **validated live** (RBAC deny-tests pass; the guard aborts a kube-system
+  target and an `app=minio` selector). Ships alongside the **Scenario 1**
+  (`multimaster-partition`) kit — disposable members, a checked-in multi-master mesh, the
+  partition fault, an orchestration script, and a self-hosted nightly workflow. See
+  [docs/chaos-suite.md](docs/chaos-suite.md).
+
 ## v2.4.0 — 2026-07-14
 
 ### Billing
