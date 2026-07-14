@@ -120,7 +120,8 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
 
 A **web console** ships with the platform — an AWS-console-style UI over every
 resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
-File Shares, Buckets, Queries, Queues, Data Flows, Streams, Active Directory, Nodes/GPUs, Monitoring)
+File Shares, Buckets, Queries, Queues, Data Flows, Streams, Active Directory,
+Security Groups, Nodes/GPUs, Monitoring, Cost Explorer)
 with per-resource detail pages and actions (object browser, model playground, the
 drag-and-drop **Data Flows** canvas + guided replication wizard, create/delete). See
 [`docs/console.md`](docs/console.md).

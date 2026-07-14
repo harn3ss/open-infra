@@ -41,13 +41,16 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **Migration** (DMS) | one-way DB migration — a mode of Data Flows; the standalone detail page shows a live **Capture → Buffer → Apply** pipeline (lag, per-table throughput, dead-letter) |
 | **Replication** (multi-master) | two-way / multi-master sync — a mode of Data Flows; the standalone detail page shows **both directions** with lag / per-table / dead-letter |
 | **Stream** (Kinesis) | **New Stream** (source endpoint + tables), JetStream subjects, status · create / delete |
+| **Query** (Athena) | An Athena-style SQL editor — code editor (⌘/Ctrl+Enter, run-selection), an **engine picker** (DuckDB over lake files / Trino over the catalog), a **Data** tree (buckets→files or catalog→schemas→tables), a resizable results grid + Download CSV, tabbed queries and **Recent queries** history. Runs `kind: Query`. See [query.md](query.md) |
 | **Bucket** (S3) | Objects — browse folders, **upload / download / delete** · create / delete bucket |
 | **Queue** (SQS) | Overview (messages/size/consumers/subjects), **Publish** a message, **Purge** |
 | **Volume** (EBS) | Overview (size/class/attachment), **snapshot / restore**, attach to a VM, YAML · create / delete |
 | **File Share** (EFS/FSx) | Overview, **Connect** (Windows `net use` / Linux `mount`), YAML · create / delete |
 | **Active Directory** (Directory Service) | Overview (domain/realm/DC), **Join** instructions, YAML · create / delete |
+| **Security Group** (Security Groups) | List/create/delete `kind: SecurityGroup` rule sets (named, reusable firewall rules); edits apply to running VMs **live**, no restart. See [security-groups.md](security-groups.md) · create / delete |
 | **Node** | CPU/memory/pod capacity, **GPU** (count + model), conditions, YAML |
 | **Chaos** (FIS) | List/create/delete `kind: FaultInjection` experiments (type, blast-radius target, duration, status); blast radius shown before you launch. See [chaos.md](chaos.md) · create / delete |
+| **Cost Explorer** (Cost Explorer) | "What AWS would've charged" — prices live cluster capacity (compute / GPU / EBS / load balancers) against AWS list rates, showing monthly & annual vs your actual **$0**, plus a by-namespace compute breakdown. See [cost.md](cost.md) |
 
 ## How it works
 
@@ -62,6 +65,8 @@ browser ──► console pod (single container)
                    ├─ /api/queues…     NATS JetStream (stats / publish / purge)
                    ├─ /api/models/…/chat   proxy to a Model's gated endpoint (key stays server-side)
                    ├─ /api/migrations/… discover source tables (the DMS engine runs continuously and stays hidden)
+                   ├─ /api/queries/…/result + /api/catalog/tables  Query results + the Iceberg catalog tree
+                   ├─ /api/cost        Cost Explorer — prices live capacity vs AWS list rates
                    └─ /grafana/*       same-origin Grafana embed
 ```
 
