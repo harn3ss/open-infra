@@ -78,6 +78,9 @@ rules:
   - apiGroups: [""]
     resources: [pods, pods/log, persistentvolumeclaims, services, configmaps, secrets]
     verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec] # seed/inspect the ephemeral members via kubectl exec (sandbox only)
+    verbs: [create]
   - apiGroups: [apps]
     resources: [statefulsets, deployments, replicasets]
     verbs: [get, list, watch, create, update, patch, delete]
