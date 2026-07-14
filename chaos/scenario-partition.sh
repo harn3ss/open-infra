@@ -28,6 +28,8 @@ cleanup() {
     log "tearing down sandbox members + mesh"
     kubectl -n "$NS" delete -f "$HERE/sandbox/mesh.yaml" --ignore-not-found >/dev/null 2>&1 || true
     kubectl -n "$NS" delete -f "$HERE/sandbox/members.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    # sweep the engine's composed mm-prep Jobs (not GC'd with the Replication claim)
+    kubectl -n "$NS" delete jobs --all --ignore-not-found >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
