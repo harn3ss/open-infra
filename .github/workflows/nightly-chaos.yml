@@ -35,8 +35,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Scenario — ${{ github.event.inputs.scenario || 'partition' }}
+        # KUBECONFIG (scoped chaos-runner) + Go/kubectl on PATH come from the runner's
+        # own .env, so the job inherits them — don't override KUBECONFIG here.
         env:
-          KUBECONFIG: ${{ env.KUBECONFIG }}
           CHAOS_KEEP: ${{ github.event.inputs.keep == 'true' && '1' || '0' }}
           # seed is logged by the run and re-runnable via workflow_dispatch
         run: |
