@@ -18,8 +18,14 @@ the product's public contract.
   sandbox. All **validated live** (RBAC deny-tests pass; the guard aborts a kube-system
   target and an `app=minio` selector). Ships alongside the **Scenario 1**
   (`multimaster-partition`) kit — disposable members, a checked-in multi-master mesh, the
-  partition fault, an orchestration script, and a self-hosted nightly workflow. See
-  [docs/chaos-suite.md](docs/chaos-suite.md).
+  partition fault, an orchestration script, and a self-hosted nightly workflow.
+  **Scenario 1 is validated end-to-end on the live cluster**: baseline convergence in
+  13s, and under a real partition the mesh diverges then re-converges byte-identical in
+  ~108s (200 keys / 20 conflicts / zero lost writes). The first run also surfaced that
+  the mesh is *pod-mediated* (a member↔member partition injects nothing) and drove a
+  platform enhancement — `kind: FaultInjection` gained **`partitionPeer`** for
+  peer-scoped network-partitions (cut A↔B while both stay reachable by outside clients).
+  See [docs/chaos-suite.md](docs/chaos-suite.md).
 
 ## v2.4.0 — 2026-07-14
 

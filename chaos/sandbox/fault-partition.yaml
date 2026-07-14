@@ -10,9 +10,16 @@ spec:
   type: network-partition
   target:
     labelSelector: { app: pg, site: b }
-  # Cut the mesh (A↔B) specifically, not B from the world — so the harness can still
-  # write to BOTH sides while their replication is severed. Both remain reachable.
-  partitionPeer: { app: pg, site: a }
+  # The mesh is POD-MEDIATED (pg → Debezium → NATS → apply-sink → pg), so cutting
+  # pg-a↔pg-b directly does nothing — replication never flows member-to-member. To
+  # actually sever it we cut site B from the engine pod that applies A's changes into
+  # it (the a→b apply-sink). B keeps accumulating local writes and stops receiving A's
+  # for the fault window, then must re-converge after heal. Both DBs stay reachable by
+  # the harness (the sink is the only peer), so writes are driven through the cut.
+  # Verified: this yields a real ~90s diverge-then-converge (a member-to-member peer
+  # completed in 13s — i.e. injected nothing). Bidirectional isolation (also cut the
+  # b Debezium) is a refinement once partitionPeer accepts multiple selectors.
+  partitionPeer: { app: chaos-mesh-pg-repl-a-b-sink }
   mode: all
   direction: both
   duration: 90s
