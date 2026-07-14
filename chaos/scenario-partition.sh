@@ -42,6 +42,14 @@ kubectl apply -f "$HERE/sandbox/mesh.yaml"
 # give the engine a moment to install mm-prep + connectors before we write
 sleep "${MESH_WARMUP:-45}"
 
+# Start from a clean table (the harness inserts fresh keys; leftover rows from a prior
+# run would collide). Fresh-provisioned members are already empty — this makes re-runs
+# on a kept sandbox safe too.
+for m in pg-a pg-b; do
+  kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app -c "TRUNCATE conv_test;" >/dev/null 2>&1 || true
+done
+sleep 5
+
 # 2. build CONV_MEMBERS from the members' ClusterIPs (reachable from the runner host)
 IP_A="$(kubectl -n "$NS" get svc pg-a -o jsonpath='{.spec.clusterIP}')"
 IP_B="$(kubectl -n "$NS" get svc pg-b -o jsonpath='{.spec.clusterIP}')"

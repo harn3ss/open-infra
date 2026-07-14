@@ -65,7 +65,7 @@ GitHub (nightly schedule) ─► self-hosted runner on the validation cluster
 
 Each is one `FaultInjection` + one harness run, and a release gate once green:
 
-1. **`multimaster-partition`** — cut a site off mid-write; assert re-convergence. *(shipped: manifests + orchestration)*
+1. **`multimaster-partition`** — cut a site off mid-write; assert re-convergence. *(shipped + validated live: a real ~90s diverge-then-converge)*
 2. **`clock-skew`** — the T6 regression, via injectable time source (not TimeChaos).
 3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive.
 4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion.
@@ -95,8 +95,16 @@ the present tense — *and that sentence is true.*
 - ✅ **Containment foundation** — sandbox namespace, quota, limit range, priority class,
   scoped RBAC, and the pre-flight guard. Deployed and **validated live** (RBAC deny-tests
   pass; pre-flight aborts kube-system and outside-selector faults).
-- ✅ **Scenario 1 kit** — disposable members, checked-in mesh, partition fault, and the
-  orchestration script + nightly workflow, all authored and schema-validated.
-- ⏭ **Next** — register the `openinfra-chaos` self-hosted runner and drive the first
-  end-to-end Scenario 1 run (stand up the sandbox mesh, confirm it converges, then fault
-  it). Then Scenario 2 (injectable clock).
+- ✅ **Scenario 1 — validated live, end-to-end.** The sandbox mesh stands up and
+  converges (baseline 13s), and under a real partition the harness diverges then
+  **re-converges byte-identical in ~108s** (200 keys, 20 conflicts, zero lost writes).
+- 💡 **Insight from the first run: the mesh is pod-mediated.** Replication flows
+  pg → Debezium → NATS → apply-sink → pg, *never* member-to-member — so a pg-a↔pg-b
+  partition injects nothing (it completed in 13s = no cut). Scenario 1 therefore cuts a
+  site from its **apply-sink** (the peer that feeds it), which is a real partition. This
+  is exactly the class of "bug I hadn't paid for yet" the suite exists to surface. It
+  also drove a platform enhancement: `kind: FaultInjection` gained **`partitionPeer`**
+  (peer-scoped network-partition — cut A↔B while both stay reachable by outside clients).
+- ⏭ **Next** — register the `openinfra-chaos` self-hosted runner to run it nightly;
+  bidirectional isolation (also cut the site's Debezium — needs `partitionPeer` to accept
+  multiple selectors); then Scenario 2 (injectable clock).
