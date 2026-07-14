@@ -1,0 +1,125 @@
+# Nightly Chaos Suite — the containment foundation (safety model, §3 of the design).
+# Nothing the suite does may endanger the one real cluster, so the blast radius is
+# built BEFORE any fault. This file is pure containment: a disposable namespace, a
+# resource cap, an evict-me-first priority, and a ServiceAccount ("runner creds =
+# chaos creds") that can fully manage the sandbox and MUTATE NOTHING outside it.
+#
+# The only cluster-scoped grant is READ-ONLY pod list, used solely by the pre-flight
+# guard to prove a fault selector can't match a pod outside the sandbox.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-sandbox
+  labels:
+    openinfra.dev/purpose: chaos-sandbox
+    # Everything the suite creates lives here; the data under fault is disposable.
+---
+# Sandbox pods are the lowest-priority workloads on the cluster: under node pressure
+# they are evicted FIRST, so the GPU workloads and HA VMs are protected by the
+# scheduler, not by hope. Non-preempting — it never evicts anything else.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: chaos-sandbox-low
+value: -100
+globalDefault: false
+preemptionPolicy: Never
+description: "Nightly chaos sandbox — evicted first under pressure, preempts nothing."
+---
+# A runaway scenario cannot exceed this slice.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: chaos-sandbox-quota
+  namespace: chaos-sandbox
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    pods: "40"
+    persistentvolumeclaims: "12"
+    requests.storage: 24Gi
+---
+# Default + ceiling per container, so an unbounded pod can't be authored by accident.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: chaos-sandbox-limits
+  namespace: chaos-sandbox
+spec:
+  limits:
+    - type: Container
+      default: { cpu: 500m, memory: 512Mi }
+      defaultRequest: { cpu: 100m, memory: 128Mi }
+      max: { cpu: "2", memory: 4Gi }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-runner
+  namespace: chaos-sandbox
+---
+# WRITE authority is namespace-scoped to chaos-sandbox ONLY. The runner can provision
+# ephemeral members, wire a multi-master flow, inject faults, run the harness as a Job,
+# and tear it all down — all inside the sandbox. It has NO cluster-scoped write and no
+# access to any other namespace, so a fat-fingered selector is rejected by the API
+# server, not merely discouraged.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-runner
+  namespace: chaos-sandbox
+rules:
+  - apiGroups: ["openinfra.dev"]
+    resources: [faultinjections, databases, dataflows, replications, queries]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods, pods/log, persistentvolumeclaims, services, configmaps, secrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [statefulsets, deployments, replicasets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-runner
+  namespace: chaos-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chaos-runner
+subjects:
+  - kind: ServiceAccount
+    name: chaos-runner
+    namespace: chaos-sandbox
+---
+# The ONLY cluster-scoped grant: READ-ONLY pod list, for the pre-flight guard to prove
+# a fault's selector matches nothing outside chaos-sandbox. Read-only by design — it
+# cannot change or destroy anything, cluster-wide or otherwise.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chaos-runner-preflight-readonly
+rules:
+  - apiGroups: [""]
+    resources: [pods, namespaces]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: chaos-runner-preflight-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: chaos-runner-preflight-readonly
+subjects:
+  - kind: ServiceAccount
+    name: chaos-runner
+    namespace: chaos-sandbox

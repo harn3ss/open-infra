@@ -1,0 +1,28 @@
+# Nightly Chaos Suite — Scenario 1 multi-master mesh (checked-in, per design open-Q #2:
+# reproducibility over per-run generation). The Replication engine (Debezium capture →
+# NATS → apply-sink, HLC last-write-wins) keeps pg-a and pg-b in sync BOTH ways, and
+# installs the mm-prep version/origin columns + triggers on conv_test. This is the mesh
+# whose convergence the partition scenario stresses.
+apiVersion: openinfra.dev/v1
+kind: Replication
+metadata:
+  name: chaos-mesh-pg
+  namespace: chaos-sandbox
+spec:
+  siteA:
+    name: a
+    engine: postgres
+    host: pg-a.chaos-sandbox.svc.cluster.local
+    database: app
+    username: app
+    passwordSecretRef: { name: pg-creds, key: password }
+    schema: public
+  siteB:
+    name: b
+    engine: postgres
+    host: pg-b.chaos-sandbox.svc.cluster.local
+    database: app
+    username: app
+    passwordSecretRef: { name: pg-creds, key: password }
+    schema: public
+  tables: [conv_test]
