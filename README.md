@@ -5,9 +5,10 @@
 [![License: Apache-2.0](https://img.shields.io/github/license/harn3ss/open-infra)](LICENSE)
 
 > A **free, self-hostable mini-cloud**. Drop one simple `infra.yaml` into your app
-> repo, `git push`, and get an AWS-like managed experience — autoscaling HTTPS
-> services, a Postgres database, object storage, queues — running on your own
-> commodity Linux boxes at **zero cloud cost**.
+> repo, `git push`, and get an AWS-like managed experience — not just autoscaling
+> HTTPS apps, managed databases, object storage and queues, but **VMs, serverless +
+> GPU inference, an analytics lake, CDC pipelines, and Active Directory** — running on
+> your own commodity Linux boxes at **zero cloud cost**.
 
 ```yaml
 # infra.yaml — you write intent, the platform produces infrastructure
@@ -118,7 +119,7 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
 
 A **web console** ships with the platform — an AWS-console-style UI over every
 resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
-File Shares, Buckets, Queues, Data Flows, Streams, Active Directory, Nodes/GPUs, Monitoring)
+File Shares, Buckets, Queries, Queues, Data Flows, Streams, Active Directory, Nodes/GPUs, Monitoring)
 with per-resource detail pages and actions (object browser, model playground, the
 drag-and-drop **Data Flows** canvas + guided replication wizard, create/delete). See
 [`docs/console.md`](docs/console.md).
