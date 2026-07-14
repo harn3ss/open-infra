@@ -6,6 +6,8 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.4.0 — 2026-07-14
+
 ### Billing
 - **New Cost Explorer — "what AWS would've charged."** The last unbuilt AWS-equivalent
   ships: a console **Billing → Cost Explorer** page that prices your live cluster
