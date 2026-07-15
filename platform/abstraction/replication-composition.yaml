@@ -96,6 +96,12 @@ spec:
                       debezium.source.plugin.name=pgoutput
                       debezium.source.slot.name={{ $slot }}
                       debezium.source.publication.name={{ $slot }}_pub
+                      # Create the publication for ONLY the replicated tables. Debezium's
+                      # default (all_tables) issues CREATE PUBLICATION ... FOR ALL TABLES,
+                      # which requires SUPERUSER — so it fails against a managed database
+                      # whose app user is (correctly) not a superuser, e.g. CloudNativePG.
+                      # `filtered` needs only ownership of the included tables.
+                      debezium.source.publication.autocreate.mode=filtered
                       debezium.source.database.hostname={{ $src.host }}
                       debezium.source.database.port={{ $sport }}
                       debezium.source.database.user={{ $src.username }}

@@ -146,9 +146,17 @@ spec:
                       debezium.source.database.user={{ $n.username }}
                       debezium.source.database.dbname={{ $n.database }}
                     {{- if eq $include "*" }}
+                      # capture-all: Debezium's default publication mode (all_tables) is
+                      # what we want — note it requires a SUPERUSER source user.
                       debezium.source.table.exclude.list=.*mm_hlc_state
                     {{- else }}
                       debezium.source.table.include.list={{ $include }}
+                      # Named tables: publish ONLY those. Debezium's default (all_tables)
+                      # issues CREATE PUBLICATION ... FOR ALL TABLES, which requires
+                      # SUPERUSER — so it fails against a managed database whose app user
+                      # is (correctly) not a superuser, e.g. CloudNativePG. `filtered`
+                      # needs only ownership of the included tables.
+                      debezium.source.publication.autocreate.mode=filtered
                     {{- end }}
                     {{- if $n.ssl }}
                       debezium.source.database.sslmode=require
