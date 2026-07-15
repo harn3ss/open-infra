@@ -1,0 +1,26 @@
+# Scenario 5 — storage degradation (design §5's `longhorn-replica-loss`, safely scoped).
+#
+# WHY NOT A REAL LONGHORN REPLICA: Longhorn replicas live in instance-manager pods in
+# longhorn-system, and each one hosts replicas for MANY volumes — this cluster has 11 real
+# volumes backing VMs, databases and MinIO. Faulting one would degrade real workloads,
+# which §3 forbids outright ("nothing the suite does may endanger the cluster") and which
+# the pre-flight guard rightly refuses (it is outside chaos-sandbox). §10 says the same:
+# scenarios 4–5 want a separate validation cluster before touching real storage.
+#
+# So we degrade the SANDBOX's OWN Longhorn-backed volume instead: slow the IO path of the
+# disposable CNPG member. That still answers the question the scenario exists to ask —
+# "do CDC offsets and the mesh survive storage degradation?" — while touching nothing real.
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-io-latency
+  namespace: chaos-sandbox
+spec:
+  type: io-latency
+  target:
+    labelSelector:
+      cnpg.io/cluster: cnpg-b
+  mode: all
+  volumePath: /var/lib/postgresql/data # CNPG's PGDATA mount (a Longhorn PVC)
+  latency: 300ms
+  duration: 90s

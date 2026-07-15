@@ -73,10 +73,17 @@ landed() { # $1=selector $2=old-uid
 }
 landed "$DBZ_SEL"  "$DBZ_BEFORE"  && log "  landed: capture (dbz) pod replaced" || { log "FAIL — capture-kill never landed"; exit 1; }
 landed "$SINK_SEL" "$SINK_BEFORE" && log "  landed: sink pod replaced"        || { log "FAIL — sink-kill never landed"; exit 1; }
-if kubectl -n "$NS" get networkchaos mm-partition >/dev/null 2>&1; then
-  log "  landed: partition active (NetworkChaos mm-partition)"
+NC_INJ=""
+for _ in $(seq 1 20); do
+  NC_INJ="$(kubectl -n "$NS" get networkchaos mm-partition \
+    -o jsonpath='{.status.conditions[?(@.type=="AllInjected")].status}' 2>/dev/null || true)"
+  [ "$NC_INJ" = "True" ] && break
+  sleep 2
+done
+if [ "$NC_INJ" = "True" ]; then
+  log "  landed: partition injected (NetworkChaos AllInjected=True)"
 else
-  log "FAIL — partition never materialised as a NetworkChaos"; exit 1
+  log "FAIL — partition never reported AllInjected; it did not inject"; exit 1
 fi
 
 log "all three faults landed concurrently; waiting for the mesh to heal and converge"

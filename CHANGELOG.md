@@ -57,7 +57,19 @@ the product's public contract.
   already-converged data and "passing" in 21s; a silently-ignored `CONV_TIMEOUT` that left
   Scenario 1 with 13s of hidden margin) were caught and fixed rather than shipped.
   Scenarios 1–4 + 6 all pass, so the 30-consecutive-night graduation clock can start.
-  See [docs/chaos-suite.md](docs/chaos-suite.md).
+  **Scenario 5 (`longhorn-replica-loss`) is parked, deliberately**: faulting a real Longhorn
+  replica would degrade the 11 real volumes backing VMs/databases/MinIO (forbidden by the
+  safety model, and refused by the pre-flight guard — it needs the separate validation
+  cluster the design already calls for), and the safe alternative is blocked by the bug
+  below. See [docs/chaos-suite.md](docs/chaos-suite.md).
+
+### Known issues
+- **`kind: FaultInjection` type `io-latency` is inert on this cluster.** Chaos Mesh's FUSE
+  injector (`toda`) panics (`Send through channel failed`, `Starting toda … encounter an
+  error`), so the IOChaos is created but sits at `phase: Not Injected/Wait,
+  injectedCount: 0` **silently** — the fault looks applied and does nothing. The XRD still
+  advertises the type. Found by the chaos suite asserting `AllInjected=True` rather than
+  mere object existence. Not yet fixed; `io-latency` should be considered non-functional.
 
 ## v2.4.0 — 2026-07-14
 
