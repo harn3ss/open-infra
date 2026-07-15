@@ -30,13 +30,42 @@ spec:
 | `pod-failure` | PodChaos | Make pods unavailable for `duration` | — |
 | `network-latency` | NetworkChaos | Add delay | `latency`, `direction` |
 | `network-loss` | NetworkChaos | Drop a % of packets | `loss`, `direction` |
-| `network-partition` | NetworkChaos | Cut the target off | `direction` |
+| `network-partition` | NetworkChaos | Cut the target off | `direction`, `partitionPeer` |
 | `stress-cpu` | StressChaos | Burn CPU | `cpuWorkers`, `cpuLoad` |
 | `stress-memory` | StressChaos | Consume memory | `memory` |
 | `clock-skew` | TimeChaos | Shift the clock (exercises HLC/LWW) | `timeOffset` |
-| `io-latency` | IOChaos | Slow disk I/O on a mount | `latency`, `volumePath` |
+| `io-latency` | IOChaos | Slow disk I/O on a mount ⚠️ **currently inert — see below** | `latency`, `volumePath` |
 
 `mode` selects how many matched pods are hit: `one`, `all`, or `fixed-percent` (with `value`).
+
+> ⚠️ **`io-latency` does not currently inject.** Chaos Mesh's FUSE injector (`toda`)
+> panics on this cluster, so the IOChaos is created and then sits at
+> `phase: Not Injected/Wait, injectedCount: 0` — **silently**. The fault looks applied
+> and does nothing. Don't rely on it until this is fixed. (Found by the chaos suite
+> asserting `AllInjected=True` rather than trusting that the object exists — a good habit
+> for any fault you write: check `status.conditions`, not just `kubectl get`.)
+
+### `partitionPeer` — cutting A from B, not B from the world
+
+By default `network-partition` isolates the target from **everything**, which also cuts it
+off from any outside client (a test driver, your app, a probe). Set `partitionPeer` to a
+second label selector to cut traffic **only between the two sets**, leaving both reachable
+from elsewhere:
+
+```yaml
+spec:
+  type: network-partition
+  target: { labelSelector: { app: pg, site: b } }   # side 1
+  partitionPeer: { app: my-engine }                 # side 2 — only B↔engine is cut
+  mode: all
+  direction: both
+  duration: 90s
+```
+
+Useful whenever the thing you want to sever is a *link*, not a member. Note that if your
+replication is **pod-mediated** (e.g. db → capture → bus → sink → db), cutting the two
+databases from each other injects **nothing** — they never talk directly. Cut a member from
+the engine that feeds it instead.
 
 > Safety: keep network/time chaos off **host-network** pods, and always set a tight
 > `target.labelSelector`. The abstraction refuses cluster-wide scope by construction (a
