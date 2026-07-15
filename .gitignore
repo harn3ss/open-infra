@@ -71,3 +71,7 @@ dist/
 node_modules/
 __pycache__/
 *.pyc
+
+# Go build artifacts: `go build ./...` in apply-sink/ emits a binary named after the
+# module (applysink). It's an 18MB ELF — never commit it; CI builds via Docker.
+apply-sink/applysink
