@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Replication
+- **Fixed: `kind: Replication` / `DataFlow` could not capture from open-infra's own
+  managed (CloudNativePG) databases.** Debezium defaults to
+  `publication.autocreate.mode=all_tables`, which issues `CREATE PUBLICATION … FOR ALL
+  TABLES` — a **superuser-only** statement. CNPG (correctly) makes the app user a
+  non-superuser, so the capture failed to start outright; the bug was masked because the
+  raw `postgres` image makes its user a superuser. The compositions now set
+  `autocreate.mode=filtered` wherever an explicit table list exists (always for
+  Replication; the named-table path for DataFlow), publishing only those tables — which
+  needs table *ownership*, not superuser. DataFlow's capture-all path keeps `all_tables`
+  (it genuinely wants every table, and still requires a superuser source). Found by the
+  new chaos Scenario 4.
+
 ### Reliability
 - **Nightly Chaos Suite — the containment foundation.** The road from *"convergence is
   hand-tested"* to *"convergence is proven nightly, or the release is blocked."* This
@@ -30,7 +43,15 @@ the product's public contract.
   default 0 — production untouched; Postgres already had a session-GUC hook, now
   generalized and added to MySQL, which T6 hit). Forcing the clock −1h backward, the HLC
   stayed monotonic (Δ=1) instead of stamping a ~2.4×10¹¹-lower version that would silently
-  lose last-write-wins. See [docs/chaos-suite.md](docs/chaos-suite.md).
+  lose last-write-wins. **Scenarios 3 (`sink-kill`) and 4 (`cnpg-failover`) also validated
+  live**: the apply-sink is killed mid-write and the mesh still converges (durable NATS
+  consumer redelivers), and a real CNPG primary is killed mid-write — CNPG promotes the
+  replica, the `-rw` service follows, and the mesh converges across the promotion with zero
+  lost writes. Scenario 4 is what surfaced the `publication.autocreate.mode` bug above.
+  Every scenario now **asserts its fault actually landed while the harness is still
+  running** — several false greens (a partition that injected nothing, a fault applied
+  after the test finished, a silently-ignored `CONV_TIMEOUT`) were caught and fixed rather
+  than shipped. See [docs/chaos-suite.md](docs/chaos-suite.md).
 
 ## v2.4.0 — 2026-07-14
 

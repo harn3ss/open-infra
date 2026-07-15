@@ -1,0 +1,19 @@
+# Scenario 4 — cnpg-failover (design §5). Kill site B's CNPG PRIMARY mid-write.
+# CNPG must promote the replica, the `-rw` service must follow the new primary, and the
+# mesh must converge across the promotion with no lost writes.
+#
+# The selector picks the primary specifically (cnpg.io/instanceRole=primary) so we kill
+# the leader, not a replica — killing a replica would prove nothing about failover.
+# Blast radius: chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-cnpg-failover
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector:
+      cnpg.io/cluster: cnpg-b
+      cnpg.io/instanceRole: primary
+  mode: all

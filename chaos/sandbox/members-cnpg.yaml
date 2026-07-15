@@ -1,0 +1,67 @@
+# Nightly Chaos Suite — Scenario 4 (cnpg-failover) disposable members.
+# Two REAL CNPG clusters (the managed-Postgres path), each HA with a replica to promote —
+# raw Postgres StatefulSets can't test failover. wal_level=logical so the mesh's Debezium
+# can capture. Disposable: storage is tiny and torn down with the scenario.
+apiVersion: v1
+kind: Secret
+metadata: { name: cnpg-app-creds, namespace: chaos-sandbox }
+type: kubernetes.io/basic-auth
+stringData:
+  username: app
+  password: chaosbox
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: { name: cnpg-a, namespace: chaos-sandbox, labels: { site: a } }
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.0
+  enableSuperuserAccess: false
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      secret: { name: cnpg-app-creds }
+      # CNPG's app user isn't a superuser, so logical decoding (Debezium) needs
+      # REPLICATION granted explicitly. postInitSQL runs as superuser at bootstrap.
+      postInitSQL:
+        - ALTER ROLE app WITH REPLICATION
+  postgresql:
+    parameters:
+      wal_level: logical
+  storage: { size: 1Gi }
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: preferred # sandbox: don't wedge on a small/odd node count
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata: { name: cnpg-b, namespace: chaos-sandbox, labels: { site: b } }
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.0
+  enableSuperuserAccess: false
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      secret: { name: cnpg-app-creds }
+      # CNPG's app user isn't a superuser, so logical decoding (Debezium) needs
+      # REPLICATION granted explicitly. postInitSQL runs as superuser at bootstrap.
+      postInitSQL:
+        - ALTER ROLE app WITH REPLICATION
+  postgresql:
+    parameters:
+      wal_level: logical
+  storage: { size: 1Gi }
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: preferred

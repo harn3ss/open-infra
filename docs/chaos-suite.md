@@ -69,7 +69,7 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 1. **`multimaster-partition`** — cut a site off mid-write; assert re-convergence. *(shipped + validated live: a real ~90s diverge-then-converge)*
 2. **`clock-skew`** — the T6 regression via an injectable clock offset (not TimeChaos). *(shipped + validated live: HLC stayed monotonic — Δ=1 — under a −1h backward clock instead of dropping ~2.4×10¹¹)*
 3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive. *(shipped + validated live: sink pod killed mid-write, mesh still converged with zero lost writes)*
-4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion.
+4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion. *(shipped + validated live: promoted cnpg-b-1→cnpg-b-2 with writes in flight, mesh converged; surfaced the `publication.autocreate.mode` bug below)*
 5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive.
 6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation).
 
@@ -80,14 +80,17 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 ./chaos/scenario-partition.sh   # provision → preflight → partition → harness → assert → teardown
 ./chaos/scenario-clockskew.sh   # T6: force the clock backward via clk_off, assert monotonic
 ./chaos/scenario-sinkkill.sh    # kill the apply-sink mid-write, assert the mesh still converges
+./chaos/scenario-cnpgfailover.sh # kill the CNPG primary mid-write, assert convergence across promotion
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
 
-> **Every scenario must prove its fault landed.** A chaos test whose fault silently
-> no-ops reports green while proving nothing — worse than no test. `sink-kill` asserts the
-> pod was actually replaced; `partition` shows it as a ~90s diverge-then-converge (a ~13s
-> run means nothing was injected); `clock-skew` shows it as Δ=1 (the logical counter
-> absorbing a backward clock).
+> **Every scenario must prove its fault landed, while the harness is still running.** A
+> chaos test whose fault silently no-ops — or lands after the test finished — reports green
+> while proving nothing, which is worse than no test. So: `sink-kill` asserts the pod was
+> replaced; `cnpg-failover` asserts a promotion actually occurred *and* that the harness was
+> still in flight; `partition` shows it as a ~90s diverge-then-converge (a ~13s run means
+> nothing was injected); `clock-skew` shows it as Δ=1. Each of these guards exists because
+> the corresponding false green actually happened here first.
 
 Nightly automation: [.github/workflows/nightly-chaos.yml](../.github/workflows/nightly-chaos.yml)
 (needs a self-hosted runner labelled `openinfra-chaos`).
@@ -102,18 +105,31 @@ the present tense — *and that sentence is true.*
 ## Status
 
 - ✅ **Containment foundation** — sandbox namespace, quota, limit range, priority class,
-  scoped RBAC, and the pre-flight guard. Deployed and **validated live** (RBAC deny-tests
-  pass; pre-flight aborts kube-system and outside-selector faults).
-- ✅ **Scenario 1 — validated live, end-to-end.** The sandbox mesh stands up and
-  converges (baseline 13s), and under a real partition the harness diverges then
-  **re-converges byte-identical in ~108s** (200 keys, 20 conflicts, zero lost writes).
-- 💡 **Insight from the first run: the mesh is pod-mediated.** Replication flows
-  pg → Debezium → NATS → apply-sink → pg, *never* member-to-member — so a pg-a↔pg-b
-  partition injects nothing (it completed in 13s = no cut). Scenario 1 therefore cuts a
-  site from its **apply-sink** (the peer that feeds it), which is a real partition. This
-  is exactly the class of "bug I hadn't paid for yet" the suite exists to surface. It
-  also drove a platform enhancement: `kind: FaultInjection` gained **`partitionPeer`**
-  (peer-scoped network-partition — cut A↔B while both stay reachable by outside clients).
-- ⏭ **Next** — register the `openinfra-chaos` self-hosted runner to run it nightly;
-  bidirectional isolation (also cut the site's Debezium — needs `partitionPeer` to accept
-  multiple selectors); then Scenario 2 (injectable clock).
+  scoped RBAC, and the pre-flight guard. **Validated live** (RBAC deny-tests pass;
+  pre-flight aborts kube-system and outside-selector faults).
+- ✅ **Runner** — a self-hosted runner (`openinfra-chaos`) runs as a systemd service and
+  authenticates as the sandbox-scoped `chaos-runner` SA: *runner creds = chaos creds*.
+- ✅ **Scenarios 1–4 validated live** (partition · clock-skew · sink-kill · cnpg-failover).
+- ⏭ **Next** — Scenario 5 (`longhorn-replica-loss`) and Scenario 6 (concurrent chaos, the
+  graduation acceptance test); bidirectional isolation (needs `partitionPeer` to accept
+  multiple selectors). Then the 30-consecutive-night clock for graduation.
+
+## What the suite has already caught
+
+It has earned its keep before ever running a nightly — each of these was found by making a
+scenario real, and each is fixed:
+
+- **A partition that injected nothing.** The mesh is *pod-mediated* (pg → Debezium → NATS →
+  apply-sink → pg), so cutting pg-a↔pg-b does nothing. Drove the `partitionPeer` fault
+  primitive and a rewritten Scenario 1.
+- **Replication could not capture from open-infra's own managed databases.** Debezium
+  defaults to `publication.autocreate.mode=all_tables`, which issues
+  `CREATE PUBLICATION … FOR ALL TABLES` — a **superuser-only** statement. CNPG (correctly)
+  makes the app user a non-superuser, so `kind: Replication`/`DataFlow` over a managed
+  database failed outright. It was masked because the raw `postgres` image makes its user a
+  superuser. Fixed by `autocreate.mode=filtered` wherever an explicit table list exists.
+- **A silently-ignored timeout.** `CONV_TIMEOUT`/`CONV_SETTLE` take *bare seconds*; passing
+  `"300s"` fell back to the 120s default, leaving Scenario 1 passing at 107s with 13s of
+  unnoticed margin.
+- **A fault that landed after the test finished** (a false green), and **a driver that
+  couldn't survive the fault it tested** (a 3s write-retry vs a ~4–10s promotion).
