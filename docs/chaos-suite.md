@@ -145,6 +145,33 @@ The script + fault manifest are kept (`chaos/scenario-storage.sh`) for when eith
 clears, but shipping it nightly would mean a permanently-red scenario — which violates the
 "zero unexplained reds" bar as surely as a false green does.
 
+## Backlog — Scenario 7: the Chaos Lottery
+
+**Gated on: 30 consecutive green nights.** Not started, deliberately.
+
+Where scenarios 1–6 are hypothesis-driven and single-primitive ("does multi-master converge
+across a partition?"), the lottery is exploration-driven and **cross-primitive**: draw 2–5
+random faults from the `FaultInjection` enum, aim them at random targets across *different*
+primitives (Replication · DataFlow · Query · Function · MinIO/NATS/Longhorn), randomise
+durations and start offsets so they overlap and cascade, then assert the whole **platform**
+re-cohered. Seeded and replayable (a lottery that finds a bug it can't reproduce is worse
+than none), weekly rather than nightly, advisory before it ever gates a release.
+
+It composes the primitives that already exist — `preflight.sh`, `partitionPeer`, the
+injectable `clk_off` — so randomisation can never widen the blast radius.
+
+**Two corrections to fold in when it is built** (both learned the hard way here):
+
+1. **Drop `io-latency` from the fault pool until it works.** It never injects (`toda`
+   panics) — a random draw would silently under-test and still report green. With scripted
+   faults you can eyeball whether each one bit; a generator cannot.
+2. **Never generate a member↔member partition.** On a pod-mediated mesh (db → capture → bus
+   → sink → db) it injects *nothing*. The generator must cut a member from the **engine that
+   feeds it** (that is what `partitionPeer` is for).
+
+Both make the `AllInjected` / fault-landed assertions **mandatory infrastructure** for the
+lottery rather than a nicety: a silently-inert fault in a random chain is invisible.
+
 ## What the suite has already caught
 
 It has earned its keep before ever running a nightly — each of these was found by making a
