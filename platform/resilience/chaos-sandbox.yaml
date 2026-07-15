@@ -87,6 +87,11 @@ rules:
     # in any other namespace.
     resources: [clusters]
     verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [chaos-mesh.org]
+    # READ-ONLY. Crossplane renders these from a FaultInjection; the runner only needs to
+    # OBSERVE them to prove a fault actually materialised (it must never author raw chaos).
+    resources: [networkchaos, podchaos, stresschaos, timechaos, iochaos]
+    verbs: [get, list, watch]
   - apiGroups: [apps]
     resources: [statefulsets, deployments, replicasets]
     verbs: [get, list, watch, create, update, patch, delete]
