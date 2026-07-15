@@ -81,6 +81,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/exec] # seed/inspect the ephemeral members via kubectl exec (sandbox only)
     verbs: [create]
+  - apiGroups: [postgresql.cnpg.io]
+    # Scenario 4 provisions disposable CNPG clusters to test a real primary failover.
+    # Sandbox-scoped like everything else: the runner cannot touch managed databases
+    # in any other namespace.
+    resources: [clusters]
+    verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
     resources: [statefulsets, deployments, replicasets]
     verbs: [get, list, watch, create, update, patch, delete]
