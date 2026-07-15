@@ -40,10 +40,21 @@ kubectl apply -f "$HERE/sandbox/fault-partition.yaml"
 
 log "running the convergence harness through the cut"
 START=$(date +%s)
-if ( cd "$REPO/apply-sink" && go test -tags convergence -run TestConvergence -timeout 20m -v ./... ); then
-  log "PASS — mesh re-converged byte-identical after the partition ($(( $(date +%s) - START ))s)"
-  exit 0
+if ! ( cd "$REPO/apply-sink" && go test -tags convergence -run TestConvergence -timeout 20m -v ./... ); then
+  log "FAIL — divergence after CONV_TIMEOUT (release blocker). Retaining state."
+  kubectl -n "$NS" get faultinjection,pods -o wide || true
+  exit 1
 fi
-log "FAIL — divergence after CONV_TIMEOUT (release blocker). Retaining state."
-kubectl -n "$NS" get faultinjection,pods -o wide || true
-exit 1
+ELAPSED=$(( $(date +%s) - START ))
+
+# The partition runs 90s, so converging well inside that window means the cut never bit —
+# the mesh replicated straight through and the run proves nothing. Assert the delay rather
+# than trusting it: a member↔member partition once "passed" in 13s having injected nothing.
+MIN_ELAPSED="${MIN_ELAPSED:-60}"
+if [ "$ELAPSED" -lt "$MIN_ELAPSED" ]; then
+  log "FAIL — converged in ${ELAPSED}s, inside the 90s partition window (expected >=${MIN_ELAPSED}s)."
+  log "       The partition did not actually cut the mesh. Refusing a false green."
+  exit 1
+fi
+log "PASS — mesh re-converged byte-identical after the partition (${ELAPSED}s; cut bit: >=${MIN_ELAPSED}s)"
+exit 0

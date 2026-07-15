@@ -71,7 +71,7 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive. *(shipped + validated live: sink pod killed mid-write, mesh still converged with zero lost writes)*
 4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion. *(shipped + validated live: promoted cnpg-b-1→cnpg-b-2 with writes in flight, mesh converged; surfaced the `publication.autocreate.mode` bug below)*
 5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive.
-6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation).
+6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation). *(shipped + validated live: all three landed together, mesh converged in 124s — the cut genuinely bit)*
 
 ## Run it
 
@@ -81,6 +81,7 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 ./chaos/scenario-clockskew.sh   # T6: force the clock backward via clk_off, assert monotonic
 ./chaos/scenario-sinkkill.sh    # kill the apply-sink mid-write, assert the mesh still converges
 ./chaos/scenario-cnpgfailover.sh # kill the CNPG primary mid-write, assert convergence across promotion
+./chaos/scenario-concurrent.sh   # GRADUATION: capture-kill + partition + sink-kill at once
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
 
@@ -109,10 +110,11 @@ the present tense — *and that sentence is true.*
   pre-flight aborts kube-system and outside-selector faults).
 - ✅ **Runner** — a self-hosted runner (`openinfra-chaos`) runs as a systemd service and
   authenticates as the sandbox-scoped `chaos-runner` SA: *runner creds = chaos creds*.
-- ✅ **Scenarios 1–4 validated live** (partition · clock-skew · sink-kill · cnpg-failover).
-- ⏭ **Next** — Scenario 5 (`longhorn-replica-loss`) and Scenario 6 (concurrent chaos, the
-  graduation acceptance test); bidirectional isolation (needs `partitionPeer` to accept
-  multiple selectors). Then the 30-consecutive-night clock for graduation.
+- ✅ **Scenarios 1–4 and 6 validated live** (partition · clock-skew · sink-kill · cnpg-failover ·
+  concurrent-chaos). Only Scenario 5 (`longhorn-replica-loss`, not graduation-required) is open.
+- ⏭ **Next** — the **30-consecutive-night clock** (all graduation scenarios now pass);
+  Scenario 5 (`longhorn-replica-loss`); bidirectional isolation (needs `partitionPeer` to
+  accept multiple selectors).
 
 ## What the suite has already caught
 
@@ -133,3 +135,7 @@ scenario real, and each is fixed:
   unnoticed margin.
 - **A fault that landed after the test finished** (a false green), and **a driver that
   couldn't survive the fault it tested** (a 3s write-retry vs a ~4–10s promotion).
+- **Chaos landing on already-converged data.** Concurrent-chaos first "passed" in 21s with
+  all three faults provably landed — but the mesh had already replicated everything before
+  they hit. Scenarios that use a timed cut now **assert the convergence delay** (`MIN_ELAPSED`),
+  so a fault that fails to actually bite is a red, not a green.

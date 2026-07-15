@@ -1,0 +1,13 @@
+# Scenario 6 component — capture-kill. Kill site B's Debezium capture, so B's own writes
+# stop flowing out to the mesh until the pod returns and resumes from its stored offset.
+# Paired with the partition + sink-kill in the concurrent-chaos acceptance test.
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-capture-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: chaos-mesh-pg-repl-b-dbz }
+  mode: all
