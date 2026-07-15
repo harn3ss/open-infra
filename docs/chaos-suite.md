@@ -70,7 +70,9 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 2. **`clock-skew`** — the T6 regression via an injectable clock offset (not TimeChaos). *(shipped + validated live: HLC stayed monotonic — Δ=1 — under a −1h backward clock instead of dropping ~2.4×10¹¹)*
 3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive. *(shipped + validated live: sink pod killed mid-write, mesh still converged with zero lost writes)*
 4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion. *(shipped + validated live: promoted cnpg-b-1→cnpg-b-2 with writes in flight, mesh converged; surfaced the `publication.autocreate.mode` bug below)*
-5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive.
+5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive. **PARKED — not
+   wired into the nightly**, for two independent reasons (see *Scenario 5 is blocked* below).
+   Not required for graduation.
 6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation). *(shipped + validated live: all three landed together, mesh converged in 124s — the cut genuinely bit)*
 
 ## Run it
@@ -116,6 +118,33 @@ the present tense — *and that sentence is true.*
   Scenario 5 (`longhorn-replica-loss`); bidirectional isolation (needs `partitionPeer` to
   accept multiple selectors).
 
+## Scenario 5 is blocked (and why that is the right call)
+
+**1. A real Longhorn replica cannot be faulted safely here.** Replicas live in
+`instance-manager` pods in `longhorn-system`, and each hosts replicas for *many* volumes —
+this cluster has **11 real volumes** backing VMs, databases and MinIO. Faulting one would
+degrade real workloads: forbidden by §3 ("nothing the suite does may endanger the cluster")
+and correctly refused by the pre-flight guard. §10 already calls for a **separate validation
+cluster** before scenarios 4–5 touch real storage.
+
+**2. The safe alternative — `io-latency` — does not actually inject.** Degrading the
+sandbox's *own* Longhorn-backed volume would have answered the same question safely, but
+Chaos Mesh's FUSE injector (`toda`) **panics** on this cluster:
+
+```
+thread panicked at 'Send through channel failed', src/jsonrpc.rs:74
+chaos-daemon: Starting toda takes too long or encounter an error → kill toda
+```
+
+The IOChaos then sits at `phase: Not Injected/Wait, injectedCount: 0` **forever, silently**.
+`kind: FaultInjection` advertises `io-latency` in its XRD enum, so **any user selecting it
+gets an inert fault that looks applied**. This was caught only because scenarios assert
+`AllInjected=True` rather than "the object exists" — the weaker check passed it as green.
+
+The script + fault manifest are kept (`chaos/scenario-storage.sh`) for when either blocker
+clears, but shipping it nightly would mean a permanently-red scenario — which violates the
+"zero unexplained reds" bar as surely as a false green does.
+
 ## What the suite has already caught
 
 It has earned its keep before ever running a nightly — each of these was found by making a
@@ -135,6 +164,9 @@ scenario real, and each is fixed:
   unnoticed margin.
 - **A fault that landed after the test finished** (a false green), and **a driver that
   couldn't survive the fault it tested** (a 3s write-retry vs a ~4–10s promotion).
+- **A fault type that never injects.** `io-latency` creates its IOChaos and reports nothing
+  wrong, but `toda` panics and it never injects — inert while looking applied. Caught only by
+  asserting `AllInjected=True`.
 - **Chaos landing on already-converged data.** Concurrent-chaos first "passed" in 21s with
   all three faults provably landed — but the mesh had already replicated everything before
   they hit. Scenarios that use a timed cut now **assert the convergence delay** (`MIN_ELAPSED`),
