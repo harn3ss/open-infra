@@ -1,0 +1,18 @@
+# Scenario 3 — sink-kill (design §5). Kill the apply-sink that applies A's changes into
+# B, mid-flight, while the harness is writing. The mesh must still converge once the pod
+# returns: the sink resumes from its durable NATS consumer (AckWait redelivers rather
+# than drops) and applies the queued changes. A lost offset or a dropped message shows up
+# as a missing key — which the convergence harness fails on.
+#
+# pod-kill is instantaneous (no duration); the Deployment restarts the pod.
+# Blast radius: chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-sink-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: chaos-mesh-pg-repl-a-b-sink }
+  mode: all

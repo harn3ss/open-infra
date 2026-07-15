@@ -68,7 +68,7 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 
 1. **`multimaster-partition`** — cut a site off mid-write; assert re-convergence. *(shipped + validated live: a real ~90s diverge-then-converge)*
 2. **`clock-skew`** — the T6 regression via an injectable clock offset (not TimeChaos). *(shipped + validated live: HLC stayed monotonic — Δ=1 — under a −1h backward clock instead of dropping ~2.4×10¹¹)*
-3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive.
+3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive. *(shipped + validated live: sink pod killed mid-write, mesh still converged with zero lost writes)*
 4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion.
 5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive.
 6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation).
@@ -77,9 +77,17 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 
 ```bash
 # on the self-hosted runner (kubectl + Go + cluster reach):
-./chaos/scenario-partition.sh          # provision → preflight → partition → harness → assert → teardown
+./chaos/scenario-partition.sh   # provision → preflight → partition → harness → assert → teardown
+./chaos/scenario-clockskew.sh   # T6: force the clock backward via clk_off, assert monotonic
+./chaos/scenario-sinkkill.sh    # kill the apply-sink mid-write, assert the mesh still converges
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
+
+> **Every scenario must prove its fault landed.** A chaos test whose fault silently
+> no-ops reports green while proving nothing — worse than no test. `sink-kill` asserts the
+> pod was actually replaced; `partition` shows it as a ~90s diverge-then-converge (a ~13s
+> run means nothing was injected); `clock-skew` shows it as Δ=1 (the logical counter
+> absorbing a backward clock).
 
 Nightly automation: [.github/workflows/nightly-chaos.yml](../.github/workflows/nightly-chaos.yml)
 (needs a self-hosted runner labelled `openinfra-chaos`).
