@@ -279,8 +279,11 @@ See [docs/chaos.md](docs/chaos.md).
 **What's tested, concretely** (`.github/workflows/test.yml`, `go test`): the
 pure CDC logic (driver dialects, cross-engine type mapping, the temporal-coercion
 rules that decide how a `DATE`/`timestamp` value lands in another engine),
-composition rendering (so, e.g., "Start" always un-hibernates a database), and the
-MySQL HLC's monotonicity under a backward wall clock. These are an **enforced gate**,
+composition rendering (so, e.g., "Start" always un-hibernates a database, and the
+`Query` engine pod cannot silently lose its non-root / read-only-rootfs / no-token /
+scoped-credential sandbox — that pod runs untrusted SQL, so each guarantee is pinned
+and the guard is proven to fail when any one is removed), and the MySQL HLC's
+monotonicity under a backward wall clock. These are an **enforced gate**,
 not advisory: the release and both image-build workflows run the suite as a required
 job, so no image is built, signed, or pushed unless it passes on that ref (verified by
 a live red build — see [docs/ci.md](docs/ci.md)). **Nightly, unattended** on a
