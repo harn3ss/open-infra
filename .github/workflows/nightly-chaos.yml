@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: partition
-        options: [partition, clockskew, sinkkill, cnpgfailover]
+        options: [partition, clockskew, sinkkill, cnpgfailover, concurrent]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -47,6 +47,7 @@ jobs:
             clockskew) ./chaos/scenario-clockskew.sh ;;
             sinkkill)  ./chaos/scenario-sinkkill.sh ;;
             cnpgfailover) ./chaos/scenario-cnpgfailover.sh ;;
+            concurrent)   ./chaos/scenario-concurrent.sh ;;
             *) echo "unknown scenario"; exit 2 ;;
           esac
 

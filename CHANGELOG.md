@@ -48,10 +48,16 @@ the product's public contract.
   consumer redelivers), and a real CNPG primary is killed mid-write — CNPG promotes the
   replica, the `-rw` service follows, and the mesh converges across the promotion with zero
   lost writes. Scenario 4 is what surfaced the `publication.autocreate.mode` bug above.
-  Every scenario now **asserts its fault actually landed while the harness is still
-  running** — several false greens (a partition that injected nothing, a fault applied
-  after the test finished, a silently-ignored `CONV_TIMEOUT`) were caught and fixed rather
-  than shipped. See [docs/chaos-suite.md](docs/chaos-suite.md).
+  **Scenario 6 (`mesh-under-concurrent-chaos`) — the graduation acceptance test — also
+  passes**: capture-kill + partition + sink-kill injected *simultaneously* while the harness
+  writes, and the mesh still converged byte-identical (124s, the cut genuinely biting).
+  Every scenario now **asserts its fault actually landed, while the harness is still
+  running, and that a timed cut actually delayed convergence** — several false greens (a
+  partition that injected nothing; a fault applied after the test finished; chaos landing on
+  already-converged data and "passing" in 21s; a silently-ignored `CONV_TIMEOUT` that left
+  Scenario 1 with 13s of hidden margin) were caught and fixed rather than shipped.
+  Scenarios 1–4 + 6 all pass, so the 30-consecutive-night graduation clock can start.
+  See [docs/chaos-suite.md](docs/chaos-suite.md).
 
 ## v2.4.0 — 2026-07-14
 
