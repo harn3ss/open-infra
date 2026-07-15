@@ -18,8 +18,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 NS="${CHAOS_SANDBOX_NS:-chaos-sandbox}"
 # The poll budget must exceed fault duration + heal + settle.
-export CONV_TIMEOUT="${CONV_TIMEOUT:-300s}"
-export CONV_SETTLE="${CONV_SETTLE:-15s}"
+export CONV_TIMEOUT="${CONV_TIMEOUT:-300}"
+export CONV_SETTLE="${CONV_SETTLE:-15}"
 export CONV_CREATE="${CONV_CREATE:-false}"   # sandbox_provision seeds the table
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"

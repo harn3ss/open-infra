@@ -1,0 +1,27 @@
+# Scenario 4 mesh — multi-master across two REAL CNPG clusters. The sites point at the
+# `-rw` services, which always resolve to whichever instance is currently primary — so the
+# mesh is expected to follow a failover automatically. That is exactly what the scenario
+# tests: kill the primary and the mesh must converge across the promotion.
+apiVersion: openinfra.dev/v1
+kind: Replication
+metadata:
+  name: chaos-mesh-cnpg
+  namespace: chaos-sandbox
+spec:
+  siteA:
+    name: a
+    engine: postgres
+    host: cnpg-a-rw.chaos-sandbox.svc.cluster.local
+    database: app
+    username: app
+    passwordSecretRef: { name: cnpg-app-creds, key: password }
+    schema: public
+  siteB:
+    name: b
+    engine: postgres
+    host: cnpg-b-rw.chaos-sandbox.svc.cluster.local
+    database: app
+    username: app
+    passwordSecretRef: { name: cnpg-app-creds, key: password }
+    schema: public
+  tables: [conv_test]

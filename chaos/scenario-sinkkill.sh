@@ -12,8 +12,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 NS="${CHAOS_SANDBOX_NS:-chaos-sandbox}"
 # The poll budget must outlast the kill + pod restart + redelivery + settle.
-export CONV_TIMEOUT="${CONV_TIMEOUT:-300s}"
-export CONV_SETTLE="${CONV_SETTLE:-15s}"
+export CONV_TIMEOUT="${CONV_TIMEOUT:-300}"
+export CONV_SETTLE="${CONV_SETTLE:-15}"
 export CONV_CREATE="${CONV_CREATE:-false}"   # sandbox_provision seeds the table
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"
@@ -35,6 +35,13 @@ log "starting the convergence harness (background)"
 HARNESS=$!
 
 sleep "${KILL_AFTER:-6}"   # let writes get in flight
+
+# The harness MUST still be running — if it already finished, the fault lands after the
+# test is over and proves nothing. That exact false green happened once; never again.
+kill -0 "$HARNESS" 2>/dev/null || {
+  echo "▸ FAIL — the harness completed BEFORE the fault was injected; the fault exercised nothing. Refusing a false green."
+  exit 1
+}
 SINK_SEL="app=chaos-mesh-pg-repl-a-b-sink"
 sink_uid() { kubectl -n "$NS" get pods -l "$SINK_SEL" -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true; }
 BEFORE="$(sink_uid)"

@@ -101,10 +101,15 @@ func TestConvergence(t *testing.T) {
 		t.Logf("created + mm-prepped %s on %d members", table, len(members))
 	}
 
-	// write helpers, tolerant of transient errors during a fault window
+	// write helpers, tolerant of transient errors during a fault window. The budget must
+	// outlast the fault being injected — a CNPG primary promotion (~4-10s) or a partition
+	// far exceeds a few hundred ms, and a driver that can't survive the fault it is
+	// testing produces spurious reds. Convergence is still asserted independently, so a
+	// write that never lands still shows up as a missing key.
+	retries := atoiEnv("CONV_WRITE_RETRIES", 40) // x500ms = 20s
 	exec := func(m *reconcileMember, q string, args ...any) error {
 		var err error
-		for i := 0; i < 6; i++ {
+		for i := 0; i < retries; i++ {
 			if _, err = m.db.Exec(q, args...); err == nil {
 				return nil
 			}
