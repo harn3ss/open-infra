@@ -244,11 +244,15 @@ promise. These run continuously on the reference cluster.
 Hybrid-Logical-Clock last-write-wins conflict resolution. This is the most capable
 part of open-infra and the least forgiving: a conflict-resolution bug is not a
 crash you notice — it's a **silently lost or diverged write** you may find weeks
-later. Correctness here rests today on design + hand testing + a growing automated
-suite, including a [convergence harness](docs/convergence-harness.md) that drives
-concurrent/conflicting writes and asserts every member ends identical with zero lost
-writes — though injecting the fault (partition / node loss) is still driven by hand,
-**not yet** a one-command run. Until that's automated: use it, keep an authoritative
+later. Correctness here rests on design plus an automated suite: a
+[convergence harness](docs/convergence-harness.md) that drives concurrent/conflicting
+writes and asserts every member ends identical with zero lost writes — now driven
+**unattended, nightly** by a [chaos suite](docs/chaos-suite.md) that partitions the
+mesh, kills its own capture/sink pods, fails over a managed Postgres primary, forces a
+backward clock, and runs all of it at once, with every scenario asserting the fault
+*actually landed*. That automation is **new**: the bar to call this Stable is **30
+consecutive green nights with zero unexplained reds**, and that clock has only just
+started. Until it runs out this stays **Experimental**: use it, keep an authoritative
 source, and don't make multi-master the system of record for data you can't
 reconstruct.
 
@@ -259,11 +263,16 @@ composition rendering (so, e.g., "Start" always un-hibernates a database), and t
 MySQL HLC's monotonicity under a backward wall clock. These are an **enforced gate**,
 not advisory: the release and both image-build workflows run the suite as a required
 job, so no image is built, signed, or pushed unless it passes on that ref (verified by
-a live red build — see [docs/ci.md](docs/ci.md)). **Not yet automated:**
-unattended fault orchestration for the convergence harness (partition / kill / skew
-are applied by hand today), and incremental-snapshot back-load of rows added to a
-table *after* a flow starts (create-then-insert syncs fully; back-loading a
-pre-populated, late-added table is a known gap).
+a live red build — see [docs/ci.md](docs/ci.md)). **Nightly, unattended** on a
+self-hosted runner (`.github/workflows/nightly-chaos.yml`): the multi-master mesh is
+partitioned, its capture and sink are killed mid-write, a managed CNPG primary is
+failed over, the HLC is driven backwards, and all of it is combined — each run
+asserting the mesh re-converges byte-identical *and* that the fault actually bit. A
+red night blocks the release. **Not yet automated:** real Longhorn replica loss (it
+would endanger the one shared cluster — it needs a separate validation cluster), and
+incremental-snapshot back-load of rows added to a table *after* a flow starts
+(create-then-insert syncs fully; back-loading a pre-populated, late-added table is a
+known gap).
 
 **One maintainer, one cluster.** open-infra is built and validated by one person on
 one live cluster. The direction of travel is to make correctness *mechanical*

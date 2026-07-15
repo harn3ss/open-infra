@@ -57,13 +57,30 @@ Replication/DataFlow member secret. `${VAR}` in a DSN is expanded from the envir
 | `CONV_CONFLICTS` | `20` | keys updated from two members at once (LWW conflicts) |
 | `CONV_SETTLE` | `8` | seconds to let seed rows replicate before racing updates |
 | `CONV_TIMEOUT` | `120` | seconds to wait for convergence |
+| `CONV_WRITE_RETRIES` | `40` | write attempts (×500ms) before giving up — must outlast the fault window |
 | `CONV_PK` | `id` | primary-key column name |
 
+> **Units: these are bare integers of seconds, not durations.** `CONV_TIMEOUT=300` — *not*
+> `300s`. A value that fails to parse silently falls back to the default, so `"300s"` gives
+> you 120s and the mis-set budget only shows up as a mystery red months later.
+
+`CONV_WRITE_RETRIES` matters under a fault: a CNPG primary promotion takes ~4–10s, so a
+driver that gives up after 3s produces spurious reds while the system under test is fine.
+
 ## Proving it under a fault (the point)
+
+> **This is now automated.** The [Nightly Chaos Suite](chaos-suite.md) drives this harness
+> unattended every night — partition, clock-skew, sink-kill, CNPG failover, and all of them at
+> once — each scenario asserting the fault *actually landed* and that the mesh re-converges. A
+> red night blocks the release. What follows is the manual equivalent, for one-off GameDays.
 
 Run the harness with a generous `CONV_TIMEOUT`, and during the write/converge window apply a
 `kind: FaultInjection` (blast-radius scoped, time-boxed — see [chaos.md](chaos.md)). The harness
 retries writes through the fault and keeps polling until the mesh re-converges after it heals.
+
+⚠️ If you hand-roll a fault, **prove it bit**. A partition between two databases whose
+replication is pod-mediated injects nothing; a fault applied after the write phase lands on
+already-converged data. Both look green. Check the elapsed time and `status.conditions`.
 
 **Partition a member, then heal:**
 ```yaml
@@ -95,10 +112,11 @@ member DSNs, the fault, and the output.
 
 This first version verifies convergence and tolerates a fault applied out-of-band. Next:
 
-- **Auto-orchestrated faults** — have the harness create/heal the `FaultInjection` itself
-  (client-go) so a single `go test` run covers the partition/kill/skew matrix unattended.
+- ~~**Auto-orchestrated faults**~~ — **done**: the [Nightly Chaos Suite](chaos-suite.md)
+  orchestrates the partition/kill/skew/failover matrix unattended (as scenario scripts around
+  the harness rather than client-go inside it).
 - **Continuous-write mode** — sustained writes across the whole fault window (not one burst)
   for a harsher test.
-- **A `workflow_dispatch` CI job** against an ephemeral flow, so convergence is checked on demand
-  rather than only by hand.
+- ~~**A `workflow_dispatch` CI job**~~ — **done**: `nightly-chaos.yml` runs on a schedule *and*
+  on demand against a disposable sandbox mesh.
 - **More topologies** — 3+ members and cross-engine meshes (PG ⇄ MySQL ⇄ SQL Server).
