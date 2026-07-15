@@ -134,6 +134,62 @@ func TestManagedDB_BabelfishEngine(t *testing.T) {
 
 // ---- helpers ----
 
+// TestQuery_SecurityHardening pins the kind: Query engine-pod sandbox. The query pod runs
+// ATTACKER-CONTROLLED SQL, so each of these lines is load-bearing: dropping any one of them
+// silently re-opens the credential-scope / exfiltration hole that was closed once already.
+// The hardening shipped; this is what KEEPS it. A refactor that quietly removes
+// automountServiceAccountToken, flips readOnlyRootFilesystem, or swaps the scoped identity
+// back to the MinIO root secret must turn this red.
+func TestQuery_SecurityHardening(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/query-composition.yaml")
+	out := render(t, tmpl, queryCtx())
+
+	// Positive: every protection must be present.
+	for _, want := range []string{
+		"automountServiceAccountToken: false", // no cluster API from the sandbox
+		"runAsNonRoot: true",
+		"runAsUser: 65532",
+		"type: RuntimeDefault", // seccompProfile
+		"readOnlyRootFilesystem: true",
+		"drop: [ALL]",       // capabilities
+		"query-runner-s3",   // least-privilege S3 identity
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("query pod lost a hardening guarantee: %q missing from the rendered Job.\n"+
+				"This pod runs untrusted SQL — restore it.\n%s", want, grepCtx(out, "securityContext"))
+		}
+	}
+
+	// Negative: the engine must NEVER be handed the MinIO root credentials again. This is
+	// the specific regression that would re-grant read/write over every bucket on the
+	// platform (backups, golden images, every app's data) to anyone who can submit a query.
+	for _, forbidden := range []string{"rootUser", "rootPassword"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("query pod references the MinIO ROOT credential %q — it must use the "+
+				"scoped query-runner-s3 identity instead.\n%s", forbidden, grepCtx(out, forbidden))
+		}
+	}
+}
+
+// queryCtx builds the observed composite for the Query composition.
+func queryCtx() map[string]any {
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"sql":    "SELECT 1",
+				"engine": "duckdb",
+			},
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-00000000qry",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "q1",
+					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}},
+	}
+}
+
 func sgCtx(withIngress bool) map[string]any {
 	spec := map[string]any{}
 	if withIngress {
@@ -308,6 +364,15 @@ func sprigLite() template.FuncMap {
 			return d
 		},
 		"list": func(v ...any) []any { return v },
+		// query-composition.yaml quotes user-supplied SQL into the Job env. Faithful to
+		// sprig: %q on the string form (the render assertions only need the value present).
+		"quote": func(v ...any) string {
+			out := make([]string, len(v))
+			for i, x := range v {
+				out[i] = fmt.Sprintf("%q", fmt.Sprint(x))
+			}
+			return strings.Join(out, " ")
+		},
 		"hasKey": func(m map[string]any, k string) bool {
 			_, ok := m[k]
 			return ok
