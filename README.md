@@ -233,14 +233,17 @@ open-infra spans two kinds of thing, and they don't carry the same risk. Read th
 before you point it at data you can't afford to lose.
 
 **Stable — the PaaS surface.** `Application` (Deployment/Service/Ingress/HPA),
-`Model`, `Function`, `VirtualMachine`, `Volume`, `FileShare`, `Directory`, and
-managed databases (Postgres / MySQL / Mongo, including HA and Start/Stop) are the
-day-to-day surface. A failure here is a restart or a rollback — the homelab-PaaS
-promise. These run continuously on the reference cluster.
+`Model`, `Function`, `VirtualMachine` (with `VmImage` golden images), `Volume`,
+`FileShare`, `Directory`, `SecurityGroup`, and managed databases (Postgres / MySQL /
+Mongo, including HA and Start/Stop) are the day-to-day surface. A failure here is a
+restart or a rollback — the homelab-PaaS promise. These run continuously on the
+reference cluster.
 
 **Experimental — the distributed-systems primitives.** `Replication`
-(bidirectional / multi-master), cross-engine `Migration`, and multi-master
-`DataFlow` ride a change-data-capture engine (Debezium → NATS → apply-sink) with
+(bidirectional / multi-master), cross-engine `Migration`, multi-master
+`DataFlow`, and `Stream` (one-way CDC onto NATS — no conflict resolution, so the
+last-write-wins caveats below don't apply to it, but it rides the same capture
+engine) ride a change-data-capture engine (Debezium → NATS → apply-sink) with
 Hybrid-Logical-Clock last-write-wins conflict resolution. This is the most capable
 part of open-infra and the least forgiving: a conflict-resolution bug is not a
 crash you notice — it's a **silently lost or diverged write** you may find weeks
@@ -255,6 +258,23 @@ consecutive green nights with zero unexplained reds**, and that clock has only j
 started. Until it runs out this stays **Experimental**: use it, keep an authoritative
 source, and don't make multi-master the system of record for data you can't
 reconstruct.
+
+**Experimental — the analytics surface.** `Query` (Athena-style serverless SQL) and the
+lakehouse behind its `trino` engine (the Iceberg REST catalog) are **one release old**, and
+their security posture was rewritten the release after that. A query pod runs **untrusted,
+user-supplied SQL**, so it is confined: a least-privilege S3 identity (read only an
+allow-list of buckets, write only to `query-results` — never the MinIO root creds), a
+NetworkPolicy permitting egress only to DNS/MinIO/Trino, a non-root read-only-rootfs pod
+with no service-account token, and DuckDB with local-filesystem access locked off. See
+[docs/query.md](docs/query.md). **Treat the read allow-list as the trust boundary:** anything
+you add to it is readable by anyone who can submit a Query. Per-namespace query identities
+(workgroups) and Trino pod hardening are tracked follow-ups.
+
+**Experimental — the chaos tooling.** `FaultInjection` compiles to Chaos Mesh with the blast
+radius enforced (namespace + label selector, time-boxed). It's test tooling, not a workload
+primitive — and one advertised type, **`io-latency`, is currently inert on this cluster**
+(Chaos Mesh's `toda` injector panics, so the fault is created and silently never injects).
+See [docs/chaos.md](docs/chaos.md).
 
 **What's tested, concretely** (`.github/workflows/test.yml`, `go test`): the
 pure CDC logic (driver dialects, cross-engine type mapping, the temporal-coercion

@@ -46,7 +46,13 @@ spec:
                     - stress-cpu        # StressChaos
                     - stress-memory     # StressChaos
                     - clock-skew        # TimeChaos — shift the clock (exercises HLC/LWW)
-                    - io-latency        # IOChaos — slow disk I/O
+                    # ⚠️ io-latency is CURRENTLY INERT on this cluster: Chaos Mesh's FUSE
+                    # injector (toda) panics, so the IOChaos is created and then sits at
+                    # `phase: Not Injected/Wait, injectedCount: 0` — SILENTLY. The fault
+                    # looks applied and does nothing. Don't rely on it; if you use it,
+                    # assert status.conditions[AllInjected]==True rather than trusting that
+                    # the object exists. See docs/chaos.md and the CHANGELOG Known issues.
+                    - io-latency        # IOChaos — slow disk I/O (see warning above)
                 # Blast radius — REQUIRED. Chaos only ever touches pods matching this
                 # selector in this namespace (defaults to the FaultInjection's namespace).
                 target:

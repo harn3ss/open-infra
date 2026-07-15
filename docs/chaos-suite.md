@@ -105,6 +105,20 @@ nightly for **30 consecutive days**, **zero unexplained reds** ("flaky, we re-ra
 not an explanation), scenario 6 passes, and the README's maturity section is rewritten in
 the present tense — *and that sentence is true.*
 
+### The graduation record must name its exclusion
+
+The clock runs on scenarios **1–4 + 6**. Scenario 5 is *structurally* un-runnable here
+(faulting a real Longhorn replica would degrade ~11 real volumes; the pre-flight guard
+refuses it) and its safe substitute `io-latency` is inert. **So the mesh graduates with no
+storage-fault coverage.** When this graduates, the claim must say so, in these words:
+
+> *Graduated on partition / clock-skew / sink-kill / cnpg-failover / concurrent-chaos.
+> Storage-degradation coverage deferred to the validation cluster.*
+
+Otherwise "chaos-proven" quietly implies a scenario that never ran — which is precisely the
+claim-outruns-code failure this whole apparatus exists to prevent. A suite that refuses its
+own false greens cannot then launder an untested dimension into a headline.
+
 ## Status
 
 - ✅ **Containment foundation** — sandbox namespace, quota, limit range, priority class,
