@@ -49,6 +49,7 @@ import { NodesPage } from "@/features/nodes/nodes-page";
 import { NetworkPage } from "@/features/network/network-page";
 import { MonitoringPage } from "@/features/monitoring/monitoring-page";
 import { CostPage } from "@/features/cost/cost-page";
+import { SnapshotsPage } from "@/features/snapshots/snapshots-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -305,6 +306,12 @@ const costRoute = createRoute({
   component: CostPage,
 });
 
+const snapshotsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/snapshots",
+  component: SnapshotsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
@@ -348,6 +355,7 @@ const routeTree = rootRoute.addChildren([
   networkRoute,
   monitoringRoute,
   costRoute,
+  snapshotsRoute,
 ]);
 
 export const router = createRouter({

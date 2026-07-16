@@ -230,6 +230,14 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/cost", handleCost(*client.Clientset, logger))
 
+		// Database snapshots — "final snapshot before you deprovision" (RDS-style): a
+		// pg_dump to MinIO that survives the DB's deletion, restorable into a new DB.
+		api.With(middleware.Timeout(20*time.Second)).
+			Post("/databases/{namespace}/{name}/snapshot", handleSnapshotCreate(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Get("/snapshots", handleSnapshotList(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Post("/snapshots/restore", handleSnapshotRestore(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Delete("/snapshots", handleSnapshotDelete(*client.Clientset, logger))
+
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
 

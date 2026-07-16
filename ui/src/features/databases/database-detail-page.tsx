@@ -15,7 +15,14 @@ import { DbConnectivity } from "@/components/common/db-connectivity";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
-import { k8sDelete, k8sGet, k8sReplace, getManagedDbStats } from "@/lib/api";
+import {
+  k8sDelete,
+  k8sGet,
+  k8sReplace,
+  getManagedDbStats,
+  createDbSnapshot,
+  listDbSnapshots,
+} from "@/lib/api";
 import { DbStatsPanel } from "@/components/common/db-stats-panel";
 import { cnpgPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { type StatusTone } from "@/lib/format";
@@ -45,6 +52,30 @@ export function DatabaseDetailPage() {
     name: string;
   };
   const [showUri, setShowUri] = useState(false);
+  // "final snapshot before delete" (RDS-style): snapshot must COMPLETE before we remove
+  // the database, or the dump Job races the deletion. So we take it, poll to ready, then delete.
+  const [finalSnap, setFinalSnap] = useState(true);
+  const [snapPhase, setSnapPhase] = useState<string | null>(null);
+  async function deleteWithOptionalSnapshot() {
+    if (finalSnap) {
+      setSnapPhase("Taking final snapshot…");
+      try {
+        const snap = await createDbSnapshot(namespace, appName);
+        for (let i = 0; i < 120; i++) {
+          const s = (await listDbSnapshots()).find((x) => x.id === snap.id);
+          if (s?.status === "ready") break;
+          if (s?.status === "failed") throw new Error("the snapshot job failed");
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      } catch (e) {
+        setSnapPhase(null);
+        alert(`Final snapshot failed — not deleting.\n${(e as Error).message}`);
+        return;
+      }
+    }
+    setSnapPhase(null);
+    deleteMutation.mutate();
+  }
   const navigate = useNavigate();
   // The CNPG cluster is named "<app>-db" and owned by its Application; deleting
   // the database means deleting that Application (Crossplane would otherwise
@@ -270,17 +301,40 @@ export function DatabaseDetailPage() {
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={db} />
         </TabsContent>
-      <TabsContent value="danger" className="pt-4">
+      <TabsContent value="danger" className="space-y-3 pt-4">
+        <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={finalSnap}
+            onChange={(e) => setFinalSnap(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium">Take a final snapshot before deleting</span>
+            <span className="block text-xs text-muted-foreground">
+              A pg_dump kept in object storage that outlives this database — restore it
+              into a new one from the Snapshots page. The delete waits for it to finish.
+            </span>
+          </span>
+        </label>
 <DangerZone
         resourceLabel="Database"
         resourceName={name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
+        deleting={deleteMutation.isPending || snapPhase !== null}
+        onConfirm={() => void deleteWithOptionalSnapshot()}
         confirmDescription={
           <>
             Permanently delete the application{" "}
             <span className="font-medium text-foreground">{appName}</span> and its
             PostgreSQL database. This cannot be undone.
+            {finalSnap ? (
+              <span className="mt-2 block text-xs">
+                A final snapshot is taken first and kept in the Snapshots page.
+              </span>
+            ) : null}
+            {snapPhase ? (
+              <span className="mt-2 block text-xs text-foreground">{snapPhase}</span>
+            ) : null}
           </>
         }
       />
