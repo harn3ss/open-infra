@@ -540,3 +540,39 @@ export interface CostResponse {
 export function getCost(): Promise<CostResponse> {
   return request<CostResponse>("/cost");
 }
+
+// --- Database snapshots (final-snapshot-before-delete + restore) -------------
+
+export interface DbSnapshot {
+  id: string;
+  namespace: string;
+  sourceName: string;
+  engine: string;
+  dbName: string;
+  createdAt: string;
+  status: "creating" | "ready" | "failed";
+  sizeBytes: number;
+}
+
+export function createDbSnapshot(namespace: string, name: string): Promise<DbSnapshot> {
+  return request<DbSnapshot>(
+    `/databases/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/snapshot`,
+    { method: "POST" },
+  );
+}
+
+export function listDbSnapshots(): Promise<DbSnapshot[]> {
+  return request<DbSnapshot[]>("/snapshots");
+}
+
+export function restoreDbSnapshot(id: string, namespace: string, target: string): Promise<unknown> {
+  return request("/snapshots/restore", {
+    method: "POST",
+    body: JSON.stringify({ id, namespace, target }),
+  });
+}
+
+export function deleteDbSnapshot(namespace: string, name: string, id: string): Promise<unknown> {
+  const q = new URLSearchParams({ namespace, name, id });
+  return request(`/snapshots?${q.toString()}`, { method: "DELETE" });
+}

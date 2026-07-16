@@ -1,4 +1,5 @@
 import {
+  Camera,
   Bomb,
   BrainCircuit,
   Boxes,
@@ -65,4 +66,6 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Chaos", to: "/chaos", icon: Bomb, matchPrefix: true, section: "Observability" },
 
   { label: "Cost Explorer", to: "/cost", icon: DollarSign, section: "Billing" },
+
+  { label: "Snapshots", to: "/snapshots", icon: Camera, section: "Backup" },
 ];
