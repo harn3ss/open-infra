@@ -53,7 +53,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | Secrets Manager | secrets | **Sealed Secrets** | encrypted secrets safe in Git; Vault planned |
 | VPC | network isolation | namespaces + **NetworkPolicy** | the Application composition authors per-app NetworkPolicies; **Cilium** enforces them |
 | VPC Security Groups | host firewall | **Cilium NetworkPolicy** | `kind: SecurityGroup`; reusable rule sets (CIDR / SG / namespace, ingress + egress) attached to apps/functions/VMs — see [security-groups.md](security-groups.md) |
-| AWS Backup | backup/DR | **Velero** → MinIO/NAS | |
+| AWS Backup | backup/DR | **Velero** → MinIO/NAS; per-DB **final snapshots** (`pg_dump`) before deprovision — see [snapshots.md](snapshots.md) |
 | Fault Injection Simulator | chaos engineering | **Chaos Mesh** | `kind: FaultInjection`; blast-radius-scoped pod/network/stress/clock faults — see [chaos.md](chaos.md). Driven unattended nightly against the multi-master mesh by the [chaos suite](chaos-suite.md) |
 | Cost Explorer | usage/billing | **console Cost Explorer** | a "what AWS would've charged" panel — prices live cluster capacity (nodes/PVCs/LBs/GPUs) against AWS list rates; see [cost.md](cost.md) |
 
