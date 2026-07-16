@@ -55,7 +55,7 @@ rules:
   - apiGroups: [batch]
     resources:
       - jobs
-    verbs: [get, list, watch]
+    verbs: [get, list, watch, create, delete]
 
   # ── Networking: read ingress routes + network policies (the Network view).
   #    LoadBalancer Services come from the core "services" rule above. ─────────
