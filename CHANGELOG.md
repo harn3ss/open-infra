@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Backup
+- **Database snapshots — "final snapshot before you deprovision" (RDS-style).** Take a
+  snapshot of a Postgres database before deleting it, and restore it into a new one. A
+  logical `pg_dump -Fc` streamed to MinIO, decoupled from the database so it **survives
+  deletion** — validated end-to-end through the console API (write a row → snapshot →
+  delete the database entirely → restore into a fresh cluster → the row returns). Logical
+  rather than a CSI volume snapshot because managed DB data is on `local-path` (no CSI
+  snapshot support) — and logical is engine-portable and the artifact obviously outlives
+  the resource. New console **Backup → Snapshots** page (list / restore / delete) and a
+  *"Take a final snapshot before deleting"* checkbox in a database's Danger Zone that waits
+  for the snapshot to finish before removing the database. Honest limits: in-cluster (MinIO)
+  durability not off-cluster DR; v1 is Postgres; MinIO root creds for now (scoping is a
+  follow-up); VM snapshots are next. See [docs/snapshots.md](docs/snapshots.md).
+
 ### Replication
 - **Fixed: `kind: Replication` / `DataFlow` could not capture from open-infra's own
   managed (CloudNativePG) databases.** Debezium defaults to
