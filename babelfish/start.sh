@@ -56,11 +56,13 @@ else
 	# (non-first) boot. This makes the Kubernetes Secret authoritative — a data dir RESTORED
 	# from a snapshot carries the SOURCE database's password, but a restored instance gets its
 	# own freshly-generated secret; without this, its connection secret wouldn't authenticate.
-	# Idempotent: a no-op when they already match (the normal case). Best-effort.
-	./pg_ctl -D ${BABELFISH_DATA}/ -w start
-	./psql -c "ALTER USER postgres WITH PASSWORD '${PASSWORD}';" || true
-	./psql -c "ALTER USER ${USERNAME} WITH PASSWORD '${PASSWORD}';" || true
-	./pg_ctl -D ${BABELFISH_DATA}/ -w stop
+	# Start a LOCAL-ONLY server (unix socket, no TCP, ssl OFF) so this has NO dependency on the
+	# TLS cert perms (the restored dir may have ssl=on with a not-yet-fixed server.key). ALTER
+	# over the socket (peer/trust — no password needed), then stop. Idempotent; best-effort.
+	./pg_ctl -D ${BABELFISH_DATA}/ -w -o "-c ssl=off -c listen_addresses='' -c unix_socket_directories=/tmp" start || true
+	./psql -h /tmp -c "ALTER USER postgres WITH PASSWORD '${PASSWORD}';" || true
+	./psql -h /tmp -c "ALTER USER ${USERNAME} WITH PASSWORD '${PASSWORD}';" || true
+	./pg_ctl -D ${BABELFISH_DATA}/ -w stop || true
 fi
 
 # --- open-infra: enable TLS when a cert is mounted (BABELFISH_TLS_DIR with tls.crt/tls.key).
