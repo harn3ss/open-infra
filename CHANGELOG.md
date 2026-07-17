@@ -35,6 +35,15 @@ the product's public contract.
   (making the k8s Secret authoritative); the restored instance comes up with its own working
   credentials. Proven end-to-end on a throwaway (canary → snapshot → restore → remote client
   with the new secret returns the canary; `sys` catalog intact). MySQL/Mongo restore is next.
+- **VM snapshots + restore-as-new** (the "or a virtual machine" half). For a VM with
+  `highAvailability` (Longhorn root disk), the console takes a durable `longhorn-backup` snapshot
+  of the root PVC — capturing the VM's shape (os/cpu/memory/cpuModel/network) — and restore
+  pre-seeds `<target>-root` from it and creates a new `VirtualMachine` that adopts it via
+  `existingRootClaim`, reproducing the spec and starting Halted. New **Snapshots** tab +
+  final-snapshot checkbox on the VM page; VMs join databases on **Backup → Snapshots**. Local-path
+  (non-HA) VM roots have no CSI snapshot — the console says so and disables the button. Validated
+  live: gating, snapshot with correct captured spec, and restore creating the right PVC (RWX Block
+  on longhorn-migratable) + VM (existingRootClaim, Halted).
 - **Fixed: the Longhorn backup target silently broke on a MinIO reprovision.** The setup job
   copies MinIO's root creds into `longhorn-minio-creds` only on Argo sync, so when MinIO's
   root creds rotated the copy went stale → `InvalidAccessKeyId` → **all Longhorn backups

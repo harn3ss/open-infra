@@ -274,6 +274,10 @@ export interface VirtualMachineSpec {
   sshKey?: string;
   expose?: boolean;
   running?: boolean;
+  highAvailability?: boolean; // root disk on Longhorn (migratable) — enables live migration + snapshots
+  cpuModel?: string;
+  network?: string;
+  existingRootClaim?: string; // boot from a pre-existing root PVC (migration / snapshot restore)
   ports?: { port: number; protocol?: string }[]; // extra TCP/UDP ports on the LAN IP
   securityGroups?: string[];
 }
