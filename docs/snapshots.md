@@ -14,14 +14,17 @@ automatically by engine:
 
 | Engine | Storage | Snapshot | Why |
 |---|---|---|---|
-| **Postgres** (CloudNativePG) | `local-path` NVMe | **logical `pg_dump -Fc` → MinIO** | local-path has **no CSI snapshot** support; a logical dump sidesteps that and is engine-portable |
-| **Babelfish / MySQL / Mongo** | **Longhorn** | **CSI `VolumeSnapshot` (`longhorn-backup`) → MinIO** | physically consistent whole-disk backup; a `pg_dump` is *wrong* for babelfish — it drags in the babelfish extensions + `sys`/`master_`/`msdb_` catalog schemas |
-| **VMs** (highAvailability) | Longhorn | same `longhorn-backup` CSI path (root disk) | reuses the managed-engine mechanism; restore boots a new VM from the restored disk |
+| **Postgres** (CloudNativePG) | `local-path` | **logical `pg_dump -Fc` → MinIO** | local-path has no CSI snapshot; a logical dump is engine-portable |
+| **Mongo** (DocumentDB/FerretDB) | `local-path` | **`pg_dump` of its Postgres backend → MinIO** | FerretDB stores data in Postgres (DocumentDB extension); the `POSTGRESQL_URL` dumps cleanly |
+| **MySQL** (MariaDB) | `local-path` | **`mariadb-dump` → MinIO** | native logical dump for the MariaDB engine |
+| **Babelfish** | **Longhorn** | **CSI `VolumeSnapshot` (`longhorn-backup`) → MinIO** | physically consistent whole-disk backup; a `pg_dump` is *wrong* for babelfish — it drags in the babelfish extensions + `sys`/`master_`/`msdb_` catalog schemas |
+| **VMs** (highAvailability) | Longhorn | same `longhorn-backup` CSI path (root disk) | restore boots a new VM from the restored disk |
 
-The `longhorn-backup` class (`type: bak`) uploads the snapshot to the Longhorn **backup target**
-(the same MinIO), so it survives full deletion of the source PVC — verified: back up → delete the
-source entirely → restore into a new volume → data returned. (The in-volume `longhorn-snapshot`
-class would die with the PVC — it is not used here.)
+Babelfish is the only engine on Longhorn — everything else is `local-path`, so it takes a logical
+dump. The `longhorn-backup` class (`type: bak`) uploads the CSI snapshot to the Longhorn **backup
+target** (the same MinIO), so it survives full deletion of the source PVC — verified: back up →
+delete the source entirely → restore into a new volume → data returned. (The in-volume
+`longhorn-snapshot` class would die with the PVC — it is not used here.)
 
 ## Flow
 
@@ -45,14 +48,14 @@ the database's connection secret and the MinIO credentials, and runs a throwaway
 
 `GET /api/snapshots` lists them (status computed from the dump object's presence + size).
 
-## How it works (managed engines)
+## How it works (babelfish, CSI)
 
-The console-api creates a durable `VolumeSnapshot` of the database's **data PVC**
-(`data-<db>-babelfish-0`, `<db>-docdb-data`, …), tagged with the source + engine so the
-Snapshots list can render it. The engine is detected from which connection secret exists — no
-CRD read. Delete removes the `VolumeSnapshot` (and, via the backup deletion policy, its MinIO
+For babelfish (the one Longhorn engine) the console-api creates a durable `VolumeSnapshot` of the
+data PVC (`data-<db>-babelfish-0`), tagged with the source + engine so the Snapshots list can
+render it. Delete removes the `VolumeSnapshot` (and, via the backup deletion policy, its MinIO
 backup). The **final-snapshot-before-delete** checkbox waits for the backup to *finish uploading*
-before it removes the database — otherwise the snapshot wouldn't outlive it.
+before it removes the database — otherwise the snapshot wouldn't outlive it. (Mongo/MySQL, being
+local-path, use the logical-dump Job path above with `POSTGRESQL_URL` / `DATABASE_URL`.)
 
 **Restore (babelfish)** pre-seeds the target's data PVC (`data-<target>-babelfish-0`) *from* the
 snapshot, so the new StatefulSet **adopts it by name**, then creates a data-only Application
@@ -76,8 +79,9 @@ spec and starting **Halted** so you boot it when ready. Snapshot + restore live 
 
 - **In-cluster durability, not DR.** Snapshots live in MinIO — they survive the database's
   deletion, but not a total cluster / MinIO loss. Not an off-cluster backup.
-- **Restore state:** Postgres (logical), **babelfish** (CSI), and **VMs** (CSI) restore are built;
-  MySQL / Mongo **create + delete** work, and their **restore-as-new** is the next step.
+- **Every engine snapshots + restores:** Postgres & Mongo via `pg_dump`/`pg_restore`, MySQL via
+  `mariadb-dump`/`mariadb`, babelfish via CSI. Logical restore streams into a *pre-created* empty
+  target (create it first, then Restore); babelfish/VM restore create the target themselves.
 - **VM snapshots need `highAvailability`** (a Longhorn root disk); local-path VM roots have no CSI
   snapshot. A running VM's snapshot is crash-consistent (recovered like a power-loss on boot).
 - **MinIO credentials are the root creds** for now; scoping to a snapshots-only MinIO user is a

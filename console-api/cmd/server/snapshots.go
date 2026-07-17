@@ -34,7 +34,8 @@ import (
 
 const (
 	snapBucket   = "db-snapshots"
-	snapImage    = "ghcr.io/cloudnative-pg/postgresql:17.0"
+	snapImage    = "ghcr.io/cloudnative-pg/postgresql:17.0" // pg_dump/pg_restore (postgres + mongo backend)
+	mariadbImage = "mariadb:11.4"                            // mariadb-dump/mariadb (mysql)
 	mcImage      = "minio/mc:latest"
 	snapEndpoint = "http://minio.minio.svc.cluster.local:9000"
 )
@@ -111,6 +112,12 @@ func snapEnv(uriSecret, uriKey string) []corev1.EnvVar {
 }
 
 func snapJob(name, ns, script string, env []corev1.EnvVar) *batchv1.Job {
+	return snapJobImg(name, ns, script, env, snapImage)
+}
+
+// snapJobImg runs a dump/restore script in the given image (postgres for pg_dump/pg_restore,
+// mariadb for mariadb-dump/mariadb), with `mc` brought in offline via an init container.
+func snapJobImg(name, ns, script string, env []corev1.EnvVar, image string) *batchv1.Job {
 	ttl := int32(3600)
 	backoff := int32(2)
 	return &batchv1.Job{
@@ -125,13 +132,58 @@ func snapJob(name, ns, script string, env []corev1.EnvVar) *batchv1.Job {
 					Volumes:        []corev1.Volume{{Name: "mc", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 					InitContainers: []corev1.Container{mcInit()},
 					Containers: []corev1.Container{{
-						Name: "snap", Image: snapImage, Command: []string{"bash", "-c"}, Args: []string{script},
+						Name: "snap", Image: image, Command: []string{"bash", "-c"}, Args: []string{script},
 						Env: env, VolumeMounts: []corev1.VolumeMount{{Name: "mc", MountPath: "/mc"}},
 					}},
 				},
 			},
 		},
 	}
+}
+
+// logicalDumpPlan resolves how to logically dump a local-path database — engine, the
+// connection-URI secret + key, and the tool. Postgres and mongo (DocumentDB has a Postgres
+// backend) use pg_dump; mysql (MariaDB) uses mariadb-dump. Detected by the connection secret.
+func logicalDumpPlan(cs kubernetes.Interface, ns, app string) (engine, secret, key, tool string, ok bool) {
+	has := func(n string) bool {
+		_, err := cs.CoreV1().Secrets(ns).Get(context.Background(), n, metav1.GetOptions{})
+		return err == nil
+	}
+	switch {
+	case has(app + "-mongo-app"):
+		return "mongo", app + "-mongo-app", "POSTGRESQL_URL", "pgdump", true
+	case has(app + "-mysql-app"):
+		return "mysql", app + "-mysql-app", "DATABASE_URL", "mariadbdump", true
+	case has(app + "-db-app"):
+		return "postgres", app + "-db-app", "uri", "pgdump", true
+	}
+	return "", "", "", "", false
+}
+
+// mariadbDumpScript parses a mysql:// URL from $PGURI and streams a mariadb-dump to MinIO.
+func mariadbDumpScript(key string) string {
+	return fmt.Sprintf(`set -euo pipefail
+/mc/mc alias set m %s "$AK" "$SK" >/dev/null
+U="${PGURI#mysql://}"; creds="${U%%%%@*}"; rest="${U#*@}"
+user="${creds%%%%:*}"; pass="${creds#*:}"
+hp="${rest%%%%/*}"; db="${rest#*/}"; db="${db%%%%\?*}"
+host="${hp%%%%:*}"; port="${hp#*:}"; [ "$port" = "$hp" ] && port=3306
+echo "dumping mysql db $db -> %s"
+mariadb-dump --host="$host" --port="$port" --user="$user" --password="$pass" --single-transaction --routines --databases "$db" | /mc/mc pipe m/%s/%sdump.sql
+echo "SNAPSHOT OK"`, snapEndpoint, key, snapBucket, key)
+}
+
+// mariadbRestoreScript waits for the target MariaDB, then streams the SQL dump back in.
+func mariadbRestoreScript(key string) string {
+	return fmt.Sprintf(`set -euo pipefail
+/mc/mc alias set m %s "$AK" "$SK" >/dev/null
+U="${PGURI#mysql://}"; creds="${U%%%%@*}"; rest="${U#*@}"
+user="${creds%%%%:*}"; pass="${creds#*:}"
+hp="${rest%%%%/*}"; host="${hp%%%%:*}"; port="${hp#*:}"; [ "$port" = "$hp" ] && port=3306
+for i in $(seq 1 60); do mariadb-admin --host="$host" --port="$port" --user="$user" --password="$pass" ping && break; sleep 3; done
+echo "restoring m/%s/%sdump.sql -> mysql"
+/mc/mc cat m/%s/%sdump.sql | mariadb --host="$host" --port="$port" --user="$user" --password="$pass"
+echo "RESTORE OK"`, snapEndpoint, snapBucket, key, snapBucket, key)
 }
 
 // POST /api/databases/{namespace}/{name}/snapshot  — take a snapshot now.
@@ -154,9 +206,11 @@ func handleSnapshotCreate(cs kubernetes.Interface, logger *slog.Logger) http.Han
 			return
 		}
 
-		uriSecret, ok := pgURISecret(cs, ns, app)
+		// Every other engine is on local-path (no CSI) → a logical dump to MinIO. Postgres and
+		// mongo (DocumentDB's Postgres backend) use pg_dump; mysql (MariaDB) uses mariadb-dump.
+		engine, secret, key0, tool, ok := logicalDumpPlan(cs, ns, app)
 		if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "this database isn't snapshot-supported (no Postgres " + app + "-db-app or managed-engine secret found)"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "this database isn't snapshot-supported (no recognised connection secret for " + app + ")"})
 			return
 		}
 		if err := ensureSnapMinioSecret(ctx, cs, ns); err != nil {
@@ -174,7 +228,7 @@ func handleSnapshotCreate(cs kubernetes.Interface, logger *slog.Logger) http.Han
 			return
 		}
 		_ = mc.MakeBucket(ctx, snapBucket, minio.MakeBucketOptions{})
-		meta := dbSnapshotMeta{ID: id, Namespace: ns, SourceName: app, Engine: "postgres",
+		meta := dbSnapshotMeta{ID: id, Namespace: ns, SourceName: app, Engine: engine,
 			DBName: app, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 		mb, _ := json.Marshal(meta)
 		if _, err := mc.PutObject(ctx, snapBucket, key+"meta.json", bytes.NewReader(mb), int64(len(mb)),
@@ -183,20 +237,23 @@ func handleSnapshotCreate(cs kubernetes.Interface, logger *slog.Logger) http.Han
 			return
 		}
 
-		script := fmt.Sprintf(`set -euo pipefail
+		jobName := "snap-" + strings.ReplaceAll(id, ".", "-")
+		if len(jobName) > 63 {
+			jobName = jobName[:63]
+		}
+		var job *batchv1.Job
+		switch tool {
+		case "mariadbdump":
+			job = snapJobImg(jobName, ns, mariadbDumpScript(key), snapEnv(secret, key0), mariadbImage)
+		default: // pgdump (postgres, mongo)
+			script := fmt.Sprintf(`set -euo pipefail
 /mc/mc alias set m %s "$AK" "$SK" >/dev/null
 echo "dumping %s -> %s"
 pg_dump -Fc "$PGURI" | /mc/mc pipe m/%s/%sdump.pgc
 echo "SNAPSHOT OK"`, snapEndpoint, app, key, snapBucket, key)
-
-		jobName := "snap-" + strings.ReplaceAll(id, ".", "-")
-		if jobName == "" {
-			jobName = "snap-" + app
+			job = snapJob(jobName, ns, script, snapEnv(secret, key0))
 		}
-		if len(jobName) > 63 {
-			jobName = jobName[:63]
-		}
-		if _, err := cs.BatchV1().Jobs(ns).Create(ctx, snapJob(jobName, ns, script, snapEnv(uriSecret, "uri")), metav1.CreateOptions{}); err != nil {
+		if _, err := cs.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{}); err != nil {
 			logger.Error("snapshot: create job", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create snapshot job"})
 			return
@@ -238,7 +295,7 @@ func handleSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 					b, _ := io.ReadAll(o)
 					_ = json.Unmarshal(b, &s.dbSnapshotMeta)
 				}
-			case "dump.pgc":
+			case "dump.pgc", "dump.sql": // pg_dump (postgres/mongo) / mariadb-dump (mysql)
 				s.Status = "ready"
 				s.SizeBytes = obj.Size
 			}
@@ -290,29 +347,39 @@ func handleSnapshotRestore(cs kubernetes.Interface, logger *slog.Logger) http.Ha
 		}
 		key := snapPrefix(in.Namespace, srcApp, in.ID)
 
-		uriSecret, ok := pgURISecret(cs, in.Namespace, in.Target)
+		// Resolve how to restore INTO the (already-created, empty) target by its engine.
+		engine, secret, key0, tool, ok := logicalDumpPlan(cs, in.Namespace, in.Target)
 		if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target " + in.Target + " is not a ready Postgres database yet"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target " + in.Target + " is not a ready database yet"})
 			return
 		}
 		if err := ensureSnapMinioSecret(ctx, cs, in.Namespace); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "prepare MinIO creds"})
 			return
 		}
-		// wait for the target to accept connections, then restore (--clean so a re-run is idempotent).
-		script := fmt.Sprintf(`set -euo pipefail
-/mc/mc alias set m %s "$AK" "$SK" >/dev/null
-for i in $(seq 1 60); do pg_isready -d "$PGURI" && break; sleep 3; done
-echo "restoring m/%s/%sdump.pgc -> %s"
-/mc/mc cat m/%s/%sdump.pgc | pg_restore --no-owner --role=app --clean --if-exists -d "$PGURI"
-echo "RESTORE OK"`, snapEndpoint, snapBucket, key, in.Target, snapBucket, key)
-
 		jobName := "restore-" + strings.ReplaceAll(in.Target, ".", "-")
 		if len(jobName) > 63 {
 			jobName = jobName[:63]
 		}
+		var job *batchv1.Job
+		switch tool {
+		case "mariadbdump":
+			job = snapJobImg(jobName, in.Namespace, mariadbRestoreScript(key), snapEnv(secret, key0), mariadbImage)
+		default: // pgdump (postgres, mongo). --role=app only for CNPG Postgres.
+			role := ""
+			if engine == "postgres" {
+				role = "--role=app"
+			}
+			script := fmt.Sprintf(`set -euo pipefail
+/mc/mc alias set m %s "$AK" "$SK" >/dev/null
+for i in $(seq 1 60); do pg_isready -d "$PGURI" && break; sleep 3; done
+echo "restoring m/%s/%sdump.pgc -> %s"
+/mc/mc cat m/%s/%sdump.pgc | pg_restore --no-owner %s --clean --if-exists -d "$PGURI"
+echo "RESTORE OK"`, snapEndpoint, snapBucket, key, in.Target, snapBucket, key, role)
+			job = snapJob(jobName, in.Namespace, script, snapEnv(secret, key0))
+		}
 		_ = cs.BatchV1().Jobs(in.Namespace).Delete(ctx, jobName, metav1.DeleteOptions{})
-		if _, err := cs.BatchV1().Jobs(in.Namespace).Create(ctx, snapJob(jobName, in.Namespace, script, snapEnv(uriSecret, "uri")), metav1.CreateOptions{}); err != nil {
+		if _, err := cs.BatchV1().Jobs(in.Namespace).Create(ctx, job, metav1.CreateOptions{}); err != nil {
 			logger.Error("restore: create job", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create restore job"})
 			return

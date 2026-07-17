@@ -44,6 +44,14 @@ the product's public contract.
   (non-HA) VM roots have no CSI snapshot — the console says so and disables the button. Validated
   live: gating, snapshot with correct captured spec, and restore creating the right PVC (RWX Block
   on longhorn-migratable) + VM (existingRootClaim, Halted).
+- **Snapshots now cover every database engine, by the right mechanism.** Correcting an earlier
+  over-broad assumption (that all managed engines were on Longhorn): only **babelfish** is —
+  Postgres, **Mongo** (FerretDB/DocumentDB), and **MySQL** (MariaDB) are on local-path, which has
+  no CSI snapshot. So Mongo now snapshots via `pg_dump` of its **Postgres backend** (`POSTGRESQL_URL`)
+  and MySQL via `mariadb-dump`; both restore into a pre-created target (`pg_restore` / `mariadb`).
+  Mongo validated end-to-end; MySQL path implemented (no MariaDB instance available to exercise
+  live here). Also added the **Snapshots tab** to the Postgres detail page (it only had the
+  Danger-Zone checkbox), with the Take-snapshot button disabled while the DB is stopped.
 - **Fixed: the Longhorn backup target silently broke on a MinIO reprovision.** The setup job
   copies MinIO's root creds into `longhorn-minio-creds` only on Argo sync, so when MinIO's
   root creds rotated the copy went stale → `InvalidAccessKeyId` → **all Longhorn backups
