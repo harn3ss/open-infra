@@ -17,8 +17,22 @@ the product's public contract.
   the resource. New console **Backup → Snapshots** page (list / restore / delete) and a
   *"Take a final snapshot before deleting"* checkbox in a database's Danger Zone that waits
   for the snapshot to finish before removing the database. Honest limits: in-cluster (MinIO)
-  durability not off-cluster DR; v1 is Postgres; MinIO root creds for now (scoping is a
-  follow-up); VM snapshots are next. See [docs/snapshots.md](docs/snapshots.md).
+  durability not off-cluster DR; MinIO root creds for now (scoping is a follow-up). See
+  [docs/snapshots.md](docs/snapshots.md).
+- **Managed engines (babelfish / MySQL / Mongo) snapshot via durable Longhorn CSI backup.**
+  These engines are Longhorn StatefulSets, not CNPG-on-local-path, so they route to a
+  different console detail page that previously had **no snapshot UI at all** — and a
+  `pg_dump` is *wrong* for babelfish (it drags in the babelfish extensions + `sys`/`master_`/
+  `msdb_` catalog schemas). The console-api now takes a `VolumeSnapshot` (`longhorn-backup`,
+  `type: bak`) of the data PVC, which uploads to MinIO and **survives full deletion of the
+  source** (verified: back up → destroy the source PVC → restore into a new volume → data
+  returned). New **Snapshots tab** + final-snapshot-before-delete checkbox on the managed
+  database page; the unified Snapshots list and delete span both mechanisms. Create + delete
+  validated live for babelfish; **restore-as-new for managed engines is the next step**.
+- **Fixed: the Longhorn backup target silently broke on a MinIO reprovision.** The setup job
+  copies MinIO's root creds into `longhorn-minio-creds` only on Argo sync, so when MinIO's
+  root creds rotated the copy went stale → `InvalidAccessKeyId` → **all Longhorn backups
+  failed**. Added a self-healing refresh CronJob that re-copies when they drift.
 
 ### Replication
 - **Fixed: `kind: Replication` / `DataFlow` could not capture from open-infra's own
