@@ -583,3 +583,37 @@ export function deleteDbSnapshot(
   const q = new URLSearchParams({ namespace, name, id, kind });
   return request(`/snapshots?${q.toString()}`, { method: "DELETE" });
 }
+
+// ── VM snapshots (Longhorn-rooted VMs) ──────────────────────────────────────
+export interface VmSnapshot {
+  id: string;
+  namespace: string;
+  sourceName: string;
+  os: string;
+  createdAt: string;
+  status: "creating" | "ready" | "failed";
+  sizeBytes: number;
+}
+
+export function createVmSnapshot(namespace: string, name: string): Promise<VmSnapshot> {
+  return request<VmSnapshot>(
+    `/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/snapshot`,
+    { method: "POST" },
+  );
+}
+
+export function listVmSnapshots(): Promise<VmSnapshot[]> {
+  return request<VmSnapshot[]>("/vm-snapshots");
+}
+
+export function restoreVmSnapshot(id: string, namespace: string, target: string): Promise<unknown> {
+  return request("/vm-snapshots/restore", {
+    method: "POST",
+    body: JSON.stringify({ id, namespace, target }),
+  });
+}
+
+export function deleteVmSnapshot(namespace: string, id: string): Promise<unknown> {
+  const q = new URLSearchParams({ namespace, id });
+  return request(`/vm-snapshots?${q.toString()}`, { method: "DELETE" });
+}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, Database, RotateCcw, Trash2 } from "lucide-react";
+import { Camera, Database, RotateCcw, Trash2, Server } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,10 @@ import {
   listDbSnapshots,
   restoreDbSnapshot,
   type DbSnapshot,
+  deleteVmSnapshot,
+  listVmSnapshots,
+  restoreVmSnapshot,
+  type VmSnapshot,
 } from "@/lib/api";
 
 const fmtBytes = (n: number) => {
@@ -96,9 +100,64 @@ function RestoreDialog({
   );
 }
 
+function VmRestoreDialog({ snap, onClose }: { snap: VmSnapshot; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [target, setTarget] = useState(`${snap.sourceName}-restored`);
+  const restore = useMutation({
+    mutationFn: () => restoreVmSnapshot(snap.id, snap.namespace, target.trim()),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["vm-snapshots"] });
+      onClose();
+    },
+  });
+  return (
+    <ConfirmDialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title="Restore VM snapshot"
+      confirmLabel="Restore"
+      destructive={false}
+      loading={restore.isPending}
+      onConfirm={() => target.trim() && restore.mutate()}
+      description={
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Creates a <b>new</b> {snap.os} VM in{" "}
+            <span className="font-mono">{snap.namespace}</span> from{" "}
+            <span className="font-medium">{snap.id}</span> — its root disk is restored from the
+            snapshot and it comes up stopped, ready to start. Just pick a name.
+          </p>
+          <label className="block text-sm">
+            <span className="text-muted-foreground">New VM name</span>
+            <input
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder="my-vm"
+            />
+          </label>
+          {restore.isError ? (
+            <p className="text-sm text-destructive">{(restore.error as Error).message}</p>
+          ) : null}
+        </div>
+      }
+    />
+  );
+}
+
 export function SnapshotsPage() {
   const qc = useQueryClient();
   const [restoring, setRestoring] = useState<DbSnapshot | null>(null);
+  const [vmRestoring, setVmRestoring] = useState<VmSnapshot | null>(null);
+  const vmSnaps = useQuery({
+    queryKey: ["vm-snapshots"],
+    queryFn: listVmSnapshots,
+    refetchInterval: 10000,
+  });
+  const delVm = useMutation({
+    mutationFn: (s: VmSnapshot) => deleteVmSnapshot(s.namespace, s.id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["vm-snapshots"] }),
+  });
   const { data = [], isLoading, isError, error, isFetching } = useQuery({
     queryKey: ["db-snapshots"],
     queryFn: listDbSnapshots,
@@ -115,7 +174,7 @@ export function SnapshotsPage() {
       <PageHeader
         icon={<Camera />}
         title="Snapshots"
-        description="Final snapshots of databases — Postgres as a pg_dump, managed engines as a Longhorn backup — kept in object storage. Survives the database's deletion; restore into a new one."
+        description="Final snapshots of databases and VMs — kept in object storage so they survive the resource's deletion; restore into a new one."
         actions={<LiveIndicator live={isFetching} />}
       />
 
@@ -124,6 +183,7 @@ export function SnapshotsPage() {
         not off-cluster disaster recovery.
       </p>
 
+      <h2 className="text-sm font-semibold text-muted-foreground">Databases</h2>
       {isLoading ? (
         <LoadingState />
       ) : isError ? (
@@ -201,8 +261,85 @@ export function SnapshotsPage() {
         </Card>
       )}
 
+      <h2 className="pt-2 text-sm font-semibold text-muted-foreground">Virtual machines</h2>
+      {(vmSnaps.data?.length ?? 0) === 0 ? (
+        <EmptyState
+          title="No VM snapshots yet"
+          description="Take one from a Longhorn-backed VM's Snapshots tab (or its Danger Zone) before you deprovision it."
+        />
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="p-3 font-medium">Source</th>
+                  <th className="p-3 font-medium">OS</th>
+                  <th className="p-3 text-right font-medium">Size</th>
+                  <th className="p-3 font-medium">Taken</th>
+                  <th className="p-3 font-medium">Status</th>
+                  <th className="p-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vmSnaps.data?.map((s) => (
+                  <tr key={`${s.namespace}/${s.id}`} className="border-b last:border-0">
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <Server className="size-4 text-muted-foreground" />
+                        <span className="font-medium">{s.sourceName}</span>
+                        <span className="text-muted-foreground">· {s.namespace}</span>
+                      </div>
+                    </td>
+                    <td className="p-3">
+                      <Badge variant="secondary">{s.os}</Badge>
+                    </td>
+                    <td className="p-3 text-right tabular-nums">{fmtBytes(s.sizeBytes)}</td>
+                    <td className="p-3 text-muted-foreground">
+                      {s.createdAt ? age(s.createdAt) : "—"}
+                    </td>
+                    <td className="p-3">
+                      <Badge
+                        variant={s.status === "ready" ? "default" : "secondary"}
+                        className={s.status === "failed" ? "bg-destructive" : ""}
+                      >
+                        {s.status}
+                      </Badge>
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={s.status !== "ready"}
+                          onClick={() => setVmRestoring(s)}
+                        >
+                          <RotateCcw className="size-3.5" /> Restore
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive"
+                          disabled={delVm.isPending}
+                          onClick={() => delVm.mutate(s)}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
+
       {restoring ? (
         <RestoreDialog snap={restoring} onClose={() => setRestoring(null)} />
+      ) : null}
+      {vmRestoring ? (
+        <VmRestoreDialog snap={vmRestoring} onClose={() => setVmRestoring(null)} />
       ) : null}
     </div>
   );

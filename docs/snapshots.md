@@ -16,7 +16,7 @@ automatically by engine:
 |---|---|---|---|
 | **Postgres** (CloudNativePG) | `local-path` NVMe | **logical `pg_dump -Fc` → MinIO** | local-path has **no CSI snapshot** support; a logical dump sidesteps that and is engine-portable |
 | **Babelfish / MySQL / Mongo** | **Longhorn** | **CSI `VolumeSnapshot` (`longhorn-backup`) → MinIO** | physically consistent whole-disk backup; a `pg_dump` is *wrong* for babelfish — it drags in the babelfish extensions + `sys`/`master_`/`msdb_` catalog schemas |
-| **VMs** | Longhorn | same `longhorn-backup` CSI path | (next) |
+| **VMs** (highAvailability) | Longhorn | same `longhorn-backup` CSI path (root disk) | reuses the managed-engine mechanism; restore boots a new VM from the restored disk |
 
 The `longhorn-backup` class (`type: bak`) uploads the snapshot to the Longhorn **backup target**
 (the same MinIO), so it survives full deletion of the source PVC — verified: back up → delete the
@@ -61,12 +61,25 @@ but the new instance generates its own secret — so the babelfish entrypoint re
 superuser password to the injected secret on every boot, making the k8s Secret authoritative. No
 exec, no pre-existing target. (MySQL/Mongo restore is a follow-up; their create + delete work.)
 
+## VMs
+
+A VM's root disk is on Longhorn only when **`highAvailability`** is on (local-path otherwise,
+which has no CSI snapshot — the console says so and disables the button). For an HA VM the
+console-api snapshots the **root PVC** with the same durable `longhorn-backup` class and captures
+the VM's shape (`os`, `cpu`, `memory`, `cpuModel`, `network`, `highAvailability`) in annotations.
+**Restore** pre-seeds `<target>-root` from the snapshot and creates a new `VirtualMachine` that
+adopts it via **`existingRootClaim`** (the same path a migrated VM uses), reproducing the captured
+spec and starting **Halted** so you boot it when ready. Snapshot + restore live on the VM's
+**Snapshots** tab, a Danger-Zone final-snapshot checkbox, and **Backup → Snapshots**.
+
 ## Honest limits
 
 - **In-cluster durability, not DR.** Snapshots live in MinIO — they survive the database's
   deletion, but not a total cluster / MinIO loss. Not an off-cluster backup.
-- **Restore state:** Postgres (logical) and **babelfish** (CSI) restore are built; MySQL / Mongo
-  **create + delete** work, and their **restore-as-new** is the next step.
+- **Restore state:** Postgres (logical), **babelfish** (CSI), and **VMs** (CSI) restore are built;
+  MySQL / Mongo **create + delete** work, and their **restore-as-new** is the next step.
+- **VM snapshots need `highAvailability`** (a Longhorn root disk); local-path VM roots have no CSI
+  snapshot. A running VM's snapshot is crash-consistent (recovered like a power-loss on boot).
 - **MinIO credentials are the root creds** for now; scoping to a snapshots-only MinIO user is a
   tracked follow-up (as was done for `kind: Query`). The Longhorn backup target reuses MinIO's
   root creds, kept fresh by a self-healing refresh CronJob (they had gone stale on a MinIO

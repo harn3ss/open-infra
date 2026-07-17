@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Eye, EyeOff, Monitor, Play, Power } from "lucide-react";
+import { Eye, EyeOff, Monitor, Play, Power, Camera, Trash2 } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,16 @@ import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { k8sDelete, k8sGet, k8sReplace } from "@/lib/api";
+import {
+  k8sDelete,
+  k8sGet,
+  k8sReplace,
+  createVmSnapshot,
+  listVmSnapshots,
+  deleteVmSnapshot,
+  type VmSnapshot,
+} from "@/lib/api";
+import { age, formatBytes } from "@/lib/format";
 import {
   cdiPaths,
   kubevirtPaths,
@@ -126,6 +135,48 @@ export function VmDetailPage() {
     onSuccess: () => void refetch(),
   });
 
+  // ── Snapshots (Longhorn-rooted VMs → durable CSI backup of the root disk). ──
+  const snapsQ = useQuery({
+    queryKey: ["vm-snapshots", namespace, name],
+    queryFn: listVmSnapshots,
+    select: (all: VmSnapshot[]) =>
+      all
+        .filter((s) => s.namespace === namespace && s.sourceName === name)
+        .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")),
+    refetchInterval: 8000,
+  });
+  const takeSnap = useMutation({
+    mutationFn: () => createVmSnapshot(namespace, name),
+    onSuccess: () => void snapsQ.refetch(),
+  });
+  const delSnap = useMutation({
+    mutationFn: (s: VmSnapshot) => deleteVmSnapshot(s.namespace, s.id),
+    onSuccess: () => void snapsQ.refetch(),
+  });
+  const [finalSnap, setFinalSnap] = useState(false);
+  const [snapPhase, setSnapPhase] = useState<string | null>(null);
+  async function deleteWithOptionalSnapshot() {
+    try {
+      if (finalSnap) {
+        setSnapPhase("Taking a final snapshot…");
+        await createVmSnapshot(namespace, name);
+        for (let i = 0; i < 400; i++) {
+          const mine = (await listVmSnapshots())
+            .filter((s) => s.namespace === namespace && s.sourceName === name)
+            .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+          if (mine[0]?.status === "ready") break;
+          if (mine[0]?.status === "failed") throw new Error("the final snapshot failed — not deleting");
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+        setSnapPhase("Deleting…");
+      }
+      deleteMutation.mutate();
+    } catch (err) {
+      setSnapPhase(null);
+      alert((err as Error).message);
+    }
+  }
+
   if (isLoading) return <LoadingState label="Loading VM…" />;
   if (isError || !vm) return <ErrorState error={error} onRetry={refetch} />;
 
@@ -179,6 +230,7 @@ export function VmDetailPage() {
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="storage">Storage</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
+          <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -333,20 +385,121 @@ export function VmDetailPage() {
           />
         </TabsContent>
 
+        <TabsContent value="snapshots" className="pt-4">
+          <Card>
+            <CardContent className="space-y-4 pt-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-medium">Snapshots</div>
+                  <p className="text-sm text-muted-foreground">
+                    A durable backup of this VM's root disk (Longhorn → object storage). It
+                    survives the VM's deletion; restore it into a new VM from the{" "}
+                    <span className="font-medium text-foreground">Backup → Snapshots</span> page.
+                  </p>
+                </div>
+                <Button
+                  onClick={() => takeSnap.mutate()}
+                  disabled={takeSnap.isPending || !spec?.highAvailability}
+                >
+                  <Camera className="size-4" />
+                  {takeSnap.isPending ? "Snapshotting…" : "Take snapshot"}
+                </Button>
+              </div>
+
+              {!spec?.highAvailability ? (
+                <p className="text-sm text-muted-foreground">
+                  This VM's root disk is on local storage (node-pinned), which has no snapshot
+                  support. Enable <span className="font-medium">highAvailability</span> (Longhorn
+                  root disk) to snapshot it.
+                </p>
+              ) : null}
+              {takeSnap.isError ? (
+                <p className="text-sm text-destructive">{(takeSnap.error as Error).message}</p>
+              ) : null}
+
+              {(snapsQ.data?.length ?? 0) === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No snapshots yet. Take one before you deprovision this VM.
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 font-medium">Taken</th>
+                      <th className="py-2 text-right font-medium">Size</th>
+                      <th className="py-2 font-medium">Status</th>
+                      <th className="py-2 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapsQ.data?.map((s) => (
+                      <tr key={s.id} className="border-b last:border-0">
+                        <td className="py-2 text-muted-foreground">
+                          {s.createdAt ? age(s.createdAt) : "—"}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {s.sizeBytes ? formatBytes(s.sizeBytes) : "—"}
+                        </td>
+                        <td className="py-2">
+                          <Badge
+                            variant={s.status === "ready" ? "default" : "secondary"}
+                            className={s.status === "failed" ? "bg-destructive" : ""}
+                          >
+                            {s.status}
+                          </Badge>
+                        </td>
+                        <td className="py-2 text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            disabled={delSnap.isPending}
+                            onClick={() => delSnap.mutate(s)}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={vm} />
         </TabsContent>
-      <TabsContent value="danger" className="pt-4">
-<DangerZone
+      <TabsContent value="danger" className="space-y-4 pt-4">
+        {spec?.highAvailability ? (
+          <label className="flex items-start gap-3 rounded-lg border p-4 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 size-4"
+              checked={finalSnap}
+              onChange={(ev) => setFinalSnap(ev.target.checked)}
+            />
+            <span>
+              <span className="font-medium">Take a final snapshot before deleting</span>
+              <span className="block text-muted-foreground">
+                A durable backup of the root disk is taken and confirmed complete before the VM
+                is removed, so you can restore it later. {snapPhase ?? ""}
+              </span>
+            </span>
+          </label>
+        ) : null}
+        <DangerZone
         resourceLabel="Virtual Machine"
         resourceName={name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
+        deleting={deleteMutation.isPending || snapPhase !== null}
+        onConfirm={() => void deleteWithOptionalSnapshot()}
         confirmDescription={
           <>
             Permanently delete the VM{" "}
             <span className="font-medium text-foreground">{name}</span> and its
             disk. This cannot be undone.
+            {finalSnap ? " A final snapshot will be taken first." : ""}
           </>
         }
       />

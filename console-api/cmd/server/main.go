@@ -238,6 +238,14 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 		api.With(middleware.Timeout(20*time.Second)).Post("/snapshots/restore", handleSnapshotRestore(*client.Clientset, logger))
 		api.With(middleware.Timeout(20*time.Second)).Delete("/snapshots", handleSnapshotDelete(*client.Clientset, logger))
 
+		// VM snapshots — same "final snapshot before deprovision", for Longhorn-rooted VMs: a
+		// durable longhorn-backup of the root disk, restorable into a new VM (existingRootClaim).
+		api.With(middleware.Timeout(20*time.Second)).
+			Post("/vms/{namespace}/{name}/snapshot", handleVMSnapshotCreate(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Get("/vm-snapshots", handleVMSnapshotList(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Post("/vm-snapshots/restore", handleVMSnapshotRestore(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Delete("/vm-snapshots", handleVMSnapshotDelete(*client.Clientset, logger))
+
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
 
