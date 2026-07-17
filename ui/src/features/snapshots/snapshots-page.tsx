@@ -91,7 +91,8 @@ export function SnapshotsPage() {
     refetchInterval: 10000,
   });
   const del = useMutation({
-    mutationFn: (s: DbSnapshot) => deleteDbSnapshot(s.namespace, s.sourceName, s.id),
+    mutationFn: (s: DbSnapshot) =>
+      deleteDbSnapshot(s.namespace, s.sourceName, s.id, s.kind),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["db-snapshots"] }),
   });
 
@@ -100,7 +101,7 @@ export function SnapshotsPage() {
       <PageHeader
         icon={<Camera />}
         title="Snapshots"
-        description="Final snapshots of databases — a pg_dump kept in object storage. Survives the database's deletion; restore into a new one."
+        description="Final snapshots of databases — Postgres as a pg_dump, managed engines as a Longhorn backup — kept in object storage. Survives the database's deletion; restore into a new one."
         actions={<LiveIndicator live={isFetching} />}
       />
 
