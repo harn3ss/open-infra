@@ -51,6 +51,16 @@ if [ ! -f ${BABELFISH_DATA}/postgresql.conf ]; then
 	./psql -d ${DATABASE} \
 		-c "CALL SYS.INITIALIZE_BABELFISH('${USERNAME}');"
 	./pg_ctl -D ${BABELFISH_DATA}/ stop
+else
+	# open-infra: reconcile the app + superuser password to the injected secret on every
+	# (non-first) boot. This makes the Kubernetes Secret authoritative — a data dir RESTORED
+	# from a snapshot carries the SOURCE database's password, but a restored instance gets its
+	# own freshly-generated secret; without this, its connection secret wouldn't authenticate.
+	# Idempotent: a no-op when they already match (the normal case). Best-effort.
+	./pg_ctl -D ${BABELFISH_DATA}/ -w start
+	./psql -c "ALTER USER postgres WITH PASSWORD '${PASSWORD}';" || true
+	./psql -c "ALTER USER ${USERNAME} WITH PASSWORD '${PASSWORD}';" || true
+	./pg_ctl -D ${BABELFISH_DATA}/ -w stop
 fi
 
 # --- open-infra: enable TLS when a cert is mounted (BABELFISH_TLS_DIR with tls.crt/tls.key).

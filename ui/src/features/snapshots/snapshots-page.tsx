@@ -36,7 +36,8 @@ function RestoreDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [target, setTarget] = useState(snap.sourceName);
+  const isVolume = snap.kind === "volume";
+  const [target, setTarget] = useState(isVolume ? `${snap.sourceName}-restored` : snap.sourceName);
   const restore = useMutation({
     mutationFn: () => restoreDbSnapshot(snap.id, snap.namespace, target.trim()),
     onSuccess: () => {
@@ -56,14 +57,27 @@ function RestoreDialog({
       description={
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            Streams <span className="font-medium">{snap.id}</span> into an{" "}
-            <b>existing, empty</b> Postgres database in{" "}
-            <span className="font-mono">{snap.namespace}</span>. Create the target
-            database first (New Database), then restore into it — the restore
-            replaces its contents.
+            {isVolume ? (
+              <>
+                Creates a <b>new</b> {snap.engine} database in{" "}
+                <span className="font-mono">{snap.namespace}</span> from{" "}
+                <span className="font-medium">{snap.id}</span> — its disk is restored from
+                the snapshot and it comes up with its own fresh credentials. Just pick a name.
+              </>
+            ) : (
+              <>
+                Streams <span className="font-medium">{snap.id}</span> into an{" "}
+                <b>existing, empty</b> Postgres database in{" "}
+                <span className="font-mono">{snap.namespace}</span>. Create the target
+                database first (New Database), then restore into it — the restore
+                replaces its contents.
+              </>
+            )}
           </p>
           <label className="block text-sm">
-            <span className="text-muted-foreground">Target database name</span>
+            <span className="text-muted-foreground">
+              {isVolume ? "New database name" : "Target database name"}
+            </span>
             <input
               className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
               value={target}

@@ -269,6 +269,20 @@ func handleSnapshotRestore(cs kubernetes.Interface, logger *slog.Logger) http.Ha
 			return
 		}
 		ctx := r.Context()
+
+		// Managed-engine (CSI) snapshots restore into a NEW database the BFF creates itself
+		// (pre-seed PVC from the snapshot + a data-only Application). Detected by the snapshot
+		// being a VolumeSnapshot named by id in the namespace.
+		if _, _, _, isCSI := csiSnapshotEngine(ctx, cs, in.Namespace, in.ID); isCSI {
+			if err := csiRestore(ctx, cs, in.Namespace, in.ID, in.Target); err != nil {
+				logger.Error("restore: csi", "err", err)
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusAccepted, map[string]string{"status": "restoring", "target": in.Target})
+			return
+		}
+
 		// the snapshot's dump; source app name is embedded in the id (app-<unix>)
 		srcApp := in.ID
 		if i := strings.LastIndexByte(in.ID, '-'); i > 0 {
