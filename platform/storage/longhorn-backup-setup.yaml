@@ -69,3 +69,47 @@ spec:
                 --from-literal=AWS_ENDPOINTS="http://minio.minio.svc:9000" \
                 --dry-run=client -o yaml | kubectl apply -f -
               echo "longhorn-minio-creds ready"
+---
+# Self-heal: the one-shot Job above only runs on Argo sync, so if MinIO's root
+# creds ROTATE (e.g. a MinIO reinstall regenerates the secret), longhorn-minio-creds
+# goes stale and the backup target fails with InvalidAccessKeyId — silently breaking
+# every Longhorn backup (and thus DB/VM final-snapshots). This CronJob re-copies the
+# current root creds periodically so the backup target recovers on its own.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: longhorn-backup-creds-refresh
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: longhorn-backup-setup
+          restartPolicy: OnFailure
+          containers:
+            - name: refresh
+              image: bitnami/kubectl
+              command: [sh, -c]
+              args:
+                - |
+                  set -e
+                  RU=$(kubectl get secret minio -n minio -o jsonpath='{.data.rootUser}' | base64 -d)
+                  RP=$(kubectl get secret minio -n minio -o jsonpath='{.data.rootPassword}' | base64 -d)
+                  [ -n "$RU" ] && [ -n "$RP" ] || { echo "MinIO secret not ready"; exit 1; }
+                  cur=$(kubectl get secret longhorn-minio-creds -n longhorn-system \
+                        -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || true)
+                  if [ "$cur" = "$RU" ]; then echo "creds already current"; exit 0; fi
+                  echo "MinIO root creds changed — refreshing longhorn-minio-creds"
+                  kubectl create secret generic longhorn-minio-creds -n longhorn-system \
+                    --from-literal=AWS_ACCESS_KEY_ID="$RU" \
+                    --from-literal=AWS_SECRET_ACCESS_KEY="$RP" \
+                    --from-literal=AWS_ENDPOINTS="http://minio.minio.svc:9000" \
+                    --dry-run=client -o yaml | kubectl apply -f -

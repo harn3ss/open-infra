@@ -51,6 +51,7 @@ type dbSnapshotMeta struct {
 // what the console renders — meta + computed status/size.
 type dbSnapshot struct {
 	dbSnapshotMeta
+	Kind      string `json:"kind"`   // logical (pg_dump→MinIO) | volume (CSI→Longhorn backup)
 	Status    string `json:"status"` // creating | ready | failed
 	SizeBytes int64  `json:"sizeBytes"`
 }
@@ -137,12 +138,27 @@ func snapJob(name, ns, script string, env []corev1.EnvVar) *batchv1.Job {
 func handleSnapshotCreate(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, app := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
-		uriSecret, ok := pgURISecret(cs, ns, app)
-		if !ok {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "snapshots are supported for Postgres databases only (no " + app + "-db-app secret found)"})
+		ctx := r.Context()
+
+		// Managed engines (babelfish/mysql/mongo) live on Longhorn → durable CSI snapshot of
+		// the data PVC. Only CNPG Postgres (local-path, no CSI) uses the logical pg_dump path.
+		if engine, pvc, ok := managedEngine(cs, ns, app); ok {
+			id := fmt.Sprintf("snap-%s-%d", app, time.Now().Unix())
+			if err := csiCreateSnapshot(ctx, cs, ns, app, engine, pvc, id); err != nil {
+				logger.Error("snapshot: csi create", "err", err, "engine", engine, "pvc", pvc)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create volume snapshot: " + err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusAccepted, dbSnapshotMeta{ID: id, Namespace: ns, SourceName: app,
+				Engine: engine, DBName: app, CreatedAt: time.Now().UTC().Format(time.RFC3339)})
 			return
 		}
-		ctx := r.Context()
+
+		uriSecret, ok := pgURISecret(cs, ns, app)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "this database isn't snapshot-supported (no Postgres " + app + "-db-app or managed-engine secret found)"})
+			return
+		}
 		if err := ensureSnapMinioSecret(ctx, cs, ns); err != nil {
 			logger.Error("snapshot: minio creds", "err", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "prepare MinIO creds"})
@@ -212,7 +228,7 @@ func handleSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 			base := parts[len(parts)-1]
 			s := metas[dir]
 			if s == nil {
-				s = &dbSnapshot{Status: "creating"}
+				s = &dbSnapshot{Kind: "logical", Status: "creating"}
 				metas[dir] = s
 			}
 			switch base {
@@ -230,6 +246,12 @@ func handleSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 		out := make([]dbSnapshot, 0, len(metas))
 		for _, s := range metas {
 			out = append(out, *s)
+		}
+		// merge in managed-engine CSI (VolumeSnapshot) snapshots
+		if csi, err := csiListSnapshots(ctx, cs); err != nil {
+			logger.Warn("snapshot: list csi", "err", err)
+		} else {
+			out = append(out, csi...)
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 		writeJSON(w, http.StatusOK, out)
@@ -294,6 +316,19 @@ func handleSnapshotDelete(cs kubernetes.Interface, logger *slog.Logger) http.Han
 			return
 		}
 		ctx := r.Context()
+
+		// managed-engine (CSI) snapshots are VolumeSnapshots named by id in ns; if one exists
+		// there, delete it (and its Longhorn backup) — otherwise fall through to logical/MinIO.
+		if r.URL.Query().Get("kind") == "volume" {
+			if err := csiDeleteSnapshot(ctx, cs, ns, id); err != nil {
+				logger.Error("snapshot: csi delete", "err", err)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete volume snapshot: " + err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+			return
+		}
+
 		mc, err := minioClient(cs)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "minio"})

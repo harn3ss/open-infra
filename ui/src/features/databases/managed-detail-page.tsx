@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Database, Eye, EyeOff } from "lucide-react";
+import { Database, Eye, EyeOff, Camera, Trash2 } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,7 +17,17 @@ import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import { claimHealth } from "@/lib/resource-health";
-import { k8sDelete, k8sGet, k8sReplace, getManagedDbStats } from "@/lib/api";
+import {
+  k8sDelete,
+  k8sGet,
+  k8sReplace,
+  getManagedDbStats,
+  createDbSnapshot,
+  listDbSnapshots,
+  deleteDbSnapshot,
+  type DbSnapshot,
+} from "@/lib/api";
+import { age, formatBytes } from "@/lib/format";
 import { DbStatsPanel } from "@/components/common/db-stats-panel";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { Application, K8sObject } from "@/types/k8s";
@@ -126,6 +136,52 @@ export function ManagedDatabaseDetailPage() {
     onSuccess: () => void refetch(),
   });
 
+  // ── Snapshots (managed engines are Longhorn-backed → durable CSI VolumeSnapshot). ──
+  const snapsQ = useQuery({
+    queryKey: ["db-snapshots", namespace, name],
+    queryFn: listDbSnapshots,
+    select: (all: DbSnapshot[]) =>
+      all
+        .filter((s) => s.namespace === namespace && s.sourceName === name)
+        .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")),
+    refetchInterval: 8000,
+  });
+  const takeSnap = useMutation({
+    mutationFn: () => createDbSnapshot(namespace, name),
+    onSuccess: () => void snapsQ.refetch(),
+  });
+  const delSnap = useMutation({
+    mutationFn: (s: DbSnapshot) => deleteDbSnapshot(s.namespace, s.sourceName, s.id, s.kind),
+    onSuccess: () => void snapsQ.refetch(),
+  });
+
+  // Danger Zone: optional "final snapshot before delete" (RDS-style). The delete WAITS for the
+  // backup to finish uploading to MinIO before destroying the source — else it wouldn't survive.
+  const [finalSnap, setFinalSnap] = useState(true);
+  const [snapPhase, setSnapPhase] = useState<string | null>(null);
+  async function deleteWithOptionalSnapshot() {
+    try {
+      if (finalSnap) {
+        setSnapPhase("Taking a final snapshot…");
+        await createDbSnapshot(namespace, name);
+        for (let i = 0; i < 200; i++) {
+          const mine = (await listDbSnapshots())
+            .filter((s) => s.namespace === namespace && s.sourceName === name)
+            .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+          const latest = mine[0];
+          if (latest?.status === "ready") break;
+          if (latest?.status === "failed") throw new Error("the final snapshot failed — not deleting");
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+        setSnapPhase("Deleting…");
+      }
+      deleteMutation.mutate();
+    } catch (err) {
+      setSnapPhase(null);
+      alert((err as Error).message);
+    }
+  }
+
   const engineKey = (app?.spec?.database?.engine ?? "mongo") as keyof typeof ENGINES;
   const e = ENGINES[engineKey] ?? ENGINES.mongo;
 
@@ -175,6 +231,7 @@ export function ManagedDatabaseDetailPage() {
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
+          <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -295,20 +352,114 @@ export function ManagedDatabaseDetailPage() {
           />
         </TabsContent>
 
+        <TabsContent value="snapshots" className="pt-4">
+          <Card>
+            <CardContent className="space-y-4 pt-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-medium">Snapshots</div>
+                  <p className="text-sm text-muted-foreground">
+                    A durable backup of this database's disk (Longhorn → object storage). It
+                    survives the database's deletion; restore it into a new database from the{" "}
+                    <span className="font-medium text-foreground">Backup → Snapshots</span> page.
+                  </p>
+                </div>
+                <Button
+                  onClick={() => takeSnap.mutate()}
+                  disabled={takeSnap.isPending}
+                >
+                  <Camera className="size-4" />
+                  {takeSnap.isPending ? "Snapshotting…" : "Take snapshot"}
+                </Button>
+              </div>
+
+              {takeSnap.isError ? (
+                <p className="text-sm text-destructive">
+                  {(takeSnap.error as Error).message}
+                </p>
+              ) : null}
+
+              {(snapsQ.data?.length ?? 0) === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No snapshots yet. Take one before you deprovision this database.
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 font-medium">Taken</th>
+                      <th className="py-2 text-right font-medium">Size</th>
+                      <th className="py-2 font-medium">Status</th>
+                      <th className="py-2 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapsQ.data?.map((s) => (
+                      <tr key={s.id} className="border-b last:border-0">
+                        <td className="py-2 text-muted-foreground">
+                          {s.createdAt ? age(s.createdAt) : "—"}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {s.sizeBytes ? formatBytes(s.sizeBytes) : "—"}
+                        </td>
+                        <td className="py-2">
+                          <Badge
+                            variant={s.status === "ready" ? "default" : "secondary"}
+                            className={s.status === "failed" ? "bg-destructive" : ""}
+                          >
+                            {s.status}
+                          </Badge>
+                        </td>
+                        <td className="py-2 text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            disabled={delSnap.isPending}
+                            onClick={() => delSnap.mutate(s)}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={app} />
         </TabsContent>
-      <TabsContent value="danger" className="pt-4">
-<DangerZone
+      <TabsContent value="danger" className="space-y-4 pt-4">
+        <label className="flex items-start gap-3 rounded-lg border p-4 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4"
+            checked={finalSnap}
+            onChange={(ev) => setFinalSnap(ev.target.checked)}
+          />
+          <span>
+            <span className="font-medium">Take a final snapshot before deleting</span>
+            <span className="block text-muted-foreground">
+              A durable backup is taken and confirmed complete before the database is
+              removed, so you can restore it later (RDS-style). {snapPhase ?? ""}
+            </span>
+          </span>
+        </label>
+        <DangerZone
         resourceLabel="Database"
         resourceName={db?.name ?? name}
-        deleting={deleteMutation.isPending}
-        onConfirm={() => deleteMutation.mutate()}
+        deleting={deleteMutation.isPending || snapPhase !== null}
+        onConfirm={() => void deleteWithOptionalSnapshot()}
         confirmDescription={
           <>
             Permanently delete the application{" "}
             <span className="font-medium text-foreground">{name}</span> and its{" "}
             {e.label} database. This cannot be undone.
+            {finalSnap ? " A final snapshot will be taken first." : ""}
           </>
         }
       />

@@ -550,6 +550,8 @@ export interface DbSnapshot {
   engine: string;
   dbName: string;
   createdAt: string;
+  /** logical = pg_dump→MinIO (Postgres); volume = CSI Longhorn backup (babelfish/mysql/mongo). */
+  kind: "logical" | "volume";
   status: "creating" | "ready" | "failed";
   sizeBytes: number;
 }
@@ -572,7 +574,12 @@ export function restoreDbSnapshot(id: string, namespace: string, target: string)
   });
 }
 
-export function deleteDbSnapshot(namespace: string, name: string, id: string): Promise<unknown> {
-  const q = new URLSearchParams({ namespace, name, id });
+export function deleteDbSnapshot(
+  namespace: string,
+  name: string,
+  id: string,
+  kind: "logical" | "volume" = "logical",
+): Promise<unknown> {
+  const q = new URLSearchParams({ namespace, name, id, kind });
   return request(`/snapshots?${q.toString()}`, { method: "DELETE" });
 }
