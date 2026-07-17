@@ -25,12 +25,15 @@ class would die with the PVC — it is not used here.)
 
 ## Flow
 
-1. **Take a snapshot** — from a database's **Danger Zone**, tick *"Take a final snapshot
-   before deleting"* (default on): the delete **waits for the snapshot to complete**, then
-   removes the database. Or take one anytime; it lands in **Snapshots**.
+1. **Take a snapshot** — from a database's **Snapshots** tab, or its **Danger Zone** tick
+   *"Take a final snapshot before deleting"* (default on): the delete **waits for the snapshot
+   to complete**, then removes the database. Snapshots also land in **Backup → Snapshots**.
 2. **Deprovision** — delete the database. The snapshot remains.
-3. **Restore** — create a new (empty) database, then **Restore** the snapshot into it from
-   the Snapshots page. Restore is a *new* resource, AWS-style — it never resurrects the old one.
+3. **Restore** — from the Snapshots page. Restore is a *new* resource, AWS-style — it never
+   resurrects the old one:
+   - **Postgres (logical):** create a new empty database first, then restore the dump into it.
+   - **Managed engines (CSI):** just pick a name — the console **creates the new database** and
+     restores its disk from the snapshot (it comes up with its own fresh credentials).
 
 ## How it works (Postgres)
 
@@ -51,13 +54,19 @@ CRD read. Delete removes the `VolumeSnapshot` (and, via the backup deletion poli
 backup). The **final-snapshot-before-delete** checkbox waits for the backup to *finish uploading*
 before it removes the database — otherwise the snapshot wouldn't outlive it.
 
+**Restore (babelfish)** pre-seeds the target's data PVC (`data-<target>-babelfish-0`) *from* the
+snapshot, so the new StatefulSet **adopts it by name**, then creates a data-only Application
+(`database.name` = the source's logical db). The restored disk carries the *source's* password,
+but the new instance generates its own secret — so the babelfish entrypoint reconciles the app +
+superuser password to the injected secret on every boot, making the k8s Secret authoritative. No
+exec, no pre-existing target. (MySQL/Mongo restore is a follow-up; their create + delete work.)
+
 ## Honest limits
 
 - **In-cluster durability, not DR.** Snapshots live in MinIO — they survive the database's
   deletion, but not a total cluster / MinIO loss. Not an off-cluster backup.
-- **Restore state:** Postgres (logical) restore is built; managed-engine (CSI) **create + delete**
-  are built and validated — **restore-as-new** for managed engines (pre-seed the target PVC from
-  the snapshot + reconcile the generated password) is the next step.
+- **Restore state:** Postgres (logical) and **babelfish** (CSI) restore are built; MySQL / Mongo
+  **create + delete** work, and their **restore-as-new** is the next step.
 - **MinIO credentials are the root creds** for now; scoping to a snapshots-only MinIO user is a
   tracked follow-up (as was done for `kind: Query`). The Longhorn backup target reuses MinIO's
   root creds, kept fresh by a self-healing refresh CronJob (they had gone stale on a MinIO

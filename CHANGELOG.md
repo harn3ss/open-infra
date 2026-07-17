@@ -27,8 +27,14 @@ the product's public contract.
   `type: bak`) of the data PVC, which uploads to MinIO and **survives full deletion of the
   source** (verified: back up → destroy the source PVC → restore into a new volume → data
   returned). New **Snapshots tab** + final-snapshot-before-delete checkbox on the managed
-  database page; the unified Snapshots list and delete span both mechanisms. Create + delete
-  validated live for babelfish; **restore-as-new for managed engines is the next step**.
+  database page; the unified Snapshots list and delete span both mechanisms.
+- **Restore-as-new for babelfish snapshots.** The BFF pre-seeds the target's data PVC *from*
+  the snapshot (the new StatefulSet adopts it by name) and creates a data-only Application — no
+  pre-existing target needed. The restored disk carries the source's password, so babelfish's
+  entrypoint now reconciles the app + superuser password to the injected secret on every boot
+  (making the k8s Secret authoritative); the restored instance comes up with its own working
+  credentials. Proven end-to-end on a throwaway (canary → snapshot → restore → remote client
+  with the new secret returns the canary; `sys` catalog intact). MySQL/Mongo restore is next.
 - **Fixed: the Longhorn backup target silently broke on a MinIO reprovision.** The setup job
   copies MinIO's root creds into `longhorn-minio-creds` only on Argo sync, so when MinIO's
   root creds rotated the copy went stale → `InvalidAccessKeyId` → **all Longhorn backups
