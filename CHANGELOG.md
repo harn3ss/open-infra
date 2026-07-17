@@ -49,9 +49,14 @@ the product's public contract.
   Postgres, **Mongo** (FerretDB/DocumentDB), and **MySQL** (MariaDB) are on local-path, which has
   no CSI snapshot. So Mongo now snapshots via `pg_dump` of its **Postgres backend** (`POSTGRESQL_URL`)
   and MySQL via `mariadb-dump`; both restore into a pre-created target (`pg_restore` / `mariadb`).
-  Mongo validated end-to-end; MySQL path implemented (no MariaDB instance available to exercise
-  live here). Also added the **Snapshots tab** to the Postgres detail page (it only had the
-  Danger-Zone checkbox), with the Take-snapshot button disabled while the DB is stopped.
+  **Both validated end-to-end** (canary round-trip: snapshot → new DB → restore → row returns).
+  Also added the **Snapshots tab** to the Postgres detail page (it only had the Danger-Zone
+  checkbox), with the Take-snapshot button disabled while the DB is stopped.
+- **Fixed: mysql databases never provisioned** (a bug surfaced while validating mysql snapshots).
+  The `openinfra-provider-kubernetes` ClusterRole enumerates every API the Crossplane provider may
+  manage but **omitted `k8s.mariadb.com`**, so the provider could create the mysql Secret/NetworkPolicy
+  but *not* the MariaDB CR — every mysql-engine database silently stuck at "mysql not yet ready".
+  Added the `mariadbs` grant; mysql now provisions (and snapshots) correctly.
 - **Fixed: the Longhorn backup target silently broke on a MinIO reprovision.** The setup job
   copies MinIO's root creds into `longhorn-minio-creds` only on Argo sync, so when MinIO's
   root creds rotated the copy went stale → `InvalidAccessKeyId` → **all Longhorn backups
