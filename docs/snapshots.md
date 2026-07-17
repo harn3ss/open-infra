@@ -16,7 +16,7 @@ automatically by engine:
 |---|---|---|---|
 | **Postgres** (CloudNativePG) | `local-path` | **logical `pg_dump -Fc` → MinIO** | local-path has no CSI snapshot; a logical dump is engine-portable |
 | **Mongo** (DocumentDB/FerretDB) | `local-path` | **`pg_dump` of its Postgres backend → MinIO** | FerretDB stores data in Postgres (DocumentDB extension); the `POSTGRESQL_URL` dumps cleanly |
-| **MySQL** (MariaDB) | `local-path` | **`mariadb-dump` → MinIO** | native logical dump for the MariaDB engine |
+| **MySQL** (MariaDB) | `local-path` | **`mariadb-dump` → MinIO** (restore via `mariadb`) | native logical dump for the MariaDB engine |
 | **Babelfish** | **Longhorn** | **CSI `VolumeSnapshot` (`longhorn-backup`) → MinIO** | physically consistent whole-disk backup; a `pg_dump` is *wrong* for babelfish — it drags in the babelfish extensions + `sys`/`master_`/`msdb_` catalog schemas |
 | **VMs** (highAvailability) | Longhorn | same `longhorn-backup` CSI path (root disk) | restore boots a new VM from the restored disk |
 
