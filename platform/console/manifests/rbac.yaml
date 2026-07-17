@@ -160,6 +160,13 @@ rules:
       - services
     verbs: [create, update, patch, delete]
 
+  # Pre-seed a data PVC from a VolumeSnapshot when restoring a managed database snapshot
+  # (the restored StatefulSet adopts data-<name>-<engine>-0 by name).
+  - apiGroups: [""]
+    resources:
+      - persistentvolumeclaims
+    verbs: [create]
+
   - apiGroups: [apps]
     resources:
       - deployments

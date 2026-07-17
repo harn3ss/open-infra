@@ -169,6 +169,78 @@ func csiDeleteSnapshot(ctx context.Context, cs kubernetes.Interface, ns, name st
 		Do(ctx).Error()
 }
 
+// csiSnapshotEngine reads a managed-DB VolumeSnapshot's engine + logical db name (or ok=false
+// if there's no such snapshot — i.e. it's a logical/pg_dump snapshot instead).
+func csiSnapshotEngine(ctx context.Context, cs kubernetes.Interface, ns, id string) (engine, dbName, size string, ok bool) {
+	raw, err := cs.CoreV1().RESTClient().Get().AbsPath(vsAbsPath(ns) + "/" + id).DoRaw(ctx)
+	if err != nil {
+		return "", "", "", false
+	}
+	var vs volumeSnapshot
+	if err := json.Unmarshal(raw, &vs); err != nil {
+		return "", "", "", false
+	}
+	size = "10Gi"
+	if vs.Status != nil && vs.Status.RestoreSize != "" {
+		size = vs.Status.RestoreSize
+	}
+	return vs.Metadata.Annotations[annEngine], vs.Metadata.Annotations[annDBName], size, true
+}
+
+// csiRestore restores a managed-DB VolumeSnapshot into a NEW database (AWS-style — never
+// resurrects the old one): it pre-seeds the target's data PVC FROM the snapshot (the
+// StatefulSet then adopts it by name) and creates a data-only Application. The restored
+// data carries the source's password, but the babelfish entrypoint reconciles the app +
+// superuser password to the new instance's generated secret on boot (start.sh), so the new
+// connection secret authenticates — no exec needed. v1: babelfish only.
+func csiRestore(ctx context.Context, cs kubernetes.Interface, ns, id, target string) error {
+	engine, dbName, size, ok := csiSnapshotEngine(ctx, cs, ns, id)
+	if !ok {
+		return fmt.Errorf("volume snapshot %q not found in %s", id, ns)
+	}
+	if engine != "babelfish" {
+		return fmt.Errorf("restore-as-new is currently supported for babelfish only (this snapshot is %q)", engine)
+	}
+	if dbName == "" {
+		dbName = target
+	}
+
+	// 1) pre-seed the target data PVC from the snapshot (STS adopts data-<target>-babelfish-0).
+	pvc := map[string]any{
+		"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+		"metadata": map[string]any{"name": fmt.Sprintf("data-%s-babelfish-0", target), "namespace": ns},
+		"spec": map[string]any{
+			"storageClassName": "longhorn",
+			"accessModes":      []string{"ReadWriteOnce"},
+			"dataSource":       map[string]any{"name": id, "kind": "VolumeSnapshot", "apiGroup": "snapshot.storage.k8s.io"},
+			"resources":        map[string]any{"requests": map[string]any{"storage": size}},
+		},
+	}
+	pb, _ := json.Marshal(pvc)
+	if err := cs.CoreV1().RESTClient().Post().
+		AbsPath("/api/v1/namespaces/" + ns + "/persistentvolumeclaims").
+		Body(pb).SetHeader("Content-Type", "application/json").Do(ctx).Error(); err != nil &&
+		!strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("create restore PVC: %w", err)
+	}
+
+	// 2) create a data-only Application; database.name = the source's logical db so the
+	//    restored physical database matches. StatefulSet adopts the pre-seeded PVC.
+	app := map[string]any{
+		"apiVersion": "openinfra.dev/v1", "kind": "Application",
+		"metadata": map[string]any{"name": target, "namespace": ns},
+		"spec":     map[string]any{"database": map[string]any{"engine": "babelfish", "name": dbName}},
+	}
+	ab, _ := json.Marshal(app)
+	if err := cs.CoreV1().RESTClient().Post().
+		AbsPath("/apis/openinfra.dev/v1/namespaces/" + ns + "/applications").
+		Body(ab).SetHeader("Content-Type", "application/json").Do(ctx).Error(); err != nil &&
+		!strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("create restored application: %w", err)
+	}
+	return nil
+}
+
 // parseQuantityBytes turns a k8s resource.Quantity string ("10Gi", "5368709120") into bytes.
 // Good enough for display; unknown units → 0.
 func parseQuantityBytes(q string) int64 {
