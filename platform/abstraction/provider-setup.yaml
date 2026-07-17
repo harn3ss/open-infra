@@ -41,6 +41,12 @@ rules:
   - apiGroups: [postgresql.cnpg.io]
     resources: [clusters]
     verbs: [get, list, watch, create, update, patch, delete]
+  # MariaDB for the managed MySQL engine (mariadb-operator). Without this the provider
+  # cannot create/observe the MariaDB CR and mysql databases never provision. The operator
+  # owns the StatefulSet/User/Database/Services from the MariaDB spec.
+  - apiGroups: [k8s.mariadb.com]
+    resources: [mariadbs]
+    verbs: [get, list, watch, create, update, patch, delete]
   # Knative Services for the kind: Function (serverless) abstraction.
   - apiGroups: [serving.knative.dev]
     resources: [services]
