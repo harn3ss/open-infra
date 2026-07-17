@@ -35,25 +35,14 @@ const (
 	annCreated = "openinfra.dev/snap-createdat"
 )
 
-// managedEngine reports the engine + data-PVC name for a managed (Longhorn) database, or
-// ok=false when the Application isn't one (e.g. it's CNPG Postgres → the pg_dump path). We
-// detect the engine by which generated connection secret exists — the same signal the rest
-// of the BFF uses — so no CRD read is needed.
+// managedEngine reports the engine + data-PVC name for a database whose data is on Longhorn
+// (→ durable CSI snapshot). In this platform that's ONLY babelfish; every other engine —
+// Postgres, mongo (DocumentDB), mysql (MariaDB) — is on local-path, which has no CSI snapshot,
+// so those take a logical dump instead (see logicalDumpPlan). Detected by the connection secret.
 func managedEngine(cs kubernetes.Interface, ns, app string) (engine, pvc string, ok bool) {
-	get := func(name string) bool {
-		_, err := cs.CoreV1().Secrets(ns).Get(context.Background(), name, metav1.GetOptions{})
-		return err == nil
-	}
-	switch {
-	case get(app + "-babelfish"):
+	if _, err := cs.CoreV1().Secrets(ns).Get(context.Background(), app+"-babelfish", metav1.GetOptions{}); err == nil {
 		// StatefulSet <app>-babelfish, volumeClaimTemplate "data" → data-<app>-babelfish-0.
 		return "babelfish", fmt.Sprintf("data-%s-babelfish-0", app), true
-	case get(app + "-mongo-app"):
-		// FerretDB/DocumentDB-Postgres Deployment mounts <app>-docdb-data.
-		return "mongo", app + "-docdb-data", true
-	case get(app + "-mysql-app"):
-		// MariaDB operator StatefulSet <app>-mysql, PVC storage-<app>-mysql-0.
-		return "mysql", fmt.Sprintf("storage-%s-mysql-0", app), true
 	}
 	return "", "", false
 }

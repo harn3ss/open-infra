@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Database, Eye, EyeOff } from "lucide-react";
+import { Database, Eye, EyeOff, Camera, Trash2 } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -22,10 +22,13 @@ import {
   getManagedDbStats,
   createDbSnapshot,
   listDbSnapshots,
+  deleteDbSnapshot,
+  type DbSnapshot,
 } from "@/lib/api";
 import { DbStatsPanel } from "@/components/common/db-stats-panel";
+import { Badge } from "@/components/ui/badge";
 import { cnpgPaths, openinfraPaths } from "@/lib/k8s-paths";
-import { type StatusTone } from "@/lib/format";
+import { type StatusTone, age, formatBytes } from "@/lib/format";
 import type { Application, CnpgCluster, K8sObject } from "@/types/k8s";
 
 function decode(v?: string): string {
@@ -84,6 +87,25 @@ export function DatabaseDetailPage() {
   const deleteMutation = useMutation({
     mutationFn: () => k8sDelete(openinfraPaths.application(namespace, appName)),
     onSuccess: () => navigate({ to: "/databases" }),
+  });
+
+  // Snapshots for this database (logical pg_dump → MinIO).
+  const snapsQ = useQuery({
+    queryKey: ["db-snapshots", namespace, appName],
+    queryFn: listDbSnapshots,
+    select: (all: DbSnapshot[]) =>
+      all
+        .filter((s) => s.namespace === namespace && s.sourceName === appName)
+        .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")),
+    refetchInterval: 8000,
+  });
+  const takeSnap = useMutation({
+    mutationFn: () => createDbSnapshot(namespace, appName),
+    onSuccess: () => void snapsQ.refetch(),
+  });
+  const delSnap = useMutation({
+    mutationFn: (s: DbSnapshot) => deleteDbSnapshot(s.namespace, s.sourceName, s.id, s.kind),
+    onSuccess: () => void snapsQ.refetch(),
   });
 
   const { data: db, isLoading, isError, error, refetch } = useQuery({
@@ -177,6 +199,7 @@ export function DatabaseDetailPage() {
           <TabsTrigger value="connectivity">Connectivity</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
+          <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -296,6 +319,88 @@ export function DatabaseDetailPage() {
             uid="openinfra-app-overview"
             vars={{ "var-namespace": namespace, "var-pod": `${name}-.*` }}
           />
+        </TabsContent>
+
+        <TabsContent value="snapshots" className="pt-4">
+          <Card>
+            <CardContent className="space-y-4 pt-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-medium">Snapshots</div>
+                  <p className="text-sm text-muted-foreground">
+                    A logical dump (<span className="font-mono">pg_dump</span>) kept in object
+                    storage. It survives the database's deletion; restore it into a new database
+                    from the <span className="font-medium text-foreground">Backup → Snapshots</span> page.
+                  </p>
+                </div>
+                <Button
+                  onClick={() => takeSnap.mutate()}
+                  disabled={takeSnap.isPending || stopped}
+                >
+                  <Camera className="size-4" />
+                  {takeSnap.isPending ? "Snapshotting…" : "Take snapshot"}
+                </Button>
+              </div>
+
+              {stopped ? (
+                <p className="text-sm text-muted-foreground">
+                  The database is <span className="font-medium">stopped</span> — start it to take a
+                  snapshot (a logical dump needs the database running).
+                </p>
+              ) : null}
+              {takeSnap.isError ? (
+                <p className="text-sm text-destructive">{(takeSnap.error as Error).message}</p>
+              ) : null}
+
+              {(snapsQ.data?.length ?? 0) === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No snapshots yet. Take one before you deprovision this database.
+                </p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 font-medium">Taken</th>
+                      <th className="py-2 text-right font-medium">Size</th>
+                      <th className="py-2 font-medium">Status</th>
+                      <th className="py-2 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapsQ.data?.map((s) => (
+                      <tr key={s.id} className="border-b last:border-0">
+                        <td className="py-2 text-muted-foreground">
+                          {s.createdAt ? age(s.createdAt) : "—"}
+                        </td>
+                        <td className="py-2 text-right tabular-nums">
+                          {s.sizeBytes ? formatBytes(s.sizeBytes) : "—"}
+                        </td>
+                        <td className="py-2">
+                          <Badge
+                            variant={s.status === "ready" ? "default" : "secondary"}
+                            className={s.status === "failed" ? "bg-destructive" : ""}
+                          >
+                            {s.status}
+                          </Badge>
+                        </td>
+                        <td className="py-2 text-right">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-destructive"
+                            disabled={delSnap.isPending}
+                            onClick={() => delSnap.mutate(s)}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
