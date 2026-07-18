@@ -1,10 +1,14 @@
-import { CircleDot } from "lucide-react";
+import { CircleDot, Search } from "lucide-react";
 import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { GlobalSearch } from "@/components/layout/global-search";
+import { openCommandPalette } from "@/components/layout/command-palette";
 import { NamespaceSwitcher } from "@/components/layout/namespace-switcher";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Separator } from "@/components/ui/separator";
 import { useConfig } from "@/lib/config-context";
+
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 export function Topbar() {
   const config = useConfig();
@@ -27,7 +31,19 @@ export function Topbar() {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <GlobalSearch className="hidden w-64 sm:block" />
+        <button
+          type="button"
+          onClick={openCommandPalette}
+          className="hidden h-9 w-56 items-center gap-2 rounded-md border border-border bg-secondary/50 px-3 text-sm text-muted-foreground transition-colors hover:bg-secondary lg:flex"
+          aria-label="Jump to a page"
+        >
+          <Search className="size-4 shrink-0" />
+          <span>Jump to…</span>
+          <kbd className="ml-auto rounded border border-border bg-background px-1.5 py-0.5 text-[0.65rem]">
+            {IS_MAC ? "⌘" : "Ctrl"} K
+          </kbd>
+        </button>
+        <GlobalSearch className="hidden w-56 sm:block lg:w-48" />
         <NamespaceSwitcher />
         <Separator orientation="vertical" className="h-6" />
         <ThemeToggle />
