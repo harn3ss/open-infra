@@ -38,12 +38,12 @@ Everything cluster-specific (cluster name, Grafana URL, version) comes from
 - [react-jsonschema-form](https://rjsf-team.github.io/react-jsonschema-form/) (`@rjsf/core` + `@rjsf/validator-ajv8`) for CRD-driven forms
 - [lucide-react](https://lucide.dev/) icons
 
-> Pinned to versions that run on Node 18+ (the project's toolchain). Newer
-> majors of Vite/TanStack Router require Node 20+.
+> Built on **Node 22 LTS ("Jod")** — Vite 8 requires Node `^20.19 || >=22.12`.
+> Use `nvm use` (see `.nvmrc`); the CI/Docker UI build stage runs `node:22-alpine`.
 
 ## Prerequisites
 
-- Node.js >= 18.18 and npm.
+- Node.js **22 LTS** (`nvm use`) — Node 18 can no longer build (Vite 8).
 - The open-infra **BFF** running locally (default `http://localhost:8080`) for
   live data during development.
 
