@@ -3,6 +3,7 @@ import { Outlet } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
+import { CommandPalette } from "@/components/layout/command-palette";
 import { BrandWordmark } from "@/components/layout/brand";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +23,9 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden oi-aurora">
+      {/* Global ⌘K command palette (jump to any page) */}
+      <CommandPalette />
+
       {/* Desktop sidebar */}
       <div className="hidden md:block">
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} />
