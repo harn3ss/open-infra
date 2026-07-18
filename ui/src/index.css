@@ -280,3 +280,14 @@
 .oi-rjsf .checkbox input {
   width: auto;
 }
+
+/* ── Content density (compact) ──────────────────────────────────────────────
+   When the user picks Compact (Settings → Density), tighten data-dense views.
+   Scoped to table rows + card body padding only; menus, alerts, form fields,
+   and dropdowns deliberately keep comfortable spacing (Cloudscape guidance).
+   Selector specificity (:root[attr] descendant element) beats Tailwind p-* utils
+   without !important. */
+:root[data-density="compact"] :is(td, th) {
+  padding-top: 0.3125rem;
+  padding-bottom: 0.3125rem;
+}

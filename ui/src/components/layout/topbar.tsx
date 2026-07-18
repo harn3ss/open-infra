@@ -3,7 +3,7 @@ import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { GlobalSearch } from "@/components/layout/global-search";
 import { openCommandPalette } from "@/components/layout/command-palette";
 import { NamespaceSwitcher } from "@/components/layout/namespace-switcher";
-import { ThemeToggle } from "@/components/layout/theme-toggle";
+import { SettingsMenu } from "@/components/layout/settings-menu";
 import { Separator } from "@/components/ui/separator";
 import { useConfig } from "@/lib/config-context";
 
@@ -46,7 +46,7 @@ export function Topbar() {
         <GlobalSearch className="hidden w-56 sm:block lg:w-48" />
         <NamespaceSwitcher />
         <Separator orientation="vertical" className="h-6" />
-        <ThemeToggle />
+        <SettingsMenu />
       </div>
     </header>
   );
