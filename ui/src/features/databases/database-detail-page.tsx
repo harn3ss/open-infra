@@ -28,7 +28,7 @@ import {
 import { DbStatsPanel } from "@/components/common/db-stats-panel";
 import { Badge } from "@/components/ui/badge";
 import { cnpgPaths, openinfraPaths } from "@/lib/k8s-paths";
-import { type StatusTone, age, formatBytes } from "@/lib/format";
+import { type StatusTone, age, formatBytes, formatTimestamp } from "@/lib/format";
 import type { Application, CnpgCluster, K8sObject } from "@/types/k8s";
 
 function decode(v?: string): string {
@@ -369,8 +369,8 @@ export function DatabaseDetailPage() {
                   <tbody>
                     {snapsQ.data?.map((s) => (
                       <tr key={s.id} className="border-b last:border-0">
-                        <td className="py-2 text-muted-foreground">
-                          {s.createdAt ? age(s.createdAt) : "—"}
+                        <td className="py-2 text-muted-foreground" title={s.createdAt ? `${age(s.createdAt)} ago` : undefined}>
+                          {formatTimestamp(s.createdAt)}
                         </td>
                         <td className="py-2 text-right tabular-nums">
                           {s.sizeBytes ? formatBytes(s.sizeBytes) : "—"}
