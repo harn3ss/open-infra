@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { ChevronDown, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ChevronDown, Clock, PanelLeftClose, PanelLeftOpen, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import { BrandWordmark } from "@/components/layout/brand";
 import { NAV_ITEMS, NAV_SECTIONS, type NavItem } from "@/components/layout/nav-items";
+import { useNavPrefs } from "@/lib/use-nav-prefs";
 import { useConfig } from "@/lib/config-context";
 import { cn } from "@/lib/utils";
 
@@ -19,7 +20,6 @@ function isActive(pathname: string, to: string, matchPrefix?: boolean): boolean 
   return pathname === to;
 }
 
-/** The section that owns the current route (or "" for ungrouped/Dashboard). */
 function activeSectionFor(pathname: string): string {
   const hit = NAV_ITEMS.find((i) => isActive(pathname, i.to, i.matchPrefix));
   return hit?.section ?? "";
@@ -36,6 +36,10 @@ function loadExpanded(): Record<string, boolean> {
   }
 }
 
+const BY_PATH: Record<string, NavItem> = Object.fromEntries(
+  NAV_ITEMS.map((i) => [i.to, i]),
+);
+
 export function Sidebar({
   collapsed,
   onToggle,
@@ -46,8 +50,16 @@ export function Sidebar({
   const config = useConfig();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeSection = activeSectionFor(pathname);
+  const { pins, recents, togglePin, isPinned, recordVisit } = useNavPrefs();
 
-  // Ungrouped items (Dashboard) first, then items bucketed by section in order.
+  const activeItem = useMemo(
+    () => NAV_ITEMS.find((i) => isActive(pathname, i.to, i.matchPrefix)),
+    [pathname],
+  );
+  useEffect(() => {
+    if (activeItem) recordVisit(activeItem.to);
+  }, [activeItem, recordVisit]);
+
   const { ungrouped, sections } = useMemo(() => {
     const ungrouped: NavItem[] = NAV_ITEMS.filter((i) => !i.section);
     const sections = NAV_SECTIONS.map((name) => ({
@@ -57,10 +69,20 @@ export function Sidebar({
     return { ungrouped, sections };
   }, []);
 
-  // Expand/collapse state, persisted. Default collapsed; the section owning the
-  // current route auto-expands (Cloudscape heuristic). User toggles are remembered.
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded);
+  const pinnedItems = useMemo(
+    () => pins.map((p) => BY_PATH[p]).filter((i): i is NavItem => Boolean(i)),
+    [pins],
+  );
+  const recentItems = useMemo(
+    () =>
+      recents
+        .map((p) => BY_PATH[p])
+        .filter((i): i is NavItem => i != null && i.to !== activeItem?.to)
+        .slice(0, 5),
+    [recents, activeItem],
+  );
 
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded);
   useEffect(() => {
     if (!activeSection) return;
     setExpanded((prev) => (prev[activeSection] ? prev : { ...prev, [activeSection]: true }));
@@ -78,7 +100,7 @@ export function Sidebar({
     });
   }, []);
 
-  function navLink(item: NavItem, indent = false) {
+  function navLink(item: NavItem, opts?: { indent?: boolean; canPin?: boolean }) {
     const active = isActive(pathname, item.to, item.matchPrefix);
     const link = (
       <Link
@@ -86,7 +108,8 @@ export function Sidebar({
         className={cn(
           "flex items-center gap-3 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
           collapsed && "justify-center px-0",
-          !collapsed && indent && "pl-9",
+          !collapsed && opts?.indent && "pl-9",
+          !collapsed && "pr-8",
           active
             ? "bg-primary/15 text-primary"
             : "text-sidebar-foreground hover:bg-secondary hover:text-foreground",
@@ -94,16 +117,57 @@ export function Sidebar({
         aria-current={active ? "page" : undefined}
       >
         <item.icon className="size-[1.15rem] shrink-0" />
-        {!collapsed ? <span>{item.label}</span> : null}
+        {!collapsed ? <span className="truncate">{item.label}</span> : null}
       </Link>
     );
-    return collapsed ? (
-      <Tooltip key={item.to}>
-        <TooltipTrigger asChild>{link}</TooltipTrigger>
-        <TooltipContent side="right">{item.label}</TooltipContent>
-      </Tooltip>
-    ) : (
-      <Fragment key={item.to}>{link}</Fragment>
+
+    if (collapsed) {
+      return (
+        <Tooltip key={item.to}>
+          <TooltipTrigger asChild>{link}</TooltipTrigger>
+          <TooltipContent side="right">{item.label}</TooltipContent>
+        </Tooltip>
+      );
+    }
+
+    const pinned = isPinned(item.to);
+    return (
+      <div key={item.to} className="group/nav relative">
+        {link}
+        {opts?.canPin !== false ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              togglePin(item.to);
+            }}
+            aria-label={pinned ? `Unpin ${item.label}` : `Pin ${item.label}`}
+            title={pinned ? "Unpin" : "Pin to top"}
+            className={cn(
+              "absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 transition-opacity",
+              pinned
+                ? "text-primary opacity-100"
+                : "text-muted-foreground opacity-0 hover:text-foreground group-hover/nav:opacity-100",
+            )}
+          >
+            <Star className={cn("size-3.5", pinned && "fill-current")} />
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+
+  function cluster(label: string, icon: ReactNode, items: NavItem[]) {
+    if (collapsed || items.length === 0) return null;
+    return (
+      <div className="pb-1">
+        <div className="flex items-center gap-1.5 px-3 pb-0.5 pt-1 text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          {icon}
+          {label}
+        </div>
+        {items.map((item) => navLink(item))}
+      </div>
     );
   }
 
@@ -125,11 +189,13 @@ export function Sidebar({
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
         <TooltipProvider delayDuration={0}>
-          {ungrouped.map((item) => navLink(item))}
+          {ungrouped.map((item) => navLink(item, { canPin: false }))}
+
+          {cluster("Pinned", <Star className="size-3" />, pinnedItems)}
+          {cluster("Recent", <Clock className="size-3" />, recentItems)}
 
           {collapsed
-            ? // Icon rail: sections don't apply — flat icon list with tooltips.
-              NAV_ITEMS.filter((i) => i.section).map((item) => navLink(item))
+            ? NAV_ITEMS.filter((i) => i.section).map((item) => navLink(item))
             : sections.map((section) => {
                 const open = Boolean(expanded[section.name]);
                 const hasActive = section.name === activeSection;
@@ -156,7 +222,7 @@ export function Sidebar({
                     </button>
                     {open ? (
                       <div className="mt-0.5 space-y-0.5">
-                        {section.items.map((item) => navLink(item, true))}
+                        {section.items.map((item) => navLink(item, { indent: true }))}
                       </div>
                     ) : null}
                   </div>
