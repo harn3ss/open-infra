@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { LiveIndicator } from "@/components/common/live-indicator";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
-import { age } from "@/lib/format";
+import { age, formatTimestamp } from "@/lib/format";
 import {
   deleteDbSnapshot,
   listDbSnapshots,
@@ -222,7 +222,9 @@ export function SnapshotsPage() {
                     </td>
                     <td className="p-3 text-right tabular-nums">{fmtBytes(s.sizeBytes)}</td>
                     <td className="p-3 text-muted-foreground">
-                      {s.createdAt ? age(s.createdAt) : "—"}
+                      <span title={s.createdAt ? `${age(s.createdAt)} ago` : undefined}>
+                        {formatTimestamp(s.createdAt)}
+                      </span>
                     </td>
                     <td className="p-3">
                       <Badge
@@ -296,7 +298,9 @@ export function SnapshotsPage() {
                     </td>
                     <td className="p-3 text-right tabular-nums">{fmtBytes(s.sizeBytes)}</td>
                     <td className="p-3 text-muted-foreground">
-                      {s.createdAt ? age(s.createdAt) : "—"}
+                      <span title={s.createdAt ? `${age(s.createdAt)} ago` : undefined}>
+                        {formatTimestamp(s.createdAt)}
+                      </span>
                     </td>
                     <td className="p-3">
                       <Badge

@@ -23,7 +23,7 @@ import {
   deleteVmSnapshot,
   type VmSnapshot,
 } from "@/lib/api";
-import { age, formatBytes } from "@/lib/format";
+import { age, formatBytes, formatTimestamp } from "@/lib/format";
 import {
   cdiPaths,
   kubevirtPaths,
@@ -434,8 +434,8 @@ export function VmDetailPage() {
                   <tbody>
                     {snapsQ.data?.map((s) => (
                       <tr key={s.id} className="border-b last:border-0">
-                        <td className="py-2 text-muted-foreground">
-                          {s.createdAt ? age(s.createdAt) : "—"}
+                        <td className="py-2 text-muted-foreground" title={s.createdAt ? `${age(s.createdAt)} ago` : undefined}>
+                          {formatTimestamp(s.createdAt)}
                         </td>
                         <td className="py-2 text-right tabular-nums">
                           {s.sizeBytes ? formatBytes(s.sizeBytes) : "—"}
