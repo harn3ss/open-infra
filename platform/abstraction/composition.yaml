@@ -248,7 +248,15 @@ spec:
                         defaultRequest: { cpu: 50m, memory: 64Mi }
             ---
             # --- Tenant isolation: object-count quota (counts only — safe; never
-            #     blocks pods for missing requests/limits) ---
+            #     blocks pods for missing requests/limits).
+            #     NOTE: a ResourceQuota is NAMESPACE-scoped, so every app's quota caps
+            #     the WHOLE namespace and the most restrictive one wins. When several
+            #     apps/VMs share a namespace (e.g. `default`) these stack up fast — and
+            #     it isn't just app Services: KubeVirt VMs add a `-lan` Service and CDI
+            #     creates a transient `cdi-upload-*` Service per disk clone, so a low cap
+            #     silently wedges VM provisioning (clone stuck in CloneScheduled). Keep
+            #     these ceilings generous; they exist to stop runaway loops, not to size
+            #     the namespace. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -262,9 +270,9 @@ spec:
                   metadata: { name: {{ $name }}-quota, namespace: {{ $ns }} }
                   spec:
                     hard:
-                      pods: "50"
-                      persistentvolumeclaims: "20"
-                      services: "20"
+                      pods: "100"
+                      persistentvolumeclaims: "60"
+                      services: "60"
             ---
             # --- Tenant isolation: restrict ingress to the app's pods to the same
             #     namespace + the ingress controller (kube-system). Egress stays
