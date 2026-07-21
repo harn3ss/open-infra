@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 )
 
 // Reading identities from `kind: User` (iam.openinfra.dev).
@@ -38,6 +40,22 @@ type crdUser struct {
 	Spec crdUserSpec `json:"spec"`
 }
 
+// rawREST returns the REST client used for the AbsPath calls below, or nil if there
+// isn't a usable one. A clientset can hand back a TYPED nil *rest.RESTClient (the fake
+// clientset always does), which is non-nil as an interface and panics on first use — so
+// an ordinary `!= nil` check is not enough. Sign-in must degrade to "no CR users", never
+// crash the login handler.
+func (a *authStore) rawREST() rest.Interface {
+	rc := a.cs.CoreV1().RESTClient()
+	if rc == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(rc); v.Kind() == reflect.Ptr && v.IsNil() {
+		return nil
+	}
+	return rc
+}
+
 func usersAbsPath(ns string) string {
 	return "/apis/iam.openinfra.dev/v1/namespaces/" + ns + "/users"
 }
@@ -47,8 +65,11 @@ func usersAbsPath(ns string) string {
 // user" rather than erroring the sign-in.
 func (a *authStore) crdUserByName(ctx context.Context, name string) (crdUser, bool) {
 	var u crdUser
-	raw, err := a.cs.CoreV1().RESTClient().Get().
-		AbsPath(usersAbsPath(a.ns) + "/" + name).DoRaw(ctx)
+	rc := a.rawREST()
+	if rc == nil {
+		return u, false
+	}
+	raw, err := rc.Get().AbsPath(usersAbsPath(a.ns) + "/" + name).DoRaw(ctx)
 	if err != nil {
 		return u, false
 	}
@@ -99,7 +120,11 @@ func crdGroups(u crdUser) []string {
 // listCRDUsers returns every User, for the console's user list. Best-effort: an
 // uninstalled CRD yields an empty list rather than an error.
 func (a *authStore) listCRDUsers(ctx context.Context) []crdUser {
-	raw, err := a.cs.CoreV1().RESTClient().Get().AbsPath(usersAbsPath(a.ns)).DoRaw(ctx)
+	rc := a.rawREST()
+	if rc == nil {
+		return nil
+	}
+	raw, err := rc.Get().AbsPath(usersAbsPath(a.ns)).DoRaw(ctx)
 	if err != nil {
 		return nil
 	}

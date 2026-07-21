@@ -372,16 +372,30 @@ func roleGroups(role string) []string {
 	}
 }
 
-// identityFor resolves the impersonation identity for a proxied k8s request.
-func identityFor(r *http.Request) (string, []string, bool) {
-	c, ok := claimsFrom(r)
-	if !ok || c.Sub == "" {
+// identityFromClaims maps a session to the Kubernetes identity it acts as. This is the
+// SINGLE definition of "who is this, to the API server": both the impersonating proxy
+// and the SubjectAccessReview checks in authz.go must agree, or the console would
+// authorize a request under one identity and then perform it as another.
+//
+// Explicit claim groups (from a kind: User) win. Secret-backed accounts carry none, so
+// their role maps to a fixed group set.
+func identityFromClaims(c sessionClaims) (string, []string, bool) {
+	if c.Sub == "" {
 		return "", nil, false
 	}
 	if len(c.Groups) > 0 {
 		return "openinfra:" + c.Sub, c.Groups, true
 	}
 	return "openinfra:" + c.Sub, roleGroups(c.Role), true
+}
+
+// identityFor resolves the impersonation identity for a proxied k8s request.
+func identityFor(r *http.Request) (string, []string, bool) {
+	c, ok := claimsFrom(r)
+	if !ok {
+		return "", nil, false
+	}
+	return identityFromClaims(c)
 }
 
 // requireWrite blocks state-changing calls to the BFF's OWN endpoints (the ones
