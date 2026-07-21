@@ -42,6 +42,34 @@ rules:
     resources: [users]
     verbs: [impersonate]
 ---
+# 1b. The BFF's own endpoints (snapshots, restores) act with this ServiceAccount rather
+#     than through the impersonating proxy, so before doing the work they ask the API
+#     server whether the SIGNED-IN user could perform the equivalent action, via a
+#     SubjectAccessReview, and fail closed. That keeps the authorization decision and
+#     the actual access from diverging, and puts the check in the audit log against a
+#     person. Creating a SubjectAccessReview only ASKS a question — it grants nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-console-authz-check
+rules:
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-console-authz-check
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-infra-console-authz-check
+subjects:
+  - kind: ServiceAccount
+    name: console
+    namespace: open-infra-console
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

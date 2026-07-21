@@ -187,9 +187,14 @@ echo "RESTORE OK"`, snapEndpoint, snapBucket, key, snapBucket, key)
 }
 
 // POST /api/databases/{namespace}/{name}/snapshot  — take a snapshot now.
-func handleSnapshotCreate(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleSnapshotCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, app := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+		// Taking a snapshot mutates that database's world; require the same rights
+		// as changing it. Checked AS the signed-in user, not as the ServiceAccount.
+		if !authorize(w, r, cs, auth, logger, "update", "openinfra.dev", "applications", ns, app) {
+			return
+		}
 		ctx := r.Context()
 
 		// Managed engines (babelfish/mysql/mongo) live on Longhorn → durable CSI snapshot of
@@ -318,11 +323,15 @@ func handleSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 // POST /api/snapshots/restore  {id, namespace, target}  — restore a snapshot into an
 // already-created (empty) target database. The console creates the new Application (New
 // Database, engine from the snapshot); this streams the dump back into it once it's up.
-func handleSnapshotRestore(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleSnapshotRestore(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct{ ID, Namespace, Target string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" || in.Target == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id, namespace, target required"})
+			return
+		}
+		// Restoring creates a NEW database, so require create rights.
+		if !authorize(w, r, cs, auth, logger, "create", "openinfra.dev", "applications", in.Namespace, in.Target) {
 			return
 		}
 		ctx := r.Context()
@@ -389,11 +398,14 @@ echo "RESTORE OK"`, snapEndpoint, snapBucket, key, in.Target, snapBucket, key, r
 }
 
 // DELETE /api/snapshots?namespace=&name=&id=  — remove a snapshot artifact.
-func handleSnapshotDelete(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleSnapshotDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, name, id := r.URL.Query().Get("namespace"), r.URL.Query().Get("name"), r.URL.Query().Get("id")
 		if ns == "" || name == "" || id == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "namespace, name, id required"})
+			return
+		}
+		if !authorize(w, r, cs, auth, logger, "update", "openinfra.dev", "applications", ns, name) {
 			return
 		}
 		ctx := r.Context()
