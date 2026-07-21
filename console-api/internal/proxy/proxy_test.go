@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +148,68 @@ func TestProxyStripsClientImpersonationHeaders(t *testing.T) {
 		if g == "system:masters" {
 			t.Fatal("client-supplied system:masters group reached the API server")
 		}
+	}
+}
+
+// The impersonation-denial rewrite must fire for exactly one shape of 403 and be
+// invisible for every other response — including ordinary RBAC denials, which the
+// console relies on passing through verbatim.
+func TestExplainImpersonationDenial(t *testing.T) {
+	mk := func(code int, body string) *http.Response {
+		return &http.Response{
+			StatusCode: code,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}
+	}
+	read := func(r *http.Response) string {
+		b, _ := io.ReadAll(r.Body)
+		return string(b)
+	}
+
+	impersonate := `{"kind":"Status","code":403,"message":"groups \"openinfra:devs\" is forbidden: User \"system:serviceaccount:open-infra-console:console\" cannot impersonate resource \"groups\" in API group \"\" at the cluster scope","details":{"name":"openinfra:devs","kind":"groups"}}`
+	resp := mk(403, impersonate)
+	if err := explainImpersonationDenial(resp); err != nil {
+		t.Fatal(err)
+	}
+	got := read(resp)
+	if !strings.Contains(got, "open-infra-console-impersonator") || !strings.Contains(got, "openinfra:devs") {
+		t.Fatalf("message not rewritten: %s", got)
+	}
+	if !strings.Contains(got, `"kind":"Status"`) {
+		t.Fatalf("rewrite dropped the Status envelope, breaking client error handling: %s", got)
+	}
+	if resp.Header.Get("Content-Length") != strconv.Itoa(len(got)) {
+		t.Fatalf("Content-Length %q does not match body length %d", resp.Header.Get("Content-Length"), len(got))
+	}
+
+	// An ordinary RBAC denial must survive byte-for-byte.
+	rbac := `{"kind":"Status","code":403,"message":"virtualmachines.openinfra.dev is forbidden: User \"openinfra:alice\" cannot list resource","details":{"kind":"virtualmachines"}}`
+	resp = mk(403, rbac)
+	if err := explainImpersonationDenial(resp); err != nil {
+		t.Fatal(err)
+	}
+	if read(resp) != rbac {
+		t.Fatal("an ordinary RBAC 403 was modified")
+	}
+
+	// Non-403s are not even parsed.
+	ok := `{"items":[]}`
+	resp = mk(200, ok)
+	if err := explainImpersonationDenial(resp); err != nil {
+		t.Fatal(err)
+	}
+	if read(resp) != ok {
+		t.Fatal("a 200 response was modified")
+	}
+
+	// Malformed bodies must pass through rather than blank the response.
+	junk := `not json`
+	resp = mk(403, junk)
+	if err := explainImpersonationDenial(resp); err != nil {
+		t.Fatal(err)
+	}
+	if read(resp) != junk {
+		t.Fatal("a malformed 403 body was not preserved")
 	}
 }
