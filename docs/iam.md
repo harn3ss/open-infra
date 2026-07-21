@@ -55,16 +55,16 @@ Two further RBAC limits worth stating, because they look like they work and then
 ### Stage 0 — harden what exists
 - ✅ **Pin impersonation.** `impersonate` on groups with no `resourceNames` is effectively
   cluster-admin (the holder can become `system:masters`). Pinned to the four `openinfra:*` groups.
-- ⬜ **SAR-gate the BFF's own endpoints.** Handlers that act as the ServiceAccount should issue a
+- ✅ **SAR-gate the BFF's own endpoints.** Handlers that act as the ServiceAccount should issue a
   `SubjectAccessReview` *as the impersonated user* before acting, and fail closed. This is the
   documented way to defer an authorization decision, and it shrinks the one real hole in
   [`auth.md`](auth.md).
-- ⬜ **Guard role drift.** `open-infra-poweruser` enumerates kinds, so adding a `kind:` silently
+- ✅ **Guard role drift.** `open-infra-poweruser` enumerates kinds, so adding a `kind:` silently
   leaves powerusers without access. AWS solves this with `NotAction`; RBAC has no such thing, and
   a bare `resources: ["*"]` would be *worse* here because it would auto-grant future identity
   CRDs. The fix is a CI test asserting every CRD is either listed or explicitly excluded.
 
-### Stage 1 — `kind: User` and `kind: Group`
+### Stage 1 — `kind: User` and `kind: Group` ✅
 Replaces the JSON blob in the `console-auth` Secret, so accounts become GitOps-managed like
 everything else.
 
@@ -86,6 +86,39 @@ the identity objects. A separate group makes that boundary structural instead of
 must remember to maintain.
 
 The local `root` account stays in the Secret as documented break-glass.
+
+**Sign-in order is Secret first, then `kind: User`.** That ordering is the whole point of
+break-glass: if the CRDs are missing, a Composition is broken, or someone deletes their own
+User, `root` still works. Losing the console because the thing that defines who may use the
+console is broken would be the worst possible failure mode.
+
+A User's `spec.groups` become the `Impersonate-Group` values **directly** — they are not
+re-derived from a role keyword. The session still carries a role, but only for display and
+for the read-only write gate on the BFF's own endpoints. Empty `spec.groups` therefore means
+"can sign in, authorized for nothing" rather than defaulting to a role: forgetting to set
+groups fails closed. Every name is `openinfra:`-prefixed, so a User asking for
+`system:masters` gets the inert `openinfra:system:masters`.
+
+#### The ceiling on group names (read this before creating a `kind: Group`)
+
+Stage 0 pinned the impersonator ClusterRole's `resourceNames` to the four built-in groups,
+because `impersonate` on groups without that pin is effectively cluster-admin. That pin is
+also a hard ceiling on `kind: Group`: **a Group whose name is not in that list has no
+effect.** Its ClusterRoleBinding is created, the user signs in fine, and then every API call
+fails, because the console is not allowed to assert the group in the first place.
+
+The console rewrites that 403 into an actionable message naming the group and the
+ClusterRole, rather than passing through the API server's version, which blames the console's
+ServiceAccount and reads like a bug.
+
+So:
+
+* Prefer the built-in groups — `admins`, `powerusers`, `readers` — and vary what they mean by
+  pointing `spec.clusterRole` at a different ClusterRole.
+* A genuinely new group name requires an operator to add `openinfra:<name>` to
+  `open-infra-console-impersonator` in `platform/console/manifests/rbac-roles.yaml`. That is a
+  deliberate, reviewable act, not something the console can do for you — anything able to widen
+  its own impersonation list could grant itself `system:masters`.
 
 ### Stage 2 — `kind: Policy` (Allow-only) and `kind: Role`
 Where the AWS-like UX actually appears, restricted to the half RBAC can enforce.
@@ -168,12 +201,13 @@ save silently; don't put the correctness-checking tool on a different page from 
 |---|---|
 | Impersonation pinned to `openinfra:*` groups | ✅ shipped |
 | Audit logging with `impersonatedUser` | ✅ shipped |
-| SAR-gating BFF-native endpoints | ⬜ not started |
-| Poweruser drift guard | ⬜ not started |
-| `kind: User` / `kind: Group` | ⬜ not started (users still a JSON blob in a Secret) |
-| `kind: Policy` / `kind: Role` | ⬜ not started (three fixed roles today) |
+| SAR-gating BFF-native endpoints | ✅ shipped (verified live: readonly 403s, root passes) |
+| Poweruser drift guard | ✅ shipped (CI test, mutation-tested) |
+| `kind: User` / `kind: Group` | ✅ shipped — sign-in reads Users; `root` stays in the Secret as break-glass |
+| Custom group names beyond the built-in four | ⬜ needs an operator edit to the impersonator ClusterRole (see above) |
+| `kind: Policy` / `kind: Role` | ⬜ not started (three fixed ClusterRoles today) |
 | `Deny` + conditions via VAP | ⬜ not started |
-| Users/Roles UI | ⬜ not started (management is `kubectl` on a Secret) |
+| Users/Roles UI | ⬜ not started (management is `kubectl apply` of a User + a hash Secret) |
 
 ## See also
 

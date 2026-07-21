@@ -139,6 +139,50 @@ the product's public contract.
   breakdown. Rates are overridable via `COST_*` env. See [docs/cost.md](docs/cost.md).
 
 ### Security
+- **Console identities are declarative: `kind: User` and `kind: Group` (IAM stage 1).**
+  Accounts used to exist only as a base64 JSON blob inside the `console-auth` Secret, so
+  adding a person or changing their access was a `kubectl edit` of an opaque field with no
+  review trail. Users and groups are now ordinary resources in a **separate API group,
+  `iam.openinfra.dev`** — separate on purpose, because RBAC is additive and the existing
+  read-only role grants `openinfra.dev: ["*"]`, which would have silently handed every
+  reader access to the objects that define who may do what, the moment those kinds existed.
+
+  Sign-in consults the **Secret first, then Users**: bootstrap `root` keeps working as
+  break-glass even if the CRDs are missing or a Composition is broken. A User's
+  `spec.groups` become the `Impersonate-Group` values *directly*, so authority comes from
+  the ClusterRoleBindings `kind: Group` creates rather than from a role keyword — and empty
+  groups authorize **nothing** instead of falling back to a default. Passwords are never in
+  the CR: a User points at a Secret holding a bcrypt hash, so User objects stay safe to read,
+  GitOps and render. Verified end-to-end on the live cluster, including a user with no groups
+  being denied reads that its role keyword alone would have allowed, and the audit log
+  recording `impersonatedUser: openinfra:<name>` for both outcomes.
+
+  Two defects this shook out, both fixed here:
+  - The `SubjectAccessReview` checks built their subject from the role keyword while the
+    proxy impersonated using the session's groups — so a CR-backed user in `openinfra:admins`
+    would have been *authorized* as a reader. Both now derive the identity from one function.
+  - `CoreV1().RESTClient()` can return a **typed nil**, which passes `!= nil` and panics on
+    first use; the login handler would have crashed rather than degrading. Caught by a test.
+
+  Known ceiling, documented in [docs/iam.md](docs/iam.md): a `kind: Group` only takes effect
+  if its name is in the impersonator ClusterRole's `resourceNames`. That pin is what stops
+  the console impersonating `system:masters`, so widening it is deliberately an operator
+  action. The console now rewrites the resulting 403 into a message that names the group and
+  says what to do, instead of the API server's version, which blames the console's own
+  ServiceAccount and reads like a bug.
+
+### GitOps
+- **Fixed a wedged platform sync.** `platform/security/audit-policy.yaml` sat inside the root
+  app's `security/*.yaml` include glob, so Argo tried to `kubectl apply` an `audit.k8s.io/v1`
+  Policy — a kind no API server serves. Because Argo aborts an entire sync when any task fails
+  validation, **nothing** in `open-infra-platform` had synced since that file landed. The audit
+  policy is kube-apiserver config read off disk, not a cluster resource, so it moved to
+  `security/apiserver/` and is now excluded by name. Worth knowing: Argo compiles these globs
+  *without* a path separator, so `*` spans directories — moving a file deeper does **not** hide
+  it from an include glob. The exclude list is now substituted into `root-app.yaml` via an
+  `__EXCLUDE__` placeholder rather than `sed`-matching the literal default, which would have
+  silently stopped matching the first time that default changed.
+
 - **`kind: Query` is no longer root over all of object storage (hardening).** The query
   Job previously ran with the **MinIO root** credentials — any user who could submit a
   Query had full read/write to *every* bucket (Velero/Longhorn/CNPG backups, golden VM

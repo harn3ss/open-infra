@@ -10,10 +10,15 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +100,13 @@ func New(host *url.URL, transport http.RoundTripper, stripPrefix string, logger 
 			}
 		},
 		Transport: transport,
+		// A group the console isn't allowed to impersonate produces a 403 that blames
+		// the ServiceAccount ("system:serviceaccount:... cannot impersonate resource
+		// groups"), which reads like a console bug and says nothing about what to do.
+		// It actually means a kind: Group used a name outside the impersonator
+		// ClusterRole's resourceNames — a deliberate privilege ceiling. Rewrite the
+		// message so the person hitting it can act on it.
+		ModifyResponse: explainImpersonationDenial,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			// Upstream/transport failure (DNS, TLS, connection reset). The API
 			// server's own 4xx/5xx responses are NOT errors and flow through the
@@ -108,4 +120,61 @@ func New(host *url.URL, transport http.RoundTripper, stripPrefix string, logger 
 		},
 	}
 	return rp
+}
+
+// explainImpersonationDenial rewrites the API server's impersonation 403 into an
+// actionable message. It only touches responses that are unambiguously this case —
+// a 403 naming an impersonate denial on "groups" — and leaves every other status,
+// including ordinary RBAC denials, exactly as the API server sent them.
+func explainImpersonationDenial(resp *http.Response) error {
+	if resp.StatusCode != http.StatusForbidden {
+		return nil
+	}
+	// Bounded read: a Status object is small, and we must not buffer a large body.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	resp.Body.Close()
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		return nil
+	}
+	restore := func() {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+
+	var st struct {
+		Message string `json:"message"`
+		Details struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"details"`
+	}
+	if json.Unmarshal(body, &st) != nil ||
+		!strings.Contains(st.Message, "cannot impersonate") ||
+		st.Details.Kind != "groups" {
+		restore()
+		return nil
+	}
+
+	var out map[string]any
+	if json.Unmarshal(body, &out) != nil {
+		restore()
+		return nil
+	}
+	out["message"] = fmt.Sprintf(
+		"the console is not permitted to impersonate the group %q. A kind: Group only takes "+
+			"effect if its name is listed in the open-infra-console-impersonator ClusterRole — "+
+			"an intentional ceiling on what any Group can grant. Either use a built-in group "+
+			"(admins, powerusers, readers) or have an operator add %q to that ClusterRole.",
+		st.Details.Name, st.Details.Name)
+	nb, err := json.Marshal(out)
+	if err != nil {
+		restore()
+		return nil
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(nb))
+	resp.ContentLength = int64(len(nb))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(nb)))
+	return nil
 }
