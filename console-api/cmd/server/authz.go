@@ -34,10 +34,16 @@ import (
 // group/resource in namespace. Fails CLOSED: any error means "no".
 func canUserDo(ctx context.Context, cs kubernetes.Interface, c sessionClaims,
 	verb, group, resource, namespace, name string) (bool, string) {
+	// Use the SAME identity the proxy impersonates with, so we never authorize a
+	// request as one subject and then perform it as another.
+	user, groups, ok := identityFromClaims(c)
+	if !ok {
+		return false, "no identity"
+	}
 	sar := &authzv1.SubjectAccessReview{
 		Spec: authzv1.SubjectAccessReviewSpec{
-			User:   "openinfra:" + c.Sub,
-			Groups: roleGroups(c.Role),
+			User:   user,
+			Groups: groups,
 			ResourceAttributes: &authzv1.ResourceAttributes{
 				Verb:      verb,
 				Group:     group,
