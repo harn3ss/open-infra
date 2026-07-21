@@ -125,9 +125,12 @@ func str(spec map[string]any, key string) string {
 }
 
 // POST /api/vms/{namespace}/{name}/snapshot
-func handleVMSnapshotCreate(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleVMSnapshotCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, name := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+		if !authorize(w, r, cs, auth, logger, "update", "openinfra.dev", "virtualmachines", ns, name) {
+			return
+		}
 		ctx := r.Context()
 		rootPVC, spec, err := vmRootAndSpec(ctx, cs, ns, name)
 		if err != nil {
@@ -209,11 +212,14 @@ func handleVMSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.Han
 }
 
 // DELETE /api/vm-snapshots?namespace=&id=
-func handleVMSnapshotDelete(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleVMSnapshotDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, id := r.URL.Query().Get("namespace"), r.URL.Query().Get("id")
 		if ns == "" || id == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "namespace, id required"})
+			return
+		}
+		if !authorize(w, r, cs, auth, logger, "update", "openinfra.dev", "virtualmachines", ns, "") {
 			return
 		}
 		if err := csiDeleteSnapshot(r.Context(), cs, ns, id); err != nil {
@@ -227,11 +233,15 @@ func handleVMSnapshotDelete(cs kubernetes.Interface, logger *slog.Logger) http.H
 // POST /api/vm-snapshots/restore  {id, namespace, target}
 // Restores into a NEW VirtualMachine: pre-seed <target>-root from the snapshot, then create an
 // openinfra VirtualMachine that adopts it (existingRootClaim). Starts Halted so the user boots it.
-func handleVMSnapshotRestore(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleVMSnapshotRestore(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct{ ID, Namespace, Target string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" || in.Target == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id, namespace, target required"})
+			return
+		}
+		// Restoring creates a NEW VirtualMachine.
+		if !authorize(w, r, cs, auth, logger, "create", "openinfra.dev", "virtualmachines", in.Namespace, in.Target) {
 			return
 		}
 		ctx := r.Context()

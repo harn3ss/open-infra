@@ -254,18 +254,18 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// Database snapshots — "final snapshot before you deprovision" (RDS-style): a
 		// pg_dump to MinIO that survives the DB's deletion, restorable into a new DB.
 		api.With(middleware.Timeout(20*time.Second)).
-			Post("/databases/{namespace}/{name}/snapshot", handleSnapshotCreate(*client.Clientset, logger))
+			Post("/databases/{namespace}/{name}/snapshot", handleSnapshotCreate(*client.Clientset, auth, logger))
 		api.With(middleware.Timeout(20*time.Second)).Get("/snapshots", handleSnapshotList(*client.Clientset, logger))
-		api.With(middleware.Timeout(20*time.Second)).Post("/snapshots/restore", handleSnapshotRestore(*client.Clientset, logger))
-		api.With(middleware.Timeout(20*time.Second)).Delete("/snapshots", handleSnapshotDelete(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Post("/snapshots/restore", handleSnapshotRestore(*client.Clientset, auth, logger))
+		api.With(middleware.Timeout(20*time.Second)).Delete("/snapshots", handleSnapshotDelete(*client.Clientset, auth, logger))
 
 		// VM snapshots — same "final snapshot before deprovision", for Longhorn-rooted VMs: a
 		// durable longhorn-backup of the root disk, restorable into a new VM (existingRootClaim).
 		api.With(middleware.Timeout(20*time.Second)).
-			Post("/vms/{namespace}/{name}/snapshot", handleVMSnapshotCreate(*client.Clientset, logger))
+			Post("/vms/{namespace}/{name}/snapshot", handleVMSnapshotCreate(*client.Clientset, auth, logger))
 		api.With(middleware.Timeout(20*time.Second)).Get("/vm-snapshots", handleVMSnapshotList(*client.Clientset, logger))
-		api.With(middleware.Timeout(20*time.Second)).Post("/vm-snapshots/restore", handleVMSnapshotRestore(*client.Clientset, logger))
-		api.With(middleware.Timeout(20*time.Second)).Delete("/vm-snapshots", handleVMSnapshotDelete(*client.Clientset, logger))
+		api.With(middleware.Timeout(20*time.Second)).Post("/vm-snapshots/restore", handleVMSnapshotRestore(*client.Clientset, auth, logger))
+		api.With(middleware.Timeout(20*time.Second)).Delete("/vm-snapshots", handleVMSnapshotDelete(*client.Clientset, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
