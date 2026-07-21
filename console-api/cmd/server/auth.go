@@ -277,6 +277,9 @@ func (a *authStore) requireAuth(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "session expired"})
 			return
 		}
+		// Attribute this request to a person in the access log.
+		noteIdentity(r, claims.Sub, claims.Role)
+
 		// CSRF: state-changing requests must carry the console's header. SameSite=Lax
 		// already blocks cross-site form posts; this stops the simple-request bypass.
 		switch r.Method {
