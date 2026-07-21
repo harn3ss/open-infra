@@ -129,6 +129,35 @@ drag-and-drop **Data Flows** canvas + guided replication wizard, create/delete).
 See [`docs/architecture.md`](docs/architecture.md) for the full diagram and the
 public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
 
+### Or use Terraform
+
+Everything the console can create is also a typed Terraform resource, published as
+[`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest):
+
+```hcl
+terraform {
+  required_providers {
+    openinfra = { source = "harn3ss/openinfra", version = "~> 0.1" }
+  }
+}
+
+resource "openinfra_database" "orders" {
+  name   = "orders"
+  engine = "postgres"
+}
+
+resource "openinfra_function" "resize" {
+  name  = "image-resize"
+  image = "ghcr.io/harn3ss/image-resize:latest"
+  gpu   = 1
+}
+```
+
+Three ways in, same objects underneath — `infra.yaml` through GitOps, the console, or
+Terraform. Use Terraform when open-infra is one part of a wider estate and you want the
+same plan to cover your DNS, TLS and cloud accounts. See
+[`docs/terraform.md`](docs/terraform.md).
+
 ---
 
 ## GPU & managed inference ("Bedrock")

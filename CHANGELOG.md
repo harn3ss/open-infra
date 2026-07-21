@@ -138,6 +138,28 @@ the product's public contract.
   Fargate rates, GPU at g4dn class, EBS gp3, ALB base — plus a by-namespace compute
   breakdown. Rates are overridable via `COST_*` env. See [docs/cost.md](docs/cost.md).
 
+### Terraform
+- **A first-party Terraform provider, published as
+  [`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest).**
+  Every open-infra kind is now a typed resource with full CRUD and `terraform import`, plus a
+  data source for reading. open-infra CRDs could always be managed with the generic
+  `kubernetes_manifest`, so this is about ergonomics rather than raw capability — real
+  attributes and plan-time validation instead of an untyped YAML blob, and the ability to put
+  a database, its CDC stream and your DNS in a single plan.
+
+  Three resources are hand-written (`application`, `database`, `virtual_machine`) because they
+  carry behaviour a schema can't express. The other thirteen are generated from a table: every
+  CRD has the same lifecycle, so a resource per kind meant ~250 lines of identical CRUD each
+  and thirteen separate places to drift from the XRD. Adding a field is now one line.
+
+  Verified clean-room — empty CLI config, no dev override — `terraform init` downloads it from
+  the Registry, verifies the GPG signature, and a plan/apply/destroy creates and removes a real
+  resource on the cluster. Source: [harn3ss/terraform-provider-openinfra](https://github.com/harn3ss/terraform-provider-openinfra).
+  Docs: [docs/terraform.md](docs/terraform.md).
+
+  Note the coupling: **the provider mirrors these CRD schemas by hand and nothing enforces it.**
+  A field added to an XRD without a matching provider change is silently unexpressible in HCL.
+
 ### Security
 - **Console identities are declarative: `kind: User` and `kind: Group` (IAM stage 1).**
   Accounts used to exist only as a base64 JSON blob inside the `console-auth` Secret, so
