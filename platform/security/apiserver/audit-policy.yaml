@@ -10,6 +10,12 @@
 # Installed to /var/lib/rancher/k3s/server/audit-policy.yaml and referenced from
 # /etc/rancher/k3s/config.yaml via kube-apiserver-arg.
 #
+# It lives under security/apiserver/ rather than security/ on purpose: this is an
+# API-server CONFIG FILE, not a cluster resource. The GitOps root app includes
+# `security/*.yaml`, and Argo would otherwise try to kubectl-apply an
+# audit.k8s.io/v1 Policy — a kind no cluster serves — which fails the whole
+# platform sync. The extra directory keeps it out of that glob.
+#
 # Volume control matters on a small cluster: Argo CD, Crossplane and the kubelets
 # generate constant read traffic. Rules are evaluated IN ORDER, first match wins,
 # so the cheap "drop the noise" rules come first.
