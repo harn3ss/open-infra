@@ -14,10 +14,34 @@ Set `AUTH_MODE` on the console Deployment (`platform/console/manifests/deploymen
 | Mode | Behaviour |
 |---|---|
 | `local` | **Default.** Users live in the `console-auth` Secret, passwords bcrypt-hashed. |
-| `ldap` / `oidc` | Reserved — next phase (LDAP binds against your `kind: Directory` AD). |
+| `ldap` | Authenticates against a directory — typically the Samba AD from `kind: Directory`. |
+| `oidc` | Reserved — not implemented yet (returns 501). |
 | `none` | **No authentication.** Only for throwaway dev clusters; logs a loud warning at boot. |
 
 The default is `local`, so a fresh install is never accidentally wide open.
+
+### LDAP / Active Directory (`AUTH_MODE=ldap`)
+
+Point the console at the AD DC that `kind: Directory` provisions, so your own directory is the
+console's identity provider:
+
+| Variable | Purpose |
+|---|---|
+| `LDAP_HOST` | DC hostname or Service DNS name |
+| `LDAP_DOMAIN` | e.g. `EXAMPLE.COM` — builds the UPN and default base DN |
+| `LDAP_BIND_USER` / `LDAP_BIND_PASSWORD` | account used to look users up |
+| `LDAP_USER_BASE_DN` | optional; defaults to the domain's base DN |
+| `LDAP_ADMIN_GROUP` | AD group → `admin` (default `openinfra-admins`) |
+| `LDAP_POWERUSER_GROUP` | AD group → `poweruser` (default `openinfra-powerusers`) |
+| `LDAP_READONLY_GROUP` | AD group → `readonly` (default `openinfra-readers`) |
+
+Sign-in binds as the lookup account, finds the user by `sAMAccountName` or UPN, then **binds as
+that user** to verify the password. Group membership picks the role; **no matching group means
+read-only**, so merely existing in the directory never grants write access. LDAPS is tried first
+and falls back to plain LDAP (Samba's self-signed cert is normal on a private network).
+
+> **Break-glass:** local accounts in the `console-auth` Secret keep working in *every* mode, so a
+> directory outage can never lock you out. Keep the `root` password somewhere safe.
 
 ## First sign-in (root)
 

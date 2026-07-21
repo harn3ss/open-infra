@@ -56,6 +56,7 @@ type authStore struct {
 	ns         string
 	mode       string
 	sessionKey []byte
+	ldap       ldapConfig
 	logger     *slog.Logger
 }
 
@@ -85,6 +86,13 @@ func consoleNamespace() string {
 // the same "grab your root credentials now" moment AWS gives you.
 func newAuthStore(cs kubernetes.Interface, logger *slog.Logger) (*authStore, error) {
 	a := &authStore{cs: cs, ns: consoleNamespace(), mode: authMode(), logger: logger}
+	if a.mode == "ldap" {
+		a.ldap = loadLDAPConfig()
+		if a.ldap.host == "" {
+			return nil, fmt.Errorf("AUTH_MODE=ldap but LDAP_HOST is not set")
+		}
+		logger.Info("console auth: LDAP backend", "host", a.ldap.host, "baseDN", a.ldap.userBaseDN)
+	}
 	if a.mode == "none" {
 		logger.Warn("AUTH_MODE=none — the console API is UNAUTHENTICATED; anyone who can reach it has admin over this cluster")
 		return a, nil
@@ -161,7 +169,21 @@ func (a *authStore) users(ctx context.Context) map[string]userRec {
 	return m
 }
 
+// verify authenticates a sign-in. Local accounts are ALWAYS accepted, whatever the
+// mode: that keeps the bootstrap `root` account working as break-glass so a
+// directory outage can never lock you out of your own console. If no local account
+// matches and we're in ldap mode, fall through to the directory.
 func (a *authStore) verify(ctx context.Context, user, pass string) (string, bool) {
+	if role, ok := a.verifyLocal(ctx, user, pass); ok {
+		return role, true
+	}
+	if a.mode == "ldap" {
+		return verifyLDAP(a.ldap, user, pass)
+	}
+	return "", false
+}
+
+func (a *authStore) verifyLocal(ctx context.Context, user, pass string) (string, bool) {
 	rec, ok := a.users(ctx)[user]
 	if !ok {
 		// Compare against a dummy hash so a missing user costs the same as a wrong
@@ -338,8 +360,8 @@ func handleLogin(a *authStore) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username and password required"})
 			return
 		}
-		if a.mode != "local" && a.mode != "none" {
-			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "AUTH_MODE=" + a.mode + " is not implemented yet"})
+		if a.mode == "oidc" {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "AUTH_MODE=oidc is not implemented yet"})
 			return
 		}
 		role, ok := a.verify(r.Context(), in.Username, in.Password)
