@@ -63,21 +63,48 @@ Changes take effect immediately — the Secret is re-read on every sign-in.
 - **Failed sign-ins are logged** with the username and remote address.
 - Unknown usernames still run a bcrypt comparison, so timing doesn't reveal which users exist.
 
+## Roles ("IAM")
+
+Each user has a `role`. The console does **not** decide what a role may do — it signs the user
+in, then proxies their Kubernetes calls with impersonation headers so **Kubernetes RBAC**
+enforces the rules and the audit log attributes every action to a person:
+
+```
+Impersonate-User:  openinfra:alice
+Impersonate-Group: openinfra:powerusers
+```
+
+| Role | Group | Can |
+|---|---|---|
+| `root`, `admin` | `openinfra:admins` | everything the console can do |
+| `poweruser` | `openinfra:powerusers` | manage open-infra resources; **not** Secrets or RBAC |
+| `readonly` | `openinfra:readers` | `get`/`list`/`watch` only; **no Secrets** |
+
+Anything unrecognised falls back to read-only (least privilege). Bindings live in
+`platform/console/manifests/rbac-roles.yaml` — edit those ClusterRoles to reshape a role.
+
+Two things make this real rather than cosmetic:
+
+- The proxy **strips any client-supplied `Impersonate-*` headers** before setting its own, so a
+  browser can't ask to be someone else.
+- A read-only user is blocked from the BFF's *own* mutating endpoints too (the handlers that act
+  with the ServiceAccount rather than going through the proxy), so there's no side door.
+
 ## Honest limits (today)
 
-- **This is a gate, not per-user authorization.** Every signed-in user currently acts with the
-  console ServiceAccount's full rights — there is no read-only user yet. Treat every account as
-  an admin account until the next phase lands.
+- **The BFF's own endpoints still act as the ServiceAccount**, not as you. Read-only users are
+  blocked from mutating them, but a `poweruser` calling e.g. the snapshot API is not further
+  restricted by Kubernetes RBAC on that path. Only `/api/k8s/*` is fully RBAC-governed.
 - Sessions are stateless: signing out clears the cookie, but a stolen token stays valid until it
   expires (12h). Rotating the Secret's `sessionKey` invalidates all sessions.
 - `local` mode has no password policy, lockout, or MFA.
+- Roles are assigned by editing the `console-auth` Secret; there is no `kind: User` CRD yet.
 
 ## Roadmap
 
-1. **Per-user authorization** — map identities to Kubernetes users/groups and have the BFF
-   **impersonate** them, so RBAC is enforced by Kubernetes, with managed roles mirroring AWS
-   (Administrator / PowerUser / ReadOnly) and a declarative `kind: User`.
-2. **LDAP** against your `kind: Directory` (Samba AD), and **OIDC** (Dex/Keycloak/GitHub).
+1. **LDAP** against your `kind: Directory` (Samba AD), and **OIDC** (Dex/Keycloak/GitHub).
+2. A declarative **`kind: User`** so accounts and role bindings are GitOps-managed like
+   everything else, instead of a JSON blob in a Secret.
 
 ## See also
 
