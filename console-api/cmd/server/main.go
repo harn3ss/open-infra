@@ -445,18 +445,46 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			start := time.Now()
+
+			// Who-did-what: the auth middleware runs deeper in the chain, so its
+			// context can't propagate back out here. Share a pointer it can fill
+			// in, and read it when the request completes — otherwise every log
+			// line is anonymous and you cannot answer "who deleted that VM?".
+			id := &requestIdentity{}
+			r = r.WithContext(context.WithValue(r.Context(), ctxIdentity{}, id))
+
 			defer func() {
-				logger.Info("http request",
+				attrs := []any{
 					slog.String("method", r.Method),
 					slog.String("path", r.URL.Path),
 					slog.Int("status", ww.Status()),
 					slog.Int("bytes", ww.BytesWritten()),
 					slog.Duration("duration", time.Since(start)),
 					slog.String("request_id", middleware.GetReqID(r.Context())),
-				)
+					slog.String("remote", r.RemoteAddr),
+				}
+				if id.user != "" {
+					attrs = append(attrs,
+						slog.String("user", id.user),
+						slog.String("role", id.role))
+				}
+				logger.Info("http request", attrs...)
 			}()
 			next.ServeHTTP(ww, r)
 		})
+	}
+}
+
+// requestIdentity is filled in by the auth middleware so the access log can name
+// the signed-in user. Pointer, because the logger holds the outer request.
+type requestIdentity struct{ user, role string }
+
+type ctxIdentity struct{}
+
+// noteIdentity records the signed-in user for this request's access-log line.
+func noteIdentity(r *http.Request, user, role string) {
+	if id, ok := r.Context().Value(ctxIdentity{}).(*requestIdentity); ok {
+		id.user, id.role = user, role
 	}
 }
 
