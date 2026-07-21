@@ -39,18 +39,41 @@ rules:
       - /openapi*
       - /swagger*
 
-  # Read-only chatter from the control plane's own components.
+  # ── Human actions first (rules are first-match-wins) ────────────────────
+  # These MUST come before the ServiceAccount rules below: an impersonated
+  # console request authenticates AS the console ServiceAccount (the person is
+  # in impersonatedUser, which audit policy cannot select on), so a blanket
+  # ServiceAccount rule would swallow exactly the attribution we need.
+  #
+  # Console WRITES get full request+response — "who changed this VM, to what".
+  - level: RequestResponse
+    users: ["system:serviceaccount:open-infra-console:console"]
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+  # Console reads: metadata is enough ("who listed the Secrets").
+  - level: Metadata
+    users: ["system:serviceaccount:open-infra-console:console"]
+
+  # ── Machine traffic ─────────────────────────────────────────────────────
+  # Controller read chatter (Argo CD, Crossplane, GC, operators) and kubelets are
+  # ~73% of all events and are attributable to no person: drop entirely.
+  - level: None
+    userGroups: ["system:serviceaccounts", "system:nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Controller WRITES are reconcile churn — Crossplane alone re-patches its
+  # managed objects continuously. Keep a metadata record (so a controller
+  # deleting something is still visible) but never the bodies, which is what
+  # actually blows up the log.
+  - level: Metadata
+    userGroups: ["system:serviceaccounts", "system:nodes"]
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+
   - level: None
     users:
       - system:apiserver
       - system:kube-scheduler
       - system:kube-controller-manager
       - system:kube-proxy
-    verbs: ["get", "list", "watch"]
-
-  # Kubelets and node-local agents listing/watching endlessly.
-  - level: None
-    userGroups: ["system:nodes"]
     verbs: ["get", "list", "watch"]
 
   # Events are high-volume and already visible via kubectl describe.
