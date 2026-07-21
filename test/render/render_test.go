@@ -468,3 +468,85 @@ func isEmpty(v any) bool {
 	}
 	return false
 }
+
+// TestConsoleRoles_NoKindDrift guards a silent failure mode in the console's RBAC.
+//
+// `open-infra-poweruser` ENUMERATES the openinfra.dev kinds it may manage. AWS avoids this with
+// `NotAction` (deny-by-omission, so new services are automatically included), but Kubernetes RBAC
+// has no such construct — and a bare `resources: ["*"]` would be worse here, because RBAC is
+// purely additive: a wildcard would auto-grant any future identity CRD (kind: User, kind: Policy)
+// to powerusers and readers the moment it existed.
+//
+// The enumeration is therefore deliberate, and this test keeps it honest: add an XRD without
+// listing its plural and CI fails, instead of powerusers silently losing access to the new kind.
+func TestConsoleRoles_NoKindDrift(t *testing.T) {
+	xrds, err := filepath.Glob("../../platform/abstraction/*xrd*.yaml")
+	if err != nil || len(xrds) == 0 {
+		t.Fatalf("could not list XRDs: %v", err)
+	}
+
+	// Plurals intentionally NOT granted to powerusers. Identity/policy kinds belong here:
+	// managing them is privilege escalation, which is why AWS's PowerUser excludes iam:*.
+	excluded := map[string]bool{
+		"users": true, "groups": true, "policies": true, "roles": true,
+	}
+
+	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")
+	if err != nil {
+		t.Fatalf("read rbac-roles.yaml: %v", err)
+	}
+	roleYAML := string(roleBytes)
+
+	var missing []string
+	for _, path := range xrds {
+		plural := pluralFromXRD(t, path)
+		if plural == "" || excluded[plural] {
+			continue
+		}
+		if !strings.Contains(roleYAML, "- "+plural+"\n") {
+			missing = append(missing, plural+"  (from "+filepath.Base(path)+")")
+		}
+	}
+
+	if len(missing) > 0 {
+		t.Errorf("these open-infra kinds are missing from platform/console/manifests/rbac-roles.yaml,\n"+
+			"so console powerusers cannot manage them. Add them to the poweruser ClusterRole, or add the\n"+
+			"plural to this test's `excluded` map if that is deliberate:\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+}
+
+// pluralFromXRD pulls the CLAIM plural out of a Crossplane XRD without a YAML
+// dependency. An XRD carries two: spec.names.plural is the composite (X-prefixed,
+// e.g. xvirtualmachines) and spec.claimNames.plural is what users actually create
+// (virtualmachines) — the latter is what RBAC grants on. Falls back to names.plural
+// for XRDs with no claim.
+func pluralFromXRD(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var namesPlural, claimPlural string
+	inClaim := false
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "claimNames:"):
+			inClaim = true
+		case strings.HasPrefix(trimmed, "names:"):
+			inClaim = false
+		case strings.HasPrefix(trimmed, "plural:"):
+			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "plural:"))
+			if inClaim {
+				claimPlural = v
+			} else if namesPlural == "" {
+				namesPlural = v
+			}
+		}
+	}
+	if claimPlural != "" {
+		return claimPlural
+	}
+	return namesPlural
+}
