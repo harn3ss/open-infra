@@ -88,6 +88,16 @@ rules:
   # ── openinfra.dev: full CRUD on the product CRDs (the console is the primary
   #    interface for creating/updating/deleting Applications, Functions, Models,
   #    VirtualMachines). VM Start/Stop is a patch of the claim's spec.running. ─
+  # Identity objects live in their OWN api group (iam.openinfra.dev) so that the
+  # openinfra.dev wildcards below can never reach them — RBAC is additive, so a
+  # wildcard grants new kinds automatically, and readers must not gain access to
+  # the objects that define who can do what. Only the console SA gets these.
+  - apiGroups: [iam.openinfra.dev]
+    resources:
+      - users
+      - groups
+    verbs: [get, list, watch, create, update, patch, delete]
+
   - apiGroups: [openinfra.dev]
     resources:
       - applications
