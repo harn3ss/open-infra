@@ -61,7 +61,9 @@ GITOPS_PATH="$(yget gitops.path)"; GITOPS_PATH="${GITOPS_PATH:-deploy}"
 # Per-component install toggles (config.yaml `components.*`). Default = install
 # everything; a component set to "false" is excluded from the app-of-apps include
 # path. (console manifests/ are always excluded — deployed by the console child app.)
-EXCLUDES="**/manifests/**"
+# security/apiserver/* is kube-apiserver config read off disk (the audit policy),
+# not a cluster resource — Argo must never try to apply it. See platform/root-app.yaml.
+EXCLUDES="**/manifests/**,security/apiserver/**"
 excl() {
   if [ "$(yget "components.$1")" = "false" ]; then
     EXCLUDES="${EXCLUDES},$2"
@@ -270,7 +272,7 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '  + apply platform/root-app.yaml (repoURL=%s path=%s exclude=%s)\n' "$GITOPS_REPO" "$GITOPS_PATH" "$EXCLUDE_GLOB"
 else
   sed -e "s#__REPO_URL__#${GITOPS_REPO}#g" -e "s#__PATH__#${GITOPS_PATH}#g" \
-    -e "s#'\*\*/manifests/\*\*'#'${EXCLUDE_GLOB}'#g" \
+    -e "s#__EXCLUDE__#${EXCLUDE_GLOB}#g" \
     "${REPO_DIR}/platform/root-app.yaml" | $KUBECTL apply -f -
 fi
 

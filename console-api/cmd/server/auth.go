@@ -169,18 +169,63 @@ func (a *authStore) users(ctx context.Context) map[string]userRec {
 	return m
 }
 
-// verify authenticates a sign-in. Local accounts are ALWAYS accepted, whatever the
-// mode: that keeps the bootstrap `root` account working as break-glass so a
-// directory outage can never lock you out of your own console. If no local account
-// matches and we're in ldap mode, fall through to the directory.
-func (a *authStore) verify(ctx context.Context, user, pass string) (string, bool) {
+// verify authenticates a sign-in and returns the role plus the Kubernetes groups to
+// impersonate with (nil = derive them from the role).
+//
+// Order is deliberate:
+//  1. Secret-backed local accounts — ALWAYS accepted in every mode. This keeps the
+//     bootstrap `root` working as break-glass, so a broken CRD, a bad Composition or a
+//     directory outage can never lock you out of your own console.
+//  2. kind: User (iam.openinfra.dev) — the GitOps-managed form, whose spec.groups are
+//     authoritative for authorization.
+//  3. LDAP, when AUTH_MODE=ldap.
+func (a *authStore) verify(ctx context.Context, user, pass string) (string, []string, bool) {
 	if role, ok := a.verifyLocal(ctx, user, pass); ok {
-		return role, true
+		return role, nil, true
+	}
+	if role, groups, ok := a.verifyCRDUser(ctx, user, pass); ok {
+		return role, groups, true
 	}
 	if a.mode == "ldap" {
-		return verifyLDAP(a.ldap, user, pass)
+		role, ok := verifyLDAP(a.ldap, user, pass)
+		return role, nil, ok
 	}
-	return "", false
+	return "", nil, false
+}
+
+// verifyCRDUser authenticates against a kind: User with source=local, using the bcrypt
+// hash in the Secret its passwordSecretRef points at. Its spec.groups become the
+// impersonation groups directly, so a User with no groups can sign in but do nothing —
+// failing closed rather than defaulting to a role.
+func (a *authStore) verifyCRDUser(ctx context.Context, user, pass string) (string, []string, bool) {
+	u, ok := a.crdUserByName(ctx, user)
+	if !ok {
+		return "", nil, false
+	}
+	if src := strings.ToLower(u.Spec.Source); src != "" && src != "local" {
+		return "", nil, false // ldap/oidc users authenticate via their directory
+	}
+	hash, ok := a.crdPasswordHash(ctx, u)
+	if !ok {
+		return "", nil, false
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
+		return "", nil, false
+	}
+	// `role` is retained for display and for the read-only write gate; the groups are
+	// what Kubernetes actually authorizes against.
+	role := "readonly"
+	for _, g := range u.Spec.Groups {
+		switch strings.ToLower(strings.TrimSpace(g)) {
+		case "admins", "admin":
+			role = "admin"
+		case "powerusers", "poweruser":
+			if role != "admin" {
+				role = "poweruser"
+			}
+		}
+	}
+	return role, crdGroups(u), true
 }
 
 func (a *authStore) verifyLocal(ctx context.Context, user, pass string) (string, bool) {
@@ -204,11 +249,16 @@ func (a *authStore) verifyLocal(ctx context.Context, user, pass string) (string,
 type sessionClaims struct {
 	Sub  string `json:"sub"`
 	Role string `json:"role"`
-	Exp  int64  `json:"exp"`
+	// Groups is set for identities that come from a kind: User, whose spec.groups
+	// are authoritative. Empty for Secret-backed accounts, where the role name maps
+	// to a fixed group set via roleGroups().
+	Groups []string `json:"groups,omitempty"`
+	Exp    int64    `json:"exp"`
 }
 
-func (a *authStore) issue(user, role string) (string, error) {
-	c, err := json.Marshal(sessionClaims{Sub: user, Role: role, Exp: time.Now().Add(sessionTTL).Unix()})
+func (a *authStore) issue(user, role string, groups []string) (string, error) {
+	c, err := json.Marshal(sessionClaims{Sub: user, Role: role, Groups: groups,
+		Exp: time.Now().Add(sessionTTL).Unix()})
 	if err != nil {
 		return "", err
 	}
@@ -328,6 +378,9 @@ func identityFor(r *http.Request) (string, []string, bool) {
 	if !ok || c.Sub == "" {
 		return "", nil, false
 	}
+	if len(c.Groups) > 0 {
+		return "openinfra:" + c.Sub, c.Groups, true
+	}
 	return "openinfra:" + c.Sub, roleGroups(c.Role), true
 }
 
@@ -367,13 +420,13 @@ func handleLogin(a *authStore) http.HandlerFunc {
 			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "AUTH_MODE=oidc is not implemented yet"})
 			return
 		}
-		role, ok := a.verify(r.Context(), in.Username, in.Password)
+		role, groups, ok := a.verify(r.Context(), in.Username, in.Password)
 		if !ok {
 			a.logger.Warn("failed console login", "user", in.Username, "remote", r.RemoteAddr)
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 			return
 		}
-		tok, err := a.issue(in.Username, role)
+		tok, err := a.issue(in.Username, role, groups)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not start session"})
 			return

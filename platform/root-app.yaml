@@ -20,10 +20,18 @@ spec:
       # Raw CRs (e.g. abstraction/config/*) are synced by their own child app.
       include: '{networking,storage,data,observability,security,abstraction,console,gpu,serverless,backup,resilience,query}/*.yaml'
       # Nested manifests/ dirs are deployed by their own child app (e.g. the
-      # console), not applied directly by the root app. install.sh rewrites this
-      # glob to also drop disabled components and the unused MinIO variant
+      # console), not applied directly by the root app; security/apiserver/ holds
+      # API-server config files (the audit policy) that are read off disk and are
+      # not cluster resources at all. install.sh substitutes __EXCLUDE__ with this
+      # base list plus disabled components and the unused MinIO variant
       # (storage/minio.yaml vs storage/minio-ha.yaml — exactly one is included).
-      exclude: '**/manifests/**'
+      #
+      # NOTE: Argo's globs do NOT treat `/` as a separator, so `*` spans path
+      # segments — `security/*.yaml` matches `security/apiserver/audit-policy.yaml`.
+      # Putting a file in a subdirectory therefore does NOT hide it; it has to be
+      # excluded by name. A manifest of a kind the API server doesn't serve fails
+      # validation, and Argo aborts the WHOLE sync when any task is invalid.
+      exclude: '__EXCLUDE__'
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
