@@ -35,6 +35,17 @@ spec:
               protocol: TCP
 
           env:
+            # Console authentication. Chosen at install time:
+            #   local (default) — users in the console-auth Secret, bcrypt hashed. On
+            #                     first start a root password is generated and printed
+            #                     ONCE to this pod's log; grab it, then rotate by
+            #                     deleting the Secret.
+            #   ldap / oidc     — reserved (next phase).
+            #   none            — NO authentication. Only for throwaway dev clusters:
+            #                     /api/k8s/* proxies the Kubernetes API with this pod's
+            #                     ServiceAccount, so anyone who can reach it is admin.
+            - name: AUTH_MODE
+              value: "local"
             - name: CLUSTER_NAME
               value: "open-infra"
             # Same-origin Grafana embedding: the BFF reverse-proxies /grafana/* to

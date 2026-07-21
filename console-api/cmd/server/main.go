@@ -80,7 +80,15 @@ func run(logger *slog.Logger) error {
 	// when no engine=trino query has run recently, up to 1 when one appears.
 	startTrinoAutostop(client.Host, client.Transport, *client.Clientset, logger)
 
-	router := newRouter(client, logger)
+	// Console authentication (AUTH_MODE: local | none; ldap/oidc reserved). On a fresh
+	// install this bootstraps the console-auth Secret and prints root credentials once.
+	auth, err := newAuthStore(*client.Clientset, logger)
+	if err != nil {
+		return err
+	}
+	logger.Info("console auth", slog.String("mode", auth.mode))
+
+	router := newRouter(client, auth, logger)
 
 	srv := &http.Server{
 		Addr:    addr,
@@ -126,7 +134,7 @@ func run(logger *slog.Logger) error {
 }
 
 // newRouter assembles the chi router with middleware and all routes.
-func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
+func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	// Standard middleware: request id, structured access logging via slog,
@@ -146,6 +154,15 @@ func newRouter(client *k8s.Client, logger *slog.Logger) http.Handler {
 
 	// --- API ---
 	r.Route("/api", func(api chi.Router) {
+		// Authentication gate. Everything under /api requires a valid session cookie
+		// except /api/auth/* — WITHOUT this, /api/k8s/* proxies the Kubernetes API
+		// using the pod's ServiceAccount to any anonymous caller.
+		api.Use(auth.requireAuth)
+
+		api.Post("/auth/login", handleLogin(auth))
+		api.Post("/auth/logout", handleLogout(auth))
+		api.Get("/auth/me", handleMe(auth))
+
 		// Runtime config: read from env on every request so a redeploy or
 		// ConfigMap change is picked up without rebuilding the SPA.
 		api.Get("/config", handleConfig)
