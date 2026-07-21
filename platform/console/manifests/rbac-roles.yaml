@@ -14,13 +14,32 @@
 ---
 # 1. Let the console's ServiceAccount impersonate console users/groups. Without
 #    this the API server rejects the Impersonate-* headers outright.
+#
+#    IMPORTANT: `impersonate` on groups with NO resourceNames is effectively
+#    cluster-admin — the holder could impersonate system:masters and bypass every
+#    other restriction. The group list is therefore pinned to exactly the console's
+#    own groups. resourceNames works here because impersonation is a get-shaped
+#    named check, not a list.
+#
+#    Usernames can't be enumerated the same way (they're open-ended), so they stay
+#    unconstrained — but every console identity is minted as `openinfra:<user>`,
+#    and no RBAC binding grants anything to a bare, unprefixed name. The group
+#    pin is what actually bounds privilege.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: open-infra-console-impersonator
 rules:
   - apiGroups: [""]
-    resources: [users, groups]
+    resources: [groups]
+    verbs: [impersonate]
+    resourceNames:
+      - openinfra:admins
+      - openinfra:powerusers
+      - openinfra:readers
+      - openinfra:users
+  - apiGroups: [""]
+    resources: [users]
     verbs: [impersonate]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

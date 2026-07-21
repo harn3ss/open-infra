@@ -1,0 +1,95 @@
+# Kubernetes API server audit policy — the "CloudTrail" of open-infra.
+#
+# The console signs users in and then proxies their calls with impersonation
+# (Impersonate-User: openinfra:<user>), so the API server is the ONLY place that
+# sees the authoritative who-did-what — including actions taken outside the
+# console (kubectl, Terraform, Argo). Each event carries BOTH `user` (the console
+# ServiceAccount) and `impersonatedUser` (the person). Without this file nothing
+# is recorded at all.
+#
+# Installed to /var/lib/rancher/k3s/server/audit-policy.yaml and referenced from
+# /etc/rancher/k3s/config.yaml via kube-apiserver-arg.
+#
+# Volume control matters on a small cluster: Argo CD, Crossplane and the kubelets
+# generate constant read traffic. Rules are evaluated IN ORDER, first match wins,
+# so the cheap "drop the noise" rules come first.
+apiVersion: audit.k8s.io/v1
+kind: Policy
+
+# Don't emit an event at request-receipt; one event per completed request.
+omitStages:
+  - RequestReceived
+
+rules:
+  # ── 1. Drop the noise ────────────────────────────────────────────────────
+  # Leader-election churn: every controller rewrites its Lease every few seconds.
+  - level: None
+    resources:
+      - group: "coordination.k8s.io"
+        resources: ["leases"]
+
+  # Health/discovery endpoints, hit constantly by probes and clients.
+  - level: None
+    nonResourceURLs:
+      - /healthz*
+      - /readyz*
+      - /livez*
+      - /version
+      - /metrics
+      - /openapi*
+      - /swagger*
+
+  # Read-only chatter from the control plane's own components.
+  - level: None
+    users:
+      - system:apiserver
+      - system:kube-scheduler
+      - system:kube-controller-manager
+      - system:kube-proxy
+    verbs: ["get", "list", "watch"]
+
+  # Kubelets and node-local agents listing/watching endlessly.
+  - level: None
+    userGroups: ["system:nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Events are high-volume and already visible via kubectl describe.
+  - level: None
+    resources:
+      - group: ""
+        resources: ["events"]
+
+  # ── 2. NEVER record secret material ──────────────────────────────────────
+  # Metadata only: who touched which Secret, never its contents. This rule must
+  # come BEFORE the RequestResponse rules below, or bodies would be logged.
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps", "serviceaccounts/token"]
+
+  # ── 3. The interesting part: changes to open-infra + identity resources ───
+  # Full request + response for writes, so "who created this VM, with what spec"
+  # is answerable after the fact.
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+    resources:
+      - group: "openinfra.dev"
+      - group: "iam.openinfra.dev"
+      - group: "kubevirt.io"
+      - group: "snapshot.storage.k8s.io"
+      - group: "rbac.authorization.k8s.io"
+
+  # ── 4. Executing into things is always interesting ───────────────────────
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/attach", "pods/portforward"]
+      - group: "subresources.kubevirt.io"
+
+  # ── 5. Every other write ─────────────────────────────────────────────────
+  - level: Metadata
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+
+  # ── 6. Everything else (reads that survived rule 1) at metadata level ────
+  # Keeps an attributable trail of "who listed the Secrets" without bodies.
+  - level: Metadata
