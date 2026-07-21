@@ -1,7 +1,7 @@
 # Console authentication
 
-> AWS equivalent: signing in to the console. A **root user** is created at install; IAM-style
-> users and per-user permissions follow (see [Roadmap](#roadmap)).
+> AWS equivalent: signing in to the console. A **root user** is created at install, and
+> IAM-style users are declarative resources — see [`iam.md`](iam.md).
 
 Every `/api` route requires a signed session. This matters more than it might sound: the console
 proxies the Kubernetes API at `/api/k8s/*` **using the pod's ServiceAccount**, so without a gate
@@ -13,7 +13,7 @@ Set `AUTH_MODE` on the console Deployment (`platform/console/manifests/deploymen
 
 | Mode | Behaviour |
 |---|---|
-| `local` | **Default.** Users live in the `console-auth` Secret, passwords bcrypt-hashed. |
+| `local` | **Default.** Users are `kind: User` resources, or entries in the `console-auth` Secret. Passwords are bcrypt-hashed either way. |
 | `ldap` | Authenticates against a directory — typically the Samba AD from `kind: Directory`. |
 | `oidc` | Reserved — not implemented yet (returns 501). |
 | `none` | **No authentication.** Only for throwaway dev clusters; logs a loud warning at boot. |
@@ -65,14 +65,46 @@ Like AWS root, this account is for break-glass and initial setup, not daily work
 
 ## Adding users (local mode)
 
-Users are a JSON map in the `console-auth` Secret's `users` key:
+The normal way is a **`kind: User`**, so accounts are GitOps-managed like everything else.
+The password is never in the resource — it points at a Secret holding a bcrypt hash:
 
-```json
-{ "root":  { "hash": "$2a$10$…", "role": "root" },
-  "alice": { "hash": "$2a$10$…", "role": "admin" } }
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: User
+metadata: { name: alice, namespace: open-infra-console }
+spec:
+  displayName: Alice Example
+  source: local
+  groups: [admins]          # what she may do comes from kind: Group
+  passwordSecretRef: { name: alice-pw, key: hash }
 ```
 
-Generate a hash with any bcrypt tool (e.g. `htpasswd -bnBC 10 "" 'password' | tr -d ':\n'`).
+```console
+$ htpasswd -bnBC 10 "" 'her-password' | tr -d ':\n'    # generate the hash
+$ kubectl -n open-infra-console create secret generic alice-pw --from-literal=hash='$2a$10$…'
+```
+
+`spec.groups` become the impersonation groups **directly** — they are not re-derived from a
+role keyword — so authority comes from the ClusterRoleBindings that `kind: Group` creates.
+Empty `groups` means "can sign in, authorized for nothing" rather than defaulting to a role.
+
+> ⚠️ A `kind: Group` only takes effect if its name is listed in the impersonator
+> ClusterRole's `resourceNames`. That pin is what stops the console impersonating
+> `system:masters`, so widening it is deliberately an operator action. Prefer the built-in
+> `admins` / `powerusers` / `readers` and vary what they mean via `spec.clusterRole`. Full
+> explanation in [`iam.md`](iam.md).
+
+### The Secret (break-glass)
+
+The `console-auth` Secret is still read **first**, before any `kind: User`. That ordering is
+the point: if the CRDs are missing, a Composition is broken, or someone deletes their own
+User, `root` still works. Losing the console because the thing that defines who may use the
+console is broken would be the worst possible failure.
+
+```json
+{ "root": { "hash": "$2a$10$…", "role": "root" } }
+```
+
 Changes take effect immediately — the Secret is re-read on every sign-in.
 
 ## How it works
@@ -89,14 +121,17 @@ Changes take effect immediately — the Secret is re-read on every sign-in.
 
 ## Roles ("IAM")
 
-Each user has a `role`. The console does **not** decide what a role may do — it signs the user
-in, then proxies their Kubernetes calls with impersonation headers so **Kubernetes RBAC**
-enforces the rules and the audit log attributes every action to a person:
+The console does **not** decide what anyone may do. It signs the user in, then proxies their
+Kubernetes calls with impersonation headers, so **Kubernetes RBAC** enforces the rules and the
+audit log attributes every action to a person:
 
 ```
 Impersonate-User:  openinfra:alice
 Impersonate-Group: openinfra:powerusers
 ```
+
+For a `kind: User`, the groups come straight from `spec.groups`. For a Secret-backed account
+the `role` maps to a fixed set:
 
 | Role | Group | Can |
 |---|---|---|
@@ -104,33 +139,44 @@ Impersonate-Group: openinfra:powerusers
 | `poweruser` | `openinfra:powerusers` | manage open-infra resources; **not** Secrets or RBAC |
 | `readonly` | `openinfra:readers` | `get`/`list`/`watch` only; **no Secrets** |
 
-Anything unrecognised falls back to read-only (least privilege). Bindings live in
-`platform/console/manifests/rbac-roles.yaml` — edit those ClusterRoles to reshape a role.
+Everyone also lands in `openinfra:users`. Anything unrecognised falls back to read-only
+(least privilege). Bindings live in `platform/console/manifests/rbac-roles.yaml` — edit those
+ClusterRoles to reshape a role.
 
 Two things make this real rather than cosmetic:
 
 - The proxy **strips any client-supplied `Impersonate-*` headers** before setting its own, so a
   browser can't ask to be someone else.
-- A read-only user is blocked from the BFF's *own* mutating endpoints too (the handlers that act
-  with the ServiceAccount rather than going through the proxy), so there's no side door.
+- The BFF's *own* endpoints — the handlers that act with the ServiceAccount rather than going
+  through the proxy — ask the API server whether **you** may do it, via a
+  `SubjectAccessReview` issued as your impersonated identity, and fail closed on any error.
+  So there is no side door around RBAC.
 
 ## Honest limits (today)
 
-- **The BFF's own endpoints still act as the ServiceAccount**, not as you. Read-only users are
-  blocked from mutating them, but a `poweruser` calling e.g. the snapshot API is not further
-  restricted by Kubernetes RBAC on that path. Only `/api/k8s/*` is fully RBAC-governed.
+- The BFF's own endpoints **perform** their work as the ServiceAccount, but they now
+  **authorize** as you first (`SubjectAccessReview`), so RBAC governs them as well as
+  `/api/k8s/*`. What remains: that check maps an action to a verb/resource pair by hand, so a
+  new BFF endpoint is only covered once it is wired up.
 - Sessions are stateless: signing out clears the cookie, but a stolen token stays valid until it
   expires (12h). Rotating the Secret's `sessionKey` invalidates all sessions.
 - `local` mode has no password policy, lockout, or MFA.
-- Roles are assigned by editing the `console-auth` Secret; there is no `kind: User` CRD yet.
+- There is **no UI** for users and groups yet — they are `kubectl apply`, or a `kubectl edit`
+  of the break-glass Secret.
+- Group names beyond the built-in three need an operator to widen the impersonator
+  ClusterRole (see above); the console cannot do it for you, by design.
 
 ## Roadmap
 
-1. **LDAP** against your `kind: Directory` (Samba AD), and **OIDC** (Dex/Keycloak/GitHub).
-2. A declarative **`kind: User`** so accounts and role bindings are GitOps-managed like
-   everything else, instead of a JSON blob in a Secret.
+1. ~~A declarative **`kind: User`**~~ — shipped; see [`iam.md`](iam.md).
+2. **OIDC** (Dex/Keycloak/GitHub); LDAP already works against your `kind: Directory`.
+3. **Users and Groups screens** in the console, so managing accounts isn't `kubectl`.
+4. `kind: Policy` / `kind: Role`, then `Deny` via ValidatingAdmissionPolicy — staged plan in
+   [`iam.md`](iam.md).
 
 ## See also
 
 - [`console.md`](console.md) — the console UI.
-- [`directory.md`](directory.md) — the AD directory that will back LDAP mode.
+- [`iam.md`](iam.md) — `kind: User` / `kind: Group`, and the staged plan for policies.
+- [`architecture.md`](architecture.md) — where `kind: Directory` (the AD DC backing LDAP mode)
+  fits in.
