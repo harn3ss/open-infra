@@ -1,14 +1,16 @@
-import { Settings } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from "@/components/ui/dropdown-menu";
+import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import { useDensity } from "@/lib/use-density";
 
@@ -16,6 +18,7 @@ import { useDensity } from "@/lib/use-density";
 export function SettingsMenu() {
   const { theme, setTheme } = useTheme();
   const { density, setDensity } = useDensity();
+  const { user, signOut } = useAuth();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -45,6 +48,20 @@ export function SettingsMenu() {
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="compact">Compact</DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
+
+        {user && !user.authDisabled ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="font-normal text-muted-foreground">
+              Signed in as{" "}
+              <span className="font-medium text-foreground">{user.user}</span>
+            </DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => void signOut()}>
+              <LogOut className="size-4" />
+              Sign out
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

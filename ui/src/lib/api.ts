@@ -69,6 +69,9 @@ async function request<T>(
       ...init,
       headers: {
         Accept: "application/json",
+        // CSRF: the BFF requires this header on state-changing requests. Together
+        // with the session cookie's SameSite=Lax it blocks cross-site submissions.
+        "X-Openinfra-Console": "1",
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
         ...init?.headers,
       },
@@ -84,6 +87,11 @@ async function request<T>(
   const body = await parseBody(res);
 
   if (!res.ok) {
+    // Session expired / not signed in: tell the app so it can drop to the login
+    // screen instead of surfacing a confusing error on every panel.
+    if (res.status === 401 && !path.startsWith("/auth/")) {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
     let message = `Request failed (${res.status})`;
     let reason: string | undefined;
     if (isK8sStatus(body)) {
@@ -96,6 +104,33 @@ async function request<T>(
   }
 
   return body as T;
+}
+
+/* ------------------------------ Auth ------------------------------ */
+
+/** Fired when any API call comes back 401 so the shell can show the login page. */
+export const UNAUTHORIZED_EVENT = "openinfra:unauthorized";
+
+export interface CurrentUser {
+  user: string;
+  role: string;
+  /** true when the server runs with AUTH_MODE=none (no authentication). */
+  authDisabled?: boolean;
+}
+
+export function getCurrentUser(): Promise<CurrentUser> {
+  return request<CurrentUser>("/auth/me");
+}
+
+export function login(username: string, password: string): Promise<CurrentUser> {
+  return request<CurrentUser>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function logout(): Promise<unknown> {
+  return request("/auth/logout", { method: "POST" });
 }
 
 /* ------------------------------ Config ------------------------------ */
