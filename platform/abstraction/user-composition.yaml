@@ -1,0 +1,52 @@
+# The compiler for kind: User.
+#
+# A User deliberately emits NO RBAC. It is a record of an identity — display name, group
+# memberships, where its password is verified — that the console reads when signing someone
+# in. Permission comes from kind: Group (which binds openinfra:<group> to a ClusterRole),
+# so that "who someone is" and "what they may do" stay separable, exactly as IAM separates
+# a user from its attached policies.
+#
+# The password is NEVER stored here: spec.passwordSecretRef points at a Secret holding a
+# bcrypt HASH. Keeping the hash in a Secret (not in the CR) means the User object itself is
+# safe to read, GitOps, and show in the console.
+#
+# Status surfaces the resolved groups so the console can render them without re-deriving.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: user
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: iam.openinfra.dev/v1
+    kind: XUser
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $groups := $spec.groups | default list }}
+            {{- $disabled := $spec.disabled | default false }}
+            ---
+            # No RBAC is emitted here on purpose — see the header. Status only.
+            apiVersion: iam.openinfra.dev/v1
+            kind: XUser
+            status:
+              ready: {{ not $disabled }}
+              groups:
+                {{- range $g := $groups }}
+                - {{ $g }}
+                {{- end }}

@@ -47,6 +47,26 @@ rules:
   - apiGroups: [k8s.mariadb.com]
     resources: [mariadbs]
     verbs: [get, list, watch, create, update, patch, delete]
+  # kind: Group compiles to a ClusterRoleBinding, so the provider must be able to
+  # create them. This is an escalation vector — anything that can create a binding
+  # can grant any role it is permitted to bind — so it is deliberately fenced:
+  #   * bindings themselves: full management, but
+  #   * the `bind` verb is restricted by resourceNames to the three console roles.
+  # Kubernetes requires `bind` (or holding the role's permissions outright) to
+  # reference a ClusterRole in a binding, so this list is the hard ceiling on what
+  # a kind: Group can ever grant. Adding a role here widens that ceiling — do it
+  # deliberately, and never add cluster-admin.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterrolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [bind]
+    resourceNames:
+      - open-infra-console
+      - open-infra-poweruser
+      - open-infra-readonly
+
   # Knative Services for the kind: Function (serverless) abstraction.
   - apiGroups: [serving.knative.dev]
     resources: [services]

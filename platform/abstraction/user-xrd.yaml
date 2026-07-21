@@ -1,0 +1,93 @@
+# open-infra's "IAM users": kind: User and kind: Group — console identities as declarative
+# resources instead of a JSON blob inside the console-auth Secret, so accounts are
+# GitOps-managed like everything else.
+#
+# WHY A SEPARATE API GROUP (iam.openinfra.dev, not openinfra.dev):
+# Kubernetes RBAC is purely ADDITIVE — a wildcard GRANTS. The console's readonly role
+# holds `apiGroups: [openinfra.dev], resources: ["*"]`, so putting identity kinds in that
+# group would silently give every reader access to the objects that define who can do
+# what, the moment these CRDs existed. A distinct group makes that boundary structural
+# rather than a list someone must remember to maintain.
+#
+# A User does NOT itself grant anything: it names an identity and its groups. Those become
+# the Impersonate-User / Impersonate-Group headers the console sends, and RBAC bindings on
+# `openinfra:<group>` are what actually confer permission. See docs/iam.md.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xusers.iam.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: iam.openinfra.dev
+  names:
+    kind: XUser
+    plural: xusers
+  claimNames:
+    kind: User
+    plural: users
+  defaultCompositionRef:
+    name: user
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                displayName:
+                  type: string
+                  description: Human-readable name shown in the console.
+                email:
+                  type: string
+                  description: Optional contact address; not used for authentication.
+                groups:
+                  type: array
+                  description: >-
+                    Groups this user belongs to. Each becomes an
+                    Impersonate-Group of openinfra:<group>, and RBAC bindings on that
+                    group are what actually grant permission. A user with no groups can
+                    sign in but can do nothing.
+                  items:
+                    type: string
+                  default: []
+                source:
+                  type: string
+                  description: >-
+                    Where the password is verified. `local` uses passwordSecretRef;
+                    `ldap` and `oidc` defer to the configured directory (AUTH_MODE).
+                  enum: [local, ldap, oidc]
+                  default: local
+                passwordSecretRef:
+                  type: object
+                  description: >-
+                    Secret holding a BCRYPT HASH (never a password) for source=local.
+                    Omit for ldap/oidc users.
+                  properties:
+                    name:
+                      type: string
+                    key:
+                      type: string
+                      default: hash
+                  required: [name]
+                disabled:
+                  type: boolean
+                  description: Suspend sign-in without deleting the account or its history.
+                  default: false
+              required: [displayName]
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                groups:
+                  type: array
+                  items:
+                    type: string

@@ -1,0 +1,70 @@
+# The compiler: one Group claim -> one ClusterRoleBinding that binds the Kubernetes group
+# `openinfra:<name>` to the chosen ClusterRole.
+#
+# This is the whole mechanism. The console authenticates a user, looks up their kind: User,
+# and sends Impersonate-Group: openinfra:<group> with every proxied call. The API server
+# then evaluates THIS binding. So permissions are enforced by Kubernetes RBAC, not by
+# console code, and hold identically whether the action comes from the console, kubectl,
+# Terraform or Argo.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: group
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: iam.openinfra.dev/v1
+    kind: XGroup
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $role := $spec.clusterRole | default "open-infra-readonly" }}
+            ---
+            # Bind openinfra:<name> to the requested ClusterRole. Note this grants to a
+            # GROUP STRING, not to an object: Kubernetes users/groups are assertions made
+            # by the authenticator (here, the console's impersonation headers), which is
+            # why the console's ability to impersonate is pinned to the openinfra:* groups.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: group-binding
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: openinfra-group-{{ $name }}
+                    labels:
+                      openinfra.dev/iam-group: {{ $name }}
+                  roleRef:
+                    apiGroup: rbac.authorization.k8s.io
+                    kind: ClusterRole
+                    name: {{ $role }}
+                  subjects:
+                    - kind: Group
+                      name: "openinfra:{{ $name }}"
+                      apiGroup: rbac.authorization.k8s.io
+            ---
+            {{- $ready := true }}
+            apiVersion: iam.openinfra.dev/v1
+            kind: XGroup
+            status:
+              ready: {{ $ready }}
+              boundTo: "openinfra:{{ $name }}"

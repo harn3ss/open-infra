@@ -1,0 +1,62 @@
+# kind: Group — a named set of permissions users are placed into, the thing that actually
+# grants access (a kind: User only names an identity and its group memberships).
+#
+# A Group compiles to a ClusterRoleBinding whose subject is the Kubernetes group
+# `openinfra:<name>`, bound to a ClusterRole. The console sends that group as an
+# Impersonate-Group header, so KUBERNETES RBAC — not the console — decides what members
+# may do, and every action is attributable in the audit log.
+#
+# Lives in iam.openinfra.dev rather than openinfra.dev: RBAC is purely additive, and the
+# console's readonly role holds openinfra.dev ["*"], so an identity kind in that group
+# would be readable by every reader the moment it existed. See docs/iam.md.
+#
+# The three built-in groups (admins / powerusers / readers) are shipped as static manifests
+# in platform/console/manifests/rbac-roles.yaml; this kind is for defining your own.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xgroups.iam.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: iam.openinfra.dev
+  names:
+    kind: XGroup
+    plural: xgroups
+  claimNames:
+    kind: Group
+    plural: groups
+  defaultCompositionRef:
+    name: group
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                description:
+                  type: string
+                  description: What this group is for, shown in the console.
+                clusterRole:
+                  type: string
+                  description: >-
+                    Name of the ClusterRole members receive. Use a built-in
+                    (open-infra-console for full access, open-infra-poweruser,
+                    open-infra-readonly) or your own. This is the ONLY field that grants
+                    anything — choose it deliberately.
+                  default: open-infra-readonly
+              required: [clusterRole]
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                boundTo:
+                  type: string
+                  description: The Kubernetes group name members are bound as.
