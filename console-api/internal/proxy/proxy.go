@@ -24,7 +24,19 @@ import (
 //	/api/k8s/apis/openinfra.dev/v1/...  ->  <host>/apis/openinfra.dev/v1/...
 //
 // The handler is mounted in the router under the same prefix it strips.
-func New(host *url.URL, transport http.RoundTripper, stripPrefix string, logger *slog.Logger) http.Handler {
+// Identity is the console user a proxied request should act as. When supplied,
+// the request is sent to the API server with Impersonate-* headers so Kubernetes
+// RBAC — not the console — decides what the user may do.
+type Identity struct {
+	User   string
+	Groups []string
+}
+
+// IdentityFunc resolves the signed-in user from an inbound request. Return
+// ok=false to forward with the ServiceAccount's own rights (no impersonation).
+type IdentityFunc func(*http.Request) (Identity, bool)
+
+func New(host *url.URL, transport http.RoundTripper, stripPrefix string, logger *slog.Logger, identity IdentityFunc) http.Handler {
 	rp := &httputil.ReverseProxy{
 		// Rewrite is the modern (Go 1.20+) replacement for Director: it sets the
 		// outbound target and preserves inbound query params automatically.
@@ -58,6 +70,29 @@ func New(host *url.URL, transport http.RoundTripper, stripPrefix string, logger 
 			pr.Out.Header.Del("X-Forwarded-For")
 			pr.Out.Header.Del("X-Forwarded-Host")
 			pr.Out.Header.Del("X-Forwarded-Proto")
+
+			// Impersonation is set by US, never by the caller: strip any
+			// client-supplied Impersonate-* headers first, or a browser could ask
+			// the API server to act as any user it likes.
+			pr.Out.Header.Del("Impersonate-User")
+			pr.Out.Header.Del("Impersonate-Uid")
+			pr.Out.Header.Del("Impersonate-Group")
+			for k := range pr.Out.Header {
+				if strings.HasPrefix(http.CanonicalHeaderKey(k), "Impersonate-") {
+					pr.Out.Header.Del(k)
+				}
+			}
+
+			// Act as the signed-in console user so Kubernetes RBAC applies to them
+			// rather than to the console's ServiceAccount.
+			if identity != nil {
+				if id, ok := identity(pr.In); ok && id.User != "" {
+					pr.Out.Header.Set("Impersonate-User", id.User)
+					for _, g := range id.Groups {
+						pr.Out.Header.Add("Impersonate-Group", g)
+					}
+				}
+			}
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

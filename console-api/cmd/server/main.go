@@ -159,6 +159,10 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// using the pod's ServiceAccount to any anonymous caller.
 		api.Use(auth.requireAuth)
 
+		// Read-only users may not invoke the BFF's own mutating endpoints. (The
+		// k8s proxy below is governed by real RBAC via impersonation instead.)
+		api.Use(func(next http.Handler) http.Handler { return requireWrite(auth, next) })
+
 		api.Post("/auth/login", handleLogin(auth))
 		api.Post("/auth/logout", handleLogout(auth))
 		api.Get("/auth/me", handleMe(auth))
@@ -269,8 +273,16 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// Kubernetes reverse proxy (CRUD). Mounted under /api/k8s and stripped
 		// before forwarding. No write timeout so large applies / log follows are
 		// not cut off; the SA's RBAC is the authorization.
-		api.Handle("/k8s", proxy.New(client.Host, client.Transport, k8sPrefix, logger))
-		api.Handle("/k8s/*", proxy.New(client.Host, client.Transport, k8sPrefix, logger))
+		api.Handle("/k8s", proxy.New(client.Host, client.Transport, k8sPrefix, logger,
+			func(r *http.Request) (proxy.Identity, bool) {
+				u, g, ok := identityFor(r)
+				return proxy.Identity{User: u, Groups: g}, ok
+			}))
+		api.Handle("/k8s/*", proxy.New(client.Host, client.Transport, k8sPrefix, logger,
+			func(r *http.Request) (proxy.Identity, bool) {
+				u, g, ok := identityFor(r)
+				return proxy.Identity{User: u, Groups: g}, ok
+			}))
 	})
 
 	// --- Grafana reverse proxy (same-origin embedding) ---

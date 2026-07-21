@@ -270,6 +270,66 @@ func (a *authStore) requireAuth(next http.Handler) http.Handler {
 
 type ctxUser struct{}
 
+// claimsFrom returns the signed-in user's session claims, if the request passed
+// through requireAuth.
+func claimsFrom(r *http.Request) (sessionClaims, bool) {
+	c, ok := r.Context().Value(ctxUser{}).(sessionClaims)
+	return c, ok
+}
+
+// Kubernetes identity for a console role. Console users are impersonated as
+// `openinfra:<user>` (namespaced so they can never collide with a real cluster
+// user) and carry group memberships that RBAC binds permissions to.
+//
+//	root / admin  -> openinfra:admins      (full access)
+//	poweruser     -> openinfra:powerusers  (manage resources, not secrets/RBAC)
+//	readonly      -> openinfra:readers     (get/list/watch only)
+//
+// Every user also gets openinfra:users, for rules that apply to everyone.
+func roleGroups(role string) []string {
+	switch strings.ToLower(role) {
+	case "root", "admin":
+		return []string{"openinfra:admins", "openinfra:users"}
+	case "poweruser":
+		return []string{"openinfra:powerusers", "openinfra:users"}
+	default: // readonly and anything unrecognised — least privilege
+		return []string{"openinfra:readers", "openinfra:users"}
+	}
+}
+
+// identityFor resolves the impersonation identity for a proxied k8s request.
+func identityFor(r *http.Request) (string, []string, bool) {
+	c, ok := claimsFrom(r)
+	if !ok || c.Sub == "" {
+		return "", nil, false
+	}
+	return "openinfra:" + c.Sub, roleGroups(c.Role), true
+}
+
+// requireWrite blocks state-changing calls to the BFF's OWN endpoints (the ones
+// that act with the ServiceAccount rather than going through the impersonating
+// k8s proxy) for read-only users. Kubernetes RBAC covers /api/k8s/*; this covers
+// everything else.
+func requireWrite(a *authStore, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Sign-in/out must stay reachable: there is no session yet at that point.
+		if a.mode == "none" || strings.HasPrefix(r.URL.Path, "/api/auth/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			c, ok := claimsFrom(r)
+			if !ok || strings.EqualFold(c.Role, "readonly") {
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "your role does not allow changes (read-only)"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // POST /api/auth/login
 func handleLogin(a *authStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

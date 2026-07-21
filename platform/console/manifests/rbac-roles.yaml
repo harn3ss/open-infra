@@ -1,0 +1,153 @@
+# Console user roles ("IAM" for open-infra).
+#
+# The console signs a user in, then proxies their Kubernetes calls with
+# Impersonate-User: openinfra:<user> and Impersonate-Group: openinfra:<group>, so
+# KUBERNETES RBAC decides what they can do — not application code. That means a
+# read-only user is read-only even if a console bug would have let them click
+# delete, and every action is attributable in the audit log.
+#
+#   root / admin -> openinfra:admins      full access (same rights the console has)
+#   poweruser    -> openinfra:powerusers  manage resources, but not secrets or RBAC
+#   readonly     -> openinfra:readers     get/list/watch only
+#
+# Everyone also lands in openinfra:users.
+---
+# 1. Let the console's ServiceAccount impersonate console users/groups. Without
+#    this the API server rejects the Impersonate-* headers outright.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-console-impersonator
+rules:
+  - apiGroups: [""]
+    resources: [users, groups]
+    verbs: [impersonate]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-console-impersonator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-infra-console-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: console
+    namespace: open-infra-console
+---
+# 2. Admins: everything the console itself can do.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-infra-console
+subjects:
+  - kind: Group
+    name: openinfra:admins
+    apiGroup: rbac.authorization.k8s.io
+---
+# 3. Power users: manage open-infra resources and workloads, but NOT secrets
+#    (credentials) or RBAC. Read-only elsewhere.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-poweruser
+rules:
+  - apiGroups: [openinfra.dev]
+    resources:
+      - applications
+      - functions
+      - models
+      - virtualmachines
+      - vmimages
+      - volumes
+      - fileshares
+      - directories
+      - migrations
+      - replications
+      - dataflows
+      - streams
+      - securitygroups
+      - faultinjections
+      - queries
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [kubevirt.io, cdi.kubevirt.io, snapshot.storage.k8s.io, postgresql.cnpg.io, k8s.mariadb.com]
+    resources: ["*"]
+    verbs: [get, list, watch]
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachineinstances/vnc, virtualmachineinstances/console]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods, nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-powerusers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-infra-poweruser
+subjects:
+  - kind: Group
+    name: openinfra:powerusers
+    apiGroup: rbac.authorization.k8s.io
+---
+# 4. Readers: look, don't touch. Deliberately excludes secrets — reading a
+#    connection Secret is equivalent to holding the database password.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-readonly
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: ["*"]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [kubevirt.io, cdi.kubevirt.io, snapshot.storage.k8s.io, postgresql.cnpg.io, k8s.mariadb.com]
+    resources: ["*"]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods, nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-readers
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-infra-readonly
+subjects:
+  - kind: Group
+    name: openinfra:readers
+    apiGroup: rbac.authorization.k8s.io
