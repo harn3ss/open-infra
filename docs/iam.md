@@ -142,6 +142,34 @@ This is exactly how Kubernetes' own `admin`/`edit`/`view` are built and where Ra
 verbs you don't hold unless you hold `escalate`. Whatever renders these ClusterRoles must hold a
 superset of anything it can emit — there is no third option. Document the choice honestly.
 
+#### What is built (2026-07-22) — and where it paused
+
+`kind: Policy` and its **permission boundary** are shipped and live; `kind: Role` is blocked on
+one decision. Honest current state:
+
+- **`kind: Policy` works**, without granting anyone `escalate`. The boundary is enforced two ways:
+  the composition **hardcodes `apiGroups: [openinfra.dev]`** into every rule and **whitelists the
+  15 product resources**, so a policy naming `secrets` (or a typo) has that rule *dropped* rather
+  than poisoning the whole role; and the rendering ServiceAccount is granted *exactly* the
+  openinfra.dev surface, so the API server independently refuses anything beyond it. Proven live: a
+  policy attempting `secrets:Get` compiled to an openinfra.dev-only ClusterRole with the bad rule
+  gone. This is the open-infra analogue of an AWS permission boundary.
+- **`kind: Role` is blocked.** A `Role` compiles to an *aggregated* ClusterRole, and Kubernetes
+  requires `escalate` to create **any** ClusterRole carrying an `aggregationRule` — a rule the
+  boundary does **not** satisfy (live error: *"must have cluster-admin privileges to use the
+  aggregationRule"*). So the "there is no third option" above turns out to have a wrinkle specific
+  to aggregation. The open decision:
+    - **A** — grant the rendering SA `escalate` on clusterroles. Bounded-harmless here: the `bind`
+      verb is still `resourceName`-fenced to the three built-in roles and the SA holds no
+      secrets/RBAC, so it still cannot *bind* any over-boundary role to a user. The user-grantable
+      surface is unchanged; only aggregated-role *creation* becomes possible.
+    - **B** — no `escalate`, no arbitrary roles: attach policies to the three built-in tiers
+      (aggregated once at install, where Argo already holds cluster-admin).
+    - **C** — no `escalate`, keep arbitrary roles: add `function-extra-resources`, have a Role read
+      its policies' rules and emit a *plain* unioned ClusterRole (no `aggregationRule`).
+- **No BFF endpoints or console UI yet** for policies/roles — management is `kubectl` on the CRs
+  until the decision above is made and the Users/Groups-style UI is extended.
+
 ### Stage 3 — `Deny` and conditions, via ValidatingAdmissionPolicy
 Only when a concrete requirement appears (likeliest: "powerusers must not delete production VMs").
 Compile `effect: Deny` statements to a **VAP + binding** rather than a ClusterRole. Use plain VAP
@@ -205,7 +233,8 @@ save silently; don't put the correctness-checking tool on a different page from 
 | Poweruser drift guard | ✅ shipped (CI test, mutation-tested) |
 | `kind: User` / `kind: Group` | ✅ shipped — sign-in reads Users; `root` stays in the Secret as break-glass |
 | Custom group names beyond the built-in four | ⬜ needs an operator edit to the impersonator ClusterRole (see above) |
-| `kind: Policy` / `kind: Role` | ⬜ not started (three fixed ClusterRoles today) |
+| `kind: Policy` + permission boundary | ✅ platform shipped, boundary proven live (out-of-boundary rules dropped); no BFF/UI yet |
+| `kind: Role` (aggregated) | ⏸ deployed but blocked — aggregation needs `escalate`; A/B/C decision pending (see Stage 2) |
 | `Deny` + conditions via VAP | ⬜ not started |
 | Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
 
