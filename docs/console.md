@@ -17,8 +17,8 @@ The sidebar is grouped like a cloud console:
 
 - **Dashboard** — counts + health for every resource type, plus recent events.
 - **Compute** — Applications, Functions, Virtual Machines.
-- **Storage** — Volumes, File Shares.
-- **Identity** — Active Directory.
+- **Storage** — Volumes, File Shares, Snapshots.
+- **Security & Identity** — Users, Groups, Policies, Roles (IAM), Security Groups, Active Directory.
 - **AI** — Models.
 - **Data** — Databases, **Data Flows**, Streams, Buckets, Queues. (Data Flows is the
   single data-movement entry — migration and replication are modes within it.)
@@ -48,6 +48,10 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **File Share** (EFS/FSx) | Overview, **Connect** (Windows `net use` / Linux `mount`), YAML · create / delete |
 | **Active Directory** (Directory Service) | Overview (domain/realm/DC), **Join** instructions, YAML · create / delete |
 | **Security Group** (Security Groups) | List/create/delete `kind: SecurityGroup` rule sets (named, reusable firewall rules); edits apply to running VMs **live**, no restart. See [security-groups.md](security-groups.md) · create / delete |
+| **User** (IAM) | Overview, Groups (edit membership), Security (set/reset password, disable/enable), Danger Zone. Backed by `kind: User`; admin-gated. See [iam.md](iam.md) · create / delete |
+| **Group** (IAM) | Overview (bound ClusterRole), Members, Danger Zone. Inert groups (outside the impersonation ceiling) are flagged. `kind: Group` · create / delete |
+| **Policy** (IAM) | A permission editor (pick an open-infra resource, toggle verbs), the compiled rules, Used-by (roles), Danger Zone. `kind: Policy` — can only grant on the openinfra.dev surface (the permission boundary) · create / edit / delete |
+| **Role** (IAM) | Attach/detach policies, the aggregated ClusterRole, how to grant it to a Group, Danger Zone. `kind: Role` · create / delete |
 | **Node** | CPU/memory/pod capacity, **GPU** (count + model), conditions, YAML |
 | **Chaos** (FIS) | List/create/delete `kind: FaultInjection` experiments (type, blast-radius target, duration, status); blast radius shown before you launch. See [chaos.md](chaos.md) · create / delete |
 | **Cost Explorer** (Cost Explorer) | "What AWS would've charged" — prices live cluster capacity (compute / GPU / EBS / load balancers) against AWS list rates, showing monthly & annual vs your actual **$0**, plus a by-namespace compute breakdown. See [cost.md](cost.md) |

@@ -64,8 +64,11 @@ CNCF projects — not a reinvention of databases or storage.
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
 | Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |
+| IAM | users, groups, policies, roles (`kind: User`/`Group`/`Policy`/`Role`) | k8s RBAC + impersonation, with a permission boundary |
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
+| Terraform / OpenTofu | infra as HCL | [`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest) provider |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
+| CloudTrail | audit trail | k8s API-server audit log (every action attributed to a person) |
 | Cost Explorer | "what AWS would've charged" | console panel pricing live capacity vs AWS list rates |
 | Secrets Manager | secrets | Sealed Secrets |
 | AWS Backup | backup/DR | Velero |
@@ -121,10 +124,12 @@ git push infra.yaml ──► GitHub Action (build image, push, bump tag)
 A **web console** ships with the platform — an AWS-console-style UI over every
 resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
 File Shares, Buckets, Queries, Queues, Data Flows, Streams, Active Directory,
-Security Groups, Nodes/GPUs, Monitoring, Cost Explorer, Snapshots)
-with per-resource detail pages and actions (object browser, model playground, the
-drag-and-drop **Data Flows** canvas + guided replication wizard, create/delete). See
-[`docs/console.md`](docs/console.md).
+Security Groups, Nodes/GPUs, Monitoring, Cost Explorer, Snapshots) plus a full
+**Security & Identity** section (sign-in, Users, Groups, Policies, Roles — IAM with a
+permission boundary, all admin-gated) with per-resource detail pages and actions
+(object browser, model playground, the drag-and-drop **Data Flows** canvas + guided
+replication wizard, create/delete). See [`docs/console.md`](docs/console.md), and
+[`docs/auth.md`](docs/auth.md) / [`docs/iam.md`](docs/iam.md) for the identity model.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full diagram and the
 public-edge story (Cloudflare Tunnel + optional Lightsail/WireGuard).
