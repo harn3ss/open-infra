@@ -207,7 +207,7 @@ save silently; don't put the correctness-checking tool on a different page from 
 | Custom group names beyond the built-in four | ⬜ needs an operator edit to the impersonator ClusterRole (see above) |
 | `kind: Policy` / `kind: Role` | ⬜ not started (three fixed ClusterRoles today) |
 | `Deny` + conditions via VAP | ⬜ not started |
-| Users/Roles UI | ⬜ not started (management is `kubectl apply` of a User + a hash Secret) |
+| Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
 
 ## See also
 
