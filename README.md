@@ -194,7 +194,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The eleven public
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The public
 abstractions are shipped and exercised on that cluster — but **maturity varies by
 capability** (see [Maturity & guarantees](#maturity--guarantees)):
 
