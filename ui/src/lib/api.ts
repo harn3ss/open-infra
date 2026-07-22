@@ -686,6 +686,10 @@ export interface IamConfig {
   namespace: string;
   /** Group names guaranteed to take effect out of the box. */
   builtinGroups: string[];
+  /** openinfra.dev resources a Policy action may name (the permission boundary). */
+  policyResources?: string[];
+  /** Verbs a Policy action may use. */
+  policyVerbs?: string[];
 }
 
 export function getIamConfig(): Promise<IamConfig> {
@@ -756,4 +760,85 @@ export function updateIamGroup(
 export function deleteIamGroup(name: string, force = false): Promise<{ name: string }> {
   const q = force ? "?force=true" : "";
   return request(`/iam/groups/${encodeURIComponent(name)}${q}`, { method: "DELETE" });
+}
+
+/* ------------------------------ IAM policies & roles (stage 2) ------------------------------ */
+
+export interface PolicyStatement {
+  effect?: string;
+  actions: string[];
+  resources?: string[];
+}
+
+export interface IamPolicy {
+  name: string;
+  description: string;
+  statements: PolicyStatement[];
+  clusterRole: string;
+  ruleCount: number;
+  ready: boolean;
+}
+
+export interface IamRole {
+  name: string;
+  description: string;
+  policies: string[];
+  clusterRole: string;
+  ready: boolean;
+}
+
+export function listIamPolicies(): Promise<IamPolicy[]> {
+  return request<IamPolicy[]>("/iam/policies");
+}
+export function getIamPolicy(name: string): Promise<IamPolicy> {
+  return request<IamPolicy>(`/iam/policies/${encodeURIComponent(name)}`);
+}
+export function createIamPolicy(body: {
+  name: string;
+  description: string;
+  statements: PolicyStatement[];
+}): Promise<{ name: string }> {
+  return request("/iam/policies", { method: "POST", body: JSON.stringify(body) });
+}
+export function updateIamPolicy(
+  name: string,
+  body: { description: string; statements: PolicyStatement[] },
+): Promise<{ name: string }> {
+  return request(`/iam/policies/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+export function deleteIamPolicy(name: string, force = false): Promise<{ name: string }> {
+  return request(`/iam/policies/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
+    method: "DELETE",
+  });
+}
+
+export function listIamRoles(): Promise<IamRole[]> {
+  return request<IamRole[]>("/iam/roles");
+}
+export function getIamRole(name: string): Promise<IamRole> {
+  return request<IamRole>(`/iam/roles/${encodeURIComponent(name)}`);
+}
+export function createIamRole(body: {
+  name: string;
+  description: string;
+  policies: string[];
+}): Promise<{ name: string }> {
+  return request("/iam/roles", { method: "POST", body: JSON.stringify(body) });
+}
+export function updateIamRole(
+  name: string,
+  body: { description: string; policies: string[] },
+): Promise<{ name: string }> {
+  return request(`/iam/roles/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+export function deleteIamRole(name: string, force = false): Promise<{ name: string }> {
+  return request(`/iam/roles/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
+    method: "DELETE",
+  });
 }

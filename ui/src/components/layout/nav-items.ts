@@ -19,7 +19,9 @@ import {
   Send,
   Server,
   Workflow,
+  FileText,
   Shield,
+  ShieldCheck,
   Users,
   UsersRound,
   Zap,
@@ -62,6 +64,8 @@ export const NAV_ITEMS: NavItem[] = [
 
   { label: "Users", to: "/users", icon: Users, matchPrefix: true, section: "Security & Identity" },
   { label: "Groups", to: "/groups", icon: UsersRound, matchPrefix: true, section: "Security & Identity" },
+  { label: "Policies", to: "/policies", icon: FileText, matchPrefix: true, section: "Security & Identity" },
+  { label: "Roles", to: "/roles", icon: ShieldCheck, matchPrefix: true, section: "Security & Identity" },
   { label: "Security Groups", to: "/security-groups", icon: Shield, matchPrefix: true, section: "Security & Identity" },
   { label: "Active Directory", to: "/directories", icon: Building2, matchPrefix: true, section: "Security & Identity" },
 

@@ -283,6 +283,17 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/groups", handleIAMGroupCreate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/groups/{name}", handleIAMGroupUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/groups/{name}", handleIAMGroupDelete(cs, auth, logger))
+		// Policies + Roles (stage 2). Same SAR gate on iam.openinfra.dev — admins only.
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies", handleIAMPoliciesList(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/policies", handleIAMPolicyCreate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies/{name}", handleIAMPolicyGet(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/policies/{name}", handleIAMPolicyUpdate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/policies/{name}", handleIAMPolicyDelete(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles", handleIAMRolesList(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/roles", handleIAMRoleCreate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles/{name}", handleIAMRoleGet(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/roles/{name}", handleIAMRoleUpdate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/roles/{name}", handleIAMRoleDelete(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

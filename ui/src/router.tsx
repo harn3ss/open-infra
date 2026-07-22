@@ -54,6 +54,10 @@ import { UsersPage } from "@/features/iam/users-page";
 import { UserDetailPage } from "@/features/iam/user-detail-page";
 import { GroupsPage } from "@/features/iam/groups-page";
 import { GroupDetailPage } from "@/features/iam/group-detail-page";
+import { PoliciesPage } from "@/features/iam/policies-page";
+import { PolicyDetailPage } from "@/features/iam/policy-detail-page";
+import { RolesPage } from "@/features/iam/roles-page";
+import { RoleDetailPage } from "@/features/iam/role-detail-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -336,6 +340,26 @@ const groupDetailRoute = createRoute({
   path: "/groups/$name",
   component: GroupDetailPage,
 });
+const policiesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/policies",
+  component: PoliciesPage,
+});
+const policyDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/policies/$name",
+  component: PolicyDetailPage,
+});
+const rolesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/roles",
+  component: RolesPage,
+});
+const roleDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/roles/$name",
+  component: RoleDetailPage,
+});
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -385,6 +409,10 @@ const routeTree = rootRoute.addChildren([
   userDetailRoute,
   groupsRoute,
   groupDetailRoute,
+  policiesRoute,
+  policyDetailRoute,
+  rolesRoute,
+  roleDetailRoute,
 ]);
 
 export const router = createRouter({
