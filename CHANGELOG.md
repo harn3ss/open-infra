@@ -194,6 +194,30 @@ the product's public contract.
   ServiceAccount and reads like a bug.
 
 ### Security
+- **IAM policies and roles: `kind: Policy` and `kind: Role`, managed from the console (stage 2).**
+  AWS-style attachable policies for open-infra, with AWS's anti-escalation guarantee. A **Policy**
+  is a document of Allow statements over open-infra resources (`virtualmachines:*`, `volumes:Get`,
+  …) that compiles to a labelled ClusterRole; a **Role** bundles policies into an aggregated
+  ClusterRole; pointing a Group at `openinfra-role-<name>` grants it.
+
+  The safety story is a **permission boundary**: a Policy can only ever grant on the `openinfra.dev`
+  product surface. That is enforced structurally — the composition hardcodes
+  `apiGroups: [openinfra.dev]` and drops any rule outside a 15-resource whitelist — and by RBAC:
+  the rendering ServiceAccount holds *exactly* that surface, so the API server refuses anything
+  beyond it. The console's `/api/iam/*` endpoints are SAR-gated on `iam.openinfra.dev` (admins
+  only), and the BFF rejects an out-of-boundary action with a clear message rather than silently
+  dropping it. Verified live: a policy naming `secrets` is refused; a member of a group bound to a
+  `virtualmachines:*, volumes:Get/List` role could delete VMs and read volumes but not delete
+  volumes, read secrets, or touch applications; a read-only user is 403'd on every IAM write.
+
+  One honest note on privilege: aggregated ClusterRoles require the RBAC `escalate` verb to create
+  at all (a Kubernetes rule the boundary doesn't satisfy), so the provider is granted it — but it
+  is bounded by the `bind` fence, not by escalate. `bind` stays restricted to the three built-in
+  roles and the provider holds no secrets/RBAC, so it can *create* a powerful ClusterRole yet never
+  *bind* one exceeding the boundary to a person. Escalate widens what can be created, never what can
+  be granted. See [docs/iam.md](docs/iam.md).
+
+### Security
 - **Users and Groups are managed from the console, not just `kubectl`.** IAM stage 1 made
   sign-in read `kind: User` / `kind: Group`, but adding a person still meant `kubectl apply` of a
   User plus a hand-built bcrypt-hash Secret. There is now a **Users** and a **Groups** page under
