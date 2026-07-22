@@ -50,6 +50,10 @@ import { NetworkPage } from "@/features/network/network-page";
 import { MonitoringPage } from "@/features/monitoring/monitoring-page";
 import { CostPage } from "@/features/cost/cost-page";
 import { SnapshotsPage } from "@/features/snapshots/snapshots-page";
+import { UsersPage } from "@/features/iam/users-page";
+import { UserDetailPage } from "@/features/iam/user-detail-page";
+import { GroupsPage } from "@/features/iam/groups-page";
+import { GroupDetailPage } from "@/features/iam/group-detail-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -312,6 +316,27 @@ const snapshotsRoute = createRoute({
   component: SnapshotsPage,
 });
 
+const usersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/users",
+  component: UsersPage,
+});
+const userDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/users/$name",
+  component: UserDetailPage,
+});
+const groupsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/groups",
+  component: GroupsPage,
+});
+const groupDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/groups/$name",
+  component: GroupDetailPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
@@ -356,6 +381,10 @@ const routeTree = rootRoute.addChildren([
   monitoringRoute,
   costRoute,
   snapshotsRoute,
+  usersRoute,
+  userDetailRoute,
+  groupsRoute,
+  groupDetailRoute,
 ]);
 
 export const router = createRouter({
