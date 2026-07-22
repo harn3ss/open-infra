@@ -164,8 +164,10 @@ func unboundGroups(groups []string) []string {
 func handleIAMConfig(auth *authStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"namespace":     auth.ns,
-			"builtinGroups": builtinGroups,
+			"namespace":       auth.ns,
+			"builtinGroups":   builtinGroups,
+			"policyResources": policyResources,
+			"policyVerbs":     []string{"Get", "List", "Watch", "Create", "Update", "Patch", "Delete", "*"},
 		})
 	}
 }

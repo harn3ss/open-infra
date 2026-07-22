@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, UsersRound } from "lucide-react";
 import {
   Dialog,
@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/common/states";
-import { createIamGroup } from "@/lib/api";
+import { createIamGroup, listIamRoles } from "@/lib/api";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -42,9 +42,20 @@ export function NewGroupDialog({
   builtins: string[];
 }) {
   const qc = useQueryClient();
+  const roles = useQuery({ queryKey: ["iam", "roles"], queryFn: listIamRoles });
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [clusterRole, setClusterRole] = useState("open-infra-readonly");
+
+  // Built-in tiers plus any custom Role's aggregated ClusterRole, so a group can grant a
+  // policy-composed role (Roles page) as easily as a built-in tier.
+  const roleOptions = [
+    ...ROLE_OPTIONS,
+    ...(roles.data ?? []).map((r) => ({
+      value: r.clusterRole || `openinfra-role-${r.name}`,
+      label: `Role: ${r.name}`,
+    })),
+  ];
 
   useEffect(() => {
     if (!open) return;
@@ -123,7 +134,7 @@ export function NewGroupDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {ROLE_OPTIONS.map((r) => (
+                {roleOptions.map((r) => (
                   <SelectItem key={r.value} value={r.value}>
                     {r.label}
                   </SelectItem>
