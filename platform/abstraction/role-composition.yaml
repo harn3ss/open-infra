@@ -1,0 +1,67 @@
+# The compiler for kind: Role — one Role claim becomes one aggregated ClusterRole whose
+# rules are the union of the attached Policies' ClusterRoles, selected by their
+# rbac.openinfra.dev/policy-<name> labels.
+#
+# The ClusterRole is emitted with an aggregationRule and NO rules of its own; the
+# kube-controller-manager's aggregation controller fills them in from the selected
+# policies. Creating an empty-rules ClusterRole grants nothing, so this needs no `escalate`.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: role
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: iam.openinfra.dev/v1
+    kind: XRole
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $policies := $spec.policies | default list }}
+            {{- /* One selector per attached policy; the aggregation controller ORs them and
+                   unions the matched policies' rules into this role. */ -}}
+            {{- $selectors := list }}
+            {{- range $p := $policies }}
+              {{- $selectors = append $selectors (dict "matchLabels" (dict (printf "rbac.openinfra.dev/policy-%s" $p) "true")) }}
+            {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: role-clusterrole
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: openinfra-role-{{ $name }}
+                    labels:
+                      rbac.openinfra.dev/managed: role
+                      openinfra.dev/iam-role: {{ $name }}
+                  # An empty clusterRoleSelectors matches nothing, so a role with no
+                  # policies attached grants nothing until one is added.
+                  aggregationRule:
+                    clusterRoleSelectors:{{ if $selectors }}{{ toYaml $selectors | nindent 22 }}{{ else }} []{{ end }}
+            ---
+            apiVersion: iam.openinfra.dev/v1
+            kind: XRole
+            status:
+              ready: true
+              clusterRole: openinfra-role-{{ $name }}
