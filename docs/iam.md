@@ -26,7 +26,7 @@ objects. Nobody reimplements authorization for cluster resources in app code.
 | Inline policy | `spec.inline` on a `kind: Role` | RBAC |
 | **Explicit `Deny`** | `kind: Policy` with `effect: Deny` | **ValidatingAdmissionPolicy** |
 | **`Condition`** | `spec.condition` on a Deny statement | **ValidatingAdmissionPolicy** |
-| Permission boundary | *deliberately not built* | — |
+| Permission boundary | the openinfra.dev product surface (Policies can grant nothing else) | RBAC + provider grant |
 | CloudTrail | k8s audit log (`impersonatedUser`) | already shipped |
 
 ## The constraint that shapes everything
@@ -142,33 +142,38 @@ This is exactly how Kubernetes' own `admin`/`edit`/`view` are built and where Ra
 verbs you don't hold unless you hold `escalate`. Whatever renders these ClusterRoles must hold a
 superset of anything it can emit — there is no third option. Document the choice honestly.
 
-#### What is built (2026-07-22) — and where it paused
+#### What is built (2026-07-22) — shipped
 
-`kind: Policy` and its **permission boundary** are shipped and live; `kind: Role` is blocked on
-one decision. Honest current state:
+`kind: Policy`, `kind: Role`, the permission boundary, the BFF endpoints and the console UI are
+all live and verified end-to-end. How it actually works:
 
-- **`kind: Policy` works**, without granting anyone `escalate`. The boundary is enforced two ways:
-  the composition **hardcodes `apiGroups: [openinfra.dev]`** into every rule and **whitelists the
-  15 product resources**, so a policy naming `secrets` (or a typo) has that rule *dropped* rather
-  than poisoning the whole role; and the rendering ServiceAccount is granted *exactly* the
-  openinfra.dev surface, so the API server independently refuses anything beyond it. Proven live: a
-  policy attempting `secrets:Get` compiled to an openinfra.dev-only ClusterRole with the bad rule
-  gone. This is the open-infra analogue of an AWS permission boundary.
-- **`kind: Role` is blocked.** A `Role` compiles to an *aggregated* ClusterRole, and Kubernetes
-  requires `escalate` to create **any** ClusterRole carrying an `aggregationRule` — a rule the
-  boundary does **not** satisfy (live error: *"must have cluster-admin privileges to use the
-  aggregationRule"*). So the "there is no third option" above turns out to have a wrinkle specific
-  to aggregation. The open decision:
-    - **A** — grant the rendering SA `escalate` on clusterroles. Bounded-harmless here: the `bind`
-      verb is still `resourceName`-fenced to the three built-in roles and the SA holds no
-      secrets/RBAC, so it still cannot *bind* any over-boundary role to a user. The user-grantable
-      surface is unchanged; only aggregated-role *creation* becomes possible.
-    - **B** — no `escalate`, no arbitrary roles: attach policies to the three built-in tiers
-      (aggregated once at install, where Argo already holds cluster-admin).
-    - **C** — no `escalate`, keep arbitrary roles: add `function-extra-resources`, have a Role read
-      its policies' rules and emit a *plain* unioned ClusterRole (no `aggregationRule`).
-- **No BFF endpoints or console UI yet** for policies/roles — management is `kubectl` on the CRs
-  until the decision above is made and the Users/Groups-style UI is extended.
+- **`kind: Policy`** — an attachable document of Allow statements over the openinfra.dev surface.
+  The boundary is enforced two ways: the composition **hardcodes `apiGroups: [openinfra.dev]`**
+  into every rule and **whitelists the 15 product resources**, so a policy naming `secrets` (or a
+  typo) has that rule *dropped* rather than poisoning the whole role; and the rendering
+  ServiceAccount holds *exactly* the openinfra.dev surface, so the API server independently refuses
+  anything beyond it. The BFF also rejects an out-of-boundary action up front with a clear 400.
+  Proven live: `secrets:Get` in a policy → 400 from the BFF; forced in at the CR level → compiled
+  to an openinfra.dev-only ClusterRole with the bad rule gone.
+- **`kind: Role`** — a named bundle of policies, compiled to an *aggregated* ClusterRole that
+  unions them by label. Aggregation is where the escalation problem actually bit: Kubernetes
+  requires `escalate` to create **any** ClusterRole carrying an `aggregationRule`, which the
+  boundary does not satisfy. We chose to grant the rendering ServiceAccount `escalate` on
+  clusterroles — **bounded-harmless**, because the `bind` verb stays `resourceName`-fenced to the
+  three built-in roles and the SA holds no secrets/RBAC, so even with escalate it can *create* a
+  powerful ClusterRole but can never *bind* one exceeding the boundary to a user. Escalate widens
+  what can be created, never what can be granted to a person — verified live: a member of a group
+  bound to a role built from a `virtualmachines:*, volumes:Get/List` policy could delete VMs and
+  get volumes, but not delete volumes, not read secrets, not touch applications.
+- **Console UI + BFF** — Policies and Roles pages under Security & Identity; `/api/iam/policies`
+  and `/api/iam/roles` are SAR-gated on `iam.openinfra.dev` exactly like Users/Groups (admins only;
+  a read-only user is 403'd on both list and create). A Role becomes effective by pointing a
+  Group's `clusterRole` at `openinfra-role-<name>` — subject to the same impersonation ceiling as
+  any group, which the UI surfaces.
+
+**Invariant to preserve:** never add a privileged role to the provider's `bind` `resourceNames`,
+and never grant the provider SA secrets/RBAC verbs. Those two fences — not the absence of
+`escalate` — are what bound the whole system.
 
 ### Stage 3 — `Deny` and conditions, via ValidatingAdmissionPolicy
 Only when a concrete requirement appears (likeliest: "powerusers must not delete production VMs").
@@ -233,8 +238,9 @@ save silently; don't put the correctness-checking tool on a different page from 
 | Poweruser drift guard | ✅ shipped (CI test, mutation-tested) |
 | `kind: User` / `kind: Group` | ✅ shipped — sign-in reads Users; `root` stays in the Secret as break-glass |
 | Custom group names beyond the built-in four | ⬜ needs an operator edit to the impersonator ClusterRole (see above) |
-| `kind: Policy` + permission boundary | ✅ platform shipped, boundary proven live (out-of-boundary rules dropped); no BFF/UI yet |
-| `kind: Role` (aggregated) | ⏸ deployed but blocked — aggregation needs `escalate`; A/B/C decision pending (see Stage 2) |
+| `kind: Policy` + permission boundary | ✅ shipped — BFF + console UI; boundary proven live (out-of-boundary action → 400; forced rule dropped) |
+| `kind: Role` (aggregated) | ✅ shipped — decision A (provider holds `escalate`, bounded by the bind fence); effective grant = boundary, verified live |
+| Policies / Roles UI | ✅ shipped — Security & Identity → Policies / Roles (author, attach/detach, admins-only via SAR) |
 | `Deny` + conditions via VAP | ⬜ not started |
 | Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
 
