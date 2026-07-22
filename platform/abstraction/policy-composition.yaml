@@ -1,0 +1,82 @@
+# The compiler for kind: Policy — one Policy claim becomes one labelled ClusterRole whose
+# rules are the policy's Allow statements, ALWAYS scoped to apiGroups: [openinfra.dev].
+#
+# That hardcoded apiGroup is the permission boundary: there is literally no way for a Policy
+# to grant on secrets or RBAC, because the template never emits any other apiGroup. A Role
+# aggregates these ClusterRoles by selecting the rbac.openinfra.dev/policy-<name> label, so
+# attaching a policy is adding a label — exactly how Kubernetes builds admin/edit/view, and
+# why no `escalate` is required (the compiled role never exceeds the product surface the
+# rendering identity already holds).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: policy
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: iam.openinfra.dev/v1
+    kind: XPolicy
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $allVerbs := list "get" "list" "watch" "create" "update" "patch" "delete" }}
+            {{- /* Build RBAC rules from Allow statements. apiGroups is ALWAYS
+                   [openinfra.dev] — that is the boundary, enforced here in one place. */ -}}
+            {{- $rules := list }}
+            {{- range $st := ($spec.statements | default list) }}
+              {{- if eq ($st.effect | default "Allow") "Allow" }}
+                {{- range $act := ($st.actions | default list) }}
+                  {{- $parts := splitList ":" $act }}
+                  {{- $res := trim (index $parts 0) }}
+                  {{- $verbRaw := "" }}
+                  {{- if gt (len $parts) 1 }}{{- $verbRaw = trim (index $parts 1) }}{{- end }}
+                  {{- if $res }}
+                    {{- $verbs := $allVerbs }}
+                    {{- if and (ne $verbRaw "*") (ne $verbRaw "") }}
+                      {{- $verbs = list (lower $verbRaw) }}
+                    {{- end }}
+                    {{- $rules = append $rules (dict "apiGroups" (list "openinfra.dev") "resources" (list $res) "verbs" $verbs) }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: policy-clusterrole
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRole
+                  metadata:
+                    name: openinfra-policy-{{ $name }}
+                    labels:
+                      rbac.openinfra.dev/managed: policy
+                      rbac.openinfra.dev/policy-{{ $name }}: "true"
+                      openinfra.dev/iam-policy: {{ $name }}
+                  rules:{{ if $rules }}{{ toYaml $rules | nindent 20 }}{{ else }} []{{ end }}
+            ---
+            apiVersion: iam.openinfra.dev/v1
+            kind: XPolicy
+            status:
+              ready: true
+              clusterRole: openinfra-policy-{{ $name }}
+              ruleCount: {{ len $rules }}

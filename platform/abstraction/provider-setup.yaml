@@ -67,6 +67,42 @@ rules:
       - open-infra-poweruser
       - open-infra-readonly
 
+  # kind: Policy / kind: Role compile to ClusterRoles (a labelled one per Policy, an
+  # aggregated one per Role), so the provider must be able to write ClusterRoles.
+  #
+  # THE PERMISSION BOUNDARY, and why this needs no `escalate`. Kubernetes refuses to let
+  # you create a ClusterRole granting verbs you do not already hold — unless you hold
+  # `escalate`, which would let you grant ANYTHING. We do NOT grant escalate. Instead the
+  # provider is granted exactly the openinfra.dev product surface below, and the Policy
+  # composition hardcodes apiGroups: [openinfra.dev] into every rule. So a Policy can only
+  # ever grant a subset of what the provider already holds; a rule outside the boundary is
+  # unrepresentable, and even if one were forged the API server would refuse the create.
+  # Holding the product surface also lets the provider BIND policy-derived Roles to groups
+  # (holding a role's permissions satisfies the bind check), so the bind fence above does
+  # not need widening for custom roles. This is the open-infra analogue of an AWS
+  # permission boundary.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [openinfra.dev]
+    resources:
+      - applications
+      - functions
+      - models
+      - virtualmachines
+      - vmimages
+      - volumes
+      - fileshares
+      - directories
+      - migrations
+      - replications
+      - dataflows
+      - streams
+      - securitygroups
+      - faultinjections
+      - queries
+    verbs: [get, list, watch, create, update, patch, delete]
+
   # Knative Services for the kind: Function (serverless) abstraction.
   - apiGroups: [serving.knative.dev]
     resources: [services]

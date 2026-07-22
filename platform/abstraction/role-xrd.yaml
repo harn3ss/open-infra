@@ -1,0 +1,66 @@
+# open-infra's "IAM roles": kind: Role — a named bundle of Policies, like an AWS role with
+# managed policies attached. It compiles to an AGGREGATED ClusterRole: its rules are the
+# union of every attached Policy's ClusterRole, selected by label. Attaching or detaching a
+# policy is adding or removing a name from spec.policies — the aggregation controller
+# recomputes the union, exactly as Kubernetes' own admin/edit/view roles work.
+#
+# A Role grants nothing until a Group points at it (spec.clusterRole:
+# openinfra-role-<name>) and that group is impersonable — the same ceiling every group is
+# subject to. See docs/iam.md.
+#
+# No `escalate` is needed to create it: an aggregated ClusterRole is created with empty
+# rules (the controller fills them in), so at creation it grants nothing.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xroles.iam.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: iam.openinfra.dev
+  names:
+    kind: XRole
+    plural: xroles
+  claimNames:
+    kind: Role
+    plural: roles
+  defaultCompositionRef:
+    name: role
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                description:
+                  type: string
+                  description: What this role is for, shown in the console.
+                policies:
+                  type: array
+                  description: Names of Policies (in this namespace) to aggregate.
+                  items:
+                    type: string
+              required: [policies]
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                clusterRole:
+                  type: string
+                  description: The aggregated ClusterRole a Group can bind to.
+      additionalPrinterColumns:
+        - name: ClusterRole
+          type: string
+          jsonPath: .status.clusterRole
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready

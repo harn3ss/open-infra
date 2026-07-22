@@ -1,0 +1,97 @@
+# open-infra's "IAM policies": kind: Policy — an attachable permission document, like an
+# AWS managed policy. You author it once and attach it to Roles; it grants nothing until
+# attached.
+#
+# THE PERMISSION BOUNDARY. A Policy can only ever grant verbs on the platform's own
+# resources (the openinfra.dev API group). That is enforced structurally: the composition
+# hardcodes apiGroups: [openinfra.dev] into every rule it emits, so a Policy CANNOT express
+# a grant on secrets, RBAC, or anything else — there is no field in which to say it. This is
+# the open-infra equivalent of an AWS permission boundary, and it is why no `escalate`
+# privilege is needed anywhere: the compiled ClusterRole never exceeds what the rendering
+# identity already holds. See docs/iam.md.
+#
+# Actions are `<resource>:<verb>`, e.g. `virtualmachines:Get` or `volumes:*`, where the
+# resource is an openinfra.dev plural and the verb is Get/List/Watch/Create/Update/Patch/
+# Delete or `*`. effect is Allow only — Deny is a later, admission-time concern (Stage 3),
+# not something RBAC can express.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xpolicies.iam.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: iam.openinfra.dev
+  names:
+    kind: XPolicy
+    plural: xpolicies
+  claimNames:
+    kind: Policy
+    plural: policies
+  defaultCompositionRef:
+    name: policy
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                description:
+                  type: string
+                  description: What this policy is for, shown in the console.
+                statements:
+                  type: array
+                  description: Allow statements. Everything not allowed is implicitly denied.
+                  items:
+                    type: object
+                    properties:
+                      effect:
+                        type: string
+                        enum: [Allow]
+                        default: Allow
+                        description: Only Allow — RBAC cannot express Deny (see docs/iam.md).
+                      actions:
+                        type: array
+                        description: >-
+                          <resource>:<verb> pairs over openinfra.dev, e.g.
+                          "virtualmachines:*", "volumes:Get". resource may be "*"
+                          (all openinfra.dev kinds); verb may be "*" (all verbs).
+                        items:
+                          type: string
+                      resources:
+                        type: array
+                        description: >-
+                          Reserved for future object-name scoping. Kubernetes RBAC cannot
+                          restrict list/watch by name, so today this is effectively ["*"] —
+                          set it for forward-compatibility and documentation.
+                        items:
+                          type: string
+                        default: ["*"]
+                    required: [actions]
+              required: [statements]
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                clusterRole:
+                  type: string
+                  description: The ClusterRole this policy compiled to.
+                ruleCount:
+                  type: integer
+                  description: How many RBAC rules it produced.
+      additionalPrinterColumns:
+        - name: Rules
+          type: integer
+          jsonPath: .status.ruleCount
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready

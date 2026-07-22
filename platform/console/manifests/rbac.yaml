@@ -96,7 +96,14 @@ rules:
     resources:
       - users
       - groups
+      - policies
+      - roles
     verbs: [get, list, watch, create, update, patch, delete]
+  # Read the compiled ClusterRoles so the console can show what a Policy grants and what a
+  # Role aggregates (read-only — the provider, not the console, writes them).
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [get, list, watch]
 
   - apiGroups: [openinfra.dev]
     resources:
