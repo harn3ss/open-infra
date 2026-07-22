@@ -6,6 +6,8 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.5.0 — 2026-07-22
+
 ### Terraform
 - **A first-party Terraform provider, published as
   [`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest).**
