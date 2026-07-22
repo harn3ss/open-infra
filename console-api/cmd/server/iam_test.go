@@ -142,3 +142,19 @@ func TestCreatedUserIsSignInReady(t *testing.T) {
 		t.Fatalf("crdGroups = %v, want [openinfra:admins openinfra:users]", g)
 	}
 }
+
+// A name clash is the caller's fault (409), not a platform failure (502) — the earlier
+// version returned 502 for "already exists", which reads as "the console is broken".
+func TestIAMErrStatus(t *testing.T) {
+	cases := map[string]int{
+		`policies.iam.openinfra.dev "vmops" already exists`: 409,
+		`policies.iam.openinfra.dev "x" not found`:          404,
+		`clusterroles is forbidden: cannot create`:          403,
+		`connection refused`:                                502,
+	}
+	for in, want := range cases {
+		if got := iamErrStatus(errString(in)); got != want {
+			t.Errorf("iamErrStatus(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

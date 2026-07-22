@@ -290,7 +290,7 @@ func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slo
 		}
 		if err := auth.postCR(r.Context(), policiesAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create policy", "policy", in.Name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: policy created", "policy", in.Name, "by", subjectOf(r))
@@ -318,7 +318,7 @@ func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slo
 		}}
 		if err := auth.patchCR(r.Context(), policiesAbsPath(auth.ns)+"/"+name, patch); err != nil {
 			logger.Error("iam: update policy", "policy", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: policy updated", "policy", name, "by", subjectOf(r))
@@ -341,7 +341,7 @@ func handleIAMPolicyDelete(cs kubernetes.Interface, auth *authStore, logger *slo
 		}
 		if err := auth.deleteCR(r.Context(), policiesAbsPath(auth.ns)+"/"+name); err != nil {
 			logger.Error("iam: delete policy", "policy", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: policy deleted", "policy", name, "by", subjectOf(r))
@@ -409,7 +409,7 @@ func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}
 		if err := auth.postCR(r.Context(), rolesAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create role", "role", in.Name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: role created", "role", in.Name, "by", subjectOf(r))
@@ -433,7 +433,7 @@ func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}}
 		if err := auth.patchCR(r.Context(), rolesAbsPath(auth.ns)+"/"+name, patch); err != nil {
 			logger.Error("iam: update role", "role", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: role updated", "role", name, "by", subjectOf(r))
@@ -457,7 +457,7 @@ func handleIAMRoleDelete(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}
 		if err := auth.deleteCR(r.Context(), rolesAbsPath(auth.ns)+"/"+name); err != nil {
 			logger.Error("iam: delete role", "role", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: role deleted", "role", name, "by", subjectOf(r))

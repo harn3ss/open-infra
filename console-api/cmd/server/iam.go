@@ -278,7 +278,7 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			// Roll back the orphaned Secret so a retry with the same name isn't blocked.
 			_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), secretName, metav1.DeleteOptions{})
 			logger.Error("iam: create user", "user", in.Name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: user created", "user", in.Name, "by", subjectOf(r))
@@ -320,7 +320,7 @@ func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		patch := map[string]any{"spec": spec}
 		if err := auth.patchCR(r.Context(), usersAbsPath(auth.ns)+"/"+name, patch); err != nil {
 			logger.Error("iam: update user", "user", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: user updated", "user", name, "by", subjectOf(r))
@@ -375,7 +375,7 @@ func handleIAMUserPassword(cs kubernetes.Interface, auth *authStore, logger *slo
 			}}
 			if err := auth.patchCR(r.Context(), usersAbsPath(auth.ns)+"/"+name, patch); err != nil {
 				logger.Error("iam: repoint passwordSecretRef", "user", name, "error", err.Error())
-				writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+				writeIAMErr(w, err)
 				return
 			}
 		}
@@ -404,7 +404,7 @@ func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}
 		if err := auth.deleteCR(r.Context(), usersAbsPath(auth.ns)+"/"+name); err != nil {
 			logger.Error("iam: delete user", "user", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		// Best-effort Secret cleanup — deleting the User already removed the account, so a
@@ -473,7 +473,7 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 		}
 		if err := auth.postCR(r.Context(), groupsAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create group", "group", in.Name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: group created", "group", in.Name, "by", subjectOf(r))
@@ -498,7 +498,7 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 		}
 		if err := auth.patchCR(r.Context(), groupsAbsPath(auth.ns)+"/"+name, map[string]any{"spec": spec}); err != nil {
 			logger.Error("iam: update group", "group", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: group updated", "group", name, "by", subjectOf(r))
@@ -523,7 +523,7 @@ func handleIAMGroupDelete(cs kubernetes.Interface, auth *authStore, logger *slog
 		}
 		if err := auth.deleteCR(r.Context(), groupsAbsPath(auth.ns)+"/"+name); err != nil {
 			logger.Error("iam: delete group", "group", name, "error", err.Error())
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": iamErr(err)})
+			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: group deleted", "group", name, "by", subjectOf(r))
@@ -676,4 +676,26 @@ func iamErr(err error) string {
 	default:
 		return "the API server rejected the request"
 	}
+}
+
+// iamErrStatus picks the HTTP status for an apiserver error. A name clash is the caller's
+// fault (409), not an upstream failure (502) — returning 502 for "already exists" reads as
+// "the platform is broken" when the user just needs a different name.
+func iamErrStatus(err error) int {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "already exists"):
+		return http.StatusConflict
+	case strings.Contains(msg, "not found"):
+		return http.StatusNotFound
+	case strings.Contains(msg, "forbidden"):
+		return http.StatusForbidden
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// writeIAMErr writes an apiserver error with the right status and a clean message.
+func writeIAMErr(w http.ResponseWriter, err error) {
+	writeJSON(w, iamErrStatus(err), map[string]string{"error": iamErr(err)})
 }
