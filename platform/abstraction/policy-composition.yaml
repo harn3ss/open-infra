@@ -35,6 +35,12 @@ spec:
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $allVerbs := list "get" "list" "watch" "create" "update" "patch" "delete" }}
+            {{- /* The openinfra.dev resources a Policy may name. This is the boundary as a
+                   whitelist: a rule for anything not here (a typo, or an attempt to grab
+                   secrets) is DROPPED, so one bad action can't stop the whole ClusterRole
+                   from compiling. The BFF rejects unknown resources with a clear message
+                   before it gets here; this is the fail-safe. "*" means all of these. */ -}}
+            {{- $known := dict "applications" true "functions" true "models" true "virtualmachines" true "vmimages" true "volumes" true "fileshares" true "directories" true "migrations" true "replications" true "dataflows" true "streams" true "securitygroups" true "faultinjections" true "queries" true }}
             {{- /* Build RBAC rules from Allow statements. apiGroups is ALWAYS
                    [openinfra.dev] — that is the boundary, enforced here in one place. */ -}}
             {{- $rules := list }}
@@ -45,7 +51,7 @@ spec:
                   {{- $res := trim (index $parts 0) }}
                   {{- $verbRaw := "" }}
                   {{- if gt (len $parts) 1 }}{{- $verbRaw = trim (index $parts 1) }}{{- end }}
-                  {{- if $res }}
+                  {{- if or (eq $res "*") (hasKey $known $res) }}
                     {{- $verbs := $allVerbs }}
                     {{- if and (ne $verbRaw "*") (ne $verbRaw "") }}
                       {{- $verbs = list (lower $verbRaw) }}
