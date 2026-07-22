@@ -161,8 +161,9 @@ Two things make this real rather than cosmetic:
 - Sessions are stateless: signing out clears the cookie, but a stolen token stays valid until it
   expires (12h). Rotating the Secret's `sessionKey` invalidates all sessions.
 - `local` mode has no password policy, lockout, or MFA.
-- There is **no UI** for users and groups yet — they are `kubectl apply`, or a `kubectl edit`
-  of the break-glass Secret.
+- The console **Users** and **Groups** pages (Security & Identity) manage `kind: User` /
+  `kind: Group` and passwords, gated so only admins can (a `SubjectAccessReview` per action).
+  The break-glass `root` account is still edited in the Secret, not there.
 - Group names beyond the built-in three need an operator to widen the impersonator
   ClusterRole (see above); the console cannot do it for you, by design.
 
@@ -170,7 +171,7 @@ Two things make this real rather than cosmetic:
 
 1. ~~A declarative **`kind: User`**~~ — shipped; see [`iam.md`](iam.md).
 2. **OIDC** (Dex/Keycloak/GitHub); LDAP already works against your `kind: Directory`.
-3. **Users and Groups screens** in the console, so managing accounts isn't `kubectl`.
+3. ~~**Users and Groups screens** in the console~~ — shipped.
 4. `kind: Policy` / `kind: Role`, then `Deny` via ValidatingAdmissionPolicy — staged plan in
    [`iam.md`](iam.md).
 

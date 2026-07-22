@@ -193,6 +193,22 @@ the product's public contract.
   says what to do, instead of the API server's version, which blames the console's own
   ServiceAccount and reads like a bug.
 
+### Security
+- **Users and Groups are managed from the console, not just `kubectl`.** IAM stage 1 made
+  sign-in read `kind: User` / `kind: Group`, but adding a person still meant `kubectl apply` of a
+  User plus a hand-built bcrypt-hash Secret. There is now a **Users** and a **Groups** page under
+  Security & Identity — create, edit, delete, set/reset passwords, manage group membership.
+
+  It is not a privilege back door: every `/api/iam/*` handler runs a `SubjectAccessReview` as the
+  signed-in user against `iam.openinfra.dev` before acting, so it is exactly as restricted as
+  `kubectl` — only admins get through (verified live: a read-only user is 403'd on both listing and
+  creating). A User never holds its password (a bcrypt hash in a Secret; the create rolls the Secret
+  back if the User fails, so a retry isn't blocked), and `root` is refused because it's the
+  break-glass account, not a User. The UI surfaces the impersonation ceiling rather than hiding it:
+  a Group whose `openinfra:<name>` is outside the impersonator ClusterRole's allow-list is flagged
+  **inert**, and a user placed in one gets a warning — the trap [docs/iam.md](docs/iam.md)
+  documents, made visible where the mistake happens.
+
 ### GitOps
 - **Fixed a wedged platform sync.** `platform/security/audit-policy.yaml` sat inside the root
   app's `security/*.yaml` include glob, so Argo tried to `kubectl apply` an `audit.k8s.io/v1`
