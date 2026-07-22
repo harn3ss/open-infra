@@ -267,6 +267,23 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(20*time.Second)).Post("/vm-snapshots/restore", handleVMSnapshotRestore(*client.Clientset, auth, logger))
 		api.With(middleware.Timeout(20*time.Second)).Delete("/vm-snapshots", handleVMSnapshotDelete(*client.Clientset, auth, logger))
 
+		// IAM: manage kind: User / kind: Group from the console instead of kubectl.
+		// Every handler authorizes the signed-in user with a SubjectAccessReview against
+		// iam.openinfra.dev (see authz.go), so this is exactly as restricted as kubectl —
+		// only admins get through. /config is static metadata and needs no gate.
+		cs := *client.Clientset
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/config", handleIAMConfig(auth))
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/users", handleIAMUsersList(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users", handleIAMUserCreate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/users/{name}", handleIAMUserGet(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/users/{name}", handleIAMUserUpdate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users/{name}/password", handleIAMUserPassword(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/users/{name}", handleIAMUserDelete(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/groups", handleIAMGroupsList(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/groups", handleIAMGroupCreate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/groups/{name}", handleIAMGroupUpdate(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/groups/{name}", handleIAMGroupDelete(cs, auth, logger))
+
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
 

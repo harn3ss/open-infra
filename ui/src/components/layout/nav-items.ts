@@ -20,6 +20,8 @@ import {
   Server,
   Workflow,
   Shield,
+  Users,
+  UsersRound,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -58,6 +60,8 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "File Shares", to: "/fileshares", icon: FolderTree, matchPrefix: true, section: "Storage" },
   { label: "Snapshots", to: "/snapshots", icon: Camera, matchPrefix: true, section: "Storage" },
 
+  { label: "Users", to: "/users", icon: Users, matchPrefix: true, section: "Security & Identity" },
+  { label: "Groups", to: "/groups", icon: UsersRound, matchPrefix: true, section: "Security & Identity" },
   { label: "Security Groups", to: "/security-groups", icon: Shield, matchPrefix: true, section: "Security & Identity" },
   { label: "Active Directory", to: "/directories", icon: Building2, matchPrefix: true, section: "Security & Identity" },
 

@@ -652,3 +652,108 @@ export function deleteVmSnapshot(namespace: string, id: string): Promise<unknown
   const q = new URLSearchParams({ namespace, id });
   return request(`/vm-snapshots?${q.toString()}`, { method: "DELETE" });
 }
+
+/* ------------------------------ IAM (users & groups) ------------------------------ */
+// These talk to the BFF's /api/iam/* endpoints, NOT the k8s proxy: each one authorizes
+// the signed-in user with a SubjectAccessReview before touching a User/Group or its
+// password Secret, so the UI is exactly as restricted as kubectl would be (admins only).
+
+/** A console identity (kind: User), as the management UI sees it. */
+export interface IamUser {
+  name: string;
+  displayName: string;
+  source: string;
+  disabled: boolean;
+  groups: string[];
+  /** false when no usable password Secret is referenced — the user can't sign in locally. */
+  hasPassword: boolean;
+  /** Groups that will NOT take effect because they're outside the impersonation ceiling. */
+  unboundGroups: string[];
+}
+
+/** A permission group (kind: Group). */
+export interface IamGroup {
+  name: string;
+  description: string;
+  clusterRole: string;
+  boundTo: string;
+  ready: boolean;
+  /** false when openinfra:<name> is outside the impersonator ceiling → the group is inert. */
+  impersonable: boolean;
+}
+
+export interface IamConfig {
+  namespace: string;
+  /** Group names guaranteed to take effect out of the box. */
+  builtinGroups: string[];
+}
+
+export function getIamConfig(): Promise<IamConfig> {
+  return request<IamConfig>("/iam/config");
+}
+
+export function listIamUsers(): Promise<IamUser[]> {
+  return request<IamUser[]>("/iam/users");
+}
+
+export function getIamUser(name: string): Promise<IamUser> {
+  return request<IamUser>(`/iam/users/${encodeURIComponent(name)}`);
+}
+
+export function createIamUser(body: {
+  name: string;
+  displayName: string;
+  groups: string[];
+  password: string;
+}): Promise<{ name: string }> {
+  return request("/iam/users", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateIamUser(
+  name: string,
+  body: { displayName?: string; groups?: string[]; disabled?: boolean },
+): Promise<{ name: string }> {
+  return request(`/iam/users/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function resetIamPassword(name: string, password: string): Promise<{ name: string }> {
+  return request(`/iam/users/${encodeURIComponent(name)}/password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function deleteIamUser(name: string): Promise<{ name: string }> {
+  return request(`/iam/users/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function listIamGroups(): Promise<IamGroup[]> {
+  return request<IamGroup[]>("/iam/groups");
+}
+
+export function createIamGroup(body: {
+  name: string;
+  description: string;
+  clusterRole: string;
+}): Promise<{ name: string }> {
+  return request("/iam/groups", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateIamGroup(
+  name: string,
+  body: { description?: string; clusterRole?: string },
+): Promise<{ name: string }> {
+  return request(`/iam/groups/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Delete a group. Pass force to remove it even while users still reference it. */
+export function deleteIamGroup(name: string, force = false): Promise<{ name: string }> {
+  const q = force ? "?force=true" : "";
+  return request(`/iam/groups/${encodeURIComponent(name)}${q}`, { method: "DELETE" });
+}
