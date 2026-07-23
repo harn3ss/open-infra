@@ -18,7 +18,7 @@ The sidebar is grouped like a cloud console:
 - **Dashboard** — counts + health for every resource type, plus recent events.
 - **Compute** — Applications, Functions, Virtual Machines.
 - **Storage** — Volumes, File Shares, Snapshots.
-- **Security & Identity** — Users, Groups, Policies, Roles (IAM), Security Groups, Active Directory.
+- **Security & Identity** — Users, Groups, Policies, Roles (IAM), Audit, Security Groups, Active Directory.
 - **AI** — Models.
 - **Data** — Databases, **Data Flows**, Streams, Buckets, Queues. (Data Flows is the
   single data-movement entry — migration and replication are modes within it.)
@@ -52,6 +52,7 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **Group** (IAM) | Overview (bound ClusterRole), Members, Danger Zone. Inert groups (outside the impersonation ceiling) are flagged. `kind: Group` · create / delete |
 | **Policy** (IAM) | A permission editor (pick an open-infra resource, toggle verbs), the compiled rules, Used-by (roles), Danger Zone. `kind: Policy` — can only grant on the openinfra.dev surface (the permission boundary) · create / edit / delete |
 | **Role** (IAM) | Attach/detach policies, the aggregated ClusterRole, how to grant it to a Group, Danger Zone. `kind: Role` · create / delete |
+| **Audit** (CloudTrail) | Who did what — every mutation + authorization decision, attributed to a person (console, kubectl, Terraform, Argo), filterable by user / resource / time. Merges the k3s API-server audit log (shipped to Loki) with the console's own IAM logs. Admin-only. Reads are omitted; the full record stays on the control-plane node |
 | **Node** | CPU/memory/pod capacity, **GPU** (count + model), conditions, YAML |
 | **Chaos** (FIS) | List/create/delete `kind: FaultInjection` experiments (type, blast-radius target, duration, status); blast radius shown before you launch. See [chaos.md](chaos.md) · create / delete |
 | **Cost Explorer** (Cost Explorer) | "What AWS would've charged" — prices live cluster capacity (compute / GPU / EBS / load balancers) against AWS list rates, showing monthly & annual vs your actual **$0**, plus a by-namespace compute breakdown. See [cost.md](cost.md) |
