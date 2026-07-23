@@ -20,6 +20,55 @@ spec:
         config:
           clients:
             - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+          snippets:
+            # Ship the k3s API-server AUDIT LOG into Loki — the authoritative "who did
+            # what" record (CloudTrail). It carries impersonatedUser, so console/kubectl/
+            # Terraform/Argo actions are all attributed to a person. Without this it lives
+            # only on the control-plane node's disk, greppable but not observable.
+            #
+            # We ship MUTATIONS + AUTHORIZATION DECISIONS, not reads: dropping get/list/watch
+            # cuts ~80% of the volume and leaves exactly the audit semantic (creates, updates,
+            # deletes, and every SubjectAccessReview). The full record — including reads of
+            # sensitive objects — remains on disk for forensics; we're changing what we SHIP,
+            # not what the audit policy records.
+            #
+            # Only one label (job=k3s-audit) on purpose: the interesting fields
+            # (impersonatedUser, resource, name, code) are high-cardinality, so they stay in
+            # the JSON body and are parsed at query time with `| json`, never as labels.
+            extraScrapeConfigs: |
+              - job_name: k3s-audit
+                static_configs:
+                  - targets: [localhost]
+                    labels:
+                      job: k3s-audit
+                      __path__: /var/lib/rancher/k3s/server/logs/audit.log
+                pipeline_stages:
+                  - json:
+                      expressions:
+                        verb: verb
+                        stage: stage
+                        ts: requestReceivedTimestamp
+                  - drop:
+                      source: stage
+                      expression: "^RequestReceived$"   # keep only the completed event
+                  - drop:
+                      source: verb
+                      expression: "^(get|list|watch)$"  # reads are noise for an audit trail
+                  - timestamp:
+                      source: ts
+                      format: RFC3339Nano
+        # The audit log lives on the control-plane node's host filesystem. promtail already
+        # runs as root, so it can read the 0600 file; it just needs the directory mounted.
+        # DirectoryOrCreate so promtail still schedules on agent nodes that have no such dir.
+        extraVolumes:
+          - name: k3s-audit
+            hostPath:
+              path: /var/lib/rancher/k3s/server/logs
+              type: DirectoryOrCreate
+        extraVolumeMounts:
+          - name: k3s-audit
+            mountPath: /var/lib/rancher/k3s/server/logs
+            readOnly: true
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring
