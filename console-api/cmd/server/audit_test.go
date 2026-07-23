@@ -50,6 +50,12 @@ func TestAuditFromConsole(t *testing.T) {
 		t.Errorf("source = %q", e.Source)
 	}
 
+	// A group event logs the target under "group", not "user" — it must still be captured.
+	g, ok := auditFromConsole(lokiValue{line: `{"msg":"iam: group deleted","group":"dba","by":"root"}`})
+	if !ok || g.Resource != "group" || g.Verb != "deleted" || g.Name != "dba" {
+		t.Errorf("group event: %+v", g)
+	}
+
 	// A non-iam log line, or one with no actor, is ignored.
 	if _, ok := auditFromConsole(lokiValue{line: `{"msg":"http request","by":""}`}); ok {
 		t.Error("non-iam line should be rejected")
