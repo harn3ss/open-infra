@@ -63,7 +63,7 @@ GITOPS_PATH="$(yget gitops.path)"; GITOPS_PATH="${GITOPS_PATH:-deploy}"
 # path. (console manifests/ are always excluded — deployed by the console child app.)
 # security/apiserver/* is kube-apiserver config read off disk (the audit policy),
 # not a cluster resource — Argo must never try to apply it. See platform/root-app.yaml.
-EXCLUDES="**/manifests/**,security/apiserver/**"
+EXCLUDES="**/manifests/**,security/apiserver/**,abstraction/policy-boundary.yaml"
 excl() {
   if [ "$(yget "components.$1")" = "false" ]; then
     EXCLUDES="${EXCLUDES},$2"

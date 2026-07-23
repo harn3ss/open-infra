@@ -1,0 +1,44 @@
+# The permission boundary for kind: Policy — the single source of truth.
+#
+# A kind: Policy may grant verbs ONLY on the openinfra.dev resources in `boundary`. This is
+# a POLICY DECISION, deliberately NOT derived from "all XRDs minus IAM": deriving it would
+# mean that adding any new XRD silently WIDENS the permission boundary as a side effect of
+# an unrelated feature — precisely the thing a boundary exists to prevent.
+#
+# CI (TestPolicyBoundaryNoDrift in console-api) asserts:
+#   1. boundary ∪ excluded  ==  every XRD's claimNames.plural   (a new kind fails the build
+#      until it is consciously placed in one list or the other)
+#   2. boundary and excluded are disjoint
+#   3. the $known dict in policy-composition.yaml            ==  boundary   (compile-time drop)
+#   4. the openinfra.dev resources in provider-setup.yaml    ==  boundary   (API-server fence)
+#   5. policyResources in console-api/cmd/server/iam_policies.go == boundary (BFF validation)
+#
+# Change the boundary HERE, then run `go test ./...` in console-api; it will name every file
+# that still disagrees. There is no generator — the other four stay hand-authored and the
+# test just refuses to let them drift.
+
+boundary:
+  - applications
+  - functions
+  - models
+  - virtualmachines
+  - vmimages
+  - volumes
+  - fileshares
+  - directories
+  - migrations
+  - replications
+  - dataflows
+  - streams
+  - securitygroups
+  - faultinjections
+  - queries
+
+# Kinds a Policy may NOT grant on, each with the reason it is excluded. Exhaustive on
+# purpose: every XRD must appear in exactly one of these two lists, so a new kind cannot be
+# silently in or out.
+excluded:
+  - users:    "identity object — a Policy granting on it would be privilege escalation"
+  - groups:   "identity object — a Policy granting on it would be privilege escalation"
+  - policies: "a Policy that could grant on Policies could widen its own boundary"
+  - roles:    "a Role is what binds the boundary to a person — granting on it escalates"

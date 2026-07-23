@@ -26,6 +26,8 @@ spec:
       # base list plus disabled components and the unused MinIO variant
       # (storage/minio.yaml vs storage/minio-ha.yaml — exactly one is included).
       #
+      # (e.g. security/apiserver/audit-policy.yaml, abstraction/policy-boundary.yaml —
+      # the latter is CI-only tooling config read by a go test, not cluster state).
       # NOTE: Argo's globs do NOT treat `/` as a separator, so `*` spans path
       # segments — `security/*.yaml` matches `security/apiserver/audit-policy.yaml`.
       # Putting a file in a subdirectory therefore does NOT hide it; it has to be
