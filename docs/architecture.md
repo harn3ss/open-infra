@@ -48,7 +48,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | ECR | registry | **GHCR** | Harbor (offline/self-host) planned |
 | CloudFormation/CDK | the manifest | **infra.yaml → Crossplane** | the heart of the product |
 | AWS Terraform provider | infra as HCL | **`harn3ss/openinfra`** on the Terraform Registry | every kind as a typed resource + a data source, so open-infra can sit in a plan alongside DNS/TLS/cloud accounts — see [terraform.md](terraform.md) |
-| CloudTrail | audit trail | **API-server audit log** | every action recorded with `impersonatedUser`, so console, `kubectl` and Terraform are all attributed — policy in `platform/security/apiserver/` |
+| CloudTrail | audit trail | **API-server audit log** → **Loki** → console **Audit** view | every mutation + authorization recorded with `impersonatedUser`, so console, `kubectl`, Terraform and Argo are all attributed; promtail ships it (mutations only) and the console Audit page renders it, merged with the BFF’s own IAM logs. Policy in `platform/security/apiserver/` |
 | CloudWatch | metrics/logs/alerts | **kube-prometheus-stack** + **Loki** | Grafana = the console |
 | IAM | users/authz/isolation | k8s **RBAC** + **impersonation** + namespaces + **NetworkPolicy** | `kind: User` / `kind: Group` (`iam.openinfra.dev`); the console signs you in then proxies your calls as *you*, so RBAC enforces and the audit log names a person — see [iam.md](iam.md) and [auth.md](auth.md). One namespace per app |
 | Directory Service | Active Directory | **Samba AD DC** | `kind: Directory`; Windows domain join |

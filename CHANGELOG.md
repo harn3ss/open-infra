@@ -6,6 +6,21 @@ the product's public contract.
 
 ## Unreleased
 
+### Observability
+- **The audit trail is now observable — a console "Audit" view (CloudTrail).** The
+  Kubernetes API-server audit log — the authoritative who-did-what record, carrying
+  `impersonatedUser` so console/`kubectl`/Terraform/Argo actions are all attributed to a
+  person — used to live only on the control-plane node's disk: recorded, but greppable
+  only over SSH. promtail now ships it to Loki (job `k3s-audit`, mutations + authorization
+  decisions; reads dropped to keep it lean — the full record stays on disk), and a new
+  **Security & Identity → Audit** page renders it, filterable by user / resource / time.
+
+  The BFF `/api/audit` endpoint (admin-gated by the same SubjectAccessReview as IAM) merges
+  two streams into one person-attributed trail: the API-server audit log, and the console's
+  own `iam:` logs — needed because the BFF-native IAM handlers act as the ServiceAccount, so
+  the audit log alone would attribute "create user" to the SA, but the console logged
+  `by=<person>`. Degrades gracefully if Loki is unavailable.
+
 ## v2.5.0 — 2026-07-22
 
 ### Terraform

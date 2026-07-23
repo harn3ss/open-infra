@@ -68,7 +68,7 @@ CNCF projects — not a reinvention of databases or storage.
 | CloudFormation | the manifest | `infra.yaml` → Crossplane |
 | Terraform / OpenTofu | infra as HCL | [`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest) provider |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
-| CloudTrail | audit trail | k8s API-server audit log (every action attributed to a person) |
+| CloudTrail | audit trail | k8s API-server audit log → Loki, with a console **Audit** view (every action attributed to a person) |
 | Cost Explorer | "what AWS would've charged" | console panel pricing live capacity vs AWS list rates |
 | Secrets Manager | secrets | Sealed Secrets |
 | AWS Backup | backup/DR | Velero |
@@ -126,7 +126,7 @@ resource (Applications, Functions, Models, Virtual Machines, Databases, Volumes,
 File Shares, Buckets, Queries, Queues, Data Flows, Streams, Active Directory,
 Security Groups, Nodes/GPUs, Monitoring, Cost Explorer, Snapshots) plus a full
 **Security & Identity** section (sign-in, Users, Groups, Policies, Roles — IAM with a
-permission boundary, all admin-gated) with per-resource detail pages and actions
+permission boundary — plus an **Audit** trail, all admin-gated) with per-resource detail pages and actions
 (object browser, model playground, the drag-and-drop **Data Flows** canvas + guided
 replication wizard, create/delete). See [`docs/console.md`](docs/console.md), and
 [`docs/auth.md`](docs/auth.md) / [`docs/iam.md`](docs/iam.md) for the identity model.
