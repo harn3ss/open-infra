@@ -16,6 +16,7 @@ import {
   Network,
   Radio,
   Search,
+  ScrollText,
   Send,
   Server,
   Workflow,
@@ -68,6 +69,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Roles", to: "/roles", icon: ShieldCheck, matchPrefix: true, section: "Security & Identity" },
   { label: "Security Groups", to: "/security-groups", icon: Shield, matchPrefix: true, section: "Security & Identity" },
   { label: "Active Directory", to: "/directories", icon: Building2, matchPrefix: true, section: "Security & Identity" },
+  { label: "Audit", to: "/audit", icon: ScrollText, matchPrefix: true, section: "Security & Identity" },
 
   { label: "Workloads", to: "/workloads", icon: Network, matchPrefix: true, section: "Cluster" },
   { label: "Nodes", to: "/nodes", icon: Server, matchPrefix: true, section: "Cluster" },

@@ -56,6 +56,9 @@ spec:
               value: "/grafana"
             - name: GRAFANA_PROXY_TARGET
               value: "http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local"
+            # Loki, for the Audit view (queries the shipped k3s audit log + console iam logs).
+            - name: LOKI_URL
+              value: "http://loki.monitoring.svc.cluster.local:3100"
 
           # Lightweight probes on the /healthz endpoint exposed by the Go BFF.
           readinessProbe:

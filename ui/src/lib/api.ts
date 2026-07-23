@@ -842,3 +842,34 @@ export function deleteIamRole(name: string, force = false): Promise<{ name: stri
     method: "DELETE",
   });
 }
+
+/* ------------------------------ Audit trail ------------------------------ */
+// The CloudTrail view — merged from the k3s API-server audit log (impersonatedUser) and
+// the console's own iam: logs (by=person). Admin-gated on the BFF.
+
+export interface AuditEvent {
+  time: string;
+  actor: string;
+  verb: string;
+  resource: string;
+  namespace: string;
+  name: string;
+  result: string;
+  /** "k8s-audit" (authoritative) or "console" (BFF-native IAM management). */
+  source: string;
+}
+
+export function listAuditEvents(params: {
+  since?: string;
+  actor?: string;
+  resource?: string;
+  limit?: number;
+} = {}): Promise<AuditEvent[]> {
+  const q = new URLSearchParams();
+  if (params.since) q.set("since", params.since);
+  if (params.actor) q.set("actor", params.actor);
+  if (params.resource) q.set("resource", params.resource);
+  if (params.limit) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  return request<AuditEvent[]>(`/audit${qs ? `?${qs}` : ""}`);
+}
