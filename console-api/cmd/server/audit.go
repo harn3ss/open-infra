@@ -220,6 +220,10 @@ func handleAudit(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) 
 		}
 		actorFilter := strings.TrimSpace(r.URL.Query().Get("actor"))
 		resourceFilter := strings.TrimSpace(r.URL.Query().Get("resource"))
+		// By default this is a WHO-DID-WHAT view for people: exclude system: actors
+		// (Crossplane and other controllers reconciling constantly would otherwise bury
+		// every human action). ?system=true brings them back for debugging.
+		includeSystem := r.URL.Query().Get("system") == "true"
 
 		// Text pre-filter in LogQL narrows the fetch; exact filtering happens in Go.
 		auditQ := `{job="k3s-audit"}`
@@ -231,8 +235,19 @@ func handleAudit(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) 
 			consoleQ += fmt.Sprintf(" |= %q", actorFilter)
 		}
 
+		// Controllers dominate the mutation stream, so when we're excluding them (the
+		// default) fetch several times the return limit or human actions get starved out
+		// of the newest N. The console iam: stream is small, so its own limit is fine.
+		fetch := limit
+		if !includeSystem {
+			fetch = limit * 6
+			if fetch > 2000 {
+				fetch = 2000
+			}
+		}
+
 		var events []auditEvent
-		if vals, err := queryLoki(r.Context(), auditQ, since, limit); err != nil {
+		if vals, err := queryLoki(r.Context(), auditQ, since, fetch); err != nil {
 			// Loki down / not deployed → degrade to whatever the other source gives,
 			// and tell the SPA so it can show a banner rather than an empty table.
 			logger.Warn("audit: k8s-audit query failed", "error", err.Error())
@@ -255,6 +270,9 @@ func handleAudit(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) 
 		// Post-filter and sort newest-first.
 		filtered := events[:0]
 		for _, e := range events {
+			if !includeSystem && strings.HasPrefix(e.Actor, "system:") {
+				continue // a controller / ServiceAccount, not a person
+			}
 			if actorFilter != "" && !strings.Contains(e.Actor, actorFilter) {
 				continue
 			}
