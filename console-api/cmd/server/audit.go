@@ -152,12 +152,19 @@ func auditFromK8s(v lokiValue) (auditEvent, bool) {
 
 // auditFromConsole parses a BFF "iam:" structured-log line, e.g.
 // {"time":"…","msg":"iam: user created","user":"alice","by":"root"}.
+//
+// The IAM handlers log the target under a key that matches the kind — "user", "group",
+// "policy" or "role" — so we read all of them and take whichever is set. Reading only
+// "user" would leave every group/policy/role event without its target name.
 func auditFromConsole(v lokiValue) (auditEvent, bool) {
 	var e struct {
-		Time string `json:"time"`
-		Msg  string `json:"msg"`
-		User string `json:"user"`
-		By   string `json:"by"`
+		Time   string `json:"time"`
+		Msg    string `json:"msg"`
+		By     string `json:"by"`
+		User   string `json:"user"`
+		Group  string `json:"group"`
+		Policy string `json:"policy"`
+		Role   string `json:"role"`
 	}
 	if json.Unmarshal([]byte(v.line), &e) != nil {
 		return auditEvent{}, false
@@ -165,20 +172,30 @@ func auditFromConsole(v lokiValue) (auditEvent, bool) {
 	if !strings.HasPrefix(e.Msg, "iam:") || e.By == "" {
 		return auditEvent{}, false
 	}
-	// "iam: user created" → verb "created", resource "user".
+	// "iam: user created" → resource "user", verb "created".
 	fields := strings.Fields(strings.TrimPrefix(e.Msg, "iam:"))
 	resource, verb := "", ""
 	if len(fields) >= 2 {
 		resource, verb = fields[0], strings.Join(fields[1:], " ")
 	}
+	name := firstNonEmpty(e.User, e.Group, e.Policy, e.Role)
 	ts := v.ts
 	if t, err := time.Parse(time.RFC3339Nano, e.Time); err == nil {
 		ts = t
 	}
 	return auditEvent{
-		Time: ts, Actor: e.By, Verb: verb, Resource: resource, Name: e.User,
+		Time: ts, Actor: e.By, Verb: verb, Resource: resource, Name: name,
 		Namespace: "open-infra-console", Source: "console",
 	}, true
+}
+
+func firstNonEmpty(xs ...string) string {
+	for _, x := range xs {
+		if x != "" {
+			return x
+		}
+	}
+	return ""
 }
 
 // handleAudit serves the merged, person-attributed audit trail.
