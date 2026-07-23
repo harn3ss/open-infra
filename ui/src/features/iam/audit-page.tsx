@@ -35,12 +35,13 @@ export function AuditPage() {
   const [actor, setActor] = useState("");
   const [resource, setResource] = useState("");
   // Debounce-free: filters apply on Enter / refetch; keeps the query key stable.
+  const [showSystem, setShowSystem] = useState(false);
   const [applied, setApplied] = useState({ actor: "", resource: "" });
 
   const { data = [], isLoading, isError, error, isFetching, refetch } = useQuery({
-    queryKey: ["audit", since, applied.actor, applied.resource],
+    queryKey: ["audit", since, applied.actor, applied.resource, showSystem],
     queryFn: () =>
-      listAuditEvents({ since, actor: applied.actor, resource: applied.resource, limit: 300 }),
+      listAuditEvents({ since, actor: applied.actor, resource: applied.resource, limit: 300, system: showSystem }),
     refetchInterval: 30000,
   });
 
@@ -97,6 +98,15 @@ export function AuditPage() {
             />
           </label>
           <Button onClick={apply}>Filter</Button>
+          <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
+            <input
+              type="checkbox"
+              className="size-4"
+              checked={showSystem}
+              onChange={(e) => setShowSystem(e.target.checked)}
+            />
+            Show system accounts
+          </label>
         </CardContent>
       </Card>
 

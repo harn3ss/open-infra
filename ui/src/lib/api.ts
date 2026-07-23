@@ -864,12 +864,14 @@ export function listAuditEvents(params: {
   actor?: string;
   resource?: string;
   limit?: number;
+  system?: boolean;
 } = {}): Promise<AuditEvent[]> {
   const q = new URLSearchParams();
   if (params.since) q.set("since", params.since);
   if (params.actor) q.set("actor", params.actor);
   if (params.resource) q.set("resource", params.resource);
   if (params.limit) q.set("limit", String(params.limit));
+  if (params.system) q.set("system", "true");
   const qs = q.toString();
   return request<AuditEvent[]>(`/audit${qs ? `?${qs}` : ""}`);
 }
