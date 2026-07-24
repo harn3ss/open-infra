@@ -39,6 +39,47 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: chaos-mesh
+  # Chaos Mesh mints its mTLS + webhook certs with Helm's genSignedCert, which is
+  # NON-DETERMINISTIC under `helm template` — the way Argo CD renders — because `lookup`
+  # returns empty there, so fresh certs are generated on every render. Left unpinned, each
+  # chaos-mesh sync rewrites these Secrets and the webhook caBundles, but the controller /
+  # chaos-daemon pods don't reload their mounted certs. The controller↔daemon mTLS then
+  # drifts (a pod that restarted after the churn has new certs; one that didn't has old),
+  # and fault injection SILENTLY fails ("unable to flush ip sets" → NetworkChaos never
+  # injects). A network-partition scenario then stops biting, converges too fast, and the
+  # chaos suite's false-green guard fails the nightly run (this is exactly what happened
+  # 2026-07-23). Freeze the trust chain: Argo keeps whatever was first created, so every
+  # component keeps matching certs across syncs. If certs ever must be rotated, do it
+  # deliberately and restart BOTH the controller Deployment and the chaos-daemon DaemonSet.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: chaos-mesh-chaosd-client-certs
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: chaos-mesh-daemon-certs
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: chaos-mesh-daemon-client-certs
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: chaos-mesh-webhook-certs
+      jsonPointers: [/data]
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: chaos-mesh-validation
+      jqPathExpressions: ['.webhooks[].clientConfig.caBundle']
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: chaos-mesh-validation-auth
+      jqPathExpressions: ['.webhooks[].clientConfig.caBundle']
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: chaos-mesh-mutation
+      jqPathExpressions: ['.webhooks[].clientConfig.caBundle']
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     # ServerSideApply: the Chaos Mesh CRDs exceed the 256KB client-side annotation limit.
