@@ -21,6 +21,26 @@ the product's public contract.
   the audit log alone would attribute "create user" to the SA, but the console logged
   `by=<person>`. Degrades gracefully if Loki is unavailable.
 
+### Security
+- **The permission boundary can no longer silently drift.** `kind: Policy`'s boundary is
+  spelled out in five hand-maintained copies — the composition whitelist, the provider RBAC
+  grant, the BFF `policyResources`, the XRD claim plurals, and `policy-boundary.yaml`. A new
+  CI test (`TestPolicyBoundaryNoDrift`) asserts all five agree, so widening the boundary in
+  one place without the others fails the build instead of quietly granting (or dropping) an
+  action. Item 1 of the schema-drift spec: *verify, don't generate* — the boundary is never
+  auto-derived, only checked.
+
+### Reliability
+- **Chaos Mesh's mTLS/webhook certs no longer churn on every Argo sync.** Chaos Mesh mints
+  its controller↔daemon certs with Helm `genSignedCert`, which is non-deterministic under
+  `helm template` (how Argo renders), so every sync rewrote the four cert Secrets and the
+  webhook `caBundle`s. Pods that restarted got new certs; those that didn't kept the old —
+  the trust chain drifted, `NetworkChaos` silently failed to inject (`unable to flush ip
+  sets`), and the nightly partition scenario converged too fast and tripped its false-green
+  guard (the 2026-07-23 red). Argo `ignoreDifferences` now freezes the cert `/data` and
+  webhook `caBundle`s, so the chain is created once and kept. If certs must be rotated, do it
+  deliberately and restart both the controller Deployment and the chaos-daemon DaemonSet.
+
 ## v2.5.0 — 2026-07-22
 
 ### Terraform
