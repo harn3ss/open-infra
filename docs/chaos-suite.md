@@ -119,6 +119,24 @@ Otherwise "chaos-proven" quietly implies a scenario that never ran — which is 
 claim-outruns-code failure this whole apparatus exists to prevent. A suite that refuses its
 own false greens cannot then launder an untested dimension into a headline.
 
+### Known reds (and why the clock survives them)
+
+"Zero **unexplained** reds" — so an explained red must be named here, with a ruling on
+whether it resets the clock. The test: **did the fault land on the system under test?** A red
+where the replication mesh actually diverged is a product bug and resets the clock. A red in
+the *harness's own scaffolding* — the fault never injected, so the mesh was never exercised —
+is not attributable to the application's solidarity and does **not** reset it.
+
+- **2026-07-23 — partition scenario, harness red, clock NOT reset.** Chaos Mesh's
+  controller↔daemon mTLS certs had drifted (Helm `genSignedCert` is non-deterministic under
+  `helm template`, so every Argo sync rewrote them; see [chaos.md](chaos.md) and
+  `platform/resilience/chaos-mesh.yaml`), so `NetworkChaos` silently failed to inject. The
+  mesh converged in 19s — not because it survived a partition, but because there was no
+  partition — and the `MIN_ELAPSED` false-green guard correctly failed the run rather than
+  bless it. The system under test never diverged; the cut never bit. This is the guard doing
+  its job, not a correctness failure. Fixed durably (Argo `ignoreDifferences` freezes the
+  cert chain) and re-run green. Off-net to the application; the clock stands.
+
 ## Status
 
 - ✅ **Containment foundation** — sandbox namespace, quota, limit range, priority class,
