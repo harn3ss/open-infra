@@ -39,7 +39,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | DMS (multi-master) | bidirectional / multi-master replication | **Debezium + apply-sink** (HLC LWW) | `kind: Replication`; sync two+ DBs both ways, across engines — see [replication.md](replication.md) |
 | Glue / Step Functions (data) | visual data-movement pipelines | **drag-and-drop canvas** → Debezium + NATS + apply-sink | `kind: DataFlow`; chain databases / topics / transform functions / buckets; replication, migration, CDC-to-topic & ETL are edge types — see [dataflow.md](dataflow.md) |
 | DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
-| ElastiCache | cache | **Redis** | |
+| ElastiCache | cache | **Valkey** (Redis-compatible) | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
 | Kinesis | streaming CDC | **Debezium** → **NATS JetStream** | `kind: Stream`; row changes → events on `cdc.<name>.*` — see [streaming.md](streaming.md) |
 | Lambda | serverless | **Knative** (net-kourier) | `kind: Function`; scale-to-zero 0..N..0, optional GPU |

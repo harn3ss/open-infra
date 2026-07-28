@@ -72,13 +72,19 @@ browser ──► console pod (single container)
                    ├─ /api/migrations/… discover source tables (the DMS engine runs continuously and stays hidden)
                    ├─ /api/queries/…/result + /api/catalog/tables  Query results + the Iceberg catalog tree
                    ├─ /api/cost        Cost Explorer — prices live capacity vs AWS list rates
-                   └─ /grafana/*       same-origin Grafana embed
+                   └─ /grafana/*       same-origin Grafana embed (session-gated)
 ```
+
+The `/grafana/*` proxy sits behind a session check (`requireSignedIn`): Grafana runs
+with anonymous Viewer for the kiosk, so without the gate anyone reaching the console —
+even unauthenticated — could read every dashboard through it.
 
 The console runs **read-mostly**: its ServiceAccount has scoped RBAC — read
 workloads + CRDs, CRUD on the `openinfra.dev` kinds, `get` + create/manage on
 secrets *by name* (connection info, a model's key, and the DMS wizard's credential
-secret), and a narrow read of just the MinIO root secret. It is **not** cluster-admin.
+secret), and a narrow read of just its **scoped** MinIO secret (`console-minio-creds`
+— the `openinfra-console` user with S3 access but no admin API, not root). It is
+**not** cluster-admin.
 
 ## Tech
 

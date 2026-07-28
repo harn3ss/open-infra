@@ -16,7 +16,7 @@ Set `AUTH_MODE` on the console Deployment (`platform/console/manifests/deploymen
 | `local` | **Default.** Users are `kind: User` resources, or entries in the `console-auth` Secret. Passwords are bcrypt-hashed either way. |
 | `ldap` | Authenticates against a directory — typically the Samba AD from `kind: Directory`. |
 | `oidc` | Reserved — not implemented yet (returns 501). |
-| `none` | **No authentication.** Only for throwaway dev clusters; logs a loud warning at boot. |
+| `none` | **No authentication.** Only for throwaway dev clusters; logs a loud warning at boot **and shows a persistent, non-dismissable banner on every console page**. |
 
 The default is `local`, so a fresh install is never accidentally wide open.
 
