@@ -35,14 +35,26 @@ There is one real cluster, so containment is built **before** any fault
    host clocks are never touched.
 3. **RBAC that makes node harm impossible.** The `chaos-runner` ServiceAccount can
    create/delete faults, pods, and databases **only in `chaos-sandbox`** — nothing
-   cluster-scoped except read-only pod list. A fat-fingered selector is *rejected by the
-   API server*, not merely discouraged. **Runner creds = chaos creds.**
+   cluster-scoped except a read-only list of pods, namespaces and nodes (the two
+   pre-flight guards need to see cluster state; they can change none of it). A
+   fat-fingered selector is *rejected by the API server*, not merely discouraged.
+   **Runner creds = chaos creds.**
 4. **Resource containment.** A `ResourceQuota` + `LimitRange` cap the sandbox, and a low
    (`-100`, non-preempting) `PriorityClass` means sandbox pods are evicted **first** under
    node pressure — the GPU workloads and HA VMs are protected by the scheduler.
 5. **Dead-man's switch.** Every fault sets a `duration` (auto-reverts even if the runner
    crashes), and a **pre-flight guard** ([chaos/preflight.sh](../chaos/preflight.sh))
    resolves the selector and **aborts if it matches any pod outside the sandbox**.
+6. **Capacity pre-flight.** A second guard
+   ([chaos/preflight-capacity.sh](../chaos/preflight-capacity.sh)) runs before every
+   scenario provisions its sandbox: it sums allocatable headroom across the Ready,
+   schedulable nodes and, if there isn't enough to run the sandbox, aborts **INCONCLUSIVE**
+   (exit 42) rather than letting the pods sit `Pending` and the scenario time out as a
+   **false red**. It deliberately does *not* require every node Ready — a node is often
+   powered down on purpose here (the GPU box nightly) — only that the survivors have room.
+   An INCONCLUSIVE night is neither red nor green: it does not block a release and does not
+   advance the graduation clock. It fails **open** — an unreadable cluster never blocks a
+   run.
 
 > **`clock-skew` uses no real clock skew** (Chaos Mesh TimeChaos is too invasive). The HLC
 > physical-clock read has an injectable offset — `mm_hlc_state.clk_off` (default 0, so
