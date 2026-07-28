@@ -65,8 +65,10 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: bootstrap
-          image: alpine/k8s:1.31.0             # non-Bitnami: shell + kubectl + openssl
+          image: alpine/k8s:1.31.0             # non-Bitnami: shell + kubectl
           command: [sh, -c]
+          env:
+            - { name: HOME, value: /tmp }        # kubectl's cache dir, writable under RO rootfs
           args:
             - |
               set -eu
@@ -74,13 +76,19 @@ spec:
                 echo "redis-auth already exists — leaving the password untouched"
                 exit 0
               fi
-              PW="$(openssl rand -hex 24)"
+              # 32-char alphanumeric password from /dev/urandom (no openssl in this image).
+              PW="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
               kubectl -n redis create secret generic redis-auth --from-literal=password="$PW"
               echo "created redis-auth"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
