@@ -83,4 +83,10 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     # ServerSideApply: the Chaos Mesh CRDs exceed the 256KB client-side annotation limit.
-    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+    # RespectIgnoreDifferences: ignoreDifferences (above) already stops DRIFT-triggered
+    # syncs from churning the certs, but a sync fired for another reason (a chart bump, a
+    # values edit) would still re-render and overwrite them. This makes the sync operation
+    # itself honor the ignore, so the live cert Secrets survive every sync. The mTLS
+    # Secrets use jsonPointers (/data), which this reliably preserves; verified on Argo
+    # v3.4.4 (app stays Synced/Healthy, certs unchanged).
+    syncOptions: [CreateNamespace=true, ServerSideApply=true, RespectIgnoreDifferences=true]
