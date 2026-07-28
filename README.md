@@ -58,7 +58,7 @@ CNCF projects — not a reinvention of databases or storage.
 | Athena + Glue | serverless SQL over the lake (`kind: Query`) | DuckDB (files) or Trino + an Iceberg REST catalog (tables), on MinIO |
 | SQS / SNS | queues + pub/sub | NATS JetStream |
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
-| ElastiCache | cache | Redis |
+| ElastiCache | cache | Valkey (Redis-compatible) |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
@@ -254,10 +254,6 @@ cluster-local). VMs reach in-cluster services (databases, file shares) through t
 host node at `<nodeIP>:<nodePort>`; a fully on-LAN VM mode (`network: bridge`, a real
 DHCP lease) is **experimental and not currently working** on the reference cluster —
 see [Maturity & guarantees](#maturity--guarantees).
-
-> **Note:** Redis currently pins Bitnami's legacy image mirror as a stopgap
-> (Bitnami purged its public versioned tags in Aug 2025); migrating off Bitnami
-> is tracked for v1.
 
 ---
 
