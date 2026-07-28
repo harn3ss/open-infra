@@ -52,7 +52,13 @@ metadata:
   name: valkey-secret-bootstrap
   namespace: redis
   annotations:
-    argocd.argoproj.io/sync-wave: "0"          # create the Secret before the StatefulSet (wave 1)
+    # A Sync hook, not a tracked resource: Kubernetes stamps a controller-uid into a Job's
+    # selector/labels after creation, so a tracked Job is perpetually OutOfSync and would
+    # keep the whole platform app from ever reporting Healthy. As a hook it isn't compared.
+    # `Sync` (not PreSync) so it doesn't gate the app-of-apps sync — the StatefulSet simply
+    # retries (CreateContainerConfigError) until this idempotent Job lands the Secret.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
 spec:
   backoffLimit: 5
   template:
@@ -95,8 +101,6 @@ kind: StatefulSet
 metadata:
   name: redis
   namespace: redis
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
 spec:
   serviceName: redis
   replicas: 1
