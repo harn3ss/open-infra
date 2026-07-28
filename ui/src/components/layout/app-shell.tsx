@@ -4,6 +4,7 @@ import { Menu } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { CommandPalette } from "@/components/layout/command-palette";
+import { AuthWarningBanner } from "@/components/layout/auth-warning-banner";
 import { BrandWordmark } from "@/components/layout/brand";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +23,11 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden oi-aurora">
+    <div className="flex h-screen w-full flex-col overflow-hidden oi-aurora">
+      {/* Full-width security banner when the console is unauthenticated (AUTH_MODE=none) */}
+      <AuthWarningBanner />
+
+      <div className="flex min-h-0 w-full flex-1 overflow-hidden">
       {/* Global ⌘K command palette (jump to any page) */}
       <CommandPalette />
 
@@ -62,6 +67,7 @@ export function AppShell() {
             <Outlet />
           </div>
         </main>
+      </div>
       </div>
     </div>
   );

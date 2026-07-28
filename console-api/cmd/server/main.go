@@ -347,6 +347,10 @@ type configResponse struct {
 	ClusterName    string `json:"clusterName"`
 	GrafanaBaseURL string `json:"grafanaBaseUrl"`
 	Version        string `json:"version"`
+	// AuthMode lets the SPA warn, persistently and visibly, when the console is
+	// running unauthenticated (AUTH_MODE=none) — the startup log alone is invisible
+	// to anyone using the UI.
+	AuthMode string `json:"authMode"`
 }
 
 // handleConfig returns runtime config read from the environment. This is the
@@ -357,6 +361,7 @@ func handleConfig(w http.ResponseWriter, _ *http.Request) {
 		ClusterName:    os.Getenv("CLUSTER_NAME"),
 		GrafanaBaseURL: os.Getenv("GRAFANA_BASE_URL"),
 		Version:        version,
+		AuthMode:       authMode(),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
