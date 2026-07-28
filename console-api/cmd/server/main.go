@@ -320,13 +320,19 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 	// Grafana (which must serve_from_sub_path under /grafana). Same-origin means
 	// the console can iframe dashboards with no CORS / cross-origin cookies and
 	// no site-specific URL. No request timeout: Grafana has live/streaming calls.
+	//
+	// Behind requireSignedIn: Grafana runs with anonymous Viewer access for the
+	// kiosk, so WITHOUT this gate anyone who can reach the console — including an
+	// unauthenticated caller on an internet-exposed one — could read every
+	// dashboard/metric/log here. A session check (not full requireAuth) so Grafana's
+	// own POST /api/ds/query panel calls, which lack our CSRF header, still work.
 	if gt := getenv("GRAFANA_PROXY_TARGET", ""); gt != "" {
 		if gp, err := newGrafanaProxy(gt, logger); err != nil {
 			logger.Error("invalid GRAFANA_PROXY_TARGET", slog.String("error", err.Error()))
 		} else {
-			r.Handle("/grafana", gp)
-			r.Handle("/grafana/*", gp)
-			logger.Info("grafana reverse proxy enabled", slog.String("target", gt))
+			r.With(auth.requireSignedIn).Handle("/grafana", gp)
+			r.With(auth.requireSignedIn).Handle("/grafana/*", gp)
+			logger.Info("grafana reverse proxy enabled (auth-gated)", slog.String("target", gt))
 		}
 	}
 
