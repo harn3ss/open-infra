@@ -11,6 +11,8 @@ export interface AppConfig {
   clusterName: string;
   grafanaBaseUrl: string;
   version: string;
+  /** "local" | "ldap" | "oidc" | "none". "none" means the console is unauthenticated. */
+  authMode: string;
 }
 
 export class ApiError extends Error {
