@@ -10,6 +10,8 @@ log() { echo "▸ $*"; }
 # The table must exist BEFORE the mesh: the engine's mm-prep installs the version/origin
 # columns + triggers onto it and CrashLoops if it's missing.
 sandbox_provision() {
+  # Abort INCONCLUSIVE (not red) if the cluster lacks headroom to run the sandbox.
+  "$HERE/preflight-capacity.sh"
   log "provisioning sandbox members"
   kubectl apply -f "$HERE/sandbox/members.yaml"
   kubectl -n "$NS" rollout status statefulset/pg-a --timeout=120s
@@ -49,6 +51,8 @@ sandbox_conv_members() {
 
 # Provision two HA CNPG clusters + the mesh over their -rw services, seeded and empty.
 sandbox_provision_cnpg() {
+  # Abort INCONCLUSIVE (not red) if the cluster lacks headroom to run the sandbox.
+  "$HERE/preflight-capacity.sh"
   log "provisioning CNPG members (2 HA clusters)"
   kubectl apply -f "$HERE/sandbox/members-cnpg.yaml"
   for i in $(seq 1 40); do

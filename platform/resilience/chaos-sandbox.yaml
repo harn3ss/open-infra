@@ -113,16 +113,19 @@ subjects:
     name: chaos-runner
     namespace: chaos-sandbox
 ---
-# The ONLY cluster-scoped grant: READ-ONLY pod list, for the pre-flight guard to prove
-# a fault's selector matches nothing outside chaos-sandbox. Read-only by design — it
-# cannot change or destroy anything, cluster-wide or otherwise.
+# The ONLY cluster-scoped grant: READ-ONLY list of pods, namespaces and nodes. pods +
+# namespaces let the blast-radius pre-flight prove a fault's selector matches nothing
+# outside chaos-sandbox; nodes let the capacity pre-flight (preflight-capacity.sh) sum
+# allocatable headroom so a capacity-starved cluster aborts INCONCLUSIVE instead of
+# timing out as a false red. Read-only by design — it cannot change or destroy anything,
+# cluster-wide or otherwise.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: chaos-runner-preflight-readonly
 rules:
   - apiGroups: [""]
-    resources: [pods, namespaces]
+    resources: [pods, namespaces, nodes]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

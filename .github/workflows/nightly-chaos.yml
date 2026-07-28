@@ -42,6 +42,7 @@ jobs:
           # seed is logged by the run and re-runnable via workflow_dispatch
         run: |
           chmod +x chaos/*.sh
+          set +e
           case "${{ github.event.inputs.scenario || 'partition' }}" in
             partition) ./chaos/scenario-partition.sh ;;
             clockskew) ./chaos/scenario-clockskew.sh ;;
@@ -50,6 +51,22 @@ jobs:
             concurrent)   ./chaos/scenario-concurrent.sh ;;
             *) echo "unknown scenario"; exit 2 ;;
           esac
+          rc=$?
+          # Exit 42 = the capacity pre-flight aborted INCONCLUSIVE: the cluster couldn't
+          # run the sandbox (a node down + no headroom). That is NOT a product red and
+          # must not fail the night — but it is NOT a green night either (nothing was
+          # proven), so it must not silently pass as a checkmark. Surface it loudly and
+          # exit 0 so the run is neither a release-blocker nor a false green.
+          if [ "$rc" -eq 42 ]; then
+            echo "::warning title=Chaos INCONCLUSIVE::Scenario skipped — insufficient node capacity. Counts as neither a green night nor a red one."
+            {
+              echo "### ⚠️ Chaos run INCONCLUSIVE"
+              echo "The node-capacity pre-flight found too little schedulable headroom to run the sandbox, so the scenario did **not** run."
+              echo "This is **not** a red (no product failure) and does **not** count toward the 30-green-night graduation clock."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Retain artifacts on red
         if: failure()
