@@ -1,43 +1,158 @@
-# Redis — cache ("ElastiCache"). Bitnami chart, standalone for dev.
-apiVersion: argoproj.io/v1alpha1
-kind: Application
+# Redis-compatible cache ("ElastiCache") — now VALKEY on an owned manifest.
+#
+# WHY THE MIGRATION: this was the Bitnami Redis Helm chart, but Bitnami purged its public
+# versioned image tags (Aug 2025), leaving the chart pinned to an unmaintained legacy
+# mirror (bitnamilegacy/*) with allowInsecureImages. Valkey is the BSD-licensed Redis fork
+# (the community successor after Redis's SSPL relicense), Redis-protocol compatible, and
+# actively maintained. Owning the manifest (no chart) drops the Bitnami dependency too —
+# the same "own it" move as the rest of the platform.
+#
+# The namespace and Service keep the `redis` name for drop-in compatibility: clients still
+# reach it at redis.redis.svc.cluster.local:6379 whatever the engine underneath. No
+# open-infra component consumes this — it's the cache primitive offered to workloads — so
+# the cutover has no internal blast radius (and cache data is disposable by definition).
+apiVersion: v1
+kind: Namespace
 metadata:
   name: redis
-  namespace: argocd
+---
+# Bootstrap the requirepass Secret once, if absent — keeps the password out of git (public
+# repo) while staying declarative and self-service. Idempotent: never rotates an existing
+# password, so re-syncs are safe. Same pattern as the Longhorn/MinIO creds Jobs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: valkey-bootstrap
+  namespace: redis
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: valkey-bootstrap
+  namespace: redis
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: valkey-bootstrap
+  namespace: redis
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: valkey-bootstrap }
+subjects:
+  - kind: ServiceAccount
+    name: valkey-bootstrap
+    namespace: redis
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: valkey-secret-bootstrap
+  namespace: redis
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"          # create the Secret before the StatefulSet (wave 1)
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      serviceAccountName: valkey-bootstrap
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.0             # non-Bitnami: shell + kubectl + openssl
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+              if kubectl -n redis get secret redis-auth >/dev/null 2>&1; then
+                echo "redis-auth already exists — leaving the password untouched"
+                exit 0
+              fi
+              PW="$(openssl rand -hex 24)"
+              kubectl -n redis create secret generic redis-auth --from-literal=password="$PW"
+              echo "created redis-auth"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: redis
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
-  project: default
-  source:
-    repoURL: https://charts.bitnami.com/bitnami
-    chart: redis
-    targetRevision: 20.1.0
-    helm:
-      values: |
-        # Bitnami purged docker.io/bitnami/* versioned tags (Aug 2025), so the
-        # chart's pinned images 404. Use the legacy mirror as a stopgap.
-        # TODO(v1): migrate off Bitnami (Valkey or a plain redis:7-alpine manifest).
-        global:
-          security:
-            allowInsecureImages: true
-        image:
-          repository: bitnamilegacy/redis
-        metrics:
-          image: { repository: bitnamilegacy/redis-exporter }
-        volumePermissions:
-          image: { repository: bitnamilegacy/os-shell }
-        sysctl:
-          image: { repository: bitnamilegacy/os-shell }
-        kubectl:
-          image: { repository: bitnamilegacy/kubectl }
-        architecture: standalone     # replication for prod
-        auth:
-          enabled: true              # password delivered via Sealed Secret in prod
-        master:
-          persistence: { size: 8Gi }
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: redis
-  syncPolicy:
-    automated: { prune: true, selfHeal: true }
-    syncOptions: [CreateNamespace=true]
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999                          # valkey user in the valkey/valkey image
+        runAsGroup: 999
+        fsGroup: 999                            # so the fresh PVC is writable by valkey
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: valkey
+          image: valkey/valkey:8-alpine
+          command: [sh, -c]
+          # requirepass from the bootstrapped Secret; persist RDB snapshots under /data.
+          args:
+            - exec valkey-server --requirepass "$VALKEY_PASSWORD" --dir /data --save "3600 1 300 100"
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: redis-auth, key: password }
+          ports:
+            - { containerPort: 6379, name: redis }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          livenessProbe:
+            tcpSocket: { port: 6379 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: [sh, -c, 'valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning ping | grep -q PONG']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 8Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: redis
+spec:
+  selector: { app: redis }
+  ports:
+    - { port: 6379, targetPort: 6379, name: redis }
