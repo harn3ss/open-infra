@@ -171,19 +171,35 @@ degrade real workloads: forbidden by §3 ("nothing the suite does may endanger t
 and correctly refused by the pre-flight guard. §10 already calls for a **separate validation
 cluster** before scenarios 4–5 touch real storage.
 
-**2. The safe alternative — `io-latency` — does not actually inject.** Degrading the
-sandbox's *own* Longhorn-backed volume would have answered the same question safely, but
-Chaos Mesh's FUSE injector (`toda`) **panics** on this cluster:
+**2. The safe alternative — `io-latency` — does not actually inject, and now we know
+exactly why.** Degrading the sandbox's *own* Longhorn-backed volume would have answered the
+same question safely, but every IOChaos sits at `phase: Not Injected/Wait, injectedCount: 0`
+**forever, silently**. Re-tested 2026-07-27 (once the drop-17 cert freeze was in, on the
+hypothesis it shared that root cause — it does **not**). The confirmed root cause is a
+**cgroup-v2 incompatibility in Chaos Mesh 2.7.2**, not certs and not really `toda`:
 
 ```
-thread panicked at 'Send through channel failed', src/jsonrpc.rs:74
-chaos-daemon: Starting toda takes too long or encounter an error → kill toda
+chaos-daemon  main.go:83  grant access to /dev/fuse  {"error": "fail to find device cgroup"}
+                          pkg/fusedev/fusedev_linux.go:60  fusedev.GrantAccess
 ```
 
-The IOChaos then sits at `phase: Not Injected/Wait, injectedCount: 0` **forever, silently**.
-`kind: FaultInjection` advertises `io-latency` in its XRD enum, so **any user selecting it
-gets an inert fault that looks applied**. This was caught only because scenarios assert
-`AllInjected=True` rather than "the object exists" — the weaker check passed it as green.
+Both chaos-daemons fail this identically at boot. `fusedev.GrantAccess` looks for a legacy
+cgroup-v1 `devices` controller to grant the daemon `/dev/fuse`, but this host (Ubuntu 24.04)
+runs the **unified cgroup-v2 hierarchy** — there is no `/sys/fs/cgroup/devices` to find. With
+no `/dev/fuse`, `toda` (the FUSE injector) can't mount, so the earlier "Starting toda takes
+too long → kill toda" / `jsonrpc.rs` panic is a *downstream* symptom of this grant failure.
+
+This is a host-level incompatibility, not a config we can flip: fixing it means either a
+Chaos Mesh release whose `GrantAccess` understands cgroup v2, or booting the host back to
+cgroup v1 (`systemd.unified_cgroup_hierarchy=0`) — a bad trade to enable one non-graduation
+scenario, since k3s/containerd and much else assume v2. So **`io-latency` stays disabled on
+this host** and Scenario 5's IO path stays blocked — now for a second, precisely-understood
+reason on top of the real-replica one above.
+
+`kind: FaultInjection` still advertises `io-latency` in its XRD enum, so **any user selecting
+it gets an inert fault that looks applied** (removing it from the enum is a tracked hardening
+follow-up). This was caught only because scenarios assert `AllInjected=True` rather than "the
+object exists" — the weaker check passed it as green.
 
 The script + fault manifest are kept (`chaos/scenario-storage.sh`) for when either blocker
 clears, but shipping it nightly would mean a permanently-red scenario — which violates the
