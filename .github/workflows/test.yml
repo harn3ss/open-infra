@@ -17,6 +17,8 @@ on:
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
+      # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
+      - "platform/console/manifests/**"
       - ".github/workflows/test.yml"
   pull_request:
     paths:
@@ -24,6 +26,8 @@ on:
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
+      # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
+      - "platform/console/manifests/**"
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
   workflow_call: {} # callable as a required gate by the build/release workflows
