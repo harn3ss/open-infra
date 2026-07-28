@@ -343,6 +343,35 @@ func (a *authStore) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// requireSignedIn gates a route on a valid console session but WITHOUT the CSRF-header
+// check that requireAuth adds on writes. It exists for the Grafana reverse proxy: those
+// routes must be behind auth — otherwise anyone who can reach the console (an
+// internet-exposed one especially) can read every dashboard, metric and log through
+// /grafana/*, since Grafana itself runs with anonymous Viewer access. But Grafana's own
+// iframe issues POST /api/ds/query for each panel WITHOUT our CSRF header, so requireAuth
+// would 403 those and break live dashboards. Same-origin embedding + SameSite=Lax already
+// stop cross-site use, and the proxied Grafana is read-only (Viewer), so a session check
+// alone is the right gate here. When AUTH_MODE=none everything is open anyway (the SPA
+// shows a standing banner), matching requireAuth.
+func (a *authStore) requireSignedIn(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.mode == "none" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		c, err := r.Cookie(sessionCookie)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+			return
+		}
+		if _, ok := a.parse(c.Value); !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "session expired"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 type ctxUser struct{}
 
 // claimsFrom returns the signed-in user's session claims, if the request passed

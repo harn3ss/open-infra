@@ -29,8 +29,12 @@ spec:
               jsonData:
                 maxLines: 1000
           # Allow the open-infra console to embed dashboards (iframe, kiosk mode)
-          # and serve them read-only without a login. Tighten auth.anonymous for
-          # internet-exposed clusters (or front Grafana via the console BFF).
+          # and serve them read-only without a login. Grafana is ClusterIP-only and the
+          # console BFF fronts it under /grafana behind a session gate (requireSignedIn),
+          # so this anonymous Viewer access is NOT reachable by unauthenticated callers —
+          # only by a signed-in console user, or by another in-cluster pod hitting the
+          # ClusterIP directly (a NetworkPolicy restricting Grafana ingress to the console
+          # namespace is the tracked follow-up that closes that last gap).
           grafana.ini:
             security:
               allow_embedding: true
