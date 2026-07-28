@@ -29,6 +29,24 @@ the product's public contract.
   one place without the others fails the build instead of quietly granting (or dropping) an
   action. Item 1 of the schema-drift spec: *verify, don't generate* — the boundary is never
   auto-derived, only checked.
+- **The embedded Grafana was readable without signing in.** The console's `/grafana/*`
+  reverse proxy was mounted outside the `/api` auth gate, and Grafana runs with anonymous
+  Viewer for the dashboard kiosk — so anyone who could reach the console, including an
+  unauthenticated caller on an internet-exposed one, could read every dashboard, metric and
+  log. It now sits behind a session gate (`requireSignedIn`) that still allows Grafana's own
+  `POST /api/ds/query` panel calls (which lack the console's CSRF header).
+- **The console BFF no longer uses the MinIO root credentials.** It now runs as a scoped
+  `openinfra-console` user (MinIO's `readwrite` policy: full S3 CRUD for the bucket browser,
+  but no admin API), minted by a Sync hook. Defense-in-depth: a bug misusing the S3 client
+  can no longer reach MinIO's user/policy/server admin surface.
+- **The Trino query engine is locked down.** Trino runs untrusted, user-supplied SQL but had
+  no `securityContext`; it now matches the per-query pod hardening — non-root, no privilege
+  escalation, all capabilities dropped, read-only rootfs, seccomp `RuntimeDefault`, and no
+  ServiceAccount token.
+- **A standing banner when auth is disabled.** With `AUTH_MODE=none` the console API is
+  unauthenticated (anyone who reaches it has cluster admin); previously the only signal was a
+  startup log line. The SPA now shows a persistent, non-dismissable security banner on every
+  page whenever auth is off.
 
 ### Reliability
 - **Chaos Mesh's mTLS/webhook certs no longer churn on every Argo sync.** Chaos Mesh mints
@@ -40,6 +58,36 @@ the product's public contract.
   guard (the 2026-07-23 red). Argo `ignoreDifferences` now freezes the cert `/data` and
   webhook `caBundle`s, so the chain is created once and kept. If certs must be rotated, do it
   deliberately and restart both the controller Deployment and the chaos-daemon DaemonSet.
+- **`RespectIgnoreDifferences` closes the cert-freeze gap.** `ignoreDifferences` stops
+  *drift*-triggered syncs from churning the Chaos Mesh certs, but a sync fired for another
+  reason (a chart bump, a values edit) would still re-render and overwrite them. The
+  chaos-mesh app now also sets `RespectIgnoreDifferences=true`, so the live cert Secrets
+  survive every sync (verified on Argo v3.4.4; cert hash unchanged across a sync).
+- **A capacity-starved chaos run is INCONCLUSIVE, not a false red.** If a node is down and
+  the survivors are full, the nightly sandbox can't schedule and the scenario would time out
+  RED — an infrastructure shortfall blamed on the product. A new
+  [capacity pre-flight](chaos/preflight-capacity.sh) sums schedulable headroom and aborts
+  INCONCLUSIVE (neither red nor green, so it doesn't advance the graduation clock). It
+  deliberately does not require every node Ready (the GPU box is off nightly) and fails open.
+- **`io-latency` FaultInjection root-caused (still inert).** Re-tested after the cert freeze;
+  it is **not** cert drift — it's a cgroup-v2 incompatibility: Chaos Mesh 2.7.2's
+  `fusedev.GrantAccess` wants a legacy cgroup-v1 `devices` controller, so on a unified-v2 host
+  `toda` never gets `/dev/fuse` and every IOChaos sits "Not Injected". Documented; `io-latency`
+  stays disabled on this host.
+- **Three correctness bugs fixed** (#67): the `test.yml` `paths:` filter now watches
+  `platform/console/manifests/**` (RBAC-role drift there shipped green before); the Longhorn
+  creds-refresh CronJob compares **both** MinIO credential values, not just the access-key ID
+  (a password-only rotation silently broke backups); and a new `TestArgoExcludeListNoDrift`
+  guards the hand-maintained `install.sh` Argo exclude-list, so a stray non-resource file
+  under a platform area can no longer wedge the whole app-of-apps sync unnoticed.
+
+### Data
+- **The Redis cache is now Valkey, on an owned manifest.** Bitnami purged its public
+  versioned image tags (Aug 2025), leaving the Redis chart pinned to an unmaintained
+  `bitnamilegacy/*` mirror. Replaced with an owned manifest running **Valkey** (the
+  BSD-licensed, actively-maintained Redis fork, Redis-protocol compatible) — same endpoint
+  (`redis.redis.svc:6379`), password bootstrapped out of git, pod hardened (non-root,
+  read-only rootfs, dropped caps). Drops the Bitnami dependency entirely.
 
 ## v2.5.0 — 2026-07-22
 
