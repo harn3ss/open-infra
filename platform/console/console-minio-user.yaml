@@ -1,0 +1,90 @@
+# Least-privilege MinIO identity for the console BFF's S3 features (the bucket browser and
+# the snapshot store). The BFF used the MinIO ROOT creds, which also carry the MinIO ADMIN
+# API — so a bug or compromise in the console (the most exposed component) could mint MinIO
+# users, rewrite policies, or reconfigure the server. This mints a scoped user
+# `openinfra-console` with MinIO's canned `readwrite` policy: full S3 CRUD on all buckets
+# (the browser genuinely needs that), but NO admin API. The BFF reads it from
+# `console-minio-creds` instead of the root secret.
+#
+# The secret keys stay rootUser/rootPassword so the BFF (services.go / snapshots.go) needs
+# no change — but the VALUES are the scoped, non-root user. One-shot Argo Sync hook using
+# root only to provision; matches the query-runtime / lakehouse-setup pattern.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: console-iam-setup
+  namespace: minio
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: console-iam-setup
+  namespace: minio
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: console-iam-setup
+  namespace: minio
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: console-iam-setup }
+subjects:
+  - kind: ServiceAccount
+    name: console-iam-setup
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: console-iam-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: console-iam-setup
+      restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
+        - name: fetch-mc
+          image: minio/mc:latest
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+      containers:
+        - name: setup
+          image: alpine/k8s:1.30.0   # kubectl (native); mc from the shared volume
+          command: [/bin/sh, -c]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+          env:
+            - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+          args:
+            - |
+              set -eu
+              [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
+              MC=/mc/mc
+              "$MC" alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+              echo "minting scoped console identity (readwrite: full S3, no admin API)…"
+
+              AK="openinfra-console"
+              # Reuse the existing secret key across reruns for stable creds; else generate.
+              SK=$(kubectl get secret console-minio-creds -n minio -o jsonpath='{.data.rootPassword}' 2>/dev/null | base64 -d || true)
+              [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              "$MC" admin user add m "$AK" "$SK" >/dev/null 2>&1 || "$MC" admin user add m "$AK" "$SK" >/dev/null
+              # Canned `readwrite` = s3:* on all buckets, but NOT the admin API.
+              "$MC" admin policy attach m readwrite --user "$AK" >/dev/null 2>&1 || true
+
+              # Keys named rootUser/rootPassword for BFF compatibility; values are the scoped user.
+              kubectl create secret generic console-minio-creds -n minio \
+                --from-literal=rootUser="$AK" --from-literal=rootPassword="$SK" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+              echo "console MinIO identity ready ($AK: readwrite, no admin)"

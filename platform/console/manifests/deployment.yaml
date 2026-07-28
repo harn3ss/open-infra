@@ -59,6 +59,10 @@ spec:
             # Loki, for the Audit view (queries the shipped k3s audit log + console iam logs).
             - name: LOKI_URL
               value: "http://loki.monitoring.svc.cluster.local:3100"
+            # Use the SCOPED MinIO identity (openinfra-console, readwrite but no admin API),
+            # not the root secret — minted by platform/console/console-minio-user.yaml.
+            - name: MINIO_SECRET_NAME
+              value: "console-minio-creds"
 
           # Lightweight probes on the /healthz endpoint exposed by the Go BFF.
           readinessProbe:
