@@ -92,6 +92,11 @@ Create tables from data you already have, e.g. via Trino:
   - **Hardened pod.** Non-root, read-only root filesystem, all capabilities dropped,
     no service-account token; the runner also disables DuckDB's local-filesystem
     access for the user SQL (no reading `/etc/passwd` or the pod's env).
+  - **Hardened Trino engine.** The Trino coordinator that `trino`-mode queries hit
+    executes untrusted SQL too, and is locked down the same way: non-root, read-only
+    rootfs (writes only to its data + `/tmp` emptyDirs), dropped capabilities, seccomp
+    `RuntimeDefault`, and no service-account token. It reads only the scoped
+    `openinfra-lakehouse` MinIO identity (read/write `s3://lakehouse` only), never root.
   - **Follow-up:** the scoped identity is currently platform-wide, not per-namespace —
     true per-tenant isolation (a workgroup per team) is still to come.
 - **Engine images/services** are open-infra's own or pinned upstream, in the platform:

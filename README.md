@@ -193,7 +193,7 @@ the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
 
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
-MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Redis, Longhorn, kube-prometheus-stack
+MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Valkey, Longhorn, kube-prometheus-stack
 + Loki, Sealed Secrets, Knative, Velero, KubeVirt). The public
 abstractions are shipped and exercised on that cluster — but **maturity varies by
 capability** (see [Maturity & guarantees](#maturity--guarantees)):
@@ -297,8 +297,9 @@ allow-list of buckets, write only to `query-results` — never the MinIO root cr
 NetworkPolicy permitting egress only to DNS/MinIO/Trino, a non-root read-only-rootfs pod
 with no service-account token, and DuckDB with local-filesystem access locked off. See
 [docs/query.md](docs/query.md). **Treat the read allow-list as the trust boundary:** anything
-you add to it is readable by anyone who can submit a Query. Per-namespace query identities
-(workgroups) and Trino pod hardening are tracked follow-ups.
+you add to it is readable by anyone who can submit a Query. The Trino engine is hardened the
+same way (non-root, read-only rootfs, dropped caps, no service-account token); per-namespace
+query identities (workgroups) remain a tracked follow-up.
 
 **Experimental — the chaos tooling.** `FaultInjection` compiles to Chaos Mesh with the blast
 radius enforced (namespace + label selector, time-boxed). It's test tooling, not a workload
