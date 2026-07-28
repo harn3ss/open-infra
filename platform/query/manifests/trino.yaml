@@ -63,10 +63,26 @@ spec:
   template:
     metadata: { labels: { app: trino } }
     spec:
+      # Trino runs untrusted, user-supplied SQL, so lock the pod down (matches the per-query
+      # pod hardening): non-root, no privilege escalation, drop all caps, read-only rootfs
+      # (Trino writes only to /data/trino and /tmp, both emptyDir), seccomp RuntimeDefault,
+      # and no ServiceAccount token — Trino never talks to the Kubernetes API. Verified: the
+      # coordinator reaches /v1/info Ready under this context with no write failures.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000                      # the trino user in trinodb/trino
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: trino
           image: trinodb/trino:468
           ports: [{ containerPort: 8080 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
           env:
             - name: AWS_ACCESS_KEY_ID
               valueFrom: { secretKeyRef: { name: minio-creds, key: AWS_ACCESS_KEY_ID } }
@@ -86,12 +102,15 @@ spec:
             - { name: etc, mountPath: /etc/trino/jvm.config, subPath: jvm.config }
             - { name: catalog, mountPath: /etc/trino/catalog }
             - { name: data, mountPath: /data/trino }
+            - { name: tmp, mountPath: /tmp }
       volumes:
         - name: etc
           configMap: { name: trino-etc }
         - name: catalog
           configMap: { name: trino-catalog }
         - name: data
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}
 ---
 apiVersion: v1
