@@ -357,6 +357,11 @@ type configResponse struct {
 	// running unauthenticated (AUTH_MODE=none) — the startup log alone is invisible
 	// to anyone using the UI.
 	AuthMode string `json:"authMode"`
+	// ChaosUIEnabled gates the fault-injection surface in the console. It is OFF by
+	// default (least functionality, NIST CM-7): a deliberately-break-things tool is a
+	// non-essential, privileged capability that a hardened/government deployment should
+	// not surface. A homelab opts in with CHAOS_UI_ENABLED=true.
+	ChaosUIEnabled bool `json:"chaosUiEnabled"`
 }
 
 // handleConfig returns runtime config read from the environment. This is the
@@ -368,6 +373,7 @@ func handleConfig(w http.ResponseWriter, _ *http.Request) {
 		GrafanaBaseURL: os.Getenv("GRAFANA_BASE_URL"),
 		Version:        version,
 		AuthMode:       authMode(),
+		ChaosUIEnabled: getenv("CHAOS_UI_ENABLED", "") == "true",
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
