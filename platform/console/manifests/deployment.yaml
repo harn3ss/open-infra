@@ -63,6 +63,11 @@ spec:
             # not the root secret — minted by platform/console/console-minio-user.yaml.
             - name: MINIO_SECRET_NAME
               value: "console-minio-creds"
+            # Fault injection (Chaos) is a privileged, non-essential capability, so it is
+            # OFF by default (least functionality, NIST CM-7): the console hides the surface
+            # entirely unless a deployment opts in. Set to "true" on a homelab/test cluster.
+            - name: CHAOS_UI_ENABLED
+              value: "false"
 
           # Lightweight probes on the /healthz endpoint exposed by the Go BFF.
           readinessProbe:

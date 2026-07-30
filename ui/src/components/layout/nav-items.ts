@@ -28,6 +28,7 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
+import type { AppConfig } from "@/lib/api";
 
 export interface NavItem {
   label: string;
@@ -37,6 +38,12 @@ export interface NavItem {
   section?: string;
   /** Match child routes too (e.g. /applications/$name). */
   matchPrefix?: boolean;
+  /**
+   * Name of a boolean AppConfig flag that must be true for this item to appear.
+   * Used to keep non-essential/privileged surfaces (e.g. Chaos) hidden unless the
+   * deployment explicitly enables them — least functionality (NIST CM-7).
+   */
+  flag?: "chaosUiEnabled";
 }
 
 /**
@@ -76,7 +83,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Network", to: "/network", icon: Globe, matchPrefix: true, section: "Cluster" },
 
   { label: "Monitoring", to: "/monitoring", icon: LineChart, section: "Observability" },
-  { label: "Chaos", to: "/chaos", icon: Bomb, matchPrefix: true, section: "Observability" },
+  { label: "Chaos", to: "/chaos", icon: Bomb, matchPrefix: true, section: "Observability", flag: "chaosUiEnabled" },
   { label: "Cost Explorer", to: "/cost", icon: DollarSign, section: "Observability" },
 ];
 
@@ -85,3 +92,12 @@ export const NAV_SECTIONS: string[] = NAV_ITEMS.reduce<string[]>((acc, item) => 
   if (item.section && !acc.includes(item.section)) acc.push(item.section);
   return acc;
 }, []);
+
+/**
+ * Whether a nav item is visible given the runtime config. Items carrying a `flag`
+ * (e.g. Chaos → chaosUiEnabled) appear only when that config flag is true — so
+ * privileged/non-essential surfaces stay hidden unless explicitly enabled.
+ */
+export function navItemVisible(item: NavItem, config: AppConfig): boolean {
+  return !item.flag || Boolean(config[item.flag]);
+}

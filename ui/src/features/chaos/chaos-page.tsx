@@ -13,6 +13,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
+import { useConfig } from "@/lib/config-context";
+import { EmptyState } from "@/components/common/states";
 import { ApiError, k8sCreate } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
@@ -52,7 +54,25 @@ function targetSummary(f: FaultInjection): string {
   return `${t.namespace ?? f.metadata.namespace}/${sel || "*"}`;
 }
 
+// Chaos is a privileged, non-essential capability (NIST CM-7): if the deployment hasn't
+// opted in, don't render the tool even on a hand-typed /chaos URL. The nav hides it; this
+// is the route-level backstop. (The authoritative control is RBAC on the FaultInjection
+// resource — this is defense in depth against surfacing it.)
 export function ChaosPage() {
+  const config = useConfig();
+  if (!config.chaosUiEnabled) {
+    return (
+      <EmptyState
+        icon={<Bomb />}
+        title="Chaos tooling is disabled"
+        description="Fault injection is turned off on this deployment. An operator can enable it by setting CHAOS_UI_ENABLED=true on the console."
+      />
+    );
+  }
+  return <ChaosPageInner />;
+}
+
+function ChaosPageInner() {
   const { scoped } = useNamespace();
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
