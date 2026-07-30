@@ -336,6 +336,16 @@ accordingly, especially for the experimental tier.
 From **v2.0.0** the changelog states each capability's tier explicitly, and breaking
 changes to the stable surface get a major-version bump.
 
+## Security & compliance
+
+open-infra is built to a control framework, not just a feature list: it is
+**secure-by-default** (authentication required, fault injection and other privileged
+capabilities off unless opted in, least-privilege service identities) and its capabilities
+map to the **NIST SP 800-53** families behind FedRAMP. It ships the *technical* controls and
+evidence so an operator can pursue an authorization — it does not claim to *be* certified.
+See [`docs/security-and-compliance.md`](docs/security-and-compliance.md) for the honest posture
+and the control-family mapping.
+
 ---
 
 ## License
