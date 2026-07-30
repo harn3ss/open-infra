@@ -4,11 +4,12 @@
 [![Build console](https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml/badge.svg)](https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/harn3ss/open-infra)](LICENSE)
 
-> A **free, self-hostable mini-cloud**. Drop one simple `infra.yaml` into your app
-> repo, `git push`, and get an AWS-like managed experience — not just autoscaling
-> HTTPS apps, managed databases, object storage and queues, but **VMs, serverless +
-> GPU inference, an analytics lake, CDC pipelines, and Active Directory** — running on
-> your own commodity Linux boxes at **zero cloud cost**.
+> A **self-hosted cloud platform** that runs entirely inside your own trust boundary.
+> Declare intent in one `infra.yaml`, `git push`, and get an AWS-like managed surface —
+> autoscaling HTTPS apps, managed databases, object storage and queues, plus **VMs,
+> serverless + GPU inference, an analytics lake, CDC pipelines, and Active Directory** —
+> GitOps-reconciled on hardware you control and built to a **NIST 800-53 control
+> framework**: secure-by-default, least-privilege, fully audited.
 
 ```yaml
 # infra.yaml — you write intent, the platform produces infrastructure
@@ -266,8 +267,8 @@ before you point it at data you can't afford to lose.
 `Model`, `Function`, `VirtualMachine` (with `VmImage` golden images), `Volume`,
 `FileShare`, `Directory`, `SecurityGroup`, and managed databases (Postgres / MySQL /
 Mongo, including HA and Start/Stop) are the day-to-day surface. A failure here is a
-restart or a rollback — the homelab-PaaS promise. These run continuously on the
-reference cluster.
+restart or a rollback — the PaaS promise: recoverable, no data at stake. These run
+continuously on the reference cluster.
 
 **Experimental — the distributed-systems primitives.** `Replication`
 (bidirectional / multi-master), cross-engine `Migration`, multi-master
