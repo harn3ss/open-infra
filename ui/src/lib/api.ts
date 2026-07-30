@@ -13,6 +13,8 @@ export interface AppConfig {
   version: string;
   /** "local" | "ldap" | "oidc" | "none". "none" means the console is unauthenticated. */
   authMode: string;
+  /** Whether the fault-injection (Chaos) surface is enabled. Off by default. */
+  chaosUiEnabled: boolean;
 }
 
 export class ApiError extends Error {

@@ -9,7 +9,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { BrandWordmark } from "@/components/layout/brand";
-import { NAV_ITEMS, NAV_SECTIONS, type NavItem } from "@/components/layout/nav-items";
+import { NAV_ITEMS, NAV_SECTIONS, navItemVisible, type NavItem } from "@/components/layout/nav-items";
 import { useNavPrefs } from "@/lib/use-nav-prefs";
 import { useConfig } from "@/lib/config-context";
 import { cn } from "@/lib/utils";
@@ -61,25 +61,29 @@ export function Sidebar({
   }, [activeItem, recordVisit]);
 
   const { ungrouped, sections } = useMemo(() => {
-    const ungrouped: NavItem[] = NAV_ITEMS.filter((i) => !i.section);
+    const visible = NAV_ITEMS.filter((i) => navItemVisible(i, config));
+    const ungrouped: NavItem[] = visible.filter((i) => !i.section);
     const sections = NAV_SECTIONS.map((name) => ({
       name,
-      items: NAV_ITEMS.filter((i) => i.section === name),
-    }));
+      items: visible.filter((i) => i.section === name),
+    })).filter((s) => s.items.length > 0);
     return { ungrouped, sections };
-  }, []);
+  }, [config]);
 
   const pinnedItems = useMemo(
-    () => pins.map((p) => BY_PATH[p]).filter((i): i is NavItem => Boolean(i)),
-    [pins],
+    () =>
+      pins
+        .map((p) => BY_PATH[p])
+        .filter((i): i is NavItem => i != null && navItemVisible(i, config)),
+    [pins, config],
   );
   const recentItems = useMemo(
     () =>
       recents
         .map((p) => BY_PATH[p])
-        .filter((i): i is NavItem => i != null && i.to !== activeItem?.to)
+        .filter((i): i is NavItem => i != null && i.to !== activeItem?.to && navItemVisible(i, config))
         .slice(0, 5),
-    [recents, activeItem],
+    [recents, activeItem, config],
   );
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded);
