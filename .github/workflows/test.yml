@@ -19,6 +19,7 @@ on:
       - "platform/abstraction/**"
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
+      - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - ".github/workflows/test.yml"
   pull_request:
     paths:
@@ -28,6 +29,7 @@ on:
       - "platform/abstraction/**"
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
+      - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
   workflow_call: {} # callable as a required gate by the build/release workflows
@@ -69,3 +71,29 @@ jobs:
       - name: go test -race
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
+
+  # Console SPA: typecheck + build. Without this, dependency bumps to ui/ (e.g.
+  # Dependabot's npm PRs) merged with no verification that the console still compiles.
+  ui:
+    name: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: install
+        working-directory: ui
+        run: npm ci
+
+      - name: typecheck
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: build
+        working-directory: ui
+        run: npm run build
