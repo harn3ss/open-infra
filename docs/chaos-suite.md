@@ -51,7 +51,8 @@ There is one real cluster, so containment is built **before** any fault
    schedulable nodes and, if there isn't enough to run the sandbox, aborts **INCONCLUSIVE**
    (exit 42) rather than letting the pods sit `Pending` and the scenario time out as a
    **false red**. It deliberately does *not* require every node Ready — a node is often
-   powered down on purpose here (the GPU box nightly) — only that the survivors have room.
+   powered down on purpose in the reference cluster (its GPU node is halted nightly) — only
+   that the survivors have room.
    An INCONCLUSIVE night is neither red nor green: it does not block a release and does not
    advance the graduation clock. It fails **open** — an unreadable cluster never blocks a
    run.
