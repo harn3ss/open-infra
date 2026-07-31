@@ -1,0 +1,56 @@
+# Dependabot version updates. (Security updates run separately and need no config.)
+# Non-major updates are grouped into one PR per ecosystem per week to keep noise low;
+# major bumps come as their own PRs so they get a deliberate review.
+version: 2
+updates:
+  # ── Go modules ────────────────────────────────────────────────────────────────
+  - package-ecosystem: gomod
+    directory: /console-api
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "chore(deps)" }
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directory: /apply-sink
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "chore(deps)" }
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: gomod
+    directory: /test/render
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "chore(deps)" }
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ── Console SPA (npm) ─────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /ui
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "chore(deps)" }
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "ci(deps)" }
+    groups:
+      actions:
+        patterns: ["*"]
