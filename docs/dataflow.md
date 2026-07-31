@@ -106,6 +106,10 @@ Caveat: a table created **already full of data** won't back-load its existing ro
 Debezium incremental snapshot runs — the common *create-then-insert* flow syncs fully (the
 table is created on peers and new rows replicate). Tables without a primary key are skipped.
 
+> **Altering an existing table** under a multi-master flow has ordering rules of its own
+> (receivers before writers; nullable → backfill → default → NOT NULL; deterministic literal
+> defaults only). See the [schema-migration runbook](replication.md#changing-a-table-under-multi-master-runbook).
+
 ---
 
 ## How the engine works
