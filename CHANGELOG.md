@@ -47,6 +47,15 @@ the product's public contract.
   unauthenticated (anyone who reaches it has cluster admin); previously the only signal was a
   startup log line. The SPA now shows a persistent, non-dismissable security banner on every
   page whenever auth is off.
+- **Fault injection is off by default (behavior change).** The Chaos surface is no longer
+  shown in the console unless a deployment sets `CHAOS_UI_ENABLED=true` — least functionality
+  (NIST CM-7): a privileged, break-things tool should not sit one click from Monitoring. The
+  BFF exposes `chaosUiEnabled` in `/api/config`; the SPA hides the nav item, the command-
+  palette entry, and the `/chaos` route unless opted in.
+- **A NIST 800-53 security & compliance posture is now documented** ([docs/security-and-compliance.md](docs/security-and-compliance.md)):
+  an honest, control-level implementation mapping (AC/AU/IA/SC/CM/SI/CP) plus the continuous
+  flaw-remediation loop (Trivy → code-scanning → Dependabot → CI), framed as
+  control-implementation evidence, not a certification claim.
 
 ### Reliability
 - **Chaos Mesh's mTLS/webhook certs no longer churn on every Argo sync.** Chaos Mesh mints
@@ -88,6 +97,23 @@ the product's public contract.
   BSD-licensed, actively-maintained Redis fork, Redis-protocol compatible) — same endpoint
   (`redis.redis.svc:6379`), password bootstrapped out of git, pod hardened (non-root,
   read-only rootfs, dropped caps). Drops the Bitnami dependency entirely.
+
+### Dependencies
+- **Load-bearing bumps recorded** (not silent plumbing): the Go toolchain `1.25 → 1.26`, the
+  Kubernetes client `client-go 0.33 → 0.36`, and the SQL Server driver `go-mssqldb → 1.10`.
+  The `go-mssqldb` and toolchain bumps touch **apply-sink**, the code the convergence/chaos
+  oracle exercises — see *note on the graduation clock* below.
+- **CVE-2026-56852** — bumped `golang.org/x/text 0.38 → 0.39` (an infinite-loop DoS in
+  `norm.Iter` on invalid UTF-8; surfaced by Trivy code-scanning, indirect dep, verified).
+- Enabled **Dependabot version updates** (Go / npm / Actions, grouped) and added a **UI
+  typecheck+build CI gate** so console dependency bumps can no longer merge unverified.
+
+> **Note — nightly-chaos graduation clock.** The `apply-sink` driver + toolchain bumps are a
+> change to the system under test (the convergence oracle runs `apply-sink`). Per the same
+> test used for the 2026-07-23 night (did the change land on the SUT or the harness?), a
+> data-path bump **re-epochs** the 30-green-night clock; the `client-go` bump (console-only)
+> does not. The graduation record must count green nights **from the apply-sink bump**, not
+> across it.
 
 ## v2.5.0 — 2026-07-22
 
