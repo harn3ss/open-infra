@@ -33,6 +33,11 @@ spec:
     metadata: { labels: { app: pg, site: a } }
     spec:
       priorityClassName: chaos-sandbox-low
+      # Pin the disposable sandbox onto the dedicated, tainted chaos nodes so a fault never
+      # lands on production hardware (segmentation model — see docs/chaos-oracle.md).
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
       terminationGracePeriodSeconds: 5
       containers:
         - name: postgres
@@ -60,6 +65,11 @@ spec:
     metadata: { labels: { app: pg, site: b } }
     spec:
       priorityClassName: chaos-sandbox-low
+      # Pin the disposable sandbox onto the dedicated, tainted chaos nodes so a fault never
+      # lands on production hardware (segmentation model — see docs/chaos-oracle.md).
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
       terminationGracePeriodSeconds: 5
       containers:
         - name: postgres
