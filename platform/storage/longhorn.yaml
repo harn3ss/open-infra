@@ -38,6 +38,13 @@ spec:
         defaultSettings:
           defaultReplicaCount: 2
           defaultDataPath: /var/lib/longhorn
+          # Only auto-create a default disk on nodes labeled node.longhorn.io/create-default-disk=true
+          # (the real storage nodes). Keeps the disposable chaos nodes storage-INELIGIBLE across a
+          # full re-add: a re-registered chaos node is unlabeled → gets no disk → can never hold a
+          # production replica (the k8s NoSchedule taint does NOT cover Longhorn — instance-manager
+          # tolerates all taints and Longhorn schedules replicas by its own allowScheduling). Existing
+          # disks are untouched by this setting.
+          createDefaultDiskLabeledNodes: true
           # HARD anti-affinity: a volume's replicas MUST land on distinct nodes, so losing one
           # node never loses the volume — the precondition for the chaos suite's Scenario 5
           # (storage replica-loss) to be a real test rather than data deletion. Kept at 2
