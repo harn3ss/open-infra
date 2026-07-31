@@ -53,9 +53,9 @@ jobs:
           - test/render # composition-render assertions (hibernation, HA)
     name: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ matrix.module }}/go.mod
           # go.mod (not go.sum) as the cache key: test/render is stdlib-only and has
