@@ -38,7 +38,17 @@ spec:
         defaultSettings:
           defaultReplicaCount: 2
           defaultDataPath: /var/lib/longhorn
-          replicaSoftAntiAffinity: true
+          # HARD anti-affinity: a volume's replicas MUST land on distinct nodes, so losing one
+          # node never loses the volume — the precondition for the chaos suite's Scenario 5
+          # (storage replica-loss) to be a real test rather than data deletion. Kept at 2
+          # replicas (not 3): mlbox is powered down nightly, and a 3-replica hard-affinity
+          # volume would sit degraded every night with only 2 storage nodes up.
+          replicaSoftAntiAffinity: false
+          # best-effort auto-balance so the hard anti-affinity actually takes effect on the
+          # EXISTING co-located volumes — Longhorn otherwise only re-evaluates placement on a
+          # rebuild event, so healthy same-node replicas would stay put. best-effort only moves
+          # replicas when there's an imbalance to correct; quiet in steady state.
+          replicaAutoBalance: best-effort
           storageOverProvisioningPercentage: 100
         csi:
           attacherReplicaCount: 1
