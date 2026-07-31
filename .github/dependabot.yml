@@ -44,6 +44,12 @@ updates:
       npm:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      # @rjsf/* v6 is a breaking migration for the console's create-forms, and the
+      # family (core/utils/validator/theme) must move in lockstep or npm ci fails on
+      # peer conflicts. Hold the major until it's done deliberately, then remove this.
+      - dependency-name: "@rjsf/*"
+        update-types: ["version-update:semver-major"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
