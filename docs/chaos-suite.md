@@ -150,6 +150,22 @@ is not attributable to the application's solidarity and does **not** reset it.
   its job, not a correctness failure. Fixed durably (Argo `ignoreDifferences` freezes the
   cert chain) and re-run green. Off-net to the application; the clock stands.
 
+### Epochs (re-epoch on a change to the system under test)
+
+The clock counts nights on **one binary**. A material change to the code the oracle exercises
+starts a new epoch — the same SUT-vs-harness test as the known-reds, applied to *code* rather
+than *faults*. Prior nights are retained as history of the old binary, not chained across the
+change. Documenting the boundary is the point: an unexplained streak that quietly spans a SUT
+change is the asterisk an auditor distrusts.
+
+- **Epoch 1 → Epoch 2 — `nats.go 1.34.1 → 1.52.0` in apply-sink.** NATS is the transport
+  every nightly run rides (`db → Debezium → NATS → apply-sink`), for every engine, so this
+  bump lands squarely on the system under test → **re-epoch**. Epoch 2, day 1 = the first
+  nightly on the nats.go-1.52 binary; Epoch 1's ~15 nights are retained as pre-bump history.
+  The live count lives in the Actions run history, not this file. *(The DB-driver bumps in the
+  same batch — pgx unchanged; mysql/mssqldb not on the nightly Postgres path — did NOT drive
+  this; the transport did.)*
+
 ## Status
 
 - ✅ **Containment foundation** — sandbox namespace, quota, limit range, priority class,

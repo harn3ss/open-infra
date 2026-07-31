@@ -100,21 +100,27 @@ the product's public contract.
 
 ### Dependencies
 - **Load-bearing bumps recorded** (not silent plumbing): the Go toolchain `1.25 → 1.26`, the
-  Kubernetes client `client-go 0.33 → 0.36`, and the SQL Server driver `go-mssqldb → 1.10`.
-  The `go-mssqldb` and toolchain bumps touch **apply-sink**, the code the convergence/chaos
-  oracle exercises — see *note on the graduation clock* below.
+  Kubernetes client `client-go 0.33 → 0.36`, the SQL Server driver `go-mssqldb → 1.10`, and —
+  the one that matters for the clock — **`nats.go 1.34.1 → 1.52.0` in apply-sink**, the
+  transport every nightly mesh run rides (`db → Debezium → NATS → apply-sink`). See the
+  *re-epoch note* below.
 - **CVE-2026-56852** — bumped `golang.org/x/text 0.38 → 0.39` (an infinite-loop DoS in
   `norm.Iter` on invalid UTF-8; surfaced by Trivy code-scanning, indirect dep, verified).
 - Enabled **Dependabot version updates** (Go / npm / Actions, grouped) and added a **UI
   typecheck+build CI gate** so console dependency bumps can no longer merge unverified.
 
-> **Note — nightly-chaos graduation clock: NOT re-epoched.** The nightly convergence oracle
-> runs Postgres (`pg-a`/`pg-b` + CNPG) via the **pgx** driver. This bump changed the **MySQL
-> and SQL Server** drivers (`go-sql-driver/mysql`, `go-mssqldb`), which the nightly runs do
-> not exercise (no MySQL/SQL-Server members), and left **pgx unchanged**. So by the
-> SUT-vs-harness test used for the 2026-07-23 night, the change did **not** land on the
-> nightly system under test — the 30-green-night clock stands. (The separate, one-time 3-way
-> PG + MySQL + SQL Server ring validation *does* rest on these drivers and should be re-run.)
+> **Note — nightly-chaos graduation clock: RE-EPOCHED (Epoch 2).** The `nats.go 1.34.1 →
+> 1.52.0` bump landed in **apply-sink** and ran in the nightly. NATS is the transport *every*
+> nightly convergence run exercises (`db → Debezium → NATS → apply-sink`), regardless of
+> engine — so by the SUT-vs-harness test used for the 2026-07-23 night, this **is** a change
+> to the system under test and the 30-night clock **re-epochs**. **Epoch 2 begins with the
+> first nightly on the nats.go-1.52 binary; Epoch 1's ~15 nights are retained as history of
+> the pre-bump binary, not chained across the dependency change.** The exact streak count
+> lives in the Actions run history, not this file.
+>
+> *(An earlier revision of this note said "not re-epoched" — it checked the DB drivers
+> (pgx/mysql/mssqldb) and missed that `nats.go`, the message bus, is on the nightly data path
+> for every engine. Corrected here.)*
 
 ## v2.5.0 — 2026-07-22
 
