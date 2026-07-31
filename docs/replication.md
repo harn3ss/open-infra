@@ -97,6 +97,79 @@ replication **lag** (events captured but not yet applied), **per-table** event
 counts, and a **dead-letter** panel. (Same view as a Migration; backed by
 `GET /api/replications/{ns}/{name}/status`, which reads JetStream lag + DLQ.)
 
+## Changing a table under multi-master (runbook)
+
+A schema change that is trivial on a single database can silently corrupt a
+multi-master mesh, because every member **applies remote rows to its own copy** of the
+table. Three failure modes drive the whole runbook:
+
+- **A member missing the column/table dead-letters.** If site A writes a row using a new
+  column before site B has it, B's apply-sink can't land the row → it goes to the
+  dead-letter queue and the sites diverge.
+- **A per-site default diverges.** A `DEFAULT now()` / sequence / `AUTO_INCREMENT` is
+  evaluated *independently on each member*, so the "same" replicated row gets a different
+  value on every site — permanent divergence that LWW can't reconcile.
+- **A lost stamping trigger freezes a row.** `mm-prep` installs `mm_stamp_trg`, which
+  advances `_mm_version` on every native write. Some DDL (a table rewrite) drops the
+  trigger; a write with a NULL `_mm_version` is *never* `>` an incoming version, so the row
+  freezes under last-write-wins and drifts.
+
+### The three rules
+
+1. **Receivers before writers.** Apply the change to **every** member and verify it, *then*
+   let any member write rows that use it. Never write the new shape before all members can
+   receive it.
+2. **Deterministic literal defaults only.** `DEFAULT 'active'`, `DEFAULT 0` — never
+   `now()`, `CURRENT_TIMESTAMP`, `nextval`/sequences, `AUTO_INCREMENT`, or
+   `uuid_generate_v4()` on a replicated table. Generate the value **once** in the
+   application (or on a single member) so the concrete value replicates identically.
+3. **Re-verify the stamping trigger last.** After the DDL, confirm `mm_stamp_trg` still
+   exists on the table (and the `_mm_version`/`_mm_origin` columns). `mm-prep` is
+   idempotent — re-run it if there's any doubt; a missing trigger is a silent diverger.
+
+### Add a `NOT NULL` column
+
+Do it in four ordered steps — the classic **nullable → backfill → default → NOT NULL** —
+so no member ever sees a NULL it can't satisfy or a row it can't apply:
+
+1. **Add it `NULL`able on every member.** A nullable column tolerates replicated inserts
+   from a not-yet-migrated writer (the column arrives absent → NULL). A `NOT NULL` add with
+   no default here would reject those inserts.
+2. **Backfill on one member** with a deterministic value and let it replicate (the stamping
+   trigger versions the backfill; LWW carries it to the others). Don't backfill the same
+   rows on multiple members concurrently — that's a needless conflict storm.
+3. **Add a literal default** for future inserts (`DEFAULT '<value>'`) — deterministic only.
+4. **Set `NOT NULL` on every member** — only once the backfill has fully propagated (lag at
+   zero, no dead letters), so no member still holds a NULL.
+
+Then verify `mm_stamp_trg` (rule 3) and resume writes.
+
+### Add a table
+
+- **`kind: Replication`** does *not* auto-create tables. Create the table on **all** members
+  with the **same primary key**, run `mm-prep` against each (or writes won't be stamped),
+  then begin writing.
+- **`kind: DataFlow` with `spec.autoSyncTables`** does this for you: the reconciler
+  auto-creates the table cross-engine and `mm-prep`s it on every member. Caveat: a table
+  that already holds rows on one member needs an **incremental snapshot** to backfill those
+  pre-existing rows to the others — `autoSyncTables` wires up new writes, not history.
+
+### Drop a column / rename
+
+- **Drop:** reverse the order — stop writing *and* reading the column on all members first,
+  then drop it everywhere. Dropping while a remote row in flight still carries that column
+  makes the apply fail.
+- **Rename:** don't rename in place (to CDC it's an incompatible drop+add, and it disturbs
+  the trigger/columns). Instead: add the new column → backfill → switch the app → drop the
+  old one, each step following the rules above.
+
+### Cross-engine
+
+On a heterogeneous mesh (e.g. Postgres + MySQL + SQL Server), only add columns whose type
+has a clean cross-engine mapping, and mind the `DATE`/`timestamp` coercion rules (see
+[`convergence-harness.md`](convergence-harness.md)). Never hand-edit `_mm_version` /
+`_mm_origin` — they are owned by `mm-prep` and the stamping trigger.
+
 ## Notes & limits
 
 - **CDC prerequisites** (same as [Migrations](migrations.md)): Postgres
