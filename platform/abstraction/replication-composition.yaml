@@ -37,6 +37,7 @@ spec:
             {{- $vcol := $spec.versionColumn | default "_mm_version" }}
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
             {{- $tables := $spec.tables }}
+            {{- $sched := $spec.scheduling | default dict }}
             {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
             {{- range $pair := (list (dict "src" $spec.siteA "dst" $spec.siteB) (dict "src" $spec.siteB "dst" $spec.siteA)) }}
             {{-   $src := $pair.src }}{{- $dst := $pair.dst }}
@@ -153,6 +154,12 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-dbz } }
                       spec:
+                        {{- if $sched.nodeSelector }}
+                        nodeSelector:{{ toYaml $sched.nodeSelector | nindent 26 }}
+                        {{- end }}
+                        {{- if $sched.tolerations }}
+                        tolerations:{{ toYaml $sched.tolerations | nindent 26 }}
+                        {{- end }}
                         securityContext: { fsGroup: 185 }
                         initContainers:
                           - name: ensure-stream
@@ -230,6 +237,12 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink } }
                       spec:
+                        {{- if $sched.nodeSelector }}
+                        nodeSelector:{{ toYaml $sched.nodeSelector | nindent 26 }}
+                        {{- end }}
+                        {{- if $sched.tolerations }}
+                        tolerations:{{ toYaml $sched.tolerations | nindent 26 }}
+                        {{- end }}
                         containers:
                           - name: apply-sink
                             image: {{ $img }}

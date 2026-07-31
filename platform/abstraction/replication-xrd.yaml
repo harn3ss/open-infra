@@ -82,6 +82,18 @@ spec:
                   type: string
                   default: "_mm_origin"
                   description: "Origin-marker column added by mm-prep and used for loop prevention + LWW tiebreak."
+                scheduling:
+                  type: object
+                  description: "Optional pod placement for the replication engine pods (apply-sink + Debezium). Its purpose is the chaos suite: pin the disposable sandbox mesh onto dedicated, tainted chaos nodes so a fault never lands on production hardware. Empty (the default) = schedule anywhere, unchanged behavior."
+                  properties:
+                    nodeSelector:
+                      type: object
+                      additionalProperties: { type: string }
+                    tolerations:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
             status:
               type: object
               properties:
