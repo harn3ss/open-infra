@@ -46,26 +46,103 @@ or dangerous capabilities are opt-in:
 A **hardened deployment profile** (see *Roadmap*) extends this: no Chaos Mesh install, RBAC
 that withholds `FaultInjection`, no `AUTH_MODE=none`, and the experimental tier disabled.
 
-## NIST 800-53 control-family mapping
+## NIST 800-53 control mapping
+
+Control-level implementation statements for the families open-infra implements. This is a
+**control-implementation summary, not an SSP** — an operator's System Security Plan (with its
+authorization boundary, inherited controls, and organizational controls) is the authoritative
+artifact; this shows what the platform provides toward it.
 
 Status legend: **Implemented** (shipped and exercised) · **Partial** (core in place, hardening
-tracked) · **Operator** (the deployment must supply/configure it).
+tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** (planned).
 
-| Family | open-infra capability | Status |
-|--------|------------------------|--------|
-| **AC — Access Control** | `kind: User`/`Group` account management; RBAC enforced via Kubernetes impersonation; `kind: Policy`/`Role` with a permission boundary + impersonation ceiling; least-privilege service identities (scoped MinIO/query users, non-root pods) | Implemented |
-| **AU — Audit & Accountability** | API-server audit log (`RequestResponse` for IAM/RBAC/`openinfra.dev` writes) shipped to Loki, person-attributed via `impersonatedUser`; console **Audit** view; console IAM actions logged with the acting human | Implemented (retention/off-site/tamper-evidence: Partial → Roadmap) |
-| **IA — Identification & Authentication** | `AUTH_MODE` local / LDAP / OIDC; signed sessions; k8s-impersonated identities namespaced as `openinfra:<user>` | Implemented (OIDC backend + MFA delegated to the IdP: Partial/Operator) |
-| **SC — System & Communications Protection** | Cilium NetworkPolicy (default-deny + `kind: SecurityGroup`); per-workload network sandboxes (Query egress allow-list); TLS via cert-manager; control-plane/mesh mTLS | Implemented (encryption-at-rest with customer keys: Roadmap) |
-| **CM — Configuration Management** | Declarative GitOps baseline (Argo CD); change control through git review + sync; **drift checkers** (policy-boundary, Argo exclude-list) fail the build on divergence; secure-by-default least functionality | Implemented |
-| **SI — System & Information Integrity** | Prometheus + Loki monitoring/alerting; container images Trivy-scanned + cosign-signed; convergence + chaos suites as integrity evidence | Implemented (file-integrity/SIEM export: Operator) |
-| **CP — Contingency Planning** | Velero (cluster) + Longhorn (volume) backups to MinIO; RDS-style pre-delete snapshots + restore; the **nightly chaos suite** is contingency/resilience *test evidence* (partition, failover, clock-skew, convergence) | Implemented |
-| **CA — Assessment & Continuous Monitoring** | Mechanical correctness: convergence harness + nightly chaos as continuous verification; drift tests as configuration assurance | Partial (evidence pipeline: Roadmap) |
-| **MP — Media Protection** | Crypto-erase data destruction (NIST **SP 800-88**): per-volume/per-DB keys, deletion = destroy key + destruction certificate | Roadmap (#71) |
-| **RA / PL / PS / IR / AT / …** | Risk assessment, planning, personnel, incident response, awareness training | **Operator** — organizational controls outside the platform |
+### AC — Access Control
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| AC-2 Account Management | `kind: User` / `kind: Group` created, disabled, and deleted from the console (Security & Identity) or `kubectl`; a break-glass `root` account for recovery. | Implemented |
+| AC-3 Access Enforcement | Every console action runs as the signed-in user via Kubernetes **impersonation** (`Impersonate-User`/`-Group`); Kubernetes RBAC is the decision point. BFF-native endpoints are gated by a `SubjectAccessReview` first. | Implemented |
+| AC-5 Separation of Duties | Built-in roles (admin / poweruser / readonly) plus `kind: Policy`/`Role` separate identity management, workload management, and read-only access. | Implemented |
+| AC-6 Least Privilege | Policies/Roles grant only within the `openinfra.dev` permission **boundary** (15 workload kinds — never secrets/RBAC); an **impersonation ceiling** caps what the console SA may impersonate; service identities are scoped (per-bucket MinIO users, non-root read-only-rootfs pods, no SA token where unused). | Implemented |
+| AC-6(9) Audit Use of Privileged Functions | IAM/RBAC/`openinfra.dev` writes are captured at `RequestResponse` in the audit log. | Implemented |
+| AC-14 Permitted Actions w/o Auth | None in the hardened posture; `AUTH_MODE=none` (dev only) disables auth and raises a persistent banner. | Implemented (secure default) |
+| AC-17 Remote Access | Console over TLS; public exposure via outbound-only Cloudflare Tunnel (no inbound ports) or WireGuard. | Implemented / Operator |
+
+### AU — Audit & Accountability
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| AU-2 Event Logging | API-server audit policy logs create/update/patch/delete on IAM, RBAC, and `openinfra.dev` resources; read and lease noise is dropped. | Implemented |
+| AU-3 Content of Audit Records | Records carry actor (`impersonatedUser`), verb, resource, timestamp, and response code; privileged writes are captured at **`RequestResponse`** (full request + response body). | Implemented |
+| AU-6 Audit Review & Analysis | Console **Audit** view, filterable by user / resource / time, merging the API-server log with console IAM actions. | Implemented |
+| AU-8 Time Stamps | `requestReceivedTimestamp` on every record. | Implemented |
+| AU-9 Protection of Audit Information | Shipped to Loki off the writable node; hash-chain + signing + WORM object-lock for tamper-evidence is **roadmap**. | Partial |
+| AU-11 / AU-4 Retention & Capacity | Loki retention today; long-term + off-site retention is **roadmap**. | Partial |
+| AU-12 Audit Record Generation | k3s API-server audit log + console `iam:` logs → promtail → Loki. | Implemented |
+
+### IA — Identification & Authentication
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| IA-2 User Authentication | `AUTH_MODE` local (built-in accounts) and LDAP / Active Directory; OIDC is reserved (not yet implemented). | Implemented (OIDC: planned) |
+| IA-2(1)(2) MFA | Delegated to the backing directory (LDAP/AD, or an OIDC IdP when added). | Operator |
+| IA-4 Identifier Management | `kind: User`; console identities are namespaced `openinfra:<user>` so they can never collide with real cluster users. | Implemented |
+| IA-5 Authenticator Management | Local passwords hashed in a Secret; break-glass `root`; directory-backed modes delegate authenticator lifecycle. | Implemented / Operator |
+
+### SC — System & Communications Protection
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| SC-7 Boundary Protection | Cilium CNI with **default-deny** NetworkPolicy + `kind: SecurityGroup`; per-workload egress sandboxes (a Query pod may reach only DNS / MinIO / Trino). | Implemented |
+| SC-8 Transmission Confidentiality/Integrity | TLS on ingress via cert-manager; control-plane and Chaos Mesh use mTLS; managed SQL-Server (Babelfish) enforces `Encrypt=mandatory`. | Implemented |
+| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; **Sealed Secrets** keep secrets encrypted at rest in git. | Implemented |
+| SC-23 Session Authenticity | HMAC-signed session cookie, `HttpOnly` + `Secure` + `SameSite=Lax`, plus a required CSRF header on all mutations. | Implemented |
+| SC-28 Protection at Rest | Relies on the underlying storage today; **customer-managed-key** encryption is **roadmap**. | Partial |
+| SC-5 Denial-of-Service Protection | Cloudflare edge when publicly exposed; dependency DoS CVEs remediated via SI-2. | Partial / Operator |
+
+### CM — Configuration Management
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| CM-2 Baseline Configuration | The entire platform is a declarative GitOps baseline, reconciled continuously by Argo CD. | Implemented |
+| CM-3 Configuration Change Control | Changes land via git (review) and apply only through Argo sync; `selfHeal` reverts out-of-band drift. | Implemented |
+| CM-4 Impact Analysis | CI (`test.yml`: Go race tests + UI typecheck/build) and drift checkers gate changes before merge. | Implemented |
+| CM-5 Access Restrictions for Change | Git plus Kubernetes RBAC restrict who can change configuration. | Implemented / Operator |
+| CM-6 Configuration Settings | Settings are declarative manifests, not imperative host state. | Implemented |
+| CM-7 Least Functionality | Secure-by-default: auth required, fault injection off unless `CHAOS_UI_ENABLED=true`, per-component install toggles, anonymous Grafana reachable only through the authenticated proxy. | Implemented |
+| CM-8 Component Inventory | The Argo app-of-apps is the authoritative, versioned component inventory. | Implemented |
+
+### SI — System & Information Integrity
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| SI-2 Flaw Remediation | Trivy scans every built image and uploads results to GitHub code-scanning; Dependabot opens grouped weekly version-update PRs and security PRs on demand; CI (including the UI gate) verifies them. | Implemented |
+| SI-3 Malicious Code Protection | Images are Trivy-scanned and **cosign-signed** (keyless / Sigstore); the Babelfish image is patched to 0 fixable CVEs. | Implemented |
+| SI-4 System Monitoring | Prometheus metrics + Loki logs + Alertmanager; platform and per-GPU dashboards. | Implemented |
+| SI-7 Software / Information Integrity | Cosign signatures on images; GitOps means running state derives from reviewed, signed git. | Implemented |
+| SI-10 Information Input Validation | IAM policy statements validated against the resource/verb boundary; CRD schemas validate resource input at admission. | Implemented |
+
+### CP — Contingency Planning
+
+| Control | Implementation | Status |
+|---------|----------------|--------|
+| CP-9 System Backup | Velero (cluster objects) + Longhorn (volume snapshots) to MinIO; RDS-style pre-delete snapshots for databases and VMs. | Implemented |
+| CP-10 Recovery & Reconstitution | Restore from Velero/Longhorn backups and snapshots; KubeVirt live migration for VM node-loss recovery. | Implemented |
+| CP-4 Contingency Plan Testing | The **nightly chaos suite** (partition, primary failover, clock-skew, convergence) is automated contingency-test evidence. | Implemented |
+
+### Partial, roadmap, and operator-supplied
+
+- **CA — Assessment & Continuous Monitoring** — the convergence harness and nightly chaos are
+  continuous verification; a formal control-evidence pipeline is **roadmap**. *(Partial)*
+- **MP-6 Media Sanitization** — crypto-erase per NIST **SP 800-88** (per-volume/DB keys;
+  deletion destroys the key and writes a destruction certificate) is **roadmap** (#71).
+- **RA / PL / PS / IR / AT / CA process controls** — risk assessment, planning, personnel
+  security, incident response, and awareness training are **organizational** controls the
+  operator supplies; the platform provides evidence sources (audit, monitoring), not the
+  programs themselves.
 
 For contractors handling **Controlled Unclassified Information (CUI)**, **NIST SP 800-171** is
-the lighter-weight cousin; the AC/AU/IA/SC/CM/SI coverage above maps directly onto its
+the lighter-weight cousin; the AC/AU/IA/SC/CM/SI statements above map directly onto its
 requirement families.
 
 ## Roadmap — the government feature track
