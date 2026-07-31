@@ -32,7 +32,7 @@ jobs:
     runs-on: [self-hosted, openinfra-chaos]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Scenario — ${{ github.event.inputs.scenario || 'partition' }}
         # KUBECONFIG (scoped chaos-runner) + Go/kubectl on PATH come from the runner's
@@ -70,7 +70,7 @@ jobs:
 
       - name: Retain artifacts on red
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chaos-artifacts-${{ github.run_id }}
           path: |
