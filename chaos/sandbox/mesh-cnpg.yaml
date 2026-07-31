@@ -25,3 +25,9 @@ spec:
     passwordSecretRef: { name: cnpg-app-creds, key: password }
     schema: public
   tables: [conv_test]
+  # Segmentation: run the mesh engine pods (apply-sink + Debezium) only on the dedicated,
+  # tainted chaos nodes, so a chaos fault never lands on production hardware.
+  scheduling:
+    nodeSelector: { openinfra.dev/chaos: "true" }
+    tolerations:
+      - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }

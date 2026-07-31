@@ -35,6 +35,10 @@ spec:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: 500m, memory: 512Mi }
   affinity:
+    # Pin onto the dedicated, tainted chaos nodes (segmentation — see docs/chaos-oracle.md).
+    nodeSelector: { openinfra.dev/chaos: "true" }
+    tolerations:
+      - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
     enablePodAntiAffinity: true
     podAntiAffinityType: preferred # sandbox: don't wedge on a small/odd node count
 ---
@@ -63,5 +67,9 @@ spec:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { cpu: 500m, memory: 512Mi }
   affinity:
+    # Pin onto the dedicated, tainted chaos nodes (segmentation — see docs/chaos-oracle.md).
+    nodeSelector: { openinfra.dev/chaos: "true" }
+    tolerations:
+      - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
     enablePodAntiAffinity: true
     podAntiAffinityType: preferred
