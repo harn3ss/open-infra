@@ -5,10 +5,11 @@ zero raw Kubernetes authored by you.
 
 ## 0. Prerequisites
 
-- One or more Linux boxes (a single box is fine for `dev` mode). Commodity
-  hardware is the target — a NUC, an old server, a spare desktop.
+- One or more Linux nodes (a single node is fine for `dev` mode). Commodity
+  x86-64 hardware is the target — a single node up to a small pool of servers.
 - A non-root user with `sudo`, and `curl`.
-- For **dev mode**: nothing else. DNS is magic (sslip.io) and TLS is self-signed.
+- For **dev mode**: nothing else — DNS resolves automatically via sslip.io and TLS
+  is self-signed.
 - For **prod mode**: a small pool of spare LAN IPs reserved outside DHCP (for
   MetalLB), and optionally a domain on Cloudflare for public access.
 

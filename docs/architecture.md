@@ -91,7 +91,7 @@ durable state to ephemeral, bursty compute invites data-loss and connection-stor
 problems). `spec.gpu` makes a function GPU-backed and frees the GPU when idle.
 Details: [`docs/serverless.md`](serverless.md).
 
-## Storage tiering (read this twice)
+## Storage tiering
 
 - **Fast local NVMe (RWO)** via k3s `local-path` for **databases** and, by default, **VM root
   disks** — fastest, but node-pinned (HA for DBs comes from replication, not the storage layer).
@@ -99,12 +99,12 @@ Details: [`docs/serverless.md`](serverless.md).
   (`spec.highAvailability` → `longhorn-migratable`, RWX block, for node-loss recovery + live
   migration). Longhorn survives a node loss; local-path does not.
 - **NAS-backed RWX** (SMB/NFS subdir provisioner) for shared/bulk volumes only.
-- **Never put a database on CIFS/NFS** — corruption and latency hell.
+- **Never put a database on CIFS/NFS** — it invites data corruption and unacceptable latency.
 
 ## Public edge & connectivity
 
-The cluster typically runs behind residential NAT with no stable public IP. To
-serve the internet without port-forwarding:
+Where the cluster runs behind NAT with no stable public IP — as the reference cluster
+does — it can still serve the internet without port-forwarding:
 
 ```
    public user ──► Cloudflare edge (DNS + TLS + WAF)
@@ -125,8 +125,8 @@ serve the internet without port-forwarding:
   `*.apps.yourdomain` certs for end-to-end TLS.
 - **Lightsail + WireGuard** is the advanced tier for raw TCP/UDP that a tunnel
   won't carry, plus an always-on anchor for the public docs/demo. Keep it thin —
-  it's the only paid box.
+  it is the sole always-on public node and the only paid component.
 
-Two documented paths: **(a)** zero-config local/LAN with magic DNS for trying it
-out, and **(b)** the Cloudflare-Tunnel public path for real internet exposure
+Two documented paths: **(a)** zero-config local/LAN with wildcard DNS (sslip.io) for
+evaluation, and **(b)** the Cloudflare-Tunnel public path for real internet exposure
 without a static IP.
