@@ -108,12 +108,13 @@ the product's public contract.
 - Enabled **Dependabot version updates** (Go / npm / Actions, grouped) and added a **UI
   typecheck+build CI gate** so console dependency bumps can no longer merge unverified.
 
-> **Note — nightly-chaos graduation clock.** The `apply-sink` driver + toolchain bumps are a
-> change to the system under test (the convergence oracle runs `apply-sink`). Per the same
-> test used for the 2026-07-23 night (did the change land on the SUT or the harness?), a
-> data-path bump **re-epochs** the 30-green-night clock; the `client-go` bump (console-only)
-> does not. The graduation record must count green nights **from the apply-sink bump**, not
-> across it.
+> **Note — nightly-chaos graduation clock: NOT re-epoched.** The nightly convergence oracle
+> runs Postgres (`pg-a`/`pg-b` + CNPG) via the **pgx** driver. This bump changed the **MySQL
+> and SQL Server** drivers (`go-sql-driver/mysql`, `go-mssqldb`), which the nightly runs do
+> not exercise (no MySQL/SQL-Server members), and left **pgx unchanged**. So by the
+> SUT-vs-harness test used for the 2026-07-23 night, the change did **not** land on the
+> nightly system under test — the 30-green-night clock stands. (The separate, one-time 3-way
+> PG + MySQL + SQL Server ring validation *does* rest on these drivers and should be re-run.)
 
 ## v2.5.0 — 2026-07-22
 
