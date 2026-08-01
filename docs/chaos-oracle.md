@@ -88,10 +88,14 @@ exactly one:
   that the measured property stays within an SLO **throughout** the window, then returns to full
   health. Availability (a web service surviving a replica loss) is here.
 
-(A third mode, `deny` — a negative invariant, e.g. a SecurityGroup must *refuse* cross-tenant
-access — is anticipated but not yet built.) The modes share the verdict vocabulary
-(GREEN/RED/INCONCLUSIVE) and the proof-of-fire discipline; they differ only in *when* the property
-is evaluated.
+- **`deny` (negative invariant)** — a thing that must NEVER happen, verified continuously with
+  **zero tolerance** (unlike `tolerate`'s SLO, which permits a small breach). A security fence may
+  not leak, not once. Cross-tenant isolation (a SecurityGroup that must *refuse* a connection) is
+  here.
+
+The three modes share the verdict vocabulary (GREEN/RED/INCONCLUSIVE) and the proof-of-fire
+discipline; they differ only in *when* and *how* the property is evaluated (after heal / continuous
+SLO / continuous zero-tolerance).
 
 ### The adapters that ship today
 
@@ -100,17 +104,25 @@ is evaluated.
 | **replication** (convergence) | recover | symmetric — every peer agrees | all members byte-identical after heal | `convergence_test.go` |
 | **migration** (fidelity) | recover | asymmetric — one-way source → target | target reflects every acked source row | `migration_test.go` |
 | **availability** | tolerate | HA service survives instance loss | HTTP success rate ≥ SLO *during* the fault | `scenario-app-availability.sh` |
+| **security-deny** | deny | egress fence never leaks | locked client reaches svc-forbidden **0** times while it churns | `scenario-security-deny.sh` |
 
 The migration adapter was the first **non-convergence** oracle (proving the runner is a contract,
-not a replication harness — it dropped on with zero runner changes). The availability adapter is
-the first **non-conservation** oracle, proving the framework spans *modes*, not just workloads: its
-prober runs **in-cluster** because the Application's own NetworkPolicy correctly denies off-cluster
-ingress (a host-side prober is blocked by Cilium) — the fence working is part of what the oracle
-witnesses. All three are proven live, and each is proven to **fail loud**: convergence RED on
-non-convergence (40% loss brownout), migration RED if the target loses rows, availability RED on a
-genuine outage (all replicas killed → 87% < 90% SLO, failure streak 5) while GREEN on a survivable
-single-replica kill (100%, streak 0). See [`chaos/scenario-migration.sh`](../chaos/scenario-migration.sh)
-and [`chaos/scenario-app-availability.sh`](../chaos/scenario-app-availability.sh).
+not a replication harness — it dropped on with zero runner changes). The availability adapter is the
+first **non-conservation** oracle, and the security-deny adapter completes the three-mode set. All
+four are proven live, and each is proven to **fail loud** — the suite's prime directive, since an
+oracle that only prints green is worthless:
+
+- **convergence** — RED on non-convergence (40% loss brownout); GREEN through a partition.
+- **migration** — RED if the target loses rows; GREEN through an apply-sink kill (300 units, zero lost).
+- **availability** — RED on a genuine outage (all replicas killed → 87% < 90% SLO, streak 5); GREEN
+  on a survivable single-replica kill (100%, streak 0).
+- **security-deny** — RED when the fence leaks (an unlocked client reaches svc-forbidden 15/15);
+  GREEN when the fence holds (0 breaches across 45 probes while svc-forbidden churns).
+
+The availability and deny probers run **in-cluster** because the Application's own NetworkPolicy
+correctly denies off-cluster ingress (a host-side prober is blocked by Cilium) — the fence working
+is itself part of what those oracles witness. See the scenarios under [`chaos/`](../chaos/):
+`scenario-migration.sh`, `scenario-app-availability.sh`, `scenario-security-deny.sh`.
 
 ## Expectation moves with magnitude (the subtle part)
 
