@@ -105,6 +105,7 @@ SLO / continuous zero-tolerance).
 | **migration** (fidelity) | recover | asymmetric — one-way source → target | target reflects every acked source row | `migration_test.go` |
 | **availability** | tolerate | HA service survives instance loss | HTTP success rate ≥ SLO *during* the fault | `scenario-app-availability.sh` |
 | **security-deny** | deny | egress fence never leaks | locked client reaches svc-forbidden **0** times while it churns | `scenario-security-deny.sh` |
+| **stream-noloss** | recover | CDC stream drops no events | cdc-evt message count ≥ driven changes after a capture kill | `scenario-stream-noloss.sh` |
 
 The migration adapter was the first **non-convergence** oracle (proving the runner is a contract,
 not a replication harness — it dropped on with zero runner changes). The availability adapter is the
@@ -118,6 +119,12 @@ oracle that only prints green is worthless:
   on a survivable single-replica kill (100%, streak 0).
 - **security-deny** — RED when the fence leaks (an unlocked client reaches svc-forbidden 15/15);
   GREEN when the fence holds (0 breaches across 45 probes while svc-forbidden churns).
+- **stream-noloss** — RED on a count shortfall (fewer events on cdc-evt than source changes =
+  dropped events); GREEN when the restarted capture drains every change from its durable offset
+  (all 151 events after a kill). The gate is the JetStream message *count*, not a body read-back:
+  reading N message bodies through the nats CLI (a fresh connection per `stream get`) under-returns
+  past a few dozen and is unreliable, whereas the stream's count is exact O(1) metadata; a
+  durable-slot capture cannot lose a committed change, so count ≥ driven == nothing dropped.
 
 The availability and deny probers run **in-cluster** because the Application's own NetworkPolicy
 correctly denies off-cluster ingress (a host-side prober is blocked by Cilium) — the fence working
