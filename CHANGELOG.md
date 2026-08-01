@@ -110,6 +110,21 @@ the product's public contract.
     classifies `up`/`slow`/`down`, so one probe witnesses both cuts and degrades — a degraded
     link an up/down probe would have misread as "up = no fault fired." This completes the
     magnitude axis: cut → total isolation → latency → loss → flapping.
+- **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
+  for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
+  distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of
+  pg-b's volume mid-write and asserts the volume degrades-but-survives, the DB stays queryable
+  off the surviving replica, the mesh converges with zero lost writes, and Longhorn rebuilds to
+  healthy. Production storage is fenced off the chaos nodes (`allowEmptyNodeSelectorVolume: false`
+  + node tags), proven both directions. *(Shaken out live as admin; not yet nightly-wired — that
+  needs a deliberately-scoped `longhorn-system` RBAC grant, since deleting a replica is a
+  cross-namespace privileged action.)*
+- **`io-latency` is a confirmed permanent dead end (cgroup v1 ↔ kubelet).** Booting the chaos
+  nodes to cgroup v1 (to give Chaos Mesh's FUSE injector the `devices` controller it needs) was
+  tried and reverted: **this k3s's kubelet refuses to run on cgroup v1**, so the nodes went
+  NotReady. io-latency needs cgroup v1; the kubelet needs cgroup v2 — mutually exclusive. It
+  stays disabled and should be dropped from the `FaultInjection` XRD enum; Scenario 5's purpose
+  is now served by real replica-loss instead.
 - **`io-latency` FaultInjection root-caused (still inert).** Re-tested after the cert freeze;
   it is **not** cert drift — it's a cgroup-v2 incompatibility: Chaos Mesh 2.7.2's
   `fusedev.GrantAccess` wants a legacy cgroup-v1 `devices` controller, so on a unified-v2 host

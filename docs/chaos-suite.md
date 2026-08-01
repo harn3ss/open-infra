@@ -83,9 +83,10 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 2. **`clock-skew`** — the T6 regression via an injectable clock offset (not TimeChaos). *(shipped + validated live: HLC stayed monotonic — Δ=1 — under a −1h backward clock instead of dropping ~2.4×10¹¹)*
 3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive. *(shipped + validated live: sink pod killed mid-write, mesh still converged with zero lost writes)*
 4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion. *(shipped + validated live: promoted cnpg-b-1→cnpg-b-2 with writes in flight, mesh converged; surfaced the `publication.autocreate.mode` bug below)*
-5. **`longhorn-replica-loss`** — storage degradation; CDC offsets survive. **PARKED — not
-   wired into the nightly**, for two independent reasons (see *Scenario 5 is blocked* below).
-   Not required for graduation.
+5. **`longhorn-replica-loss`** — lose a replica of a sandbox DB's Longhorn volume mid-write;
+   assert degrade-but-survive + rebuild + zero lost writes. *(mechanism SHIPPED + proven live as
+   admin — `chaos/scenario-storage-replica-loss.sh`; not yet nightly-wired pending a scoped
+   longhorn-system RBAC decision — see below. Not graduation-required.)*
 6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation). *(shipped + validated live: all three landed together, mesh converged in 124s — the cut genuinely bit)*
 
 ### Magnitude variants (Phase 1)
@@ -212,14 +213,23 @@ change is the asterisk an auditor distrusts.
   Scenario 5 (`longhorn-replica-loss`); bidirectional isolation (needs `partitionPeer` to
   accept multiple selectors).
 
-## Scenario 5 is blocked (and why that is the right call)
+## Scenario 5 — storage replica-loss (now runnable; mechanism proven 2026-08-01)
 
-**1. A real Longhorn replica cannot be faulted safely here.** Replicas live in
-`instance-manager` pods in `longhorn-system`, and each hosts replicas for *many* volumes —
-this cluster has **11 real volumes** backing VMs, databases and MinIO. Faulting one would
-degrade real workloads: forbidden by §3 ("nothing the suite does may endanger the cluster")
-and correctly refused by the pre-flight guard. §10 already calls for a **separate validation
-cluster** before scenarios 4–5 touch real storage.
+Formerly blocked for two reasons; the first is now **solved** and the second is **moot**. The
+real replica-loss test runs end-to-end (`chaos/scenario-storage-replica-loss.sh`): provision the
+sandbox DBs on Longhorn, lose a replica of pg-b's volume mid-write, and assert the volume
+degrades-but-survives, the DB stays queryable off the surviving replica, the mesh converges
+byte-identical (zero lost writes), and Longhorn rebuilds to healthy. *(Shaken out live as admin:
+degrade confirmed, converged 22s, rebuilt to 2 replicas across 2 chaos nodes.)*
+
+**1. Faulting a real replica used to be unsafe — now the sandbox has its OWN fault-able
+storage.** Replicas live in `instance-manager` pods in `longhorn-system`, each hosting replicas
+for many *production* volumes, so faulting one degraded real workloads. Resolved by the
+dedicated disposable chaos nodes + a storage fence: the sandbox DBs use the `longhorn-chaos`
+StorageClass (`nodeSelector: chaos`), so their replicas land ONLY on chaos nodes, while
+`allowEmptyNodeSelectorVolume: false` keeps every production (empty-selector) volume OFF those
+tagged nodes. Proven both directions live. Losing a chaos-node replica therefore never touches
+production data — the §3 safety bar is met without a separate cluster.
 
 **2. The safe alternative — `io-latency` — does not actually inject, and now we know
 exactly why.** Degrading the sandbox's *own* Longhorn-backed volume would have answered the
@@ -239,21 +249,30 @@ runs the **unified cgroup-v2 hierarchy** — there is no `/sys/fs/cgroup/devices
 no `/dev/fuse`, `toda` (the FUSE injector) can't mount, so the earlier "Starting toda takes
 too long → kill toda" / `jsonrpc.rs` panic is a *downstream* symptom of this grant failure.
 
-This is a host-level incompatibility, not a config we can flip: fixing it means either a
-Chaos Mesh release whose `GrantAccess` understands cgroup v2, or booting the host back to
-cgroup v1 (`systemd.unified_cgroup_hierarchy=0`) — a bad trade to enable one non-graduation
-scenario, since k3s/containerd and much else assume v2. So **`io-latency` stays disabled on
-this host** and Scenario 5's IO path stays blocked — now for a second, precisely-understood
-reason on top of the real-replica one above.
+**2b. `io-latency` is a confirmed DEAD END — and now moot.** io-latency was only ever a *safe
+stand-in* for faulting storage; with the real replica-loss test above, it isn't needed. And the
+one apparent fix is impossible: booting the chaos nodes to cgroup v1
+(`systemd.unified_cgroup_hierarchy=0`) to restore the `devices` controller was **tried on all
+three (2026-08-01) and reverted** — the devices controller reappeared, but **this k3s's kubelet
+refuses to run on cgroup v1** (`kubelet is configured to not run on a host using cgroup v1`),
+so the nodes went NotReady. io-latency needs cgroup v1; the kubelet needs cgroup v2 — mutually
+exclusive on this Kubernetes version. The only theoretical path left is a Chaos Mesh release
+whose `GrantAccess` speaks cgroup v2. So **`io-latency` stays disabled** (drop it from the XRD
+enum — tracked), but Scenario 5's *purpose* (storage resilience) is now covered by real
+replica-loss, not IO latency.
 
 `kind: FaultInjection` still advertises `io-latency` in its XRD enum, so **any user selecting
 it gets an inert fault that looks applied** (removing it from the enum is a tracked hardening
 follow-up). This was caught only because scenarios assert `AllInjected=True` rather than "the
 object exists" — the weaker check passed it as green.
 
-The script + fault manifest are kept (`chaos/scenario-storage.sh`) for when either blocker
-clears, but shipping it nightly would mean a permanently-red scenario — which violates the
-"zero unexplained reds" bar as surely as a false green does.
+**Remaining gap before nightly automation (the one safety-sensitive piece):** the scenario
+deletes a `replicas.longhorn.io` in `longhorn-system` — outside the sandbox namespace. It's
+proven runnable *as admin*, but granting the sandbox-scoped `chaos-runner` broad delete on
+Longhorn replicas would let a bug reach *production* replicas, violating the blast-radius model.
+So it is **not yet wired into the nightly**: the fault mechanism is proven, but automating it
+needs a deliberately-scoped grant (or a narrower fault primitive) — a decision to make, not to
+sneak in via a broad RBAC rule. Until then it runs on demand as admin.
 
 ## Backlog — Scenario 7: the Chaos Lottery
 

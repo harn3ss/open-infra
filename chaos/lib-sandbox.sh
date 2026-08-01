@@ -12,10 +12,12 @@ log() { echo "▸ $*"; }
 sandbox_provision() {
   # Abort INCONCLUSIVE (not red) if the cluster lacks headroom to run the sandbox.
   "$HERE/preflight-capacity.sh"
-  log "provisioning sandbox members"
-  kubectl apply -f "$HERE/sandbox/members.yaml"
-  kubectl -n "$NS" rollout status statefulset/pg-a --timeout=120s
-  kubectl -n "$NS" rollout status statefulset/pg-b --timeout=120s
+  log "provisioning sandbox members (${MEMBERS_MANIFEST:-members.yaml})"
+  # Scenarios override MEMBERS_MANIFEST to swap the storage backing (e.g. members-longhorn.yaml
+  # puts the DBs on the longhorn-chaos StorageClass for the storage replica-loss scenario).
+  kubectl apply -f "$HERE/sandbox/${MEMBERS_MANIFEST:-members.yaml}"
+  kubectl -n "$NS" rollout status statefulset/pg-a --timeout="${MEMBERS_ROLLOUT_TIMEOUT:-120s}"
+  kubectl -n "$NS" rollout status statefulset/pg-b --timeout="${MEMBERS_ROLLOUT_TIMEOUT:-120s}"
 
   log "seeding conv_test on both members"
   for m in pg-a pg-b; do
@@ -120,8 +122,11 @@ sandbox_teardown() {
   if [ "${CHAOS_KEEP:-0}" != "1" ]; then
     log "tearing down sandbox members + mesh"
     kubectl -n "$NS" delete -f "$HERE/sandbox/mesh.yaml" --ignore-not-found >/dev/null 2>&1 || true
-    kubectl -n "$NS" delete -f "$HERE/sandbox/members.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/${MEMBERS_MANIFEST:-members.yaml}" --ignore-not-found >/dev/null 2>&1 || true
     # sweep the engine's composed mm-prep Jobs (not GC'd with the Replication claim)
     kubectl -n "$NS" delete jobs --all --ignore-not-found >/dev/null 2>&1 || true
+    # StatefulSet volumeClaimTemplate PVCs are NOT deleted with the StatefulSet — sweep them so
+    # the Longhorn-backed variant doesn't leak volumes on the chaos nodes across runs.
+    kubectl -n "$NS" delete pvc -l app=pg --ignore-not-found >/dev/null 2>&1 || true
   fi
 }
