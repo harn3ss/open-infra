@@ -118,8 +118,10 @@ secondary guard; the probe is the primary proof-of-fire.
    its per-magnitude expectation and prove the oracle catches a known-bad seed before it counts.
    ✅ *(shipped so far: **flapping** — `scenario-partition-flapping.sh`, converges after
    repeated cut/heal with ≥1 cut confirmed live; **latency degrade** — `scenario-partition-latency.sh`,
-   converges byte-identical under sustained 800ms with the handshake confirmed `slow`. Both
-   shaken out live off-gate before folding in.)*
+   converges byte-identical under sustained 800ms with the handshake confirmed `slow`;
+   **total isolation** — `scenario-partition-isolation.sh`, both members diverge under a
+   whole-mesh cut and reconverge byte-identical (126s, cut confirmed `down`). All shaken out
+   live off-gate before folding in.)*
 
 ## Magnitude axis — per-magnitude expectations (Phase 1)
 
@@ -138,7 +140,7 @@ eventually, so sustained divergence under a degrade is a **real bug**, not a tol
 | Magnitude | Fault (`FaultInjection`) | Proof-of-fire (independent witness) | Mid-fault expectation | Post-heal |
 |-----------|--------------------------|-------------------------------------|-----------------------|-----------|
 | **One-directional cut** *(current)* | `network-partition`, `partitionPeer: a-b-sink`, `direction: both` — cuts a→b apply only | `probe up|down` (TCP to `pg-b:5432` from sink netns) | B misses A's writes; **divergence EXPECTED** (b→a still flows, so A stays whole) | converge |
-| **Total isolation** *(harsher)* | same, cutting **both** `a-b-sink` **and** `b-a-sink` — needs `partitionPeer` to accept a list *(abstraction enhancement)* | probe both sink→DB links = down | B fully isolated; **divergence EXPECTED** (both sides diverge) | converge |
+| **Total isolation** *(harsher — current)* | `network-partition`, `partitionPeer: {openinfra.dev/replication: <name>}` — cuts pg-b from its **whole** mesh at once: the inbound `a-b-sink→B` **and** the outbound `b-dbz→B` links (the other rules it adds are harmless no-ops — those pods talk to pg-a) | `probe down` (the a-b-sink↔B link, one of the two cut, is the witness) | B fully isolated; **divergence EXPECTED both sides** (B misses A's writes *and* A misses B's) | converge |
 | **% packet loss** *(degrade)* | `network-loss`, `loss: "40"`, same peer | **statistical**: N connects from sink netns, expect a *fraction* to fail (not 0, not all) → loss is biting | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
 | **Latency / jitter** *(degrade — current)* | `network-latency`, `latency: "800ms"`, `direction: both`, `partitionPeer: a-b-sink` (the peer `target` is what makes `both` legal) | `probe slow` — timed handshake from sink netns elevated to ~1.6s (≫ baseline ~0s) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
 | **Flapping** *(intermittent — current)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
@@ -146,8 +148,11 @@ eventually, so sustained divergence under a degrade is a **real bug**, not a tol
 ### Build increments (each: build → un-gated shakedown → prove fail-loud → fold in)
 
 - **Cuts reuse the proven probe.** Total-isolation and flapping use the existing up/down
-  `probe-partition.sh` unchanged — total-isolation needs a small `partitionPeer`-list
-  enhancement to the FaultInjection XRD; flapping is a scenario loop. Lowest-risk next.
+  `probe-partition.sh` unchanged. Both are **done**: flapping is a scenario loop; total-isolation
+  needed **no** `partitionPeer`-list enhancement after all — the mesh pods share an
+  `openinfra.dev/replication` label, so one peer selector cuts pg-b from its whole mesh. (That
+  required fixing a latent omission: the label was on the Deployment metadata but not the pod
+  template, so Chaos Mesh/NetworkPolicy — which select pods — couldn't see it.)
 - **Degrades need a new witness.** `latency`'s RTT witness is **done**: `probe-partition.sh`
   now times the handshake and classifies `slow` (a degraded-but-connected link an up/down probe
   would have misread as "up = no fault fired"); shaken out live up→slow→down. It also required

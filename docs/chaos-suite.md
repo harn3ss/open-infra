@@ -103,6 +103,12 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
   floor). Proof-of-fire is the timed handshake reading `slow` (~1.6s), not `down`. *(shipped +
   validated live: converged byte-identical — 220 keys / 20 conflicts / zero lost — under
   sustained 800ms, ~4× slower apply path.)*
+- **`partition-isolation`** — harsher cut: severs site B from its **whole** mesh at once (both
+  the inbound a-b-sink→B and the outbound b-dbz→B links, via the shared `openinfra.dev/replication`
+  label), so **both** members diverge and both must reconverge — vs the default partition's
+  one-sided cut. Same `down` proof-of-fire and `MIN_ELAPSED` floor as the partition (it's a
+  cut). *(shipped + validated live: both diverged, reconverged byte-identical in 126s, cut
+  confirmed `down`.)*
 
 ## Run it
 
@@ -115,6 +121,7 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
 ./chaos/scenario-concurrent.sh   # GRADUATION: capture-kill + partition + sink-kill at once
 ./chaos/scenario-partition-flapping.sh  # magnitude: repeated cut/heal, converge after it stops
 ./chaos/scenario-partition-latency.sh   # magnitude: 800ms degrade, must keep converging (no MIN_ELAPSED)
+./chaos/scenario-partition-isolation.sh # magnitude: cut B from its whole mesh, both sides diverge + reconverge
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
 

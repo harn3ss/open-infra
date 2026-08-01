@@ -152,7 +152,7 @@ spec:
                     strategy: { type: Recreate }
                     selector: { matchLabels: { app: {{ $name }}-repl-{{ $sname }}-dbz } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-dbz } }
+                      metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-dbz, openinfra.dev/replication: "{{ $name }}" } }
                       spec:
                         {{- if $sched.nodeSelector }}
                         nodeSelector:{{ toYaml $sched.nodeSelector | nindent 26 }}
@@ -241,7 +241,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink } }
+                      metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink, openinfra.dev/replication: "{{ $name }}" } }
                       spec:
                         {{- if $sched.nodeSelector }}
                         nodeSelector:{{ toYaml $sched.nodeSelector | nindent 26 }}
