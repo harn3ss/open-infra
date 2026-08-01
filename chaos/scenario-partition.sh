@@ -35,8 +35,35 @@ sandbox_conv_members
 log "pre-flight guard"
 "$HERE/preflight.sh" "$HERE/sandbox/fault-partition.yaml"
 
+EXIT_INCONCLUSIVE=42   # neither red nor green (the nightly-chaos workflow maps this to a warning)
+
+# Proof-of-fire (oracle pillar 1), part 1: the a→b link must be HEALTHY before the cut —
+# otherwise the mesh isn't ready and nothing this run observes can be trusted.
+log "proof-of-fire: confirming the a→b link is up BEFORE the cut"
+if ! "$HERE/probe-partition.sh" up; then
+  log "INCONCLUSIVE — a→b link not up pre-fault (mesh not ready / probe path broken). Not counting."
+  exit "$EXIT_INCONCLUSIVE"
+fi
+
 log "injecting the partition (90s, time-boxed + pod-scoped)"
 kubectl apply -f "$HERE/sandbox/fault-partition.yaml"
+
+# Proof-of-fire (oracle pillar 1), part 2 — the 07-23 gap: actively confirm the cut BIT,
+# from the mesh's own netns. iptables/ipset take a moment to land, so sample briefly. If the
+# link stays reachable through the window the fault never fired → INCONCLUSIVE, not green.
+log "proof-of-fire: confirming the partition actually cut the a→b link"
+fired=0
+for _ in $(seq 1 6); do
+  if "$HERE/probe-partition.sh" down; then fired=1; break; fi
+  sleep 3
+done
+if [ "$fired" != 1 ]; then
+  log "INCONCLUSIVE — a→b link still reachable during the fault window; the partition did not bite."
+  log "            The oracle refuses to bless a fault that didn't fire. Not counting this night."
+  kubectl -n "$NS" get faultinjection,networkchaos -o wide || true
+  exit "$EXIT_INCONCLUSIVE"
+fi
+log "proof-of-fire OK — the cut is confirmed live."
 
 log "running the convergence harness through the cut"
 START=$(date +%s)
@@ -47,9 +74,10 @@ if ! ( cd "$REPO/apply-sink" && go test -tags convergence -run TestConvergence -
 fi
 ELAPSED=$(( $(date +%s) - START ))
 
-# The partition runs 90s, so converging well inside that window means the cut never bit —
-# the mesh replicated straight through and the run proves nothing. Assert the delay rather
-# than trusting it: a member↔member partition once "passed" in 13s having injected nothing.
+# SECONDARY guard (the active proof-of-fire probe above is now the primary): converging well
+# inside the 90s window is a second signal the cut never bit — the mesh replicated straight
+# through. Assert the delay rather than trusting it: a member↔member partition once "passed"
+# in 13s having injected nothing.
 MIN_ELAPSED="${MIN_ELAPSED:-60}"
 if [ "$ELAPSED" -lt "$MIN_ELAPSED" ]; then
   log "FAIL — converged in ${ELAPSED}s, inside the 90s partition window (expected >=${MIN_ELAPSED}s)."
