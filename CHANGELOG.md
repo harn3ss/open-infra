@@ -92,6 +92,13 @@ the product's public contract.
     800ms, a ~4× slower apply path.)* Required a composition fix: Chaos Mesh rejects a netem
     `delay` with `direction: both` unless a peer `target` block is present, so the FaultInjection
     composition now emits that block for **any** peer-scoped `NetworkChaos`, not just partitions.
+  - **`partition-isolation`** — a harsher cut: severs site B from its **whole** mesh at once
+    (both the inbound a-b-sink→B and the outbound b-dbz→B links), so **both** members diverge
+    and both must reconverge — vs the default partition's one-sided cut. One peer selector does
+    it via the shared `openinfra.dev/replication` label; this surfaced a latent omission —
+    that label was on the replication Deployments' metadata but **not** their pod templates,
+    so Chaos Mesh and NetworkPolicy (which select pods) couldn't see it. Now on the pods.
+    *(shaken out live: both diverged, reconverged byte-identical in 126s, cut confirmed.)*
   - The proof-of-fire probe now **times** the handshake (busybox `time`, 0.01s resolution) and
     classifies `up`/`slow`/`down`, so one probe witnesses both cuts and degrades — a degraded
     link an up/down probe would have misread as "up = no fault fired."
