@@ -117,6 +117,12 @@ the product's public contract.
   its NATS consumer or lose its offset. Both faults are proof-of-fired independently (partition
   via the probe, sink via PodChaos `AllInjected`). *(Shaken out live BOTH orders:
   partition-first converged 62s, sink-first 74s — recovery is heal-order-independent.)*
+- **Chaos axis 3 (fault variety) — first increment: CPU pressure.** `stress-cpu` saturates the
+  a→b apply-sink's CPU (2 workers @100% inside its 1-core cgroup); a degrade like latency/loss,
+  so the mesh must keep converging (no MIN_ELAPSED), proof-of-fire via StressChaos `AllInjected`.
+  *(Shaken out live: injected + converged zero-lost. Honest caveat: the apply-sink is
+  I/O/network-bound, so CPU starvation is a mild stressor for this workload — it confirms
+  resilience but isn't a hard squeeze.)*
 - **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
   for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
   distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of
