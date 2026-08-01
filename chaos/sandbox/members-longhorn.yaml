@@ -1,0 +1,96 @@
+# Nightly Chaos Suite — Scenario 5 (storage replica-loss) members. Identical to members.yaml
+# EXCEPT the DB data lives on the `longhorn-chaos` StorageClass instead of emptyDir: 2 Longhorn
+# replicas per volume, placed (via nodeSelector: chaos + global hard anti-affinity) on two
+# DISTINCT disposable chaos nodes. Losing a chaos node that holds a replica therefore leaves a
+# surviving replica AND a third chaos node for Longhorn to rebuild onto — a real storage-loss
+# test, not data deletion. Production is fenced off these nodes by allowEmptyNodeSelectorVolume.
+#
+# Same labels/pinning as members.yaml, so the mesh + the existing partition faults work unchanged.
+apiVersion: v1
+kind: Secret
+metadata: { name: pg-creds, namespace: chaos-sandbox }
+stringData: { password: chaosbox }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: pg-a, namespace: chaos-sandbox, labels: { app: pg, site: a } }
+spec:
+  selector: { app: pg, site: a }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: pg-b, namespace: chaos-sandbox, labels: { app: pg, site: b } }
+spec:
+  selector: { app: pg, site: b }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: pg-a, namespace: chaos-sandbox, labels: { app: pg, site: a } }
+spec:
+  serviceName: pg-a
+  replicas: 1
+  selector: { matchLabels: { app: pg, site: a } }
+  template:
+    metadata: { labels: { app: pg, site: a } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+          env:
+            - { name: POSTGRES_DB, value: app }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: pg-creds, key: password } } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+          readinessProbe: { exec: { command: [sh, -c, "pg_isready -U app -d app"] }, initialDelaySeconds: 5, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data, labels: { app: pg, site: a } }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: longhorn-chaos
+        resources: { requests: { storage: 2Gi } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: pg-b, namespace: chaos-sandbox, labels: { app: pg, site: b } }
+spec:
+  serviceName: pg-b
+  replicas: 1
+  selector: { matchLabels: { app: pg, site: b } }
+  template:
+    metadata: { labels: { app: pg, site: b } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+          env:
+            - { name: POSTGRES_DB, value: app }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: pg-creds, key: password } } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+          readinessProbe: { exec: { command: [sh, -c, "pg_isready -U app -d app"] }, initialDelaySeconds: 5, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data, labels: { app: pg, site: b } }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: longhorn-chaos
+        resources: { requests: { storage: 2Gi } }
