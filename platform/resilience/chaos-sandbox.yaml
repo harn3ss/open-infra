@@ -13,6 +13,16 @@ metadata:
   labels:
     openinfra.dev/purpose: chaos-sandbox
     # Everything the suite creates lives here; the data under fault is disposable.
+  annotations:
+    # Blast-zone containment, universally: force EVERY pod in this namespace onto the disposable
+    # chaos nodes, whatever kind creates it. The PodNodeSelector plugin injects the nodeSelector;
+    # PodTolerationRestriction injects the toleration for the chaos taint. This lets the sandbox
+    # host realistic multi-resource workloads (Application/Database/Migration/Stream/VM/…) without
+    # a scheduling passthrough in every composition. REQUIRES the two admission plugins enabled in
+    # the k3s server (kube-apiserver-arg in /etc/rancher/k3s/config.yaml — a host-local change,
+    # like the audit args; documented in the chaos-suite memory). Harmless if they're not enabled.
+    scheduler.alpha.kubernetes.io/node-selector: "openinfra.dev/chaos=true"
+    scheduler.alpha.kubernetes.io/defaultTolerations: '[{"key":"openinfra.dev/chaos","operator":"Equal","value":"true","effect":"NoSchedule"}]'
 ---
 # Sandbox pods are the lowest-priority workloads on the cluster: under node pressure
 # they are evicted FIRST, so the GPU workloads and HA VMs are protected by the
