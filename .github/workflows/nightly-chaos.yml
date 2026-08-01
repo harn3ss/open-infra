@@ -16,7 +16,7 @@ on:
       scenario:
         description: "scenario to run"
         type: choice
-        default: partition
+        default: lottery
         options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, lottery]
       keep:
         description: "keep the sandbox up after the run (debug)"
@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Scenario — ${{ github.event.inputs.scenario || 'partition' }}
+      - name: Scenario — ${{ github.event.inputs.scenario || 'lottery' }}
         # KUBECONFIG (scoped chaos-runner) + Go/kubectl on PATH come from the runner's
         # own .env, so the job inherits them — don't override KUBECONFIG here.
         env:
@@ -43,7 +43,7 @@ jobs:
         run: |
           chmod +x chaos/*.sh
           set +e
-          case "${{ github.event.inputs.scenario || 'partition' }}" in
+          case "${{ github.event.inputs.scenario || 'lottery' }}" in
             partition) ./chaos/scenario-partition.sh ;;
             partition-flapping) ./chaos/scenario-partition-flapping.sh ;;
             partition-latency) ./chaos/scenario-partition-latency.sh ;;
