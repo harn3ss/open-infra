@@ -107,7 +107,43 @@ secondary guard; the probe is the primary proof-of-fire.
 ## Build order (Phase 0 → 1)
 
 1. **This table + the proof-of-fire probe for the full partition** — prove all four pillars on
-   the one fault already run, before touching the injector or the draw.
-2. Only then bring up the magnitude axis (partial/asymmetric partitions, %-loss, jittering
-   latency) — and for **each** magnitude, extend this table with its per-magnitude expectation
-   and prove the oracle catches a known-bad seed before it counts.
+   the one fault already run, before touching the injector or the draw. ✅ *(done — the probe
+   is shaken out up→down→up live; see `chaos/probe-partition.sh`, `scenario-partition.sh`.)*
+2. Only then bring up the magnitude axis — and for **each** magnitude, extend this table with
+   its per-magnitude expectation and prove the oracle catches a known-bad seed before it counts.
+
+## Magnitude axis — per-magnitude expectations (Phase 1)
+
+The magnitude dial is where the highest-value bugs live: a clean full failure trips a clean
+failover, but the *limping* zone (a link that's slow or lossy, not dead) is where conflict
+resolution actually breaks. The cost of this axis is **not** injecting the partial fault — the
+`FaultInjection` abstraction already exposes the knobs (`direction`, `loss`, `latency`). The
+cost is that **the oracle's definition of "safe" flips with magnitude**, so each magnitude
+needs its own expectation and its own proof-of-fire. The injector and oracle share the
+fault/magnitude timeline; the oracle grades against the row below.
+
+**The load-bearing distinction:** a *cut* makes mid-fault divergence **expected**; a *degrade*
+(loss/latency) must **not** diverge — a lossy-but-connected link still carries every write
+eventually, so sustained divergence under a degrade is a **real bug**, not a tolerated cut.
+
+| Magnitude | Fault (`FaultInjection`) | Proof-of-fire (independent witness) | Mid-fault expectation | Post-heal |
+|-----------|--------------------------|-------------------------------------|-----------------------|-----------|
+| **One-directional cut** *(current)* | `network-partition`, `partitionPeer: a-b-sink`, `direction: both` — cuts a→b apply only | `probe up|down` (TCP to `pg-b:5432` from sink netns) | B misses A's writes; **divergence EXPECTED** (b→a still flows, so A stays whole) | converge |
+| **Total isolation** *(harsher)* | same, cutting **both** `a-b-sink` **and** `b-a-sink` — needs `partitionPeer` to accept a list *(abstraction enhancement)* | probe both sink→DB links = down | B fully isolated; **divergence EXPECTED** (both sides diverge) | converge |
+| **% packet loss** *(degrade)* | `network-loss`, `loss: "40"`, same peer | **statistical**: N connects from sink netns, expect a *fraction* to fail (not 0, not all) → loss is biting | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
+| **Latency / jitter** *(degrade)* | `network-latency`, `latency: "200ms"`, same peer | **RTT**: connect time from sink netns elevated (≫ baseline) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
+| **Flapping** *(intermittent)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
+
+### Build increments (each: build → un-gated shakedown → prove fail-loud → fold in)
+
+- **Cuts reuse the proven probe.** Total-isolation and flapping use the existing up/down
+  `probe-partition.sh` unchanged — total-isolation needs a small `partitionPeer`-list
+  enhancement to the FaultInjection XRD; flapping is a scenario loop. Lowest-risk next.
+- **Degrades need a new witness.** `%-loss` needs a *statistical* probe (sample many connects,
+  assert a non-trivial failure fraction — a single connect can't witness probabilistic loss),
+  and `latency` needs an *RTT* probe (measure connect time, assert it's elevated). These must
+  be built and shaken out on their own before they count — an up/down probe would falsely read
+  a degraded link as "up = no fault fired" and INCONCLUSIVE every night.
+- **The oracle's reconvergence bound tightens for degrades.** Under a cut, the bound spans the
+  fault window; under loss/latency the mesh should track continuously, so the bound is much
+  tighter and a breach is a real liveness bug — encode that per row, not a single global bound.
