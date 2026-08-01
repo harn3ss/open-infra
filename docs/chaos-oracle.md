@@ -120,8 +120,10 @@ secondary guard; the probe is the primary proof-of-fire.
    repeated cut/heal with ≥1 cut confirmed live; **latency degrade** — `scenario-partition-latency.sh`,
    converges byte-identical under sustained 800ms with the handshake confirmed `slow`;
    **total isolation** — `scenario-partition-isolation.sh`, both members diverge under a
-   whole-mesh cut and reconverge byte-identical (126s, cut confirmed `down`). All shaken out
-   live off-gate before folding in.)*
+   whole-mesh cut and reconverge byte-identical (126s, cut confirmed `down`); **% loss** —
+   `scenario-partition-loss.sh`, converges byte-identical under sustained 15% loss (22s) with a
+   statistical proof-of-fire. That completes the magnitude axis (cut → total isolation →
+   latency → loss → flapping). All shaken out live off-gate before folding in.)*
 
 ## Magnitude axis — per-magnitude expectations (Phase 1)
 
@@ -141,7 +143,7 @@ eventually, so sustained divergence under a degrade is a **real bug**, not a tol
 |-----------|--------------------------|-------------------------------------|-----------------------|-----------|
 | **One-directional cut** *(current)* | `network-partition`, `partitionPeer: a-b-sink`, `direction: both` — cuts a→b apply only | `probe up|down` (TCP to `pg-b:5432` from sink netns) | B misses A's writes; **divergence EXPECTED** (b→a still flows, so A stays whole) | converge |
 | **Total isolation** *(harsher — current)* | `network-partition`, `partitionPeer: {openinfra.dev/replication: <name>}` — cuts pg-b from its **whole** mesh at once: the inbound `a-b-sink→B` **and** the outbound `b-dbz→B` links (the other rules it adds are harmless no-ops — those pods talk to pg-a) | `probe down` (the a-b-sink↔B link, one of the two cut, is the witness) | B fully isolated; **divergence EXPECTED both sides** (B misses A's writes *and* A misses B's) | converge |
-| **% packet loss** *(degrade)* | `network-loss`, `loss: "40"`, same peer | **statistical**: N connects from sink netns, expect a *fraction* to fail (not 0, not all) → loss is biting | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
+| **% packet loss** *(degrade — current)* | `network-loss`, `loss: "15"`, `direction: both`, same peer | **statistical** (`probe-loss.sh`): 20 connects from sink netns; a *fraction* must be impaired (≥0.10) but not all (that'd be a cut) → loss is biting. 15%, not more: throughput falls ~1/√p, so beyond ~20% an established TCP link brown-outs into a de-facto slow cut (40% left B 119 writes behind) | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
 | **Latency / jitter** *(degrade — current)* | `network-latency`, `latency: "800ms"`, `direction: both`, `partitionPeer: a-b-sink` (the peer `target` is what makes `both` legal) | `probe slow` — timed handshake from sink netns elevated to ~1.6s (≫ baseline ~0s) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
 | **Flapping** *(intermittent — current)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
 
@@ -158,9 +160,10 @@ eventually, so sustained divergence under a degrade is a **real bug**, not a tol
   would have misread as "up = no fault fired"); shaken out live up→slow→down. It also required
   a composition fix — a netem `delay` with `direction: both` is rejected by Chaos Mesh unless a
   peer `target` block is present, so the FaultInjection composition now emits that block for any
-  peer-scoped NetworkChaos, not just partitions. `%-loss` still needs a *statistical* probe
-  (sample many connects, assert a non-trivial failure fraction — a single connect can't witness
-  probabilistic loss); build and shake it out on its own before it counts.
+  peer-scoped NetworkChaos, not just partitions. `%-loss` is also **done**: `probe-loss.sh`
+  samples 20 connects and asserts a non-trivial impaired fraction (a single connect can't witness
+  probabilistic loss). Calibrated to 15% — throughput falls ~1/√p, so a higher loss brown-outs
+  the link into a de-facto slow cut, not a degrade (validated: 40% left B 119 writes behind).
 - **The oracle's reconvergence bound tightens for degrades.** Under a cut, the bound spans the
   fault window; under loss/latency the mesh should track continuously, so the bound is much
   tighter and a breach is a real liveness bug — encode that per row, not a single global bound.

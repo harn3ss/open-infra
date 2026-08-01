@@ -1,0 +1,30 @@
+# Magnitude axis — network packet-LOSS degrade (see docs/chaos-oracle.md). Drop 15% of the
+# sink↔B packets in both directions. Like latency this is a *degrade*, not a cut: TCP
+# retransmits carry every write eventually, so the mesh MUST keep converging — sustained
+# divergence under mere loss is a BUG, not a tolerated cut.
+#
+# Peer-scoped to the a→b sink (partitionPeer), mirroring the partition/latency faults: the
+# `target` block narrows the loss to the exact sink↔B apply path AND is what makes
+# `direction: both` legal (Chaos Mesh rejects from|both netem without a target).
+#
+# 15% (not higher) is deliberate: for an ESTABLISHED TCP connection, throughput falls ~1/√p,
+# so beyond ~20% loss the apply link collapses into a de-facto slow cut (validated: 40% left
+# pg-b 119 writes behind after 6min — a throughput brownout, not a safety fault). 15% clearly
+# bites the statistical proof-of-fire (~0.28 of handshakes impaired) while leaving enough
+# throughput that the mesh reconverges within the bound — which is the property under test.
+#
+# Blast radius: chaos-sandbox only (composition scopes the selector; pre-flight guard verifies).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-loss
+  namespace: chaos-sandbox
+spec:
+  type: network-loss
+  target:
+    labelSelector: { app: pg, site: b }
+  partitionPeer: { app: chaos-mesh-pg-repl-a-b-sink }
+  loss: "15"
+  mode: all
+  direction: both
+  duration: 90s

@@ -99,9 +99,17 @@ the product's public contract.
     that label was on the replication Deployments' metadata but **not** their pod templates,
     so Chaos Mesh and NetworkPolicy (which select pods) couldn't see it. Now on the pods.
     *(shaken out live: both diverged, reconverged byte-identical in 126s, cut confirmed.)*
+  - **`partition-loss`** — a *degrade* like latency: drop 15% of the sink↔B packets, mesh must
+    keep converging (no `MIN_ELAPSED`). Proof-of-fire is **statistical** (`probe-loss.sh`:
+    20 handshakes, a non-trivial impaired fraction — a single connect can't witness
+    probabilistic loss). Deliberately calibrated to 15%: TCP throughput falls ~1/√p, so past
+    ~20% an established link brown-outs into a de-facto slow cut — the 40% attempt correctly
+    *failed* to converge (a throughput brownout, not a safety fault), which is why the value is
+    tuned down. *(shaken out live: converged byte-identical in 22s under sustained 15% loss.)*
   - The proof-of-fire probe now **times** the handshake (busybox `time`, 0.01s resolution) and
     classifies `up`/`slow`/`down`, so one probe witnesses both cuts and degrades — a degraded
-    link an up/down probe would have misread as "up = no fault fired."
+    link an up/down probe would have misread as "up = no fault fired." This completes the
+    magnitude axis: cut → total isolation → latency → loss → flapping.
 - **`io-latency` FaultInjection root-caused (still inert).** Re-tested after the cert freeze;
   it is **not** cert drift — it's a cgroup-v2 incompatibility: Chaos Mesh 2.7.2's
   `fusedev.GrantAccess` wants a legacy cgroup-v1 `devices` controller, so on a unified-v2 host

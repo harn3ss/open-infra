@@ -109,6 +109,13 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
   one-sided cut. Same `down` proof-of-fire and `MIN_ELAPSED` floor as the partition (it's a
   cut). *(shipped + validated live: both diverged, reconverged byte-identical in 126s, cut
   confirmed `down`.)*
+- **`partition-loss`** — a *degrade* like latency: drop 15% of the sink↔B packets. The mesh
+  **must keep converging** (TCP retransmits carry every write; sustained divergence is a bug,
+  no `MIN_ELAPSED`). Proof-of-fire is **statistical** (`probe-loss.sh`: 20 handshakes, a
+  non-trivial fraction impaired). 15% not higher: past ~20% an established TCP link brown-outs
+  into a slow cut. *(shipped + validated live: converged byte-identical in 22s under sustained
+  15% loss; the 40% attempt correctly failed to converge — a throughput brownout, which is why
+  the value is calibrated down.)*
 
 ## Run it
 
@@ -122,6 +129,7 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
 ./chaos/scenario-partition-flapping.sh  # magnitude: repeated cut/heal, converge after it stops
 ./chaos/scenario-partition-latency.sh   # magnitude: 800ms degrade, must keep converging (no MIN_ELAPSED)
 ./chaos/scenario-partition-isolation.sh # magnitude: cut B from its whole mesh, both sides diverge + reconverge
+./chaos/scenario-partition-loss.sh      # magnitude: 15% packet-loss degrade, must keep converging (statistical probe)
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
 
