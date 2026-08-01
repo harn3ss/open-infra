@@ -81,6 +81,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/exec] # seed/inspect the ephemeral members via kubectl exec (sandbox only)
     verbs: [create]
+  - apiGroups: [""]
+    # proof-of-fire probe (oracle pillar 1): attach an ephemeral busybox to the a→b sink pod
+    # to witness, from the mesh's own netns, that the partition actually cut the link to pg-b.
+    # Sandbox-scoped; read-only witness, cannot change or destroy anything. See docs/chaos-oracle.md.
+    resources: [pods/ephemeralcontainers]
+    verbs: [get, patch, update]
   - apiGroups: [postgresql.cnpg.io]
     # Scenario 4 provisions disposable CNPG clusters to test a real primary failover.
     # Sandbox-scoped like everything else: the runner cannot touch managed databases
