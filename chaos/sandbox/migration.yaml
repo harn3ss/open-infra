@@ -1,0 +1,34 @@
+# Nightly Chaos Suite — the kind: Migration under test (#4 zero-downtime migration). One-way
+# full-load + CDC from the disposable source (mig-src) into the disposable target (mig-tgt), both
+# in-sandbox. This is the SAME abstraction a user provisions from the console — the suite tests the
+# real product path, not a bespoke rig. tables is pinned to the one probe table so the pipeline
+# stays fast and its capture list is deterministic (the table is pre-created on the source before
+# this CR is applied, so the Debezium snapshot + publication include it).
+#
+# The apply-sink/dbz pods this composes are pinned to the chaos nodes automatically by the
+# chaos-sandbox namespace admission annotation (no per-composition scheduling passthrough) — this
+# is exactly the universal-pinning win that lets the blast zone host the full workload plane.
+apiVersion: openinfra.dev/v1
+kind: Migration
+metadata:
+  name: mig
+  namespace: chaos-sandbox
+spec:
+  mode: full-load-and-cdc
+  source:
+    engine: postgres
+    host: mig-src.chaos-sandbox.svc.cluster.local
+    port: 5432
+    database: app
+    username: app
+    passwordSecretRef: { name: mig-creds }
+    schemas: ["public"]
+  target:
+    engine: postgres
+    host: mig-tgt.chaos-sandbox.svc.cluster.local
+    port: 5432
+    database: app
+    username: app
+    passwordSecretRef: { name: mig-creds }
+    schema: public
+  tables: ["mig_test"]

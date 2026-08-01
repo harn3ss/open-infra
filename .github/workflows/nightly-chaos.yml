@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: lottery
-        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, lottery]
+        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, migration, lottery]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -57,6 +57,7 @@ jobs:
             cnpgfailover) ./chaos/scenario-cnpgfailover.sh ;;
             sinkdrainkill) ./chaos/scenario-sink-drain-kill.sh ;;
             concurrent)   ./chaos/scenario-concurrent.sh ;;
+            migration) ./chaos/scenario-migration.sh ;;
             lottery)   ./chaos/scenario-lottery.sh ;;
             *) echo "unknown scenario"; exit 2 ;;
           esac

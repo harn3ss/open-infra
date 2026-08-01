@@ -2,15 +2,20 @@
 
 package main
 
-// Convergence harness — the "does multi-master actually converge?" test the README's
-// Maturity section calls out as the missing correctness evidence. Point it at the
-// members of a RUNNING multi-master flow; it drives concurrent and deliberately
-// CONFLICTING writes, then asserts every member ends byte-identical: same key set
-// (no lost writes) and the same HLC-winning version+value per key (deterministic
-// last-write-wins). Run it WHILE injecting a fault (kind: FaultInjection
-// network-partition or pod-kill) to prove convergence survives partition / node loss
-// — the harness retries writes through the fault and polls until the mesh re-converges
-// after it heals. See docs/convergence-harness.md.
+// Convergence harness — the REPLICATION adapter of the singular chaos oracle (see
+// oracle_framework.go). It is the "does multi-master actually converge?" evidence the README's
+// Maturity section calls out. Point it at the members of a RUNNING multi-master flow; it drives
+// concurrent and deliberately CONFLICTING writes (the ledger of acknowledged work), then the
+// shared runner asserts every member ends byte-identical — same key set (conservation: no lost
+// writes) and the same HLC-winning version+value per key (deterministic last-write-wins). Run it
+// WHILE injecting a fault (kind: FaultInjection network-partition or pod-kill) to prove
+// convergence survives partition / node loss — the driver retries writes through the fault and
+// the runner polls until the mesh re-converges after it heals. See docs/convergence-harness.md.
+//
+// This is the FIRST adapter, and its correctness contract is the symmetric one: every member must
+// agree. The migration adapter (migration_test.go) is the asymmetric counterpart. Behaviour here
+// is unchanged from the original monolithic harness — only the verdict/poll machinery moved to the
+// shared runner — because this test drives the 30-night graduation clock.
 //
 // Opt-in (build tag `convergence`, skips without CONV_MEMBERS):
 //   CONV_MEMBERS='[{"name":"pg-a","engine":"postgres","dsn":"...","site":"a","schema":"public"},
@@ -41,15 +46,32 @@ func TestConvergence(t *testing.T) {
 	if len(members) < 2 {
 		t.Fatalf("need >= 2 members, got %d", len(members))
 	}
+	runOracle(t, newReplicationOracle(t, members))
+}
 
+// replicationOracle is the multi-master correctness contract: symmetric peers that must all end
+// byte-identical. It implements Oracle — Drive races conflicting writes, SteadyState checks
+// all-identical, Reconcile checks no expected key was lost.
+type replicationOracle struct {
+	members []*reconcileMember
+	vcol    string
+	pk      string
+	nKeys   int
+	nConf   int
+	settle  time.Duration
+	qt      func(m *reconcileMember) string
+	writers map[*reconcileMember]func(q string, args ...any) error
+
+	// lastSnap caches the most recent full sample so Reconcile can inspect the SETTLED state
+	// SteadyState just validated, rather than re-querying and racing further replication.
+	lastSnap map[string]map[string][2]string
+}
+
+func newReplicationOracle(t *testing.T, members []*reconcileMember) *replicationOracle {
 	vcol := env("VERSION_COLUMN", "_mm_version")
 	ocol := env("ORIGIN_COLUMN", "_mm_origin")
 	table := env("CONV_TABLE", "public.conv_test")
 	pk := env("CONV_PK", "id")
-	nKeys := atoiEnv("CONV_KEYS", 200)
-	nConf := atoiEnv("CONV_CONFLICTS", 20)
-	settle := time.Duration(atoiEnv("CONV_SETTLE", 8)) * time.Second
-	timeout := time.Duration(atoiEnv("CONV_TIMEOUT", 120)) * time.Second
 
 	srcSchema, tbl := "public", table
 	if i := strings.IndexByte(table, '.'); i >= 0 {
@@ -68,10 +90,9 @@ func TestConvergence(t *testing.T) {
 		t.Cleanup(func() { db.Close() })
 	}
 
-	// Optionally create + mm-prep the dedicated (id, val) table on every member. The
-	// running flow must CAPTURE it (capture-all CDC / autoSyncTables) for writes to
-	// replicate — otherwise point CONV_TABLE at a table already in the flow that has
-	// (id, val) columns.
+	// Optionally create + mm-prep the dedicated (id, val) table on every member. The running flow
+	// must CAPTURE it (capture-all CDC / autoSyncTables) for writes to replicate — otherwise point
+	// CONV_TABLE at a table already in the flow that has (id, val) columns.
 	if os.Getenv("CONV_CREATE") == "true" {
 		for _, m := range members {
 			ttype := "text"
@@ -101,125 +122,117 @@ func TestConvergence(t *testing.T) {
 		t.Logf("created + mm-prepped %s on %d members", table, len(members))
 	}
 
-	// write helpers, tolerant of transient errors during a fault window. The budget must
-	// outlast the fault being injected — a CNPG primary promotion (~4-10s) or a partition
-	// far exceeds a few hundred ms, and a driver that can't survive the fault it is
-	// testing produces spurious reds. Convergence is still asserted independently, so a
-	// write that never lands still shows up as a missing key.
-	retries := atoiEnv("CONV_WRITE_RETRIES", 40) // x500ms = 20s
-	exec := func(m *reconcileMember, q string, args ...any) error {
-		var err error
-		for i := 0; i < retries; i++ {
-			if _, err = m.db.Exec(q, args...); err == nil {
-				return nil
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		return err
-	}
-	insert := func(m *reconcileMember, id, val string) error {
-		return exec(m, fmt.Sprintf("INSERT INTO %s (%s, val) VALUES (%s, %s)",
-			qt(m), quoteIdent(m.Engine, pk), placeholder(m.Engine, 0), placeholder(m.Engine, 1)), id, val)
-	}
-	update := func(m *reconcileMember, id, val string) error {
-		return exec(m, fmt.Sprintf("UPDATE %s SET val=%s WHERE %s=%s",
-			qt(m), placeholder(m.Engine, 0), quoteIdent(m.Engine, pk), placeholder(m.Engine, 1)), val, id)
+	writers := map[*reconcileMember]func(q string, args ...any) error{}
+	for _, m := range members {
+		writers[m] = retryWriter(m.db)
 	}
 
+	return &replicationOracle{
+		members: members,
+		vcol:    vcol,
+		pk:      pk,
+		nKeys:   atoiEnv("CONV_KEYS", 200),
+		nConf:   atoiEnv("CONV_CONFLICTS", 20),
+		settle:  time.Duration(atoiEnv("CONV_SETTLE", 8)) * time.Second,
+		qt:      qt,
+		writers: writers,
+	}
+}
+
+func (o *replicationOracle) Name() string { return "convergence" }
+
+func (o *replicationOracle) insert(m *reconcileMember, id, val string) error {
+	return o.writers[m](fmt.Sprintf("INSERT INTO %s (%s, val) VALUES (%s, %s)",
+		o.qt(m), quoteIdent(m.Engine, o.pk), placeholder(m.Engine, 0), placeholder(m.Engine, 1)), id, val)
+}
+func (o *replicationOracle) update(m *reconcileMember, id, val string) error {
+	return o.writers[m](fmt.Sprintf("UPDATE %s SET val=%s WHERE %s=%s",
+		o.qt(m), placeholder(m.Engine, 0), quoteIdent(m.Engine, o.pk), placeholder(m.Engine, 1)), val, id)
+}
+
+func (o *replicationOracle) Drive(t *testing.T) map[string]bool {
 	expected := map[string]bool{}
 	var wg sync.WaitGroup
 
 	// Distinct keys spread across all members — each must end present on every member.
-	for i := 0; i < nKeys; i++ {
+	for i := 0; i < o.nKeys; i++ {
 		id := fmt.Sprintf("k%05d", i)
 		expected[id] = true
-		m := members[i%len(members)]
+		m := o.members[i%len(o.members)]
 		wg.Add(1)
 		go func(m *reconcileMember, id string) {
 			defer wg.Done()
-			if err := insert(m, id, "d:"+m.Name); err != nil {
+			if err := o.insert(m, id, "d:"+m.Name); err != nil {
 				t.Errorf("insert %s on %s: %v", id, m.Name, err)
 			}
 		}(m, id)
 	}
 	wg.Wait()
 
-	// Conflict keys: seed on member[0], let them replicate, then race an UPDATE from
-	// two members with different values — LWW must pick one winner, identical everywhere.
-	for j := 0; j < nConf; j++ {
+	// Conflict keys: seed on member[0], let them replicate, then race an UPDATE from two members
+	// with different values — LWW must pick one winner, identical everywhere.
+	for j := 0; j < o.nConf; j++ {
 		id := fmt.Sprintf("c%05d", j)
 		expected[id] = true
-		if err := insert(members[0], id, "seed"); err != nil {
+		if err := o.insert(o.members[0], id, "seed"); err != nil {
 			t.Fatalf("seed conflict %s: %v", id, err)
 		}
 	}
-	time.Sleep(settle)
-	for j := 0; j < nConf; j++ {
+	time.Sleep(o.settle)
+	for j := 0; j < o.nConf; j++ {
 		id := fmt.Sprintf("c%05d", j)
 		wg.Add(2)
-		go func(id string) { defer wg.Done(); _ = update(members[0], id, "w:"+members[0].Name) }(id)
-		go func(id string) { defer wg.Done(); _ = update(members[1], id, "w:"+members[1].Name) }(id)
+		go func(id string) { defer wg.Done(); _ = o.update(o.members[0], id, "w:"+o.members[0].Name) }(id)
+		go func(id string) { defer wg.Done(); _ = o.update(o.members[1], id, "w:"+o.members[1].Name) }(id)
 	}
 	wg.Wait()
+	return expected
+}
 
-	// Converge: poll until every member's (id -> version+val) map is identical.
-	snapshot := func(m *reconcileMember) (map[string][2]string, error) {
-		rows, err := m.db.Query(fmt.Sprintf("SELECT %s, val, %s FROM %s",
-			quoteIdent(m.Engine, pk), quoteIdent(m.Engine, vcol), qt(m)))
-		if err != nil {
+func (o *replicationOracle) snapshot(m *reconcileMember) (map[string][2]string, error) {
+	rows, err := m.db.Query(fmt.Sprintf("SELECT %s, val, %s FROM %s",
+		quoteIdent(m.Engine, o.pk), quoteIdent(m.Engine, o.vcol), o.qt(m)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][2]string{}
+	for rows.Next() {
+		var id, val string
+		var ver sql.NullInt64
+		if err := rows.Scan(&id, &val, &ver); err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := map[string][2]string{}
-		for rows.Next() {
-			var id, val string
-			var ver sql.NullInt64
-			if err := rows.Scan(&id, &val, &ver); err != nil {
-				return nil, err
-			}
-			out[id] = [2]string{fmt.Sprint(ver.Int64), val}
-		}
-		return out, rows.Err()
+		out[id] = [2]string{fmt.Sprint(ver.Int64), val}
 	}
+	return out, rows.Err()
+}
 
-	deadline := time.Now().Add(timeout)
-	var last map[string]map[string][2]string
-	converged := false
-	for time.Now().Before(deadline) {
-		snaps := map[string]map[string][2]string{}
-		ok := true
-		for _, m := range members {
-			s, err := snapshot(m)
-			if err != nil {
-				ok = false
-				break
-			}
-			snaps[m.Name] = s
+func (o *replicationOracle) SteadyState() (bool, string, error) {
+	snaps := map[string]map[string][2]string{}
+	for _, m := range o.members {
+		s, err := o.snapshot(m)
+		if err != nil {
+			return false, "", err
 		}
-		last = snaps
-		if ok && allIdentical(snaps, members) {
-			converged = true
-			break
-		}
-		time.Sleep(2 * time.Second)
+		snaps[m.Name] = s
 	}
+	o.lastSnap = snaps
+	if allIdentical(snaps, o.members) {
+		return true, "", nil
+	}
+	return false, convDiff(snaps, o.members), nil
+}
 
-	if !converged {
-		t.Fatalf("members did NOT converge within %s\n%s", timeout, convDiff(last, members, expected))
-	}
-	base := last[members[0].Name]
+func (o *replicationOracle) Reconcile(expected map[string]bool) []string {
+	base := o.lastSnap[o.members[0].Name]
 	var missing []string
 	for id := range expected {
 		if _, ok := base[id]; !ok {
 			missing = append(missing, id)
 		}
 	}
-	if len(missing) > 0 {
-		t.Fatalf("LOST WRITES: %d/%d expected keys absent after convergence (e.g. %v)",
-			len(missing), len(expected), convFirst(missing, 10))
-	}
-	t.Logf("CONVERGED: %d members, %d keys (%d conflicts) — identical version+value on every member, zero lost writes",
-		len(members), len(expected), nConf)
+	return missing
 }
 
 func allIdentical(snaps map[string]map[string][2]string, members []*reconcileMember) bool {
@@ -238,18 +251,17 @@ func allIdentical(snaps map[string]map[string][2]string, members []*reconcileMem
 	return true
 }
 
-func convDiff(snaps map[string]map[string][2]string, members []*reconcileMember, expected map[string]bool) string {
+func convDiff(snaps map[string]map[string][2]string, members []*reconcileMember) string {
 	var b strings.Builder
 	for _, m := range members {
 		fmt.Fprintf(&b, "  %s: %d rows\n", m.Name, len(snaps[m.Name]))
 	}
 	base := snaps[members[0].Name]
 	shown := 0
-	for id := range expected {
+	for id, want := range base {
 		if shown >= 8 {
 			break
 		}
-		want := base[id]
 		for _, m := range members[1:] {
 			if got := snaps[m.Name][id]; got != want {
 				fmt.Fprintf(&b, "  DIVERGE key=%s  %s=%v  %s=%v\n", id, members[0].Name, want, m.Name, got)
@@ -259,11 +271,4 @@ func convDiff(snaps map[string]map[string][2]string, members []*reconcileMember,
 		}
 	}
 	return b.String()
-}
-
-func convFirst(s []string, n int) []string {
-	if len(s) < n {
-		return s
-	}
-	return s[:n]
 }
