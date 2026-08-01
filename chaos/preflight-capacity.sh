@@ -23,6 +23,12 @@ set -uo pipefail
 MIN_READY_NODES="${CHAOS_MIN_READY_NODES:-1}"   # usable Ready/schedulable nodes required
 REQ_FREE_CPU_M="${CHAOS_REQ_FREE_CPU_M:-1500}"  # millicores of unreserved CPU the sandbox needs
 REQ_FREE_MEM_MI="${CHAOS_REQ_FREE_MEM_MI:-3072}" # Mi of unreserved memory the sandbox needs
+# The sandbox is PINNED to the dedicated chaos nodes (nodeSelector) and TOLERATES their taint,
+# so capacity must be measured on THOSE nodes — not the untainted general pool. (An empty label
+# key falls back to counting the general untainted pool, for non-segmented clusters.)
+CHAOS_NODE_LABEL="${CHAOS_NODE_LABEL:-openinfra.dev/chaos}"
+CHAOS_NODE_LABEL_VALUE="${CHAOS_NODE_LABEL_VALUE:-true}"
+CHAOS_TOLERATED_TAINT="${CHAOS_TOLERATED_TAINT:-openinfra.dev/chaos}"
 
 # Read cluster state into temp files — `kubectl get pods -A -o json` is far too large to
 # pass through argv or the environment (E2BIG), so python reads the files by path.
@@ -35,12 +41,13 @@ if [ ! -s "$TMP/nodes.json" ] || [ ! -s "$TMP/pods.json" ]; then
   exit 0
 fi
 
-python3 - "$MIN_READY_NODES" "$REQ_FREE_CPU_M" "$REQ_FREE_MEM_MI" "$TMP/nodes.json" "$TMP/pods.json" <<'PY'
+python3 - "$MIN_READY_NODES" "$REQ_FREE_CPU_M" "$REQ_FREE_MEM_MI" "$TMP/nodes.json" "$TMP/pods.json" "$CHAOS_NODE_LABEL" "$CHAOS_NODE_LABEL_VALUE" "$CHAOS_TOLERATED_TAINT" <<'PY'
 import sys, json
 
 min_ready = int(sys.argv[1]); req_cpu = int(sys.argv[2]); req_mem = int(sys.argv[3])
 nodes = json.load(open(sys.argv[4])).get("items", [])
 pods  = json.load(open(sys.argv[5])).get("items", [])
+label_key = sys.argv[6]; label_val = sys.argv[7]; tolerated_taint = sys.argv[8]
 
 def cpu_m(q):
     if not q: return 0
@@ -62,14 +69,21 @@ def mem_mi(q):
             return float(q[:-len(suf)]) * mul
     return float(q) / (1024*1024)  # bare bytes
 
-# Usable node = Ready, schedulable, untainted (NoSchedule/NoExecute), no resource pressure.
+# Usable node = where the sandbox can actually schedule: carries the chaos node label (if the
+# cluster is segmented), Ready, schedulable, no resource pressure, and no NoSchedule/NoExecute
+# taint OTHER than the one the sandbox tolerates. Measuring the untainted general pool here
+# would be a false-OK — the sandbox pins to the (tainted) chaos nodes.
 usable = set(); alloc_cpu = {}; alloc_mem = {}
 for n in nodes:
     name = n["metadata"]["name"]
+    labels = n.get("metadata", {}).get("labels", {}) or {}
+    if label_key and labels.get(label_key) != label_val:
+        continue  # not a chaos node — the sandbox won't land here
     spec = n.get("spec", {}) or {}
     if spec.get("unschedulable"):
         continue
-    if any(t.get("effect") in ("NoSchedule", "NoExecute") for t in (spec.get("taints") or [])):
+    if any(t.get("effect") in ("NoSchedule", "NoExecute") and t.get("key") != tolerated_taint
+           for t in (spec.get("taints") or [])):
         continue
     conds = {c["type"]: c["status"] for c in n.get("status", {}).get("conditions", [])}
     if conds.get("Ready") != "True":
