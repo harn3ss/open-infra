@@ -88,6 +88,22 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
    Not required for graduation.
 6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation). *(shipped + validated live: all three landed together, mesh converged in 124s — the cut genuinely bit)*
 
+### Magnitude variants (Phase 1)
+
+The partition scenario also runs at other **magnitudes** — the "limping zone" where conflict
+resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The oracle's verdict
+*flips* with magnitude, so each carries its own proof-of-fire and expectation:
+
+- **`partition-flapping`** — the cut is injected/healed in short repeated cycles while the
+  harness drives conflicting writes; the mesh must converge **after** the flapping stops, with
+  ≥1 cut confirmed live. *(shipped + validated live: converged byte-identical, cut confirmed.)*
+- **`partition-latency`** — a *degrade*, not a cut: 800ms both-ways on the sink↔B apply path,
+  held for the whole run. The opposite expectation — the mesh **must keep converging** (a
+  degrade never severs, so sustained divergence is a **bug**, and there is no `MIN_ELAPSED`
+  floor). Proof-of-fire is the timed handshake reading `slow` (~1.6s), not `down`. *(shipped +
+  validated live: converged byte-identical — 220 keys / 20 conflicts / zero lost — under
+  sustained 800ms, ~4× slower apply path.)*
+
 ## Run it
 
 ```bash
@@ -97,6 +113,8 @@ Each is one `FaultInjection` + one harness run, and a release gate once green:
 ./chaos/scenario-sinkkill.sh    # kill the apply-sink mid-write, assert the mesh still converges
 ./chaos/scenario-cnpgfailover.sh # kill the CNPG primary mid-write, assert convergence across promotion
 ./chaos/scenario-concurrent.sh   # GRADUATION: capture-kill + partition + sink-kill at once
+./chaos/scenario-partition-flapping.sh  # magnitude: repeated cut/heal, converge after it stops
+./chaos/scenario-partition-latency.sh   # magnitude: 800ms degrade, must keep converging (no MIN_ELAPSED)
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
 
