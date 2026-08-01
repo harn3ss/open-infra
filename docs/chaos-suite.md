@@ -130,6 +130,7 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
 ./chaos/scenario-partition-flapping.sh  # magnitude: repeated cut/heal, converge after it stops
 ./chaos/scenario-partition-latency.sh   # magnitude: 800ms degrade, must keep converging (no MIN_ELAPSED)
 ./chaos/scenario-partition-isolation.sh # magnitude: cut B from its whole mesh, both sides diverge + reconverge
+./chaos/scenario-sink-drain-kill.sh   # target-selection: kill the sink MID-backlog-drain, offset must survive
 ./chaos/scenario-partition-loss.sh      # magnitude: 15% packet-loss degrade, must keep converging (statistical probe)
 HEAL_ORDER=partition-first ./chaos/scenario-healing-order.sh  # timing/overlap: partition+sink outage, heal in order, reconverge
 ./chaos/scenario-stress-cpu.sh           # fault-variety: CPU pressure on the apply-sink, must keep converging
