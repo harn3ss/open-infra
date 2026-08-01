@@ -133,6 +133,7 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
 ./chaos/scenario-partition-loss.sh      # magnitude: 15% packet-loss degrade, must keep converging (statistical probe)
 HEAL_ORDER=partition-first ./chaos/scenario-healing-order.sh  # timing/overlap: partition+sink outage, heal in order, reconverge
 ./chaos/scenario-stress-cpu.sh           # fault-variety: CPU pressure on the apply-sink, must keep converging
+./chaos/scenario-stress-mem.sh           # fault-variety: memory pressure on pg-b, must keep converging
 CHAOS_KEEP=1 ./chaos/scenario-partition.sh   # leave the sandbox up to inspect
 ```
 

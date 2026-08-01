@@ -122,7 +122,10 @@ the product's public contract.
   so the mesh must keep converging (no MIN_ELAPSED), proof-of-fire via StressChaos `AllInjected`.
   *(Shaken out live: injected + converged zero-lost. Honest caveat: the apply-sink is
   I/O/network-bound, so CPU starvation is a mild stressor for this workload — it confirms
-  resilience but isn't a hard squeeze.)*
+  resilience but isn't a hard squeeze.)* A second increment, **`stress-mem`**, puts 300MB of
+  memory pressure on site B's Postgres (sized under its 512Mi limit so it degrades, not OOMs) —
+  a different fault type on a different target; the DB stays queryable and the mesh converges
+  zero-lost. Remaining variety (disk-fill, DNS) needs new `FaultInjection` XRD types.
 - **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
   for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
   distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of

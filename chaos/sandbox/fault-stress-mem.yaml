@@ -1,0 +1,22 @@
+# Fault-variety axis (see docs/chaos-oracle.md) — MEMORY pressure on site B's database. A single
+# stressor consuming 300MB inside pg-b's cgroup (limited to 512Mi), leaving headroom above
+# Postgres's own footprint so this DEGRADES (pressure, slower/ swappy queries) rather than
+# OOM-kills — a distinct target (the DB, not the sink) and distinct fault type from stress-cpu.
+# A degrade: the mesh must keep converging; sustained divergence under mere memory pressure is a BUG.
+#
+# Sized deliberately UNDER the limit: 300MB stressor + ~100-150Mi Postgres stays below 512Mi, so
+# the OOM-killer should not fire (if it does, that's a KILL test overlapping sink/pod-kill — the
+# scenario surfaces it rather than hiding it). Proof-of-fire: StressChaos AllInjected.
+# Blast radius: chaos-sandbox only (pre-flight guard verifies).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-stress-mem
+  namespace: chaos-sandbox
+spec:
+  type: stress-memory
+  target:
+    labelSelector: { app: pg, site: b }
+  memory: "300MB"
+  mode: all
+  duration: 90s
