@@ -106,12 +106,22 @@ SLO / continuous zero-tolerance).
 | **availability** | tolerate | HA service survives instance loss | HTTP success rate ≥ SLO *during* the fault | `scenario-app-availability.sh` |
 | **security-deny** | deny | egress fence never leaks | locked client reaches svc-forbidden **0** times while it churns | `scenario-security-deny.sh` |
 | **stream-noloss** | recover | CDC stream drops no events | cdc-evt message count ≥ driven changes after a capture kill | `scenario-stream-noloss.sh` |
+| **directory-recover** | recover | AD directory survives a DC kill | an account created pre-fault still exists after the DC restarts | `scenario-directory-recover.sh` |
+| **fileshare-durable** | recover | SMB share data survives a server kill | a file written pre-fault is present + writable after the Samba pod restarts | `scenario-fileshare-durable.sh` |
+| **volume-durable** | recover | block volume data survives a pod reschedule | a raw-block signature reads back after the attached pod is killed | `scenario-volume-durable.sh` |
+| **vm-resilience** | recover | VM survives a virt-launcher kill | the VMI returns to Running after its launcher pod is killed | `scenario-vm-resilience.sh` |
+| **dataflow-converge** | recover | the DataFlow kind's mesh reconverges | members byte-identical after a DataFlow capture kill | `scenario-dataflow-converge.sh` |
 
 The migration adapter was the first **non-convergence** oracle (proving the runner is a contract,
 not a replication harness — it dropped on with zero runner changes). The availability adapter is the
-first **non-conservation** oracle, and the security-deny adapter completes the three-mode set. All
-four are proven live, and each is proven to **fail loud** — the suite's prime directive, since an
-oracle that only prints green is worthless:
+first **non-conservation** oracle, and the security-deny adapter completes the three-mode set. The
+coverage then widened across every blast-zone-testable kind — identity (Directory), files
+(FileShare), block storage (Volume), compute (VirtualMachine), and the DataFlow topology — so the
+suite now exercises the whole workload plane, not just multi-master. (Query is the one kind that is
+NOT blast-zone-testable: its composition runs the query Job in the shared `minio` namespace, outside
+the sandbox, so a fault there would escape containment.) Every adapter is proven live, and each is
+proven to **fail loud** — the suite's prime directive, since an oracle that only prints green is
+worthless:
 
 - **convergence** — RED on non-convergence (40% loss brownout); GREEN through a partition.
 - **migration** — RED if the target loses rows; GREEN through an apply-sink kill (300 units, zero lost).
@@ -125,6 +135,16 @@ oracle that only prints green is worthless:
   reading N message bodies through the nats CLI (a fresh connection per `stream get`) under-returns
   past a few dozen and is unreliable, whereas the stream's count is exact O(1) metadata; a
   durable-slot capture cannot lose a committed change, so count ≥ driven == nothing dropped.
+- **directory / fileshare / volume / vm** — RED if the state is lost after the kill (the account,
+  the file, the block signature, or the VM does not come back); GREEN when it does. Verified via
+  samba-tool / smbclient / raw-block read / the KubeVirt VMI phase respectively (reliable, no
+  guessing).
+- **dataflow-converge** — RED on divergence after a capture kill; GREEN when the mesh reconverges.
+  Building this chain **found a real product bug**: a DataFlow node named with a hyphen (`pg-a`)
+  leaked the hyphen into the Debezium Postgres replication slot name, which PostgreSQL rejects, so
+  the capture crash-looped and replication never started. Fixed by sanitizing the node name in the
+  slot/publication derivation (`dataflow-composition.yaml`). This is exactly the suite's purpose —
+  an injector that surfaces a real defect, caught before a user hit it.
 
 The availability and deny probers run **in-cluster** because the Application's own NetworkPolicy
 correctly denies off-cluster ingress (a host-side prober is blocked by Cilium) — the fence working

@@ -1,0 +1,38 @@
+# Nightly Chaos Suite — the kind: DataFlow under test (data-movement topology). Declares the same
+# two-site multi-master mesh as the convergence scenario, but via the unified DataFlow graph (nodes
+# + edges) instead of kind: Replication — proving the DataFlow kind's composition survives chaos.
+# One replication edge (pg-a <-> pg-b) over the disposable members. The chaos fault kills a node's
+# CDC capture mid-write; the convergence harness (SQL, reliable) asserts the mesh still reconverges
+# byte-identical. Reuses sandbox members.yaml (pg-a/pg-b) as the node backends.
+apiVersion: openinfra.dev/v1
+kind: DataFlow
+metadata:
+  name: df
+  namespace: chaos-sandbox
+spec:
+  nodes:
+    - name: pg-a
+      role: database
+      engine: postgres
+      host: pg-a.chaos-sandbox.svc.cluster.local
+      port: 5432
+      database: app
+      username: app
+      passwordSecretRef: { name: pg-creds }
+      schema: public
+    - name: pg-b
+      role: database
+      engine: postgres
+      host: pg-b.chaos-sandbox.svc.cluster.local
+      port: 5432
+      database: app
+      username: app
+      passwordSecretRef: { name: pg-creds }
+      schema: public
+  edges:
+    - from: pg-a
+      to: pg-b
+      type: replication
+      # conv_test is pre-created on both members by the scenario (like the convergence mesh) and the
+      # edge's mm-prep makes it multi-master-ready, so no bootstrap seeding is needed.
+  tables: ["conv_test"]

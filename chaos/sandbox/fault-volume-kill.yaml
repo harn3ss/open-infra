@@ -1,0 +1,14 @@
+# Volume chain — kill the pod attached to the block volume. The Deployment reschedules a new pod
+# that re-attaches the SAME Longhorn volume, so a raw-block signature written before the fault must
+# still be readable afterward. A volume that lost data across the detach/reattach is a red.
+# pod-kill is instantaneous. Blast radius: chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: volume-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: vol-writer }
+  mode: all

@@ -1,0 +1,17 @@
+# Nightly Chaos Suite — the kind: VirtualMachine under test (compute/virt plane). A small KubeVirt
+# Linux VM (ubuntu cloud image imported by CDI onto a node-local disk). The chaos fault kills the
+# VM's virt-launcher pod; the recover-mode oracle asserts KubeVirt brings the VM back — the VMI
+# returns to Running (the guest reboots from its persistent disk). non-HA on local-path keeps the
+# disk node-local and the whole VM inside the blast zone; virt-launcher is pinned to the chaos nodes
+# by the namespace annotation. Small (1 vCPU / 1.5Gi / 10Gi) to keep import + boot fast.
+apiVersion: openinfra.dev/v1
+kind: VirtualMachine
+metadata:
+  name: vm
+  namespace: chaos-sandbox
+spec:
+  os: ubuntu-24.04
+  cpu: 1
+  memory: 1536Mi
+  diskSize: 10Gi
+  running: true
