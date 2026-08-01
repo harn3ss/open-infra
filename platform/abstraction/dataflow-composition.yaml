@@ -99,9 +99,6 @@ spec:
             {{-   $engine := $n.engine }}
             {{-   $prefix := printf "f.%s.%s" $fqd $node }}
             {{-   $stream := printf "flow-%s-%s" $fqd $node }}
-            {{-   /* Postgres replication slot/publication names allow only [a-z0-9_] — sanitize BOTH
-                     the fqd AND the node name (a node named e.g. "pg-a" would otherwise emit an
-                     invalid slot name with a hyphen and the capture crash-loops on slot creation). */}}
             {{-   $slot := printf "df_%s_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $fqd "_") (regexReplaceAll "[^a-zA-Z0-9_]" $node "_") | trunc 63 }}
             {{-   $include := index $inc $node }}
             {{-   $sport := $n.port | default 5432 }}
