@@ -141,6 +141,19 @@ the product's public contract.
   drop the in-flight batch). Two-part proof-of-fire (backlog actually staged; kill actually landed
   mid-drain, pod replaced); INCONCLUSIVE if the drain finishes before the kill can land.
   *(Shaken out live: killed at pg-b=1701/10000, resumed from offset to 10000/10000, zero lost.)*
+- **Chaos axis 5 (correlation) — THE LOTTERY (`scenario-lottery.sh`), the capstone.** A seeded
+  draw ([chaos/lottery-draw.py](chaos/lottery-draw.py)) picks 2–4 concurrent faults from the
+  composable palette, ~75% biased toward a shared surface tag (interaction bugs live where faults
+  overlap) with a wildcard tail; the driver applies them all, PROVES each fired (Chaos Mesh
+  `AllInjected` / pod-replaced — a partial draw is INCONCLUSIVE, never green), drives the
+  convergence harness through the combination, heals, and requires byte-identical reconvergence.
+  Seeded + **replayable** (a red reruns with `LOTTERY_SEED=<seed>`), draw-without-replacement,
+  blast-cap 2–4. A conflict model keeps draws physically composable (never a netem fault paired
+  with a pod-kill of its peer pod — the peer IP churns and the netem can't inject). Inert faults
+  (io-latency, dns) are excluded from the pool. *(Shaken out live: seed 7 `[latency, capture-kill,
+  stress-mem]` converged 250s; seed 42 `[isolation, stress-mem, sink-failure]` — max blast —
+  reconverged 599s; the draw engine is deterministic with 0 invalid combos across 4000 seeds.)*
+  Bandit-weighting is the tracked refinement; v1 uses the surface-tag correlation bias.
 - **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
   for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
   distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of
