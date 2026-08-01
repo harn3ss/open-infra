@@ -1,0 +1,22 @@
+# Fault-variety axis (see docs/chaos-oracle.md) — CPU pressure on the a→b apply engine. Two
+# stressor threads at 100% inside the sink pod's cgroup, which is limited to 1 CPU, so they
+# compete directly with the apply-sink process and starve it. This is a *degrade*, like latency:
+# the apply path slows but is never severed, so the mesh MUST keep converging — sustained
+# divergence under mere CPU pressure is a BUG, not a tolerated cut.
+#
+# Targets the sink by app label (StressChaos runs the stressors in that pod's cgroup). Proof-of-
+# fire is the StressChaos AllInjected condition (no external probe for CPU contention).
+# Blast radius: chaos-sandbox only (pre-flight guard verifies).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-stress-cpu
+  namespace: chaos-sandbox
+spec:
+  type: stress-cpu
+  target:
+    labelSelector: { app: chaos-mesh-pg-repl-a-b-sink }
+  cpuWorkers: 2
+  cpuLoad: 100
+  mode: all
+  duration: 90s
