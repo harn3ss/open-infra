@@ -1,0 +1,19 @@
+# Availability chain — kill ONE app replica mid-traffic (mode: one, not all). With ≥2 replicas
+# behind the Service, killing a single pod must be invisible to callers: k8s removes the dying pod
+# from the Service endpoints and the survivor(s) absorb the traffic, while the Deployment restarts
+# the killed pod. A drop in success rate beyond the SLO means the app tier is NOT actually
+# HA (single point of failure, missing PodDisruptionBudget, or the Service/endpoints misbehaving) —
+# which the tolerate-mode oracle catches as a continuous-availability violation.
+#
+# pod-kill is instantaneous; mode: one picks a single matching pod. Blast radius: chaos-sandbox
+# only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: app-replica-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app.kubernetes.io/name: web }
+  mode: one

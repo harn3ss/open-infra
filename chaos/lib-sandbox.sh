@@ -172,6 +172,45 @@ sandbox_teardown_migration() {
   fi
 }
 
+# ---- Availability variant (app-availability): HA app + DB + SG, tolerate-mode oracle ------
+
+# Provision the HA Application + its Database + the SecurityGroup, wait for ≥2 app replicas Ready,
+# and deploy an in-sandbox prober pod (the app's NetworkPolicy denies off-cluster ingress by
+# design, so the prober must live in-namespace). Blocks until the app rollout is complete.
+sandbox_provision_appavail() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning availability chain (Application web + Database + SecurityGroup web-tier)"
+  kubectl apply -f "$HERE/sandbox/app-availability.yaml"
+  # The app pod mounts the CNPG app secret, so its rollout implicitly waits for the DB tier too.
+  log "waiting for the app to reach its HA replica count (rollout)"
+  for _ in $(seq 1 "${APPAVAIL_WARMUP_TRIES:-40}"); do
+    if kubectl -n "$NS" get deploy web >/dev/null 2>&1; then
+      kubectl -n "$NS" rollout status deploy/web --timeout="${APPAVAIL_ROLLOUT_TIMEOUT:-90s}" && break
+    fi
+    sleep "${APPAVAIL_WARMUP_SLEEP:-6}"
+  done
+  # Guarantee the HA precondition: the fault is only meaningful with ≥2 replicas to survive it.
+  local ready
+  ready="$(kubectl -n "$NS" get deploy web -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
+  log "app ready replicas: ${ready:-0}"
+
+  log "deploying the in-sandbox availability prober"
+  kubectl -n "$NS" run avail-prober --image=curlimages/curl:latest --restart=Never \
+    --labels=app=avail-prober --command -- sleep 100000 >/dev/null 2>&1 || true
+  kubectl -n "$NS" wait --for=condition=Ready pod/avail-prober --timeout=60s >/dev/null 2>&1 || true
+}
+
+sandbox_teardown_appavail() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down availability chain"
+    kubectl -n "$NS" delete pod avail-prober --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/app-availability.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    # CNPG PVCs are not GC'd with the Cluster
+    kubectl -n "$NS" delete pvc -l cnpg.io/cluster --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
 # ---- shared ------------------------------------------------------------------------
 
 # Remove any fault, then (unless CHAOS_KEEP=1) the mesh + members + composed mm-prep Jobs.
