@@ -1,0 +1,58 @@
+# Nightly Chaos Suite — Deny chain endpoints (the security-deny scenario). The framework's THIRD
+# oracle mode: `deny` — a NEGATIVE invariant (something that must NEVER happen), verified
+# continuously. A locked client may reach one service and must be REFUSED the other; the oracle
+# asserts the fence never leaks — zero tolerance — even while the forbidden target churns under a
+# fault. Distinct from `tolerate` (an SLO that allows a small breach) and `recover` (post-heal).
+#
+# The deny is EGRESS-based on purpose: kind: Application's default NetworkPolicy allows all
+# same-namespace ingress and SG policies are additive (widen-only), so an ingress deny is impossible
+# within one namespace — but an egress fence on the client is enforced on the client and holds
+# regardless of the target's ingress. This is the honest, testable shape of tenant isolation in a
+# single sandbox namespace.
+apiVersion: openinfra.dev/v1
+kind: SecurityGroup
+metadata:
+  name: svc-tier
+  namespace: chaos-sandbox
+spec:
+  # Marks svc-allowed as the one permitted egress destination (members get openinfra.dev/sg-svc-tier).
+  ingress:
+    - protocol: TCP
+      ports: [80]
+      description: "Allow HTTP to the permitted service from within the sandbox."
+      from:
+        - namespace: chaos-sandbox
+---
+apiVersion: openinfra.dev/v1
+kind: SecurityGroup
+metadata:
+  name: client-egress
+  namespace: chaos-sandbox
+spec:
+  # Members may egress ONLY to svc-tier:80 (DNS auto-allowed). Everything else — svc-forbidden — is
+  # denied. This is the fence the deny oracle proves never leaks.
+  egress:
+    - protocol: TCP
+      ports: [80]
+      description: "Permit egress only to the svc-tier service."
+      to:
+        - securityGroup: svc-tier
+---
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: svc-allowed
+  namespace: chaos-sandbox
+spec:
+  image: traefik/whoami
+  port: 80
+  securityGroups: [svc-tier]
+---
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: svc-forbidden
+  namespace: chaos-sandbox
+spec:
+  image: traefik/whoami
+  port: 80

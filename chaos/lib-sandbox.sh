@@ -211,6 +211,40 @@ sandbox_teardown_appavail() {
   fi
 }
 
+# ---- Deny variant (security-deny): egress fence + negative-invariant oracle ------
+
+# Provision svc-allowed + svc-forbidden + the two SecurityGroups, wait both apps Ready, and deploy
+# the egress-locked prober (a member of client-egress, so its egress is fenced to svc-tier only).
+sandbox_provision_deny() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning deny chain (svc-allowed + svc-forbidden + SecurityGroups svc-tier/client-egress)"
+  kubectl apply -f "$HERE/sandbox/deny-chain.yaml"
+  for a in svc-allowed svc-forbidden; do
+    for _ in $(seq 1 "${DENY_WARMUP_TRIES:-30}"); do
+      kubectl -n "$NS" get deploy "$a" >/dev/null 2>&1 && break
+      sleep "${DENY_WARMUP_SLEEP:-4}"
+    done
+    kubectl -n "$NS" rollout status deploy/"$a" --timeout="${DENY_ROLLOUT_TIMEOUT:-90s}" || true
+  done
+
+  log "deploying the egress-locked prober (member of client-egress SG)"
+  kubectl -n "$NS" run deny-prober --image=curlimages/curl:latest --restart=Never \
+    --command -- sleep 100000 >/dev/null 2>&1 || true
+  # Membership label: the client-egress netpol selects openinfra.dev/sg-client-egress (value "").
+  kubectl -n "$NS" label pod deny-prober openinfra.dev/sg-client-egress= --overwrite >/dev/null 2>&1 || true
+  kubectl -n "$NS" wait --for=condition=Ready pod/deny-prober --timeout=60s >/dev/null 2>&1 || true
+  sleep 8   # let Cilium apply the egress policy after the label change
+}
+
+sandbox_teardown_deny() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down deny chain"
+    kubectl -n "$NS" delete pod deny-prober --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/deny-chain.yaml" --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
 # ---- shared ------------------------------------------------------------------------
 
 # Remove any fault, then (unless CHAOS_KEEP=1) the mesh + members + composed mm-prep Jobs.
