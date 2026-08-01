@@ -1,0 +1,20 @@
+# Nightly Chaos Suite — the kind: Stream under test (the "Kinesis" path). Taps evt-src's change
+# log and publishes every row-level change to the durable JetStream stream cdc-evt (subjects
+# cdc.evt.>). The chaos fault kills the capture engine mid-flight; the no-loss oracle then consumes
+# cdc-evt and asserts every acknowledged source row is represented — the stream's delivery
+# guarantee. Same abstraction a user provisions from the console; the suite tests the real path.
+apiVersion: openinfra.dev/v1
+kind: Stream
+metadata:
+  name: evt
+  namespace: chaos-sandbox
+spec:
+  source:
+    engine: postgres
+    host: evt-src.chaos-sandbox.svc.cluster.local
+    port: 5432
+    database: app
+    username: app
+    passwordSecretRef: { name: evt-creds }
+    schemas: ["public"]
+    tables: ["events"]
