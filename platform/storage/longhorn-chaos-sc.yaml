@@ -1,0 +1,27 @@
+# Longhorn StorageClass that pins replicas to the DISPOSABLE chaos nodes only.
+# `nodeSelector: "chaos"` means a volume of this class schedules its replicas exclusively
+# on Longhorn nodes tagged `chaos` (the dedicated chaos-test boxes). Combined with the
+# `allowEmptyNodeSelectorVolume: false` default (see longhorn.yaml), this is a two-way fence:
+# these volumes land ONLY on chaos nodes, and every production (empty-selector) volume refuses
+# those tagged nodes — so the chaos suite's Scenario 5 can lose a chaos node without ever
+# touching production data.
+#
+# Used by the nightly Chaos Suite's storage replica-loss scenario (the sandbox DBs opt in via
+# this class instead of emptyDir). 2 replicas + global HARD anti-affinity => the two replicas
+# sit on two distinct chaos nodes, so killing one leaves a survivor and Longhorn rebuilds onto
+# the third — a real storage-resilience test, not data deletion.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-chaos
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  nodeSelector: "chaos"
+  staleReplicaTimeout: "30"
+  fromBackup: ""
