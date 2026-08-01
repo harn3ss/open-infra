@@ -1,0 +1,14 @@
+# Nightly Chaos Suite — the kind: FileShare under test (file plane). A Samba SMB share backed by
+# Longhorn. The chaos fault kills the Samba server pod; the recover-mode oracle asserts a file
+# written to the share BEFORE the fault is still there afterward (the PVC persists across the pod
+# reschedule) and the share is writable again. Conservation of acknowledged work, files edition.
+# expose:false keeps it a ClusterIP (no MetalLB dependency in the sandbox); the SMB test uses the
+# in-cluster service. Pinned to the chaos nodes by the namespace annotation.
+apiVersion: openinfra.dev/v1
+kind: FileShare
+metadata:
+  name: fs
+  namespace: chaos-sandbox
+spec:
+  size: 1Gi
+  expose: false

@@ -1,0 +1,15 @@
+# Nightly Chaos Suite — the kind: Directory under test (identity plane). A Samba AD Domain
+# Controller (the open-source "Simple AD"). The chaos fault kills the DC pod; the recover-mode
+# oracle asserts the directory comes back with its data intact — an AD user created before the fault
+# must still exist after the DC restarts from its (stable, PVC-backed) domain database. Conservation
+# of acknowledged work, identity edition. Pinned to the chaos nodes by the namespace annotation; its
+# domain-database PVC uses the longhorn SC (lands on production storage, remounts on pod reschedule —
+# the fault here is the DC pod, not the storage).
+apiVersion: openinfra.dev/v1
+kind: Directory
+metadata:
+  name: dir
+  namespace: chaos-sandbox
+spec:
+  domain: corp.chaos.lan
+  size: 2Gi
