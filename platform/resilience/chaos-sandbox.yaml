@@ -61,6 +61,24 @@ metadata:
   name: chaos-runner
   namespace: chaos-sandbox
 ---
+# The self-hosted runner authenticates to the cluster AS this SA (runner creds = chaos creds);
+# its kubeconfig carries the token from THIS Secret. Git-managing it — rather than a one-off
+# `kubectl create token` — is what makes the credential DURABLE: if it is ever deleted (e.g. a
+# too-broad `kubectl -n chaos-sandbox delete secret --all` during sandbox cleanup, which is
+# exactly what silently 401'd the nightly on 2026-08-01), Argo recreates it. ServerSideApply lets
+# the token controller own `data`, so Argo manages only metadata/type and never churns the token;
+# Prune=false keeps it even through a partial sync. If it is ever recreated the token value
+# changes — refresh the runner kubeconfig from it then (kubectl get secret … -o jsonpath .data.token).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: chaos-runner-token
+  namespace: chaos-sandbox
+  annotations:
+    kubernetes.io/service-account.name: chaos-runner
+    argocd.argoproj.io/sync-options: ServerSideApply=true,Prune=false
+type: kubernetes.io/service-account-token
+---
 # WRITE authority is namespace-scoped to chaos-sandbox ONLY. The runner can provision
 # ephemeral members, wire a multi-master flow, inject faults, run the harness as a Job,
 # and tear it all down — all inside the sandbox. It has NO cluster-scoped write and no
