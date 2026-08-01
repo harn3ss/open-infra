@@ -130,20 +130,6 @@ sandbox_provision_migration() {
   kubectl -n "$NS" exec mig-src-0 -- psql -U app -d app \
     -c "CREATE TABLE IF NOT EXISTS public.mig_test (id text PRIMARY KEY, val text);"
 
-  # Pre-create the JetStream stream the migration will use, with a MODEST reservation. The
-  # composition's ensure-stream init only creates the stream if it's absent (`stream info || add`),
-  # and the product default reserves --max-bytes=2GB per stream. On this cluster the shared 10Gi
-  # JetStream store is already ~8GB-reserved by the standing replication streams, so a 5th 2GB
-  # reservation is refused (err 10047) — a real platform density ceiling (2GB × N > 10Gi), flagged
-  # separately. The sandbox needs only a few hundred rows, so we seed the stream at 512MB first;
-  # ensure-stream then finds it and skips the greedy 2GB add. Keeps the nightly self-contained and
-  # off the shared reservation pool. Teardown removes it so it doesn't leak the reservation.
-  log "pre-creating the migration JetStream stream (512MB; avoids the 2GB reservation ceiling)"
-  kubectl -n nats run nats-mig-stream-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
-    sh -c "nats --server=nats://nats.nats.svc:4222 stream info mig-mig >/dev/null 2>&1 || \
-      nats --server=nats://nats.nats.svc:4222 stream add mig-mig --subjects='mig.mig.>' --subjects='mig.mig' \
-      --storage=file --replicas=1 --max-bytes=512MB --discard=old --defaults" >/dev/null 2>&1 || true
-
   log "starting the kind: Migration (full-load + CDC, src -> tgt)"
   kubectl apply -f "$HERE/sandbox/migration.yaml"
   # Wait for the apply-sink Deployment the composition renders to become available — that is the
@@ -179,8 +165,8 @@ sandbox_teardown_migration() {
     kubectl -n "$NS" delete jobs --all --ignore-not-found >/dev/null 2>&1 || true
     kubectl -n "$NS" delete pvc -l app=mig --ignore-not-found >/dev/null 2>&1 || true
     kubectl -n "$NS" delete pvc mig-migration-offsets --ignore-not-found >/dev/null 2>&1 || true
-    # Remove the JetStream stream so its reservation is returned to the shared 10Gi store (else it
-    # leaks 512MB per run and eventually re-hits the density ceiling). Recreated next provision.
+    # Remove the migration's JetStream stream so its reservation is returned to the shared store
+    # (the composition's ensure-stream recreates it, right-sized, next provision).
     kubectl -n nats run nats-mig-rm-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
       nats --server=nats://nats.nats.svc:4222 stream rm mig-mig -f >/dev/null 2>&1 || true
   fi
