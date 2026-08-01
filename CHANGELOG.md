@@ -134,6 +134,13 @@ the product's public contract.
   was reverted; the finding is recorded here. **disk-fill** has no native Chaos Mesh primitive.
   So fault-variety on this cluster is stress-cpu + stress-mem; DNS and disk-fill are documented
   gaps (DNS would light up for free if a Chaos Mesh upgrade fixes the injector).
+- **Chaos axis 4 (target selection) — first increment: SINK-KILL MID-DRAIN.** `sinkdrainkill`
+  targets the apply-sink in its hardest *state* — mid-backlog-drain — rather than idle (scenario 3):
+  it cuts a→b, piles a 10k-row backlog into NATS, heals, catches the sink partway through draining,
+  and kills it, asserting pg-b still receives ALL 10k rows (a sink that acked before applying would
+  drop the in-flight batch). Two-part proof-of-fire (backlog actually staged; kill actually landed
+  mid-drain, pod replaced); INCONCLUSIVE if the drain finishes before the kill can land.
+  *(Shaken out live: killed at pg-b=1701/10000, resumed from offset to 10000/10000, zero lost.)*
 - **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
   for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
   distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of
