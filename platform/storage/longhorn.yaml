@@ -52,9 +52,9 @@ spec:
           # `chaos` tag — so production stays fenced onto the untagged real storage nodes while
           # the `longhorn-chaos` StorageClass (nodeSelector: chaos) places sandbox replicas on the
           # disposable chaos nodes. Proven live both directions 2026-08-01. The chaos nodes' tag +
-          # allowScheduling + eviction-cleared state is runtime node config (nodes.longhorn.io),
-          # documented in the chaos-suite memory; re-add durability wants them labeled for a
-          # default disk (tracked follow-up).
+          # allowScheduling + eviction-cleared state is reconciled from the durable node label by
+          # chaos-node-longhorn-reconciler.yaml, so it survives a node rebuild (a re-added chaos
+          # node reacquires its disk + `chaos` tag on its own).
           allowEmptyNodeSelectorVolume: false
           # HARD anti-affinity: a volume's replicas MUST land on distinct nodes, so losing one
           # node never loses the volume — the precondition for the chaos suite's Scenario 5
