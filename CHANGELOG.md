@@ -110,6 +110,13 @@ the product's public contract.
     classifies `up`/`slow`/`down`, so one probe witnesses both cuts and degrades — a degraded
     link an up/down probe would have misread as "up = no fault fired." This completes the
     magnitude axis: cut → total isolation → latency → loss → flapping.
+- **Chaos axis 2 (timing/overlap) — first increment: HEALING ORDER.** `healing-order` overlaps a
+  partition and a held-down sink (pod-failure) on the a→b path, then heals them in a controlled
+  ORDER with a gap, asserting the mesh reconverges byte-identical either way — a sink that comes
+  back into a still-cut network (or a network that heals while the sink is down) must not drop
+  its NATS consumer or lose its offset. Both faults are proof-of-fired independently (partition
+  via the probe, sink via PodChaos `AllInjected`). *(Shaken out live BOTH orders:
+  partition-first converged 62s, sink-first 74s — recovery is heal-order-independent.)*
 - **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
   for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
   distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of

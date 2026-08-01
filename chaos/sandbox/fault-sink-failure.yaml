@@ -1,0 +1,20 @@
+# Healing-order scenario (timing/overlap axis; see docs/chaos-oracle.md). Unlike sink-KILL
+# (pod-kill, instantaneous — the Deployment restarts it right away), this HOLDS the a→b sink
+# unavailable for the whole fault window via pod-FAILURE (Chaos Mesh swaps the container for a
+# pause image and restores it when the fault is deleted or the duration expires). That lets the
+# scenario keep the sink down while it heals a second, overlapping fault (the partition) in a
+# controlled ORDER, to test that recovery doesn't depend on which fault clears first.
+#
+# Long duration = a safety backstop only; the scenario heals by DELETING the CR, so it controls
+# the exact heal moment. Blast radius: chaos-sandbox only (pre-flight guard verifies).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-sink-failure
+  namespace: chaos-sandbox
+spec:
+  type: pod-failure
+  target:
+    labelSelector: { app: chaos-mesh-pg-repl-a-b-sink }
+  mode: all
+  duration: 600s
