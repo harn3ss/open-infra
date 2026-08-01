@@ -76,18 +76,41 @@ system may drop in-flight/unacked work and may serve degraded during a fault, bu
 lose or corrupt what it *acknowledged*, and must reconverge to a state consistent with those
 acks. Each workload only defines what an "acknowledged unit" and a "consistent state" are.
 
-Two adapters ship today, and the second exists specifically to prove the seam is workload-agnostic:
+### Two oracle MODES
 
-| Adapter | Contract | Ledger | Steady state | Lives in |
+Not every workload is judged after the fault heals. There are two modes, and an adapter belongs to
+exactly one:
+
+- **`recover` (conservation)** — drive work, then after healing assert no acknowledged unit was
+  lost and the end state is correct. This is `runOracle`. Convergence and migration are here.
+- **`tolerate` (continuous SLO)** — a property measured *continuously while the fault is live*, not
+  a state checked after it heals. The workload is sampled at a steady cadence and the contract is
+  that the measured property stays within an SLO **throughout** the window, then returns to full
+  health. Availability (a web service surviving a replica loss) is here.
+
+(A third mode, `deny` — a negative invariant, e.g. a SecurityGroup must *refuse* cross-tenant
+access — is anticipated but not yet built.) The modes share the verdict vocabulary
+(GREEN/RED/INCONCLUSIVE) and the proof-of-fire discipline; they differ only in *when* the property
+is evaluated.
+
+### The adapters that ship today
+
+| Adapter | Mode | Contract | Measured | Lives in |
 |---|---|---|---|---|
-| **replication** (convergence) | symmetric — every peer agrees | conflicting writes on all members | all members byte-identical | `convergence_test.go` |
-| **migration** (fidelity) | asymmetric — one-way source → target | inserts+updates on the source only | target reflects every acked source row | `migration_test.go` |
+| **replication** (convergence) | recover | symmetric — every peer agrees | all members byte-identical after heal | `convergence_test.go` |
+| **migration** (fidelity) | recover | asymmetric — one-way source → target | target reflects every acked source row | `migration_test.go` |
+| **availability** | tolerate | HA service survives instance loss | HTTP success rate ≥ SLO *during* the fault | `scenario-app-availability.sh` |
 
-The migration adapter is the first **non-convergence** oracle — the keystone for every chain past
-multi-master — and it dropped onto the shared runner with **zero** changes to the runner, which is
-the evidence the framework is genuinely a contract and not a replication harness in disguise. Both
-are proven live: convergence STEADY through a partition, migration STEADY through an apply-sink kill
-mid-stream (the `migration` scenario — see [`chaos/scenario-migration.sh`](../chaos/scenario-migration.sh)).
+The migration adapter was the first **non-convergence** oracle (proving the runner is a contract,
+not a replication harness — it dropped on with zero runner changes). The availability adapter is
+the first **non-conservation** oracle, proving the framework spans *modes*, not just workloads: its
+prober runs **in-cluster** because the Application's own NetworkPolicy correctly denies off-cluster
+ingress (a host-side prober is blocked by Cilium) — the fence working is part of what the oracle
+witnesses. All three are proven live, and each is proven to **fail loud**: convergence RED on
+non-convergence (40% loss brownout), migration RED if the target loses rows, availability RED on a
+genuine outage (all replicas killed → 87% < 90% SLO, failure streak 5) while GREEN on a survivable
+single-replica kill (100%, streak 0). See [`chaos/scenario-migration.sh`](../chaos/scenario-migration.sh)
+and [`chaos/scenario-app-availability.sh`](../chaos/scenario-app-availability.sh).
 
 ## Expectation moves with magnitude (the subtle part)
 

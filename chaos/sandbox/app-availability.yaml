@@ -1,0 +1,43 @@
+# Nightly Chaos Suite — Availability chain endpoints (the app-availability scenario). A realistic
+# web-app stack: an HA Application (traefik/whoami, ≥2 replicas behind a Service) backed by a
+# managed Database (Postgres), fenced by a SecurityGroup. The chaos fault kills ONE app replica
+# mid-traffic; the tolerate-mode oracle asserts the Service keeps serving (the survivor absorbs the
+# load) — availability stays within SLO THROUGHOUT the fault, then returns to full health. This is
+# the framework's second oracle mode: a continuous SLO measured DURING the fault, not a post-heal
+# conservation check. Everything is pinned to the chaos nodes by the namespace admission annotation.
+#
+# The SecurityGroup allows the in-sandbox prober (TCP 80 from this namespace) to reach the app.
+# The prober MUST run in-cluster: the app's own NetworkPolicy correctly denies off-cluster ingress
+# (a host-side prober is blocked by Cilium), which is itself the availability oracle's proof that
+# the network fence works. NetworkPolicies are additive, so this rule only widens allowed sources.
+apiVersion: openinfra.dev/v1
+kind: SecurityGroup
+metadata:
+  name: web-tier
+  namespace: chaos-sandbox
+spec:
+  ingress:
+    - protocol: TCP
+      ports: [80]
+      description: "Allow HTTP to the web tier from within the sandbox (the availability prober)."
+      from:
+        - namespace: chaos-sandbox
+---
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: web
+  namespace: chaos-sandbox
+spec:
+  image: traefik/whoami
+  port: 80
+  # ≥2 replicas so a single-pod kill leaves a survivor — the Service must keep serving. The HPA
+  # floor (minReplicas) guarantees the replica count independent of metrics.
+  scaling:
+    min: 2
+    max: 4
+  # A managed Postgres backend makes this a realistic multi-tier stack (4 resource types with the
+  # SecurityGroup + FaultInjection). Non-HA — the fault targets the app tier, not the DB tier.
+  database:
+    engine: postgres
+  securityGroups: [web-tier]
