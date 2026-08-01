@@ -131,6 +131,7 @@ resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The or
 ./chaos/scenario-partition-latency.sh   # magnitude: 800ms degrade, must keep converging (no MIN_ELAPSED)
 ./chaos/scenario-partition-isolation.sh # magnitude: cut B from its whole mesh, both sides diverge + reconverge
 ./chaos/scenario-sink-drain-kill.sh   # target-selection: kill the sink MID-backlog-drain, offset must survive
+./chaos/scenario-lottery.sh           # correlation: seeded draw of 2-4 concurrent faults (LOTTERY_SEED=N to replay)
 ./chaos/scenario-partition-loss.sh      # magnitude: 15% packet-loss degrade, must keep converging (statistical probe)
 HEAL_ORDER=partition-first ./chaos/scenario-healing-order.sh  # timing/overlap: partition+sink outage, heal in order, reconverge
 ./chaos/scenario-stress-cpu.sh           # fault-variety: CPU pressure on the apply-sink, must keep converging
@@ -287,32 +288,36 @@ So it is **not yet wired into the nightly**: the fault mechanism is proven, but 
 needs a deliberately-scoped grant (or a narrower fault primitive) — a decision to make, not to
 sneak in via a broad RBAC rule. Until then it runs on demand as admin.
 
-## Backlog — Scenario 7: the Chaos Lottery
-
-**Gated on: 30 consecutive green nights.** Not started, deliberately.
+## Scenario 7: the Chaos Lottery *(shipped — the capstone)*
 
 Where scenarios 1–6 are hypothesis-driven and single-primitive ("does multi-master converge
-across a partition?"), the lottery is exploration-driven and **cross-primitive**: draw 2–5
-random faults from the `FaultInjection` enum, aim them at random targets across *different*
-primitives (Replication · DataFlow · Query · Function · MinIO/NATS/Longhorn), randomise
-durations and start offsets so they overlap and cascade, then assert the whole **platform**
-re-cohered. Seeded and replayable (a lottery that finds a bug it can't reproduce is worse
-than none), weekly rather than nightly, advisory before it ever gates a release.
+across a partition?"), the lottery is exploration-driven and **cross-primitive**. A seeded draw
+([chaos/lottery-draw.py](../chaos/lottery-draw.py)) picks **2–4** concurrent faults from the
+composable palette, biased ~75% toward faults sharing a surface tag (interaction bugs live where
+faults overlap) with a uniform wildcard tail; `scenario-lottery.sh` applies them all at once,
+**proves each one fired**, drives the convergence harness through the combined chaos, heals, and
+requires byte-identical reconvergence with zero lost. Design: seeded + **replayable** (a red
+reruns with `LOTTERY_SEED=<seed>`, printed prominently), draw-**without-replacement**, blast-cap
+2–4, convergence oracle as judge. *(Shaken out live: seed 7 `[latency, capture-kill, stress-mem]`
+converged 250s; seed 42 `[isolation, stress-mem, sink-failure]` — a max-blast cut combo —
+reconverged 599s.)*
 
-It composes the primitives that already exist — `preflight.sh`, `partitionPeer`, the
-injectable `clk_off` — so randomisation can never widen the blast radius.
+Baked-in lessons (all learned the hard way here):
 
-**Two corrections to fold in when it is built** (both learned the hard way here):
+1. **The palette excludes inert faults.** `io-latency` and `dns-error` never inject on this
+   cluster (their Chaos Mesh Rust injectors panic); a random draw of them would silently
+   under-test. They're out of the pool.
+2. **No member↔member partitions.** On a pod-mediated mesh the netB faults cut a member from the
+   **engine that feeds it** via `partitionPeer` — never member↔member (which injects nothing).
+3. **Per-fault proof-of-fire is mandatory.** Every drawn fault must be independently witnessed
+   (Chaos Mesh `AllInjected` / pod-replaced); a partial draw is INCONCLUSIVE, never green — a
+   silently-inert fault in a random chain would otherwise be invisible.
+4. **Conflict model.** netem faults peer on mesh pods, so the draw never pairs one with a pod-KILL
+   of a peer pod (the peer's IP churns and the netem can't inject) — those are two ways to break
+   the same link, not an interesting combo.
 
-1. **Drop `io-latency` from the fault pool until it works.** It never injects (`toda`
-   panics) — a random draw would silently under-test and still report green. With scripted
-   faults you can eyeball whether each one bit; a generator cannot.
-2. **Never generate a member↔member partition.** On a pod-mediated mesh (db → capture → bus
-   → sink → db) it injects *nothing*. The generator must cut a member from the **engine that
-   feeds it** (that is what `partitionPeer` is for).
-
-Both make the `AllInjected` / fault-landed assertions **mandatory infrastructure** for the
-lottery rather than a nicety: a silently-inert fault in a random chain is invisible.
+**Bandit-weighting** (weighting arms by past yield) is the tracked next refinement; v1 uses
+uniform arm weights + the surface-tag correlation bias, which is where the spec's value is.
 
 ## What the suite has already caught
 
