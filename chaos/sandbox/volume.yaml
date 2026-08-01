@@ -1,0 +1,13 @@
+# Nightly Chaos Suite — the kind: Volume under test (block-storage plane, EBS-style). A standalone
+# Longhorn block volume. The chaos fault kills the pod attached to it; the recover-mode oracle
+# asserts a raw-block signature written before the fault is still readable after the pod reschedules
+# and re-attaches the volume — the persistent block device survives independent of any one pod.
+# Conservation of acknowledged work, block edition. The longhorn SC lands the replica on production
+# storage (the fault here is the attached pod, not the storage; Longhorn replica-loss is Scenario 5).
+apiVersion: openinfra.dev/v1
+kind: Volume
+metadata:
+  name: vol
+  namespace: chaos-sandbox
+spec:
+  size: 1Gi

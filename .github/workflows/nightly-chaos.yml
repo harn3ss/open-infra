@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: lottery
-        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, migration, app-availability, security-deny, stream-noloss, lottery]
+        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, migration, app-availability, security-deny, stream-noloss, directory-recover, fileshare-durable, volume-durable, dataflow-converge, vm-resilience, lottery]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -61,6 +61,11 @@ jobs:
             app-availability) ./chaos/scenario-app-availability.sh ;;
             security-deny) ./chaos/scenario-security-deny.sh ;;
             stream-noloss) ./chaos/scenario-stream-noloss.sh ;;
+            directory-recover) ./chaos/scenario-directory-recover.sh ;;
+            fileshare-durable) ./chaos/scenario-fileshare-durable.sh ;;
+            volume-durable) ./chaos/scenario-volume-durable.sh ;;
+            dataflow-converge) ./chaos/scenario-dataflow-converge.sh ;;
+            vm-resilience) ./chaos/scenario-vm-resilience.sh ;;
             lottery)   ./chaos/scenario-lottery.sh ;;
             *) echo "unknown scenario"; exit 2 ;;
           esac

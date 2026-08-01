@@ -1,0 +1,14 @@
+# VM chain — kill the VM's virt-launcher pod. With runStrategy: Always, KubeVirt must bring the VM
+# back: it recreates the launcher pod and the guest reboots from its persistent (node-local) disk,
+# so the VMI must return to Running. A VM that stays down is a red. pod-kill is instantaneous.
+# Blast radius: chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: vm-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { kubevirt.io/domain: vm }
+  mode: all
