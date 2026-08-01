@@ -125,7 +125,15 @@ the product's public contract.
   resilience but isn't a hard squeeze.)* A second increment, **`stress-mem`**, puts 300MB of
   memory pressure on site B's Postgres (sized under its 512Mi limit so it degrades, not OOMs) —
   a different fault type on a different target; the DB stays queryable and the mesh converges
-  zero-lost. Remaining variety (disk-fill, DNS) needs new `FaultInjection` XRD types.
+  zero-lost. **DNS was evaluated and found INERT on this cluster** — a full `dns-error` path
+  (XRD type + DNSChaos composition mapping + provider RBAC + a resolv-witness probe) was built
+  and shaken out, but Chaos Mesh's DNS injector *panics* on inject (`exit 101 … Os NotFound`,
+  `Not Injected`, `injectedCount:0`) — the same Rust-injector-panic class as io-latency's `toda`,
+  a runtime/host incompatibility, not a config. Rather than carry a second silently-inert fault
+  type (the project is trying to *remove* io-latency from the enum, not add more), the DNS work
+  was reverted; the finding is recorded here. **disk-fill** has no native Chaos Mesh primitive.
+  So fault-variety on this cluster is stress-cpu + stress-mem; DNS and disk-fill are documented
+  gaps (DNS would light up for free if a Chaos Mesh upgrade fixes the injector).
 - **Scenario 5 (storage replica-loss) is real now — the honest test io-latency was a stand-in
   for.** The sandbox DBs can run on Longhorn (`longhorn-chaos` StorageClass, 2 replicas on
   distinct disposable chaos nodes); `chaos/scenario-storage-replica-loss.sh` loses a replica of
