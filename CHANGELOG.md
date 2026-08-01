@@ -78,6 +78,23 @@ the product's public contract.
   [capacity pre-flight](chaos/preflight-capacity.sh) sums schedulable headroom and aborts
   INCONCLUSIVE (neither red nor green, so it doesn't advance the graduation clock). It
   deliberately does not require every node Ready (the GPU box is off nightly) and fails open.
+- **The chaos suite gained a magnitude axis (Epoch 2, Phase 1).** The nightly partition ran at
+  one magnitude (a clean cut); the highest-value multi-master bugs live in the *limping* zone.
+  Two new variants, each with its own proof-of-fire and its own oracle expectation
+  ([docs/chaos-oracle.md](docs/chaos-oracle.md)):
+  - **`partition-flapping`** — the cut is injected/healed in short repeated cycles while
+    conflicting writes flow; the mesh must reconverge byte-identical **after** flapping stops,
+    with ≥1 cut confirmed live. *(shaken out live before folding in.)*
+  - **`partition-latency`** — a *degrade*, not a cut: 800ms both ways on the sink↔B apply path.
+    The oracle expectation **inverts** — a degrade never severs, so the mesh must **keep
+    converging** and there is no `MIN_ELAPSED` floor (fast convergence is the goal, not a false
+    green). *(shaken out live: converged — 220 keys / 20 conflicts / zero lost — under sustained
+    800ms, a ~4× slower apply path.)* Required a composition fix: Chaos Mesh rejects a netem
+    `delay` with `direction: both` unless a peer `target` block is present, so the FaultInjection
+    composition now emits that block for **any** peer-scoped `NetworkChaos`, not just partitions.
+  - The proof-of-fire probe now **times** the handshake (busybox `time`, 0.01s resolution) and
+    classifies `up`/`slow`/`down`, so one probe witnesses both cuts and degrades — a degraded
+    link an up/down probe would have misread as "up = no fault fired."
 - **`io-latency` FaultInjection root-caused (still inert).** Re-tested after the cert freeze;
   it is **not** cert drift — it's a cgroup-v2 incompatibility: Chaos Mesh 2.7.2's
   `fusedev.GrantAccess` wants a legacy cgroup-v1 `devices` controller, so on a unified-v2 host
