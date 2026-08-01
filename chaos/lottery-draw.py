@@ -27,16 +27,23 @@ from random import Random
 # Excluded on purpose: io-latency + dns-error (inert — Chaos Mesh injector panics here), and
 # cnpg-failover (a different, CNPG sandbox). Each fault carries surface tags (for the correlation
 # bias) and an exclusion group (mutually-exclusive picks). `fault` is the manifest the driver applies.
+# `surfaces` = the COMPONENT each fault actually stresses, NOT its location. Correlation is only
+# meaningful if a shared surface means a genuine interaction (two faults piling onto the same
+# component); location tags like "site-b"/"apply-link" were on ~every fault, so every pair looked
+# "correlated", the wildcard tail never fired, and the multi-surface faults out-competed the cuts.
+# Components: `pg-b` (the DB — its network AND memory), `sink` (the a→b apply engine — its link,
+# lifecycle, CPU), `dbz` (B's capture). netB faults touch pg-b's network AND peer the sink, so they
+# carry both; stress-cpu/sink-lifecycle touch only the sink; stress-mem only pg-b; capture-kill only dbz.
 PALETTE = [
-    {"name": "partition",   "fault": "fault-partition.yaml",  "group": "netB",  "surfaces": ["network", "apply-link", "site-b"]},
-    {"name": "isolation",   "fault": "fault-isolation.yaml",  "group": "netB",  "surfaces": ["network", "apply-link", "mesh", "site-b"]},
-    {"name": "latency",     "fault": "fault-latency.yaml",    "group": "netB",  "surfaces": ["network", "apply-link", "site-b"]},
-    {"name": "loss",        "fault": "fault-loss.yaml",       "group": "netB",  "surfaces": ["network", "apply-link", "site-b"]},
-    {"name": "sink-kill",   "fault": "fault-sink-kill.yaml",  "group": "sink",  "surfaces": ["pod", "sink", "apply-link"]},
-    {"name": "sink-failure","fault": "fault-sink-failure.yaml","group": "sink", "surfaces": ["pod", "sink", "apply-link"]},
-    {"name": "stress-cpu",  "fault": "fault-stress-cpu.yaml", "group": "sink",  "surfaces": ["compute", "sink"]},
-    {"name": "capture-kill","fault": "fault-capture-kill.yaml","group": "dbz",  "surfaces": ["pod", "capture", "site-b"]},
-    {"name": "stress-mem",  "fault": "fault-stress-mem.yaml", "group": "db",    "surfaces": ["compute", "memory", "db", "site-b"]},
+    {"name": "partition",   "fault": "fault-partition.yaml",  "group": "netB",  "surfaces": ["pg-b", "sink"]},
+    {"name": "isolation",   "fault": "fault-isolation.yaml",  "group": "netB",  "surfaces": ["pg-b", "sink", "dbz"]},
+    {"name": "latency",     "fault": "fault-latency.yaml",    "group": "netB",  "surfaces": ["pg-b", "sink"]},
+    {"name": "loss",        "fault": "fault-loss.yaml",       "group": "netB",  "surfaces": ["pg-b", "sink"]},
+    {"name": "sink-kill",   "fault": "fault-sink-kill.yaml",  "group": "sink",  "surfaces": ["sink"]},
+    {"name": "sink-failure","fault": "fault-sink-failure.yaml","group": "sink", "surfaces": ["sink"]},
+    {"name": "stress-cpu",  "fault": "fault-stress-cpu.yaml", "group": "sink",  "surfaces": ["sink"]},
+    {"name": "capture-kill","fault": "fault-capture-kill.yaml","group": "dbz",  "surfaces": ["dbz"]},
+    {"name": "stress-mem",  "fault": "fault-stress-mem.yaml", "group": "db",    "surfaces": ["pg-b"]},
 ]
 
 CORRELATION_BIAS = float(os.environ.get("LOTTERY_CORRELATION_BIAS", "0.75"))  # P(prefer a shared-surface pick)
