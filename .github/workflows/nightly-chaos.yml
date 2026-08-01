@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: lottery
-        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, migration, app-availability, security-deny, lottery]
+        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, sinkdrainkill, concurrent, migration, app-availability, security-deny, stream-noloss, lottery]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -60,6 +60,7 @@ jobs:
             migration) ./chaos/scenario-migration.sh ;;
             app-availability) ./chaos/scenario-app-availability.sh ;;
             security-deny) ./chaos/scenario-security-deny.sh ;;
+            stream-noloss) ./chaos/scenario-stream-noloss.sh ;;
             lottery)   ./chaos/scenario-lottery.sh ;;
             *) echo "unknown scenario"; exit 2 ;;
           esac

@@ -1,0 +1,18 @@
+# Stream chain — kill the CDC capture engine mid-flight. The Debezium Deployment
+# (<name>-stream-dbz, pods labelled app: <name>-stream) reads the source WAL and publishes to
+# JetStream. Killing it while the source is being written tests that the stream loses NOTHING
+# across the outage: on restart Debezium resumes from its durable file offset and re-publishes any
+# uncommitted changes (at-least-once), so every acknowledged source row still lands on cdc-evt. A
+# lost offset or dropped batch shows up as a missing key — which the no-loss oracle fails on.
+#
+# pod-kill is instantaneous; the Deployment restarts the pod. Blast radius: chaos-sandbox only.
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: stream-capture-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: evt-stream }
+  mode: all

@@ -1,0 +1,46 @@
+# Nightly Chaos Suite — Stream chain source (the stream-noloss scenario). One disposable Postgres
+# whose change log a kind: Stream taps (CDC → JetStream, the "Kinesis" path). The oracle verifies
+# the STREAM delivery guarantee: every acknowledged source change appears on the JetStream stream
+# even when the capture engine is killed mid-flight (no loss; at-least-once, so dups are allowed).
+# wal_level=logical so Debezium can read the WAL. Pinned to the chaos nodes by the ns annotation.
+apiVersion: v1
+kind: Secret
+metadata: { name: evt-creds, namespace: chaos-sandbox }
+stringData: { password: chaosbox }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: evt-src, namespace: chaos-sandbox, labels: { app: evt-db } }
+spec:
+  selector: { app: evt-db }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: evt-src, namespace: chaos-sandbox, labels: { app: evt-db } }
+spec:
+  serviceName: evt-src
+  replicas: 1
+  selector: { matchLabels: { app: evt-db } }
+  template:
+    metadata: { labels: { app: evt-db } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+          env:
+            - { name: POSTGRES_DB, value: app }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: evt-creds, key: password } } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+          readinessProbe: { exec: { command: [sh, -c, "pg_isready -U app -d app"] }, initialDelaySeconds: 5, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+      volumes: [{ name: data, emptyDir: {} }] # ephemeral on purpose — this is a sandbox

@@ -211,6 +211,55 @@ sandbox_teardown_appavail() {
   fi
 }
 
+# ---- Stream variant (stream-noloss): CDC → JetStream, no-loss oracle -----------------
+
+# Provision the disposable source DB, pre-create the capture table, then start the kind: Stream.
+# Blocks until the capture (Debezium) Deployment is available.
+sandbox_provision_stream() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning stream source DB"
+  kubectl apply -f "$HERE/sandbox/stream-source.yaml"
+  kubectl -n "$NS" rollout status statefulset/evt-src --timeout="${MEMBERS_ROLLOUT_TIMEOUT:-120s}"
+
+  log "pre-creating public.events on the source (the Stream captures it)"
+  kubectl -n "$NS" exec evt-src-0 -- psql -U app -d app \
+    -c "CREATE TABLE IF NOT EXISTS public.events (id text PRIMARY KEY, val text);"
+
+  log "starting the kind: Stream (CDC → JetStream cdc-evt)"
+  kubectl apply -f "$HERE/sandbox/stream.yaml"
+  log "waiting for the capture engine to become available (warmup)"
+  for _ in $(seq 1 "${STREAM_WARMUP_TRIES:-40}"); do
+    if kubectl -n "$NS" get deploy evt-stream-dbz >/dev/null 2>&1; then
+      kubectl -n "$NS" rollout status deploy/evt-stream-dbz --timeout="${STREAM_ROLLOUT_TIMEOUT:-90s}" && break
+    fi
+    sleep "${STREAM_WARMUP_SLEEP:-6}"
+  done
+}
+
+# The number of messages currently on the cdc-evt JetStream stream (one nats call, exact). This is
+# the authoritative no-loss signal for the stream scenario: reading each message BODY back via the
+# nats CLI (`stream get`) is unreliable past a few dozen (fresh connection per get → throttling),
+# but the stream's message COUNT is O(1) metadata and always accurate.
+sandbox_stream_msg_count() {
+  kubectl -n nats run nats-stream-cnt-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+    sh -c "nats --server=nats://nats.nats.svc:4222 stream info cdc-evt --json 2>/dev/null | tr ',' '\n' | grep -oE '\"messages\": *[0-9]+' | grep -oE '[0-9]+' | head -1" 2>/dev/null \
+    | grep -oE '[0-9]+' | head -1
+}
+
+sandbox_teardown_stream() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down stream CR + source"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/stream.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/stream-source.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc -l app=evt-db --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc evt-stream-offsets --ignore-not-found >/dev/null 2>&1 || true
+    # Return the JetStream stream so it doesn't linger between runs (recreated by ensure-stream).
+    kubectl -n nats run nats-stream-rm-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+      nats --server=nats://nats.nats.svc:4222 stream rm cdc-evt -f >/dev/null 2>&1 || true
+  fi
+}
+
 # ---- Deny variant (security-deny): egress fence + negative-invariant oracle ------
 
 # Provision svc-allowed + svc-forbidden + the two SecurityGroups, wait both apps Ready, and deploy
