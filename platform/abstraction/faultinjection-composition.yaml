@@ -110,10 +110,13 @@ spec:
                         {{- range $k, $v := $spec.target.labelSelector }}
                         {{ $k }}: {{ $v | quote }}
                         {{- end }}
-                    {{- /* Peer-scoped partition: cut traffic only BETWEEN the target and
-                           the peer set (same namespace), leaving both reachable by outside
-                           clients. Chaos Mesh's `target` block is the second side. */}}
-                    {{- if and (eq $type "network-partition") $spec.partitionPeer }}
+                    {{- /* Peer-scoped netem: apply the fault only to traffic BETWEEN the
+                           target and the peer set (same namespace), leaving both reachable
+                           by outside clients. Chaos Mesh's `target` block is the second side.
+                           Required for delay/loss with direction from|both (the webhook
+                           rejects those without a target), and it also narrows a partition's
+                           blast radius to the single link under test. */}}
+                    {{- if and (eq $ckind "NetworkChaos") $spec.partitionPeer }}
                     target:
                       mode: all
                       selector:

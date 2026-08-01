@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: partition
-        options: [partition, partition-flapping, clockskew, sinkkill, cnpgfailover, concurrent]
+        options: [partition, partition-flapping, partition-latency, clockskew, sinkkill, cnpgfailover, concurrent]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -46,6 +46,7 @@ jobs:
           case "${{ github.event.inputs.scenario || 'partition' }}" in
             partition) ./chaos/scenario-partition.sh ;;
             partition-flapping) ./chaos/scenario-partition-flapping.sh ;;
+            partition-latency) ./chaos/scenario-partition-latency.sh ;;
             clockskew) ./chaos/scenario-clockskew.sh ;;
             sinkkill)  ./chaos/scenario-sinkkill.sh ;;
             cnpgfailover) ./chaos/scenario-cnpgfailover.sh ;;

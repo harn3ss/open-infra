@@ -80,8 +80,8 @@ cut), so writes are driven through the cut.
 | **4. Reconvergence** | Members byte-identical within `CONV_TIMEOUT` after heal | Diverge during the ~90s cut (**expected** at this magnitude), reconverge after | Not identical within bound → **RED** (liveness) |
 
 Note pillar 4's "diverge during the cut" is **expected** here — at full-partition magnitude,
-mid-fault divergence is not a bug. That same divergence under mild latency (a future axis)
-would be a bug; the oracle must know the magnitude to grade it.
+mid-fault divergence is not a bug. That same divergence under mild latency (now implemented —
+see the latency row below) **would** be a bug; the oracle must know the magnitude to grade it.
 
 ## Pillar 1 — the proof-of-fire probe (vantage matters)
 
@@ -91,13 +91,18 @@ reaches B via the `a→b` sink pod, and the partition drops exactly the sink↔B
 - **Vantage:** the `a→b` sink pod's network namespace (its pod IP is what B's drop rules
   target). A probe from the harness or an unrelated pod would **not** be cut and would give a
   false "fault fired = no."
-- **Probe:** a short-timeout TCP connect to `pg-b:5432` (e.g. 3s), sampled repeatedly across
-  the fault window.
+- **Probe:** a **timed** TCP connect to `pg-b:5432`, sampled repeatedly across the fault
+  window. `probe-partition.sh` times the handshake with busybox `time` (0.01s resolution —
+  busybox `date` has no `%N`) and classifies three states, so one probe witnesses both cuts
+  and degrades: `up` (< 0.30s), `slow` (connects but ≥ 0.30s — a latency degrade), `down`
+  (connect fails within the timeout — a cut).
 - **Verdict logic:**
-  - fails throughout the window → fault fired ✓ (proceed to pillars 2–4);
-  - succeeds at any mid-window sample → the cut isn't biting → **INCONCLUSIVE** (throw the
-    night out; do not let pillars 2–4 bless a fault that didn't happen);
-  - also sample **before** injection and **after** heal → must succeed, else the probe path
+  - the expected state holds throughout the window → fault fired ✓ (proceed to pillars 2–4).
+    For a partition that's `down`; for a latency degrade that's `slow`;
+  - the link stays `up` when a fault is meant to be biting → the fault isn't biting →
+    **INCONCLUSIVE** (throw the night out; do not let pillars 2–4 bless a fault that didn't
+    happen);
+  - also sample **before** injection and **after** heal → must be `up`, else the probe path
     itself is broken (→ INCONCLUSIVE, not red).
 
 This replaces the current `MIN_ELAPSED` heuristic (which merely *infers* the cut from a slow
@@ -111,6 +116,10 @@ secondary guard; the probe is the primary proof-of-fire.
    is shaken out up→down→up live; see `chaos/probe-partition.sh`, `scenario-partition.sh`.)*
 2. Only then bring up the magnitude axis — and for **each** magnitude, extend this table with
    its per-magnitude expectation and prove the oracle catches a known-bad seed before it counts.
+   ✅ *(shipped so far: **flapping** — `scenario-partition-flapping.sh`, converges after
+   repeated cut/heal with ≥1 cut confirmed live; **latency degrade** — `scenario-partition-latency.sh`,
+   converges byte-identical under sustained 800ms with the handshake confirmed `slow`. Both
+   shaken out live off-gate before folding in.)*
 
 ## Magnitude axis — per-magnitude expectations (Phase 1)
 
@@ -131,19 +140,22 @@ eventually, so sustained divergence under a degrade is a **real bug**, not a tol
 | **One-directional cut** *(current)* | `network-partition`, `partitionPeer: a-b-sink`, `direction: both` — cuts a→b apply only | `probe up|down` (TCP to `pg-b:5432` from sink netns) | B misses A's writes; **divergence EXPECTED** (b→a still flows, so A stays whole) | converge |
 | **Total isolation** *(harsher)* | same, cutting **both** `a-b-sink` **and** `b-a-sink` — needs `partitionPeer` to accept a list *(abstraction enhancement)* | probe both sink→DB links = down | B fully isolated; **divergence EXPECTED** (both sides diverge) | converge |
 | **% packet loss** *(degrade)* | `network-loss`, `loss: "40"`, same peer | **statistical**: N connects from sink netns, expect a *fraction* to fail (not 0, not all) → loss is biting | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
-| **Latency / jitter** *(degrade)* | `network-latency`, `latency: "200ms"`, same peer | **RTT**: connect time from sink netns elevated (≫ baseline) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
-| **Flapping** *(intermittent)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
+| **Latency / jitter** *(degrade — current)* | `network-latency`, `latency: "800ms"`, `direction: both`, `partitionPeer: a-b-sink` (the peer `target` is what makes `both` legal) | `probe slow` — timed handshake from sink netns elevated to ~1.6s (≫ baseline ~0s) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
+| **Flapping** *(intermittent — current)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
 
 ### Build increments (each: build → un-gated shakedown → prove fail-loud → fold in)
 
 - **Cuts reuse the proven probe.** Total-isolation and flapping use the existing up/down
   `probe-partition.sh` unchanged — total-isolation needs a small `partitionPeer`-list
   enhancement to the FaultInjection XRD; flapping is a scenario loop. Lowest-risk next.
-- **Degrades need a new witness.** `%-loss` needs a *statistical* probe (sample many connects,
-  assert a non-trivial failure fraction — a single connect can't witness probabilistic loss),
-  and `latency` needs an *RTT* probe (measure connect time, assert it's elevated). These must
-  be built and shaken out on their own before they count — an up/down probe would falsely read
-  a degraded link as "up = no fault fired" and INCONCLUSIVE every night.
+- **Degrades need a new witness.** `latency`'s RTT witness is **done**: `probe-partition.sh`
+  now times the handshake and classifies `slow` (a degraded-but-connected link an up/down probe
+  would have misread as "up = no fault fired"); shaken out live up→slow→down. It also required
+  a composition fix — a netem `delay` with `direction: both` is rejected by Chaos Mesh unless a
+  peer `target` block is present, so the FaultInjection composition now emits that block for any
+  peer-scoped NetworkChaos, not just partitions. `%-loss` still needs a *statistical* probe
+  (sample many connects, assert a non-trivial failure fraction — a single connect can't witness
+  probabilistic loss); build and shake it out on its own before it counts.
 - **The oracle's reconvergence bound tightens for degrades.** Under a cut, the bound spans the
   fault window; under loss/latency the mesh should track continuously, so the bound is much
   tighter and a breach is a real liveness bug — encode that per row, not a single global bound.

@@ -1,0 +1,27 @@
+# Magnitude axis — network LATENCY degrade (see docs/chaos-oracle.md). Instead of cutting
+# the a→b link, DELAY the sink↔B traffic so the apply path is slow but never severed. Unlike
+# a partition, the mesh must keep converging — sustained divergence under mere latency is a
+# BUG, not a tolerated cut.
+#
+# Like the partition, this is PEER-SCOPED to the a→b sink (partitionPeer): the delay hits
+# only the exact sink↔B link the mesh applies through, not all of site B's traffic. A
+# `target` block is also what makes direction: both legal — Chaos Mesh's webhook rejects
+# from|both netem with no target. 800ms each way delays the sink→pg-b handshake to ~1.6s
+# (both legs delayed), well past the proof-of-fire probe's 0.30s "fast" threshold, so it
+# registers as `slow`, not `up`.
+#
+# Blast radius: chaos-sandbox only (composition scopes the selector; pre-flight guard verifies).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-latency
+  namespace: chaos-sandbox
+spec:
+  type: network-latency
+  target:
+    labelSelector: { app: pg, site: b }
+  partitionPeer: { app: chaos-mesh-pg-repl-a-b-sink }
+  latency: 800ms
+  mode: all
+  direction: both
+  duration: 90s
