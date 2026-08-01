@@ -97,7 +97,13 @@ rules:
     resources: [pods, pods/log, persistentvolumeclaims, services, configmaps, secrets]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
-    resources: [pods/exec] # seed/inspect the ephemeral members via kubectl exec (sandbox only)
+    # pods/exec: seed/inspect the ephemeral members via kubectl exec (sandbox only).
+    # pods/attach: the proof-of-fire probe uses `kubectl debug --attach`, which needs BOTH
+    # ephemeralcontainers (below) to inject the busybox AND attach to read its output. Without
+    # attach, kubectl silently falls back to log-streaming, the probe reads nothing, and every
+    # cut reads as "not down" → INCONCLUSIVE (exactly what 401'd... rather, no-op'd the
+    # 2026-08-01 nightly after the credential fix). Both are `create`.
+    resources: [pods/exec, pods/attach]
     verbs: [create]
   - apiGroups: [""]
     # proof-of-fire probe (oracle pillar 1): attach an ephemeral busybox to the a→b sink pod
