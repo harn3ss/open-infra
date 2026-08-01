@@ -45,6 +45,17 @@ spec:
           # tolerates all taints and Longhorn schedules replicas by its own allowScheduling). Existing
           # disks are untouched by this setting.
           createDefaultDiskLabeledNodes: true
+          # Refines the segmentation for the chaos suite's Scenario 5 (storage replica-loss):
+          # the dedicated chaos nodes ARE now Longhorn-schedulable, but ONLY for volumes that
+          # explicitly select them. With this false, a volume with an EMPTY node selector (every
+          # production volume) refuses any TAGGED node — and only the chaos nodes carry the
+          # `chaos` tag — so production stays fenced onto the untagged real storage nodes while
+          # the `longhorn-chaos` StorageClass (nodeSelector: chaos) places sandbox replicas on the
+          # disposable chaos nodes. Proven live both directions 2026-08-01. The chaos nodes' tag +
+          # allowScheduling + eviction-cleared state is runtime node config (nodes.longhorn.io),
+          # documented in the chaos-suite memory; re-add durability wants them labeled for a
+          # default disk (tracked follow-up).
+          allowEmptyNodeSelectorVolume: false
           # HARD anti-affinity: a volume's replicas MUST land on distinct nodes, so losing one
           # node never loses the volume — the precondition for the chaos suite's Scenario 5
           # (storage replica-loss) to be a real test rather than data deletion. Kept at 2
