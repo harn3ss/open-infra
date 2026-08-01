@@ -17,7 +17,7 @@ on:
         description: "scenario to run"
         type: choice
         default: partition
-        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, clockskew, sinkkill, cnpgfailover, concurrent]
+        options: [partition, partition-flapping, partition-latency, partition-isolation, partition-loss, healing-order, stress-cpu, stress-mem, clockskew, sinkkill, cnpgfailover, concurrent]
       keep:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
@@ -51,6 +51,7 @@ jobs:
             partition-loss) ./chaos/scenario-partition-loss.sh ;;
             healing-order) ./chaos/scenario-healing-order.sh ;;
             stress-cpu) ./chaos/scenario-stress-cpu.sh ;;
+            stress-mem) ./chaos/scenario-stress-mem.sh ;;
             clockskew) ./chaos/scenario-clockskew.sh ;;
             sinkkill)  ./chaos/scenario-sinkkill.sh ;;
             cnpgfailover) ./chaos/scenario-cnpgfailover.sh ;;
