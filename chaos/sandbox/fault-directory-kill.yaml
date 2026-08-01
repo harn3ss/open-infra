@@ -1,0 +1,15 @@
+# Directory chain — kill the Domain Controller pod. The DC StatefulSet recreates it and it remounts
+# the stable domain-database PVC, so the directory must come back with every account intact. A DC
+# that lost its database, or failed to re-serve, is a red — Windows/Linux domain members would lose
+# authentication. pod-kill is instantaneous; the StatefulSet restarts the pod. Blast radius:
+# chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: directory-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: dir-dc }
+  mode: all
