@@ -1,0 +1,32 @@
+# Magnitude axis — TOTAL ISOLATION (harsher cut; see docs/chaos-oracle.md). The default
+# partition (fault-partition.yaml) cuts only the a→b apply link, so B misses A's writes but
+# b→a still flows and A stays whole — one-sided divergence. This isolates site B from its
+# ENTIRE replication mesh at once, so BOTH directions diverge and both must reconverge.
+#
+# How one selector isolates B completely: the load-bearing links into/out of pg-b are
+#   - a-b-sink → pg-b   (applies A's writes INTO B)   — cut ⇒ B stops receiving
+#   - b-dbz    → pg-b   (captures B's writes FOR A)   — cut ⇒ B stops sending
+# both of which carry the shared `openinfra.dev/replication: chaos-mesh-pg` label (so does
+# every other mesh pod). Cutting pg-b from that whole label set severs both real links in one
+# peer selector — no `partitionPeer`-list enhancement needed. The extra rules it creates
+# (pg-b↔a-dbz, pg-b↔b-a-sink) are harmless no-ops: those pods talk to pg-a, never pg-b.
+#
+# The harness still reaches pg-b: it connects to the pg-b Service ClusterIP from the node's
+# host netns (no replication label), and a peer-scoped partition leaves outside clients
+# reachable — so conflicting writes are still driven through the isolation, exactly as the
+# one-directional cut already proves.
+#
+# Blast radius: chaos-sandbox only (composition scopes the selector; pre-flight guard verifies).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mm-isolation
+  namespace: chaos-sandbox
+spec:
+  type: network-partition
+  target:
+    labelSelector: { app: pg, site: b }
+  partitionPeer: { openinfra.dev/replication: chaos-mesh-pg }
+  mode: all
+  direction: both
+  duration: 90s
