@@ -1,0 +1,19 @@
+# Deny chain — churn the FORBIDDEN target while the fence is under watch. Killing svc-forbidden
+# recreates it with a fresh pod (new IP, new Cilium identity assignment). The egress fence on the
+# locked client is label/identity-based, so the recreated pod must STILL be denied — a CNI that
+# resolved policy by cached IP, or raced the identity on pod creation, would briefly let the client
+# through (fail-open). The deny oracle asserts the client NEVER reaches svc-forbidden across this
+# churn — zero tolerance.
+#
+# pod-kill is instantaneous; mode: all churns every svc-forbidden pod. Blast radius: chaos-sandbox
+# only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: svc-forbidden-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app.kubernetes.io/name: svc-forbidden }
+  mode: all
