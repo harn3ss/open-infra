@@ -50,6 +50,45 @@ through the fault and asserts every member ends byte-identical (same key set = p
 winning version+value = pillar 3) after re-converging within `CONV_TIMEOUT` (pillar 4).
 **Pillar 1 is the Epoch-2 addition.**
 
+## One oracle, many workloads — the adapter contract
+
+The suite must eventually judge more than multi-master convergence: a realistic workload chain
+is a *migration* (one-way fidelity), an *app* (bounded availability), a *stream* (exactly-once),
+a *query* (no torn reads). These are different definitions of "correct", so it is tempting to
+write a bespoke oracle per workload — but that forks the verdict machinery (the GREEN/RED/
+INCONCLUSIVE space, the reconvergence poll, the safety check) that must be **identical**
+everywhere, and a monolithic oracle that branches per workload is one nobody can audit. Neither
+is acceptable.
+
+Instead there is **one oracle framework and many small adapters**
+([`apply-sink/oracle_framework.go`](../apply-sink/oracle_framework.go)). The shared runner owns
+everything that must never differ: drive the workload → poll to steady state within
+`CONV_TIMEOUT` → assert no acknowledged work was lost. An adapter (`Oracle`) supplies only the
+three workload-specific decisions:
+
+- **`Drive`** — generate work and return the **ledger** of acknowledged units (the promises the
+  system made).
+- **`SteadyState`** — the predicate for "reconverged to *this* workload's correctness contract".
+- **`Reconcile`** — which ledger entries are missing/corrupt in the settled state (lost work).
+
+The unifying principle every adapter instantiates is **conservation of acknowledged work**: the
+system may drop in-flight/unacked work and may serve degraded during a fault, but it must never
+lose or corrupt what it *acknowledged*, and must reconverge to a state consistent with those
+acks. Each workload only defines what an "acknowledged unit" and a "consistent state" are.
+
+Two adapters ship today, and the second exists specifically to prove the seam is workload-agnostic:
+
+| Adapter | Contract | Ledger | Steady state | Lives in |
+|---|---|---|---|---|
+| **replication** (convergence) | symmetric — every peer agrees | conflicting writes on all members | all members byte-identical | `convergence_test.go` |
+| **migration** (fidelity) | asymmetric — one-way source → target | inserts+updates on the source only | target reflects every acked source row | `migration_test.go` |
+
+The migration adapter is the first **non-convergence** oracle — the keystone for every chain past
+multi-master — and it dropped onto the shared runner with **zero** changes to the runner, which is
+the evidence the framework is genuinely a contract and not a replication harness in disguise. Both
+are proven live: convergence STEADY through a partition, migration STEADY through an apply-sink kill
+mid-stream (the `migration` scenario — see [`chaos/scenario-migration.sh`](../chaos/scenario-migration.sh)).
+
 ## Expectation moves with magnitude (the subtle part)
 
 The oracle reads its definition of "safe" from a **shared timeline** with the injector — what

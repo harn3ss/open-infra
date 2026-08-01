@@ -1,0 +1,88 @@
+# Nightly Chaos Suite — Migration chain disposable endpoints (the #4 zero-downtime-migration
+# scenario). Two throwaway Postgres DBs in the sandbox: a SOURCE (mig-src, wal_level=logical so
+# the migration's Debezium capture can read its WAL) and a TARGET (mig-tgt, a plain Postgres
+# standing in for a managed target). The kind: Migration engine (Debezium → NATS → apply-sink)
+# does a one-way full-load + CDC from src → tgt; the chaos fault kills the apply-sink mid-stream
+# and the migration adapter (apply-sink/migration_test.go) asserts the target stays byte-faithful
+# to every acknowledged source row. Data here is DESIGNED to be destroyed.
+#
+# Both DBs are pinned to the tainted chaos nodes (explicitly AND by the namespace admission
+# annotation) so the fault never lands on production hardware. The postgres image creates
+# POSTGRES_USER as a superuser, which Debezium needs to create its replication slot + publication.
+apiVersion: v1
+kind: Secret
+metadata: { name: mig-creds, namespace: chaos-sandbox }
+stringData: { password: chaosbox }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mig-src, namespace: chaos-sandbox, labels: { app: mig, role: source } }
+spec:
+  selector: { app: mig, role: source }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: mig-tgt, namespace: chaos-sandbox, labels: { app: mig, role: target } }
+spec:
+  selector: { app: mig, role: target }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: mig-src, namespace: chaos-sandbox, labels: { app: mig, role: source } }
+spec:
+  serviceName: mig-src
+  replicas: 1
+  selector: { matchLabels: { app: mig, role: source } }
+  template:
+    metadata: { labels: { app: mig, role: source } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          args: ["-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10"]
+          env:
+            - { name: POSTGRES_DB, value: app }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: mig-creds, key: password } } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+          readinessProbe: { exec: { command: [sh, -c, "pg_isready -U app -d app"] }, initialDelaySeconds: 5, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+      volumes: [{ name: data, emptyDir: {} }] # ephemeral on purpose — this is a sandbox
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: mig-tgt, namespace: chaos-sandbox, labels: { app: mig, role: target } }
+spec:
+  serviceName: mig-tgt
+  replicas: 1
+  selector: { matchLabels: { app: mig, role: target } }
+  template:
+    metadata: { labels: { app: mig, role: target } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      nodeSelector: { openinfra.dev/chaos: "true" }
+      tolerations:
+        - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_DB, value: app }
+            - { name: POSTGRES_USER, value: app }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: mig-creds, key: password } } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432 }]
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 512Mi } }
+          readinessProbe: { exec: { command: [sh, -c, "pg_isready -U app -d app"] }, initialDelaySeconds: 5, periodSeconds: 5 }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+      volumes: [{ name: data, emptyDir: {} }]

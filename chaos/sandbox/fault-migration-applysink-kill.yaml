@@ -1,0 +1,20 @@
+# Migration chain (#4) — kill the CDC apply engine mid-stream. The apply-sink Deployment
+# (<name>-migration-applysink) is what drains change events off NATS JetStream and upserts them
+# into the target. Killing it while the source is being written proves the one-way load loses
+# NOTHING across the outage: the restarted sink resumes from its durable NATS consumer offset
+# (AckWait redelivers rather than drops) and the target catches back up to every acknowledged
+# source row — which the migration adapter (apply-sink/migration_test.go) asserts as fidelity.
+#
+# pod-kill is instantaneous (no duration); the Deployment restarts the pod. This is the migration
+# analogue of the multi-master sink-kill (Scenario 3), but the oracle is one-way fidelity, not
+# convergence. Blast radius: chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: mig-applysink-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: mig-migration-applysink }
+  mode: all
