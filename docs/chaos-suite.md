@@ -234,6 +234,15 @@ StorageClass (`nodeSelector: chaos`), so their replicas land ONLY on chaos nodes
 tagged nodes. Proven both directions live. Losing a chaos-node replica therefore never touches
 production data — the §3 safety bar is met without a separate cluster.
 
+**Re-add durability.** The segmentation (taint + `openinfra.dev/chaos` label) survives a node
+rebuild because it lives in the k3s agent config. The Longhorn side did not — `tags:[chaos]`,
+`allowScheduling` and the cleared eviction are runtime `nodes.longhorn.io` state, and
+`createDefaultDiskLabeledNodes: true` means a rebuilt node gets no disk. A reconciler
+([platform/storage/chaos-node-longhorn-reconciler.yaml](../platform/storage/chaos-node-longhorn-reconciler.yaml))
+closes that from the one durable signal — the node label — setting the create-default-disk label
+and the Longhorn node tag/scheduling on every `openinfra.dev/chaos` node (Sync Job now + a
+self-healing CronJob), so a rebuilt chaos node reacquires its disk and `chaos` tag on its own.
+
 **2. The safe alternative — `io-latency` — does not actually inject, and now we know
 exactly why.** Degrading the sandbox's *own* Longhorn-backed volume would have answered the
 same question safely, but every IOChaos sits at `phase: Not Injected/Wait, injectedCount: 0`

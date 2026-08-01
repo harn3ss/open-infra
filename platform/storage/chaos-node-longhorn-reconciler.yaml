@@ -1,0 +1,139 @@
+# Re-add durability for the chaos suite's storage foundation (docs/chaos-suite.md, Scenario 5).
+#
+# The chaos-node SEGMENTATION (k8s taint + `openinfra.dev/chaos` label) is durable across a node
+# rebuild — it lives in the k3s agent config, so a re-registered node comes back tainted+labelled.
+# The Longhorn STORAGE config did NOT have that property: `tags:[chaos]`, `allowScheduling` and the
+# cleared eviction live in the runtime `nodes.longhorn.io` CR, and `createDefaultDiskLabeledNodes:
+# true` means a rebuilt chaos node gets no disk at all. So a rebuild silently dropped the storage
+# foundation and Scenario 5 would go INCONCLUSIVE (no 2 replicas on distinct chaos nodes).
+#
+# This reconciler closes that gap declaratively, from the ONE durable signal (the node label):
+# for every node labelled `openinfra.dev/chaos=true` it (1) sets the Longhorn create-default-disk
+# label so a rebuilt node auto-provisions a disk, and (2) ensures its Longhorn node CR is
+# tagged `chaos`, schedulable, and not evicting. Idempotent; a one-shot Sync Job applies it now,
+# a CronJob self-heals future re-adds. Production stays fenced off these nodes by
+# allowEmptyNodeSelectorVolume=false + the `chaos` tag (see longhorn.yaml / longhorn-chaos-sc.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chaos-node-longhorn-reconciler
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: chaos-node-longhorn-reconciler
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  # Read chaos nodes and set the Longhorn create-default-disk label on them.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, patch]
+  # Set tags / scheduling / eviction on the matching Longhorn node CRs.
+  - apiGroups: [longhorn.io]
+    resources: [nodes]
+    verbs: [get, list, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: chaos-node-longhorn-reconciler
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: chaos-node-longhorn-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: chaos-node-longhorn-reconciler
+    namespace: longhorn-system
+---
+# The reconcile script, shared by the Sync Job and the CronJob.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-node-longhorn-reconciler
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  reconcile.sh: |
+    set -eu
+    found=0
+    for node in $(kubectl get nodes -l openinfra.dev/chaos=true -o name); do
+      found=1
+      n=${node#node/}
+      # (1) auto-provision a Longhorn disk on a rebuilt node (createDefaultDiskLabeledNodes gate).
+      kubectl label "$node" node.longhorn.io/create-default-disk=true --overwrite
+      # (2) tag the Longhorn node `chaos`, keep it schedulable, and never leave it evicting.
+      #     merge-patch replaces the tags array, so this converges to exactly ["chaos"].
+      if kubectl -n longhorn-system get nodes.longhorn.io "$n" >/dev/null 2>&1; then
+        kubectl -n longhorn-system patch nodes.longhorn.io "$n" --type merge \
+          -p '{"spec":{"allowScheduling":true,"evictionRequested":false,"tags":["chaos"]}}'
+      else
+        echo "note: Longhorn node CR $n not present yet (will converge on the next run)"
+      fi
+    done
+    [ "$found" = 1 ] || echo "no nodes labelled openinfra.dev/chaos=true (nothing to reconcile)"
+    echo "chaos-node Longhorn reconcile complete"
+---
+# One-shot on Argo sync: configure whatever is present right now.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chaos-node-longhorn-reconciler
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      serviceAccountName: chaos-node-longhorn-reconciler
+      restartPolicy: OnFailure
+      containers:
+        - name: reconcile
+          image: bitnami/kubectl
+          command: [sh, /scripts/reconcile.sh]
+          volumeMounts:
+            - { name: script, mountPath: /scripts }
+      volumes:
+        - name: script
+          configMap: { name: chaos-node-longhorn-reconciler }
+---
+# Self-heal: re-apply on a schedule so a rebuilt/re-registered chaos node reacquires its disk +
+# tag on its own, without anyone touching it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chaos-node-longhorn-reconciler
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: chaos-node-longhorn-reconciler
+          restartPolicy: OnFailure
+          containers:
+            - name: reconcile
+              image: bitnami/kubectl
+              command: [sh, /scripts/reconcile.sh]
+              volumeMounts:
+                - { name: script, mountPath: /scripts }
+          volumes:
+            - name: script
+              configMap: { name: chaos-node-longhorn-reconciler }
