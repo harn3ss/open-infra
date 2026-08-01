@@ -294,6 +294,195 @@ sandbox_teardown_deny() {
   fi
 }
 
+# ---- VirtualMachine variant (vm-resilience): the VM comes back from a virt-launcher kill --------
+
+# Provision the kind: VirtualMachine and wait until the VMI reaches Running (CDI import + boot is
+# slow — a few minutes for the first boot).
+sandbox_provision_vm() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning kind: VirtualMachine (ubuntu, CDI import + boot — slow)"
+  kubectl apply -f "$HERE/sandbox/vm.yaml"
+}
+
+# Current VMI phase (Running/Scheduling/…), empty if the VMI doesn't exist yet.
+sandbox_vmi_phase() { kubectl -n "$NS" get vmi vm -o jsonpath='{.status.phase}' 2>/dev/null || true; }
+
+# Block until the VMI reports Running (or give up). $1 = tries (x6s).
+sandbox_vm_wait_running() {
+  local tries="${1:-70}"
+  for _ in $(seq 1 "$tries"); do
+    [ "$(sandbox_vmi_phase)" = "Running" ] && return 0
+    sleep 6
+  done
+  return 1
+}
+
+sandbox_teardown_vm() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down kind: VirtualMachine"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/vm.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    # the CDI-provisioned root disk PVC is not GC'd with the VM
+    kubectl -n "$NS" delete pvc vm-root --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
+# ---- DataFlow variant (dataflow-converge): the DataFlow kind reconverges under a capture kill ----
+
+# Provision the disposable members + pre-seed conv_test, then start the kind: DataFlow (one
+# replication edge over pg-a<->pg-b). Reuses members.yaml; blocks until both nodes' capture is up.
+sandbox_provision_dataflow() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning sandbox members (for the DataFlow nodes)"
+  kubectl apply -f "$HERE/sandbox/members.yaml"
+  kubectl -n "$NS" rollout status statefulset/pg-a --timeout="${MEMBERS_ROLLOUT_TIMEOUT:-120s}"
+  kubectl -n "$NS" rollout status statefulset/pg-b --timeout="${MEMBERS_ROLLOUT_TIMEOUT:-120s}"
+  log "seeding conv_test on both members"
+  for m in pg-a pg-b; do
+    kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app \
+      -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);"
+  done
+
+  log "starting the kind: DataFlow (replication edge pg-a <-> pg-b)"
+  kubectl apply -f "$HERE/sandbox/dataflow.yaml"
+  sleep "${MESH_WARMUP:-45}"   # let mm-prep + per-node capture + per-edge sinks settle
+  for m in pg-a pg-b; do
+    kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app -c "TRUNCATE conv_test;" >/dev/null 2>&1 || true
+  done
+  sleep 5
+}
+
+sandbox_teardown_dataflow() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down DataFlow + members"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/dataflow.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/members.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete jobs --all --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc -l app=pg --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc -l openinfra.dev/dataflow=df --ignore-not-found >/dev/null 2>&1 || true
+    # return the per-node flow streams
+    for node in pg-a pg-b; do
+      kubectl -n nats run nats-df-rm-$$-$node --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+        sh -c "nats --server=nats://nats.nats.svc:4222 stream ls -n 2>/dev/null | grep '^flow-' | xargs -r -n1 nats --server=nats://nats.nats.svc:4222 stream rm -f" >/dev/null 2>&1 || true
+      break
+    done
+  fi
+}
+
+# ---- Volume variant (volume-durable): block data survives a pod reschedule ----------
+
+# Provision the kind: Volume + a writer Deployment that attaches its block device, and wait for the
+# writer to be Running with the device present.
+sandbox_provision_volume() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning kind: Volume (Longhorn block) + writer"
+  kubectl apply -f "$HERE/sandbox/volume.yaml"
+  for _ in $(seq 1 "${VOL_WARMUP_TRIES:-30}"); do
+    kubectl -n "$NS" get pvc vol >/dev/null 2>&1 && break
+    sleep "${VOL_WARMUP_SLEEP:-4}"
+  done
+  kubectl apply -f "$HERE/sandbox/volume-writer.yaml"
+  kubectl -n "$NS" rollout status deploy/vol-writer --timeout="${VOL_ROLLOUT_TIMEOUT:-180s}" || true
+}
+
+# Run a shell command in the current vol-writer pod.
+sandbox_vol_exec() { kubectl -n "$NS" exec deploy/vol-writer -- sh -c "$*"; }
+
+sandbox_teardown_volume() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down kind: Volume + writer"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/volume-writer.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/volume.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc vol --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
+# ---- FileShare variant (fileshare-durable): SMB share data survives a server kill ----
+
+# Provision the kind: FileShare, wait for the Samba Deployment, and deploy an smbclient client pod
+# (userspace SMB — no cifs kernel mount needed, so it tests the real share over the Service).
+sandbox_provision_fileshare() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning kind: FileShare (Samba SMB share on Longhorn)"
+  kubectl apply -f "$HERE/sandbox/fileshare.yaml"
+  for _ in $(seq 1 "${FS_WARMUP_TRIES:-40}"); do
+    kubectl -n "$NS" get deploy fs-smb >/dev/null 2>&1 && break
+    sleep "${FS_WARMUP_SLEEP:-6}"
+  done
+  kubectl -n "$NS" rollout status deploy/fs-smb --timeout="${FS_ROLLOUT_TIMEOUT:-180s}" || true
+
+  log "deploying the smbclient probe pod"
+  # Force-recreate: a `kubectl run` silently no-ops if a prior fs-client is still Terminating,
+  # leaving no ready client and every SMB probe failing. Delete + wait-gone, then create fresh.
+  kubectl -n "$NS" delete pod fs-client --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+  kubectl -n "$NS" wait --for=delete pod/fs-client --timeout=30s >/dev/null 2>&1 || true
+  kubectl -n "$NS" run fs-client --image=dperson/samba --restart=Never --command -- sleep 100000 >/dev/null 2>&1 || true
+  kubectl -n "$NS" wait --for=condition=Ready pod/fs-client --timeout=90s >/dev/null 2>&1 || true
+}
+
+# smbclient against the share over the Service. $1 = the -c command string. Prints smbclient output.
+# Trailing `|| true`: smbclient often exits non-zero even on a successful listing (dperson/samba
+# emits messaging-context warnings), which under the callers' `set -o pipefail` would poison
+# `sandbox_smb ... | grep` and make the check false even when grep matched. Force exit 0 so only the
+# OUTPUT matters — a real failure just yields empty output (no grep match), which the callers handle.
+sandbox_smb() {
+  local pass="$1"; shift
+  kubectl -n "$NS" exec fs-client -- smbclient "//fs.$NS.svc.cluster.local/fs" -U "openinfra%${pass}" -c "$*" 2>/dev/null || true
+}
+
+sandbox_teardown_fileshare() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down kind: FileShare"
+    kubectl -n "$NS" delete pod fs-client --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete -f "$HERE/sandbox/fileshare.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc -l openinfra.dev/fileshare=true --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
+# ---- Directory variant (directory-recover): AD DC survives a kill with data intact ----
+
+# Provision the kind: Directory and wait until the AD domain is actually provisioned and serving
+# (samba-tool answers), not merely until the pod is Running — first-boot domain provisioning is slow.
+sandbox_provision_directory() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning kind: Directory (Samba AD DC)"
+  kubectl apply -f "$HERE/sandbox/directory.yaml"
+  log "waiting for the DC pod to appear + become Running"
+  for _ in $(seq 1 "${DIR_WARMUP_TRIES:-50}"); do
+    kubectl -n "$NS" get statefulset dir-dc >/dev/null 2>&1 && break
+    sleep "${DIR_WARMUP_SLEEP:-6}"
+  done
+  kubectl -n "$NS" rollout status statefulset/dir-dc --timeout="${DIR_ROLLOUT_TIMEOUT:-300s}" || true
+}
+
+# Run samba-tool inside the current DC pod (dir-dc-0). Returns its exit status; used both to wait for
+# the domain to be provisioned and to create/verify the probe account.
+sandbox_dc_exec() { kubectl -n "$NS" exec dir-dc-0 -- "$@"; }
+
+# Block until the AD domain answers `samba-tool user list` (domain provisioned + serving).
+sandbox_dc_wait_ready() {
+  local tries="${1:-40}"
+  for _ in $(seq 1 "$tries"); do
+    if sandbox_dc_exec samba-tool user list >/dev/null 2>&1; then return 0; fi
+    sleep 6
+  done
+  return 1
+}
+
+sandbox_teardown_directory() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down kind: Directory"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/directory.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    # StatefulSet volumeClaimTemplate PVC is not GC'd with the StatefulSet.
+    kubectl -n "$NS" delete pvc -l openinfra.dev/directory=true --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pvc -l app=dir-dc --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+
 # ---- shared ------------------------------------------------------------------------
 
 # Remove any fault, then (unless CHAOS_KEEP=1) the mesh + members + composed mm-prep Jobs.

@@ -1,0 +1,14 @@
+# FileShare chain — kill the Samba server pod. The Deployment recreates it and it remounts the
+# backing PVC, so files written to the share must survive and the share must accept writes again. A
+# share that lost data, or failed to re-serve, is a red. pod-kill is instantaneous. Blast radius:
+# chaos-sandbox only (pre-flight refuses anything else).
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: fileshare-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: fs-smb }
+  mode: all

@@ -1,0 +1,28 @@
+# A disposable pod that attaches the kind: Volume block device (PVC "vol") so the scenario can write
+# and read a raw-block signature across a pod kill. Recreate strategy: an RWO block volume must fully
+# detach from the old pod before the new one can attach, so overlapping pods would deadlock. Pinned
+# to the chaos nodes by the namespace annotation. Not part of the product — it's the block probe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vol-writer
+  namespace: chaos-sandbox
+  labels: { app: vol-writer }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: vol-writer } }
+  template:
+    metadata: { labels: { app: vol-writer } }
+    spec:
+      priorityClassName: chaos-sandbox-low
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: writer
+          image: busybox
+          command: ["sh", "-c", "sleep 100000"]
+          volumeDevices:
+            - { name: data, devicePath: /dev/xvda }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: vol }

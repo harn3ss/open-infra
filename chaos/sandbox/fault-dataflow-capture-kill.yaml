@@ -1,0 +1,14 @@
+# DataFlow chain — kill node pg-a's CDC capture mid-write. The Deployment recreates it and it
+# resumes from its durable offset, so the DataFlow's replication edge must still reconverge the mesh
+# byte-identical (no lost writes). A dropped offset or lost batch shows up as divergence — which the
+# convergence harness fails on. pod-kill is instantaneous. Blast radius: chaos-sandbox only.
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: dataflow-capture-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: df-flow-pg-a-dbz }
+  mode: all
