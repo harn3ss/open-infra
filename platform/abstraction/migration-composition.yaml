@@ -215,7 +215,7 @@ spec:
                             command:
                               - sh
                               - -c
-                              - nats stream info {{ $streamName }} >/dev/null 2>&1 || nats stream add {{ $streamName }} --subjects='mig.{{ $name }}.>' --subjects='mig.{{ $name }}' --storage=file --replicas=1 --max-bytes=2GB --discard=old --defaults
+                              - nats stream info {{ $streamName }} >/dev/null 2>&1 || nats stream add {{ $streamName }} --subjects='mig.{{ $name }}.>' --subjects='mig.{{ $name }}' --storage=file --replicas=1 --max-bytes=512MB --discard=old --defaults
                             env:
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
                         containers:
