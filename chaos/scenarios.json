@@ -8,7 +8,7 @@
   "scenarios": [
     { "id": "C1", "batch": "composite", "title": "SaaS — all three oracle modes at once", "category": "Application + SecurityGroup + Postgres (HA)", "status": "PASS",
       "note": "One run exercised recover + tolerate + deny together: app availability 150/150, orders 139/139 (zero lost), tenant fence 0 breaches, DB failed over. (Surfaced + fixed the SG-labels-on-DB bug.)",
-      "chain": { "nodes": [ {"id":"app","label":"Application (HA, min 2)","kind":"app"}, {"id":"db","label":"Postgres (HA)","kind":"database"}, {"id":"fence","label":"tenant fence (SG)","kind":"app"} ], "edges": [ {"from":"app","to":"db","label":"orders"}, {"from":"fence","to":"db","label":"blocked","dir":""} ] },
+      "chain": { "nodes": [ {"id":"app","label":"Application (HA, min 2)","kind":"app"}, {"id":"db","label":"Postgres (HA)","kind":"database","on":[{"node":"sandbox-node-01","role":"primary"},{"node":"sandbox-node-02","role":"replica"}]}, {"id":"fence","label":"tenant fence (SG)","kind":"app"} ], "edges": [ {"from":"app","to":"db","label":"orders"}, {"from":"fence","to":"db","label":"blocked","dir":""} ] },
       "fault": { "target":"db", "kind":"PodChaos", "label":"kill CNPG primary mid-workload" },
       "oracle": { "mode":"tolerate", "invariant":"availability + zero lost orders + zero fence breaches through failover" } },
 
@@ -20,7 +20,7 @@
 
     { "id": "C3", "batch": "composite", "title": "Ledger conservation under DB failover", "category": "Application + Postgres (HA)", "status": "PASS",
       "note": "144/150 transfers committed, 6 failed in the ~2.4s failover window, SUM(balance)=100000 exactly — no torn transfer.",
-      "chain": { "nodes": [ {"id":"app","label":"transfer loop","kind":"app"}, {"id":"db","label":"Postgres (HA)","kind":"database"} ], "edges": [ {"from":"app","to":"db","label":"BEGIN/debit/credit/COMMIT"} ] },
+      "chain": { "nodes": [ {"id":"app","label":"transfer loop","kind":"app"}, {"id":"db","label":"Postgres (HA)","kind":"database","on":[{"node":"sandbox-node-01","role":"primary"},{"node":"sandbox-node-02","role":"replica"}]} ], "edges": [ {"from":"app","to":"db","label":"BEGIN/debit/credit/COMMIT"} ] },
       "fault": { "target":"db", "kind":"PodChaos", "label":"kill primary mid-stream" },
       "oracle": { "mode":"recover", "invariant":"SUM(balance) conserved exactly" } },
 
@@ -32,7 +32,7 @@
 
     { "id": "C5", "batch": "composite", "title": "Active-active multi-region", "category": "Multi-master mesh (2 regions)", "status": "PASS",
       "note": "Both regions served 20/20 local writes THROUGH the split; healed → reconverged 40/40 with zero lost writes.",
-      "chain": { "nodes": [ {"id":"ra","label":"region-A","kind":"database"}, {"id":"rb","label":"region-B","kind":"database"} ], "edges": [ {"from":"ra","to":"rb","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"ra","label":"region-A","kind":"database","on":[{"node":"sandbox-node-01","role":"region-A"}]}, {"id":"rb","label":"region-B","kind":"database","on":[{"node":"sandbox-node-02","role":"region-B"}]} ], "edges": [ {"from":"ra","to":"rb","label":"replication","dir":"both"} ] },
       "fault": { "edge":["ra","rb"], "kind":"NetworkChaos", "label":"partition region-B" },
       "oracle": { "mode":"tolerate", "invariant":"both serve local writes through the split, then reconverge" } },
 
@@ -88,13 +88,13 @@
 
     { "id": "N09", "batch": "manual-n", "title": "DataFlow autoSyncTables under concurrent writes", "category": "DataFlow (mesh)", "status": "PASS",
       "note": "New table added on one master under load → auto-created on the peer and synced 15/15.",
-      "chain": { "nodes": [ {"id":"a","label":"pg-x","kind":"database"}, {"id":"b","label":"pg-y","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication + autoSync","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-x","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-y","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication + autoSync","dir":"both"} ] },
       "fault": { "target":"a", "kind":"schema", "label":"add a new table while writes flow" },
       "oracle": { "mode":"recover", "invariant":"the new table is auto-created + synced on every peer" } },
 
     { "id": "N10", "batch": "manual-n", "title": "Heterogeneous pg↔mysql mesh", "category": "DataFlow (cross-engine)", "status": "FINDING",
       "note": "FINDING (confirmed): a managed MariaDB without highAvailability ships log_bin=OFF, so Debezium cannot capture from it. pg→mysql applied 10/10, mysql→pg yielded 0/10 — the mesh silently runs one-way. Fix: enable binlog (log_bin + binlog_format=ROW) on a managed MariaDB used as a CDC source.",
-      "chain": { "nodes": [ {"id":"pg","label":"Postgres","kind":"database"}, {"id":"my","label":"MariaDB (non-HA)","kind":"database"} ], "edges": [ {"from":"pg","to":"my","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"pg","label":"Postgres","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"my","label":"MariaDB (non-HA)","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"pg","to":"my","label":"replication","dir":"both"} ] },
       "fault": { "target":"my", "kind":"config", "label":"capture-from-mysql (log_bin OFF)" },
       "oracle": { "mode":"recover", "invariant":"both engines converge to all rows" } },
 
@@ -106,7 +106,7 @@
 
     { "id": "N12", "batch": "manual-n", "title": "Multi-master LWW conflict determinism", "category": "Multi-master mesh", "status": "PASS",
       "note": "10 simultaneous conflicting writes to the same keys on both masters → all 10 resolved to the same winner on both; no split-brain.",
-      "chain": { "nodes": [ {"id":"a","label":"master-A","kind":"database"}, {"id":"b","label":"master-B","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"master-A","kind":"database","on":[{"node":"sandbox-node-01","role":"master"}]}, {"id":"b","label":"master-B","kind":"database","on":[{"node":"sandbox-node-02","role":"master"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"data", "label":"simultaneous conflicting writes (same keys)" },
       "oracle": { "mode":"recover", "invariant":"both masters converge to the same winner per key (deterministic LWW)" } },
 
@@ -129,8 +129,8 @@
       "oracle": { "mode":"recover", "invariant":"idempotent upsert — no duplicate rows" } },
 
     { "id": "N16", "batch": "manual-n", "title": "VM live-migration under node drain", "category": "Virtual machine", "status": "PENDING",
-      "chain": { "nodes": [ {"id":"vm","label":"VM","kind":"vm"}, {"id":"n1","label":"sandbox-node-01","kind":"node"}, {"id":"n2","label":"sandbox-node-02","kind":"node"} ], "edges": [ {"from":"vm","to":"n1","label":"runs on"} ] },
-      "fault": { "target":"n1", "kind":"drain", "label":"cordon + drain the node" },
+      "chain": { "nodes": [ {"id":"vm","label":"VM","kind":"vm","on":[{"node":"sandbox-node-01","role":"from"},{"node":"sandbox-node-02","role":"to (live-migrate)"}]} ], "edges": [] },
+      "fault": { "target":"vm", "node":"sandbox-node-01", "kind":"drain", "label":"cordon + drain the source node" },
       "oracle": { "mode":"tolerate", "invariant":"VM live-migrates to another node with no downtime" } },
 
     { "id": "N17", "batch": "manual-n", "title": "Block-mode volume hotplug to a running VM", "category": "Volume + VM", "status": "PENDING",
@@ -155,7 +155,7 @@
       "oracle": { "mode":"tolerate", "invariant":"high-priority workload scheduled; low-priority evicted" } },
 
     { "id": "S01", "batch": "discovery", "title": "MariaDB Galera node kill", "category": "MySQL (HA)", "status": "PASS",
-      "chain": { "nodes": [ {"id":"db","label":"MariaDB (Galera x3)","kind":"database"} ], "edges": [] },
+      "chain": { "nodes": [ {"id":"db","label":"MariaDB (Galera)","kind":"database","on":[{"node":"sandbox-node-01","role":"galera-1"},{"node":"sandbox-node-02","role":"galera-2"},{"node":"sandbox-node-03","role":"galera-3"}]} ], "edges": [] },
       "fault": { "target":"db", "kind":"PodChaos", "label":"kill a Galera node" },
       "oracle": { "mode":"recover", "invariant":"committed rows survive on quorum" } },
 
@@ -177,12 +177,12 @@
 
     { "id": "S10", "batch": "discovery", "title": "3-node DataFlow mesh convergence", "category": "DataFlow (mesh, N≥3)", "status": "PASS",
       "note": "An earlier 'non-convergence' was traced to the 8-CPU sandbox quota starving apply-sinks (env, not product). Given capacity, the 3-node mesh converges 90/90/90. Multi-master now verified at N=2 and N=3.",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"}, {"id":"c","label":"pg-c","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"repl","dir":"both"}, {"from":"b","to":"c","label":"repl","dir":"both"}, {"from":"a","to":"c","label":"repl","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]}, {"id":"c","label":"pg-c","kind":"database","on":[{"node":"sandbox-node-03","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"repl","dir":"both"}, {"from":"b","to":"c","label":"repl","dir":"both"}, {"from":"a","to":"c","label":"repl","dir":"both"} ] },
       "fault": { "target":"a", "kind":"PodChaos", "label":"capture kill (full mesh)" },
       "oracle": { "mode":"recover", "invariant":"all three members reconverge byte-identical" } },
 
     { "id": "S12", "batch": "discovery", "title": "Kill 2-of-3 Deployment replicas", "category": "Application availability", "status": "PASS",
-      "chain": { "nodes": [ {"id":"app","label":"Application (3 replicas)","kind":"app"} ], "edges": [] },
+      "chain": { "nodes": [ {"id":"app","label":"Application (3 replicas)","kind":"app","on":[{"node":"sandbox-node-01","role":"replica"},{"node":"sandbox-node-02","role":"replica"},{"node":"sandbox-node-03","role":"replica"}]} ], "edges": [] },
       "fault": { "target":"app", "kind":"PodChaos", "label":"kill 2 of 3 replicas" },
       "oracle": { "mode":"tolerate", "invariant":"Service keeps serving; Deployment restores the count" } },
 
@@ -192,8 +192,8 @@
       "oracle": { "mode":"tolerate", "invariant":"all 60 requests served (60/60)" } },
 
     { "id": "S15", "batch": "discovery", "title": "Longhorn Volume replica loss", "category": "Volume (Longhorn)", "status": "PASS",
-      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume"}, {"id":"n","label":"sandbox-node-02","kind":"node"} ], "edges": [ {"from":"vol","to":"n","label":"replica"} ] },
-      "fault": { "target":"n", "kind":"PodChaos", "label":"lose a replica" },
+      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume","on":[{"node":"sandbox-node-01","role":"replica"},{"node":"sandbox-node-02","role":"replica"}]} ], "edges": [] },
+      "fault": { "target":"vol", "node":"sandbox-node-02", "kind":"PodChaos", "label":"lose a replica" },
       "oracle": { "mode":"recover", "invariant":"data intact; Longhorn rebuilds the replica" } },
 
     { "id": "S16", "batch": "discovery", "title": "FileShare killed mid-write", "category": "FileShare (SMB)", "status": "PASS",
@@ -234,47 +234,47 @@
       "oracle": { "mode":"tolerate", "invariant":"HTTP success rate ≥ SLO during the fault" } },
 
     { "id": "M02", "batch": "nightly", "title": "cnpg-failover", "category": "Postgres (HA)", "status": "PASS",
-      "chain": { "nodes": [ {"id":"db","label":"CNPG cluster","kind":"database"} ], "edges": [] },
+      "chain": { "nodes": [ {"id":"db","label":"CNPG cluster","kind":"database","on":[{"node":"sandbox-node-01","role":"primary"},{"node":"sandbox-node-02","role":"replica"}]} ], "edges": [] },
       "fault": { "target":"db", "kind":"PodChaos", "label":"kill the primary" },
       "oracle": { "mode":"recover", "invariant":"failover with no lost writes" } },
 
     { "id": "M03", "batch": "nightly", "title": "partition", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"clean partition" },
       "oracle": { "mode":"recover", "invariant":"reconverge byte-identical after heal" } },
 
     { "id": "M04", "batch": "nightly", "title": "partition-isolation", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "target":"b", "kind":"NetworkChaos", "label":"sever B from the whole mesh (both links)" },
       "oracle": { "mode":"recover", "invariant":"both members diverge then reconverge byte-identical" } },
 
     { "id": "M05", "batch": "nightly", "title": "partition-flapping", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"repeated cut/heal cycles" },
       "oracle": { "mode":"recover", "invariant":"reconverge byte-identical after flapping stops" } },
 
     { "id": "M06", "batch": "nightly", "title": "partition-latency", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"800ms latency both ways" },
       "oracle": { "mode":"tolerate", "invariant":"keeps converging under a ~4× slower apply path" } },
 
     { "id": "M07", "batch": "nightly", "title": "partition-loss", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"15% packet loss" },
       "oracle": { "mode":"tolerate", "invariant":"keeps converging under sustained loss" } },
 
     { "id": "M08", "batch": "nightly", "title": "clock-skew", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "target":"b", "kind":"TimeChaos", "label":"clock skew on a member" },
       "oracle": { "mode":"recover", "invariant":"LWW still converges (no lost-write regression)" } },
 
     { "id": "M09", "batch": "nightly", "title": "healing-order", "category": "Multi-master mesh (timing)", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"}, {"id":"s","label":"a→b sink","kind":"app"} ], "edges": [ {"from":"a","to":"s"}, {"from":"s","to":"b"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]}, {"id":"s","label":"a→b sink","kind":"app"} ], "edges": [ {"from":"a","to":"s"}, {"from":"s","to":"b"} ] },
       "fault": { "target":"s", "kind":"NetworkChaos+PodChaos", "label":"overlap partition + held-down sink, heal in order" },
       "oracle": { "mode":"recover", "invariant":"reconverge regardless of heal order" } },
 
     { "id": "M10", "batch": "nightly", "title": "concurrent (mesh under overlapping chaos)", "category": "Multi-master mesh", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"NetworkChaos+PodChaos", "label":"partition + sink kill together" },
       "oracle": { "mode":"recover", "invariant":"reconverge with zero lost writes (graduation test)" } },
 
@@ -309,7 +309,7 @@
       "oracle": { "mode":"recover", "invariant":"stream message count ≥ driven changes (no dropped events)" } },
 
     { "id": "M17", "batch": "nightly", "title": "dataflow-converge", "category": "DataFlow", "status": "PASS",
-      "chain": { "nodes": [ {"id":"a","label":"member-A","kind":"database"}, {"id":"b","label":"member-B","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"DataFlow mesh","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"member-A","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"member-B","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"DataFlow mesh","dir":"both"} ] },
       "fault": { "target":"a", "kind":"PodChaos", "label":"DataFlow capture kill" },
       "oracle": { "mode":"recover", "invariant":"members byte-identical after heal" } },
 
@@ -329,13 +329,13 @@
       "oracle": { "mode":"recover", "invariant":"a pre-fault file is present + writable after restart" } },
 
     { "id": "M21", "batch": "nightly", "title": "volume-durable", "category": "Volume (Longhorn)", "status": "PASS",
-      "chain": { "nodes": [ {"id":"vol","label":"block Volume","kind":"volume"} ], "edges": [] },
+      "chain": { "nodes": [ {"id":"vol","label":"block Volume","kind":"volume","on":[{"node":"sandbox-node-01","role":"replica"},{"node":"sandbox-node-02","role":"replica"}]} ], "edges": [] },
       "fault": { "target":"vol", "kind":"PodChaos", "label":"kill the attached pod (reschedule)" },
       "oracle": { "mode":"recover", "invariant":"a raw-block signature reads back after reschedule" } },
 
     { "id": "M22", "batch": "nightly", "title": "storage-replica-loss", "category": "Storage (Longhorn)", "status": "PASS",
-      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume"}, {"id":"n1","label":"sandbox-node-01","kind":"node"}, {"id":"n2","label":"sandbox-node-02","kind":"node"} ], "edges": [ {"from":"vol","to":"n1","label":"replica"}, {"from":"vol","to":"n2","label":"replica"} ] },
-      "fault": { "target":"n1", "kind":"PodChaos", "label":"lose a replica (distinct nodes)" },
+      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume","on":[{"node":"sandbox-node-01","role":"replica"},{"node":"sandbox-node-02","role":"replica"},{"node":"sandbox-node-03","role":"replica"}]} ], "edges": [] },
+      "fault": { "target":"vol", "node":"sandbox-node-03", "kind":"PodChaos", "label":"lose a replica (distinct nodes)" },
       "oracle": { "mode":"recover", "invariant":"volume survives on the surviving replica; rebuilds" } },
 
     { "id": "M23", "batch": "nightly", "title": "vm-resilience", "category": "Virtual machine", "status": "PASS",
@@ -345,7 +345,7 @@
 
     { "id": "M24", "batch": "nightly", "title": "lottery (correlation capstone)", "category": "Multi-master mesh (seeded)", "status": "PARKED",
       "note": "The correlation capstone: a seeded RNG composes 2–4 physically-composable faults per night. Backlogged until the base suite banks 30 consecutive green nights.",
-      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"seeded multi-fault", "label":"seeded blast (2–4 composed faults)" },
       "oracle": { "mode":"recover", "invariant":"reconverge under any composed blast" } }
   ]
