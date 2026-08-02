@@ -8,7 +8,9 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 64 scenarios — 🟢 52 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 9 pending · ⏸️ 1 parked.
+**Tally:** 64 scenarios — 🟢 53 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 9 pending · ⏸️ 0 parked.
+
+**Last nightly:** `lottery` 🟢 success ([2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269))
 
 ### Legend
 
@@ -89,7 +91,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M21](#s-M21) | volume-durable | Volume (Longhorn) | 01,02 | 🟢 PASS |
 | [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS |
 | [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS |
-| [M24](#s-M24) | lottery (correlation capstone) | Multi-master mesh (seeded) | 01,02 | ⏸️ PARKED |
+| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -1219,7 +1221,7 @@ flowchart LR
 
 ## Nightly suite
 
-Runs every night on a self-hosted runner, sandbox-scoped. Each scenario asserts its fault actually landed (proof-of-fire) while the harness is still holding the break, so a false-green fails loud. This is the continuously-green core.
+The scheduled nightly run executes the **lottery** (M24) — a seeded draw of 2–4 concurrent faults — on a self-hosted runner, sandbox-scoped. The other scenarios here are the on-demand library the lottery composes from (also runnable individually via workflow_dispatch). Each asserts its fault actually landed (proof-of-fire) while the break is held, so a false-green fails loud. This page regenerates on every nightly run.
 
 <a id="s-M01"></a>
 ### M01 · app-availability &nbsp; 🟢 PASS
@@ -1845,13 +1847,15 @@ flowchart LR
 </details>
 
 <a id="s-M24"></a>
-### M24 · lottery (correlation capstone) &nbsp; ⏸️ PARKED
+### M24 · lottery (correlation capstone) — THE nightly run &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh (seeded) &nbsp;•&nbsp; **Oracle:** recover — reconverge under any composed blast
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-> The correlation capstone: a seeded RNG composes 2–4 physically-composable faults per night. Backlogged until the base suite banks 30 consecutive green nights.
+**Last nightly:** 🟢 success · [2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269)
+
+> This is what the scheduled nightly actually runs. A seeded, replayable draw (lottery-draw.py) composes 2–4 physically-composable faults each night; a red night reruns with LOTTERY_SEED=<printed seed>. The other nightly-batch scenarios are the library it draws from.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
