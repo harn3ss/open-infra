@@ -42,7 +42,8 @@
       "fault": { "target":"pump", "kind":"PodChaos", "label":"kill pump mid-stream" },
       "oracle": { "mode":"recover", "invariant":"zero events lost (durable consumer resumes from offset)" } },
 
-    { "id": "N01", "batch": "manual-n", "title": "HPA scale-out under load + replica kill", "category": "Application autoscaling", "status": "PENDING",
+    { "id": "N01", "batch": "manual-n", "title": "HPA scale-out under load + replica kill", "category": "Application autoscaling", "status": "PASS",
+      "note": "Concurrent load pushed CPU past the HPA target; the app scaled out 1→4 (max). Killing a scaled replica recovered back to 4 — scale-out and self-heal both hold.",
       "chain": { "nodes": [ {"id":"app","label":"Application (min 2 / max 5)","kind":"app"} ], "edges": [] },
       "fault": { "target":"app", "kind":"PodChaos", "label":"kill a scaled replica under load" },
       "oracle": { "mode":"tolerate", "invariant":"availability holds; HPA restores the replica count" } },
