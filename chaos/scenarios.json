@@ -3,7 +3,7 @@
     { "id": "composite", "title": "Composite workflows", "desc": "Realistic multi-kind tenant stacks hit by one fault, judged on a business-level invariant (money conserved / no order lost / identity+data survive) — often blending oracle modes in a single run. Hand-driven." },
     { "id": "manual-n", "title": "Targeted batch (N-series)", "desc": "New-coverage probes across untested ground: IAM/permission boundary, cross-namespace isolation, DataFlow internals, cross-engine replication, migration lifecycle, autoscaling, snapshots, and VM storage. Hand-driven." },
     { "id": "discovery", "title": "Discovery batch (S-series)", "desc": "A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config — the sweep that surfaced the cross-engine primary-key regression (found + fixed)." },
-    { "id": "nightly", "title": "Nightly suite", "desc": "Runs every night on a self-hosted runner, sandbox-scoped. Each scenario asserts its fault actually landed (proof-of-fire) while the harness is still holding the break, so a false-green fails loud. This is the continuously-green core." }
+    { "id": "nightly", "title": "Nightly suite", "desc": "The scheduled nightly run executes the **lottery** (M24) — a seeded draw of 2–4 concurrent faults — on a self-hosted runner, sandbox-scoped. The other scenarios here are the on-demand library the lottery composes from (also runnable individually via workflow_dispatch). Each asserts its fault actually landed (proof-of-fire) while the break is held, so a false-green fails loud. This page regenerates on every nightly run." }
   ],
   "scenarios": [
     { "id": "C1", "batch": "composite", "title": "SaaS — all three oracle modes at once", "category": "Application + SecurityGroup + Postgres (HA)", "status": "PASS",
@@ -343,8 +343,8 @@
       "fault": { "target":"vm", "kind":"PodChaos", "label":"kill the virt-launcher pod" },
       "oracle": { "mode":"recover", "invariant":"the VMI returns to Running" } },
 
-    { "id": "M24", "batch": "nightly", "title": "lottery (correlation capstone)", "category": "Multi-master mesh (seeded)", "status": "PARKED",
-      "note": "The correlation capstone: a seeded RNG composes 2–4 physically-composable faults per night. Backlogged until the base suite banks 30 consecutive green nights.",
+    { "id": "M24", "batch": "nightly", "title": "lottery (correlation capstone) — THE nightly run", "category": "Multi-master mesh (seeded)", "status": "PASS", "key": "lottery",
+      "note": "This is what the scheduled nightly actually runs. A seeded, replayable draw (lottery-draw.py) composes 2–4 physically-composable faults each night; a red night reruns with LOTTERY_SEED=<printed seed>. The other nightly-batch scenarios are the library it draws from.",
       "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database","on":[{"node":"sandbox-node-01","role":"member"}]}, {"id":"b","label":"pg-b","kind":"database","on":[{"node":"sandbox-node-02","role":"member"}]} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
       "fault": { "edge":["a","b"], "kind":"seeded multi-fault", "label":"seeded blast (2–4 composed faults)" },
       "oracle": { "mode":"recover", "invariant":"reconverge under any composed blast" } }
