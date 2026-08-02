@@ -150,7 +150,8 @@
       "fault": { "target":"", "kind":"", "label":"" },
       "oracle": { "mode":"recover", "invariant":"both functions receive every event (independent consumers)" } },
 
-    { "id": "N20", "batch": "manual-n", "title": "PriorityClass preemption under pressure", "category": "Scheduling / control-plane", "status": "PENDING",
+    { "id": "N20", "batch": "manual-n", "title": "PriorityClass preemption under pressure", "category": "Scheduling / control-plane", "status": "PASS",
+      "note": "Packed a node with 5 low-priority pods; a high-priority pod scheduled by preempting 2 of them (confirmed via Preempted events). Run in a no-quota scratch namespace so real node pressure could build.",
       "chain": { "nodes": [ {"id":"lo","label":"low-priority pods","kind":"app"}, {"id":"hi","label":"high-priority pod","kind":"app"} ], "edges": [ {"from":"hi","to":"lo","label":"preempts"} ] },
       "fault": { "target":"lo", "kind":"quota", "label":"fill capacity, then schedule a high-priority pod" },
       "oracle": { "mode":"tolerate", "invariant":"high-priority workload scheduled; low-priority evicted" } },
