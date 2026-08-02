@@ -1656,6 +1656,25 @@ func splitType(t string) (string, string) {
 	return t, ""
 }
 
+// boundKeyType coerces an unbounded LOB type to a bounded VARCHAR when the column is (part of) a
+// PRIMARY KEY on a MySQL or SQL Server target — those engines forbid a TEXT/BLOB/…(max) column as a
+// key without a length. 255 is safe for an InnoDB utf8mb4 key (1020 bytes < the 3072-byte prefix
+// limit) and covers the usual string/UUID keys; non-key LOB columns are untouched.
+func boundKeyType(engine, typ string) string {
+	u := strings.ToUpper(strings.TrimSpace(typ))
+	switch driverName(engine) {
+	case "mysql":
+		if strings.Contains(u, "TEXT") || strings.Contains(u, "BLOB") || u == "JSON" {
+			return "VARCHAR(255)"
+		}
+	case "sqlserver":
+		if strings.Contains(u, "(MAX)") || u == "TEXT" || u == "NTEXT" {
+			return "NVARCHAR(255)"
+		}
+	}
+	return typ
+}
+
 func mapType(srcEngine, tgtEngine, srcType string) string {
 	if driverName(srcEngine) == driverName(tgtEngine) {
 		return srcType
@@ -1964,9 +1983,22 @@ func pgToMssql(base, params string) string {
 }
 
 func createTargetTable(db *sql.DB, engine, schema, table string, cols []ddlCol, pk []string) error {
+	pkset := map[string]bool{}
+	for _, p := range pk {
+		pkset[p] = true
+	}
 	var defs []string
 	for _, c := range cols {
-		d := fmt.Sprintf("%s %s", quoteIdent(engine, c.name), c.typ)
+		typ := c.typ
+		// A PRIMARY KEY column cannot be an unbounded LOB on MySQL (TEXT/BLOB) or SQL Server
+		// (varchar(max)/text): both reject it as a key without a length, so the cross-engine
+		// CREATE fails (MySQL error 1170) and the migration never lands. Coerce a key column to a
+		// bounded VARCHAR so the CREATE succeeds. Only PK columns are affected; non-key LOBs keep
+		// their mapped type.
+		if pkset[c.name] {
+			typ = boundKeyType(engine, typ)
+		}
+		d := fmt.Sprintf("%s %s", quoteIdent(engine, c.name), typ)
 		if c.notnull {
 			d += " NOT NULL"
 		}
