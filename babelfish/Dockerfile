@@ -7,7 +7,7 @@
 # patches — `apt upgrade` clears the fixable base-image CVEs the prebuilt image carried.
 #
 # Bump BABELFISH_VERSION deliberately (tags: github.com/babelfish-for-postgresql).
-FROM ubuntu:22.04 AS base
+FROM ubuntu:26.04 AS base
 
 # ---------------------------------------------------------------------------- build
 FROM base AS builder
