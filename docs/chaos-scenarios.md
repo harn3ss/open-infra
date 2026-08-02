@@ -8,7 +8,7 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 64 scenarios — 🟢 53 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 9 pending · ⏸️ 0 parked.
+**Tally:** 64 scenarios — 🟢 54 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 8 pending · ⏸️ 0 parked.
 
 **Last nightly:** `lottery` 🟢 success ([2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269))
 
@@ -35,7 +35,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [C5](#s-C5) | Active-active multi-region | Multi-master mesh (2 regions) | 01,02 | 🟢 PASS |
 | [C6](#s-C6) | Event pipeline (DB→Stream→Function) | Stream + Function | pool | 🟢 PASS |
 | [N01](#s-N01) | HPA scale-out under load + replica kill | Application autoscaling | pool | ⏳ PENDING |
-| [N02](#s-N02) | Scale-to-zero cold burst with backlog | Function (Knative) | pool | ⏳ PENDING |
+| [N02](#s-N02) | Scale-to-zero cold burst with backlog | Function (Knative) | pool | 🟢 PASS |
 | [N03](#s-N03) | Postgres final snapshot → delete → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
 | [N04](#s-N04) | MariaDB backup → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
 | [N05](#s-N05) | Kill MinIO backup target mid-snapshot | Snapshots + object store | pool | ⏳ PENDING |
@@ -316,13 +316,15 @@ flowchart LR
 </details>
 
 <a id="s-N02"></a>
-### N02 · Scale-to-zero cold burst with backlog &nbsp; ⏳ PENDING
+### N02 · Scale-to-zero cold burst with backlog &nbsp; 🟢 PASS
 
 **Category:** Function (Knative) &nbsp;•&nbsp; **Oracle:** recover — the whole backlog drains on wake, nothing dropped
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+> Function scaled to ZERO after idle (0 replicas), then a 30-event burst cold-started it and the durable pump drained the whole backlog (Unprocessed=0).
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
