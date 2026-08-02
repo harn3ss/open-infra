@@ -21,7 +21,10 @@ source DB ──▶ Debezium Server ──▶ NATS JetStream ──▶ apply-sin
 - **[apply-sink](../apply-sink/)** consumes those events and applies them to the
   target with the engine's native upsert (Postgres `ON CONFLICT`, MySQL
   `ON DUPLICATE KEY UPDATE`, SQL Server `MERGE`). A schema-sync step introspects the
-  source and **auto-creates the target tables with cross-engine type mapping**.
+  source and **auto-creates the target tables with cross-engine type mapping**. Primary-key
+  (and unique-key) columns whose mapped type would be an unbounded LOB are coerced to a
+  bounded type on the target — `VARCHAR(255)` on MySQL, `NVARCHAR(255)` on SQL Server —
+  because those engines forbid `TEXT`/`BLOB`/`(MAX)` columns in a key.
 
 The user only ever sees `kind: Migration` / the console.
 
