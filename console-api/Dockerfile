@@ -60,7 +60,7 @@ RUN go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
 # ---------------------------------------------------------------------------
 # Stage 3 — minimal runtime.
 # ---------------------------------------------------------------------------
-FROM alpine:3.20 AS runtime
+FROM alpine:3.24 AS runtime
 
 # wget (busybox) is used by the healthcheck; ca-certificates lets the BFF verify
 # the API server / Grafana TLS chains when needed.
