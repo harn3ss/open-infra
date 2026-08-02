@@ -294,3 +294,34 @@ func TestMapType(t *testing.T) {
 		}
 	}
 }
+
+// TestBoundKeyType covers the cross-engine PK fix: a PRIMARY KEY column that would map to an
+// unbounded LOB on MySQL (TEXT/BLOB/JSON) or SQL Server ((max)/text/ntext) must be coerced to a
+// bounded VARCHAR — those engines reject a LOB as a key without a length (MySQL error 1170), which
+// otherwise fails the cross-engine target CREATE and leaves a Migration unable to land.
+func TestBoundKeyType(t *testing.T) {
+	cases := []struct{ engine, in, want string }{
+		{"mysql", "TEXT", "VARCHAR(255)"},
+		{"mysql", "text", "VARCHAR(255)"},   // case-insensitive
+		{"mysql", "LONGTEXT", "VARCHAR(255)"},
+		{"mysql", "MEDIUMTEXT", "VARCHAR(255)"},
+		{"mysql", "BLOB", "VARCHAR(255)"},
+		{"mysql", "JSON", "VARCHAR(255)"},
+		{"mariadb", "TEXT", "VARCHAR(255)"}, // driverName folds mariadb->mysql
+		{"mysql", "VARCHAR(64)", "VARCHAR(64)"}, // already bounded -> unchanged
+		{"mysql", "INT", "INT"},                 // non-LOB -> unchanged
+		{"mysql", "bigint", "bigint"},
+		{"sqlserver", "NVARCHAR(MAX)", "NVARCHAR(255)"},
+		{"sqlserver", "varchar(max)", "NVARCHAR(255)"},
+		{"sqlserver", "text", "NVARCHAR(255)"},
+		{"sqlserver", "NTEXT", "NVARCHAR(255)"},
+		{"sqlserver", "NVARCHAR(64)", "NVARCHAR(64)"}, // bounded -> unchanged
+		{"postgres", "text", "text"},                  // pg allows a text PK -> unchanged
+		{"postgres", "uuid", "uuid"},
+	}
+	for _, c := range cases {
+		if got := boundKeyType(c.engine, c.in); got != c.want {
+			t.Errorf("boundKeyType(%q, %q) = %q, want %q", c.engine, c.in, got, c.want)
+		}
+	}
+}
