@@ -360,7 +360,7 @@ type configResponse struct {
 	// ChaosUIEnabled gates the fault-injection surface in the console. It is OFF by
 	// default (least functionality, NIST CM-7): a deliberately-break-things tool is a
 	// non-essential, privileged capability that a hardened/government deployment should
-	// not surface. A homelab opts in with CHAOS_UI_ENABLED=true.
+	// not surface. A non-production cluster opts in with CHAOS_UI_ENABLED=true.
 	ChaosUIEnabled bool `json:"chaosUiEnabled"`
 }
 
