@@ -200,8 +200,8 @@ surface and treat the Experimental tier as opt-in, not system-of-record.
 
 ## Reference environment vs. the platform
 
-open-infra is developed and proven on a real cluster, and that cluster is a **homelab** —
-disclosed honestly, because "it actually runs" is worth more than a diagram. The homelab is the
+open-infra is developed and proven on a real cluster, and that cluster is a **residential computer lab** —
+disclosed honestly, because "it actually runs" is worth more than a diagram. The residential computer lab is the
 *reference environment*; it is **not** the security boundary. The guarantees and controls above
 describe the **platform**; a production or authorized deployment supplies its own hardened
 environment, organizational controls, and authorization boundary.
