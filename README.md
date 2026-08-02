@@ -258,6 +258,22 @@ see [Maturity & guarantees](#maturity--guarantees).
 
 ---
 
+## Continuous chaos testing
+
+The platform is **continuously tested against failure**, and we publish exactly what we break.
+[**docs/chaos-scenarios.md**](docs/chaos-scenarios.md) is a living gallery — one diagram per
+scenario showing the resource **chain**, the **⚡ fault-injection point**, and the **invariant**
+that must hold (recover / tolerate / deny). It spans the nightly suite (which runs every night on a
+self-hosted runner and asserts each fault actually landed) plus the hand-driven composite and
+targeted batches.
+
+The page is **auto-generated** from [`chaos/scenarios.json`](chaos/scenarios.json) by
+[`tools/chaosdoc`](tools/chaosdoc), so the diagrams can never drift from the source-of-truth — and
+findings are recorded honestly, in the open (e.g. a managed non-HA MariaDB can't act as a CDC
+source). See also [`docs/chaos.md`](docs/chaos.md) and [`docs/chaos-oracle.md`](docs/chaos-oracle.md).
+
+---
+
 ## Maturity & guarantees
 
 open-infra spans two kinds of thing, and they don't carry the same risk. Read this

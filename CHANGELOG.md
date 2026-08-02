@@ -58,6 +58,15 @@ the product's public contract.
   control-implementation evidence, not a certification claim.
 
 ### Reliability
+- **A public, auto-generated chaos-scenario gallery** ([docs/chaos-scenarios.md](docs/chaos-scenarios.md),
+  linked from the [README](README.md#continuous-chaos-testing)). One Mermaid diagram per scenario shows
+  the resource **chain**, the **⚡ fault-injection point**, and the **invariant** that must hold
+  (recover / tolerate / deny) — so anyone can see what we break nightly and what's expected to survive.
+  It's generated from a single source-of-truth ([`chaos/scenarios.json`](chaos/scenarios.json)) by a
+  stdlib-only Go tool ([`tools/chaosdoc`](tools/chaosdoc)); `go run ./tools/chaosdoc -check` fails the
+  build if the page drifts. Backfilled across every batch to date — the nightly suite plus the
+  hand-driven composite and targeted runs (64 scenarios at first publish) — and findings are recorded
+  honestly (e.g. a managed non-HA MariaDB has `log_bin` off, so it can't be a CDC source).
 - **The chaos oracle went "fully wide open" — one framework, three modes, ten adapters across the
   whole workload plane** ([docs/chaos-oracle.md](docs/chaos-oracle.md)). What began as a
   multi-master convergence harness is now a single oracle runner (a *contract*, not a replication

@@ -53,6 +53,7 @@ jobs:
           - apply-sink # pure-Go CDC apply logic (coerce, dialects, table parsing)
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
+          - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
     name: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v7
@@ -71,6 +72,12 @@ jobs:
       - name: go test -race
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
+
+      # docs/chaos-scenarios.md is generated from chaos/scenarios.json — fail if it drifted.
+      - name: chaosdoc drift-guard
+        if: matrix.module == 'tools/chaosdoc'
+        working-directory: tools/chaosdoc
+        run: go run . -check
 
   # Console SPA: typecheck + build. Without this, dependency bumps to ui/ (e.g.
   # Dependabot's npm PRs) merged with no verification that the console still compiles.
