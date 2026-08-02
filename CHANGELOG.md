@@ -66,7 +66,12 @@ the product's public contract.
   stdlib-only Go tool ([`tools/chaosdoc`](tools/chaosdoc)); `go run ./tools/chaosdoc -check` fails the
   build if the page drifts. Backfilled across every batch to date — the nightly suite plus the
   hand-driven composite and targeted runs (64 scenarios at first publish) — and findings are recorded
-  honestly (e.g. a managed non-HA MariaDB has `log_bin` off, so it can't be a CDC source).
+  honestly (e.g. a managed non-HA MariaDB has `log_bin` off, so it can't be a CDC source). Each
+  scenario shows **which sandbox nodes** it used; a resource spread across nodes (HA primary/replica,
+  Galera, Longhorn replicas, VM live-migration) is drawn as one **subgraph per node** with the
+  instances tied together. A top **index table** plus collapsible per-scenario diagrams (findings
+  stay expanded) keep the page navigable as scenarios accumulate — it grows with distinct scenarios,
+  not nightly runs (those update status in place).
 - **The chaos oracle went "fully wide open" — one framework, three modes, ten adapters across the
   whole workload plane** ([docs/chaos-oracle.md](docs/chaos-oracle.md)). What began as a
   multi-master convergence harness is now a single oracle runner (a *contract*, not a replication

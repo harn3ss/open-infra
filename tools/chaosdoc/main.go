@@ -30,9 +30,14 @@ type Batch struct {
 	Desc  string `json:"desc"`
 }
 type Node struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Kind  string `json:"kind"` // database|stream|function|vm|storage|directory|app|node|external
+	ID    string  `json:"id"`
+	Label string  `json:"label"`
+	Kind  string  `json:"kind"` // database|stream|function|vm|storage|directory|app|node|external
+	On    []Place `json:"on"`   // sandbox node(s) this resource occupied (>1 = spread across nodes)
+}
+type Place struct {
+	Node string `json:"node"` // sandbox-node-01 | sandbox-node-02 | sandbox-node-03
+	Role string `json:"role"` // optional: primary|replica|member|from|to|...
 }
 type Edge struct {
 	From  string `json:"from"`
@@ -43,6 +48,7 @@ type Edge struct {
 type Fault struct {
 	Target string   `json:"target"` // node id the fault hits (omit if Edge set)
 	Edge   []string `json:"edge"`   // [from,to] if the fault is injected on an edge
+	Node   string   `json:"node"`   // optional: sandbox node whose instance of Target is hit (e.g. lose a replica)
 	Kind   string   `json:"kind"`   // PodChaos|NetworkChaos|StressChaos|kill|config|quota|...
 	Label  string   `json:"label"`
 }
@@ -102,6 +108,10 @@ func shape(kind string) (string, string) {
 
 func q(s string) string { return "\"" + strings.ReplaceAll(s, "\"", "'") + "\"" }
 
+func aliasSafe(s string) string {
+	return strings.NewReplacer("-", "_", ".", "_", " ", "_", "/", "_").Replace(s)
+}
+
 func filepathIsAbs(p string) bool { return strings.HasPrefix(p, "/") }
 
 // repoRoot walks up from the CWD looking for a .git directory; falls back to ".".
@@ -122,36 +132,130 @@ func repoRoot() string {
 	}
 }
 
+// involvedNodes returns the sorted set of sandbox nodes referenced by a scenario's placements.
+func involvedNodes(sc Scenario) []string {
+	set := map[string]bool{}
+	for _, n := range sc.Chain.Nodes {
+		for _, p := range n.On {
+			set[p.Node] = true
+		}
+	}
+	var out []string
+	for a := range set {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func ranOn(sc Scenario) string {
+	ns := involvedNodes(sc)
+	if len(ns) == 0 {
+		return "scheduler-placed within the sandbox-node-01…03 pool"
+	}
+	return strings.Join(ns, ", ")
+}
+
 func mermaid(sc Scenario) string {
+	placed := len(involvedNodes(sc)) > 0
 	var b strings.Builder
 	b.WriteString("```mermaid\nflowchart LR\n")
-	// nodes
-	for _, n := range sc.Chain.Nodes {
-		l, r := shape(n.Kind)
-		fmt.Fprintf(&b, "  n_%s%s%s%s\n", n.ID, l, q(n.Label), r)
+
+	// rep maps a resource id -> the mermaid node id used for edges/faults.
+	rep := map[string]string{}
+
+	if !placed {
+		for _, n := range sc.Chain.Nodes {
+			l, r := shape(n.Kind)
+			fmt.Fprintf(&b, "  n_%s%s%s%s\n", n.ID, l, q(n.Label), r)
+			rep[n.ID] = "n_" + n.ID
+		}
+	} else {
+		// unplaced resources render plainly, above the node subgraphs
+		for _, n := range sc.Chain.Nodes {
+			if len(n.On) == 0 {
+				l, r := shape(n.Kind)
+				fmt.Fprintf(&b, "  n_%s%s%s%s\n", n.ID, l, q(n.Label), r)
+				rep[n.ID] = "n_" + n.ID
+			}
+		}
+		// one subgraph per sandbox node; a resource on N nodes gets one instance per node
+		for _, a := range involvedNodes(sc) {
+			fmt.Fprintf(&b, "  subgraph sg_%s[%s]\n", aliasSafe(a), q(a))
+			for _, n := range sc.Chain.Nodes {
+				for _, p := range n.On {
+					if p.Node != a {
+						continue
+					}
+					l, r := shape(n.Kind)
+					label := n.Label
+					if p.Role != "" {
+						label = n.Label + " · " + p.Role
+					}
+					fmt.Fprintf(&b, "    n_%s__%s%s%s%s\n", n.ID, aliasSafe(a), l, q(label), r)
+				}
+			}
+			b.WriteString("  end\n")
+		}
+		// representative instance = first placement
+		for _, n := range sc.Chain.Nodes {
+			if len(n.On) > 0 {
+				rep[n.ID] = fmt.Sprintf("n_%s__%s", n.ID, aliasSafe(n.On[0].Node))
+			}
+		}
+		// dotted links tie together the instances of one multi-node resource
+		for _, n := range sc.Chain.Nodes {
+			for i := 1; i < len(n.On); i++ {
+				lbl := "HA"
+				if n.On[i].Role != "" {
+					lbl = n.On[i].Role
+				}
+				fmt.Fprintf(&b, "  n_%s__%s -.->|%s| n_%s__%s\n",
+					n.ID, aliasSafe(n.On[0].Node), q(lbl), n.ID, aliasSafe(n.On[i].Node))
+			}
+		}
 	}
-	// edges
+
+	// edges (via representative instances)
 	for _, e := range sc.Chain.Edges {
+		from, to := rep[e.From], rep[e.To]
+		if from == "" {
+			from = "n_" + e.From
+		}
+		if to == "" {
+			to = "n_" + e.To
+		}
 		arrow := "-->"
 		if e.Dir == "both" {
 			arrow = "<-->"
 		}
 		if e.Label != "" {
-			fmt.Fprintf(&b, "  n_%s %s|%s| n_%s\n", e.From, arrow, q(e.Label), e.To)
+			fmt.Fprintf(&b, "  %s %s|%s| %s\n", from, arrow, q(e.Label), to)
 		} else {
-			fmt.Fprintf(&b, "  n_%s %s n_%s\n", e.From, arrow, e.To)
+			fmt.Fprintf(&b, "  %s %s %s\n", from, arrow, to)
 		}
 	}
 	// fault marker
 	if sc.Fault.Label != "" {
 		fl := q("⚡ " + sc.Fault.Label)
-		if len(sc.Fault.Edge) == 2 {
-			// fault on an edge: draw the fault node between the two endpoints
+		var tgt string
+		switch {
+		case len(sc.Fault.Edge) == 2:
+			tgt = rep[sc.Fault.Edge[1]]
+			if tgt == "" {
+				tgt = "n_" + sc.Fault.Edge[1]
+			}
+		case sc.Fault.Node != "" && sc.Fault.Target != "":
+			tgt = fmt.Sprintf("n_%s__%s", sc.Fault.Target, aliasSafe(sc.Fault.Node)) // a specific node's instance
+		case sc.Fault.Target != "":
+			tgt = rep[sc.Fault.Target]
+			if tgt == "" {
+				tgt = "n_" + sc.Fault.Target
+			}
+		}
+		if tgt != "" {
 			fmt.Fprintf(&b, "  FAULT((%s)):::fault\n", fl)
-			fmt.Fprintf(&b, "  FAULT -.-> n_%s\n", sc.Fault.Edge[1])
-		} else if sc.Fault.Target != "" {
-			fmt.Fprintf(&b, "  FAULT((%s)):::fault\n", fl)
-			fmt.Fprintf(&b, "  FAULT -.-> n_%s\n", sc.Fault.Target)
+			fmt.Fprintf(&b, "  FAULT -.-> %s\n", tgt)
 		}
 	}
 	// oracle badge
@@ -199,7 +303,37 @@ func render(d Doc) string {
 	h.WriteString("| blue badge | **deny** — a negative invariant that must NEVER happen (zero tolerance) |\n")
 	h.WriteString("| 🟢🔴⚪⏳⏸️ | pass · finding · inconclusive · pending · parked |\n\n")
 	h.WriteString("Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory · ")
-	h.WriteString("`([stadium])` = function · `[/parallelogram/]` = VM · `[rectangle]` = app/service.\n\n")
+	h.WriteString("`([stadium])` = function · `[/parallelogram/]` = VM · `[rectangle]` = app/service. ")
+	h.WriteString("Where a resource spanned multiple sandbox nodes (HA / replicas / live-migration), each ")
+	h.WriteString("node is drawn as its own **subgraph** and the instances are tied together.\n\n")
+
+	// Scannable index — keeps the page navigable as scenarios accumulate. (The gallery grows with
+	// distinct SCENARIOS, not with runs: the nightly suite re-runs the same set and updates status.)
+	h.WriteString("### Scenario index\n\n")
+	h.WriteString("| ID | Scenario | Category | Sandbox nodes | Status |\n|---|---|---|---|---|\n")
+	for _, bt := range d.Batches {
+		var scs []Scenario
+		for _, s := range d.Scenarios {
+			if s.Batch == bt.ID {
+				scs = append(scs, s)
+			}
+		}
+		sort.SliceStable(scs, func(i, j int) bool { return scs[i].ID < scs[j].ID })
+		for _, s := range scs {
+			nodes := "pool"
+			if inv := involvedNodes(s); len(inv) > 0 {
+				var short []string
+				for _, a := range inv {
+					short = append(short, strings.TrimPrefix(a, "sandbox-node-"))
+				}
+				nodes = strings.Join(short, ",")
+			}
+			fmt.Fprintf(&h, "| [%s](#s-%s) | %s | %s | %s | %s |\n", s.ID, s.ID, s.Title, s.Category, nodes, statusBadge(s.Status))
+		}
+	}
+	h.WriteString("\n> **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. ")
+	h.WriteString("`pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource ")
+	h.WriteString("spread across those specific nodes (see the per-scenario subgraphs).\n\n")
 	h.WriteString("---\n\n")
 
 	for _, bt := range d.Batches {
@@ -218,13 +352,22 @@ func render(d Doc) string {
 			fmt.Fprintf(&h, "%s\n\n", bt.Desc)
 		}
 		for _, s := range scs {
+			fmt.Fprintf(&h, "<a id=\"s-%s\"></a>\n", s.ID)
 			fmt.Fprintf(&h, "### %s · %s &nbsp; %s\n\n", s.ID, s.Title, statusBadge(s.Status))
 			fmt.Fprintf(&h, "**Category:** %s &nbsp;•&nbsp; **Oracle:** %s — %s\n\n", s.Category, s.Oracle.Mode, s.Oracle.Invariant)
+			fmt.Fprintf(&h, "**Ran on:** %s\n\n", ranOn(s))
 			if s.Note != "" {
 				fmt.Fprintf(&h, "> %s\n\n", s.Note)
 			}
+			// Diagram collapses by default so the page stays navigable as scenarios accumulate;
+			// findings / inconclusive stay open so problems are visible at a glance.
+			openAttr := ""
+			if st := strings.ToUpper(s.Status); st != "PASS" && st != "PARKED" {
+				openAttr = " open"
+			}
+			fmt.Fprintf(&h, "<details%s><summary>diagram — chain, ⚡ fault, oracle</summary>\n\n", openAttr)
 			h.WriteString(mermaid(s))
-			h.WriteString("\n")
+			h.WriteString("\n</details>\n\n")
 		}
 		h.WriteString("---\n\n")
 	}
