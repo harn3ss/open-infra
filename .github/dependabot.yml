@@ -79,3 +79,14 @@ updates:
       docker:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      # babelfish compiles Babelfish-for-PostgreSQL from source with `-Werror`; Ubuntu's
+      # newer GCC (24.04+) flags warnings the pinned source hits, and 26.04 also drops the
+      # `libicu70` this Dockerfile needs. Moving the base OS is a source-porting task, not a
+      # dependency bump — hold the major until that's done deliberately, then remove this.
+      - dependency-name: "ubuntu"
+        update-types: ["version-update:semver-major"]
+      # Stay on the Node LTS line for the console SPA builder; odd majors (23/25/…) are not
+      # LTS. Take the next even LTS deliberately rather than tracking every major.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
