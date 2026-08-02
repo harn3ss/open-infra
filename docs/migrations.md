@@ -86,6 +86,10 @@ there's nothing extra to wire up.
 - **Postgres** — `wal_level=logical`.
 - **MySQL / MariaDB** — `binlog_format=ROW` (default on MySQL 8); the user needs
   `REPLICATION SLAVE` + `REPLICATION CLIENT`.
+  > **Managed MariaDB as a source:** a managed MariaDB (an `Application`'s `database`) only
+  > turns on the binary log when `highAvailability` is enabled (Galera). A **single-instance
+  > managed MariaDB has `log_bin` off and cannot be a CDC source** — capture silently produces
+  > nothing. Enable `highAvailability` (or supply binlog config) to use it as a source.
 - **SQL Server** — CDC enabled (`sys.sp_cdc_enable_db` / `sp_cdc_enable_table`) and
   the SQL Server Agent running.
 

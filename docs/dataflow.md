@@ -167,6 +167,11 @@ Served by `POST /api/dataflows/{ns}/{name}/status` in the console BFF.
   binlog (ROW); SQL Server needs the SQL Agent running and a sysadmin login — per-table CDC
   is then enabled automatically (by `mm-prep` / the auto-sync reconciler), so no manual
   `sys.sp_cdc_enable_table` is required for managed flows.
+  > **Managed MariaDB mesh members:** a managed MariaDB only turns on binlog under
+  > `highAvailability` (Galera). A single-instance managed MariaDB has `log_bin` off, so it can
+  > be an apply *target* but **not a capture source** — a heterogeneous mesh with a non-HA
+  > managed MariaDB replicates one-way (into it, not out). Enable `highAvailability` for a
+  > MariaDB that must originate changes.
 - **A primary key** on every table that's replicated/loaded (required for upsert apply).
 - For replication, participating tables must exist (or use `bootstrap`) and share the same
   primary key across members.
