@@ -72,6 +72,13 @@ the product's public contract.
   instances tied together. A top **index table** plus collapsible per-scenario diagrams (findings
   stay expanded) keep the page navigable as scenarios accumulate — it grows with distinct scenarios,
   not nightly runs (those update status in place).
+- **Known limitation surfaced by the chaos runs: a managed MariaDB can't be a CDC source unless it's
+  HA.** A single-instance managed MariaDB (an `Application`'s `database` without `highAvailability`)
+  ships with `log_bin` **off**, so Debezium can't capture from it — a `Stream`/`Migration`/`DataFlow`
+  using it as a *source* silently produces nothing (it works fine as an apply *target*). A cross-engine
+  mesh with a non-HA managed MariaDB therefore replicates one-way. Enable `highAvailability` (Galera
+  turns binlog on) for a MariaDB that must originate changes; documented in
+  [migrations](docs/migrations.md), [streaming](docs/streaming.md), and [dataflow](docs/dataflow.md).
 - **The chaos oracle went "fully wide open" — one framework, three modes, ten adapters across the
   whole workload plane** ([docs/chaos-oracle.md](docs/chaos-oracle.md)). What began as a
   multi-master convergence harness is now a single oracle runner (a *contract*, not a replication
