@@ -31,10 +31,13 @@ jobs:
   chaos:
     runs-on: [self-hosted, openinfra-chaos]
     timeout-minutes: 45
+    permissions:
+      contents: write # to commit the regenerated docs/chaos-scenarios.md + nightly-status.json
     steps:
       - uses: actions/checkout@v7
 
       - name: Scenario — ${{ github.event.inputs.scenario || 'lottery' }}
+        id: scenario
         # KUBECONFIG (scoped chaos-runner) + Go/kubectl on PATH come from the runner's
         # own .env, so the job inherits them — don't override KUBECONFIG here.
         env:
@@ -82,8 +85,10 @@ jobs:
               echo "The node-capacity pre-flight found too little schedulable headroom to run the sandbox, so the scenario did **not** run."
               echo "This is **not** a red (no product failure) and does **not** count toward the 30-green-night graduation clock."
             } >> "$GITHUB_STEP_SUMMARY"
+            echo "result=inconclusive" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "$rc" -eq 0 ]; then echo "result=success" >> "$GITHUB_OUTPUT"; else echo "result=failure" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
 
       - name: Retain artifacts on red
@@ -95,3 +100,42 @@ jobs:
             chaos/artifacts/**
           if-no-files-found: ignore
           retention-days: 30
+
+      # Record this night's result into chaos/nightly-status.json, regenerate the public
+      # gallery (docs/chaos-scenarios.md), and commit both. Best-effort: a docs hiccup must
+      # never turn a green chaos night red, so every command here swallows its own failure.
+      - name: Publish nightly status + regenerate docs
+        if: always()
+        env:
+          SCEN: ${{ github.event.inputs.scenario || 'lottery' }}
+          RESULT: ${{ steps.scenario.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+        run: |
+          set +e
+          RESULT="${RESULT:-failure}"
+          DATE="$(date -u +%Y-%m-%d)"; UPDATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 - "$SCEN" "$RESULT" "$DATE" "$UPDATED" "$RUN_URL" <<'PY'
+          import json, os, sys
+          scen, result, date, updated, url = sys.argv[1:6]
+          p = "chaos/nightly-status.json"
+          d = {"updated": updated, "runs": {}}
+          if os.path.exists(p):
+              try: d = json.load(open(p))
+              except Exception: pass
+          d.setdefault("runs", {})[scen] = {"conclusion": result, "date": date, "runUrl": url}
+          d["updated"] = updated
+          with open(p, "w") as f:
+              json.dump(d, f, indent=2, ensure_ascii=False); f.write("\n")
+          PY
+          ( cd tools/chaosdoc && go run . ) || { echo "::warning::chaosdoc regen failed"; exit 0; }
+          if [ -z "$(git status --porcelain chaos/nightly-status.json docs/chaos-scenarios.md)" ]; then
+            echo "no doc changes"; exit 0
+          fi
+          git config user.name "openinfra-chaos-bot"
+          git config user.email "chaos-bot@users.noreply.github.com"
+          git add chaos/nightly-status.json docs/chaos-scenarios.md
+          git commit -m "docs(chaos): nightly ${SCEN} → ${RESULT} [skip ci]" || { echo "::warning::commit failed"; exit 0; }
+          git pull --rebase origin "$REF" || echo "::warning::rebase issue"
+          git push origin "HEAD:$REF" || echo "::warning::doc push failed"
+          exit 0

@@ -62,6 +62,7 @@ type Scenario struct {
 	Title    string `json:"title"`
 	Category string `json:"category"`
 	Status   string `json:"status"` // PASS|FINDING|INCONCLUSIVE|PENDING|PARKED
+	Key      string `json:"key"`    // workflow scenario name, to join nightly run status
 	Note     string `json:"note"`
 	Chain    struct {
 		Nodes []Node `json:"nodes"`
@@ -69,6 +70,31 @@ type Scenario struct {
 	} `json:"chain"`
 	Fault  Fault  `json:"fault"`
 	Oracle Oracle `json:"oracle"`
+}
+
+// Nightly is an optional sidecar (chaos/nightly-status.json) written by the nightly workflow;
+// it overlays each night's live result onto the (otherwise static) scenario catalog.
+type Nightly struct {
+	Updated string               `json:"updated"`
+	Runs    map[string]RunStatus `json:"runs"`
+}
+type RunStatus struct {
+	Conclusion string `json:"conclusion"` // success|failure|inconclusive
+	Date       string `json:"date"`
+	RunURL     string `json:"runUrl"`
+}
+
+func runEmoji(c string) string {
+	switch strings.ToLower(c) {
+	case "success":
+		return "🟢"
+	case "failure":
+		return "🔴"
+	case "inconclusive":
+		return "⚪"
+	default:
+		return "•"
+	}
 }
 
 func statusBadge(s string) string {
@@ -278,7 +304,7 @@ func mermaid(sc Scenario) string {
 	return b.String()
 }
 
-func render(d Doc) string {
+func render(d Doc, nl Nightly) string {
 	// tally
 	counts := map[string]int{}
 	for _, s := range d.Scenarios {
@@ -294,6 +320,25 @@ func render(d Doc) string {
 	h.WriteString("[`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.\n\n")
 	fmt.Fprintf(&h, "**Tally:** %d scenarios — 🟢 %d pass · 🔴 %d finding · ⚪ %d inconclusive · ⏳ %d pending · ⏸️ %d parked.\n\n",
 		len(d.Scenarios), counts["PASS"], counts["FINDING"], counts["INCONCLUSIVE"], counts["PENDING"], counts["PARKED"])
+
+	// Live nightly overlay (written by the nightly workflow; this page regenerates each night).
+	if len(nl.Runs) > 0 {
+		var keys []string
+		for k := range nl.Runs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var parts []string
+		for _, k := range keys {
+			r := nl.Runs[k]
+			link := r.Date
+			if r.RunURL != "" {
+				link = fmt.Sprintf("[%s](%s)", r.Date, r.RunURL)
+			}
+			parts = append(parts, fmt.Sprintf("`%s` %s %s (%s)", k, runEmoji(r.Conclusion), r.Conclusion, link))
+		}
+		fmt.Fprintf(&h, "**Last nightly:** %s\n\n", strings.Join(parts, " · "))
+	}
 
 	h.WriteString("### Legend\n\n")
 	h.WriteString("| Symbol | Meaning |\n|---|---|\n")
@@ -356,6 +401,15 @@ func render(d Doc) string {
 			fmt.Fprintf(&h, "### %s · %s &nbsp; %s\n\n", s.ID, s.Title, statusBadge(s.Status))
 			fmt.Fprintf(&h, "**Category:** %s &nbsp;•&nbsp; **Oracle:** %s — %s\n\n", s.Category, s.Oracle.Mode, s.Oracle.Invariant)
 			fmt.Fprintf(&h, "**Ran on:** %s\n\n", ranOn(s))
+			if s.Key != "" {
+				if r, ok := nl.Runs[s.Key]; ok {
+					link := r.Date
+					if r.RunURL != "" {
+						link = fmt.Sprintf("[%s](%s)", r.Date, r.RunURL)
+					}
+					fmt.Fprintf(&h, "**Last nightly:** %s %s · %s\n\n", runEmoji(r.Conclusion), r.Conclusion, link)
+				}
+			}
 			if s.Note != "" {
 				fmt.Fprintf(&h, "> %s\n\n", s.Note)
 			}
@@ -406,7 +460,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "parse scenarios.json:", err)
 		os.Exit(1)
 	}
-	got := render(d)
+	// Optional nightly-status sidecar (written by the nightly workflow).
+	var nl Nightly
+	if b, err := os.ReadFile(root + "/chaos/nightly-status.json"); err == nil {
+		_ = json.Unmarshal(b, &nl)
+	}
+	got := render(d, nl)
 
 	if *check {
 		cur, _ := os.ReadFile(*out)
