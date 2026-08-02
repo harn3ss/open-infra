@@ -116,7 +116,8 @@ CDC reads the source's change log, which the source must be configured for:
 - **PostgreSQL:** `wal_level=logical`. Debezium creates the replication slot
   (`dbz_<name>`) + publication itself; the user needs `REPLICATION`.
 - **MySQL / MariaDB:** `binlog_format=ROW`; a user with `REPLICATION SLAVE,
-  REPLICATION CLIENT`.
+  REPLICATION CLIENT`. A **managed** MariaDB only enables binlog under `highAvailability`
+  (Galera) — a single-instance managed MariaDB has `log_bin` off and **can't be a CDC source**.
 - **SQL Server:** CDC enabled (`sys.sp_cdc_enable_db` + per-table) and **SQL Server
   Agent running**.
 - **MongoDB:** a **replica set** (change streams require one).
