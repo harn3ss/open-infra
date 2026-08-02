@@ -4,9 +4,11 @@
 
 The convergence harness ([convergence-harness.md](convergence-harness.md)) and
 `kind: FaultInjection` ([chaos.md](chaos.md)) both exist — but a human has to drive
-them. This suite closes that gap: every night, unattended, open-infra partitions its own
-multi-master mesh, kills its own capture/sink pods, and proves the mesh still converges
-byte-identical. **A red run is a release blocker** — the same enforcement as the
+them. This suite closes that gap: every night, unattended, open-infra runs the **chaos lottery** —
+a seeded, replayable draw of 2–4 concurrent faults (partitions, pod kills, latency/loss,
+CPU/memory stress, clock skew) against its own multi-master mesh — and proves the mesh still
+converges byte-identical. (The individual scenarios remain runnable on demand via
+`workflow_dispatch`; the lottery is the scheduled capstone that composes from them.) **A red run is a release blocker** — the same enforcement as the
 `needs: test` gate. It is the documented road from **Experimental → Stable** for
 `Replication` / `Migration` / `DataFlow`.
 
