@@ -59,8 +59,8 @@ spec:
           # HARD anti-affinity: a volume's replicas MUST land on distinct nodes, so losing one
           # node never loses the volume — the precondition for the chaos suite's Scenario 5
           # (storage replica-loss) to be a real test rather than data deletion. Kept at 2
-          # replicas (not 3): mlbox is powered down nightly, and a 3-replica hard-affinity
-          # volume would sit degraded every night with only 2 storage nodes up.
+          # replicas (not 3): when only 2 storage nodes are reliably up, a 3-replica
+          # hard-anti-affinity volume would sit permanently degraded.
           replicaSoftAntiAffinity: false
           # best-effort auto-balance so the hard anti-affinity actually takes effect on the
           # EXISTING co-located volumes — Longhorn otherwise only re-evaluates placement on a
