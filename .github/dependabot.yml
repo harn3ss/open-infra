@@ -60,3 +60,22 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # ── Container base images (Dockerfile FROM lines) ─────────────────────────────
+  # Previously unwatched: the images we build + ship (apply-sink, babelfish, console-api, query)
+  # and the hello-web example never got base-image (golang/node/alpine/debezium/…) bumps or CVE
+  # fixes. Grouped weekly, non-major; majors come separately for a deliberate review.
+  - package-ecosystem: docker
+    directories:
+      - /apply-sink
+      - /babelfish
+      - /console-api
+      - /query
+      - /examples/hello-web
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "chore(deps)" }
+    groups:
+      docker:
+        patterns: ["*"]
+        update-types: [minor, patch]
