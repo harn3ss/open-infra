@@ -17,7 +17,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — build the React SPA (produces ui/dist).
 # ---------------------------------------------------------------------------
-FROM node:22-alpine AS ui-builder
+FROM node:25-alpine AS ui-builder
 WORKDIR /ui
 
 # Install dependencies first so this layer caches unless the lockfile changes.
