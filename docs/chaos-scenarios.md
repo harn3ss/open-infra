@@ -8,7 +8,7 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 64 scenarios — 🟢 55 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 7 pending · ⏸️ 0 parked.
+**Tally:** 64 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 6 pending · ⏸️ 0 parked.
 
 **Last nightly:** `lottery` 🟢 success ([2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269))
 
@@ -34,7 +34,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [C4](#s-C4) | VDI correlated outage | Directory + FileShare | pool | 🟢 PASS |
 | [C5](#s-C5) | Active-active multi-region | Multi-master mesh (2 regions) | 01,02 | 🟢 PASS |
 | [C6](#s-C6) | Event pipeline (DB→Stream→Function) | Stream + Function | pool | 🟢 PASS |
-| [N01](#s-N01) | HPA scale-out under load + replica kill | Application autoscaling | pool | ⏳ PENDING |
+| [N01](#s-N01) | HPA scale-out under load + replica kill | Application autoscaling | pool | 🟢 PASS |
 | [N02](#s-N02) | Scale-to-zero cold burst with backlog | Function (Knative) | pool | 🟢 PASS |
 | [N03](#s-N03) | Postgres final snapshot → delete → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
 | [N04](#s-N04) | MariaDB backup → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
@@ -293,13 +293,15 @@ flowchart LR
 New-coverage probes across untested ground: IAM/permission boundary, cross-namespace isolation, DataFlow internals, cross-engine replication, migration lifecycle, autoscaling, snapshots, and VM storage. Hand-driven.
 
 <a id="s-N01"></a>
-### N01 · HPA scale-out under load + replica kill &nbsp; ⏳ PENDING
+### N01 · HPA scale-out under load + replica kill &nbsp; 🟢 PASS
 
 **Category:** Application autoscaling &nbsp;•&nbsp; **Oracle:** tolerate — availability holds; HPA restores the replica count
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+> Concurrent load pushed CPU past the HPA target; the app scaled out 1→4 (max). Killing a scaled replica recovered back to 4 — scale-out and self-heal both hold.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
