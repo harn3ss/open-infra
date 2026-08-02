@@ -58,6 +58,21 @@ the product's public contract.
   control-implementation evidence, not a certification claim.
 
 ### Reliability
+- **The chaos oracle went "fully wide open" — one framework, three modes, ten adapters across the
+  whole workload plane** ([docs/chaos-oracle.md](docs/chaos-oracle.md)). What began as a
+  multi-master convergence harness is now a single oracle runner (a *contract*, not a replication
+  test) with small per-kind adapters dropped onto it. Three verdict **modes** cover the ways a
+  workload can be judged: **`recover`** (conservation — after the fault heals, no acknowledged unit
+  of work was lost), **`tolerate`** (a continuous SLO measured *while the fault is live*), and
+  **`deny`** (a negative invariant — a thing that must NEVER happen, verified with zero tolerance).
+  On those modes ride **ten adapters**, one per blast-zone-testable kind: replication (convergence),
+  migration (fidelity), availability, security-deny, stream-noloss, directory-recover,
+  fileshare-durable, volume-durable, vm-resilience, and dataflow-converge — so the suite now
+  exercises databases, identity (`Directory`), files (`FileShare`), block storage (`Volume`),
+  compute (`VirtualMachine`), and the `DataFlow` topology, not just the mesh. (`Query` is the one
+  kind deliberately excluded: its Job runs in the shared `minio` namespace, outside the sandbox, so
+  a fault there would escape containment.) Every adapter is proven **fail-loud** — RED on a genuine
+  fault, GREEN only on a survivable one — because an oracle that only ever prints green is worthless.
 - **Chaos Mesh's mTLS/webhook certs no longer churn on every Argo sync.** Chaos Mesh mints
   its controller↔daemon certs with Helm `genSignedCert`, which is non-deterministic under
   `helm template` (how Argo renders), so every sync rewrote the four cert Secrets and the
@@ -189,6 +204,33 @@ the product's public contract.
   (`redis.redis.svc:6379`), password bootstrapped out of git, pod hardened (non-root,
   read-only rootfs, dropped caps). Drops the Bitnami dependency entirely.
 
+### Fixes
+_Three product bugs surfaced by composite, cross-kind chaos runs — each a cross-resource
+interaction that per-kind unit tests miss — found and fixed, then re-verified live._
+- **Cross-engine `Migration`/`DataFlow` into MySQL or SQL Server dropped the primary key,
+  leaving the target empty.** The schema-sync step maps a source Postgres `text`/UUID-as-text
+  primary-key column to the target engine's `TEXT` type, but MySQL forbids a `TEXT`/`BLOB`
+  column in a key without a prefix length (`Error 1170: BLOB/TEXT column used in key
+  specification without a key length`) and SQL Server forbids `(MAX)`/`TEXT` in a key — so the
+  `CREATE TABLE` failed, the target was never created, and the stream applier then looped
+  forever (`… has no primary key (required for upsert)`) with zero rows delivered. A
+  primary-key (or unique-key) LOB column is now coerced to a bounded type — `VARCHAR(255)`
+  (MySQL) / `NVARCHAR(255)` (SQL Server) — so the key is valid and the load completes.
+  Postgres→Postgres and integer-key migrations were never affected. Unit-tested
+  (`TestBoundKeyType`); the direct parallel to the earlier cross-engine `DATE` coercion fix.
+- **`kind: Application` with both `securityGroups` and a managed `database` couldn't form its
+  database.** The Application composition stamped the app's Security Group labels onto the
+  managed-database pods too, but a Security Group's ingress only opens the app's port — so the
+  database was fenced on the wrong ports: its operator couldn't read pod status (cluster stuck
+  below quorum), a replica couldn't join, and the app couldn't reach its own database. Security
+  Group labels are no longer propagated to any managed-DB tier (CNPG/MariaDB/FerretDB/Babelfish);
+  a Security Group fences the app's ingress, and the database is reached over its injected
+  connection secret and its own operator, so it must not be an SG member.
+- **`kind: DataFlow` nodes with hyphenated names produced invalid Postgres replication slots.**
+  A node name was interpolated directly into the logical-replication slot name, which only
+  permits `[a-z0-9_]`; a hyphen (or other punctuation) yielded a slot Postgres rejected. Node
+  names are now sanitized (and length-bounded) when composing the slot name.
+
 ### Dependencies
 - **Load-bearing bumps recorded** (not silent plumbing): the Go toolchain `1.25 → 1.26`, the
   Kubernetes client `client-go 0.33 → 0.36`, the SQL Server driver `go-mssqldb → 1.10`, and —
@@ -199,6 +241,10 @@ the product's public contract.
   `norm.Iter` on invalid UTF-8; surfaced by Trivy code-scanning, indirect dep, verified).
 - Enabled **Dependabot version updates** (Go / npm / Actions, grouped) and added a **UI
   typecheck+build CI gate** so console dependency bumps can no longer merge unverified.
+- **Dependabot now also watches container base images.** The `docker` ecosystem was missing, so
+  the `FROM` images in the five Dockerfiles we build and ship (apply-sink, babelfish, console-api,
+  query, and the hello-web example) never got base-image bumps or CVE fixes. Added, grouped
+  weekly, majors separate — closing the last un-watched dependency surface.
 
 > **Note — nightly-chaos graduation clock: RE-EPOCHED (Epoch 2).** The `nats.go 1.34.1 →
 > 1.52.0` bump landed in **apply-sink** and ran in the nightly. NATS is the transport *every*
