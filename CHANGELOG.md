@@ -79,6 +79,11 @@ the product's public contract.
   mesh with a non-HA managed MariaDB therefore replicates one-way. Enable `highAvailability` (Galera
   turns binlog on) for a MariaDB that must originate changes; documented in
   [migrations](docs/migrations.md), [streaming](docs/streaming.md), and [dataflow](docs/dataflow.md).
+- **The scheduled nightly now runs the chaos lottery.** The nightly cron executes the seeded-draw
+  lottery (2–4 composed faults) rather than a single fixed scenario; the individual scenarios remain
+  the on-demand library it composes from (runnable via `workflow_dispatch`). The nightly also records
+  its result into `chaos/nightly-status.json`, regenerates the public gallery, and commits it back —
+  so [docs/chaos-scenarios.md](docs/chaos-scenarios.md) shows a live "Last nightly" status.
 - **The chaos oracle went "fully wide open" — one framework, three modes, ten adapters across the
   whole workload plane** ([docs/chaos-oracle.md](docs/chaos-oracle.md)). What began as a
   multi-master convergence harness is now a single oracle runner (a *contract*, not a replication

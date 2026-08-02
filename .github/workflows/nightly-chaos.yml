@@ -1,7 +1,8 @@
 # Nightly Chaos Suite (design §4, §6). Runs on the self-hosted runner ON the validation
-# cluster — zero GitHub-hosted minutes. Each night it partitions a disposable multi-master
-# mesh and proves it re-converges. A red run is a RELEASE BLOCKER, same philosophy as the
-# `needs: test` gate.
+# cluster — zero GitHub-hosted minutes. Each night it runs the chaos LOTTERY (a seeded draw of
+# 2–4 composed faults) against a disposable multi-master mesh and proves it re-converges; the
+# individual scenarios stay runnable on demand via workflow_dispatch. A red run is a RELEASE
+# BLOCKER, same philosophy as the `needs: test` gate.
 #
 # Requires a self-hosted runner labelled `openinfra-chaos` with kubectl + Go and a
 # kubeconfig for the cluster. Until one is registered this workflow simply queues (it never
