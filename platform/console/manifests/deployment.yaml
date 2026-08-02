@@ -65,7 +65,7 @@ spec:
               value: "console-minio-creds"
             # Fault injection (Chaos) is a privileged, non-essential capability, so it is
             # OFF by default (least functionality, NIST CM-7): the console hides the surface
-            # entirely unless a deployment opts in. Set to "true" on a homelab/test cluster.
+            # entirely unless a deployment opts in. Set to "true" on a test/non-production cluster.
             - name: CHAOS_UI_ENABLED
               value: "false"
 

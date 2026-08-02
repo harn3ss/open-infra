@@ -160,7 +160,7 @@ Run it:
 
 ```bash
 docker run --rm -p 8080:8080 \
-  -e CLUSTER_NAME=homelab -e GRAFANA_BASE_URL=https://grafana.example \
+  -e CLUSTER_NAME=my-cluster -e GRAFANA_BASE_URL=https://grafana.example \
   open-infra-console:dev
 ```
 

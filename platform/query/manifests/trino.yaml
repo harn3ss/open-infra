@@ -1,5 +1,5 @@
 # Trino — the distributed SQL engine behind kind: Query (Phase 2). A single-node
-# coordinator (also a worker) for this homelab, wired to the Iceberg REST catalog
+# coordinator (also a worker) for this deployment, wired to the Iceberg REST catalog
 # (the Glue Data Catalog) with data on MinIO. This replaces the per-query DuckDB pod
 # with real database.table querying + federation, without changing kind: Query.
 #
