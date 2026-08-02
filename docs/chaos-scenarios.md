@@ -20,7 +20,78 @@ systems-level **invariant** — not just "did it come back up". This page is gen
 | blue badge | **deny** — a negative invariant that must NEVER happen (zero tolerance) |
 | 🟢🔴⚪⏳⏸️ | pass · finding · inconclusive · pending · parked |
 
-Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory · `([stadium])` = function · `[/parallelogram/]` = VM · `[rectangle]` = app/service.
+Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory · `([stadium])` = function · `[/parallelogram/]` = VM · `[rectangle]` = app/service. Where a resource spanned multiple sandbox nodes (HA / replicas / live-migration), each node is drawn as its own **subgraph** and the instances are tied together.
+
+### Scenario index
+
+| ID | Scenario | Category | Sandbox nodes | Status |
+|---|---|---|---|---|
+| [C1](#s-C1) | SaaS — all three oracle modes at once | Application + SecurityGroup + Postgres (HA) | 01,02 | 🟢 PASS |
+| [C2](#s-C2) | Zero-downtime cutover | Migration + live writes | pool | 🟢 PASS |
+| [C3](#s-C3) | Ledger conservation under DB failover | Application + Postgres (HA) | 01,02 | 🟢 PASS |
+| [C4](#s-C4) | VDI correlated outage | Directory + FileShare | pool | 🟢 PASS |
+| [C5](#s-C5) | Active-active multi-region | Multi-master mesh (2 regions) | 01,02 | 🟢 PASS |
+| [C6](#s-C6) | Event pipeline (DB→Stream→Function) | Stream + Function | pool | 🟢 PASS |
+| [N01](#s-N01) | HPA scale-out under load + replica kill | Application autoscaling | pool | ⏳ PENDING |
+| [N02](#s-N02) | Scale-to-zero cold burst with backlog | Function (Knative) | pool | ⏳ PENDING |
+| [N03](#s-N03) | Postgres final snapshot → delete → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
+| [N04](#s-N04) | MariaDB backup → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
+| [N05](#s-N05) | Kill MinIO backup target mid-snapshot | Snapshots + object store | pool | ⏳ PENDING |
+| [N06](#s-N06) | Permission-boundary self-escalation deny | IAM (kind: Policy / Role) | pool | 🟢 PASS |
+| [N07](#s-N07) | Least-privilege — mutating verbs denied | IAM (impersonation / SAR) | pool | 🟢 PASS |
+| [N08](#s-N08) | Cross-namespace SecurityGroup isolation | SecurityGroup (Cilium/NetworkPolicy) | pool | 🟢 PASS |
+| [N09](#s-N09) | DataFlow autoSyncTables under concurrent writes | DataFlow (mesh) | 01,02 | 🟢 PASS |
+| [N10](#s-N10) | Heterogeneous pg↔mysql mesh | DataFlow (cross-engine) | 01,02 | 🔴 FINDING |
+| [N11](#s-N11) | Dead-letter on a poison row | apply-sink error handling | pool | 🟢 PASS |
+| [N12](#s-N12) | Multi-master LWW conflict determinism | Multi-master mesh | 01,02 | 🟢 PASS |
+| [N13](#s-N13) | Cross-engine key coercion (pg→mysql) | Migration (cross-engine) | pool | 🟢 PASS |
+| [N14](#s-N14) | Migration resume after apply-sink delete | Migration lifecycle | pool | 🟢 PASS |
+| [N15](#s-N15) | Migration idempotency | Migration lifecycle | pool | 🟢 PASS |
+| [N16](#s-N16) | VM live-migration under node drain | Virtual machine | 01,02 | ⏳ PENDING |
+| [N17](#s-N17) | Block-mode volume hotplug to a running VM | Volume + VM | pool | ⏳ PENDING |
+| [N18](#s-N18) | VM disk backup → restore | Virtual machine (Longhorn/KubeVirt) | pool | ⏳ PENDING |
+| [N19](#s-N19) | Stream fan-out to two Functions | Stream (delivery guarantee) | pool | 🟢 PASS |
+| [N20](#s-N20) | PriorityClass preemption under pressure | Scheduling / control-plane | pool | ⏳ PENDING |
+| [S01](#s-S01) | MariaDB Galera node kill | MySQL (HA) | 01,02,03 | 🟢 PASS |
+| [S02](#s-S02) | Mongo/FerretDB backend kill | MongoDB (FerretDB on Postgres) | pool | 🟢 PASS |
+| [S03](#s-S03) | Babelfish pod kill | Babelfish (SQL-Server-compatible) | pool | 🟢 PASS |
+| [S04](#s-S04) | Cross-engine primary-key coercion | Migration (cross-engine) | pool | 🟢 PASS |
+| [S10](#s-S10) | 3-node DataFlow mesh convergence | DataFlow (mesh, N≥3) | 01,02,03 | 🟢 PASS |
+| [S12](#s-S12) | Kill 2-of-3 Deployment replicas | Application availability | 01,02,03 | 🟢 PASS |
+| [S13](#s-S13) | Function cold-start burst | Function (Knative) | pool | 🟢 PASS |
+| [S14](#s-S14) | HA-VM under fault | Virtual machine | pool | ⚪ INCONCLUSIVE |
+| [S15](#s-S15) | Longhorn Volume replica loss | Volume (Longhorn) | 01,02 | 🟢 PASS |
+| [S16](#s-S16) | FileShare killed mid-write | FileShare (SMB) | pool | 🟢 PASS |
+| [S17](#s-S17) | Online Volume expand | Volume (Longhorn) | pool | 🟢 PASS |
+| [S18](#s-S18) | Live SecurityGroup egress change | SecurityGroup | pool | 🟢 PASS |
+| [S19](#s-S19) | Secret rotation propagation | Application config | pool | 🟢 PASS |
+| [S20](#s-S20) | ResourceQuota caps a runaway | Control-plane (quota) | pool | 🟢 PASS |
+| [M01](#s-M01) | app-availability | Application | pool | 🟢 PASS |
+| [M02](#s-M02) | cnpg-failover | Postgres (HA) | 01,02 | 🟢 PASS |
+| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M07](#s-M07) | partition-loss | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS |
+| [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS |
+| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS |
+| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS |
+| [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS |
+| [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS |
+| [M15](#s-M15) | migration | Migration (fidelity) | pool | 🟢 PASS |
+| [M16](#s-M16) | stream-noloss | Stream (CDC) | pool | 🟢 PASS |
+| [M17](#s-M17) | dataflow-converge | DataFlow | 01,02 | 🟢 PASS |
+| [M18](#s-M18) | security-deny | SecurityGroup | pool | 🟢 PASS |
+| [M19](#s-M19) | directory-recover | Active Directory | pool | 🟢 PASS |
+| [M20](#s-M20) | fileshare-durable | FileShare (SMB) | pool | 🟢 PASS |
+| [M21](#s-M21) | volume-durable | Volume (Longhorn) | 01,02 | 🟢 PASS |
+| [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS |
+| [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS |
+| [M24](#s-M24) | lottery (correlation capstone) | Multi-master mesh (seeded) | 01,02 | ⏸️ PARKED |
+
+> **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
 ---
 
@@ -28,21 +99,32 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 
 Realistic multi-kind tenant stacks hit by one fault, judged on a business-level invariant (money conserved / no order lost / identity+data survive) — often blending oracle modes in a single run. Hand-driven.
 
+<a id="s-C1"></a>
 ### C1 · SaaS — all three oracle modes at once &nbsp; 🟢 PASS
 
 **Category:** Application + SecurityGroup + Postgres (HA) &nbsp;•&nbsp; **Oracle:** tolerate — availability + zero lost orders + zero fence breaches through failover
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > One run exercised recover + tolerate + deny together: app availability 150/150, orders 139/139 (zero lost), tenant fence 0 breaches, DB failed over. (Surfaced + fixed the SG-labels-on-DB bug.)
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
   n_app["Application (HA, min 2)"]
-  n_db[("Postgres (HA)")]
   n_fence["tenant fence (SG)"]
-  n_app -->|"orders"| n_db
-  n_fence -->|"blocked"| n_db
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_db__sandbox_node_01[("Postgres (HA) · primary")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_db__sandbox_node_02[("Postgres (HA) · replica")]
+  end
+  n_db__sandbox_node_01 -.->|"replica"| n_db__sandbox_node_02
+  n_app -->|"orders"| n_db__sandbox_node_01
+  n_fence -->|"blocked"| n_db__sandbox_node_01
   FAULT(("⚡ kill CNPG primary mid-workload")):::fault
-  FAULT -.-> n_db
+  FAULT -.-> n_db__sandbox_node_01
   ORACLE{{"tolerate · availability + zero lost orders + zero fence breaches through failover"}}:::oracle_tolerate
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -50,11 +132,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-C2"></a>
 ### C2 · Zero-downtime cutover &nbsp; 🟢 PASS
 
 **Category:** Migration + live writes &nbsp;•&nbsp; **Oracle:** recover — zero downtime for the app + full fidelity at target
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Source 120/120 writes committed (zero app downtime) and all 120 reached the target.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -72,19 +161,32 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-C3"></a>
 ### C3 · Ledger conservation under DB failover &nbsp; 🟢 PASS
 
 **Category:** Application + Postgres (HA) &nbsp;•&nbsp; **Oracle:** recover — SUM(balance) conserved exactly
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > 144/150 transfers committed, 6 failed in the ~2.4s failover window, SUM(balance)=100000 exactly — no torn transfer.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
   n_app["transfer loop"]
-  n_db[("Postgres (HA)")]
-  n_app -->|"BEGIN/debit/credit/COMMIT"| n_db
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_db__sandbox_node_01[("Postgres (HA) · primary")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_db__sandbox_node_02[("Postgres (HA) · replica")]
+  end
+  n_db__sandbox_node_01 -.->|"replica"| n_db__sandbox_node_02
+  n_app -->|"BEGIN/debit/credit/COMMIT"| n_db__sandbox_node_01
   FAULT(("⚡ kill primary mid-stream")):::fault
-  FAULT -.-> n_db
+  FAULT -.-> n_db__sandbox_node_01
   ORACLE{{"recover · SUM(balance) conserved exactly"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -92,11 +194,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-C4"></a>
 ### C4 · VDI correlated outage &nbsp; 🟢 PASS
 
 **Category:** Directory + FileShare &nbsp;•&nbsp; **Oracle:** recover — identity + files both survive the correlated outage
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Killed the AD domain controller AND the Samba pod together; both recovered — user re-auth intact, file intact + writable.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -111,19 +220,30 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-C5"></a>
 ### C5 · Active-active multi-region &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh (2 regions) &nbsp;•&nbsp; **Oracle:** tolerate — both serve local writes through the split, then reconverge
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > Both regions served 20/20 local writes THROUGH the split; healed → reconverged 40/40 with zero lost writes.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
-  n_ra[("region-A")]
-  n_rb[("region-B")]
-  n_ra <-->|"replication"| n_rb
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_ra__sandbox_node_01[("region-A · region-A")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_rb__sandbox_node_02[("region-B · region-B")]
+  end
+  n_ra__sandbox_node_01 <-->|"replication"| n_rb__sandbox_node_02
   FAULT(("⚡ partition region-B")):::fault
-  FAULT -.-> n_rb
+  FAULT -.-> n_rb__sandbox_node_02
   ORACLE{{"tolerate · both serve local writes through the split, then reconverge"}}:::oracle_tolerate
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -131,11 +251,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-C6"></a>
 ### C6 · Event pipeline (DB→Stream→Function) &nbsp; 🟢 PASS
 
 **Category:** Stream + Function &nbsp;•&nbsp; **Oracle:** recover — zero events lost (durable consumer resumes from offset)
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Killed the Function's durable-consumer pump mid-stream; it redelivered from offset — all 120 changes reached the function, zero loss.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -155,15 +282,22 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
 ---
 
 ## Targeted batch (N-series)
 
 New-coverage probes across untested ground: IAM/permission boundary, cross-namespace isolation, DataFlow internals, cross-engine replication, migration lifecycle, autoscaling, snapshots, and VM storage. Hand-driven.
 
+<a id="s-N01"></a>
 ### N01 · HPA scale-out under load + replica kill &nbsp; ⏳ PENDING
 
 **Category:** Application autoscaling &nbsp;•&nbsp; **Oracle:** tolerate — availability holds; HPA restores the replica count
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -177,9 +311,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N02"></a>
 ### N02 · Scale-to-zero cold burst with backlog &nbsp; ⏳ PENDING
 
 **Category:** Function (Knative) &nbsp;•&nbsp; **Oracle:** recover — the whole backlog drains on wake, nothing dropped
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -195,11 +336,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N03"></a>
 ### N03 · Postgres final snapshot → delete → restore &nbsp; ⏳ PENDING
 
 **Category:** Snapshots (console-orchestrated) &nbsp;•&nbsp; **Oracle:** recover — restore into a new DB returns every row
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Snapshots are orchestrated by the console-api (no CRD); driven via the BFF.
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -215,9 +363,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N04"></a>
 ### N04 · MariaDB backup → restore &nbsp; ⏳ PENDING
 
 **Category:** Snapshots (console-orchestrated) &nbsp;•&nbsp; **Oracle:** recover — restored DB returns all data
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -233,9 +388,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N05"></a>
 ### N05 · Kill MinIO backup target mid-snapshot &nbsp; ⏳ PENDING
 
 **Category:** Snapshots + object store &nbsp;•&nbsp; **Oracle:** recover — snapshot integrity preserved / retried, never silently truncated
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -251,11 +413,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N06"></a>
 ### N06 · Permission-boundary self-escalation deny &nbsp; 🟢 PASS
 
 **Category:** IAM (kind: Policy / Role) &nbsp;•&nbsp; **Oracle:** deny — escalation grants never materialize (0 breaches)
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > A Policy that tried to grant policies:*/users:*/roles:* had all three dropped at compile time; the compiled ClusterRole held only the in-boundary grant.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -271,11 +440,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N07"></a>
 ### N07 · Least-privilege — mutating verbs denied &nbsp; 🟢 PASS
 
 **Category:** IAM (impersonation / SAR) &nbsp;•&nbsp; **Oracle:** deny — every out-of-role mutating verb is denied
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Read-only subject can list, but delete/create denied across kinds.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -291,11 +467,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N08"></a>
 ### N08 · Cross-namespace SecurityGroup isolation &nbsp; 🟢 PASS
 
 **Category:** SecurityGroup (Cilium/NetworkPolicy) &nbsp;•&nbsp; **Oracle:** deny — cross-namespace access blocked; same-namespace allowed
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Same-ns client 200; client in another namespace denied.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -311,19 +494,30 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N09"></a>
 ### N09 · DataFlow autoSyncTables under concurrent writes &nbsp; 🟢 PASS
 
 **Category:** DataFlow (mesh) &nbsp;•&nbsp; **Oracle:** recover — the new table is auto-created + synced on every peer
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > New table added on one master under load → auto-created on the peer and synced 15/15.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
-  n_a[("pg-x")]
-  n_b[("pg-y")]
-  n_a <-->|"replication + autoSync"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-x · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-y · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication + autoSync"| n_b__sandbox_node_02
   FAULT(("⚡ add a new table while writes flow")):::fault
-  FAULT -.-> n_a
+  FAULT -.-> n_a__sandbox_node_01
   ORACLE{{"recover · the new table is auto-created + synced on every peer"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -331,19 +525,30 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N10"></a>
 ### N10 · Heterogeneous pg↔mysql mesh &nbsp; 🔴 FINDING
 
 **Category:** DataFlow (cross-engine) &nbsp;•&nbsp; **Oracle:** recover — both engines converge to all rows
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > FINDING (confirmed): a managed MariaDB without highAvailability ships log_bin=OFF, so Debezium cannot capture from it. pg→mysql applied 10/10, mysql→pg yielded 0/10 — the mesh silently runs one-way. Fix: enable binlog (log_bin + binlog_format=ROW) on a managed MariaDB used as a CDC source.
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
-  n_pg[("Postgres")]
-  n_my[("MariaDB (non-HA)")]
-  n_pg <-->|"replication"| n_my
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_pg__sandbox_node_01[("Postgres · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_my__sandbox_node_02[("MariaDB (non-HA) · member")]
+  end
+  n_pg__sandbox_node_01 <-->|"replication"| n_my__sandbox_node_02
   FAULT(("⚡ capture-from-mysql (log_bin OFF)")):::fault
-  FAULT -.-> n_my
+  FAULT -.-> n_my__sandbox_node_02
   ORACLE{{"recover · both engines converge to all rows"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -351,11 +556,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N11"></a>
 ### N11 · Dead-letter on a poison row &nbsp; 🟢 PASS
 
 **Category:** apply-sink error handling &nbsp;•&nbsp; **Oracle:** recover — poison dead-lettered; good rows keep flowing (no head-of-line block)
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Poison row (violates a target CHECK) did not head-of-line block: all good rows applied, poison never corrupted the target; apply-sink dead-letters to a bounded DLQ after MAX_DELIVER.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -375,19 +587,30 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N12"></a>
 ### N12 · Multi-master LWW conflict determinism &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — both masters converge to the same winner per key (deterministic LWW)
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > 10 simultaneous conflicting writes to the same keys on both masters → all 10 resolved to the same winner on both; no split-brain.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
-  n_a[("master-A")]
-  n_b[("master-B")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("master-A · master")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("master-B · master")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ simultaneous conflicting writes (same keys)")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · both masters converge to the same winner per key (deterministic LWW)"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -395,11 +618,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N13"></a>
 ### N13 · Cross-engine key coercion (pg→mysql) &nbsp; 🟢 PASS
 
 **Category:** Migration (cross-engine) &nbsp;•&nbsp; **Oracle:** recover — target table builds + loads without a key-length error
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > INT pk + TEXT UNIQUE key loaded 25/25 with no key-spec error. Fidelity note: the source UNIQUE constraint is not replicated to the target (primary key only).
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -415,11 +645,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N14"></a>
 ### N14 · Migration resume after apply-sink delete &nbsp; 🟢 PASS
 
 **Category:** Migration lifecycle &nbsp;•&nbsp; **Oracle:** recover — apply-sink self-heals and resumes from offset, no loss
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Deleted the apply-sink Deployment mid-CDC; the composition recreated it (~212s) and CDC resumed from offset to 40/40 — zero loss.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -437,11 +674,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N15"></a>
 ### N15 · Migration idempotency &nbsp; 🟢 PASS
 
 **Category:** Migration lifecycle &nbsp;•&nbsp; **Oracle:** recover — idempotent upsert — no duplicate rows
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Re-running the same migration kept exactly 20 rows — the upsert is idempotent, no duplication.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -457,18 +701,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N16"></a>
 ### N16 · VM live-migration under node drain &nbsp; ⏳ PENDING
 
 **Category:** Virtual machine &nbsp;•&nbsp; **Oracle:** tolerate — VM live-migrates to another node with no downtime
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_vm[/"VM"/]
-  n_n1{{"sandbox-node-01"}}
-  n_n2{{"sandbox-node-02"}}
-  n_vm -->|"runs on"| n_n1
-  FAULT(("⚡ cordon + drain the node")):::fault
-  FAULT -.-> n_n1
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_vm__sandbox_node_01[/"VM · from"/]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_vm__sandbox_node_02[/"VM · to (live-migrate)"/]
+  end
+  n_vm__sandbox_node_01 -.->|"to (live-migrate)"| n_vm__sandbox_node_02
+  FAULT(("⚡ cordon + drain the source node")):::fault
+  FAULT -.-> n_vm__sandbox_node_01
   ORACLE{{"tolerate · VM live-migrates to another node with no downtime"}}:::oracle_tolerate
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -476,9 +730,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N17"></a>
 ### N17 · Block-mode volume hotplug to a running VM &nbsp; ⏳ PENDING
 
 **Category:** Volume + VM &nbsp;•&nbsp; **Oracle:** recover — volume attaches + is usable with no VM reboot
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -494,9 +755,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N18"></a>
 ### N18 · VM disk backup → restore &nbsp; ⏳ PENDING
 
 **Category:** Virtual machine (Longhorn/KubeVirt) &nbsp;•&nbsp; **Oracle:** recover — a new VM boots from the restored disk with its data
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -512,11 +780,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N19"></a>
 ### N19 · Stream fan-out to two Functions &nbsp; 🟢 PASS
 
 **Category:** Stream (delivery guarantee) &nbsp;•&nbsp; **Oracle:** recover — both functions receive every event (independent consumers)
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > One Stream, two Functions → two independent durable consumers (fn-f1, fn-f2); both drained all 30 events (Unprocessed=0 each).
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -534,9 +809,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-N20"></a>
 ### N20 · PriorityClass preemption under pressure &nbsp; ⏳ PENDING
 
 **Category:** Scheduling / control-plane &nbsp;•&nbsp; **Oracle:** tolerate — high-priority workload scheduled; low-priority evicted
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -552,21 +834,38 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
 ---
 
 ## Discovery batch (S-series)
 
 A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config — the sweep that surfaced the cross-engine primary-key regression (found + fixed).
 
+<a id="s-S01"></a>
 ### S01 · MariaDB Galera node kill &nbsp; 🟢 PASS
 
 **Category:** MySQL (HA) &nbsp;•&nbsp; **Oracle:** recover — committed rows survive on quorum
 
+**Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_db[("MariaDB (Galera x3)")]
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_db__sandbox_node_01[("MariaDB (Galera) · galera-1")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_db__sandbox_node_02[("MariaDB (Galera) · galera-2")]
+  end
+  subgraph sg_sandbox_node_03["sandbox-node-03"]
+    n_db__sandbox_node_03[("MariaDB (Galera) · galera-3")]
+  end
+  n_db__sandbox_node_01 -.->|"galera-2"| n_db__sandbox_node_02
+  n_db__sandbox_node_01 -.->|"galera-3"| n_db__sandbox_node_03
   FAULT(("⚡ kill a Galera node")):::fault
-  FAULT -.-> n_db
+  FAULT -.-> n_db__sandbox_node_01
   ORACLE{{"recover · committed rows survive on quorum"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -574,9 +873,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S02"></a>
 ### S02 · Mongo/FerretDB backend kill &nbsp; 🟢 PASS
 
 **Category:** MongoDB (FerretDB on Postgres) &nbsp;•&nbsp; **Oracle:** recover — documents survive
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -590,9 +896,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S03"></a>
 ### S03 · Babelfish pod kill &nbsp; 🟢 PASS
 
 **Category:** Babelfish (SQL-Server-compatible) &nbsp;•&nbsp; **Oracle:** recover — data durable across the reschedule (Longhorn PVC)
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -606,11 +919,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S04"></a>
 ### S04 · Cross-engine primary-key coercion &nbsp; 🟢 PASS
 
 **Category:** Migration (cross-engine) &nbsp;•&nbsp; **Oracle:** recover — target builds + fully populates (regression fixed)
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Surfaced a real regression: a pg text/UUID primary key mapped to MySQL TEXT failed CREATE (Error 1170) → empty target. FIXED — PK LOB columns now coerce to VARCHAR(255)/NVARCHAR(255); verified 25/25.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -626,22 +946,35 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S10"></a>
 ### S10 · 3-node DataFlow mesh convergence &nbsp; 🟢 PASS
 
 **Category:** DataFlow (mesh, N≥3) &nbsp;•&nbsp; **Oracle:** recover — all three members reconverge byte-identical
 
+**Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
+
 > An earlier 'non-convergence' was traced to the 8-CPU sandbox quota starving apply-sinks (env, not product). Given capacity, the 3-node mesh converges 90/90/90. Multi-master now verified at N=2 and N=3.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_c[("pg-c")]
-  n_a <-->|"repl"| n_b
-  n_b <-->|"repl"| n_c
-  n_a <-->|"repl"| n_c
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  subgraph sg_sandbox_node_03["sandbox-node-03"]
+    n_c__sandbox_node_03[("pg-c · member")]
+  end
+  n_a__sandbox_node_01 <-->|"repl"| n_b__sandbox_node_02
+  n_b__sandbox_node_02 <-->|"repl"| n_c__sandbox_node_03
+  n_a__sandbox_node_01 <-->|"repl"| n_c__sandbox_node_03
   FAULT(("⚡ capture kill (full mesh)")):::fault
-  FAULT -.-> n_a
+  FAULT -.-> n_a__sandbox_node_01
   ORACLE{{"recover · all three members reconverge byte-identical"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -649,15 +982,32 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S12"></a>
 ### S12 · Kill 2-of-3 Deployment replicas &nbsp; 🟢 PASS
 
 **Category:** Application availability &nbsp;•&nbsp; **Oracle:** tolerate — Service keeps serving; Deployment restores the count
 
+**Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_app["Application (3 replicas)"]
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_app__sandbox_node_01["Application (3 replicas) · replica"]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_app__sandbox_node_02["Application (3 replicas) · replica"]
+  end
+  subgraph sg_sandbox_node_03["sandbox-node-03"]
+    n_app__sandbox_node_03["Application (3 replicas) · replica"]
+  end
+  n_app__sandbox_node_01 -.->|"replica"| n_app__sandbox_node_02
+  n_app__sandbox_node_01 -.->|"replica"| n_app__sandbox_node_03
   FAULT(("⚡ kill 2 of 3 replicas")):::fault
-  FAULT -.-> n_app
+  FAULT -.-> n_app__sandbox_node_01
   ORACLE{{"tolerate · Service keeps serving; Deployment restores the count"}}:::oracle_tolerate
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -665,9 +1015,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S13"></a>
 ### S13 · Function cold-start burst &nbsp; 🟢 PASS
 
 **Category:** Function (Knative) &nbsp;•&nbsp; **Oracle:** tolerate — all 60 requests served (60/60)
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -681,11 +1038,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S14"></a>
 ### S14 · HA-VM under fault &nbsp; ⚪ INCONCLUSIVE
 
 **Category:** Virtual machine &nbsp;•&nbsp; **Oracle:** recover — the VM returns to Running
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > Blocked on an intermittent CDI image-import flake (vm-root-scratch) — an environment issue, not a product result. The standalone VM resilience chain passes.
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -699,17 +1063,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S15"></a>
 ### S15 · Longhorn Volume replica loss &nbsp; 🟢 PASS
 
 **Category:** Volume (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — data intact; Longhorn rebuilds the replica
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_vol[("Longhorn Volume")]
-  n_n{{"sandbox-node-02"}}
-  n_vol -->|"replica"| n_n
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_vol__sandbox_node_01[("Longhorn Volume · replica")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_vol__sandbox_node_02[("Longhorn Volume · replica")]
+  end
+  n_vol__sandbox_node_01 -.->|"replica"| n_vol__sandbox_node_02
   FAULT(("⚡ lose a replica")):::fault
-  FAULT -.-> n_n
+  FAULT -.-> n_vol__sandbox_node_02
   ORACLE{{"recover · data intact; Longhorn rebuilds the replica"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -717,9 +1092,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S16"></a>
 ### S16 · FileShare killed mid-write &nbsp; 🟢 PASS
 
 **Category:** FileShare (SMB) &nbsp;•&nbsp; **Oracle:** recover — the committed file is intact + writable after restart
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -733,11 +1115,18 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S17"></a>
 ### S17 · Online Volume expand &nbsp; 🟢 PASS
 
 **Category:** Volume (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — capacity grows with data intact
 
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
 > An earlier 'failure' was a harness bug (ambiguous 'volume' short-name hit the wrong CRD). With volume.openinfra.dev: 1Gi→2Gi propagated and Longhorn expanded in ~16s.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -751,9 +1140,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S18"></a>
 ### S18 · Live SecurityGroup egress change &nbsp; 🟢 PASS
 
 **Category:** SecurityGroup &nbsp;•&nbsp; **Oracle:** tolerate — the change applies to running pods with no restart
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -769,9 +1165,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S19"></a>
 ### S19 · Secret rotation propagation &nbsp; 🟢 PASS
 
 **Category:** Application config &nbsp;•&nbsp; **Oracle:** recover — the new secret value is picked up
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -785,9 +1188,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-S20"></a>
 ### S20 · ResourceQuota caps a runaway &nbsp; 🟢 PASS
 
 **Category:** Control-plane (quota) &nbsp;•&nbsp; **Oracle:** deny — excess pods rejected at admission (blast contained)
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -803,15 +1213,22 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
 ---
 
 ## Nightly suite
 
 Runs every night on a self-hosted runner, sandbox-scoped. Each scenario asserts its fault actually landed (proof-of-fire) while the harness is still holding the break, so a false-green fails loud. This is the continuously-green core.
 
+<a id="s-M01"></a>
 ### M01 · app-availability &nbsp; 🟢 PASS
 
 **Category:** Application &nbsp;•&nbsp; **Oracle:** tolerate — HTTP success rate ≥ SLO during the fault
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -827,15 +1244,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M02"></a>
 ### M02 · cnpg-failover &nbsp; 🟢 PASS
 
 **Category:** Postgres (HA) &nbsp;•&nbsp; **Oracle:** recover — failover with no lost writes
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_db[("CNPG cluster")]
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_db__sandbox_node_01[("CNPG cluster · primary")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_db__sandbox_node_02[("CNPG cluster · replica")]
+  end
+  n_db__sandbox_node_01 -.->|"replica"| n_db__sandbox_node_02
   FAULT(("⚡ kill the primary")):::fault
-  FAULT -.-> n_db
+  FAULT -.-> n_db__sandbox_node_01
   ORACLE{{"recover · failover with no lost writes"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -843,17 +1273,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M03"></a>
 ### M03 · partition &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — reconverge byte-identical after heal
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ clean partition")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · reconverge byte-identical after heal"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -861,17 +1302,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M04"></a>
 ### M04 · partition-isolation &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — both members diverge then reconverge byte-identical
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ sever B from the whole mesh (both links)")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · both members diverge then reconverge byte-identical"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -879,17 +1331,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M05"></a>
 ### M05 · partition-flapping &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — reconverge byte-identical after flapping stops
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ repeated cut/heal cycles")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · reconverge byte-identical after flapping stops"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -897,17 +1360,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M06"></a>
 ### M06 · partition-latency &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** tolerate — keeps converging under a ~4× slower apply path
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ 800ms latency both ways")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"tolerate · keeps converging under a ~4× slower apply path"}}:::oracle_tolerate
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -915,17 +1389,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M07"></a>
 ### M07 · partition-loss &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** tolerate — keeps converging under sustained loss
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ 15% packet loss")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"tolerate · keeps converging under sustained loss"}}:::oracle_tolerate
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -933,17 +1418,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M08"></a>
 ### M08 · clock-skew &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — LWW still converges (no lost-write regression)
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ clock skew on a member")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · LWW still converges (no lost-write regression)"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -951,17 +1447,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M09"></a>
 ### M09 · healing-order &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh (timing) &nbsp;•&nbsp; **Oracle:** recover — reconverge regardless of heal order
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
   n_s["a→b sink"]
-  n_a --> n_s
-  n_s --> n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 --> n_s
+  n_s --> n_b__sandbox_node_02
   FAULT(("⚡ overlap partition + held-down sink, heal in order")):::fault
   FAULT -.-> n_s
   ORACLE{{"recover · reconverge regardless of heal order"}}:::oracle_recover
@@ -971,17 +1478,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M10"></a>
 ### M10 · concurrent (mesh under overlapping chaos) &nbsp; 🟢 PASS
 
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — reconverge with zero lost writes (graduation test)
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ partition + sink kill together")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · reconverge with zero lost writes (graduation test)"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -989,9 +1507,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M11"></a>
 ### M11 · stress-cpu &nbsp; 🟢 PASS
 
 **Category:** apply-sink (fault variety) &nbsp;•&nbsp; **Oracle:** tolerate — keeps converging under CPU pressure
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1005,9 +1530,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M12"></a>
 ### M12 · stress-mem &nbsp; 🟢 PASS
 
 **Category:** Postgres (fault variety) &nbsp;•&nbsp; **Oracle:** tolerate — DB stays queryable; mesh converges zero-lost
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1021,9 +1553,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M13"></a>
 ### M13 · sink-kill &nbsp; 🟢 PASS
 
 **Category:** apply-sink &nbsp;•&nbsp; **Oracle:** recover — resume from offset, no loss
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1041,9 +1580,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M14"></a>
 ### M14 · sink-drain-kill &nbsp; 🟢 PASS
 
 **Category:** apply-sink (hardest state) &nbsp;•&nbsp; **Oracle:** recover — no loss even killed at its hardest moment
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1061,9 +1607,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M15"></a>
 ### M15 · migration &nbsp; 🟢 PASS
 
 **Category:** Migration (fidelity) &nbsp;•&nbsp; **Oracle:** recover — target reflects every acknowledged source row
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1079,9 +1632,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M16"></a>
 ### M16 · stream-noloss &nbsp; 🟢 PASS
 
 **Category:** Stream (CDC) &nbsp;•&nbsp; **Oracle:** recover — stream message count ≥ driven changes (no dropped events)
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1097,17 +1657,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M17"></a>
 ### M17 · dataflow-converge &nbsp; 🟢 PASS
 
 **Category:** DataFlow &nbsp;•&nbsp; **Oracle:** recover — members byte-identical after heal
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_a[("member-A")]
-  n_b[("member-B")]
-  n_a <-->|"DataFlow mesh"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("member-A · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("member-B · member")]
+  end
+  n_a__sandbox_node_01 <-->|"DataFlow mesh"| n_b__sandbox_node_02
   FAULT(("⚡ DataFlow capture kill")):::fault
-  FAULT -.-> n_a
+  FAULT -.-> n_a__sandbox_node_01
   ORACLE{{"recover · members byte-identical after heal"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -1115,9 +1686,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M18"></a>
 ### M18 · security-deny &nbsp; 🟢 PASS
 
 **Category:** SecurityGroup &nbsp;•&nbsp; **Oracle:** deny — the fence never leaks (0 breaches)
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1133,9 +1711,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M19"></a>
 ### M19 · directory-recover &nbsp; 🟢 PASS
 
 **Category:** Active Directory &nbsp;•&nbsp; **Oracle:** recover — an account created pre-fault survives the restart
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1149,9 +1734,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M20"></a>
 ### M20 · fileshare-durable &nbsp; 🟢 PASS
 
 **Category:** FileShare (SMB) &nbsp;•&nbsp; **Oracle:** recover — a pre-fault file is present + writable after restart
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1165,15 +1757,28 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M21"></a>
 ### M21 · volume-durable &nbsp; 🟢 PASS
 
 **Category:** Volume (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — a raw-block signature reads back after reschedule
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_vol[("block Volume")]
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_vol__sandbox_node_01[("block Volume · replica")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_vol__sandbox_node_02[("block Volume · replica")]
+  end
+  n_vol__sandbox_node_01 -.->|"replica"| n_vol__sandbox_node_02
   FAULT(("⚡ kill the attached pod (reschedule)")):::fault
-  FAULT -.-> n_vol
+  FAULT -.-> n_vol__sandbox_node_01
   ORACLE{{"recover · a raw-block signature reads back after reschedule"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -1181,19 +1786,32 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M22"></a>
 ### M22 · storage-replica-loss &nbsp; 🟢 PASS
 
 **Category:** Storage (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — volume survives on the surviving replica; rebuilds
 
+**Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
 ```mermaid
 flowchart LR
-  n_vol[("Longhorn Volume")]
-  n_n1{{"sandbox-node-01"}}
-  n_n2{{"sandbox-node-02"}}
-  n_vol -->|"replica"| n_n1
-  n_vol -->|"replica"| n_n2
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_vol__sandbox_node_01[("Longhorn Volume · replica")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_vol__sandbox_node_02[("Longhorn Volume · replica")]
+  end
+  subgraph sg_sandbox_node_03["sandbox-node-03"]
+    n_vol__sandbox_node_03[("Longhorn Volume · replica")]
+  end
+  n_vol__sandbox_node_01 -.->|"replica"| n_vol__sandbox_node_02
+  n_vol__sandbox_node_01 -.->|"replica"| n_vol__sandbox_node_03
   FAULT(("⚡ lose a replica (distinct nodes)")):::fault
-  FAULT -.-> n_n1
+  FAULT -.-> n_vol__sandbox_node_03
   ORACLE{{"recover · volume survives on the surviving replica; rebuilds"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
@@ -1201,9 +1819,16 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M23"></a>
 ### M23 · vm-resilience &nbsp; 🟢 PASS
 
 **Category:** Virtual machine &nbsp;•&nbsp; **Oracle:** recover — the VMI returns to Running
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
@@ -1217,25 +1842,38 @@ flowchart LR
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
 
+</details>
+
+<a id="s-M24"></a>
 ### M24 · lottery (correlation capstone) &nbsp; ⏸️ PARKED
 
 **Category:** Multi-master mesh (seeded) &nbsp;•&nbsp; **Oracle:** recover — reconverge under any composed blast
 
+**Ran on:** sandbox-node-01, sandbox-node-02
+
 > The correlation capstone: a seeded RNG composes 2–4 physically-composable faults per night. Backlogged until the base suite banks 30 consecutive green nights.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
-  n_a[("pg-a")]
-  n_b[("pg-b")]
-  n_a <-->|"replication"| n_b
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ seeded blast (2–4 composed faults)")):::fault
-  FAULT -.-> n_b
+  FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · reconverge under any composed blast"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
   classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
 ```
+
+</details>
 
 ---
 
