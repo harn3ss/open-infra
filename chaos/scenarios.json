@@ -47,7 +47,8 @@
       "fault": { "target":"app", "kind":"PodChaos", "label":"kill a scaled replica under load" },
       "oracle": { "mode":"tolerate", "invariant":"availability holds; HPA restores the replica count" } },
 
-    { "id": "N02", "batch": "manual-n", "title": "Scale-to-zero cold burst with backlog", "category": "Function (Knative)", "status": "PENDING",
+    { "id": "N02", "batch": "manual-n", "title": "Scale-to-zero cold burst with backlog", "category": "Function (Knative)", "status": "PASS",
+      "note": "Function scaled to ZERO after idle (0 replicas), then a 30-event burst cold-started it and the durable pump drained the whole backlog (Unprocessed=0).",
       "chain": { "nodes": [ {"id":"st","label":"Stream (backlog)","kind":"stream"}, {"id":"fn","label":"Function (scaled to 0)","kind":"function"} ], "edges": [ {"from":"st","to":"fn"} ] },
       "fault": { "target":"fn", "kind":"scale", "label":"idle → 0, then cold burst" },
       "oracle": { "mode":"recover", "invariant":"the whole backlog drains on wake, nothing dropped" } },
