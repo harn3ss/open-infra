@@ -1,0 +1,352 @@
+{
+  "batches": [
+    { "id": "composite", "title": "Composite workflows", "desc": "Realistic multi-kind tenant stacks hit by one fault, judged on a business-level invariant (money conserved / no order lost / identity+data survive) — often blending oracle modes in a single run. Hand-driven." },
+    { "id": "manual-n", "title": "Targeted batch (N-series)", "desc": "New-coverage probes across untested ground: IAM/permission boundary, cross-namespace isolation, DataFlow internals, cross-engine replication, migration lifecycle, autoscaling, snapshots, and VM storage. Hand-driven." },
+    { "id": "discovery", "title": "Discovery batch (S-series)", "desc": "A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config — the sweep that surfaced the cross-engine primary-key regression (found + fixed)." },
+    { "id": "nightly", "title": "Nightly suite", "desc": "Runs every night on a self-hosted runner, sandbox-scoped. Each scenario asserts its fault actually landed (proof-of-fire) while the harness is still holding the break, so a false-green fails loud. This is the continuously-green core." }
+  ],
+  "scenarios": [
+    { "id": "C1", "batch": "composite", "title": "SaaS — all three oracle modes at once", "category": "Application + SecurityGroup + Postgres (HA)", "status": "PASS",
+      "note": "One run exercised recover + tolerate + deny together: app availability 150/150, orders 139/139 (zero lost), tenant fence 0 breaches, DB failed over. (Surfaced + fixed the SG-labels-on-DB bug.)",
+      "chain": { "nodes": [ {"id":"app","label":"Application (HA, min 2)","kind":"app"}, {"id":"db","label":"Postgres (HA)","kind":"database"}, {"id":"fence","label":"tenant fence (SG)","kind":"app"} ], "edges": [ {"from":"app","to":"db","label":"orders"}, {"from":"fence","to":"db","label":"blocked","dir":""} ] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill CNPG primary mid-workload" },
+      "oracle": { "mode":"tolerate", "invariant":"availability + zero lost orders + zero fence breaches through failover" } },
+
+    { "id": "C2", "batch": "composite", "title": "Zero-downtime cutover", "category": "Migration + live writes", "status": "PASS",
+      "note": "Source 120/120 writes committed (zero app downtime) and all 120 reached the target.",
+      "chain": { "nodes": [ {"id":"src","label":"source DB","kind":"database"}, {"id":"sink","label":"apply-sink","kind":"app"}, {"id":"tgt","label":"target DB","kind":"database"} ], "edges": [ {"from":"src","to":"sink","label":"CDC"}, {"from":"sink","to":"tgt","label":"apply"} ] },
+      "fault": { "target":"sink", "kind":"PodChaos", "label":"kill apply-sink mid-cutover" },
+      "oracle": { "mode":"recover", "invariant":"zero downtime for the app + full fidelity at target" } },
+
+    { "id": "C3", "batch": "composite", "title": "Ledger conservation under DB failover", "category": "Application + Postgres (HA)", "status": "PASS",
+      "note": "144/150 transfers committed, 6 failed in the ~2.4s failover window, SUM(balance)=100000 exactly — no torn transfer.",
+      "chain": { "nodes": [ {"id":"app","label":"transfer loop","kind":"app"}, {"id":"db","label":"Postgres (HA)","kind":"database"} ], "edges": [ {"from":"app","to":"db","label":"BEGIN/debit/credit/COMMIT"} ] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill primary mid-stream" },
+      "oracle": { "mode":"recover", "invariant":"SUM(balance) conserved exactly" } },
+
+    { "id": "C4", "batch": "composite", "title": "VDI correlated outage", "category": "Directory + FileShare", "status": "PASS",
+      "note": "Killed the AD domain controller AND the Samba pod together; both recovered — user re-auth intact, file intact + writable.",
+      "chain": { "nodes": [ {"id":"dc","label":"AD domain controller","kind":"directory"}, {"id":"fs","label":"SMB share","kind":"fileshare"} ], "edges": [] },
+      "fault": { "target":"dc", "kind":"PodChaos", "label":"kill DC + Samba together" },
+      "oracle": { "mode":"recover", "invariant":"identity + files both survive the correlated outage" } },
+
+    { "id": "C5", "batch": "composite", "title": "Active-active multi-region", "category": "Multi-master mesh (2 regions)", "status": "PASS",
+      "note": "Both regions served 20/20 local writes THROUGH the split; healed → reconverged 40/40 with zero lost writes.",
+      "chain": { "nodes": [ {"id":"ra","label":"region-A","kind":"database"}, {"id":"rb","label":"region-B","kind":"database"} ], "edges": [ {"from":"ra","to":"rb","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["ra","rb"], "kind":"NetworkChaos", "label":"partition region-B" },
+      "oracle": { "mode":"tolerate", "invariant":"both serve local writes through the split, then reconverge" } },
+
+    { "id": "C6", "batch": "composite", "title": "Event pipeline (DB→Stream→Function)", "category": "Stream + Function", "status": "PASS",
+      "note": "Killed the Function's durable-consumer pump mid-stream; it redelivered from offset — all 120 changes reached the function, zero loss.",
+      "chain": { "nodes": [ {"id":"db","label":"Postgres","kind":"database"}, {"id":"st","label":"Stream cdc-evt","kind":"stream"}, {"id":"pump","label":"pump (durable consumer)","kind":"app"}, {"id":"fn","label":"Function","kind":"function"} ], "edges": [ {"from":"db","to":"st","label":"CDC"}, {"from":"st","to":"pump"}, {"from":"pump","to":"fn","label":"HTTP 200"} ] },
+      "fault": { "target":"pump", "kind":"PodChaos", "label":"kill pump mid-stream" },
+      "oracle": { "mode":"recover", "invariant":"zero events lost (durable consumer resumes from offset)" } },
+
+    { "id": "N01", "batch": "manual-n", "title": "HPA scale-out under load + replica kill", "category": "Application autoscaling", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"app","label":"Application (min 2 / max 5)","kind":"app"} ], "edges": [] },
+      "fault": { "target":"app", "kind":"PodChaos", "label":"kill a scaled replica under load" },
+      "oracle": { "mode":"tolerate", "invariant":"availability holds; HPA restores the replica count" } },
+
+    { "id": "N02", "batch": "manual-n", "title": "Scale-to-zero cold burst with backlog", "category": "Function (Knative)", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"st","label":"Stream (backlog)","kind":"stream"}, {"id":"fn","label":"Function (scaled to 0)","kind":"function"} ], "edges": [ {"from":"st","to":"fn"} ] },
+      "fault": { "target":"fn", "kind":"scale", "label":"idle → 0, then cold burst" },
+      "oracle": { "mode":"recover", "invariant":"the whole backlog drains on wake, nothing dropped" } },
+
+    { "id": "N03", "batch": "manual-n", "title": "Postgres final snapshot → delete → restore", "category": "Snapshots (console-orchestrated)", "status": "PENDING",
+      "note": "Snapshots are orchestrated by the console-api (no CRD); driven via the BFF.",
+      "chain": { "nodes": [ {"id":"db","label":"Postgres","kind":"database"}, {"id":"snap","label":"pg_dump → MinIO","kind":"storage"} ], "edges": [ {"from":"db","to":"snap","label":"final snapshot"} ] },
+      "fault": { "target":"db", "kind":"lifecycle", "label":"deprovision the database" },
+      "oracle": { "mode":"recover", "invariant":"restore into a new DB returns every row" } },
+
+    { "id": "N04", "batch": "manual-n", "title": "MariaDB backup → restore", "category": "Snapshots (console-orchestrated)", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"db","label":"MariaDB","kind":"database"}, {"id":"snap","label":"mariadb-dump → MinIO","kind":"storage"} ], "edges": [ {"from":"db","to":"snap","label":"backup"} ] },
+      "fault": { "target":"db", "kind":"lifecycle", "label":"deprovision + restore" },
+      "oracle": { "mode":"recover", "invariant":"restored DB returns all data" } },
+
+    { "id": "N05", "batch": "manual-n", "title": "Kill MinIO backup target mid-snapshot", "category": "Snapshots + object store", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"db","label":"Postgres","kind":"database"}, {"id":"snap","label":"MinIO (backup target)","kind":"storage"} ], "edges": [ {"from":"db","to":"snap","label":"snapshot"} ] },
+      "fault": { "target":"snap", "kind":"PodChaos", "label":"kill MinIO mid-snapshot" },
+      "oracle": { "mode":"recover", "invariant":"snapshot integrity preserved / retried, never silently truncated" } },
+
+    { "id": "N06", "batch": "manual-n", "title": "Permission-boundary self-escalation deny", "category": "IAM (kind: Policy / Role)", "status": "PASS",
+      "note": "A Policy that tried to grant policies:*/users:*/roles:* had all three dropped at compile time; the compiled ClusterRole held only the in-boundary grant.",
+      "chain": { "nodes": [ {"id":"pol","label":"kind: Policy","kind":"app"}, {"id":"cr","label":"compiled ClusterRole","kind":"app"} ], "edges": [ {"from":"pol","to":"cr","label":"compile (boundary)"} ] },
+      "fault": { "target":"pol", "kind":"config", "label":"grant policies/users/roles (escalation)" },
+      "oracle": { "mode":"deny", "invariant":"escalation grants never materialize (0 breaches)" } },
+
+    { "id": "N07", "batch": "manual-n", "title": "Least-privilege — mutating verbs denied", "category": "IAM (impersonation / SAR)", "status": "PASS",
+      "note": "Read-only subject can list, but delete/create denied across kinds.",
+      "chain": { "nodes": [ {"id":"user","label":"scoped user (impersonated)","kind":"app"}, {"id":"api","label":"Kubernetes API","kind":"app"} ], "edges": [ {"from":"user","to":"api","label":"SubjectAccessReview"} ] },
+      "fault": { "target":"user", "kind":"config", "label":"attempt delete/create" },
+      "oracle": { "mode":"deny", "invariant":"every out-of-role mutating verb is denied" } },
+
+    { "id": "N08", "batch": "manual-n", "title": "Cross-namespace SecurityGroup isolation", "category": "SecurityGroup (Cilium/NetworkPolicy)", "status": "PASS",
+      "note": "Same-ns client 200; client in another namespace denied.",
+      "chain": { "nodes": [ {"id":"svc","label":"fenced service (ns-A)","kind":"app"}, {"id":"ext","label":"client (ns-B)","kind":"app"} ], "edges": [ {"from":"ext","to":"svc","label":"cross-ns request"} ] },
+      "fault": { "edge":["ext","svc"], "kind":"NetworkPolicy", "label":"reach fenced svc from another namespace" },
+      "oracle": { "mode":"deny", "invariant":"cross-namespace access blocked; same-namespace allowed" } },
+
+    { "id": "N09", "batch": "manual-n", "title": "DataFlow autoSyncTables under concurrent writes", "category": "DataFlow (mesh)", "status": "PASS",
+      "note": "New table added on one master under load → auto-created on the peer and synced 15/15.",
+      "chain": { "nodes": [ {"id":"a","label":"pg-x","kind":"database"}, {"id":"b","label":"pg-y","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication + autoSync","dir":"both"} ] },
+      "fault": { "target":"a", "kind":"schema", "label":"add a new table while writes flow" },
+      "oracle": { "mode":"recover", "invariant":"the new table is auto-created + synced on every peer" } },
+
+    { "id": "N10", "batch": "manual-n", "title": "Heterogeneous pg↔mysql mesh", "category": "DataFlow (cross-engine)", "status": "FINDING",
+      "note": "FINDING (confirmed): a managed MariaDB without highAvailability ships log_bin=OFF, so Debezium cannot capture from it. pg→mysql applied 10/10, mysql→pg yielded 0/10 — the mesh silently runs one-way. Fix: enable binlog (log_bin + binlog_format=ROW) on a managed MariaDB used as a CDC source.",
+      "chain": { "nodes": [ {"id":"pg","label":"Postgres","kind":"database"}, {"id":"my","label":"MariaDB (non-HA)","kind":"database"} ], "edges": [ {"from":"pg","to":"my","label":"replication","dir":"both"} ] },
+      "fault": { "target":"my", "kind":"config", "label":"capture-from-mysql (log_bin OFF)" },
+      "oracle": { "mode":"recover", "invariant":"both engines converge to all rows" } },
+
+    { "id": "N11", "batch": "manual-n", "title": "Dead-letter on a poison row", "category": "apply-sink error handling", "status": "PASS",
+      "note": "Poison row (violates a target CHECK) did not head-of-line block: all good rows applied, poison never corrupted the target; apply-sink dead-letters to a bounded DLQ after MAX_DELIVER.",
+      "chain": { "nodes": [ {"id":"src","label":"source DB","kind":"database"}, {"id":"sink","label":"apply-sink","kind":"app"}, {"id":"tgt","label":"target DB","kind":"database"}, {"id":"dlq","label":"DLQ (dlq.>)","kind":"stream"} ], "edges": [ {"from":"src","to":"sink","label":"CDC"}, {"from":"sink","to":"tgt","label":"apply"}, {"from":"sink","to":"dlq","label":"poison"} ] },
+      "fault": { "target":"sink", "kind":"data", "label":"inject a permanently-failing row" },
+      "oracle": { "mode":"recover", "invariant":"poison dead-lettered; good rows keep flowing (no head-of-line block)" } },
+
+    { "id": "N12", "batch": "manual-n", "title": "Multi-master LWW conflict determinism", "category": "Multi-master mesh", "status": "PASS",
+      "note": "10 simultaneous conflicting writes to the same keys on both masters → all 10 resolved to the same winner on both; no split-brain.",
+      "chain": { "nodes": [ {"id":"a","label":"master-A","kind":"database"}, {"id":"b","label":"master-B","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"data", "label":"simultaneous conflicting writes (same keys)" },
+      "oracle": { "mode":"recover", "invariant":"both masters converge to the same winner per key (deterministic LWW)" } },
+
+    { "id": "N13", "batch": "manual-n", "title": "Cross-engine key coercion (pg→mysql)", "category": "Migration (cross-engine)", "status": "PASS",
+      "note": "INT pk + TEXT UNIQUE key loaded 25/25 with no key-spec error. Fidelity note: the source UNIQUE constraint is not replicated to the target (primary key only).",
+      "chain": { "nodes": [ {"id":"pg","label":"Postgres","kind":"database"}, {"id":"my","label":"MariaDB","kind":"database"} ], "edges": [ {"from":"pg","to":"my","label":"CDC + schema-sync"} ] },
+      "fault": { "target":"my", "kind":"schema", "label":"TEXT primary/unique key on a MySQL target" },
+      "oracle": { "mode":"recover", "invariant":"target table builds + loads without a key-length error" } },
+
+    { "id": "N14", "batch": "manual-n", "title": "Migration resume after apply-sink delete", "category": "Migration lifecycle", "status": "PASS",
+      "note": "Deleted the apply-sink Deployment mid-CDC; the composition recreated it (~212s) and CDC resumed from offset to 40/40 — zero loss.",
+      "chain": { "nodes": [ {"id":"src","label":"source DB","kind":"database"}, {"id":"sink","label":"apply-sink","kind":"app"}, {"id":"tgt","label":"target DB","kind":"database"} ], "edges": [ {"from":"src","to":"sink","label":"CDC"}, {"from":"sink","to":"tgt","label":"apply"} ] },
+      "fault": { "target":"sink", "kind":"PodChaos", "label":"delete the apply-sink Deployment mid-CDC" },
+      "oracle": { "mode":"recover", "invariant":"apply-sink self-heals and resumes from offset, no loss" } },
+
+    { "id": "N15", "batch": "manual-n", "title": "Migration idempotency", "category": "Migration lifecycle", "status": "PASS",
+      "note": "Re-running the same migration kept exactly 20 rows — the upsert is idempotent, no duplication.",
+      "chain": { "nodes": [ {"id":"src","label":"source DB","kind":"database"}, {"id":"tgt","label":"target DB","kind":"database"} ], "edges": [ {"from":"src","to":"tgt","label":"CDC (run twice)"} ] },
+      "fault": { "target":"tgt", "kind":"lifecycle", "label":"re-run the same migration" },
+      "oracle": { "mode":"recover", "invariant":"idempotent upsert — no duplicate rows" } },
+
+    { "id": "N16", "batch": "manual-n", "title": "VM live-migration under node drain", "category": "Virtual machine", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"vm","label":"VM","kind":"vm"}, {"id":"n1","label":"sandbox-node-01","kind":"node"}, {"id":"n2","label":"sandbox-node-02","kind":"node"} ], "edges": [ {"from":"vm","to":"n1","label":"runs on"} ] },
+      "fault": { "target":"n1", "kind":"drain", "label":"cordon + drain the node" },
+      "oracle": { "mode":"tolerate", "invariant":"VM live-migrates to another node with no downtime" } },
+
+    { "id": "N17", "batch": "manual-n", "title": "Block-mode volume hotplug to a running VM", "category": "Volume + VM", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"vm","label":"running VM","kind":"vm"}, {"id":"vol","label":"Block Volume","kind":"volume"} ], "edges": [ {"from":"vol","to":"vm","label":"hotplug"} ] },
+      "fault": { "target":"vm", "kind":"lifecycle", "label":"attach a volume live" },
+      "oracle": { "mode":"recover", "invariant":"volume attaches + is usable with no VM reboot" } },
+
+    { "id": "N18", "batch": "manual-n", "title": "VM disk backup → restore", "category": "Virtual machine (Longhorn/KubeVirt)", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"vm","label":"VM","kind":"vm"}, {"id":"snap","label":"Longhorn backup → MinIO","kind":"storage"} ], "edges": [ {"from":"vm","to":"snap","label":"CSI snapshot"} ] },
+      "fault": { "target":"vm", "kind":"lifecycle", "label":"delete + restore the root disk" },
+      "oracle": { "mode":"recover", "invariant":"a new VM boots from the restored disk with its data" } },
+
+    { "id": "N19", "batch": "manual-n", "title": "Stream fan-out to two Functions", "category": "Stream (delivery guarantee)", "status": "PASS",
+      "note": "One Stream, two Functions → two independent durable consumers (fn-f1, fn-f2); both drained all 30 events (Unprocessed=0 each).",
+      "chain": { "nodes": [ {"id":"db","label":"Postgres","kind":"database"}, {"id":"st","label":"Stream cdc-evt","kind":"stream"}, {"id":"f1","label":"Function f1","kind":"function"}, {"id":"f2","label":"Function f2","kind":"function"} ], "edges": [ {"from":"db","to":"st","label":"CDC"}, {"from":"st","to":"f1"}, {"from":"st","to":"f2"} ] },
+      "fault": { "target":"", "kind":"", "label":"" },
+      "oracle": { "mode":"recover", "invariant":"both functions receive every event (independent consumers)" } },
+
+    { "id": "N20", "batch": "manual-n", "title": "PriorityClass preemption under pressure", "category": "Scheduling / control-plane", "status": "PENDING",
+      "chain": { "nodes": [ {"id":"lo","label":"low-priority pods","kind":"app"}, {"id":"hi","label":"high-priority pod","kind":"app"} ], "edges": [ {"from":"hi","to":"lo","label":"preempts"} ] },
+      "fault": { "target":"lo", "kind":"quota", "label":"fill capacity, then schedule a high-priority pod" },
+      "oracle": { "mode":"tolerate", "invariant":"high-priority workload scheduled; low-priority evicted" } },
+
+    { "id": "S01", "batch": "discovery", "title": "MariaDB Galera node kill", "category": "MySQL (HA)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"db","label":"MariaDB (Galera x3)","kind":"database"} ], "edges": [] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill a Galera node" },
+      "oracle": { "mode":"recover", "invariant":"committed rows survive on quorum" } },
+
+    { "id": "S02", "batch": "discovery", "title": "Mongo/FerretDB backend kill", "category": "MongoDB (FerretDB on Postgres)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"db","label":"FerretDB + Postgres backend","kind":"database"} ], "edges": [] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill the storage-Postgres" },
+      "oracle": { "mode":"recover", "invariant":"documents survive" } },
+
+    { "id": "S03", "batch": "discovery", "title": "Babelfish pod kill", "category": "Babelfish (SQL-Server-compatible)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"db","label":"Babelfish (StatefulSet on Longhorn)","kind":"database"} ], "edges": [] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill the pod" },
+      "oracle": { "mode":"recover", "invariant":"data durable across the reschedule (Longhorn PVC)" } },
+
+    { "id": "S04", "batch": "discovery", "title": "Cross-engine primary-key coercion", "category": "Migration (cross-engine)", "status": "PASS",
+      "note": "Surfaced a real regression: a pg text/UUID primary key mapped to MySQL TEXT failed CREATE (Error 1170) → empty target. FIXED — PK LOB columns now coerce to VARCHAR(255)/NVARCHAR(255); verified 25/25.",
+      "chain": { "nodes": [ {"id":"pg","label":"Postgres","kind":"database"}, {"id":"my","label":"MySQL","kind":"database"} ], "edges": [ {"from":"pg","to":"my","label":"CDC + schema-sync"} ] },
+      "fault": { "target":"my", "kind":"schema", "label":"TEXT primary key on a MySQL target" },
+      "oracle": { "mode":"recover", "invariant":"target builds + fully populates (regression fixed)" } },
+
+    { "id": "S10", "batch": "discovery", "title": "3-node DataFlow mesh convergence", "category": "DataFlow (mesh, N≥3)", "status": "PASS",
+      "note": "An earlier 'non-convergence' was traced to the 8-CPU sandbox quota starving apply-sinks (env, not product). Given capacity, the 3-node mesh converges 90/90/90. Multi-master now verified at N=2 and N=3.",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"}, {"id":"c","label":"pg-c","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"repl","dir":"both"}, {"from":"b","to":"c","label":"repl","dir":"both"}, {"from":"a","to":"c","label":"repl","dir":"both"} ] },
+      "fault": { "target":"a", "kind":"PodChaos", "label":"capture kill (full mesh)" },
+      "oracle": { "mode":"recover", "invariant":"all three members reconverge byte-identical" } },
+
+    { "id": "S12", "batch": "discovery", "title": "Kill 2-of-3 Deployment replicas", "category": "Application availability", "status": "PASS",
+      "chain": { "nodes": [ {"id":"app","label":"Application (3 replicas)","kind":"app"} ], "edges": [] },
+      "fault": { "target":"app", "kind":"PodChaos", "label":"kill 2 of 3 replicas" },
+      "oracle": { "mode":"tolerate", "invariant":"Service keeps serving; Deployment restores the count" } },
+
+    { "id": "S13", "batch": "discovery", "title": "Function cold-start burst", "category": "Function (Knative)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"fn","label":"Function (scale-from-zero)","kind":"function"} ], "edges": [] },
+      "fault": { "target":"fn", "kind":"load", "label":"burst 60 concurrent requests from cold" },
+      "oracle": { "mode":"tolerate", "invariant":"all 60 requests served (60/60)" } },
+
+    { "id": "S15", "batch": "discovery", "title": "Longhorn Volume replica loss", "category": "Volume (Longhorn)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume"}, {"id":"n","label":"sandbox-node-02","kind":"node"} ], "edges": [ {"from":"vol","to":"n","label":"replica"} ] },
+      "fault": { "target":"n", "kind":"PodChaos", "label":"lose a replica" },
+      "oracle": { "mode":"recover", "invariant":"data intact; Longhorn rebuilds the replica" } },
+
+    { "id": "S16", "batch": "discovery", "title": "FileShare killed mid-write", "category": "FileShare (SMB)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"fs","label":"SMB share","kind":"fileshare"} ], "edges": [] },
+      "fault": { "target":"fs", "kind":"PodChaos", "label":"kill the Samba pod mid-write" },
+      "oracle": { "mode":"recover", "invariant":"the committed file is intact + writable after restart" } },
+
+    { "id": "S18", "batch": "discovery", "title": "Live SecurityGroup egress change", "category": "SecurityGroup", "status": "PASS",
+      "chain": { "nodes": [ {"id":"cl","label":"client","kind":"app"}, {"id":"svc","label":"target service","kind":"app"} ], "edges": [ {"from":"cl","to":"svc","label":"egress"} ] },
+      "fault": { "edge":["cl","svc"], "kind":"config", "label":"flip SG egress denied → allowed (live)" },
+      "oracle": { "mode":"tolerate", "invariant":"the change applies to running pods with no restart" } },
+
+    { "id": "S19", "batch": "discovery", "title": "Secret rotation propagation", "category": "Application config", "status": "PASS",
+      "chain": { "nodes": [ {"id":"app","label":"Application (envFrom secret)","kind":"app"} ], "edges": [] },
+      "fault": { "target":"app", "kind":"config", "label":"rotate the secret + rollout-restart" },
+      "oracle": { "mode":"recover", "invariant":"the new secret value is picked up" } },
+
+    { "id": "S20", "batch": "discovery", "title": "ResourceQuota caps a runaway", "category": "Control-plane (quota)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"run","label":"50-pod runaway","kind":"app"}, {"id":"q","label":"ResourceQuota","kind":"app"} ], "edges": [ {"from":"run","to":"q","label":"admission"} ] },
+      "fault": { "target":"run", "kind":"quota", "label":"request 50 pods past the quota" },
+      "oracle": { "mode":"deny", "invariant":"excess pods rejected at admission (blast contained)" } },
+
+    { "id": "S14", "batch": "discovery", "title": "HA-VM under fault", "category": "Virtual machine", "status": "INCONCLUSIVE",
+      "note": "Blocked on an intermittent CDI image-import flake (vm-root-scratch) — an environment issue, not a product result. The standalone VM resilience chain passes.",
+      "chain": { "nodes": [ {"id":"vm","label":"VM (HA)","kind":"vm"} ], "edges": [] },
+      "fault": { "target":"vm", "kind":"PodChaos", "label":"fault the VM" },
+      "oracle": { "mode":"recover", "invariant":"the VM returns to Running" } },
+
+    { "id": "S17", "batch": "discovery", "title": "Online Volume expand", "category": "Volume (Longhorn)", "status": "PASS",
+      "note": "An earlier 'failure' was a harness bug (ambiguous 'volume' short-name hit the wrong CRD). With volume.openinfra.dev: 1Gi→2Gi propagated and Longhorn expanded in ~16s.",
+      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume"} ], "edges": [] },
+      "fault": { "target":"vol", "kind":"config", "label":"expand 1Gi → 2Gi online" },
+      "oracle": { "mode":"recover", "invariant":"capacity grows with data intact" } },
+
+    { "id": "M01", "batch": "nightly", "title": "app-availability", "category": "Application", "status": "PASS",
+      "chain": { "nodes": [ {"id":"app","label":"Application (HA)","kind":"app"}, {"id":"db","label":"Postgres","kind":"database"} ], "edges": [ {"from":"app","to":"db"} ] },
+      "fault": { "target":"app", "kind":"PodChaos", "label":"kill an instance" },
+      "oracle": { "mode":"tolerate", "invariant":"HTTP success rate ≥ SLO during the fault" } },
+
+    { "id": "M02", "batch": "nightly", "title": "cnpg-failover", "category": "Postgres (HA)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"db","label":"CNPG cluster","kind":"database"} ], "edges": [] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill the primary" },
+      "oracle": { "mode":"recover", "invariant":"failover with no lost writes" } },
+
+    { "id": "M03", "batch": "nightly", "title": "partition", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"clean partition" },
+      "oracle": { "mode":"recover", "invariant":"reconverge byte-identical after heal" } },
+
+    { "id": "M04", "batch": "nightly", "title": "partition-isolation", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "target":"b", "kind":"NetworkChaos", "label":"sever B from the whole mesh (both links)" },
+      "oracle": { "mode":"recover", "invariant":"both members diverge then reconverge byte-identical" } },
+
+    { "id": "M05", "batch": "nightly", "title": "partition-flapping", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"repeated cut/heal cycles" },
+      "oracle": { "mode":"recover", "invariant":"reconverge byte-identical after flapping stops" } },
+
+    { "id": "M06", "batch": "nightly", "title": "partition-latency", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"800ms latency both ways" },
+      "oracle": { "mode":"tolerate", "invariant":"keeps converging under a ~4× slower apply path" } },
+
+    { "id": "M07", "batch": "nightly", "title": "partition-loss", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"NetworkChaos", "label":"15% packet loss" },
+      "oracle": { "mode":"tolerate", "invariant":"keeps converging under sustained loss" } },
+
+    { "id": "M08", "batch": "nightly", "title": "clock-skew", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "target":"b", "kind":"TimeChaos", "label":"clock skew on a member" },
+      "oracle": { "mode":"recover", "invariant":"LWW still converges (no lost-write regression)" } },
+
+    { "id": "M09", "batch": "nightly", "title": "healing-order", "category": "Multi-master mesh (timing)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"}, {"id":"s","label":"a→b sink","kind":"app"} ], "edges": [ {"from":"a","to":"s"}, {"from":"s","to":"b"} ] },
+      "fault": { "target":"s", "kind":"NetworkChaos+PodChaos", "label":"overlap partition + held-down sink, heal in order" },
+      "oracle": { "mode":"recover", "invariant":"reconverge regardless of heal order" } },
+
+    { "id": "M10", "batch": "nightly", "title": "concurrent (mesh under overlapping chaos)", "category": "Multi-master mesh", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"NetworkChaos+PodChaos", "label":"partition + sink kill together" },
+      "oracle": { "mode":"recover", "invariant":"reconverge with zero lost writes (graduation test)" } },
+
+    { "id": "M11", "batch": "nightly", "title": "stress-cpu", "category": "apply-sink (fault variety)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"s","label":"a→b apply-sink","kind":"app"} ], "edges": [] },
+      "fault": { "target":"s", "kind":"StressChaos", "label":"saturate the sink's CPU" },
+      "oracle": { "mode":"tolerate", "invariant":"keeps converging under CPU pressure" } },
+
+    { "id": "M12", "batch": "nightly", "title": "stress-mem", "category": "Postgres (fault variety)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"b","label":"site-B Postgres","kind":"database"} ], "edges": [] },
+      "fault": { "target":"b", "kind":"StressChaos", "label":"300MB memory pressure (under the limit)" },
+      "oracle": { "mode":"tolerate", "invariant":"DB stays queryable; mesh converges zero-lost" } },
+
+    { "id": "M13", "batch": "nightly", "title": "sink-kill", "category": "apply-sink", "status": "PASS",
+      "chain": { "nodes": [ {"id":"src","label":"source","kind":"database"}, {"id":"s","label":"apply-sink","kind":"app"}, {"id":"tgt","label":"target","kind":"database"} ], "edges": [ {"from":"src","to":"s"}, {"from":"s","to":"tgt"} ] },
+      "fault": { "target":"s", "kind":"PodChaos", "label":"kill the apply-sink" },
+      "oracle": { "mode":"recover", "invariant":"resume from offset, no loss" } },
+
+    { "id": "M14", "batch": "nightly", "title": "sink-drain-kill", "category": "apply-sink (hardest state)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"src","label":"source","kind":"database"}, {"id":"s","label":"apply-sink (mid-backlog)","kind":"app"}, {"id":"tgt","label":"target","kind":"database"} ], "edges": [ {"from":"src","to":"s"}, {"from":"s","to":"tgt"} ] },
+      "fault": { "target":"s", "kind":"PodChaos", "label":"kill mid-backlog-drain" },
+      "oracle": { "mode":"recover", "invariant":"no loss even killed at its hardest moment" } },
+
+    { "id": "M15", "batch": "nightly", "title": "migration", "category": "Migration (fidelity)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"src","label":"source DB","kind":"database"}, {"id":"tgt","label":"target DB","kind":"database"} ], "edges": [ {"from":"src","to":"tgt","label":"CDC"} ] },
+      "fault": { "target":"src", "kind":"PodChaos", "label":"kill capture/apply mid-migration" },
+      "oracle": { "mode":"recover", "invariant":"target reflects every acknowledged source row" } },
+
+    { "id": "M16", "batch": "nightly", "title": "stream-noloss", "category": "Stream (CDC)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"db","label":"source DB","kind":"database"}, {"id":"st","label":"Stream cdc-evt","kind":"stream"} ], "edges": [ {"from":"db","to":"st","label":"CDC"} ] },
+      "fault": { "target":"db", "kind":"PodChaos", "label":"kill the capture" },
+      "oracle": { "mode":"recover", "invariant":"stream message count ≥ driven changes (no dropped events)" } },
+
+    { "id": "M17", "batch": "nightly", "title": "dataflow-converge", "category": "DataFlow", "status": "PASS",
+      "chain": { "nodes": [ {"id":"a","label":"member-A","kind":"database"}, {"id":"b","label":"member-B","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"DataFlow mesh","dir":"both"} ] },
+      "fault": { "target":"a", "kind":"PodChaos", "label":"DataFlow capture kill" },
+      "oracle": { "mode":"recover", "invariant":"members byte-identical after heal" } },
+
+    { "id": "M18", "batch": "nightly", "title": "security-deny", "category": "SecurityGroup", "status": "PASS",
+      "chain": { "nodes": [ {"id":"cl","label":"egress-locked client","kind":"app"}, {"id":"svc","label":"forbidden service","kind":"app"} ], "edges": [ {"from":"cl","to":"svc","label":"blocked"} ] },
+      "fault": { "edge":["cl","svc"], "kind":"config", "label":"locked client churns against a forbidden service" },
+      "oracle": { "mode":"deny", "invariant":"the fence never leaks (0 breaches)" } },
+
+    { "id": "M19", "batch": "nightly", "title": "directory-recover", "category": "Active Directory", "status": "PASS",
+      "chain": { "nodes": [ {"id":"dc","label":"AD domain controller","kind":"directory"} ], "edges": [] },
+      "fault": { "target":"dc", "kind":"PodChaos", "label":"kill the DC" },
+      "oracle": { "mode":"recover", "invariant":"an account created pre-fault survives the restart" } },
+
+    { "id": "M20", "batch": "nightly", "title": "fileshare-durable", "category": "FileShare (SMB)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"fs","label":"SMB share","kind":"fileshare"} ], "edges": [] },
+      "fault": { "target":"fs", "kind":"PodChaos", "label":"kill the Samba server" },
+      "oracle": { "mode":"recover", "invariant":"a pre-fault file is present + writable after restart" } },
+
+    { "id": "M21", "batch": "nightly", "title": "volume-durable", "category": "Volume (Longhorn)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"vol","label":"block Volume","kind":"volume"} ], "edges": [] },
+      "fault": { "target":"vol", "kind":"PodChaos", "label":"kill the attached pod (reschedule)" },
+      "oracle": { "mode":"recover", "invariant":"a raw-block signature reads back after reschedule" } },
+
+    { "id": "M22", "batch": "nightly", "title": "storage-replica-loss", "category": "Storage (Longhorn)", "status": "PASS",
+      "chain": { "nodes": [ {"id":"vol","label":"Longhorn Volume","kind":"volume"}, {"id":"n1","label":"sandbox-node-01","kind":"node"}, {"id":"n2","label":"sandbox-node-02","kind":"node"} ], "edges": [ {"from":"vol","to":"n1","label":"replica"}, {"from":"vol","to":"n2","label":"replica"} ] },
+      "fault": { "target":"n1", "kind":"PodChaos", "label":"lose a replica (distinct nodes)" },
+      "oracle": { "mode":"recover", "invariant":"volume survives on the surviving replica; rebuilds" } },
+
+    { "id": "M23", "batch": "nightly", "title": "vm-resilience", "category": "Virtual machine", "status": "PASS",
+      "chain": { "nodes": [ {"id":"vm","label":"VM","kind":"vm"} ], "edges": [] },
+      "fault": { "target":"vm", "kind":"PodChaos", "label":"kill the virt-launcher pod" },
+      "oracle": { "mode":"recover", "invariant":"the VMI returns to Running" } },
+
+    { "id": "M24", "batch": "nightly", "title": "lottery (correlation capstone)", "category": "Multi-master mesh (seeded)", "status": "PARKED",
+      "note": "The correlation capstone: a seeded RNG composes 2–4 physically-composable faults per night. Backlogged until the base suite banks 30 consecutive green nights.",
+      "chain": { "nodes": [ {"id":"a","label":"pg-a","kind":"database"}, {"id":"b","label":"pg-b","kind":"database"} ], "edges": [ {"from":"a","to":"b","label":"replication","dir":"both"} ] },
+      "fault": { "edge":["a","b"], "kind":"seeded multi-fault", "label":"seeded blast (2–4 composed faults)" },
+      "oracle": { "mode":"recover", "invariant":"reconverge under any composed blast" } }
+  ]
+}
