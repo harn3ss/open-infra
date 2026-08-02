@@ -8,7 +8,7 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 64 scenarios — 🟢 54 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 8 pending · ⏸️ 0 parked.
+**Tally:** 64 scenarios — 🟢 55 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 7 pending · ⏸️ 0 parked.
 
 **Last nightly:** `lottery` 🟢 success ([2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269))
 
@@ -53,7 +53,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [N17](#s-N17) | Block-mode volume hotplug to a running VM | Volume + VM | pool | ⏳ PENDING |
 | [N18](#s-N18) | VM disk backup → restore | Virtual machine (Longhorn/KubeVirt) | pool | ⏳ PENDING |
 | [N19](#s-N19) | Stream fan-out to two Functions | Stream (delivery guarantee) | pool | 🟢 PASS |
-| [N20](#s-N20) | PriorityClass preemption under pressure | Scheduling / control-plane | pool | ⏳ PENDING |
+| [N20](#s-N20) | PriorityClass preemption under pressure | Scheduling / control-plane | pool | 🟢 PASS |
 | [S01](#s-S01) | MariaDB Galera node kill | MySQL (HA) | 01,02,03 | 🟢 PASS |
 | [S02](#s-S02) | Mongo/FerretDB backend kill | MongoDB (FerretDB on Postgres) | pool | 🟢 PASS |
 | [S03](#s-S03) | Babelfish pod kill | Babelfish (SQL-Server-compatible) | pool | 🟢 PASS |
@@ -816,13 +816,15 @@ flowchart LR
 </details>
 
 <a id="s-N20"></a>
-### N20 · PriorityClass preemption under pressure &nbsp; ⏳ PENDING
+### N20 · PriorityClass preemption under pressure &nbsp; 🟢 PASS
 
 **Category:** Scheduling / control-plane &nbsp;•&nbsp; **Oracle:** tolerate — high-priority workload scheduled; low-priority evicted
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+> Packed a node with 5 low-priority pods; a high-priority pod scheduled by preempting 2 of them (confirmed via Preempted events). Run in a no-quota scratch namespace so real node pressure could build.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
 flowchart LR
