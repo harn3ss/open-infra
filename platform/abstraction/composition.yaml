@@ -420,9 +420,8 @@ spec:
                       metadata:
                         labels:
                           app.kubernetes.io/name: {{ $name }}-mongo
-                          {{- range $sg := ($spec.securityGroups | default list) }}
-                          openinfra.dev/sg-{{ $sg }}: ""
-                          {{- end }}
+                          # DB tier is deliberately NOT an SG member (a SecurityGroup fences the
+                          # app's ingress port; on the DB it would blackhole the DB's own ports).
                       spec:
                         {{- if $spec.database.highAvailability }}
                         affinity:
@@ -496,14 +495,8 @@ spec:
                   kind: MariaDB
                   metadata: { name: {{ $name }}-mysql, namespace: {{ $ns }} }
                   spec:
-                    {{- if $spec.securityGroups }}
-                    # SecurityGroup membership: label the DB pods so attached SGs gate them.
-                    podMetadata:
-                      labels:
-                        {{- range $sg := $spec.securityGroups }}
-                        openinfra.dev/sg-{{ $sg }}: ""
-                        {{- end }}
-                    {{- end }}
+                    # DB tier is deliberately NOT an SG member (a SecurityGroup fences the app's
+                    # ingress port; on the DB it would blackhole the DB's own ports).
                     rootPasswordSecretKeyRef: { name: {{ $name }}-mysql-app, key: rootPassword }
                     username: app
                     passwordSecretKeyRef: { name: {{ $name }}-mysql-app, key: password }
@@ -601,9 +594,7 @@ spec:
                       metadata:
                         labels:
                           app: {{ $name }}-babelfish
-                          {{- range $sg := ($spec.securityGroups | default list) }}
-                          openinfra.dev/sg-{{ $sg }}: ""
-                          {{- end }}
+                          # DB tier is deliberately NOT an SG member (see the app-tier note).
                       spec:
                         securityContext: { fsGroup: 1000 }
                         # Postgres refuses a root-owned data dir; chown the Longhorn PVC first.
@@ -691,15 +682,12 @@ spec:
                     # must explicitly write "off" to un-hibernate.
                     annotations: { cnpg.io/hibernation: "{{ if $dbStopped }}on{{ else }}off{{ end }}" }
                   spec:
-                    {{- if $spec.securityGroups }}
-                    # SecurityGroup membership: CNPG propagates inheritedMetadata to
-                    # the cluster's pods, so attached SecurityGroups actually gate the DB.
-                    inheritedMetadata:
-                      labels:
-                        {{- range $sg := $spec.securityGroups }}
-                        openinfra.dev/sg-{{ $sg }}: ""
-                        {{- end }}
-                    {{- end }}
+                    # DB tier is deliberately NOT an SG member: a SecurityGroup fences the app's
+                    # user-facing ingress (its port); inheriting it onto the CNPG pods applied that
+                    # port-scoped rule to the DB and blackholed the DB's own ports — the operator's
+                    # status port (cluster wedged at 1/2), streaming replication (no HA), and even
+                    # the app's own 5432 connection. The app reaches the DB via its injected
+                    # connection secret (password); the DB stays on CNPG's default network posture.
                     # database.highAvailability -> primary + hot standby, streaming
                     # replication, automatic failover. local-path PVs are node-local,
                     # so anti-affinity (one instance per node) is what makes the DB
