@@ -3,6 +3,8 @@
 
 # Chaos scenarios — what we break, and what must hold
 
+> **These four chaos docs:** [primitive](chaos.md) (`kind: FaultInjection`) → [judging](chaos-oracle.md) (the oracle: modes + pillars) → [nightly program](chaos-suite.md) (safety, graduation) → **catalog + live status** (this page, generated).
+
 open-infra is **continuously tested against failure**. Every scenario below drives a real
 resource *chain*, injects a real fault at a marked point (⚡), and asserts a business- or
 systems-level **invariant** — not just "did it come back up". This page is generated from
