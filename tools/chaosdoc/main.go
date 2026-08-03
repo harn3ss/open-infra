@@ -342,10 +342,14 @@ func render(d Doc, nl Nightly) string {
 		fmt.Fprintf(&h, "**Last nightly:** %s\n\n", strings.Join(parts, " · "))
 	}
 
-	h.WriteString("> **Freshness — read this before the green.** Only **nightly-lottery** scenarios are ")
-	h.WriteString("re-verified every night; **hand-driven** and **on-demand** results are point-in-time ")
-	h.WriteString("(see each scenario's *Verified* date + method). The nightly banner above reflects the ")
-	h.WriteString("**lottery only** — a PASS elsewhere means \"passed when last run\", not \"passed last night\".\n\n")
+	h.WriteString("> **Freshness — read this before the green.** `nightly-lottery` means the fault is in the ")
+	h.WriteString("lottery's **draw palette**; its *Verified* date is the last night it was **actually drawn** ")
+	h.WriteString("(a night draws only 2–4 faults, so these dates vary and many read *not recorded* until drawn ")
+	h.WriteString("and machine-stamped by the run). `hand-driven` / `on-demand` are **point-in-time**, not ")
+	h.WriteString("refreshed nightly. Nuance: the lottery judges a drawn fault with a deliberately generous ")
+	h.WriteString("**convergence** oracle (the mesh reconverged), *not* each scenario's standalone oracle — so ")
+	h.WriteString("`nightly-lottery` means \"drawn and the mesh recovered\", a bit weaker than \"this scenario's ")
+	h.WriteString("exact check passed\". The banner above is the lottery run itself.\n\n")
 
 	h.WriteString("### Legend\n\n")
 	h.WriteString("| Symbol | Meaning |\n|---|---|\n")
@@ -380,10 +384,16 @@ func render(d Doc, nl Nightly) string {
 				}
 				nodes = strings.Join(short, ",")
 			}
-			ver := s.LastVerified
-			if ver == "" {
-				ver = "not recorded"
+			verDate := s.LastVerified
+			if s.Key != "" {
+				if r, ok := nl.Runs[s.Key]; ok {
+					verDate = r.Date
+				}
 			}
+			if verDate == "" {
+				verDate = "not recorded"
+			}
+			ver := verDate
 			if s.VerifiedBy != "" {
 				ver = ver + " · " + s.VerifiedBy
 			}
@@ -415,24 +425,27 @@ func render(d Doc, nl Nightly) string {
 			fmt.Fprintf(&h, "### %s · %s &nbsp; %s\n\n", s.ID, s.Title, statusBadge(s.Status))
 			fmt.Fprintf(&h, "**Category:** %s &nbsp;•&nbsp; **Oracle:** %s — %s\n\n", s.Category, s.Oracle.Mode, s.Oracle.Invariant)
 			fmt.Fprintf(&h, "**Ran on:** %s\n\n", ranOn(s))
+			// The Verified date for a nightly-lottery scenario comes from the machine-written
+			// nightly-status sidecar (the night its fault was actually drawn) — never hand-stamped.
 			lv := s.LastVerified
-			if lv == "" {
-				lv = "not recorded"
-			}
 			vb := s.VerifiedBy
 			if vb == "" {
 				vb = "—"
 			}
-			fmt.Fprintf(&h, "**Verified:** %s · %s\n\n", lv, vb)
+			mark := ""
 			if s.Key != "" {
 				if r, ok := nl.Runs[s.Key]; ok {
-					link := r.Date
+					lv = r.Date
 					if r.RunURL != "" {
-						link = fmt.Sprintf("[%s](%s)", r.Date, r.RunURL)
+						lv = fmt.Sprintf("[%s](%s)", r.Date, r.RunURL)
 					}
-					fmt.Fprintf(&h, "**Last nightly:** %s %s · %s\n\n", runEmoji(r.Conclusion), r.Conclusion, link)
+					mark = " " + runEmoji(r.Conclusion)
 				}
 			}
+			if lv == "" {
+				lv = "not recorded"
+			}
+			fmt.Fprintf(&h, "**Verified:** %s · %s%s\n\n", lv, vb, mark)
 			if s.Note != "" {
 				fmt.Fprintf(&h, "> %s\n\n", s.Note)
 			}

@@ -12,7 +12,7 @@ systems-level **invariant** — not just "did it come back up". This page is gen
 
 **Last nightly:** `lottery` 🟢 success ([2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269))
 
-> **Freshness — read this before the green.** Only **nightly-lottery** scenarios are re-verified every night; **hand-driven** and **on-demand** results are point-in-time (see each scenario's *Verified* date + method). The nightly banner above reflects the **lottery only** — a PASS elsewhere means "passed when last run", not "passed last night".
+> **Freshness — read this before the green.** `nightly-lottery` means the fault is in the lottery's **draw palette**; its *Verified* date is the last night it was **actually drawn** (a night draws only 2–4 faults, so these dates vary and many read *not recorded* until drawn and machine-stamped by the run). `hand-driven` / `on-demand` are **point-in-time**, not refreshed nightly. Nuance: the lottery judges a drawn fault with a deliberately generous **convergence** oracle (the mesh reconverged), *not* each scenario's standalone oracle — so `nightly-lottery` means "drawn and the mesh recovered", a bit weaker than "this scenario's exact check passed". The banner above is the lottery run itself.
 
 ### Legend
 
@@ -72,18 +72,18 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [S20](#s-S20) | ResourceQuota caps a runaway | Control-plane (quota) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
 | [M01](#s-M01) | app-availability | Application | pool | 🟢 PASS | not recorded · on-demand |
 | [M02](#s-M02) | cnpg-failover | Postgres (HA) | 01,02 | 🟢 PASS | not recorded · on-demand |
-| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M07](#s-M07) | partition-loss | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
-| [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
+| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
+| [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
+| [M07](#s-M07) | partition-loss | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
+| [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | not recorded · nightly-lottery |
+| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | not recorded · nightly-lottery |
+| [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS | not recorded · nightly-lottery |
+| [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS | not recorded · on-demand |
 | [M15](#s-M15) | migration | Migration (fidelity) | pool | 🟢 PASS | not recorded · on-demand |
 | [M16](#s-M16) | stream-noloss | Stream (CDC) | pool | 🟢 PASS | not recorded · on-demand |
 | [M17](#s-M17) | dataflow-converge | DataFlow | 01,02 | 🟢 PASS | not recorded · on-demand |
@@ -1376,7 +1376,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1407,7 +1407,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1438,7 +1438,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1469,7 +1469,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1500,7 +1500,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1531,7 +1531,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1562,7 +1562,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1595,7 +1595,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1626,7 +1626,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1651,7 +1651,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1676,7 +1676,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1705,7 +1705,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** 2026-08-02 · nightly-lottery
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1987,9 +1987,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** 2026-08-02 · nightly-lottery
-
-**Last nightly:** 🟢 success · [2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269)
+**Verified:** [2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269) · nightly-lottery 🟢
 
 > This is what the scheduled nightly actually runs. A seeded, replayable draw (lottery-draw.py) composes 2–4 physically-composable faults each night; a red night reruns with LOTTERY_SEED=<printed seed>. The other nightly-batch scenarios are the library it draws from.
 
