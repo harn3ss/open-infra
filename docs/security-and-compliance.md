@@ -128,12 +128,16 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
 |---------|----------------|--------|
 | CP-9 System Backup | Velero (cluster objects) + Longhorn (volume snapshots) to MinIO; RDS-style pre-delete snapshots for databases and VMs. | Implemented |
 | CP-10 Recovery & Reconstitution | Restore from Velero/Longhorn backups and snapshots; KubeVirt live migration for VM node-loss recovery. | Implemented |
-| CP-4 Contingency Plan Testing | The **nightly chaos suite** (partition, primary failover, clock-skew, convergence) is automated contingency-test evidence. | Implemented |
+| CP-4 Contingency Plan Testing | The **nightly chaos suite** runs a seeded **lottery** (2–4 composed multi-master faults → proven byte-identical reconvergence) every night; a wider set of recover-mode contingency tests (HA-DB failover, CDC-pipeline resume, directory / fileshare / volume / VM recovery) runs on-demand. Every scenario — its fault-injection point, its invariant, and its last-verified date + method — is published in the auto-generated **[chaos-scenarios.md](chaos-scenarios.md)** gallery. | Implemented (nightly: multi-master; wider plane: on-demand) |
 
 ### Partial, roadmap, and operator-supplied
 
-- **CA — Assessment & Continuous Monitoring** — the convergence harness and nightly chaos are
-  continuous verification; a formal control-evidence pipeline is **roadmap**. *(Partial)*
+- **CA — Assessment & Continuous Monitoring** — the nightly lottery + convergence harness give
+  continuous verification of multi-master recovery, and the [chaos-scenarios.md](chaos-scenarios.md)
+  gallery is the per-scenario evidence record (chain, fault, invariant, last-verified date + method,
+  auto-regenerated on each nightly). Continuous coverage is **strong for multi-master** and
+  **point-in-time for the wider plane** (on-demand); folding the whole plane into the counted nightly,
+  plus a formal control-evidence export, is **roadmap**. *(Partial)*
 - **MP-6 Media Sanitization** — crypto-erase per NIST **SP 800-88** (per-volume/DB keys;
   deletion destroys the key and writes a destruction certificate) is **roadmap** (#71).
 - **RA / PL / PS / IR / AT / CA process controls** — risk assessment, planning, personnel
