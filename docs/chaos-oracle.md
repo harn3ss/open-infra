@@ -1,7 +1,9 @@
 # The Chaos Oracle (Epoch 2 foundation)
 
+> **These four chaos docs:** [primitive](chaos.md) (`kind: FaultInjection`) → **[judging](chaos-oracle.md)** (the oracle: modes + pillars, you are here) → [nightly program](chaos-suite.md) (safety, graduation) → [catalog + live status](chaos-scenarios.md) (every scenario, generated).
+
 A chaos suite is only as trustworthy as the judge that prints "safe." This document defines
-that judge — the **oracle** — before any new injector or the lottery draw is built. The
+that judge — the **oracle**. The
 prime directive: *the oracle comes before the injector.* An injector without a trustworthy
 oracle just manufactures green you can't stand behind — which is precisely the 2026-07-23
 failure (the fault silently didn't fire and the night went green on a lie).
@@ -165,7 +167,7 @@ So the real cost of the magnitude axis (Phase 1) is not injecting a partial faul
 teaching the oracle a *per-magnitude* expectation. The injector and oracle therefore must
 share the fault/magnitude/timing timeline; the oracle keys its expectation table off it.
 
-## Expectation table — full partition (Scenario 1, the one fault run so far)
+## Expectation table — full partition
 
 The cut severs **site-B pods ↔ the `a→b` apply-sink pod** (`partitionPeer:
 {app: chaos-mesh-pg-repl-a-b-sink}`), for 90s, `direction: both`. The mesh path into B is
@@ -206,25 +208,17 @@ reaches B via the `a→b` sink pod, and the partition drops exactly the sink↔B
   - also sample **before** injection and **after** heal → must be `up`, else the probe path
     itself is broken (→ INCONCLUSIVE, not red).
 
-This replaces the current `MIN_ELAPSED` heuristic (which merely *infers* the cut from a slow
+The probe supersedes the older `MIN_ELAPSED` heuristic (which merely *infers* the cut from a slow
 convergence) with a **direct observation** of the severed link. `MIN_ELAPSED` stays as a
 secondary guard; the probe is the primary proof-of-fire.
 
-## Build order (Phase 0 → 1)
+## Method — the oracle comes before the injector
 
-1. **This table + the proof-of-fire probe for the full partition** — prove all four pillars on
-   the one fault already run, before touching the injector or the draw. ✅ *(done — the probe
-   is shaken out up→down→up live; see `chaos/probe-partition.sh`, `scenario-partition.sh`.)*
-2. Only then bring up the magnitude axis — and for **each** magnitude, extend this table with
-   its per-magnitude expectation and prove the oracle catches a known-bad seed before it counts.
-   ✅ *(shipped so far: **flapping** — `scenario-partition-flapping.sh`, converges after
-   repeated cut/heal with ≥1 cut confirmed live; **latency degrade** — `scenario-partition-latency.sh`,
-   converges byte-identical under sustained 800ms with the handshake confirmed `slow`;
-   **total isolation** — `scenario-partition-isolation.sh`, both members diverge under a
-   whole-mesh cut and reconverge byte-identical (126s, cut confirmed `down`); **% loss** —
-   `scenario-partition-loss.sh`, converges byte-identical under sustained 15% loss (22s) with a
-   statistical proof-of-fire. That completes the magnitude axis (cut → total isolation →
-   latency → loss → flapping). All shaken out live off-gate before folding in.)*
+Every fault, and every *magnitude* of it, earns its place the same way: prove all four pillars on
+it, give it an **independent proof-of-fire**, and demonstrate the oracle catches a **known-bad
+seed** (fails loud) *before* it counts toward the graduation clock. A magnitude whose expectation
+isn't encoded in the table below, or whose fail-loud hasn't been demonstrated, is not folded in.
+The magnitude axis spans **cut → total isolation → latency → loss → flapping**.
 
 ## Magnitude axis — per-magnitude expectations (Phase 1)
 
@@ -242,29 +236,25 @@ eventually, so sustained divergence under a degrade is a **real bug**, not a tol
 
 | Magnitude | Fault (`FaultInjection`) | Proof-of-fire (independent witness) | Mid-fault expectation | Post-heal |
 |-----------|--------------------------|-------------------------------------|-----------------------|-----------|
-| **One-directional cut** *(current)* | `network-partition`, `partitionPeer: a-b-sink`, `direction: both` — cuts a→b apply only | `probe up|down` (TCP to `pg-b:5432` from sink netns) | B misses A's writes; **divergence EXPECTED** (b→a still flows, so A stays whole) | converge |
-| **Total isolation** *(harsher — current)* | `network-partition`, `partitionPeer: {openinfra.dev/replication: <name>}` — cuts pg-b from its **whole** mesh at once: the inbound `a-b-sink→B` **and** the outbound `b-dbz→B` links (the other rules it adds are harmless no-ops — those pods talk to pg-a) | `probe down` (the a-b-sink↔B link, one of the two cut, is the witness) | B fully isolated; **divergence EXPECTED both sides** (B misses A's writes *and* A misses B's) | converge |
-| **% packet loss** *(degrade — current)* | `network-loss`, `loss: "15"`, `direction: both`, same peer | **statistical** (`probe-loss.sh`): 20 connects from sink netns; a *fraction* must be impaired (≥0.10) but not all (that'd be a cut) → loss is biting. 15%, not more: throughput falls ~1/√p, so beyond ~20% an established TCP link brown-outs into a de-facto slow cut (40% left B 119 writes behind) | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
-| **Latency / jitter** *(degrade — current)* | `network-latency`, `latency: "800ms"`, `direction: both`, `partitionPeer: a-b-sink` (the peer `target` is what makes `both` legal) | `probe slow` — timed handshake from sink netns elevated to ~1.6s (≫ baseline ~0s) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
-| **Flapping** *(intermittent — current)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
+| **One-directional cut** | `network-partition`, `partitionPeer: a-b-sink`, `direction: both` — cuts a→b apply only | `probe up|down` (TCP to `pg-b:5432` from sink netns) | B misses A's writes; **divergence EXPECTED** (b→a still flows, so A stays whole) | converge |
+| **Total isolation** *(harsher)* | `network-partition`, `partitionPeer: {openinfra.dev/replication: <name>}` — cuts pg-b from its **whole** mesh at once: the inbound `a-b-sink→B` **and** the outbound `b-dbz→B` links (the other rules it adds are harmless no-ops — those pods talk to pg-a) | `probe down` (the a-b-sink↔B link, one of the two cut, is the witness) | B fully isolated; **divergence EXPECTED both sides** (B misses A's writes *and* A misses B's) | converge |
+| **% packet loss** *(degrade)* | `network-loss`, `loss: "15"`, `direction: both`, same peer | **statistical** (`probe-loss.sh`): 20 connects from sink netns; a *fraction* must be impaired (≥0.10) but not all (that'd be a cut) → loss is biting. 15%, not more: throughput falls ~1/√p, so beyond ~20% an established TCP link brown-outs into a de-facto slow cut (40% left B 119 writes behind) | TCP retransmits carry the data; **NO sustained divergence — divergence = BUG** | converge, tight bound |
+| **Latency / jitter** *(degrade)* | `network-latency`, `latency: "800ms"`, `direction: both`, `partitionPeer: a-b-sink` (the peer `target` is what makes `both` legal) | `probe slow` — timed handshake from sink netns elevated to ~1.6s (≫ baseline ~0s) but succeeds | apply lags but lands; **NO sustained divergence — divergence = BUG** | converge, tight bound |
+| **Flapping** *(intermittent)* | the partition injected/healed in short repeated cycles *(scenario-level loop)* | `probe up|down` **oscillates** (≥1 `down` observed across cycles) | transient divergence per cut; churn is expected | must converge **after** flapping stops |
 
-### Build increments (each: build → un-gated shakedown → prove fail-loud → fold in)
+### Per-magnitude witnesses
 
-- **Cuts reuse the proven probe.** Total-isolation and flapping use the existing up/down
-  `probe-partition.sh` unchanged. Both are **done**: flapping is a scenario loop; total-isolation
-  needed **no** `partitionPeer`-list enhancement after all — the mesh pods share an
-  `openinfra.dev/replication` label, so one peer selector cuts pg-b from its whole mesh. (That
-  required fixing a latent omission: the label was on the Deployment metadata but not the pod
-  template, so Chaos Mesh/NetworkPolicy — which select pods — couldn't see it.)
-- **Degrades need a new witness.** `latency`'s RTT witness is **done**: `probe-partition.sh`
-  now times the handshake and classifies `slow` (a degraded-but-connected link an up/down probe
-  would have misread as "up = no fault fired"); shaken out live up→slow→down. It also required
-  a composition fix — a netem `delay` with `direction: both` is rejected by Chaos Mesh unless a
-  peer `target` block is present, so the FaultInjection composition now emits that block for any
-  peer-scoped NetworkChaos, not just partitions. `%-loss` is also **done**: `probe-loss.sh`
-  samples 20 connects and asserts a non-trivial impaired fraction (a single connect can't witness
-  probabilistic loss). Calibrated to 15% — throughput falls ~1/√p, so a higher loss brown-outs
-  the link into a de-facto slow cut, not a degrade (validated: 40% left B 119 writes behind).
-- **The oracle's reconvergence bound tightens for degrades.** Under a cut, the bound spans the
-  fault window; under loss/latency the mesh should track continuously, so the bound is much
-  tighter and a breach is a real liveness bug — encode that per row, not a single global bound.
+- **Cuts** (partition, total-isolation, flapping) use the up/down `probe-partition.sh`. Total
+  isolation cuts pg-b from its whole mesh via the shared `openinfra.dev/replication` label — which
+  must be on the pod template, not just the Deployment metadata, or Chaos Mesh / NetworkPolicy
+  (which select pods) can't see it.
+- **Degrades** (latency, loss) need a witness an up/down probe can't give — a degraded-but-connected
+  link reads as "up = no fault." Latency uses a **timed handshake** (`slow` classification); a netem
+  `delay` with `direction: both` requires a peer `target` block, so the FaultInjection composition
+  emits one for any peer-scoped NetworkChaos, not just partitions. Loss uses a **statistical** witness
+  (`probe-loss.sh`: a non-trivial impaired fraction over N connects — a single connect can't witness
+  probabilistic loss). Loss is calibrated to 15%: throughput falls ~1/√p, so past ~20% a TCP link
+  brown-outs into a de-facto slow cut rather than a degrade.
+- **The reconvergence bound tightens for degrades.** Under a cut the bound spans the fault window;
+  under loss / latency the mesh should track continuously, so the bound is tighter and a breach is a
+  real liveness bug — encoded per row, not one global bound.

@@ -1,5 +1,7 @@
 # Chaos engineering (`kind: FaultInjection`)
 
+> **These four chaos docs:** **[primitive](chaos.md)** (`kind: FaultInjection`, you are here) → [judging](chaos-oracle.md) (the oracle: modes + pillars) → [nightly program](chaos-suite.md) (safety, graduation) → [catalog + live status](chaos-scenarios.md) (every scenario, generated).
+
 > AWS equivalent: **Fault Injection Simulator (FIS)**.
 
 Fault injection lets you *prove* the platform's resilience instead of hoping for it. open-infra
