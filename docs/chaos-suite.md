@@ -1,5 +1,7 @@
 # Nightly Chaos Suite
 
+> **These four chaos docs:** [primitive](chaos.md) (`kind: FaultInjection`) → [judging](chaos-oracle.md) (the oracle: modes + pillars) → **[nightly program](chaos-suite.md)** (safety, graduation, you are here) → [catalog + live status](chaos-scenarios.md) (every scenario, generated).
+
 > Makes multi-master correctness **mechanical instead of attention-dependent.**
 
 The convergence harness ([convergence-harness.md](convergence-harness.md)) and
@@ -99,46 +101,22 @@ GitHub (nightly schedule) ─► self-hosted runner on the validation cluster
 
 ## Scenario rollout
 
-Each is one `FaultInjection` + one harness run, and a release gate once green:
+Each scenario is one `FaultInjection` + one harness run, and a **release gate once green**. The
+graduation-required set is the multi-master convergence scenarios — a one-sided partition and its
+magnitude variants (isolation, latency, loss, flapping), `clock-skew`, `sink-kill` / `capture-kill`,
+and `cnpg-failover` — plus the **`mesh-under-concurrent-chaos`** capstone (all three faults at once).
+`longhorn-replica-loss` is proven as admin but not graduation-required (pending a scoped
+longhorn-system RBAC decision).
 
-1. **`multimaster-partition`** — cut a site off mid-write; assert re-convergence. *(shipped + validated live: a real ~90s diverge-then-converge)*
-2. **`clock-skew`** — the T6 regression via an injectable clock offset (not TimeChaos). *(shipped + validated live: HLC stayed monotonic — Δ=1 — under a −1h backward clock instead of dropping ~2.4×10¹¹)*
-3. **`sink-kill` / `capture-kill`** — kill the engine mid-flight; offsets + redelivery survive. *(shipped + validated live: sink pod killed mid-write, mesh still converged with zero lost writes)*
-4. **`cnpg-failover`** — kill the CNPG primary; converge across promotion. *(shipped + validated live: promoted cnpg-b-1→cnpg-b-2 with writes in flight, mesh converged; surfaced the `publication.autocreate.mode` bug below)*
-5. **`longhorn-replica-loss`** — lose a replica of a sandbox DB's Longhorn volume mid-write;
-   assert degrade-but-survive + rebuild + zero lost writes. *(mechanism SHIPPED + proven live as
-   admin — `chaos/scenario-storage-replica-loss.sh`; not yet nightly-wired pending a scoped
-   longhorn-system RBAC decision — see below. Not graduation-required.)*
-6. **`mesh-under-concurrent-chaos`** — capture-kill + partition + sink-kill at once (graduation). *(shipped + validated live: all three landed together, mesh converged in 124s — the cut genuinely bit)*
+The **magnitude dial** — cut vs *degrade* (latency / loss) — is where the highest-value bugs live: a
+clean cut trips a clean failover, but the *limping* zone is where conflict resolution actually breaks,
+so the oracle's verdict *flips* with magnitude. That framework (per-magnitude expectations + their
+proof-of-fire) lives in **[chaos-oracle.md](chaos-oracle.md)**.
 
-### Magnitude variants (Phase 1)
-
-The partition scenario also runs at other **magnitudes** — the "limping zone" where conflict
-resolution actually breaks (see [docs/chaos-oracle.md](chaos-oracle.md)). The oracle's verdict
-*flips* with magnitude, so each carries its own proof-of-fire and expectation:
-
-- **`partition-flapping`** — the cut is injected/healed in short repeated cycles while the
-  harness drives conflicting writes; the mesh must converge **after** the flapping stops, with
-  ≥1 cut confirmed live. *(shipped + validated live: converged byte-identical, cut confirmed.)*
-- **`partition-latency`** — a *degrade*, not a cut: 800ms both-ways on the sink↔B apply path,
-  held for the whole run. The opposite expectation — the mesh **must keep converging** (a
-  degrade never severs, so sustained divergence is a **bug**, and there is no `MIN_ELAPSED`
-  floor). Proof-of-fire is the timed handshake reading `slow` (~1.6s), not `down`. *(shipped +
-  validated live: converged byte-identical — 220 keys / 20 conflicts / zero lost — under
-  sustained 800ms, ~4× slower apply path.)*
-- **`partition-isolation`** — harsher cut: severs site B from its **whole** mesh at once (both
-  the inbound a-b-sink→B and the outbound b-dbz→B links, via the shared `openinfra.dev/replication`
-  label), so **both** members diverge and both must reconverge — vs the default partition's
-  one-sided cut. Same `down` proof-of-fire and `MIN_ELAPSED` floor as the partition (it's a
-  cut). *(shipped + validated live: both diverged, reconverged byte-identical in 126s, cut
-  confirmed `down`.)*
-- **`partition-loss`** — a *degrade* like latency: drop 15% of the sink↔B packets. The mesh
-  **must keep converging** (TCP retransmits carry every write; sustained divergence is a bug,
-  no `MIN_ELAPSED`). Proof-of-fire is **statistical** (`probe-loss.sh`: 20 handshakes, a
-  non-trivial fraction impaired). 15% not higher: past ~20% an established TCP link brown-outs
-  into a slow cut. *(shipped + validated live: converged byte-identical in 22s under sustained
-  15% loss; the 40% attempt correctly failed to converge — a throughput brownout, which is why
-  the value is calibrated down.)*
+**The full, current catalog** — every scenario, its chain, its ⚡ fault point, its invariant, and its
+last-verified date + method — is the auto-generated gallery, **[chaos-scenarios.md](chaos-scenarios.md)**.
+That is the source of truth for *what exists and its status*; this doc keeps only the nightly program's
+design (safety, graduation, how to run).
 
 ## Run it
 
