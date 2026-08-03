@@ -345,6 +345,47 @@ func render(d Doc, nl Nightly) string {
 		fmt.Fprintf(&h, "**Last nightly:** %s\n\n", strings.Join(parts, " · "))
 	}
 
+	// Daily spotlight — the scenarios the most recent nightly actually exercised, diagrams expanded.
+	// Reflects the machine-written nightly-status sidecar, so it changes each night with the draw.
+	if len(nl.Runs) > 0 {
+		maxDate := ""
+		for _, r := range nl.Runs {
+			if r.Date > maxDate {
+				maxDate = r.Date
+			}
+		}
+		var feat []Scenario
+		seen := map[string]bool{}
+		for _, s := range d.Scenarios {
+			if s.Key == "" {
+				continue
+			}
+			if r, ok := nl.Runs[s.Key]; ok && r.Date == maxDate && !seen[s.ID] {
+				feat = append(feat, s)
+				seen[s.ID] = true
+			}
+		}
+		sort.SliceStable(feat, func(i, j int) bool {
+			li, lj := feat[i].Key == "lottery", feat[j].Key == "lottery"
+			if li != lj {
+				return li // the lottery (the run itself) first
+			}
+			return feat[i].ID < feat[j].ID
+		})
+		if len(feat) > 0 {
+			fmt.Fprintf(&h, "## 🌙 Last night's run — %s\n\n", maxDate)
+			h.WriteString("The scenarios the scheduled nightly actually exercised last night, diagrams expanded. ")
+			h.WriteString("Each also appears in its batch below; the full catalog is the [index](#scenario-index).\n\n")
+			for _, s := range feat {
+				fmt.Fprintf(&h, "### %s · %s &nbsp; %s &nbsp; _(nightly %s)_\n\n", s.ID, s.Title, statusBadge(s.Status), maxDate)
+				h.WriteString("<details open><summary>diagram — chain, ⚡ fault, oracle</summary>\n\n")
+				h.WriteString(mermaid(s))
+				h.WriteString("\n</details>\n\n")
+			}
+			h.WriteString("---\n\n")
+		}
+	}
+
 	h.WriteString("> **Freshness — read this before the green.** `nightly-lottery` means the fault is in the ")
 	h.WriteString("lottery's **draw palette**; its *Verified* date is the last night it was **actually drawn** ")
 	h.WriteString("(a night draws only 2–4 faults, so these dates vary and many read *not recorded* until drawn ")
