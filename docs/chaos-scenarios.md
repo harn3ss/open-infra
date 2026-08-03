@@ -12,6 +12,8 @@ systems-level **invariant** — not just "did it come back up". This page is gen
 
 **Last nightly:** `lottery` 🟢 success ([2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269))
 
+> **Freshness — read this before the green.** Only **nightly-lottery** scenarios are re-verified every night; **hand-driven** and **on-demand** results are point-in-time (see each scenario's *Verified* date + method). The nightly banner above reflects the **lottery only** — a PASS elsewhere means "passed when last run", not "passed last night".
+
 ### Legend
 
 | Symbol | Meaning |
@@ -26,72 +28,72 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 
 ### Scenario index
 
-| ID | Scenario | Category | Sandbox nodes | Status |
-|---|---|---|---|---|
-| [C1](#s-C1) | SaaS — all three oracle modes at once | Application + SecurityGroup + Postgres (HA) | 01,02 | 🟢 PASS |
-| [C2](#s-C2) | Zero-downtime cutover | Migration + live writes | pool | 🟢 PASS |
-| [C3](#s-C3) | Ledger conservation under DB failover | Application + Postgres (HA) | 01,02 | 🟢 PASS |
-| [C4](#s-C4) | VDI correlated outage | Directory + FileShare | pool | 🟢 PASS |
-| [C5](#s-C5) | Active-active multi-region | Multi-master mesh (2 regions) | 01,02 | 🟢 PASS |
-| [C6](#s-C6) | Event pipeline (DB→Stream→Function) | Stream + Function | pool | 🟢 PASS |
-| [N01](#s-N01) | HPA scale-out under load + replica kill | Application autoscaling | pool | 🟢 PASS |
-| [N02](#s-N02) | Scale-to-zero cold burst with backlog | Function (Knative) | pool | 🟢 PASS |
-| [N03](#s-N03) | Postgres final snapshot → delete → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
-| [N04](#s-N04) | MariaDB backup → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING |
-| [N05](#s-N05) | Kill MinIO backup target mid-snapshot | Snapshots + object store | pool | ⏳ PENDING |
-| [N06](#s-N06) | Permission-boundary self-escalation deny | IAM (kind: Policy / Role) | pool | 🟢 PASS |
-| [N07](#s-N07) | Least-privilege — mutating verbs denied | IAM (impersonation / SAR) | pool | 🟢 PASS |
-| [N08](#s-N08) | Cross-namespace SecurityGroup isolation | SecurityGroup (Cilium/NetworkPolicy) | pool | 🟢 PASS |
-| [N09](#s-N09) | DataFlow autoSyncTables under concurrent writes | DataFlow (mesh) | 01,02 | 🟢 PASS |
-| [N10](#s-N10) | Heterogeneous pg↔mysql mesh | DataFlow (cross-engine) | 01,02 | 🔴 FINDING |
-| [N11](#s-N11) | Dead-letter on a poison row | apply-sink error handling | pool | 🟢 PASS |
-| [N12](#s-N12) | Multi-master LWW conflict determinism | Multi-master mesh | 01,02 | 🟢 PASS |
-| [N13](#s-N13) | Cross-engine key coercion (pg→mysql) | Migration (cross-engine) | pool | 🟢 PASS |
-| [N14](#s-N14) | Migration resume after apply-sink delete | Migration lifecycle | pool | 🟢 PASS |
-| [N15](#s-N15) | Migration idempotency | Migration lifecycle | pool | 🟢 PASS |
-| [N16](#s-N16) | VM live-migration under node drain | Virtual machine | 01,02 | ⏳ PENDING |
-| [N17](#s-N17) | Block-mode volume hotplug to a running VM | Volume + VM | pool | ⏳ PENDING |
-| [N18](#s-N18) | VM disk backup → restore | Virtual machine (Longhorn/KubeVirt) | pool | ⏳ PENDING |
-| [N19](#s-N19) | Stream fan-out to two Functions | Stream (delivery guarantee) | pool | 🟢 PASS |
-| [N20](#s-N20) | PriorityClass preemption under pressure | Scheduling / control-plane | pool | 🟢 PASS |
-| [S01](#s-S01) | MariaDB Galera node kill | MySQL (HA) | 01,02,03 | 🟢 PASS |
-| [S02](#s-S02) | Mongo/FerretDB backend kill | MongoDB (FerretDB on Postgres) | pool | 🟢 PASS |
-| [S03](#s-S03) | Babelfish pod kill | Babelfish (SQL-Server-compatible) | pool | 🟢 PASS |
-| [S04](#s-S04) | Cross-engine primary-key coercion | Migration (cross-engine) | pool | 🟢 PASS |
-| [S10](#s-S10) | 3-node DataFlow mesh convergence | DataFlow (mesh, N≥3) | 01,02,03 | 🟢 PASS |
-| [S12](#s-S12) | Kill 2-of-3 Deployment replicas | Application availability | 01,02,03 | 🟢 PASS |
-| [S13](#s-S13) | Function cold-start burst | Function (Knative) | pool | 🟢 PASS |
-| [S14](#s-S14) | HA-VM under fault | Virtual machine | pool | ⚪ INCONCLUSIVE |
-| [S15](#s-S15) | Longhorn Volume replica loss | Volume (Longhorn) | 01,02 | 🟢 PASS |
-| [S16](#s-S16) | FileShare killed mid-write | FileShare (SMB) | pool | 🟢 PASS |
-| [S17](#s-S17) | Online Volume expand | Volume (Longhorn) | pool | 🟢 PASS |
-| [S18](#s-S18) | Live SecurityGroup egress change | SecurityGroup | pool | 🟢 PASS |
-| [S19](#s-S19) | Secret rotation propagation | Application config | pool | 🟢 PASS |
-| [S20](#s-S20) | ResourceQuota caps a runaway | Control-plane (quota) | pool | 🟢 PASS |
-| [M01](#s-M01) | app-availability | Application | pool | 🟢 PASS |
-| [M02](#s-M02) | cnpg-failover | Postgres (HA) | 01,02 | 🟢 PASS |
-| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M07](#s-M07) | partition-loss | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS |
-| [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS |
-| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS |
-| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS |
-| [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS |
-| [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS |
-| [M15](#s-M15) | migration | Migration (fidelity) | pool | 🟢 PASS |
-| [M16](#s-M16) | stream-noloss | Stream (CDC) | pool | 🟢 PASS |
-| [M17](#s-M17) | dataflow-converge | DataFlow | 01,02 | 🟢 PASS |
-| [M18](#s-M18) | security-deny | SecurityGroup | pool | 🟢 PASS |
-| [M19](#s-M19) | directory-recover | Active Directory | pool | 🟢 PASS |
-| [M20](#s-M20) | fileshare-durable | FileShare (SMB) | pool | 🟢 PASS |
-| [M21](#s-M21) | volume-durable | Volume (Longhorn) | 01,02 | 🟢 PASS |
-| [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS |
-| [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS |
-| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS |
+| ID | Scenario | Category | Sandbox nodes | Status | Verified |
+|---|---|---|---|---|---|
+| [C1](#s-C1) | SaaS — all three oracle modes at once | Application + SecurityGroup + Postgres (HA) | 01,02 | 🟢 PASS | 2026-08-01 · hand-driven |
+| [C2](#s-C2) | Zero-downtime cutover | Migration + live writes | pool | 🟢 PASS | 2026-08-01 · hand-driven |
+| [C3](#s-C3) | Ledger conservation under DB failover | Application + Postgres (HA) | 01,02 | 🟢 PASS | 2026-08-01 · hand-driven |
+| [C4](#s-C4) | VDI correlated outage | Directory + FileShare | pool | 🟢 PASS | 2026-08-01 · hand-driven |
+| [C5](#s-C5) | Active-active multi-region | Multi-master mesh (2 regions) | 01,02 | 🟢 PASS | 2026-08-01 · hand-driven |
+| [C6](#s-C6) | Event pipeline (DB→Stream→Function) | Stream + Function | pool | 🟢 PASS | 2026-08-01 · hand-driven |
+| [N01](#s-N01) | HPA scale-out under load + replica kill | Application autoscaling | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N02](#s-N02) | Scale-to-zero cold burst with backlog | Function (Knative) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N03](#s-N03) | Postgres final snapshot → delete → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING | 2026-08-02 · hand-driven |
+| [N04](#s-N04) | MariaDB backup → restore | Snapshots (console-orchestrated) | pool | ⏳ PENDING | 2026-08-02 · hand-driven |
+| [N05](#s-N05) | Kill MinIO backup target mid-snapshot | Snapshots + object store | pool | ⏳ PENDING | 2026-08-02 · hand-driven |
+| [N06](#s-N06) | Permission-boundary self-escalation deny | IAM (kind: Policy / Role) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N07](#s-N07) | Least-privilege — mutating verbs denied | IAM (impersonation / SAR) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N08](#s-N08) | Cross-namespace SecurityGroup isolation | SecurityGroup (Cilium/NetworkPolicy) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N09](#s-N09) | DataFlow autoSyncTables under concurrent writes | DataFlow (mesh) | 01,02 | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N10](#s-N10) | Heterogeneous pg↔mysql mesh | DataFlow (cross-engine) | 01,02 | 🔴 FINDING | 2026-08-02 · hand-driven |
+| [N11](#s-N11) | Dead-letter on a poison row | apply-sink error handling | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N12](#s-N12) | Multi-master LWW conflict determinism | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N13](#s-N13) | Cross-engine key coercion (pg→mysql) | Migration (cross-engine) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N14](#s-N14) | Migration resume after apply-sink delete | Migration lifecycle | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N15](#s-N15) | Migration idempotency | Migration lifecycle | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N16](#s-N16) | VM live-migration under node drain | Virtual machine | 01,02 | ⏳ PENDING | 2026-08-02 · hand-driven |
+| [N17](#s-N17) | Block-mode volume hotplug to a running VM | Volume + VM | pool | ⏳ PENDING | 2026-08-02 · hand-driven |
+| [N18](#s-N18) | VM disk backup → restore | Virtual machine (Longhorn/KubeVirt) | pool | ⏳ PENDING | 2026-08-02 · hand-driven |
+| [N19](#s-N19) | Stream fan-out to two Functions | Stream (delivery guarantee) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [N20](#s-N20) | PriorityClass preemption under pressure | Scheduling / control-plane | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S01](#s-S01) | MariaDB Galera node kill | MySQL (HA) | 01,02,03 | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S02](#s-S02) | Mongo/FerretDB backend kill | MongoDB (FerretDB on Postgres) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S03](#s-S03) | Babelfish pod kill | Babelfish (SQL-Server-compatible) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S04](#s-S04) | Cross-engine primary-key coercion | Migration (cross-engine) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S10](#s-S10) | 3-node DataFlow mesh convergence | DataFlow (mesh, N≥3) | 01,02,03 | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S12](#s-S12) | Kill 2-of-3 Deployment replicas | Application availability | 01,02,03 | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S13](#s-S13) | Function cold-start burst | Function (Knative) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S14](#s-S14) | HA-VM under fault | Virtual machine | pool | ⚪ INCONCLUSIVE | 2026-08-02 · hand-driven |
+| [S15](#s-S15) | Longhorn Volume replica loss | Volume (Longhorn) | 01,02 | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S16](#s-S16) | FileShare killed mid-write | FileShare (SMB) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S17](#s-S17) | Online Volume expand | Volume (Longhorn) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S18](#s-S18) | Live SecurityGroup egress change | SecurityGroup | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S19](#s-S19) | Secret rotation propagation | Application config | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [S20](#s-S20) | ResourceQuota caps a runaway | Control-plane (quota) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
+| [M01](#s-M01) | app-availability | Application | pool | 🟢 PASS | not recorded · on-demand |
+| [M02](#s-M02) | cnpg-failover | Postgres (HA) | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M07](#s-M07) | partition-loss | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS | 2026-08-02 · nightly-lottery |
+| [M15](#s-M15) | migration | Migration (fidelity) | pool | 🟢 PASS | not recorded · on-demand |
+| [M16](#s-M16) | stream-noloss | Stream (CDC) | pool | 🟢 PASS | not recorded · on-demand |
+| [M17](#s-M17) | dataflow-converge | DataFlow | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M18](#s-M18) | security-deny | SecurityGroup | pool | 🟢 PASS | not recorded · on-demand |
+| [M19](#s-M19) | directory-recover | Active Directory | pool | 🟢 PASS | not recorded · on-demand |
+| [M20](#s-M20) | fileshare-durable | FileShare (SMB) | pool | 🟢 PASS | not recorded · on-demand |
+| [M21](#s-M21) | volume-durable | Volume (Longhorn) | 01,02 | 🟢 PASS | not recorded · on-demand |
+| [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS | not recorded · on-demand |
+| [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS | not recorded · on-demand |
+| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-02 · nightly-lottery |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -107,6 +109,8 @@ Realistic multi-kind tenant stacks hit by one fault, judged on a business-level 
 **Category:** Application + SecurityGroup + Postgres (HA) &nbsp;•&nbsp; **Oracle:** tolerate — availability + zero lost orders + zero fence breaches through failover
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-01 · hand-driven
 
 > One run exercised recover + tolerate + deny together: app availability 150/150, orders 139/139 (zero lost), tenant fence 0 breaches, DB failed over. (Surfaced + fixed the SG-labels-on-DB bug.)
 
@@ -143,6 +147,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-01 · hand-driven
+
 > Source 120/120 writes committed (zero app downtime) and all 120 reached the target.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -171,6 +177,8 @@ flowchart LR
 **Category:** Application + Postgres (HA) &nbsp;•&nbsp; **Oracle:** recover — SUM(balance) conserved exactly
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-01 · hand-driven
 
 > 144/150 transfers committed, 6 failed in the ~2.4s failover window, SUM(balance)=100000 exactly — no torn transfer.
 
@@ -205,6 +213,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-01 · hand-driven
+
 > Killed the AD domain controller AND the Samba pod together; both recovered — user re-auth intact, file intact + writable.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -230,6 +240,8 @@ flowchart LR
 **Category:** Multi-master mesh (2 regions) &nbsp;•&nbsp; **Oracle:** tolerate — both serve local writes through the split, then reconverge
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-01 · hand-driven
 
 > Both regions served 20/20 local writes THROUGH the split; healed → reconverged 40/40 with zero lost writes.
 
@@ -261,6 +273,8 @@ flowchart LR
 **Category:** Stream + Function &nbsp;•&nbsp; **Oracle:** recover — zero events lost (durable consumer resumes from offset)
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-01 · hand-driven
 
 > Killed the Function's durable-consumer pump mid-stream; it redelivered from offset — all 120 changes reached the function, zero loss.
 
@@ -299,6 +313,8 @@ New-coverage probes across untested ground: IAM/permission boundary, cross-names
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 > Concurrent load pushed CPU past the HPA target; the app scaled out 1→4 (max). Killing a scaled replica recovered back to 4 — scale-out and self-heal both hold.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -323,6 +339,8 @@ flowchart LR
 **Category:** Function (Knative) &nbsp;•&nbsp; **Oracle:** recover — the whole backlog drains on wake, nothing dropped
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > Function scaled to ZERO after idle (0 replicas), then a 30-event burst cold-started it and the durable pump drained the whole backlog (Unprocessed=0).
 
@@ -351,6 +369,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 > Snapshots are orchestrated by the console-api (no CRD); driven via the BFF.
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -378,6 +398,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -403,6 +425,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -427,6 +451,8 @@ flowchart LR
 **Category:** IAM (kind: Policy / Role) &nbsp;•&nbsp; **Oracle:** deny — escalation grants never materialize (0 breaches)
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > A Policy that tried to grant policies:*/users:*/roles:* had all three dropped at compile time; the compiled ClusterRole held only the in-boundary grant.
 
@@ -455,6 +481,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 > Read-only subject can list, but delete/create denied across kinds.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -482,6 +510,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 > Same-ns client 200; client in another namespace denied.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -508,6 +538,8 @@ flowchart LR
 **Category:** DataFlow (mesh) &nbsp;•&nbsp; **Oracle:** recover — the new table is auto-created + synced on every peer
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · hand-driven
 
 > New table added on one master under load → auto-created on the peer and synced 15/15.
 
@@ -540,6 +572,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · hand-driven
+
 > FINDING (confirmed): a managed MariaDB without highAvailability ships log_bin=OFF, so Debezium cannot capture from it. pg→mysql applied 10/10, mysql→pg yielded 0/10 — the mesh silently runs one-way. Fix: enable binlog (log_bin + binlog_format=ROW) on a managed MariaDB used as a CDC source.
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -570,6 +604,8 @@ flowchart LR
 **Category:** apply-sink error handling &nbsp;•&nbsp; **Oracle:** recover — poison dead-lettered; good rows keep flowing (no head-of-line block)
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > Poison row (violates a target CHECK) did not head-of-line block: all good rows applied, poison never corrupted the target; apply-sink dead-letters to a bounded DLQ after MAX_DELIVER.
 
@@ -602,6 +638,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · hand-driven
+
 > 10 simultaneous conflicting writes to the same keys on both masters → all 10 resolved to the same winner on both; no split-brain.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -633,6 +671,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 > INT pk + TEXT UNIQUE key loaded 25/25 with no key-spec error. Fidelity note: the source UNIQUE constraint is not replicated to the target (primary key only).
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -659,6 +699,8 @@ flowchart LR
 **Category:** Migration lifecycle &nbsp;•&nbsp; **Oracle:** recover — apply-sink self-heals and resumes from offset, no loss
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > Deleted the apply-sink Deployment mid-CDC; the composition recreated it (~212s) and CDC resumed from offset to 40/40 — zero loss.
 
@@ -689,6 +731,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 > Re-running the same migration kept exactly 20 rows — the upsert is idempotent, no duplication.
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
@@ -715,6 +759,8 @@ flowchart LR
 **Category:** Virtual machine &nbsp;•&nbsp; **Oracle:** tolerate — VM live-migrates to another node with no downtime
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · hand-driven
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -745,6 +791,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -770,6 +818,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -794,6 +844,8 @@ flowchart LR
 **Category:** Stream (delivery guarantee) &nbsp;•&nbsp; **Oracle:** recover — both functions receive every event (independent consumers)
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > One Stream, two Functions → two independent durable consumers (fn-f1, fn-f2); both drained all 30 events (Unprocessed=0 each).
 
@@ -823,6 +875,8 @@ flowchart LR
 **Category:** Scheduling / control-plane &nbsp;•&nbsp; **Oracle:** tolerate — high-priority workload scheduled; low-priority evicted
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > Packed a node with 5 low-priority pods; a high-priority pod scheduled by preempting 2 of them (confirmed via Preempted events). Run in a no-quota scratch namespace so real node pressure could build.
 
@@ -857,6 +911,8 @@ A broad first wave across non-Postgres engines, new fault types, control-plane, 
 
 **Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -890,6 +946,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -913,6 +971,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -935,6 +995,8 @@ flowchart LR
 **Category:** Migration (cross-engine) &nbsp;•&nbsp; **Oracle:** recover — target builds + fully populates (regression fixed)
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > Surfaced a real regression: a pg text/UUID primary key mapped to MySQL TEXT failed CREATE (Error 1170) → empty target. FIXED — PK LOB columns now coerce to VARCHAR(255)/NVARCHAR(255); verified 25/25.
 
@@ -962,6 +1024,8 @@ flowchart LR
 **Category:** DataFlow (mesh, N≥3) &nbsp;•&nbsp; **Oracle:** recover — all three members reconverge byte-identical
 
 **Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
+
+**Verified:** 2026-08-02 · hand-driven
 
 > An earlier 'non-convergence' was traced to the 8-CPU sandbox quota starving apply-sinks (env, not product). Given capacity, the 3-node mesh converges 90/90/90. Multi-master now verified at N=2 and N=3.
 
@@ -999,6 +1063,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1032,6 +1098,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1054,6 +1122,8 @@ flowchart LR
 **Category:** Virtual machine &nbsp;•&nbsp; **Oracle:** recover — the VM returns to Running
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > Blocked on an intermittent CDI image-import flake (vm-root-scratch) — an environment issue, not a product result. The standalone VM resilience chain passes.
 
@@ -1079,6 +1149,8 @@ flowchart LR
 **Category:** Volume (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — data intact; Longhorn rebuilds the replica
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · hand-driven
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1109,6 +1181,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1131,6 +1205,8 @@ flowchart LR
 **Category:** Volume (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — capacity grows with data intact
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 > An earlier 'failure' was a harness bug (ambiguous 'volume' short-name hit the wrong CRD). With volume.openinfra.dev: 1Gi→2Gi propagated and Longhorn expanded in ~16s.
 
@@ -1157,6 +1233,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1182,6 +1260,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · hand-driven
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1204,6 +1284,8 @@ flowchart LR
 **Category:** Control-plane (quota) &nbsp;•&nbsp; **Oracle:** deny — excess pods rejected at admission (blast contained)
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · hand-driven
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1236,6 +1318,8 @@ The scheduled nightly run executes the **lottery** (M24) — a seeded draw of 2�
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1260,6 +1344,8 @@ flowchart LR
 **Category:** Postgres (HA) &nbsp;•&nbsp; **Oracle:** recover — failover with no lost writes
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1290,6 +1376,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1318,6 +1406,8 @@ flowchart LR
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — both members diverge then reconverge byte-identical
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1348,6 +1438,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1376,6 +1468,8 @@ flowchart LR
 **Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** tolerate — keeps converging under a ~4× slower apply path
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1406,6 +1500,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1435,6 +1531,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1463,6 +1561,8 @@ flowchart LR
 **Category:** Multi-master mesh (timing) &nbsp;•&nbsp; **Oracle:** recover — reconverge regardless of heal order
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1495,6 +1595,8 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1524,6 +1626,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1547,6 +1651,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1569,6 +1675,8 @@ flowchart LR
 **Category:** apply-sink &nbsp;•&nbsp; **Oracle:** recover — resume from offset, no loss
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-02 · nightly-lottery
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1597,6 +1705,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** 2026-08-02 · nightly-lottery
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1624,6 +1734,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1649,6 +1761,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1673,6 +1787,8 @@ flowchart LR
 **Category:** DataFlow &nbsp;•&nbsp; **Oracle:** recover — members byte-identical after heal
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1703,6 +1819,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1728,6 +1846,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1751,6 +1871,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1773,6 +1895,8 @@ flowchart LR
 **Category:** Volume (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — a raw-block signature reads back after reschedule
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1802,6 +1926,8 @@ flowchart LR
 **Category:** Storage (Longhorn) &nbsp;•&nbsp; **Oracle:** recover — volume survives on the surviving replica; rebuilds
 
 **Ran on:** sandbox-node-01, sandbox-node-02, sandbox-node-03
+
+**Verified:** not recorded · on-demand
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1836,6 +1962,8 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
+**Verified:** not recorded · on-demand
+
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
 ```mermaid
@@ -1858,6 +1986,8 @@ flowchart LR
 **Category:** Multi-master mesh (seeded) &nbsp;•&nbsp; **Oracle:** recover — reconverge under any composed blast
 
 **Ran on:** sandbox-node-01, sandbox-node-02
+
+**Verified:** 2026-08-02 · nightly-lottery
 
 **Last nightly:** 🟢 success · [2026-08-02](https://github.com/harn3ss/open-infra/actions/runs/30743231269)
 
