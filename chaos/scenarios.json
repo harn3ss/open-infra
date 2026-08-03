@@ -1854,8 +1854,9 @@
         "mode": "recover",
         "invariant": "reconverge byte-identical after heal"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "partition"
     },
     {
       "id": "M04",
@@ -1906,8 +1907,9 @@
         "mode": "recover",
         "invariant": "both members diverge then reconverge byte-identical"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "isolation"
     },
     {
       "id": "M05",
@@ -1961,8 +1963,8 @@
         "mode": "recover",
         "invariant": "reconverge byte-identical after flapping stops"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "on-demand"
     },
     {
       "id": "M06",
@@ -2016,8 +2018,9 @@
         "mode": "tolerate",
         "invariant": "keeps converging under a ~4× slower apply path"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "latency"
     },
     {
       "id": "M07",
@@ -2071,8 +2074,9 @@
         "mode": "tolerate",
         "invariant": "keeps converging under sustained loss"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "loss"
     },
     {
       "id": "M08",
@@ -2123,8 +2127,8 @@
         "mode": "recover",
         "invariant": "LWW still converges (no lost-write regression)"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "on-demand"
     },
     {
       "id": "M09",
@@ -2182,8 +2186,8 @@
         "mode": "recover",
         "invariant": "reconverge regardless of heal order"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "on-demand"
     },
     {
       "id": "M10",
@@ -2237,8 +2241,8 @@
         "mode": "recover",
         "invariant": "reconverge with zero lost writes (graduation test)"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "on-demand"
     },
     {
       "id": "M11",
@@ -2265,8 +2269,9 @@
         "mode": "tolerate",
         "invariant": "keeps converging under CPU pressure"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "stress-cpu"
     },
     {
       "id": "M12",
@@ -2293,8 +2298,9 @@
         "mode": "tolerate",
         "invariant": "DB stays queryable; mesh converges zero-lost"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "stress-mem"
     },
     {
       "id": "M13",
@@ -2340,8 +2346,9 @@
         "mode": "recover",
         "invariant": "resume from offset, no loss"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "nightly-lottery",
+      "key": "sink-kill"
     },
     {
       "id": "M14",
@@ -2387,8 +2394,8 @@
         "mode": "recover",
         "invariant": "no loss even killed at its hardest moment"
       },
-      "lastVerified": "2026-08-02",
-      "verifiedBy": "nightly-lottery"
+      "lastVerified": "",
+      "verifiedBy": "on-demand"
     },
     {
       "id": "M15",
@@ -2781,7 +2788,7 @@
         "mode": "recover",
         "invariant": "reconverge under any composed blast"
       },
-      "lastVerified": "2026-08-02",
+      "lastVerified": "",
       "verifiedBy": "nightly-lottery"
     }
   ]

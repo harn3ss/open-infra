@@ -41,6 +41,9 @@ echo "▸ ============================================================"
 echo "▸  CHAOS LOTTERY  seed=$SEED   draw: $NAMES"
 echo "▸  replay this exact run with:  LOTTERY_SEED=$SEED"
 echo "▸ ============================================================"
+# In CI, surface the drawn faults + seed so the workflow can stamp per-fault nightly dates
+# into chaos/nightly-status.json (only the faults ACTUALLY drawn get today's date).
+[ -n "${GITHUB_OUTPUT:-}" ] && { echo "faults=$NAMES"; echo "seed=$SEED"; } >> "$GITHUB_OUTPUT"
 
 # shellcheck source=lib-sandbox.sh
 . "$HERE/lib-sandbox.sh"
