@@ -14,6 +14,78 @@ systems-level **invariant** — not just "did it come back up". This page is gen
 
 **Last nightly:** `loss` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `lottery` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `sink-failure` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `stress-mem` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399))
 
+## 🌙 Last night's run — 2026-08-03
+
+The scenarios the scheduled nightly actually exercised last night, diagrams expanded. Each also appears in its batch below; the full catalog is the [index](#scenario-index).
+
+### M24 · lottery (correlation capstone) — THE nightly run &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-03)_
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
+  FAULT(("⚡ seeded blast (2–4 composed faults)")):::fault
+  FAULT -.-> n_b__sandbox_node_02
+  ORACLE{{"recover · reconverge under any composed blast"}}:::oracle_recover
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+### M07 · partition-loss &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-03)_
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  subgraph sg_sandbox_node_01["sandbox-node-01"]
+    n_a__sandbox_node_01[("pg-a · member")]
+  end
+  subgraph sg_sandbox_node_02["sandbox-node-02"]
+    n_b__sandbox_node_02[("pg-b · member")]
+  end
+  n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
+  FAULT(("⚡ 15% packet loss")):::fault
+  FAULT -.-> n_b__sandbox_node_02
+  ORACLE{{"tolerate · keeps converging under sustained loss"}}:::oracle_tolerate
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+### M12 · stress-mem &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-03)_
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  n_b[("site-B Postgres")]
+  FAULT(("⚡ 300MB memory pressure (under the limit)")):::fault
+  FAULT -.-> n_b
+  ORACLE{{"tolerate · DB stays queryable; mesh converges zero-lost"}}:::oracle_tolerate
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+---
+
 > **Freshness — read this before the green.** `nightly-lottery` means the fault is in the lottery's **draw palette**; its *Verified* date is the last night it was **actually drawn** (a night draws only 2–4 faults, so these dates vary and many read *not recorded* until drawn and machine-stamped by the run). `hand-driven` / `on-demand` are **point-in-time**, not refreshed nightly. Nuance: the lottery judges a drawn fault with a deliberately generous **convergence** oracle (the mesh reconverged), *not* each scenario's standalone oracle — so `nightly-lottery` means "drawn and the mesh recovered", a bit weaker than "this scenario's exact check passed". The banner above is the lottery run itself.
 
 ### Legend
