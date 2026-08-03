@@ -12,7 +12,27 @@ converges byte-identical. (The individual scenarios remain runnable on demand vi
 `needs: test` gate. It is the documented road from **Experimental → Stable** for
 `Replication` / `Migration` / `DataFlow`.
 
-## What it proves (stated precisely)
+## Scope — multi-master nightly, the wider plane on-demand
+
+**What the _counted_ nightly proves is multi-master convergence.** The scheduled lottery drives
+disposable multi-master meshes and asserts they reconverge; that is the clock gating
+`Replication` / `Migration` / `DataFlow` from Experimental → Stable, and it is deliberately narrow so
+a green streak means something precise.
+
+**The chaos program is wider than the nightly, though.** The same oracle runner
+([chaos-oracle.md](chaos-oracle.md)) generalized into **one framework, three modes
+(recover / tolerate / deny), and ten per-kind adapters** across the whole workload plane — managed
+databases, identity (`Directory`), files (`FileShare`), block storage (`Volume`), compute
+(`VirtualMachine`), streaming (`Stream` / `Function`), and networking/security (`SecurityGroup` / IAM).
+Every scenario — its chain, its ⚡ fault point, its invariant, and its last-verified date + method — is
+published in the auto-generated gallery: **[chaos-scenarios.md](chaos-scenarios.md)**.
+
+**Honest boundary:** those wider scenarios run **on-demand** (`workflow_dispatch`) and as hand-driven
+batches — they are **not yet in the counted nightly clock**, which remains multi-master-only. Folding
+the whole plane into the nightly beat is the open next step; until then the gallery's per-scenario
+`Verified` dates state plainly which results are nightly-fresh vs point-in-time.
+
+## What the nightly proves (multi-master, stated precisely)
 
 - **Byte-identical members** — after the fault heals, every member holds the same key
   set, winning value, and version per key.
