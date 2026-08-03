@@ -110,21 +110,28 @@ jobs:
         env:
           SCEN: ${{ github.event.inputs.scenario || 'lottery' }}
           RESULT: ${{ steps.scenario.outputs.result }}
+          FAULTS: ${{ steps.scenario.outputs.faults }} # space-separated fault names the lottery actually drew
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REF: ${{ github.ref_name }}
         run: |
           set +e
           RESULT="${RESULT:-failure}"
           DATE="$(date -u +%Y-%m-%d)"; UPDATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          python3 - "$SCEN" "$RESULT" "$DATE" "$UPDATED" "$RUN_URL" <<'PY'
+          python3 - "$SCEN" "$RESULT" "$DATE" "$UPDATED" "$RUN_URL" "$FAULTS" <<'PY'
           import json, os, sys
-          scen, result, date, updated, url = sys.argv[1:6]
+          scen, result, date, updated, url, faults = sys.argv[1:7]
           p = "chaos/nightly-status.json"
           d = {"updated": updated, "runs": {}}
           if os.path.exists(p):
               try: d = json.load(open(p))
               except Exception: pass
-          d.setdefault("runs", {})[scen] = {"conclusion": result, "date": date, "runUrl": url}
+          runs = d.setdefault("runs", {})
+          # the scenario itself (e.g. "lottery" → drives the top banner + M24)
+          runs[scen] = {"conclusion": result, "date": date, "runUrl": url}
+          # stamp ONLY the faults the lottery actually drew this run — so per-scenario dates
+          # advance only when a fault was truly exercised (never a uniform hand-stamp).
+          for f in faults.split():
+              runs[f] = {"conclusion": result, "date": date, "runUrl": url}
           d["updated"] = updated
           with open(p, "w") as f:
               json.dump(d, f, indent=2, ensure_ascii=False); f.write("\n")
