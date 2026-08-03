@@ -57,14 +57,16 @@ type Oracle struct {
 	Invariant string `json:"invariant"`
 }
 type Scenario struct {
-	ID       string `json:"id"`
-	Batch    string `json:"batch"`
-	Title    string `json:"title"`
-	Category string `json:"category"`
-	Status   string `json:"status"` // PASS|FINDING|INCONCLUSIVE|PENDING|PARKED
-	Key      string `json:"key"`    // workflow scenario name, to join nightly run status
-	Note     string `json:"note"`
-	Chain    struct {
+	ID           string `json:"id"`
+	Batch        string `json:"batch"`
+	Title        string `json:"title"`
+	Category     string `json:"category"`
+	Status       string `json:"status"`       // PASS|FINDING|INCONCLUSIVE|PENDING|PARKED
+	Key          string `json:"key"`          // workflow scenario name, to join nightly run status
+	LastVerified string `json:"lastVerified"` // YYYY-MM-DD the result was last observed (empty = not recorded)
+	VerifiedBy   string `json:"verifiedBy"`   // nightly-lottery | hand-driven | on-demand
+	Note         string `json:"note"`
+	Chain        struct {
 		Nodes []Node `json:"nodes"`
 		Edges []Edge `json:"edges"`
 	} `json:"chain"`
@@ -340,6 +342,11 @@ func render(d Doc, nl Nightly) string {
 		fmt.Fprintf(&h, "**Last nightly:** %s\n\n", strings.Join(parts, " · "))
 	}
 
+	h.WriteString("> **Freshness — read this before the green.** Only **nightly-lottery** scenarios are ")
+	h.WriteString("re-verified every night; **hand-driven** and **on-demand** results are point-in-time ")
+	h.WriteString("(see each scenario's *Verified* date + method). The nightly banner above reflects the ")
+	h.WriteString("**lottery only** — a PASS elsewhere means \"passed when last run\", not \"passed last night\".\n\n")
+
 	h.WriteString("### Legend\n\n")
 	h.WriteString("| Symbol | Meaning |\n|---|---|\n")
 	h.WriteString("| ⚡ (red) | fault-injection point — where the break is applied |\n")
@@ -355,7 +362,7 @@ func render(d Doc, nl Nightly) string {
 	// Scannable index — keeps the page navigable as scenarios accumulate. (The gallery grows with
 	// distinct SCENARIOS, not with runs: the nightly suite re-runs the same set and updates status.)
 	h.WriteString("### Scenario index\n\n")
-	h.WriteString("| ID | Scenario | Category | Sandbox nodes | Status |\n|---|---|---|---|---|\n")
+	h.WriteString("| ID | Scenario | Category | Sandbox nodes | Status | Verified |\n|---|---|---|---|---|---|\n")
 	for _, bt := range d.Batches {
 		var scs []Scenario
 		for _, s := range d.Scenarios {
@@ -373,7 +380,14 @@ func render(d Doc, nl Nightly) string {
 				}
 				nodes = strings.Join(short, ",")
 			}
-			fmt.Fprintf(&h, "| [%s](#s-%s) | %s | %s | %s | %s |\n", s.ID, s.ID, s.Title, s.Category, nodes, statusBadge(s.Status))
+			ver := s.LastVerified
+			if ver == "" {
+				ver = "not recorded"
+			}
+			if s.VerifiedBy != "" {
+				ver = ver + " · " + s.VerifiedBy
+			}
+			fmt.Fprintf(&h, "| [%s](#s-%s) | %s | %s | %s | %s | %s |\n", s.ID, s.ID, s.Title, s.Category, nodes, statusBadge(s.Status), ver)
 		}
 	}
 	h.WriteString("\n> **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. ")
@@ -401,6 +415,15 @@ func render(d Doc, nl Nightly) string {
 			fmt.Fprintf(&h, "### %s · %s &nbsp; %s\n\n", s.ID, s.Title, statusBadge(s.Status))
 			fmt.Fprintf(&h, "**Category:** %s &nbsp;•&nbsp; **Oracle:** %s — %s\n\n", s.Category, s.Oracle.Mode, s.Oracle.Invariant)
 			fmt.Fprintf(&h, "**Ran on:** %s\n\n", ranOn(s))
+			lv := s.LastVerified
+			if lv == "" {
+				lv = "not recorded"
+			}
+			vb := s.VerifiedBy
+			if vb == "" {
+				vb = "—"
+			}
+			fmt.Fprintf(&h, "**Verified:** %s · %s\n\n", lv, vb)
 			if s.Key != "" {
 				if r, ok := nl.Runs[s.Key]; ok {
 					link := r.Date
