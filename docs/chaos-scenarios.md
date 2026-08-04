@@ -12,13 +12,13 @@ systems-level **invariant** — not just "did it come back up". This page is gen
 
 **Tally:** 64 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 6 pending · ⏸️ 0 parked.
 
-**Last nightly:** `loss` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `lottery` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `sink-failure` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `stress-mem` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399))
+**Last nightly:** `loss` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `lottery` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `partition` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `sink-failure` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `stress-cpu` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `stress-mem` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565))
 
-## 🌙 Last night's run — 2026-08-03
+## 🌙 Last night's run — 2026-08-04
 
 The scenarios the scheduled nightly actually exercised last night, diagrams expanded. Each also appears in its batch below; the full catalog is the [index](#scenario-index).
 
-### M24 · lottery (correlation capstone) — THE nightly run &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-03)_
+### M24 · lottery (correlation capstone) — THE nightly run &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-04)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -42,7 +42,7 @@ flowchart LR
 
 </details>
 
-### M07 · partition-loss &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-03)_
+### M03 · partition &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-04)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -55,9 +55,9 @@ flowchart LR
     n_b__sandbox_node_02[("pg-b · member")]
   end
   n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
-  FAULT(("⚡ 15% packet loss")):::fault
+  FAULT(("⚡ clean partition")):::fault
   FAULT -.-> n_b__sandbox_node_02
-  ORACLE{{"tolerate · keeps converging under sustained loss"}}:::oracle_tolerate
+  ORACLE{{"recover · reconverge byte-identical after heal"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
@@ -66,7 +66,25 @@ flowchart LR
 
 </details>
 
-### M12 · stress-mem &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-03)_
+### M11 · stress-cpu &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-04)_
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  n_s["a→b apply-sink"]
+  FAULT(("⚡ saturate the sink's CPU")):::fault
+  FAULT -.-> n_s
+  ORACLE{{"tolerate · keeps converging under CPU pressure"}}:::oracle_tolerate
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+### M12 · stress-mem &nbsp; 🟢 PASS &nbsp; _(nightly 2026-08-04)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -146,7 +164,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [S20](#s-S20) | ResourceQuota caps a runaway | Control-plane (quota) | pool | 🟢 PASS | 2026-08-02 · hand-driven |
 | [M01](#s-M01) | app-availability | Application | pool | 🟢 PASS | not recorded · on-demand |
 | [M02](#s-M02) | cnpg-failover | Postgres (HA) | 01,02 | 🟢 PASS | not recorded · on-demand |
-| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
+| [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS | 2026-08-04 · nightly-lottery |
 | [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
 | [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · nightly-lottery |
@@ -154,8 +172,8 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
-| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | not recorded · nightly-lottery |
-| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | 2026-08-03 · nightly-lottery |
+| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | 2026-08-04 · nightly-lottery |
+| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | 2026-08-04 · nightly-lottery |
 | [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS | not recorded · nightly-lottery |
 | [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS | not recorded · on-demand |
 | [M15](#s-M15) | migration | Migration (fidelity) | pool | 🟢 PASS | not recorded · on-demand |
@@ -167,7 +185,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M21](#s-M21) | volume-durable | Volume (Longhorn) | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS | not recorded · on-demand |
 | [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS | not recorded · on-demand |
-| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-03 · nightly-lottery |
+| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-04 · nightly-lottery |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -1450,7 +1468,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** not recorded · nightly-lottery
+**Verified:** [2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565) · nightly-lottery ⚪
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1700,7 +1718,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** not recorded · nightly-lottery
+**Verified:** [2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565) · nightly-lottery ⚪
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1725,7 +1743,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** [2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399) · nightly-lottery 🟢
+**Verified:** [2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565) · nightly-lottery ⚪
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -2061,7 +2079,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** [2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399) · nightly-lottery 🟢
+**Verified:** [2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565) · nightly-lottery ⚪
 
 > This is what the scheduled nightly actually runs. A seeded, replayable draw (lottery-draw.py) composes 2–4 physically-composable faults each night; a red night reruns with LOTTERY_SEED=<printed seed>. The other nightly-batch scenarios are the library it draws from.
 
