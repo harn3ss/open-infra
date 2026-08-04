@@ -32,6 +32,11 @@ EXIT_INCONCLUSIVE=42
 SINKD="app=chaos-mesh-pg-repl-a-b-sink"
 DBZB="app=chaos-mesh-pg-repl-b-dbz"
 
+# shellcheck source=lib-sandbox.sh
+# Sourced up here (before the oracle routing) so `log` is defined for the routing branch below;
+# lib-sandbox.sh is pure function defs (no source-time side effects), so this is order-safe.
+. "$HERE/lib-sandbox.sh"
+
 # --- the draw (seeded, replayable) ---
 DRAW_JSON="$(python3 "$HERE/lottery-draw.py")"   # resolves LOTTERY_SEED or a fresh seed
 SEED="$(printf '%s' "$DRAW_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["meta"]["seed"])')"
@@ -45,8 +50,17 @@ echo "▸ ============================================================"
 # into chaos/nightly-status.json (only the faults ACTUALLY drawn get today's date).
 [ -n "${GITHUB_OUTPUT:-}" ] && { echo "faults=$NAMES"; echo "seed=$SEED"; } >> "$GITHUB_OUTPUT"
 
-# shellcheck source=lib-sandbox.sh
-. "$HERE/lib-sandbox.sh"
+# Oracle-partitioned routing (design §5). A draw picks ONE oracle. `convergence` runs the body below
+# — the counted nightly, unchanged. Any other oracle is GATED (only reachable via LOTTERY_ORACLE=<x>
+# for un-gated shakeout) and delegates to that adapter's runner, which shares the same runOracle judge.
+ORACLE="$(printf '%s' "$DRAW_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["meta"]["oracle"])')"
+if [ "$ORACLE" != "convergence" ]; then
+  case "$ORACLE" in
+    migration) log "lottery drew a MIGRATION night (oracle=$ORACLE, seed=$SEED) → running the migration adapter"; exec "$HERE/scenario-migration.sh" ;;
+    *) log "INCONCLUSIVE — no runner wired for oracle '$ORACLE' (seed=$SEED)"; exit "$EXIT_INCONCLUSIVE" ;;
+  esac
+fi
+
 cleanup() {
   for f in $FILES; do kubectl -n "$NS" delete -f "$HERE/sandbox/$f" --ignore-not-found >/dev/null 2>&1 || true; done
   sandbox_teardown
