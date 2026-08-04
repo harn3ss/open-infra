@@ -34,16 +34,22 @@ from random import Random
 # Components: `pg-b` (the DB — its network AND memory), `sink` (the a→b apply engine — its link,
 # lifecycle, CPU), `dbz` (B's capture). netB faults touch pg-b's network AND peer the sink, so they
 # carry both; stress-cpu/sink-lifecycle touch only the sink; stress-mem only pg-b; capture-kill only dbz.
+# `oracle` = which adapter judges this fault; `sandbox` = which workload stack must be stood up for
+# the fault to mean anything (design: open-infra-plane-wide-lottery-design.md §4). Today every fault
+# is judged by `convergence` in the `conv_test` sandbox — the palette is all-mesh BY CONSTRUCTION, so
+# the single convergence oracle fits every draw. Plane-wide expansion adds faults carrying a different
+# `oracle` (e.g. `migration`), at which point the oracle-partitioned draw (below) routes each night to
+# one judge + one sandbox. Faults sharing an `oracle` must share a `sandbox`.
 PALETTE = [
-    {"name": "partition",   "fault": "fault-partition.yaml",  "group": "netB",  "surfaces": ["pg-b", "sink"]},
-    {"name": "isolation",   "fault": "fault-isolation.yaml",  "group": "netB",  "surfaces": ["pg-b", "sink", "dbz"]},
-    {"name": "latency",     "fault": "fault-latency.yaml",    "group": "netB",  "surfaces": ["pg-b", "sink"]},
-    {"name": "loss",        "fault": "fault-loss.yaml",       "group": "netB",  "surfaces": ["pg-b", "sink"]},
-    {"name": "sink-kill",   "fault": "fault-sink-kill.yaml",  "group": "sink",  "surfaces": ["sink"]},
-    {"name": "sink-failure","fault": "fault-sink-failure.yaml","group": "sink", "surfaces": ["sink"]},
-    {"name": "stress-cpu",  "fault": "fault-stress-cpu.yaml", "group": "sink",  "surfaces": ["sink"]},
-    {"name": "capture-kill","fault": "fault-capture-kill.yaml","group": "dbz",  "surfaces": ["dbz"]},
-    {"name": "stress-mem",  "fault": "fault-stress-mem.yaml", "group": "db",    "surfaces": ["pg-b"]},
+    {"name": "partition",   "fault": "fault-partition.yaml",  "group": "netB",  "surfaces": ["pg-b", "sink"],        "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "isolation",   "fault": "fault-isolation.yaml",  "group": "netB",  "surfaces": ["pg-b", "sink", "dbz"], "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "latency",     "fault": "fault-latency.yaml",    "group": "netB",  "surfaces": ["pg-b", "sink"],        "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "loss",        "fault": "fault-loss.yaml",       "group": "netB",  "surfaces": ["pg-b", "sink"],        "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "sink-kill",   "fault": "fault-sink-kill.yaml",  "group": "sink",  "surfaces": ["sink"],               "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "sink-failure","fault": "fault-sink-failure.yaml","group": "sink", "surfaces": ["sink"],               "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "stress-cpu",  "fault": "fault-stress-cpu.yaml", "group": "sink",  "surfaces": ["sink"],               "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "capture-kill","fault": "fault-capture-kill.yaml","group": "dbz",  "surfaces": ["dbz"],                "oracle": "convergence", "sandbox": "conv_test"},
+    {"name": "stress-mem",  "fault": "fault-stress-mem.yaml", "group": "db",    "surfaces": ["pg-b"],               "oracle": "convergence", "sandbox": "conv_test"},
 ]
 
 CORRELATION_BIAS = float(os.environ.get("LOTTERY_CORRELATION_BIAS", "0.75"))  # P(prefer a shared-surface pick)
@@ -69,13 +75,20 @@ def _conflicts(a: str, b: str) -> bool:
 def draw(seed: int):
     """Return (list-of-fault-dicts, meta) for a seed. Deterministic: same seed -> same draw."""
     rng = Random(seed)
-    # Cap the draw at how many distinct exclusion groups exist (can't exceed one-per-group).
-    ngroups = len({f["group"] for f in PALETTE})
+    # Oracle-partitioned draw (design §5, recommended-first): pick ONE oracle for the night, then
+    # draw only its faults — so a night has one judge + one sandbox (lowest false-green surface). With
+    # a single oracle in the palette this MUST be a no-op that consumes no RNG, so historical seeds
+    # replay identically; the meta-draw only activates once a second oracle is added to the palette.
+    oracles = sorted({f["oracle"] for f in PALETTE})
+    oracle = oracles[0] if len(oracles) == 1 else rng.choice(oracles)
+    pool = [f for f in PALETTE if f["oracle"] == oracle]
+
+    # Cap the draw at how many distinct exclusion groups exist in this oracle's pool (one-per-group).
+    ngroups = len({f["group"] for f in pool})
     k = rng.randint(MIN_DRAW, min(MAX_DRAW, ngroups))
 
     chosen, used_groups, used_surfaces = [], set(), set()
     wildcards = 0
-    pool = list(PALETTE)
 
     while len(chosen) < k:
         avail = [f for f in pool
@@ -95,8 +108,12 @@ def draw(seed: int):
         used_groups.add(pick["group"])
         used_surfaces.update(pick["surfaces"])
 
+    # All faults of one oracle share a sandbox; surface that for the composer/driver to stand up.
+    sandboxes = sorted({f["sandbox"] for f in chosen})
     meta = {
         "seed": seed,
+        "oracle": oracle,
+        "sandbox": sandboxes[0] if len(sandboxes) == 1 else sandboxes,
         "count": len(chosen),
         "faults": [f["name"] for f in chosen],
         "shared_surfaces": sorted(used_surfaces),
