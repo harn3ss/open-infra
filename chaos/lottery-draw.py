@@ -50,6 +50,11 @@ PALETTE = [
     {"name": "stress-cpu",  "fault": "fault-stress-cpu.yaml", "group": "sink",  "surfaces": ["sink"],               "oracle": "convergence", "sandbox": "conv_test"},
     {"name": "capture-kill","fault": "fault-capture-kill.yaml","group": "dbz",  "surfaces": ["dbz"],                "oracle": "convergence", "sandbox": "conv_test"},
     {"name": "stress-mem",  "fault": "fault-stress-mem.yaml", "group": "db",    "surfaces": ["pg-b"],               "oracle": "convergence", "sandbox": "conv_test"},
+    # --- GATED: judged by the migration adapter (not convergence). In the palette so the plane-wide
+    # routing is real, but excluded from the counted nightly until shaken out un-gated + proven
+    # fail-loud (design §6). Force a migration night with: LOTTERY_ORACLE=migration ; the composer
+    # delegates to scenario-migration.sh (sandbox_provision_migration + TestMigrationFidelity). ---
+    {"name": "mig-applysink-kill", "fault": "fault-migration-applysink-kill.yaml", "group": "mig-sink", "surfaces": ["mig-sink"], "oracle": "migration", "sandbox": "mig_test", "gated": True},
 ]
 
 CORRELATION_BIAS = float(os.environ.get("LOTTERY_CORRELATION_BIAS", "0.75"))  # P(prefer a shared-surface pick)
@@ -76,16 +81,32 @@ def draw(seed: int):
     """Return (list-of-fault-dicts, meta) for a seed. Deterministic: same seed -> same draw."""
     rng = Random(seed)
     # Oracle-partitioned draw (design §5, recommended-first): pick ONE oracle for the night, then
-    # draw only its faults — so a night has one judge + one sandbox (lowest false-green surface). With
-    # a single oracle in the palette this MUST be a no-op that consumes no RNG, so historical seeds
-    # replay identically; the meta-draw only activates once a second oracle is added to the palette.
-    oracles = sorted({f["oracle"] for f in PALETTE})
-    oracle = oracles[0] if len(oracles) == 1 else rng.choice(oracles)
-    pool = [f for f in PALETTE if f["oracle"] == oracle]
+    # draw only its faults — so a night has one judge + one sandbox (lowest false-green surface).
+    #
+    # GATING is the guardrail (design §6): a fault with "gated": true is in the palette (tagged,
+    # routable) but EXCLUDED from the default draw — the scheduled/counted nightly never draws it.
+    # `LOTTERY_ORACLE=<name>` FORCES that oracle and includes its gated faults, for un-gated manual
+    # shakeout (workflow_dispatch) before the adapter is ever allowed to count. So a new adapter
+    # (e.g. migration) rides in the palette, is exercisable on demand, and cannot gate a release
+    # until it is deliberately un-gated. With only one un-gated oracle the meta-draw consumes no RNG,
+    # so historical seeds replay identically.
+    force = os.environ.get("LOTTERY_ORACLE")
+    if force:
+        pool = [f for f in PALETTE if f["oracle"] == force]
+        if not pool:
+            raise SystemExit(f"LOTTERY_ORACLE={force}: no palette faults carry that oracle")
+        oracle = force
+    else:
+        drawable = [f for f in PALETTE if not f.get("gated")]
+        oracles = sorted({f["oracle"] for f in drawable})
+        oracle = oracles[0] if len(oracles) == 1 else rng.choice(oracles)
+        pool = [f for f in drawable if f["oracle"] == oracle]
 
-    # Cap the draw at how many distinct exclusion groups exist in this oracle's pool (one-per-group).
+    # Draw size is bounded by how many distinct exclusion groups this oracle's pool has (one-per-
+    # group) — and can't demand more than exist. For the 4-group convergence pool this is the
+    # original randint(2,4); a small pool (e.g. a single-fault adapter) yields a 1-fault night.
     ngroups = len({f["group"] for f in pool})
-    k = rng.randint(MIN_DRAW, min(MAX_DRAW, ngroups))
+    k = rng.randint(min(MIN_DRAW, ngroups), min(MAX_DRAW, ngroups))
 
     chosen, used_groups, used_surfaces = [], set(), set()
     wildcards = 0
