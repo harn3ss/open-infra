@@ -23,6 +23,11 @@ on:
         description: "keep the sandbox up after the run (debug)"
         type: boolean
         default: false
+      oracle:
+        description: "force a lottery oracle for UN-GATED shakeout (blank = normal convergence draw). Only applies when scenario=lottery."
+        type: choice
+        default: ""
+        options: ["", migration]
 
 concurrency:
   group: nightly-chaos
@@ -43,6 +48,8 @@ jobs:
         # own .env, so the job inherits them — don't override KUBECONFIG here.
         env:
           CHAOS_KEEP: ${{ github.event.inputs.keep == 'true' && '1' || '0' }}
+          # Force a gated lottery oracle (un-gated shakeout). Empty on the cron → convergence draw.
+          LOTTERY_ORACLE: ${{ github.event.inputs.oracle }}
           # seed is logged by the run and re-runnable via workflow_dispatch
         run: |
           chmod +x chaos/*.sh
