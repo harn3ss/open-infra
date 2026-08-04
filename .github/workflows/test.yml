@@ -104,3 +104,13 @@ jobs:
       - name: build
         working-directory: ui
         run: npm run build
+
+  # The lottery draw engine (chaos/lottery-draw.py) is pure + replay-critical: a fixed seed must
+  # yield a fixed draw, and the oracle-partitioning invariant must hold. stdlib only, no deps.
+  chaos-draw:
+    name: chaos-draw
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: lottery draw unit test
+        run: python3 chaos/test_lottery_draw.py
