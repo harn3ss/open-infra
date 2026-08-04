@@ -20,6 +20,7 @@ on:
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
+      - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - ".github/workflows/test.yml"
   pull_request:
     paths:
@@ -30,6 +31,7 @@ on:
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
+      - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
   workflow_call: {} # callable as a required gate by the build/release workflows
