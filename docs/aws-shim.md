@@ -115,7 +115,11 @@ made faithful: an unsupported service is an honest `501`, not a silent partial.
 ### S3 (faithful, proven)
 
 `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`,
-`ListBuckets`, with S3-faithful ETags, headers, list XML, and error codes/statuses.
+`ListBuckets`, with S3-faithful ETags, headers, list XML, and error codes/statuses. `PutObject`
+also **decodes aws-chunked framing** — the per-chunk size/signature wrapping an SDK adds when it
+sends a trailing checksum (the AWS CLI v2 default in many paths) — so the object is stored raw, not
+with the framing bytes. Guarded by a decoder unit test and a probe step that forces a chunked
+upload (`--checksum-algorithm CRC32`) and asserts byte-identity.
 
 ### STS (faithful)
 
