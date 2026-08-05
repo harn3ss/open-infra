@@ -245,6 +245,17 @@ spec:
             # the account id surfaced in STS GetCallerIdentity ARNs.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
             - { name: ACCOUNT_ID, value: "open-infra" }
+            # AppSync (GraphQL) → the Hasura engine (components.graphql). The admin secret is read
+            # optionally from this namespace: copy open-infra-graphql/hasura-admin here as
+            # `graphql-admin` to connect the two opt-in components (see docs/aws-shim.md). Absent →
+            # the appsync service still runs but returns 502 until the engine + secret are present.
+            - { name: GRAPHQL_ENDPOINT, value: "http://hasura.open-infra-graphql.svc.cluster.local:8080" }
+            - name: GRAPHQL_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: graphql-admin
+                  key: adminSecret
+                  optional: true
           readinessProbe:
             httpGet: { path: /healthz, port: 4566 }
             initialDelaySeconds: 5
