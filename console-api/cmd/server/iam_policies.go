@@ -32,7 +32,7 @@ import (
 var policyResources = []string{
 	"applications", "functions", "models", "virtualmachines", "vmimages", "volumes",
 	"fileshares", "directories", "migrations", "replications", "dataflows", "streams",
-	"securitygroups", "faultinjections", "queries",
+	"securitygroups", "faultinjections", "queries", "httpapis",
 }
 
 // policyVerbs are the verbs an action may use (case-insensitive), plus "*".

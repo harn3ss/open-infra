@@ -44,6 +44,7 @@ CNCF projects — not a reinvention of databases or storage.
 | EC2 / ECS | container orchestration | k3s |
 | ASG | autoscaling | HPA |
 | ALB / ELB | ingress + LB | Traefik + MetalLB |
+| API Gateway | HTTP API front door (`kind: HttpApi`) | Traefik Ingress → Functions/Applications, cert-manager TLS |
 | Route 53 | DNS | sslip.io / Cloudflare |
 | ACM | TLS | cert-manager |
 | S3 | object storage | MinIO |
