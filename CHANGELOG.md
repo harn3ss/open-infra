@@ -7,6 +7,10 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **A GraphQL engine (Hasura) — the backend behind the shim's AppSync surface (opt-in).**
+  `components.graphql: true` stands up Hasura over a dedicated CloudNativePG Postgres. It's a real
+  GraphQL engine (managed via Hasura), so the shim's AppSync data-plane is a genuine
+  SigV4-authenticated path to a real backend, not an emulator. OFF by default.
 - **`kind: HttpApi` — an API-Gateway-style HTTP front door.** Declare a `domain` and a list of
   `path → backend` routes onto `kind: Function` or `kind: Application` backends; the composition
   renders one Traefik Ingress with cert-manager TLS. It's the genuine capability expressed as a
@@ -45,6 +49,13 @@ the product's public contract.
   error dialect. Services whose backend speaks a different wire protocol (DynamoDB→Mongo, …) are
   deliberately **not** stubbed — they return an honest `501` and graduate the same gated way (built →
   probed → counted), because two proven services beat fourteen hand-wavy ones.
+- **AppSync (GraphQL) is now a fronted service.** The shim's `appsync` handler SigV4-verifies a
+  GraphQL `POST {query,variables}` and proxies it to the Hasura engine (`components.graphql`),
+  returning the response verbatim. Authorization is split: the shim authenticates + runs a coarse
+  platform gate, then presents the engine admin secret with a **non-admin** `x-hasura-role` +
+  `x-hasura-user-id` so Hasura enforces per-role permissions — no caller can act as engine admin
+  through the shim. Data plane only in v1 (schemas managed in Hasura); the AppSync management API is
+  a flagged graduation. See [docs/aws-shim.md](docs/aws-shim.md) for wiring the two opt-in components.
 
 ### Observability
 - **The audit trail is now observable — a console "Audit" view (CloudTrail).** The
