@@ -78,11 +78,8 @@ CNCF projects — not a reinvention of databases or storage.
 Full mapping and rationale: [`docs/architecture.md`](docs/architecture.md).
 
 The table above is *concept* parity — an open-infra-native surface that feels like AWS. For apps
-that must speak the AWS **wire protocol** unchanged, an experimental, opt-in [**AWS-SDK
-shim**](docs/aws-shim.md) presents an AWS-shaped front door (`AWS_ENDPOINT_URL`) that verifies SigV4
-against an open-infra access key, enforces the same RBAC + permission boundary as the console, and
-calls the real backend. v1 is deliberately narrow — **S3 over MinIO**, proven byte-faithful by a
-compatibility probe — with further services graduating only as each is proven, not claimed.
+that must speak the AWS **wire protocol** unchanged, an opt-in AWS-SDK shim presents an AWS-shaped
+front door — see [AWS-SDK compatibility](#aws-sdk-compatibility-the-shim) below.
 
 ---
 
@@ -173,27 +170,38 @@ same plan to cover your DNS, TLS and cloud accounts. See
 
 ---
 
-## GPU & managed inference ("Bedrock")
+## AWS-SDK compatibility (the shim)
 
-Label a GPU node and open-infra advertises its GPUs (shown on the console **Nodes**
-panel), scrapes per-GPU metrics into Grafana, and lets you stand up **managed
-inference** with one resource:
+Most of open-infra is *concept* parity — a native surface that feels like AWS. For apps that must
+speak the AWS **wire protocol** unchanged, an experimental, opt-in **AWS-SDK shim** presents an
+AWS-shaped front door: point any AWS SDK at it (one env var) and it verifies the request's SigV4
+signature against an open-infra access key, enforces the **same** RBAC + permission boundary as the
+console (one policy world — not a parallel auth), calls the real backend, and re-dresses the
+response in AWS's exact byte-shape. It is **not** an emulator — it fronts durable backends, not
+fakes, so unlike LocalStack/Floci its fidelity isn't bounded by what a mock chose to implement.
 
-```yaml
-# infra.yaml — a GPU-backed, OpenAI-compatible endpoint gated by an API key
-apiVersion: openinfra.dev/v1
-kind: Model
-metadata:
-  name: chat
-spec:
-  model: llama3.1:8b      # any Ollama model tag
-  gpu: 1
+```sh
+# An unmodified AWS SDK / CLI, aimed at open-infra — one env var, path-style S3.
+export AWS_ENDPOINT_URL=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566
+aws s3api put-object --bucket my-bucket --key hello.txt --body ./hello.txt
+# → stored in real MinIO, behind the shim's SigV4 verification + open-infra RBAC.
 ```
 
-`open-infra init model` scaffolds this; apps consume it by referencing the
-generated `chat-model` secret (`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `MODEL`).
-Full setup — host prerequisites, the device plugin, GPU dashboards, and consuming
-the endpoint — is in [`docs/gpu.md`](docs/gpu.md).
+The access key is verified by **recomputing and constant-time-comparing** the signature — naming a
+key without holding its secret is rejected, exactly as AWS returns `SignatureDoesNotMatch`. Access
+keys are a sub-resource of `kind: User`; authorization is the same impersonated check everything
+else uses.
+
+v1 is deliberately narrow — **S3 over MinIO** (put / get / head / delete / list, S3-faithful ETags,
+headers, and error codes) — and **proven byte-faithful** by a compatibility probe that fires real
+AWS SDK calls and asserts identical bytes plus the negatives that earn the trust: a valid key ID
+with a wrong secret is rejected, and a read-only principal attempting a write is denied. Enable it
+with `components.awsShim: true`; further services graduate only as each is proven, not claimed.
+Full detail — client setup, the identity model, scope, and the probe — is in
+[`docs/aws-shim.md`](docs/aws-shim.md).
+
+(GPU-backed managed inference — `kind: Model`, open-infra's "Bedrock" — is in
+[`docs/gpu.md`](docs/gpu.md).)
 
 ---
 

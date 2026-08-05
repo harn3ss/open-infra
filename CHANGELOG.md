@@ -22,7 +22,10 @@ the product's public contract.
   keys are a sub-resource of `kind: User`, stored one-Secret-per-key (the store holds the real
   secret because SigV4 verification is symmetric). v1 authorization is a real but coarse read-vs-
   write gate; per-bucket authorization + per-principal MinIO identity are the flagged graduation
-  steps. Enable with `components.awsShim: true`. See [docs/aws-shim.md](docs/aws-shim.md).
+  steps. Validated end-to-end against a live deployment (real AWS CLI v2 → the shim → MinIO): the
+  byte-identical round-trip and both negatives pass, and the AWS CLI's default `aws-chunked`
+  checksum upload round-trips faithfully. Enable with `components.awsShim: true`. See
+  [docs/aws-shim.md](docs/aws-shim.md).
 
 ### Observability
 - **The audit trail is now observable — a console "Audit" view (CloudTrail).** The
