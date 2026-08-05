@@ -117,6 +117,18 @@ awsq "$WAK" "$WSK" list-objects-v2 --bucket "$BUCKET" | grep -q '"Key": "probe.t
   || fail "list-objects-v2 did not include the written key"
 log "  ✓ key listed"
 
+# --- 4b. Chunked upload round-trips (forces aws-chunked framing via a trailing checksum) ---------
+# --checksum-algorithm CRC32 makes the CLI send a STREAMING-…-TRAILER (aws-chunked) body: the wire
+# payload is the file wrapped in per-chunk size/signature framing. If the shim stored that verbatim
+# the object would be corrupted; this asserts the shim dechunks it. (Guards the CHANGELOG claim.)
+log "chunked upload: put-object --checksum-algorithm CRC32, then get, compare bytes"
+printf 'aws-chunked-payload-%s-%s' "$RANDOM$RANDOM" "$(head -c 200 /dev/zero | tr '\0' x)" > "$WORK/chunk-in.txt"
+awsq "$WAK" "$WSK" put-object --bucket "$BUCKET" --key chunk.txt --body "$WORK/chunk-in.txt" --checksum-algorithm CRC32 >/dev/null 2>"$WORK/chunk.err" \
+  || fail "chunked put-object (--checksum-algorithm CRC32) failed: $(cat "$WORK/chunk.err")"
+awsq "$WAK" "$WSK" get-object --bucket "$BUCKET" --key chunk.txt "$WORK/chunk-out.txt" >/dev/null || fail "chunked get-object failed"
+cmp -s "$WORK/chunk-in.txt" "$WORK/chunk-out.txt" || fail "aws-chunked upload was stored WITH framing bytes — dechunking is broken"
+log "  ✓ chunked upload round-trips byte-identical (framing stripped)"
+
 # --- 5. NEGATIVE: valid key ID, WRONG secret → SignatureDoesNotMatch ---------------------------
 log "negative: valid key ID with a WRONG secret must be rejected"
 if awsq "$WAK" "wrong-secret-not-the-real-one" get-object --bucket "$BUCKET" --key probe.txt "$WORK/nope.txt" >"$WORK/neg.out" 2>&1; then
@@ -148,6 +160,7 @@ log "  ✓ reader read succeeded"
 
 # --- cleanup the object we wrote --------------------------------------------------------------
 awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key probe.txt >/dev/null 2>&1 || true
+awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key chunk.txt >/dev/null 2>&1 || true
 
 echo
 echo "✓ PASS — aws-shim S3 surface is byte-faithful and enforces auth + the write boundary."

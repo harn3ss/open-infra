@@ -194,14 +194,15 @@ keys are a sub-resource of `kind: User`; authorization is the same impersonated 
 else uses.
 
 The shim is a **router with pluggable per-service handlers** — one front door, many domain experts,
-dispatched by the service each client signs for. It fronts **S3** (over MinIO: put / get / head /
-delete / list with S3-faithful ETags, headers, and error codes — **proven byte-faithful** by a
-compatibility probe that fires real AWS SDK calls and asserts identical bytes plus the negatives
-that earn the trust: a wrong secret is rejected, a read-only principal's write is denied), **STS**
-`GetCallerIdentity`, and **Lambda** `Invoke` over `kind: Function` (Knative). Services whose backend
-speaks a different wire protocol (DynamoDB→Mongo, …) are real translation work and return an honest
-`501` until built — two proven services beat fourteen hand-wavy ones. Enable it with
-`components.awsShim: true`; each service graduates only as it's proven, not claimed. Full detail —
+dispatched by the service each client signs for. It fronts four services today: **S3** (over MinIO),
+**STS** `GetCallerIdentity`, **Lambda** `Invoke` over `kind: Function` (Knative), and **AppSync**
+(GraphQL over a Hasura engine). Only **S3** carries the end-to-end compatibility probe so far — real
+AWS SDK calls asserting byte-identical put/get plus the negatives that earn the trust (a wrong
+secret rejected, a read-only principal's write denied); the others are unit-tested and manually
+verified live, and each graduates to that same probe bar before it counts as proven. Services whose
+backend speaks a different wire protocol (DynamoDB→Mongo, …) are real translation work and return an
+honest `501` until built — **narrow and proven beats broad and hand-wavy**. Enable it with
+`components.awsShim: true`. Full detail —
 client setup, the identity model, the per-service matrix, and the probe — is in
 [`docs/aws-shim.md`](docs/aws-shim.md).
 
