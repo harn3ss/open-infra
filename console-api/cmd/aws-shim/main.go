@@ -64,7 +64,10 @@ func run(logger *slog.Logger) error {
 	//     there — never Secrets — to resolve an access key's owner to its current groups.
 	keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
 	usersNS := getenv("USERS_NAMESPACE", "open-infra-console")
-	authzNS := getenv("AUTHZ_NAMESPACE", "default") // namespace the coarse S3 RBAC gate checks
+	authzNS := getenv("AUTHZ_NAMESPACE", "default")  // namespace the coarse S3 RBAC gate checks
+	fnNS := getenv("FUNCTIONS_NAMESPACE", "default") // namespace kind: Function lives in
+	svcSuffix := getenv("SVC_SUFFIX", "svc.cluster.local")
+	account := getenv("ACCOUNT_ID", "open-infra") // surfaced in STS ARNs
 
 	mc, err := newMinioClient()
 	if err != nil {
@@ -75,9 +78,15 @@ func run(logger *slog.Logger) error {
 		keys:    awskeys.NewStore(cs, keysNS),
 		resolve: newOwnerResolver(cs, usersNS),
 	}
-	s3 := &s3Handler{auth: auth, cs: cs, mc: mc, authzNS: authzNS, logger: logger}
 
-	router := newRouter(logger, s3)
+	// The service registry: one front door, many domain experts (keyed by the AWS service name the
+	// client signs for). Adding a service is one more entry. Each carries its own decoder,
+	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
+	router := newRouter(logger, auth, map[string]awsService{
+		"s3":     &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
+		"sts":    &stsHandler{account: account, logger: logger},
+		"lambda": newLambdaHandler(cs, fnNS, svcSuffix, logger),
+	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
 	srv := &http.Server{
@@ -120,21 +129,25 @@ func run(logger *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRouter(logger *slog.Logger, s3 *s3Handler) http.Handler {
+func newRouter(logger *slog.Logger, auth *authenticator, services map[string]awsService) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 
-	// Health is unauthenticated (kubelet probes it); it is NOT an S3 path.
+	// Health is unauthenticated (kubelet probes it); it is NOT an AWS request path.
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	// Everything else is an S3 request (v1: the only service handler). Future services (Lambda-
-	// style invoke over Knative, …) are added as sibling handlers dispatched by their own decoder,
-	// mirroring the chaos-oracle adapter pattern: one front door, many domain experts.
-	r.Handle("/*", s3)
+	// Every other request is an AWS-SDK call; the serviceRouter authenticates once and dispatches
+	// to the handler for the service the client signed for.
+	names := make([]string, 0, len(services))
+	for n := range services {
+		names = append(names, n)
+	}
+	logger.Info("aws services registered", "services", names)
+	r.Handle("/*", &serviceRouter{auth: auth, services: services, logger: logger})
 	return r
 }
 

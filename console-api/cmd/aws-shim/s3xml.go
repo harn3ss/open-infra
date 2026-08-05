@@ -52,7 +52,17 @@ func writeS3Error(w http.ResponseWriter, code, requestID, resource string) {
 	if !ok {
 		code, info = "InternalError", s3Errors["InternalError"]
 	}
-	body := s3ErrorBody{Code: code, Message: info.Message, Resource: resource, RequestID: requestID}
+	writeS3ErrorFull(w, code, info.Status, requestID, info.Message, resource)
+}
+
+// writeS3ErrorMsg writes an S3-shaped error with an explicit status and message (for codes not in
+// the s3Errors table, e.g. the router's NotImplemented for an un-fronted service).
+func writeS3ErrorMsg(w http.ResponseWriter, code string, status int, requestID, message string) {
+	writeS3ErrorFull(w, code, status, requestID, message, "")
+}
+
+func writeS3ErrorFull(w http.ResponseWriter, code string, status int, requestID, message, resource string) {
+	body := s3ErrorBody{Code: code, Message: message, Resource: resource, RequestID: requestID}
 	out, err := xml.Marshal(body)
 	if err != nil {
 		http.Error(w, "InternalError", http.StatusInternalServerError)
@@ -60,7 +70,7 @@ func writeS3Error(w http.ResponseWriter, code, requestID, resource string) {
 	}
 	w.Header().Set("Content-Type", "application/xml")
 	w.Header().Set("x-amz-request-id", requestID)
-	w.WriteHeader(info.Status)
+	w.WriteHeader(status)
 	_, _ = w.Write([]byte(xml.Header))
 	_, _ = w.Write(out)
 }
