@@ -34,6 +34,22 @@ type Claims struct {
 	Groups []string `json:"groups,omitempty"`
 }
 
+// GroupsFromSpec turns a kind: User's spec.groups into the impersonation groups the principal
+// acts as: each non-empty entry prefixed with "openinfra:", plus the universal "openinfra:users".
+// Empty spec.groups means "authenticated but authorized for nothing" — deliberately NOT a fallback
+// to a default role, so a User created without groups fails CLOSED. This is the single source of
+// truth for that mapping, shared by the console (kind: User sign-in) and the shim (resolving an
+// access key's owning User) so the two can never derive a principal's groups differently.
+func GroupsFromSpec(specGroups []string) []string {
+	out := make([]string, 0, len(specGroups)+1)
+	for _, g := range specGroups {
+		if g = strings.TrimSpace(g); g != "" {
+			out = append(out, "openinfra:"+g)
+		}
+	}
+	return append(out, "openinfra:users")
+}
+
 // RoleGroups maps a console role to the Kubernetes groups it acts as. Console principals are
 // impersonated as `openinfra:<user>` (namespaced so they can never collide with a real cluster
 // user) and carry group memberships that RBAC binds permissions to.
