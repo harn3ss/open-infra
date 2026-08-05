@@ -121,6 +121,7 @@ rules:
       - securitygroups
       - faultinjections
       - queries
+      - httpapis
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
     resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]

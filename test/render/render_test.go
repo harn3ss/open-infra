@@ -102,6 +102,45 @@ func TestSecurityGroup_AlwaysAllowsConsole(t *testing.T) {
 	}
 }
 
+func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
+	out := render(t, tmpl, httpApiCtx(true))
+
+	// One Traefik Ingress, in the claim namespace, on the declared host.
+	for _, want := range []string{"kind: Ingress", "ingressClassName: traefik",
+		"name: httpapi-storefront", "namespace: shop", "host: api.example.com"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("HttpApi ingress missing %q; got:\n%s", want, grepCtx(out, "Ingress"))
+		}
+	}
+	// Every declared route becomes a path → its backend Service (both Function and Application
+	// backends resolve to a Service named after the resource).
+	for _, want := range []string{"path: /", "path: /fn", "name: web", "name: hello"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("HttpApi ingress missing route %q; got:\n%s", want, grepCtx(out, "path"))
+		}
+	}
+	// TLS on → cert-manager issuer + websecure entrypoint + a tls block.
+	for _, want := range []string{"cert-manager.io/cluster-issuer: openinfra-issuer",
+		"entrypoints: websecure", "secretName: httpapi-storefront-tls"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("HttpApi (tls) missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+func TestHttpApi_NoTLS(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
+	out := render(t, tmpl, httpApiCtx(false))
+	// TLS off → plain-HTTP entrypoint, and no cert-manager / tls block.
+	if !strings.Contains(out, "entrypoints: web") {
+		t.Errorf("HttpApi (no tls) should use the web entrypoint; got:\n%s", out)
+	}
+	if strings.Contains(out, "cert-manager.io/cluster-issuer") || strings.Contains(out, "secretName: httpapi-") {
+		t.Errorf("HttpApi (no tls) must not emit cert-manager/tls; got:\n%s", out)
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
@@ -224,6 +263,29 @@ func fileshareCtx(nodeIP string) map[string]any {
 				"labels": map[string]any{
 					"crossplane.io/claim-name":      "iis-work",
 					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}},
+	}
+}
+
+// httpApiCtx builds the context for a kind: HttpApi with two routes and a toggle for TLS.
+func httpApiCtx(tls bool) map[string]any {
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"domain": "api.example.com",
+				"tls":    tls,
+				"routes": []any{
+					map[string]any{"path": "/", "backend": map[string]any{"kind": "Application", "name": "web", "port": int64(80)}},
+					map[string]any{"path": "/fn", "pathType": "Prefix", "backend": map[string]any{"kind": "Function", "name": "hello"}},
+				},
+			},
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000ap",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "storefront",
+					"crossplane.io/claim-namespace": "shop",
 				},
 			},
 		}}},

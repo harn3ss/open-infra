@@ -109,6 +109,7 @@ rules:
       - securitygroups
       - faultinjections
       - queries
+      - httpapis
     verbs: [get, list, watch, create, update, patch, delete]
 
   # Knative Services for the kind: Function (serverless) abstraction.
