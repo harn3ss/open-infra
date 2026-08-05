@@ -140,19 +140,40 @@ func Verify(req *http.Request, cred Credential, secretKey string) error {
 		return fmt.Errorf("%w: no X-Amz-Date", ErrMalformedAuthorization)
 	}
 
-	payloadHash, err := payloadHash(req)
+	want, err := signature(req, cred, amzDate, secretKey)
 	if err != nil {
 		return err
 	}
-	canonReq := canonicalRequest(req, cred, payloadHash)
-	sts := stringToSign(amzDate, cred.CredentialScope(), canonReq)
-	want := hex.EncodeToString(hmacSHA256(deriveSigningKey(secretKey, cred), sts))
-
 	// Constant-time comparison — never leak, via timing, how many leading hex digits matched.
 	if subtle.ConstantTimeCompare([]byte(want), []byte(cred.Signature)) != 1 {
 		return ErrSignatureMismatch
 	}
 	return nil
+}
+
+// Sign computes the SigV4 signature a correct client would present for req under cred, using
+// secretKey. It is the exact inverse of Verify (Verify recomputes this and compares), and exists
+// so an internal signer — or a test that must produce a genuinely-valid request — can reuse the
+// same vector-anchored math rather than reimplementing it. It reads X-Amz-Date/Date from req.
+func Sign(req *http.Request, cred Credential, secretKey string) (string, error) {
+	amzDate := req.Header.Get("X-Amz-Date")
+	if amzDate == "" {
+		amzDate = req.Header.Get("Date")
+	}
+	if amzDate == "" {
+		return "", fmt.Errorf("%w: no X-Amz-Date", ErrMalformedAuthorization)
+	}
+	return signature(req, cred, amzDate, secretKey)
+}
+
+// signature is the shared core of Verify and Sign: canonical request → string to sign → HMAC.
+func signature(req *http.Request, cred Credential, amzDate, secretKey string) (string, error) {
+	ph, err := payloadHash(req)
+	if err != nil {
+		return "", err
+	}
+	sts := stringToSign(amzDate, cred.CredentialScope(), canonicalRequest(req, cred, ph))
+	return hex.EncodeToString(hmacSHA256(deriveSigningKey(secretKey, cred), sts)), nil
 }
 
 // canonicalRequest builds AWS's canonical request string (SigV4 step 1).
