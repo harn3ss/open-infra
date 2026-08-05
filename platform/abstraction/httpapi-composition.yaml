@@ -1,0 +1,79 @@
+# Composition for kind: HttpApi — renders one Traefik Ingress mapping the declared path routes onto
+# their backend Services (a kind: Function's Knative Service or a kind: Application's Service, both
+# reachable as `service <name>:80` in the claim namespace). TLS is terminated by cert-manager via
+# the openinfra-issuer when spec.tls is true (the default). Mirrors the Application composition's
+# Ingress block; adds per-route paths.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: httpapi
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XHttpApi }
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef: { name: crossplane-contrib-function-go-templating }
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- /* `| default true` is WRONG for a bool: Sprig's default treats false as empty and
+                   would force TLS on. Respect an explicit tls:false; default to true only when the
+                   key is absent (the XRD default sets it, so absence is only the bare-template case). */ -}}
+            {{- $tls := true }}
+            {{- if hasKey $spec "tls" }}{{- $tls = $spec.tls }}{{- end }}
+            ---
+            # --- The API Gateway front door: one Traefik Ingress, one path per route ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ingress
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: httpapi-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/httpapi: {{ $name }}
+                    annotations:
+                      {{- if $tls }}
+                      cert-manager.io/cluster-issuer: openinfra-issuer
+                      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+                      {{- else }}
+                      traefik.ingress.kubernetes.io/router.entrypoints: web
+                      {{- end }}
+                  spec:
+                    ingressClassName: traefik
+                    rules:
+                      - host: {{ $spec.domain }}
+                        http:
+                          paths:
+                            {{- range $route := $spec.routes }}
+                            - path: {{ $route.path }}
+                              pathType: {{ $route.pathType | default "Prefix" }}
+                              backend:
+                                service:
+                                  name: {{ $route.backend.name }}
+                                  port:
+                                    number: {{ $route.backend.port | default 80 }}
+                            {{- end }}
+                    {{- if $tls }}
+                    tls:
+                      - hosts: [ {{ $spec.domain }} ]
+                        secretName: httpapi-{{ $name }}-tls
+                    {{- end }}
+    - step: ready
+      functionRef: { name: crossplane-contrib-function-auto-ready }

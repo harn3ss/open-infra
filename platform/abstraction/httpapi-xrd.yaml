@@ -1,0 +1,77 @@
+# kind: HttpApi — open-infra's "API Gateway": a hostname with path routes onto backends.
+#
+# API Gateway's job is to put an HTTP front door in front of functions/services and route by path.
+# open-infra already has the pieces — Traefik ingress + cert-manager TLS + Knative Functions and
+# Applications — so HttpApi is a thin, NATIVE composite over them: declare a domain and a list of
+# path → backend routes, and the composition renders one Traefik Ingress. It is not an emulator and
+# it is not the AWS API Gateway wire protocol (that management API can be fronted by the shim later,
+# on top of this real backend); it is the genuine capability, expressed as a first-class kind.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xhttpapis.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XHttpApi, plural: xhttpapis }
+  claimNames: { kind: HttpApi, plural: httpapis }
+  defaultCompositionRef: { name: httpapi }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [domain, routes]
+              properties:
+                domain:
+                  type: string
+                  description: "Hostname the API is served on, e.g. api.example.com."
+                tls:
+                  type: boolean
+                  default: true
+                  description: "Terminate TLS via cert-manager (openinfra-issuer). Set false for plain HTTP."
+                routes:
+                  type: array
+                  description: "Path → backend routes, evaluated in order (put more specific paths first)."
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [path, backend]
+                    properties:
+                      path:
+                        type: string
+                        description: "URL path to match, e.g. / or /users."
+                      pathType:
+                        type: string
+                        default: Prefix
+                        enum: [Prefix, Exact, ImplementationSpecific]
+                        description: "Ingress path match type."
+                      backend:
+                        type: object
+                        required: [name]
+                        properties:
+                          kind:
+                            type: string
+                            default: Function
+                            enum: [Function, Application]
+                            description: "The kind of backend this route targets (both expose an in-cluster Service named after the resource on port 80)."
+                          name:
+                            type: string
+                            description: "Name of the backing kind: Function or kind: Application (same namespace as this HttpApi)."
+                          port:
+                            type: integer
+                            default: 80
+                            description: "Backend Service port. Functions and Applications both listen on 80."
+            status:
+              type: object
+              properties:
+                url:
+                  type: string
+                  description: "The public URL of the API (scheme + domain)."
