@@ -29,16 +29,21 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | EC2/ECS/Fargate | orchestration | **k3s** | HA = 3 servers w/ embedded etcd |
 | Auto Scaling Groups | autoscaling | **HPA** | pod CPU/mem autoscaling; KEDA (event-driven) + node autoscaling are planned |
 | ELB/ALB/NLB | ingress + LB | **Traefik** + **MetalLB** | MetalLB needs reserved LAN IPs |
+| API Gateway | HTTP API front door | **Traefik Ingress** → Functions/Applications | `kind: HttpApi`; domain + path routes, cert-manager TLS |
 | Route 53 | DNS | sslip.io / **Cloudflare** | sslip.io = zero-config dev default; ExternalDNS planned |
 | ACM | TLS | **cert-manager** | LE public, or self-signed LAN CA |
 | S3 | object storage | **MinIO** | can reuse an existing NAS data dir |
 | EBS | block volumes | **Longhorn** | `kind: Volume`; RWO, snapshot/restore, hotplug to VMs |
 | EFS/FSx | shared file storage | **Samba (SMB)** on Longhorn | `kind: FileShare`; RWX, Connect helper (net use / mount) |
 | RDS/Aurora | managed Postgres | **CloudNativePG** | **local NVMe PVs, never CIFS/NFS** |
+| RDS (SQL Server–compatible) | drop-in for SQL Server apps | **Babelfish for PostgreSQL** | `engine: babelfish` (TDS 1433 + T-SQL); experimental |
+| OpenSearch (vector) | vector search | **pgvector** | `database.vector: true` |
+| Athena + Glue | serverless SQL over the lake | **DuckDB** (files) or **Trino** + Iceberg REST (tables) | `kind: Query` — see [query.md](query.md) |
+| AppSync | managed GraphQL | **Hasura** on CloudNativePG | via the AWS-SDK shim's `appsync` service; opt-in `components.graphql` — see [aws-shim.md](aws-shim.md) |
 | DMS | DB migration + CDC | **Debezium + apply-sink** + Crossplane | `kind: Migration`; full-load / ongoing CDC into a target SQL database — see [migrations.md](migrations.md) |
 | DMS (multi-master) | bidirectional / multi-master replication | **Debezium + apply-sink** (HLC LWW) | `kind: Replication`; sync two+ DBs both ways, across engines — see [replication.md](replication.md) |
 | Glue / Step Functions (data) | visual data-movement pipelines | **drag-and-drop canvas** → Debezium + NATS + apply-sink | `kind: DataFlow`; chain databases / topics / transform functions / buckets; replication, migration, CDC-to-topic & ETL are edge types — see [dataflow.md](dataflow.md) |
-| DynamoDB | NoSQL | *(deferred)* | post-v1 if demand |
+| DynamoDB | document store | **FerretDB** on DocumentDB-Postgres | `engine: mongo` (MongoDB-wire-compatible) via `kind: Application` `spec.database` |
 | ElastiCache | cache | **Valkey** (Redis-compatible) | |
 | SQS/SNS | queues + pub/sub | **NATS JetStream** | one component, both patterns |
 | Kinesis | streaming CDC | **Debezium** → **NATS JetStream** | `kind: Stream`; row changes → events on `cdc.<name>.*` — see [streaming.md](streaming.md) |
