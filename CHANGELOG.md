@@ -36,9 +36,11 @@ the product's public contract.
   secret because SigV4 verification is symmetric). v1 authorization is a real but coarse read-vs-
   write gate; per-bucket authorization + per-principal MinIO identity are the flagged graduation
   steps. Validated end-to-end against a live deployment (real AWS CLI v2 → the shim → MinIO): the
-  byte-identical round-trip and both negatives pass, and the AWS CLI's default `aws-chunked`
-  checksum upload round-trips faithfully. Enable with `components.awsShim: true`. See
-  [docs/aws-shim.md](docs/aws-shim.md).
+  byte-identical round-trip and both negatives pass. **aws-chunked** uploads (the framing an AWS
+  SDK adds when it sends a trailing checksum) are decoded before storage so the object is stored
+  raw, not with the chunk framing — guarded by a decoder unit test and a probe step that *forces*
+  a chunked upload (`--checksum-algorithm CRC32`) and asserts byte-identity. Enable with
+  `components.awsShim: true`. See [docs/aws-shim.md](docs/aws-shim.md).
 - **The shim is now multi-service — a router with pluggable per-service handlers.** It authenticates
   SigV4 once (shared, so no handler grows its own weaker auth) and dispatches by the AWS service the
   client signed for. Beyond S3 it now fronts **STS** `GetCallerIdentity` (the identity check tooling
