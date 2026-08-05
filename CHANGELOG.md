@@ -27,7 +27,7 @@ the product's public contract.
   the caller to their open-infra principal, enforces the **same** RBAC + permission boundary as the
   console (the shared `internal/iam` authorization core — one policy world, not a parallel auth),
   calls the real backend, and re-dresses the response in AWS's byte-shape. It is **not** an
-  emulator: it fronts durable backends. v1 is deliberately narrow — **S3 over MinIO** (put/get/
+  emulator: it fronts durable backends. Its first fronted service is **S3 over MinIO** (put/get/
   head/delete/list, S3-faithful ETags/headers/error codes) — proven **byte-faithful** by a
   compatibility probe (`probe/aws-shim-s3.sh`) that fires real AWS SDK calls and asserts identical
   bytes plus the two negatives that earn the trust: a valid key ID with a wrong secret is rejected
@@ -50,7 +50,7 @@ the product's public contract.
   with Lambda's JSON error dialect). Each service carries its own decoder, authorization mapping, and
   error dialect. Services whose backend speaks a different wire protocol (DynamoDB→Mongo, …) are
   deliberately **not** stubbed — they return an honest `501` and graduate the same gated way (built →
-  probed → counted), because two proven services beat fourteen hand-wavy ones.
+  probed → counted), because narrow and proven beats broad and hand-wavy.
 - **AppSync (GraphQL) is now a fronted service.** The shim's `appsync` handler SigV4-verifies a
   GraphQL `POST {query,variables}` and proxies it to the Hasura engine (`components.graphql`),
   returning the response verbatim. Authorization is split: the shim authenticates + runs a coarse
