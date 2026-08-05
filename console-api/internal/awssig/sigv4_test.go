@@ -1,7 +1,6 @@
 package awssig
 
 import (
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -97,10 +96,11 @@ func TestVerify_GroundTruth_S3GetObject(t *testing.T) {
 // signForTest computes the SigV4 signature the way a correct client would, so tests can produce a
 // valid signature to feed back through Verify. It reuses the package's own (vector-anchored) math.
 func signForTest(req *http.Request, cred Credential, secret string) string {
-	amzDate := req.Header.Get("X-Amz-Date")
-	ph, _ := payloadHash(req)
-	sts := stringToSign(amzDate, cred.CredentialScope(), canonicalRequest(req, cred, ph))
-	return hex.EncodeToString(hmacSHA256(deriveSigningKey(secret, cred), sts))
+	sig, err := Sign(req, cred, secret)
+	if err != nil {
+		panic(err)
+	}
+	return sig
 }
 
 // TestVerify_WrongSecret is the "prove the no" test for authentication: a caller who NAMES a
