@@ -50,6 +50,7 @@ Every kind, with full CRUD and `terraform import` via `namespace/name`:
 | `openinfra_database` | `Application` with `spec.database` (postgres/mysql/mongo/babelfish) |
 | `openinfra_virtual_machine` | `VirtualMachine` |
 | `openinfra_function` | `Function` |
+| `openinfra_http_api` | `HttpApi` — API-Gateway-style HTTP routes → Functions/Applications |
 | `openinfra_volume` | `Volume` |
 | `openinfra_file_share` | `FileShare` |
 | `openinfra_security_group` | `SecurityGroup` |
