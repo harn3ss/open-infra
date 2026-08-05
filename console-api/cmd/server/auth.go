@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -246,18 +247,17 @@ func (a *authStore) verifyLocal(ctx context.Context, user, pass string) (string,
 	return role, true
 }
 
+// sessionClaims is the cookie-backed session: the shared iam.Claims (sub/role/groups) plus the
+// console-session-specific expiry. iam.Claims is embedded (not a named field), so its fields are
+// promoted into the session-cookie JSON exactly as before — existing cookies round-trip byte-for-
+// byte — while c.Claims hands the shared authorization core (iam.Identity/iam.CanDo) the identity.
 type sessionClaims struct {
-	Sub  string `json:"sub"`
-	Role string `json:"role"`
-	// Groups is set for identities that come from a kind: User, whose spec.groups
-	// are authoritative. Empty for Secret-backed accounts, where the role name maps
-	// to a fixed group set via roleGroups().
-	Groups []string `json:"groups,omitempty"`
-	Exp    int64    `json:"exp"`
+	iam.Claims
+	Exp int64 `json:"exp"`
 }
 
 func (a *authStore) issue(user, role string, groups []string) (string, error) {
-	c, err := json.Marshal(sessionClaims{Sub: user, Role: role, Groups: groups,
+	c, err := json.Marshal(sessionClaims{Claims: iam.Claims{Sub: user, Role: role, Groups: groups},
 		Exp: time.Now().Add(sessionTTL).Unix()})
 	if err != nil {
 		return "", err
@@ -381,50 +381,14 @@ func claimsFrom(r *http.Request) (sessionClaims, bool) {
 	return c, ok
 }
 
-// Kubernetes identity for a console role. Console users are impersonated as
-// `openinfra:<user>` (namespaced so they can never collide with a real cluster
-// user) and carry group memberships that RBAC binds permissions to.
-//
-//	root / admin  -> openinfra:admins      (full access)
-//	poweruser     -> openinfra:powerusers  (manage resources, not secrets/RBAC)
-//	readonly      -> openinfra:readers     (get/list/watch only)
-//
-// Every user also gets openinfra:users, for rules that apply to everyone.
-func roleGroups(role string) []string {
-	switch strings.ToLower(role) {
-	case "root", "admin":
-		return []string{"openinfra:admins", "openinfra:users"}
-	case "poweruser":
-		return []string{"openinfra:powerusers", "openinfra:users"}
-	default: // readonly and anything unrecognised — least privilege
-		return []string{"openinfra:readers", "openinfra:users"}
-	}
-}
-
-// identityFromClaims maps a session to the Kubernetes identity it acts as. This is the
-// SINGLE definition of "who is this, to the API server": both the impersonating proxy
-// and the SubjectAccessReview checks in authz.go must agree, or the console would
-// authorize a request under one identity and then perform it as another.
-//
-// Explicit claim groups (from a kind: User) win. Secret-backed accounts carry none, so
-// their role maps to a fixed group set.
-func identityFromClaims(c sessionClaims) (string, []string, bool) {
-	if c.Sub == "" {
-		return "", nil, false
-	}
-	if len(c.Groups) > 0 {
-		return "openinfra:" + c.Sub, c.Groups, true
-	}
-	return "openinfra:" + c.Sub, roleGroups(c.Role), true
-}
-
-// identityFor resolves the impersonation identity for a proxied k8s request.
+// identityFor resolves the impersonation identity for a proxied k8s request, via the shared
+// authorization core (iam.Identity) so the console and the shim map identity identically.
 func identityFor(r *http.Request) (string, []string, bool) {
 	c, ok := claimsFrom(r)
 	if !ok {
 		return "", nil, false
 	}
-	return identityFromClaims(c)
+	return iam.Identity(c.Claims)
 }
 
 // requireWrite blocks state-changing calls to the BFF's OWN endpoints (the ones
