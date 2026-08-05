@@ -77,6 +77,13 @@ CNCF projects — not a reinvention of databases or storage.
 
 Full mapping and rationale: [`docs/architecture.md`](docs/architecture.md).
 
+The table above is *concept* parity — an open-infra-native surface that feels like AWS. For apps
+that must speak the AWS **wire protocol** unchanged, an experimental, opt-in [**AWS-SDK
+shim**](docs/aws-shim.md) presents an AWS-shaped front door (`AWS_ENDPOINT_URL`) that verifies SigV4
+against an open-infra access key, enforces the same RBAC + permission boundary as the console, and
+calls the real backend. v1 is deliberately narrow — **S3 over MinIO**, proven byte-faithful by a
+compatibility probe — with further services graduating only as each is proven, not claimed.
+
 ---
 
 ## Quickstart
