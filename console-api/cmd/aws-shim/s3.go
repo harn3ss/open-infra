@@ -29,7 +29,6 @@ import (
 //     graduation step; until then the shim acts to MinIO as a single scoped, NON-root service
 //     account, and this coarse gate is honest about what it does and does not enforce.
 type s3Handler struct {
-	auth    *authenticator
 	cs      kubernetes.Interface // for the impersonated SubjectAccessReview (iam.CanDo)
 	mc      *minio.Client        // MinIO bridge — a scoped, non-root service account (v1 identity bridge)
 	authzNS string               // namespace the coarse object-storage RBAC gate is evaluated in
@@ -44,24 +43,22 @@ type s3op struct {
 	write  bool // put/delete mutate; drives the read-vs-write authorization verb
 }
 
-func (h *s3Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestID := requestIDFrom(r)
+// authFailure writes S3's dialect of an authentication rejection (design's indistinguishable 403).
+func (h *s3Handler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeS3Error(w, "SignatureDoesNotMatch", requestID, r.URL.Path)
+}
 
-	// 1. Authenticate: SigV4 → open-infra principal. Any failure is an indistinguishable 403.
-	claims, err := h.auth.authenticate(r.Context(), r)
-	if err != nil {
-		writeS3Error(w, "SignatureDoesNotMatch", requestID, r.URL.Path)
-		return
-	}
-
-	// 2. Decode the S3 intent from path-style addressing (/{bucket}/{key}).
+// serve handles an already-authenticated S3 request: decode intent → authorize via the shared
+// impersonated SubjectAccessReview (one policy world) → dispatch to MinIO → re-encode byte-faithful.
+func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	// 1. Decode the S3 intent from path-style addressing (/{bucket}/{key}).
 	op, ok := decodeS3(r)
 	if !ok {
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 		return
 	}
 
-	// 3. Authorize via the shared impersonated SubjectAccessReview — one policy world.
+	// 2. Authorize via the shared impersonated SubjectAccessReview — one policy world.
 	if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
 		h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
 			"bucket", op.bucket, "key", op.key, "reason", reason)
@@ -69,7 +66,7 @@ func (h *s3Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Dispatch to MinIO and re-encode.
+	// 3. Dispatch to MinIO and re-encode.
 	switch op.kind {
 	case "list-buckets":
 		h.listBuckets(w, r, requestID)
