@@ -1,0 +1,307 @@
+# open-infra aws-shim — the AWS-SDK interception front door (S3 over MinIO, v1).
+#
+# Opt-in, OFF by default: this whole directory is excluded from the app-of-apps unless
+# components.awsShim: true (install.sh incl()). It is one optional AWS-shaped surface over the
+# platform, never a core dependency.
+#
+# Security posture (design handoff §4 — "one policy world", no parallel auth, no god-mode):
+#   - The shim reuses internal/iam, so authorization is the SAME impersonated SubjectAccessReview
+#     the console uses. Its only cluster-wide grant is `create subjectaccessreviews` — which ASKS
+#     the API server a question and grants nothing.
+#   - Least privilege by namespace split: the shim reads access-key Secrets ONLY in its own
+#     namespace, and reads kind: User (never Secrets) in the console namespace to resolve owners.
+#   - It talks to MinIO as a scoped, NON-root service account (no MinIO admin API), minted the
+#     same declarative way as the console/query identities.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-aws-shim
+  labels:
+    openinfra.dev/component: aws-shim
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-shim
+  namespace: open-infra-aws-shim
+---
+# The ONLY cluster-scoped grant: ask the API server authorization questions (SubjectAccessReview).
+# This is exactly the console's authz-check grant — it decides nothing itself, it only asks, so the
+# real authority stays the RBAC compiled from kind: Policy/Role/Group, bounded by the boundary.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-authz
+rules:
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-aws-shim-authz
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-authz }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# Access-key lookup: read Secrets ONLY in the shim's own namespace (the iam-ak-<id> store). The
+# shim never gets secret access in the console namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-keys
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-keys
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-keys }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# Owner resolution: read kind: User (NEVER Secrets) in the console namespace, to map an access
+# key's owner to its current groups. get+list only; nothing mutating.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-users
+  namespace: open-infra-console
+rules:
+  - apiGroups: [iam.openinfra.dev]
+    resources: [users]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-users
+  namespace: open-infra-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-users }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# --- MinIO scoped identity (declarative mint; same pattern as console-minio-user / query-runtime) ---
+# A one-shot Argo Sync hook mints a NON-root MinIO user `openinfra-aws-shim` (canned `readwrite`:
+# full S3 CRUD on buckets, NO admin API) and writes its creds into the shim's namespace as
+# `aws-shim-minio`. v1 uses this single scoped identity to MinIO; per-principal MinIO users +
+# per-bucket policies are the flagged graduation step. The Job runs in the minio namespace (it
+# needs the root secret to provision) and writes the creds Secret cross-namespace into
+# open-infra-aws-shim via the RoleBinding below.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-shim-iam-setup
+  namespace: minio
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-iam-setup
+  namespace: minio
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get] # read the MinIO root secret to provision
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-iam-setup
+  namespace: minio
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-iam-setup }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim-iam-setup
+    namespace: minio
+---
+# Cross-namespace: let the (minio-ns) setup SA write ONLY the aws-shim-minio creds Secret into the
+# shim's namespace. Bound by resourceNames to that one Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-minio-creds-writer
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+    resourceNames: [aws-shim-minio]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create] # create needs no resourceName (the object doesn't exist yet)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-minio-creds-writer
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-minio-creds-writer }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim-iam-setup
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aws-shim-iam-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: aws-shim-iam-setup
+      restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
+        - name: fetch-mc
+          image: minio/mc:latest
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+      containers:
+        - name: setup
+          image: alpine/k8s:1.30.0 # kubectl (native); mc from the shared volume
+          command: [/bin/sh, -c]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+          env:
+            - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+            - { name: DEST_NS, value: "open-infra-aws-shim" }
+          args:
+            - |
+              set -eu
+              [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
+              MC=/mc/mc
+              "$MC" alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+              echo "minting scoped aws-shim identity (readwrite: full S3, no admin API)…"
+
+              AK="openinfra-aws-shim"
+              # Reuse the existing secret key across reruns for stable creds; else generate.
+              SK=$(kubectl get secret aws-shim-minio -n "$DEST_NS" -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d || true)
+              [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              "$MC" admin user add m "$AK" "$SK" >/dev/null 2>&1 || "$MC" admin user add m "$AK" "$SK" >/dev/null
+              "$MC" admin policy attach m readwrite --user "$AK" >/dev/null 2>&1 || true
+
+              kubectl create secret generic aws-shim-minio -n "$DEST_NS" \
+                --from-literal=accessKey="$AK" --from-literal=secretKey="$SK" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+              echo "aws-shim MinIO identity ready ($AK: readwrite, no admin)"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-shim
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: aws-shim }
+  template:
+    metadata:
+      labels: { app: aws-shim }
+    spec:
+      serviceAccountName: aws-shim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: aws-shim
+          image: ghcr.io/harn3ss/open-infra-aws-shim:latest
+          imagePullPolicy: Always
+          ports:
+            - name: s3
+              containerPort: 4566
+          env:
+            - { name: LISTEN_ADDR, value: ":4566" }
+            - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
+            - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: aws-shim-minio, key: accessKey } } }
+            - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: aws-shim-minio, key: secretKey } } }
+            - { name: KEYS_NAMESPACE, value: "open-infra-aws-shim" }
+            - { name: USERS_NAMESPACE, value: "open-infra-console" }
+            # Coarse v1 S3 authorization gate is evaluated on applications in this namespace.
+            - { name: AUTHZ_NAMESPACE, value: "default" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 4566 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 4566 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-shim
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim }
+spec:
+  type: ClusterIP
+  selector: { app: aws-shim }
+  ports:
+    - name: s3
+      port: 4566
+      targetPort: 4566
+---
+# Egress control. Selecting Egress imposes default-deny-egress on the shim, so every destination it
+# needs is listed: DNS, MinIO's S3 API, and the kube-apiserver (for SAR + User/Secret reads). The
+# apiserver rule is by port only (no ipBlock): on this Cilium/k3s cluster ipBlock CIDR matching is
+# unreliable, and the apiserver is host-network, so a port-scoped allow is the robust form.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aws-shim-egress
+  namespace: open-infra-aws-shim
+spec:
+  podSelector:
+    matchLabels: { app: aws-shim }
+  policyTypes: [Egress]
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # MinIO S3 API
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: minio }
+          podSelector:
+            matchLabels: { app: minio }
+      ports:
+        - { protocol: TCP, port: 9000 }
+    # kube-apiserver (SubjectAccessReview + User/Secret reads). Port-scoped; see note above.
+    - ports:
+        - { protocol: TCP, port: 6443 }
+        - { protocol: TCP, port: 443 }
