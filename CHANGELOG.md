@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Abstractions
+- **`kind: HttpApi` — an API-Gateway-style HTTP front door.** Declare a `domain` and a list of
+  `path → backend` routes onto `kind: Function` or `kind: Application` backends; the composition
+  renders one Traefik Ingress with cert-manager TLS. It's the genuine capability expressed as a
+  first-class kind over the pieces open-infra already has (Traefik + Knative + Functions), not an
+  emulator — the AWS API Gateway management wire protocol can be fronted by the shim later, on top
+  of this real backend. Grantable via `kind: Policy` (added to the permission boundary in all its
+  synchronized copies), render-tested, and mirrored in the Terraform provider (`openinfra_http_api`).
+
 ### AWS compatibility
 - **An AWS-SDK shim — unmodified AWS SDK apps can talk to open-infra (experimental, opt-in, OFF
   by default).** A new server-side component (`kind`-less platform service `aws-shim`) presents an
