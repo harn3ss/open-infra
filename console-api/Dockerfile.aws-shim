@@ -1,0 +1,20 @@
+# open-infra aws-shim — the AWS-SDK interception front door (S3 over MinIO, v1).
+#
+# The shim lives in the console-api Go module on purpose: it shares internal/iam so it reuses the
+# ONE authorization core (the same impersonated SubjectAccessReview the console uses) rather than a
+# weaker parallel auth. This image builds only ./cmd/aws-shim — no SPA, no embed — so it stays a
+# small static binary on distroless, like apply-sink. Build context is console-api/.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /aws-shim ./cmd/aws-shim
+
+FROM gcr.io/distroless/static-debian12
+# 4566 is the AWS-SDK endpoint port (the LocalStack/Floci convention clients already expect).
+EXPOSE 4566
+USER 65532:65532
+COPY --from=build /aws-shim /aws-shim
+ENTRYPOINT ["/aws-shim"]
