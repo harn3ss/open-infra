@@ -6,6 +6,24 @@ the product's public contract.
 
 ## Unreleased
 
+### AWS compatibility
+- **An AWS-SDK shim — unmodified AWS SDK apps can talk to open-infra (experimental, opt-in, OFF
+  by default).** A new server-side component (`kind`-less platform service `aws-shim`) presents an
+  AWS-shaped front door: an app pointed at it via `AWS_ENDPOINT_URL` believes it is talking to AWS,
+  and the shim verifies the request's SigV4 signature against an open-infra access key, resolves
+  the caller to their open-infra principal, enforces the **same** RBAC + permission boundary as the
+  console (the shared `internal/iam` authorization core — one policy world, not a parallel auth),
+  calls the real backend, and re-dresses the response in AWS's byte-shape. It is **not** an
+  emulator: it fronts durable backends. v1 is deliberately narrow — **S3 over MinIO** (put/get/
+  head/delete/list, S3-faithful ETags/headers/error codes) — proven **byte-faithful** by a
+  compatibility probe (`probe/aws-shim-s3.sh`) that fires real AWS SDK calls and asserts identical
+  bytes plus the two negatives that earn the trust: a valid key ID with a wrong secret is rejected
+  (no authentication theater), and a reader attempting a write is denied by the boundary. Access
+  keys are a sub-resource of `kind: User`, stored one-Secret-per-key (the store holds the real
+  secret because SigV4 verification is symmetric). v1 authorization is a real but coarse read-vs-
+  write gate; per-bucket authorization + per-principal MinIO identity are the flagged graduation
+  steps. Enable with `components.awsShim: true`. See [docs/aws-shim.md](docs/aws-shim.md).
+
 ### Observability
 - **The audit trail is now observable — a console "Audit" view (CloudTrail).** The
   Kubernetes API-server audit log — the authoritative who-did-what record, carrying

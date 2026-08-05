@@ -87,7 +87,7 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
 | IA-2 User Authentication | `AUTH_MODE` local (built-in accounts) and LDAP / Active Directory; OIDC is reserved (not yet implemented). | Implemented (OIDC: planned) |
 | IA-2(1)(2) MFA | Delegated to the backing directory (LDAP/AD, or an OIDC IdP when added). | Operator |
 | IA-4 Identifier Management | `kind: User`; console identities are namespaced `openinfra:<user>` so they can never collide with real cluster users. | Implemented |
-| IA-5 Authenticator Management | Local passwords hashed in a Secret; break-glass `root`; directory-backed modes delegate authenticator lifecycle. | Implemented / Operator |
+| IA-5 Authenticator Management | Local passwords hashed in a Secret; break-glass `root`; directory-backed modes delegate authenticator lifecycle. The experimental [AWS-SDK shim](aws-shim.md) adds SigV4 access keys as a `kind: User` sub-resource (one Secret per key, revocable); the shim **recomputes and constant-time-compares** the signature ("verify, don't just parse") — naming a key without holding its secret is rejected, and it reuses the same impersonated `SubjectAccessReview`, never a parallel auth path. | Implemented / Operator |
 
 ### SC — System & Communications Protection
 
