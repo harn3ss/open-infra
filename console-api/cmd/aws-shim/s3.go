@@ -223,7 +223,16 @@ func (h *s3Handler) headObject(w http.ResponseWriter, r *http.Request, op s3op, 
 }
 
 func (h *s3Handler) putObject(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
-	info, err := h.mc.PutObject(r.Context(), op.bucket, op.key, r.Body, r.ContentLength,
+	// If the client used aws-chunked framing (a trailing checksum, the AWS CLI v2 default in many
+	// paths), strip the framing so we store the real object bytes, not the chunk headers — otherwise
+	// the framing would be persisted verbatim, silently corrupting the object.
+	var body io.Reader = r.Body
+	size := r.ContentLength
+	if isAwsChunked(r) {
+		body = newAwsChunkedReader(r.Body)
+		size = decodedContentLength(r)
+	}
+	info, err := h.mc.PutObject(r.Context(), op.bucket, op.key, body, size,
 		minio.PutObjectOptions{ContentType: r.Header.Get("Content-Type")})
 	if err != nil {
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
