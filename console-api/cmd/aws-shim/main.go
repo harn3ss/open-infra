@@ -56,8 +56,15 @@ func run(logger *slog.Logger) error {
 	}
 	cs := *kc.Clientset
 
-	iamNS := getenv("IAM_NAMESPACE", "open-infra-console") // where iam-ak-<id> Secrets + Users live
-	authzNS := getenv("AUTHZ_NAMESPACE", "default")        // namespace the coarse S3 RBAC gate checks
+	// Two DIFFERENT namespaces, deliberately split for least privilege:
+	//   - keysNS holds the iam-ak-<id> access-key Secrets. Default is the shim's OWN namespace, so
+	//     the shim's `get secrets` RBAC never reaches the console namespace (where bcrypt password
+	//     hashes and the session-signing key live).
+	//   - usersNS is where kind: User objects live (the console namespace). The shim reads USERS
+	//     there — never Secrets — to resolve an access key's owner to its current groups.
+	keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
+	usersNS := getenv("USERS_NAMESPACE", "open-infra-console")
+	authzNS := getenv("AUTHZ_NAMESPACE", "default") // namespace the coarse S3 RBAC gate checks
 
 	mc, err := newMinioClient()
 	if err != nil {
@@ -65,8 +72,8 @@ func run(logger *slog.Logger) error {
 	}
 
 	auth := &authenticator{
-		keys:    awskeys.NewStore(cs, iamNS),
-		resolve: newOwnerResolver(cs, iamNS),
+		keys:    awskeys.NewStore(cs, keysNS),
+		resolve: newOwnerResolver(cs, usersNS),
 	}
 	s3 := &s3Handler{auth: auth, cs: cs, mc: mc, authzNS: authzNS, logger: logger}
 
@@ -83,7 +90,8 @@ func run(logger *slog.Logger) error {
 	serverErr := make(chan error, 1)
 	go func() {
 		logger.Info("aws-shim listening", "addr", addr, "version", version,
-			"minioEndpoint", getenv("MINIO_ENDPOINT", defaultMinioEndpoint), "iamNamespace", iamNS)
+			"minioEndpoint", getenv("MINIO_ENDPOINT", defaultMinioEndpoint),
+			"keysNamespace", keysNS, "usersNamespace", usersNS)
 		cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
 		var lerr error
 		if cert != "" && key != "" {

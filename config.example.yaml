@@ -113,3 +113,4 @@ components:
   gpu: true                    # NVIDIA device plugin + DCGM metrics (GPU nodes only)
   velero: true                 # scheduled backups → MinIO (node-agent fs backups)
   virtualization: true         # KubeVirt + CDI — kind: VirtualMachine (EC2-style VMs); needs /dev/kvm
+  awsShim: false               # AWS-SDK interception shim (S3 over MinIO) — experimental, opt-in, OFF by default

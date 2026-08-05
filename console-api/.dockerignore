@@ -1,0 +1,3 @@
+# Keep stray local build artifacts out of the aws-shim image build context (context: console-api/).
+aws-shim
+console-api
