@@ -26,6 +26,16 @@ the product's public contract.
   byte-identical round-trip and both negatives pass, and the AWS CLI's default `aws-chunked`
   checksum upload round-trips faithfully. Enable with `components.awsShim: true`. See
   [docs/aws-shim.md](docs/aws-shim.md).
+- **The shim is now multi-service — a router with pluggable per-service handlers.** It authenticates
+  SigV4 once (shared, so no handler grows its own weaker auth) and dispatches by the AWS service the
+  client signed for. Beyond S3 it now fronts **STS** `GetCallerIdentity` (the identity check tooling
+  probes first — it reflects the SigV4-proven principal as an open-infra ARN, no backend to get
+  wrong) and **Lambda** `Invoke` over `kind: Function`/Knative (`POST …/functions/{name}/invocations`
+  → the Function's cluster-local address, authorized by the same impersonated SubjectAccessReview,
+  with Lambda's JSON error dialect). Each service carries its own decoder, authorization mapping, and
+  error dialect. Services whose backend speaks a different wire protocol (DynamoDB→Mongo, …) are
+  deliberately **not** stubbed — they return an honest `501` and graduate the same gated way (built →
+  probed → counted), because two proven services beat fourteen hand-wavy ones.
 
 ### Observability
 - **The audit trail is now observable — a console "Audit" view (CloudTrail).** The
