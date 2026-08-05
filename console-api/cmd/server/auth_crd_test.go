@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -101,7 +102,7 @@ func TestVerify_LocalWorksWithoutIAMCRDs(t *testing.T) {
 	if !ok || role != "root" {
 		t.Fatalf("break-glass root login failed: role=%q ok=%v", role, ok)
 	}
-	// Secret-backed accounts carry no explicit groups; roleGroups(role) derives them.
+	// Secret-backed accounts carry no explicit groups; iam.RoleGroups(role) derives them.
 	if groups != nil {
 		t.Fatalf("local account should not pin groups, got %v", groups)
 	}
@@ -115,9 +116,11 @@ func TestVerify_LocalWorksWithoutIAMCRDs(t *testing.T) {
 
 // identityFor must prefer the claim's explicit groups (a CR user's spec.groups) over
 // the role-derived defaults, otherwise kind: User memberships would be silently ignored.
+// This also guards that sessionClaims' embedded iam.Claims flows through the shared core.
 func TestIdentityFromClaims_PrefersExplicitGroups(t *testing.T) {
-	c := sessionClaims{Sub: "alice", Role: "readonly", Groups: []string{"openinfra:admins", "openinfra:users"}}
-	user, groups, ok := identityFromClaims(c)
+	c := sessionClaims{Claims: iam.Claims{Sub: "alice", Role: "readonly",
+		Groups: []string{"openinfra:admins", "openinfra:users"}}}
+	user, groups, ok := iam.Identity(c.Claims)
 	if !ok || user != "openinfra:alice" {
 		t.Fatalf("user=%q ok=%v", user, ok)
 	}
@@ -126,8 +129,8 @@ func TestIdentityFromClaims_PrefersExplicitGroups(t *testing.T) {
 	}
 
 	// No explicit groups → fall back to the role mapping.
-	_, groups, _ = identityFromClaims(sessionClaims{Sub: "root", Role: "root"})
-	want := roleGroups("root")
+	_, groups, _ = iam.Identity(iam.Claims{Sub: "root", Role: "root"})
+	want := iam.RoleGroups("root")
 	if len(groups) != len(want) || groups[0] != want[0] {
 		t.Fatalf("role fallback broken: %v want %v", groups, want)
 	}
