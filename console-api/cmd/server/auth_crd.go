@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
@@ -104,17 +105,12 @@ func (a *authStore) crdPasswordHash(ctx context.Context, u crdUser) (string, boo
 	return h, true
 }
 
-// crdGroups returns the Kubernetes groups a CR user should be impersonated with.
-// Empty spec.groups means "signed in but authorized for nothing" — deliberately NOT a
-// fallback to a default role, so forgetting to set groups fails closed.
+// crdGroups returns the Kubernetes groups a CR user should be impersonated with. The mapping
+// itself lives in the shared iam core (iam.GroupsFromSpec) so the console and the shim derive a
+// principal's groups identically; empty spec.groups still means "signed in but authorized for
+// nothing" — deliberately NOT a fallback to a default role, so forgetting to set groups fails closed.
 func crdGroups(u crdUser) []string {
-	out := make([]string, 0, len(u.Spec.Groups)+1)
-	for _, g := range u.Spec.Groups {
-		if g = strings.TrimSpace(g); g != "" {
-			out = append(out, "openinfra:"+g)
-		}
-	}
-	return append(out, "openinfra:users")
+	return iam.GroupsFromSpec(u.Spec.Groups)
 }
 
 // listCRDUsers returns every User, for the console's user list. Best-effort: an
