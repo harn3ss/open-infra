@@ -241,6 +241,10 @@ spec:
             - { name: USERS_NAMESPACE, value: "open-infra-console" }
             # Coarse v1 S3 authorization gate is evaluated on applications in this namespace.
             - { name: AUTHZ_NAMESPACE, value: "default" }
+            # Lambda (Invoke over kind: Function / Knative): the namespace Functions live in, and
+            # the account id surfaced in STS GetCallerIdentity ARNs.
+            - { name: FUNCTIONS_NAMESPACE, value: "default" }
+            - { name: ACCOUNT_ID, value: "open-infra" }
           readinessProbe:
             httpGet: { path: /healthz, port: 4566 }
             initialDelaySeconds: 5
@@ -305,3 +309,10 @@ spec:
     - ports:
         - { protocol: TCP, port: 6443 }
         - { protocol: TCP, port: 443 }
+    # Lambda invoke → Knative Function cluster-local addresses (HTTP). Knative routes an invoke
+    # through the activator (knative-serving) and then to per-revision pods whose location varies
+    # with scale, so this is port-scoped (80/8080) rather than pinned to a single destination —
+    # the same robust form used for the apiserver rule above.
+    - ports:
+        - { protocol: TCP, port: 80 }
+        - { protocol: TCP, port: 8080 }

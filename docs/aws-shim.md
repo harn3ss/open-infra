@@ -11,10 +11,14 @@ It is **not** an emulator. LocalStack/Floci *fake* AWS for throwaway testing; th
 bounded by what they chose to implement — the same false-green risk open-infra designs against
 everywhere. The shim fronts *durable* backends, not fakes.
 
-> **Status: experimental, opt-in, OFF by default.** v1 is deliberately narrow: **S3 over MinIO**,
-> proven byte-faithful by a compatibility probe. It is one optional AWS-shaped surface over the
-> platform, never a core dependency. Breadth beyond S3 is a roadmap of *earned* graduations, not a
-> claim of coverage.
+> **Status: experimental, opt-in, OFF by default.** The shim is a router with pluggable per-service
+> handlers — one front door, many domain experts. Fronted today: **S3** (over MinIO, proven
+> byte-faithful), **STS** GetCallerIdentity (identity reflection), and **Lambda** Invoke (over
+> `kind: Function`/Knative). It is one optional AWS-shaped surface over the platform, never a core
+> dependency. Breadth is a roadmap of *earned* graduations — each service built, probed, and
+> counted the same gated way — never a claim of coverage. Services whose backend speaks a different
+> wire protocol (e.g. DynamoDB→Mongo) are real translation work and return an honest `501` until
+> built, not a hand-wavy stub.
 
 ## Enabling it
 
@@ -89,11 +93,43 @@ Least privilege by namespace split: the shim reads access-key Secrets only in it
 namespace, and reads `kind: User` (never Secrets) in the console namespace. Its only cluster-wide
 grant is `create subjectaccessreviews` — which asks the API server a question and grants nothing.
 
-## v1 scope and the graduation path
+## Services
 
-**Faithful today:** S3 over MinIO — `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
-`HeadBucket`, `ListObjectsV2`, `ListBuckets`, with S3-faithful ETags, headers, list XML, and error
-codes/statuses.
+The shim dispatches by the AWS service the client signed for (read from the SigV4 credential
+scope). Each service is an independent handler with its own decoder, authorization mapping, and
+error dialect.
+
+| Service | Backend | Operations | Status |
+|---|---|---|---|
+| **S3** | MinIO | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets` | **Faithful, proven live** — byte-identical round-trip + auth/boundary negatives (`probe/aws-shim-s3.sh`) |
+| **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
+| **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse) | **Built + unit-tested** — live proof pending a deployed Function |
+| DynamoDB, Secrets Manager, Kinesis, IAM, Bedrock, … | Postgres/FerretDB, Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
+
+Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters
+do — built → shaken out → proven by a probe → counted. The shim never claims a service it hasn't
+made faithful: an unsupported service is an honest `501`, not a silent partial.
+
+### S3 (faithful, proven)
+
+`PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`,
+`ListBuckets`, with S3-faithful ETags, headers, list XML, and error codes/statuses.
+
+### STS (faithful)
+
+`aws sts get-caller-identity` — the first call most SDKs and tools make to confirm "who am I / does
+auth work." It has no backend: the shim reflects the identity it already proved via SigV4 as an
+open-infra-shaped ARN (`arn:openinfra:iam::open-infra:user/<name>`), so there is nothing to
+translate and nothing to get subtly wrong. Any authenticated principal may call it (as on AWS).
+
+### Lambda (built; live proof pending)
+
+`Invoke` maps onto `kind: Function`: `POST /2015-03-31/functions/{name}/invocations` forwards the
+payload to the Function's cluster-local Knative address (which drives scale-from-zero) and returns
+the response, with Lambda's JSON error dialect and `X-Amz-Function-Error` semantics. Authorization
+is the same impersonated `SubjectAccessReview` (invoke → `get` on `functions`). v1 is synchronous
+(`RequestResponse`) and resolves Functions in a single configured namespace; async invocation,
+version qualifiers, and cross-namespace resolution are the flagged next steps.
 
 **Honest limitations (flagged, not hidden):**
 
