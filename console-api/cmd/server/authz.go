@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 
-	authzv1 "k8s.io/api/authorization/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -19,9 +17,10 @@ import (
 // the authorization decision and the actual access would diverge.
 //
 // Fix: before doing the work, ask the API server whether the SIGNED-IN user could perform the
-// equivalent action, via a SubjectAccessReview, and fail closed. This is the documented way to
-// defer an authorization decision, and it means the check appears in the audit log against a
-// person rather than being an invisible `if` in Go.
+// equivalent action, via a SubjectAccessReview, and fail closed. The check itself lives in the
+// shared authorization core (internal/iam.CanDo) so the console and the AWS-shim enforce through
+// exactly the same impersonated SubjectAccessReview — one policy world. It also means the check
+// appears in the audit log against a person rather than being an invisible `if` in Go.
 //
 // Snapshot endpoints map onto the verb you'd need on the underlying resource:
 //
@@ -29,43 +28,6 @@ import (
 //	restore into a new database -> create  applications      (it creates one)
 //	take/delete a VM snapshot   -> update  virtualmachines
 //	restore into a new VM       -> create  virtualmachines
-
-// canUserDo asks the API server whether the signed-in user may perform verb on
-// group/resource in namespace. Fails CLOSED: any error means "no".
-func canUserDo(ctx context.Context, cs kubernetes.Interface, c sessionClaims,
-	verb, group, resource, namespace, name string) (bool, string) {
-	// Use the SAME identity the proxy impersonates with, so we never authorize a
-	// request as one subject and then perform it as another.
-	user, groups, ok := identityFromClaims(c)
-	if !ok {
-		return false, "no identity"
-	}
-	sar := &authzv1.SubjectAccessReview{
-		Spec: authzv1.SubjectAccessReviewSpec{
-			User:   user,
-			Groups: groups,
-			ResourceAttributes: &authzv1.ResourceAttributes{
-				Verb:      verb,
-				Group:     group,
-				Resource:  resource,
-				Namespace: namespace,
-				Name:      name,
-			},
-		},
-	}
-	out, err := cs.AuthorizationV1().SubjectAccessReviews().Create(ctx, sar, metav1.CreateOptions{})
-	if err != nil {
-		return false, "authorization check failed"
-	}
-	if !out.Status.Allowed || out.Status.Denied {
-		reason := out.Status.Reason
-		if reason == "" {
-			reason = "your role does not allow " + verb + " on " + resource
-		}
-		return false, reason
-	}
-	return true, ""
-}
 
 // authorize guards a BFF-native handler. Returns false (and writes the response)
 // when the signed-in user may not perform the equivalent action.
@@ -79,7 +41,7 @@ func authorize(w http.ResponseWriter, r *http.Request, cs kubernetes.Interface, 
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 		return false
 	}
-	allowed, reason := canUserDo(r.Context(), cs, c, verb, group, resource, namespace, name)
+	allowed, reason := iam.CanDo(r.Context(), cs, c.Claims, verb, group, resource, namespace, name)
 	if !allowed {
 		logger.Warn("denied BFF action",
 			"user", c.Sub, "role", c.Role, "verb", verb, "resource", resource,
