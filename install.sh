@@ -84,6 +84,18 @@ excl velero        "backup/*"
 excl mariadbOperator "data/mariadb-operator.yaml"
 excl lakehouse     "query/*" # Trino + Iceberg REST catalog (DuckDB Query needs none of this)
 
+# Opt-in, OFF by default (experimental surfaces): exclude UNLESS explicitly enabled — the inverse
+# of excl(). The base EXCLUDES doesn't list these, so they must be excluded unless set to "true"
+# (mirrors networking.vmLan.enabled / storage.highAvailability). Flip components.awsShim: true and
+# re-run install.sh to bring the AWS-SDK shim up.
+incl() {
+  if [ "$(yget "components.$1")" != "true" ]; then
+    EXCLUDES="${EXCLUDES},$2"
+    LOG "component (opt-in) not enabled: $1"
+  fi
+}
+incl awsShim "aws-shim/*"
+
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
 # NOT default to HA. (Skip when MinIO is disabled — both already excluded above.)
