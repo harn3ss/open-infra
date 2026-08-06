@@ -1,0 +1,2 @@
+# keep stray local build artifacts out of the build context
+open-appsync
