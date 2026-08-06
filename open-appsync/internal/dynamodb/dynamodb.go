@@ -10,6 +10,7 @@
 package dynamodb
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -18,9 +19,10 @@ import (
 )
 
 // Store executes a DynamoDB operation (as decoded from a VTL request template) and returns the
-// plain-value result for the response template.
+// plain-value result for the response template. The context carries the request deadline/cancellation
+// (a live store — FerretDB — needs it; MemStore ignores it).
 type Store interface {
-	Execute(op map[string]any) (any, error)
+	Execute(ctx context.Context, op map[string]any) (any, error)
 }
 
 // fromDynamoDB is the inverse of $util.dynamodb.toDynamoDBJson: a DynamoDB-typed value → a plain
@@ -83,7 +85,7 @@ type MemStore struct {
 
 func NewMemStore() *MemStore { return &MemStore{items: map[string]map[string]any{}} }
 
-func (s *MemStore) Execute(op map[string]any) (any, error) {
+func (s *MemStore) Execute(_ context.Context, op map[string]any) (any, error) {
 	operation, _ := op["operation"].(string)
 	switch operation {
 	case "GetItem":
