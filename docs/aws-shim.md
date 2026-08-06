@@ -15,7 +15,7 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > handlers — one front door, many domain experts. Fronted today: **S3** (over MinIO, proven
 > byte-faithful), **STS** GetCallerIdentity (identity reflection), **Lambda** Invoke (over
 > `kind: Function`/Knative), and **AppSync** (GraphQL, over the **open-appsync** engine — a
-> resolver-first, VTL-faithful engine on its own graduation ladder, a placeholder today). It is one optional
+> resolver-first, VTL-faithful engine on its own graduation ladder; slice 1 runs live, experimental). It is one optional
 > AWS-shaped surface over the platform, never a core
 > dependency. Breadth is a roadmap of *earned* graduations — each service built, probed, and
 > counted the same gated way — never a claim of coverage. Services whose backend speaks a different
@@ -106,7 +106,7 @@ error dialect.
 | **S3** | MinIO | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets` | **Faithful, proven live** — byte-identical round-trip + auth/boundary negatives (`probe/aws-shim-s3.sh`) |
 | **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
 | **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse) | **Built + unit-tested** — live proof pending a deployed Function |
-| **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Front door built + unit-tested; engine is a placeholder — NOT proven**. Needs `components.openAppsync` |
+| **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); **experimental**, fidelity docs-anchored. Needs `components.openAppsync` |
 | DynamoDB, Secrets Manager, Kinesis, IAM, Bedrock, … | Postgres/FerretDB, Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
 
 Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters
@@ -138,7 +138,7 @@ is the same impersonated `SubjectAccessReview` (invoke → `get` on `functions`)
 (`RequestResponse`) and resolves Functions in a single configured namespace; async invocation,
 version qualifiers, and cross-namespace resolution are the flagged next steps.
 
-### AppSync (GraphQL; over open-appsync — front door built, engine NOT yet proven)
+### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 
 AppSync's data plane *is* GraphQL-over-HTTP. A client (Amplify/Apollo with IAM auth) signs a
 `POST {query, variables}` with SigV4 (service `appsync`); the shim verifies it, runs the coarse
@@ -150,10 +150,13 @@ VTL-faithful** AppSync engine, built to serve teams locked into AppSync by their
 investment (VTL templates, data-source wiring, `$util` helpers). It is *not* a GraphQL-over-tables
 engine wearing a mask: that would be a leaky abstraction the moment a specialist writes a resolver
 the underlying engine can't model. open-appsync is on its own **graduation ladder** (slice 1 = VTL
-over one DynamoDB-style data source, proven by a probe against *real* AppSync; subscriptions-over-
-JetStream is rung 2). **Today it is a placeholder** that answers with an honest `NotImplemented`
-GraphQL error — the front door and its auth are real and tested; the engine is **un-proven** until
-slice 1 lands its compatibility probe.
+over one DynamoDB-style data source; subscriptions-over-JetStream is rung 2). **Slice 1 runs live
+end-to-end** — a SigV4-signed `createTodo` mutation then `getTodo` query round-trips through the shim
+→ open-appsync → a real VTL resolver (autoId + DynamoDB typed marshalling) → the data source → `{data}`
+(verified on-cluster). It stays **experimental**: fidelity is anchored on AWS's *documented* VTL/`$util`
+behavior (the corpus probe, green in CI), **not** diffed against a live AWS AppSync (that needs an AWS
+account), and the slice-1 "not yet" list (subscriptions, multiple data-source types, JS/pipeline
+resolvers, a management API) still applies. See [open-appsync/README.md](../open-appsync/README.md).
 
 Authorization stays "one policy world": the shim authenticates (SigV4 → principal) and runs the
 coarse impersonated `SubjectAccessReview` gate; because open-appsync is our own engine, the shim
