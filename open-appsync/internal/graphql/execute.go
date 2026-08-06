@@ -49,11 +49,15 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	data := map[string]any{}
 	var errs []GqlError
 	for _, sel := range op.selections {
-		key := rootType + "." + sel.name
 		respKey := sel.name
 		if sel.alias != "" {
 			respKey = sel.alias
 		}
+		if sel.name == "__typename" { // GraphQL meta-field: the root type's name
+			data[respKey] = rootType
+			continue
+		}
+		key := rootType + "." + sel.name
 		r, ok := e.resolvers[key]
 		if !ok {
 			errs = append(errs, GqlError{Message: "no resolver for field " + key, Path: []any{respKey}})
