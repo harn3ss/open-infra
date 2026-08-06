@@ -32,9 +32,14 @@ genuinely-useful, provably-faithful slice first; widen only after a probe proves
 - **Slice 1 — VTL over one DynamoDB-style data source.** One real VTL resolver runs faithfully
   end-to-end. Pieces: (1) schema intake, (2) **the VTL engine + `$util`** — the heart, (3) one
   data-source binding, (4) resolver lifecycle glue, (5) the compatibility probe.
-  - **Building now:** piece 2 (the VTL engine + `$util` core) + piece 5 (a docs-anchored corpus),
-    paired first per the handoff (don't build the engine without a probe target in hand). Proven with
-    a mock data source; the GraphQL executor (piece 1/4) and the FerretDB binding (piece 3) follow.
+  - **Done:** piece 2 (the VTL engine + `$util`), piece 4 (the resolver request→execute→response
+    lifecycle), and piece 5 (a docs-anchored corpus) — a real AppSync VTL resolver runs end-to-end
+    against a DynamoDB-style data source and returns the GraphQL result AWS would (proven with the
+    in-memory `dynamodb.MemStore`).
+  - **Next:** piece 3 — the FerretDB binding (translate the VTL-emitted DynamoDB operation onto
+    Mongo/FerretDB, behind the same `dynamodb.Store` interface, integration-tested); piece 1 + a
+    GraphQL query executor (parse SDL, walk selection sets → invoke resolvers); then **deploy** (swap
+    the nginx placeholder for this engine) and light up the end-to-end compatibility probe.
   - **Slice-1 "not yet" (flagged):** subscriptions, multiple data-source types, a management API,
     JavaScript resolvers, pipeline resolvers.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
