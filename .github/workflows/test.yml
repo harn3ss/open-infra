@@ -21,6 +21,7 @@ on:
       - "platform/console/manifests/**"
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
+      - "open-appsync/**" # the VTL engine + resolver probe
       - ".github/workflows/test.yml"
   pull_request:
     paths:
@@ -32,6 +33,7 @@ on:
       - "platform/console/manifests/**"
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
+      - "open-appsync/**" # the VTL engine + resolver probe
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
   workflow_call: {} # callable as a required gate by the build/release workflows
@@ -56,6 +58,7 @@ jobs:
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
+          - open-appsync # the VTL engine + $util + the docs-anchored resolver probe
     name: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v7
