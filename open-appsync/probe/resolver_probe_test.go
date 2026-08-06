@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestResolverProbe_PutThenGet(t *testing.T) {
 	}
 
 	// createTodo(input: {name:"Ada", age:36}) → the written item, id from $util.autoId().
-	created, err := createTodo.Resolve(e, map[string]any{
+	created, err := createTodo.Resolve(context.Background(), e, map[string]any{
 		"args": map[string]any{"input": map[string]any{"name": "Ada", "age": float64(36)}},
 	})
 	if err != nil {
@@ -45,7 +46,7 @@ func TestResolverProbe_PutThenGet(t *testing.T) {
 	}
 
 	// getTodo(id) → the same item, read back through fromDynamoDB un-marshalling.
-	got, err := getTodo.Resolve(e, map[string]any{"args": map[string]any{"id": id}})
+	got, err := getTodo.Resolve(context.Background(), e, map[string]any{"args": map[string]any{"id": id}})
 	if err != nil {
 		t.Fatalf("getTodo: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestResolverProbe_GetMissingIsNull(t *testing.T) {
 		Response: mustTemplate(t, "response.vtl"),
 		Source:   dynamodb.NewMemStore(),
 	}
-	got, err := getTodo.Resolve(engine(), map[string]any{"args": map[string]any{"id": "nope"}})
+	got, err := getTodo.Resolve(context.Background(), engine(), map[string]any{"args": map[string]any{"id": "nope"}})
 	if err != nil {
 		t.Fatalf("getTodo: %v", err)
 	}
@@ -79,12 +80,12 @@ func TestResolverProbe_ValidationAborts(t *testing.T) {
 		Response: mustTemplate(t, "response.vtl"),
 		Source:   store,
 	}
-	_, err := create.Resolve(engine(), map[string]any{"args": map[string]any{"input": map[string]any{}}})
+	_, err := create.Resolve(context.Background(), engine(), map[string]any{"args": map[string]any{"input": map[string]any{}}})
 	if err == nil {
 		t.Fatal("expected the validation resolver to abort with an error")
 	}
 	// Nothing was written.
-	scan, _ := store.Execute(map[string]any{"operation": "Scan"})
+	scan, _ := store.Execute(context.Background(), map[string]any{"operation": "Scan"})
 	if items := scan.(map[string]any)["items"].([]any); len(items) != 0 {
 		t.Fatalf("a rejected mutation must not write; store has %d items", len(items))
 	}
