@@ -68,8 +68,9 @@ func run(logger *slog.Logger) error {
 	fnNS := getenv("FUNCTIONS_NAMESPACE", "default") // namespace kind: Function lives in
 	svcSuffix := getenv("SVC_SUFFIX", "svc.cluster.local")
 	account := getenv("ACCOUNT_ID", "open-infra") // surfaced in STS ARNs
-	graphqlEndpoint := getenv("GRAPHQL_ENDPOINT", "http://hasura.open-infra-graphql.svc.cluster.local:8080")
-	graphqlAdminSecret := os.Getenv("GRAPHQL_ADMIN_SECRET") // engine admin secret (trusts our x-hasura-* headers)
+	// open-appsync engine endpoint (opt-in component `openAppsync`). Our own engine — no admin
+	// secret; the shim conveys the verified principal and open-appsync enforces authz internally.
+	graphqlEndpoint := getenv("GRAPHQL_ENDPOINT", "http://open-appsync.open-infra-open-appsync.svc.cluster.local:80")
 
 	mc, err := newMinioClient()
 	if err != nil {
@@ -88,7 +89,7 @@ func run(logger *slog.Logger) error {
 		"s3":      &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
 		"sts":     &stsHandler{account: account, logger: logger},
 		"lambda":  newLambdaHandler(cs, fnNS, svcSuffix, logger),
-		"appsync": newAppsyncHandler(cs, graphqlEndpoint, graphqlAdminSecret, authzNS, logger),
+		"appsync": newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
