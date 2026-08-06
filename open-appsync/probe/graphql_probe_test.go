@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestGraphQLProbe_MutationThenQuery(t *testing.T) {
 
 	// A real mutation string — inline object argument + selection set.
 	mut := `mutation { createTodo(input: { name: "Ada", age: 36 }) { id name age } }`
-	res := e.Execute(mut, nil)
+	res := e.Execute(context.Background(), mut, nil)
 	if len(res.Errors) != 0 {
 		t.Fatalf("mutation errors: %+v", res.Errors)
 	}
@@ -50,7 +51,7 @@ func TestGraphQLProbe_MutationThenQuery(t *testing.T) {
 
 	// A real query with a $variable + a narrower selection set (only id + name).
 	q := `query GetTodo($id: ID!) { getTodo(id: $id) { id name } }`
-	res = e.Execute(q, map[string]any{"id": id})
+	res = e.Execute(context.Background(), q, map[string]any{"id": id})
 	if len(res.Errors) != 0 {
 		t.Fatalf("query errors: %+v", res.Errors)
 	}
@@ -67,7 +68,7 @@ func TestGraphQLProbe_ValidationErrorEntry(t *testing.T) {
 	e := graphql.New(engine(), map[string]resolver.Resolver{
 		"Mutation.createTodo": {Request: mustCorpus("validate.request.vtl"), Response: "$util.toJson($ctx.result)", Source: store},
 	})
-	res := e.Execute(`mutation { createTodo(input: {}) { id } }`, nil)
+	res := e.Execute(context.Background(), `mutation { createTodo(input: {}) { id } }`, nil)
 	if len(res.Errors) != 1 || res.Errors[0].ErrorType != "BadRequest" {
 		t.Fatalf("expected one BadRequest error, got %+v", res.Errors)
 	}
@@ -78,7 +79,7 @@ func TestGraphQLProbe_ValidationErrorEntry(t *testing.T) {
 
 // An unknown field is a GraphQL error, not a silent empty — honest about what's implemented.
 func TestGraphQLProbe_UnknownField(t *testing.T) {
-	res := newGraphQLEngine().Execute(`query { listAllTheThings { id } }`, nil)
+	res := newGraphQLEngine().Execute(context.Background(), `query { listAllTheThings { id } }`, nil)
 	if len(res.Errors) != 1 {
 		t.Fatalf("expected one error for the unknown field, got %+v", res.Errors)
 	}
