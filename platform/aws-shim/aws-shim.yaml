@@ -245,17 +245,10 @@ spec:
             # the account id surfaced in STS GetCallerIdentity ARNs.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
             - { name: ACCOUNT_ID, value: "open-infra" }
-            # AppSync (GraphQL) → the Hasura engine (components.graphql). The admin secret is read
-            # optionally from this namespace: copy open-infra-graphql/hasura-admin here as
-            # `graphql-admin` to connect the two opt-in components (see docs/aws-shim.md). Absent →
-            # the appsync service still runs but returns 502 until the engine + secret are present.
-            - { name: GRAPHQL_ENDPOINT, value: "http://hasura.open-infra-graphql.svc.cluster.local:8080" }
-            - name: GRAPHQL_ADMIN_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: graphql-admin
-                  key: adminSecret
-                  optional: true
+            # AppSync (GraphQL) → the open-appsync engine (components.openAppsync). Our own engine, so
+            # no admin secret: the shim conveys the verified principal and open-appsync enforces authz
+            # internally. Absent (component disabled) → the appsync service returns 502.
+            - { name: GRAPHQL_ENDPOINT, value: "http://open-appsync.open-infra-open-appsync.svc.cluster.local:80" }
           readinessProbe:
             httpGet: { path: /healthz, port: 4566 }
             initialDelaySeconds: 5
@@ -290,7 +283,7 @@ spec:
 # Egress control — a CiliumNetworkPolicy, not a standard NetworkPolicy, DELIBERATELY.
 #
 # The shim reaches all its backends through ClusterIP Services (MinIO, the kube-apiserver, the
-# Knative kourier gateway for Lambda, the Hasura engine for AppSync). On this cluster Cilium runs
+# Knative kourier gateway for Lambda, the open-appsync engine for AppSync). On this cluster Cilium runs
 # with kube-proxy replacement and bpf-lb-sock=false, so a standard NetworkPolicy evaluates egress
 # against the PRE-DNAT ClusterIP — which a namespaceSelector (backend pods) can't match, so
 # ClusterIP egress is silently dropped as an i/o timeout (verified: Lambda→kourier failed under a
@@ -308,5 +301,5 @@ spec:
   endpointSelector:
     matchLabels: { app: aws-shim }
   egress:
-    # In-cluster services (MinIO / Knative / Hasura) + the kube-apiserver. NOT the outside world.
+    # In-cluster services (MinIO / Knative / open-appsync) + the kube-apiserver. NOT the outside world.
     - toEntities: [cluster, kube-apiserver]

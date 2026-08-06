@@ -39,7 +39,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | RDS (SQL Server–compatible) | drop-in for SQL Server apps | **Babelfish for PostgreSQL** | `engine: babelfish` (TDS 1433 + T-SQL); experimental |
 | OpenSearch (vector) | vector search | **pgvector** | `database.vector: true` |
 | Athena + Glue | serverless SQL over the lake | **DuckDB** (files) or **Trino** + Iceberg REST (tables) | `kind: Query` — see [query.md](query.md) |
-| AppSync | managed GraphQL | **Hasura** on CloudNativePG | via the AWS-SDK shim's `appsync` service; opt-in `components.graphql` — see [aws-shim.md](aws-shim.md) |
+| AppSync | managed GraphQL | **open-appsync** (resolver-first, VTL-faithful) | via the AWS-SDK shim's `appsync` service; opt-in `components.openAppsync`. Engine on a graduation ladder (placeholder today) — see [aws-shim.md](aws-shim.md) |
 | DMS | DB migration + CDC | **Debezium + apply-sink** + Crossplane | `kind: Migration`; full-load / ongoing CDC into a target SQL database — see [migrations.md](migrations.md) |
 | DMS (multi-master) | bidirectional / multi-master replication | **Debezium + apply-sink** (HLC LWW) | `kind: Replication`; sync two+ DBs both ways, across engines — see [replication.md](replication.md) |
 | Glue / Step Functions (data) | visual data-movement pipelines | **drag-and-drop canvas** → Debezium + NATS + apply-sink | `kind: DataFlow`; chain databases / topics / transform functions / buckets; replication, migration, CDC-to-topic & ETL are edge types — see [dataflow.md](dataflow.md) |
