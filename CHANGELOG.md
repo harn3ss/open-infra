@@ -12,11 +12,15 @@ the product's public contract.
   templates, data-source wiring, `$util` helpers), so the engine is **resolver-first and
   VTL-faithful** by design — not GraphQL-over-tables wearing a mask (that would be a leaky
   abstraction the moment a specialist writes a resolver it can't model). open-appsync is on its own
-  graduation ladder (slice 1 = VTL over one DynamoDB-style data source, proven by a probe against
-  *real* AppSync; subscriptions-over-JetStream is rung 2). `components.openAppsync` currently stands
-  up a placeholder that answers with an honest `NotImplemented` GraphQL error — the shim front door
-  and its auth are real and tested; the engine is un-proven until slice 1's probe lands. OFF by
-  default. (Replaces the earlier Hasura-backed AppSync placeholder, now removed — Hasura's
+  graduation ladder (subscriptions-over-JetStream is rung 2). **Slice 1 — VTL over one DynamoDB-style
+  data source — runs live:** `components.openAppsync` deploys the real engine (`cmd/open-appsync`),
+  and on-cluster a SigV4-signed GraphQL client → the shim → open-appsync → a real VTL resolver (with
+  the `$util.dynamodb` typed marshalling, `$util.autoId`, etc.) → the data source (in-memory, or
+  FerretDB for durable) → `{data}` — a `createTodo` mutation + `getTodo` query round-trip verified
+  end-to-end. It stays **experimental**: VTL/`$util` fidelity is anchored on AWS's *documented*
+  behavior (a corpus probe, green in CI), not diffed against a live AWS AppSync; and it's not a full
+  AppSync (no subscriptions / multi-data-source / JS or pipeline resolvers / management API yet). OFF
+  by default. (Replaces the earlier Hasura-backed AppSync placeholder, now removed — Hasura's
   declare-tables model is the wrong fit for resolver-fidelity.)
 - **`kind: HttpApi` — an API-Gateway-style HTTP front door.** Declare a `domain` and a list of
   `path → backend` routes onto `kind: Function` or `kind: Application` backends; the composition
