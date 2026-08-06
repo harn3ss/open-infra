@@ -287,43 +287,26 @@ spec:
       port: 4566
       targetPort: 4566
 ---
-# Egress control. Selecting Egress imposes default-deny-egress on the shim, so every destination it
-# needs is listed: DNS, MinIO's S3 API, and the kube-apiserver (for SAR + User/Secret reads). The
-# apiserver rule is by port only (no ipBlock): on this Cilium/k3s cluster ipBlock CIDR matching is
-# unreliable, and the apiserver is host-network, so a port-scoped allow is the robust form.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+# Egress control — a CiliumNetworkPolicy, not a standard NetworkPolicy, DELIBERATELY.
+#
+# The shim reaches all its backends through ClusterIP Services (MinIO, the kube-apiserver, the
+# Knative kourier gateway for Lambda, the Hasura engine for AppSync). On this cluster Cilium runs
+# with kube-proxy replacement and bpf-lb-sock=false, so a standard NetworkPolicy evaluates egress
+# against the PRE-DNAT ClusterIP — which a namespaceSelector (backend pods) can't match, so
+# ClusterIP egress is silently dropped as an i/o timeout (verified: Lambda→kourier failed under a
+# standard netpol, succeeded with this policy). Cilium's `toEntities` understands cluster identity
+# and resolves the ClusterIP→backend correctly. This is both correct AND a stronger posture: the
+# shim may reach anything IN the cluster (+ the apiserver) but is denied egress to the outside world
+# (verified: an external 1.1.1.1 request is blocked). Per-service micro-segmentation would need
+# Cilium `toServices`; `toEntities: [cluster]` is the robust v1.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
 metadata:
   name: aws-shim-egress
   namespace: open-infra-aws-shim
 spec:
-  podSelector:
+  endpointSelector:
     matchLabels: { app: aws-shim }
-  policyTypes: [Egress]
   egress:
-    # DNS
-    - to:
-        - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: kube-system }
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
-    # MinIO S3 API
-    - to:
-        - namespaceSelector:
-            matchLabels: { kubernetes.io/metadata.name: minio }
-          podSelector:
-            matchLabels: { app: minio }
-      ports:
-        - { protocol: TCP, port: 9000 }
-    # kube-apiserver (SubjectAccessReview + User/Secret reads). Port-scoped; see note above.
-    - ports:
-        - { protocol: TCP, port: 6443 }
-        - { protocol: TCP, port: 443 }
-    # Lambda invoke → Knative Function cluster-local addresses (HTTP). Knative routes an invoke
-    # through the activator (knative-serving) and then to per-revision pods whose location varies
-    # with scale, so this is port-scoped (80/8080) rather than pinned to a single destination —
-    # the same robust form used for the apiserver rule above.
-    - ports:
-        - { protocol: TCP, port: 80 }
-        - { protocol: TCP, port: 8080 }
+    # In-cluster services (MinIO / Knative / Hasura) + the kube-apiserver. NOT the outside world.
+    - toEntities: [cluster, kube-apiserver]
