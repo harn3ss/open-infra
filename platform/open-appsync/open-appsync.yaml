@@ -1,14 +1,13 @@
 # open-appsync — open-infra's resolver-first, VTL-faithful AWS AppSync engine.
 #
-# Opt-in, OFF by default (components.openAppsync). This is the engine the aws-shim's `appsync`
-# service fronts (replacing the earlier GraphQL-over-tables placeholder, which has been removed). The real engine
-# is a resolver-first VTL runtime built on a graduation ladder (slice 1 = VTL over one DynamoDB-style
-# data source, proven by a probe against real AppSync; subscriptions-over-JetStream is rung 2). See
-# open-infra-open-appsync-handoff.md.
+# Opt-in, OFF by default (components.openAppsync). The aws-shim's `appsync` service fronts this
+# engine (SigV4 → coarse IAM gate → forward to /graphql). It is on a graduation ladder: slice 1 is
+# VTL over one DynamoDB-style data source (see open-appsync/README.md + the handoff). Still
+# EXPERIMENTAL / not counted as proven until its end-to-end probe runs on-cluster.
 #
-# WHAT THIS IS RIGHT NOW: a PLACEHOLDER so the shim's front door has somewhere to route while the
-# engine is built. It answers any GraphQL request with an honest "not yet implemented" GraphQL error
-# — never a fake data response. open-appsync is UN-PROVEN until slice 1 lands its compatibility probe.
+# This ships a working engine with a DEMO resolver config (a Todo API) backed by an in-memory data
+# source, so it boots and serves real GraphQL without external deps. For durable data, switch the
+# data source to `dynamodb` and point MONGO_URI at a FerretDB endpoint (see the ConfigMap comment).
 ---
 apiVersion: v1
 kind: Namespace
@@ -17,22 +16,38 @@ metadata:
   labels:
     openinfra.dev/component: open-appsync
 ---
-# The placeholder's response body: a valid GraphQL errors document, so a real GraphQL client parses
-# it cleanly and sees the honest "not implemented" — not a lookalike success.
+# The declarative engine config: config.json (data sources + resolvers) + the VTL templates as
+# sibling files (no escaping). To make it durable: set the data source type to "dynamodb" with a
+# `collection`, and set MONGO_URI on the Deployment to a FerretDB endpoint.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: open-appsync-placeholder
+  name: open-appsync-config
   namespace: open-infra-open-appsync
 data:
-  default.conf: |
-    server {
-      listen 8080;
-      location / {
-        default_type application/json;
-        return 200 '{"errors":[{"errorType":"NotImplemented","message":"open-appsync is a placeholder — the resolver-first VTL engine (slice 1) is not yet implemented"}]}';
-      }
+  config.json: |
+    {
+      "dataSources": [{ "name": "todos", "type": "memory" }],
+      "resolvers": [
+        { "type": "Query", "field": "getTodo", "dataSource": "todos", "request": "getTodo.request.vtl", "response": "response.vtl" },
+        { "type": "Mutation", "field": "createTodo", "dataSource": "todos", "request": "createTodo.request.vtl", "response": "response.vtl" }
+      ]
     }
+  getTodo.request.vtl: |
+    {
+      "version": "2018-05-29",
+      "operation": "GetItem",
+      "key": { "id": $util.dynamodb.toDynamoDBJson($ctx.args.id) }
+    }
+  createTodo.request.vtl: |
+    {
+      "version": "2018-05-29",
+      "operation": "PutItem",
+      "key": { "id": $util.dynamodb.toDynamoDBJson($util.autoId()) },
+      "attributeValues": $util.dynamodb.toMapValuesJson($ctx.args.input)
+    }
+  response.vtl: |
+    $util.toJson($ctx.result)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -50,31 +65,41 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
       containers:
         - name: engine
-          # Placeholder server (unprivileged nginx, listens :8080 as a non-root user). Swapped for
-          # the real open-appsync engine image when slice 1 is built.
-          image: nginxinc/nginx-unprivileged:1.27-alpine
+          image: ghcr.io/harn3ss/open-infra-open-appsync:latest
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
+          env:
+            - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: CONFIG_DIR, value: "/etc/open-appsync" }
+            # For durable data, add: MONGO_URI (a FerretDB endpoint) + MONGO_DB, and switch the
+            # config's data source type to "dynamodb" with a collection.
           volumeMounts:
-            - { name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf }
+            - { name: config, mountPath: /etc/open-appsync }
           readinessProbe:
-            httpGet: { path: /graphql, port: 8080 }
+            httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 3
             periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
           securityContext:
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
           resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { cpu: 200m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 256Mi }
       volumes:
-        - name: conf
+        - name: config
           configMap:
-            name: open-appsync-placeholder
+            name: open-appsync-config
 ---
 apiVersion: v1
 kind: Service
