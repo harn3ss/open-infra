@@ -36,10 +36,14 @@ genuinely-useful, provably-faithful slice first; widen only after a probe proves
     lifecycle), and piece 5 (a docs-anchored corpus) — a real AppSync VTL resolver runs end-to-end
     against a DynamoDB-style data source and returns the GraphQL result AWS would (proven with the
     in-memory `dynamodb.MemStore`).
-  - **Next:** piece 3 — the FerretDB binding (translate the VTL-emitted DynamoDB operation onto
-    Mongo/FerretDB, behind the same `dynamodb.Store` interface, integration-tested); piece 1 + a
-    GraphQL query executor (parse SDL, walk selection sets → invoke resolvers); then **deploy** (swap
-    the nginx placeholder for this engine) and light up the end-to-end compatibility probe.
+  - **Also done:** the GraphQL executor (`internal/graphql`) — a real query/mutation string drives
+    the resolvers (field→resolver dispatch, arguments + `$variables`, selection-set projection,
+    `{data, errors}` with resolver-thrown `errorType`). The whole stack — schema intake → execute →
+    resolver lifecycle → `$util` → data source — runs from an actual GraphQL operation.
+  - **Next:** piece 3 — the FerretDB-backed `dynamodb.Store` (translate the VTL-emitted DynamoDB
+    operation onto Mongo/FerretDB, same interface, integration-tested) for durable real data; then
+    the engine HTTP server (`cmd/open-appsync`, POST /graphql) + image + manifest to **deploy** (swap
+    the nginx placeholder), so the shim's `appsync` service fronts the real engine end-to-end.
   - **Slice-1 "not yet" (flagged):** subscriptions, multiple data-source types, a management API,
     JavaScript resolvers, pipeline resolvers.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
