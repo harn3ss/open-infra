@@ -57,9 +57,16 @@ genuinely-useful, provably-faithful slice first; widen only after a probe proves
 
 ## Status
 
-**UN-PROVEN.** The deployed component (`components.openAppsync`) is currently a placeholder that
-returns an honest `NotImplemented` GraphQL error. This module is slice 1 under construction; it does
-not count as proven until its probe is green.
+**EXPERIMENTAL — slice 1 runs live end-to-end.** The deployed component (`components.openAppsync`)
+is the real engine (`cmd/open-appsync`, a demo Todo API). Verified on-cluster: a SigV4-signed GraphQL
+client → the aws-shim's `appsync` service → open-appsync → a real VTL resolver → the data source →
+`{data}` (a `createTodo` mutation then `getTodo` query round-trip; wrong signature → 401). The
+docs-anchored VTL/`$util` corpus probe is green in CI.
+
+Honest limits: fidelity is anchored on AWS's *documented* behavior, **not diffed against a live AWS
+AppSync** (that needs an AWS account). And this is **not a full AppSync** — the slice-1 "not yet"
+list (subscriptions, multiple data-source types, JavaScript/pipeline resolvers, a management API)
+still applies. Each widening graduates behind its own probe.
 
 ## Layout
 
