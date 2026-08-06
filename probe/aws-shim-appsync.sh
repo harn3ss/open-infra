@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Compatibility probe for the aws-shim AppSync (GraphQL) surface (design handoff §8).
 #
-# Signs a REAL SigV4 GraphQL request (service `appsync`) and asserts it returns a GraphQL data
-# response through the shim → Hasura engine, plus the negative: a wrong secret is rejected as 401
-# UnauthorizedException. AppSync's data plane has no aws-CLI command, so this embeds a stdlib SigV4
-# signer (python3 + urllib — no external deps), which is exactly how an IAM-auth GraphQL client signs.
+# Signs a REAL SigV4 GraphQL request (service `appsync`) and asserts the FRONT DOOR works: the
+# request is authenticated + passes the coarse IAM gate + reaches the open-appsync engine, which
+# answers with a GraphQL-shaped body — plus the negative: a wrong secret is rejected as 401
+# UnauthorizedException. Data/resolver fidelity is open-appsync's OWN slice-1 probe, not this one.
+# AppSync's data plane has no aws-CLI command, so this embeds a stdlib SigV4 signer (python3 +
+# urllib — no external deps), which is exactly how an IAM-auth GraphQL client signs.
 #
-# On-demand — needs the shim AND the GraphQL engine (`components.graphql`) with its admin secret
-# wired into the shim namespace (see docs/aws-shim.md). Exit 0 = pass, 1 = a real failure,
-# 42 = INCONCLUSIVE (engine not deployed/wired). Mirrors probe/aws-shim-s3.sh.
+# On-demand — needs the shim AND the open-appsync engine (`components.openAppsync`). Exit 0 = pass,
+# 1 = a real failure, 42 = INCONCLUSIVE (engine not deployed). Mirrors probe/aws-shim-s3.sh.
 #
 #   SHIM_ENDPOINT=http://localhost:4566 ./probe/aws-shim-appsync.sh
 set -euo pipefail
@@ -85,12 +86,18 @@ read -r AK SK <<<"$(mint_key "appsync-probe" "powerusers")"
 [ -n "$AK" ] && [ -n "$SK" ] || inconclusive "failed to mint a key"
 sleep 2
 
-log "signed GraphQL introspection ({ __typename }) through the shim → engine"
+# This probe validates the FRONT DOOR: a signed GraphQL request is authenticated + passes the
+# coarse IAM gate + reaches the open-appsync engine, which answers with a GraphQL-shaped body. It
+# deliberately does NOT assert resolver/data fidelity — that is open-appsync's own slice-1 probe
+# (VTL over a data source, run against real AppSync). Against the placeholder engine the body is an
+# honest {errors:[NotImplemented]}; a real slice-1 engine returns {data}. Either is a valid GraphQL
+# response and proves the shim path.
+log "signed GraphQL request through the shim → open-appsync engine"
 OUT="$(AK="$AK" SK="$SK" EP="$ENDPOINT" HOST="$HOSTHDR" BODY='{"query":"{ __typename }"}' python3 "$WORK/sign.py")"
-echo "$OUT" | grep -q '^STATUS 502' && inconclusive "shim returned 502 — the GraphQL engine (components.graphql) is not deployed/wired"
+echo "$OUT" | grep -q '^STATUS 502' && inconclusive "shim returned 502 — the open-appsync engine (components.openAppsync) is not deployed"
 echo "$OUT" | grep -q '^STATUS 200' || fail "GraphQL request did not return 200:\n$OUT"
-echo "$OUT" | grep -q '"data"' || fail "GraphQL response had no data field (not a valid GraphQL result):\n$OUT"
-log "  ✓ GraphQL data response through the full path: $(echo "$OUT" | tail -1)"
+echo "$OUT" | grep -Eq '"data"|"errors"' || fail "response was not a GraphQL-shaped document (no data/errors):\n$OUT"
+log "  ✓ signed request reached the engine and got a GraphQL response: $(echo "$OUT" | tail -1)"
 
 log "negative: a valid key ID with a WRONG secret must be rejected (401)"
 NEG="$(AK="$AK" SK="wrong-secret" EP="$ENDPOINT" HOST="$HOSTHDR" python3 "$WORK/sign.py")"

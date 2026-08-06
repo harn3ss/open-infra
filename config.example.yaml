@@ -114,4 +114,4 @@ components:
   velero: true                 # scheduled backups → MinIO (node-agent fs backups)
   virtualization: true         # KubeVirt + CDI — kind: VirtualMachine (EC2-style VMs); needs /dev/kvm
   awsShim: false               # AWS-SDK interception shim (S3/STS/Lambda/AppSync) — experimental, opt-in, OFF by default
-  graphql: false               # Hasura GraphQL engine (the backend the shim's AppSync surface fronts) — opt-in, OFF by default
+  openAppsync: false           # open-appsync — resolver-first AppSync engine the shim's AppSync surface fronts (placeholder; opt-in, OFF)

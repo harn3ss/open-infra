@@ -11,36 +11,37 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// appsyncHandler fronts AWS AppSync's data plane (managed GraphQL) over a real GraphQL engine
-// (Hasura, over the managed Postgres). AppSync's data plane IS GraphQL-over-HTTPS: an SDK/Amplify
-// client with IAM auth signs a `POST {query, variables}` with SigV4 (service "appsync"); the shim
-// verifies that signature, then forwards the GraphQL body to the engine's /v1/graphql and returns
-// its response verbatim. GraphQL response shape (`{data, errors}`) is identical between AppSync and
-// the engine, so a GraphQL client can't tell the difference.
+// appsyncHandler fronts AWS AppSync's data plane over open-infra's own AppSync engine, "open-appsync"
+// (opt-in component `openAppsync`). open-appsync is resolver-first and VTL-faithful — the authoring
+// model AppSync-locked teams actually depend on — NOT a GraphQL-over-tables engine wearing a mask.
+// (An earlier drop fronted a GraphQL-over-tables placeholder here; it was the wrong model for
+// resolver fidelity and has been removed. See open-infra-open-appsync-handoff.md.)
 //
-// Authorization model (honest about the split): the SHIM authenticates (SigV4 → principal) and runs
-// a coarse platform-membership gate; the ENGINE authorizes per operation. The shim presents the
-// engine's admin secret (proving it is the trusted gateway) AND a NON-admin x-hasura-role derived
-// from the principal plus x-hasura-user-id — so the engine applies that role's row/column
-// permissions. The shim never lets a caller act as the engine admin. Per-role mapping and the
-// AppSync *management* API (schema/resolver CRUD) are the flagged graduations; v1 is the data plane.
+// An SDK/Amplify client with IAM auth signs a `POST {query, variables}` with SigV4 (service
+// `appsync`); the shim verifies that signature (router), runs the coarse platform-membership gate,
+// and forwards the GraphQL body to the engine. Three disciplines are load-bearing:
+//   - the SigV4 verification + the impersonated coarse IAM gate ("one policy world, four front doors");
+//   - the fresh-upstream-request discipline: a brand-new request is built so NO client header is ever
+//     forwarded to the engine (an attacker can't smuggle an identity/role/secret header);
+//   - component-gating: engine absent → 502; OFF unless explicitly enabled.
+// open-appsync is our OWN engine, so the shim conveys the verified principal as its auth context
+// (X-OpenInfra-User) and open-appsync enforces fine-grained authz internally against the same
+// principals — no foreign admin secret, no vendor-specific role header.
 type appsyncHandler struct {
-	cs          kubernetes.Interface
-	client      *http.Client
-	endpoint    string // GraphQL engine base URL (…/v1/graphql is appended)
-	adminSecret string // engine admin secret; presented so the engine trusts our x-hasura-* headers
-	authzNS     string // namespace the coarse platform-membership gate is evaluated in
-	logger      *slog.Logger
+	cs       kubernetes.Interface
+	client   *http.Client
+	endpoint string // open-appsync engine base URL (…/graphql is appended)
+	authzNS  string // namespace the coarse platform-membership gate is evaluated in
+	logger   *slog.Logger
 }
 
-func newAppsyncHandler(cs kubernetes.Interface, endpoint, adminSecret, authzNS string, logger *slog.Logger) *appsyncHandler {
+func newAppsyncHandler(cs kubernetes.Interface, endpoint, authzNS string, logger *slog.Logger) *appsyncHandler {
 	return &appsyncHandler{
-		cs:          cs,
-		client:      &http.Client{Timeout: 30 * time.Second},
-		endpoint:    endpoint,
-		adminSecret: adminSecret,
-		authzNS:     authzNS,
-		logger:      logger,
+		cs:       cs,
+		client:   &http.Client{Timeout: 30 * time.Second},
+		endpoint: endpoint,
+		authzNS:  authzNS,
+		logger:   logger,
 	}
 }
 
@@ -56,7 +57,8 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	}
 
 	// Coarse platform-membership gate via the shared impersonated SubjectAccessReview — one policy
-	// world. Fine-grained (per-type/row) authorization is delegated to the engine via x-hasura-role.
+	// world. Fine-grained (per-type/field/resolver) authorization lives INSIDE open-appsync, which
+	// resolves the same principal conveyed below.
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "get", "openinfra.dev", "applications", h.authzNS, ""); !allowed {
 		h.logger.Warn("appsync denied", "user", claims.Sub, "reason", reason)
 		writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
@@ -64,20 +66,18 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		return
 	}
 
-	target := strings.TrimRight(h.endpoint, "/") + "/v1/graphql"
+	// Fresh upstream request — never forward client headers. The GraphQL body streams straight
+	// through; the verified principal is conveyed as open-appsync's auth context.
+	target := strings.TrimRight(h.endpoint, "/") + "/graphql"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, r.Body)
 	if err != nil {
 		writeAppsyncError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not build upstream request")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	// Present the admin secret so the engine trusts the identity headers, then act AS a non-admin
-	// role scoped to this principal — the engine enforces that role's permissions.
-	if h.adminSecret != "" {
-		req.Header.Set("x-hasura-admin-secret", h.adminSecret)
+	if claims.Sub != "" {
+		req.Header.Set("X-OpenInfra-User", claims.Sub)
 	}
-	req.Header.Set("x-hasura-role", hasuraRole(claims))
-	req.Header.Set("x-hasura-user-id", claims.Sub)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -96,13 +96,6 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// hasuraRole maps an open-infra principal onto a GraphQL-engine role. v1 deliberately NEVER returns
-// the engine's admin role — every shim caller acts as a bounded role, so no principal can gain
-// admin over the engine through the shim. Per-group role mapping is a flagged graduation.
-func hasuraRole(_ iam.Claims) string {
-	return "user"
-}
-
 // writeAppsyncError writes AppSync's error dialect: a GraphQL-style JSON `errors` array carrying an
 // AWS `errorType`, which both GraphQL clients and the AppSync SDK can parse.
 func writeAppsyncError(w http.ResponseWriter, status int, errorType, requestID, message string) {
@@ -110,7 +103,6 @@ func writeAppsyncError(w http.ResponseWriter, status int, errorType, requestID, 
 	w.Header().Set("x-amzn-ErrorType", errorType)
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)
-	// Minimal hand-rolled JSON to avoid a struct just for errors; message/errorType are controlled.
 	_, _ = io.WriteString(w, `{"errors":[{"errorType":"`+errorType+`","message":"`+jsonEscape(message)+`"}]}`)
 }
 
