@@ -7,10 +7,17 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
-- **A GraphQL engine (Hasura) — the backend behind the shim's AppSync surface (opt-in).**
-  `components.graphql: true` stands up Hasura over a dedicated CloudNativePG Postgres. It's a real
-  GraphQL engine (managed via Hasura), so the shim's AppSync data-plane is a genuine
-  SigV4-authenticated path to a real backend, not an emulator. OFF by default.
+- **open-appsync — open-infra's own AppSync engine (opt-in; placeholder today, not yet proven).**
+  The AppSync surface is aimed at teams locked into AWS AppSync by their resolver investment (VTL
+  templates, data-source wiring, `$util` helpers), so the engine is **resolver-first and
+  VTL-faithful** by design — not GraphQL-over-tables wearing a mask (that would be a leaky
+  abstraction the moment a specialist writes a resolver it can't model). open-appsync is on its own
+  graduation ladder (slice 1 = VTL over one DynamoDB-style data source, proven by a probe against
+  *real* AppSync; subscriptions-over-JetStream is rung 2). `components.openAppsync` currently stands
+  up a placeholder that answers with an honest `NotImplemented` GraphQL error — the shim front door
+  and its auth are real and tested; the engine is un-proven until slice 1's probe lands. OFF by
+  default. (Replaces the earlier Hasura-backed AppSync placeholder, now removed — Hasura's
+  declare-tables model is the wrong fit for resolver-fidelity.)
 - **`kind: HttpApi` — an API-Gateway-style HTTP front door.** Declare a `domain` and a list of
   `path → backend` routes onto `kind: Function` or `kind: Application` backends; the composition
   renders one Traefik Ingress with cert-manager TLS. It's the genuine capability expressed as a
@@ -51,13 +58,15 @@ the product's public contract.
   error dialect. Services whose backend speaks a different wire protocol (DynamoDB→Mongo, …) are
   deliberately **not** stubbed — they return an honest `501` and graduate the same gated way (built →
   probed → counted), because narrow and proven beats broad and hand-wavy.
-- **AppSync (GraphQL) is now a fronted service.** The shim's `appsync` handler SigV4-verifies a
-  GraphQL `POST {query,variables}` and proxies it to the Hasura engine (`components.graphql`),
-  returning the response verbatim. Authorization is split: the shim authenticates + runs a coarse
-  platform gate, then presents the engine admin secret with a **non-admin** `x-hasura-role` +
-  `x-hasura-user-id` so Hasura enforces per-role permissions — no caller can act as engine admin
-  through the shim. Data plane only in v1 (schemas managed in Hasura); the AppSync management API is
-  a flagged graduation. See [docs/aws-shim.md](docs/aws-shim.md) for wiring the two opt-in components.
+- **AppSync (GraphQL) is a fronted service — front door proven, engine (open-appsync) not yet.**
+  The shim's `appsync` handler SigV4-verifies a GraphQL `POST {query,variables}`, runs the coarse
+  impersonated `SubjectAccessReview` gate, and forwards to the **open-appsync** engine
+  (`components.openAppsync`), conveying the verified principal as the engine's auth context
+  (`X-OpenInfra-User`) and never forwarding client headers. open-appsync is our own engine, so it
+  enforces fine-grained authz internally against the same principals — no foreign admin secret, no
+  vendor role header. The front-door auth is unit-tested; the engine is a placeholder and **un-proven**
+  until its slice-1 compatibility probe (VTL over a data source, against real AppSync) lands. See
+  [docs/aws-shim.md](docs/aws-shim.md).
 
 ### Observability
 - **The audit trail is now observable — a console "Audit" view (CloudTrail).** The

@@ -1,0 +1,91 @@
+# open-appsync — open-infra's resolver-first, VTL-faithful AWS AppSync engine.
+#
+# Opt-in, OFF by default (components.openAppsync). This is the engine the aws-shim's `appsync`
+# service fronts (replacing the earlier GraphQL-over-tables placeholder, which has been removed). The real engine
+# is a resolver-first VTL runtime built on a graduation ladder (slice 1 = VTL over one DynamoDB-style
+# data source, proven by a probe against real AppSync; subscriptions-over-JetStream is rung 2). See
+# open-infra-open-appsync-handoff.md.
+#
+# WHAT THIS IS RIGHT NOW: a PLACEHOLDER so the shim's front door has somewhere to route while the
+# engine is built. It answers any GraphQL request with an honest "not yet implemented" GraphQL error
+# — never a fake data response. open-appsync is UN-PROVEN until slice 1 lands its compatibility probe.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-open-appsync
+  labels:
+    openinfra.dev/component: open-appsync
+---
+# The placeholder's response body: a valid GraphQL errors document, so a real GraphQL client parses
+# it cleanly and sees the honest "not implemented" — not a lookalike success.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-appsync-placeholder
+  namespace: open-infra-open-appsync
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      location / {
+        default_type application/json;
+        return 200 '{"errors":[{"errorType":"NotImplemented","message":"open-appsync is a placeholder — the resolver-first VTL engine (slice 1) is not yet implemented"}]}';
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-appsync
+  namespace: open-infra-open-appsync
+  labels: { app: open-appsync }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: open-appsync }
+  template:
+    metadata:
+      labels: { app: open-appsync }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: engine
+          # Placeholder server (unprivileged nginx, listens :8080 as a non-root user). Swapped for
+          # the real open-appsync engine image when slice 1 is built.
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf }
+          readinessProbe:
+            httpGet: { path: /graphql, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: conf
+          configMap:
+            name: open-appsync-placeholder
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-appsync
+  namespace: open-infra-open-appsync
+  labels: { app: open-appsync }
+spec:
+  type: ClusterIP
+  selector: { app: open-appsync }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

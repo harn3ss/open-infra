@@ -27,23 +27,32 @@ func csWithSAR(allowed bool) *fake.Clientset {
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestAppsync_ProxiesGraphQLWithBoundedRole(t *testing.T) {
-	// A stand-in GraphQL engine that records what the shim forwarded and returns a GraphQL result.
-	var gotBody, gotRole, gotUser, gotAdmin string
+// TestAppsync_ForwardsToEngine_NeverClientHeaders proves the two invariants that survive the
+// engine swap: the GraphQL body reaches open-appsync's /graphql with the verified principal as its
+// auth context, and NO client-supplied header is ever forwarded (a fresh upstream request) — so an
+// attacker can't smuggle an identity/role/secret header through to the engine.
+func TestAppsync_ForwardsToEngine_NeverClientHeaders(t *testing.T) {
+	var gotBody, gotUser, gotPath string
+	var forwardedSmuggled bool
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
-		gotRole = r.Header.Get("x-hasura-role")
-		gotUser = r.Header.Get("x-hasura-user-id")
-		gotAdmin = r.Header.Get("x-hasura-admin-secret")
+		gotPath = r.URL.Path
+		gotUser = r.Header.Get("X-OpenInfra-User")
+		// The client tried to smuggle these; the fresh request must NOT carry them.
+		if r.Header.Get("X-Smuggled-Secret") != "" || r.Header.Get("X-Smuggled-Impersonate") != "" {
+			forwardedSmuggled = true
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"data":{"users":[{"id":"1"}]}}`)
 	}))
 	defer engine.Close()
 
-	h := newAppsyncHandler(csWithSAR(true), engine.URL, "the-admin-secret", "default", discardLogger())
+	h := newAppsyncHandler(csWithSAR(true), engine.URL, "default", discardLogger())
 	body := `{"query":"{ users { id } }"}`
 	req := httptest.NewRequest("POST", "http://appsync/graphql", strings.NewReader(body))
+	req.Header.Set("X-Smuggled-Secret", "attacker-tries-secret") // must be dropped
+	req.Header.Set("X-Smuggled-Impersonate", "root")             // must be dropped
 	w := httptest.NewRecorder()
 	h.serve(w, req, iam.Claims{Sub: "erin", Groups: []string{"openinfra:admins", "openinfra:users"}}, "req-1")
 
@@ -56,16 +65,14 @@ func TestAppsync_ProxiesGraphQLWithBoundedRole(t *testing.T) {
 	if gotBody != body {
 		t.Errorf("engine got body %q, want %q", gotBody, body)
 	}
-	// The shim presents the admin secret (trusted gateway) but acts as a NON-admin role — even for
-	// an openinfra:admins principal, it must never be the engine's `admin` role.
-	if gotAdmin != "the-admin-secret" {
-		t.Errorf("admin secret not forwarded: %q", gotAdmin)
-	}
-	if gotRole == "admin" || gotRole == "" {
-		t.Errorf("x-hasura-role must be a bounded non-admin role, got %q", gotRole)
+	if gotPath != "/graphql" {
+		t.Errorf("engine ingress path = %q, want /graphql", gotPath)
 	}
 	if gotUser != "erin" {
-		t.Errorf("x-hasura-user-id=%q want erin", gotUser)
+		t.Errorf("X-OpenInfra-User=%q want erin (verified principal as auth context)", gotUser)
+	}
+	if forwardedSmuggled {
+		t.Error("a client-supplied header was forwarded to the engine — fresh-request discipline broken")
 	}
 }
 
@@ -77,7 +84,7 @@ func TestAppsync_CoarseGateDenies(t *testing.T) {
 	}))
 	defer engine.Close()
 
-	h := newAppsyncHandler(csWithSAR(false), engine.URL, "s", "default", discardLogger())
+	h := newAppsyncHandler(csWithSAR(false), engine.URL, "default", discardLogger())
 	req := httptest.NewRequest("POST", "http://appsync/graphql", strings.NewReader(`{"query":"{x}"}`))
 	w := httptest.NewRecorder()
 	h.serve(w, req, iam.Claims{Sub: "nobody"}, "r")
@@ -88,7 +95,7 @@ func TestAppsync_CoarseGateDenies(t *testing.T) {
 }
 
 func TestAppsync_NonPOST(t *testing.T) {
-	h := newAppsyncHandler(csWithSAR(true), "http://unused", "s", "default", discardLogger())
+	h := newAppsyncHandler(csWithSAR(true), "http://unused", "default", discardLogger())
 	req := httptest.NewRequest("GET", "http://appsync/graphql", nil)
 	w := httptest.NewRecorder()
 	h.serve(w, req, iam.Claims{Sub: "erin"}, "r")
@@ -98,7 +105,7 @@ func TestAppsync_NonPOST(t *testing.T) {
 }
 
 func TestAppsync_AuthFailureDialect(t *testing.T) {
-	h := newAppsyncHandler(csWithSAR(true), "http://unused", "s", "default", discardLogger())
+	h := newAppsyncHandler(csWithSAR(true), "http://unused", "default", discardLogger())
 	w := httptest.NewRecorder()
 	h.authFailure(w, httptest.NewRequest("POST", "http://appsync/", nil), "r")
 	if w.Code != http.StatusUnauthorized {

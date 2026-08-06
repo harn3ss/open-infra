@@ -95,7 +95,7 @@ incl() {
   fi
 }
 incl awsShim "aws-shim/*"
-incl graphql "graphql/*" # Hasura GraphQL engine (backs the shim's AppSync surface)
+incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSync surface)
 
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
