@@ -11,6 +11,7 @@
 package resolver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -29,7 +30,7 @@ type Resolver struct {
 // Resolve runs the request→execute→response cycle. ctx is the resolver context ($ctx): it must
 // carry "args" (and optionally identity/source); Resolve sets ctx["result"] to the data-source
 // result before rendering the response template, exactly as AppSync does.
-func (r Resolver) Resolve(e *vtl.Engine, ctx map[string]any) (any, error) {
+func (r Resolver) Resolve(reqCtx context.Context, e *vtl.Engine, ctx map[string]any) (any, error) {
 	// 1. Request mapping template → a data-source operation document.
 	reqOut, err := e.Render(r.Request, ctx)
 	if err != nil {
@@ -41,7 +42,7 @@ func (r Resolver) Resolve(e *vtl.Engine, ctx map[string]any) (any, error) {
 	}
 
 	// 2. Execute against the data source; its (un-marshalled) result becomes $ctx.result.
-	result, err := r.Source.Execute(op)
+	result, err := r.Source.Execute(reqCtx, op)
 	if err != nil {
 		return nil, err
 	}

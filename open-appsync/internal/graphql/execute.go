@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"context"
 	"errors"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
@@ -35,7 +36,7 @@ type Result struct {
 // Execute parses and runs an operation, returning the GraphQL {data, errors} response. Each
 // top-level field runs its resolver (request→execute→response); a resolver error becomes a GraphQL
 // error with that field's path and its data set to null, exactly as AppSync surfaces it.
-func (e *Engine) Execute(query string, variables map[string]any) Result {
+func (e *Engine) Execute(ctx context.Context, query string, variables map[string]any) Result {
 	op, err := parseQuery(query)
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error()}}}
@@ -59,8 +60,8 @@ func (e *Engine) Execute(query string, variables map[string]any) Result {
 			data[respKey] = nil
 			continue
 		}
-		ctx := map[string]any{"args": evalArgs(sel.args, variables)}
-		res, rerr := r.Resolve(e.vtl, ctx)
+		gctx := map[string]any{"args": evalArgs(sel.args, variables)}
+		res, rerr := r.Resolve(ctx, e.vtl, gctx)
 		if rerr != nil {
 			ge := GqlError{Message: rerr.Error(), Path: []any{respKey}}
 			var te *vtl.ThrowError
