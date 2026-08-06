@@ -1,0 +1,9 @@
+#if($util.isNullOrEmpty($ctx.args.input.name))
+  $util.error("name is required", "BadRequest")
+#end
+{
+  "version": "2018-05-29",
+  "operation": "PutItem",
+  "key": { "id": $util.dynamodb.toDynamoDBJson($util.autoId()) },
+  "attributeValues": $util.dynamodb.toMapValuesJson($ctx.args.input)
+}
