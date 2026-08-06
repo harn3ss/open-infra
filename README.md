@@ -196,8 +196,8 @@ else uses.
 The shim is a **router with pluggable per-service handlers** — one front door, many domain experts,
 dispatched by the service each client signs for. It fronts four services today: **S3** (over MinIO),
 **STS** `GetCallerIdentity`, **Lambda** `Invoke` over `kind: Function` (Knative), and **AppSync**
-(GraphQL, over **open-appsync** — a resolver-first, VTL-faithful engine on its own graduation ladder,
-a placeholder today and **not yet proven**). Only **S3** carries the end-to-end compatibility probe
+(GraphQL, over **open-appsync** — a resolver-first, VTL-faithful engine on its own graduation ladder;
+slice 1 runs live but it's **experimental**, not a full AppSync). Only **S3** carries the end-to-end compatibility probe
 so far — real AWS SDK calls asserting byte-identical put/get plus the negatives that earn the trust (a
 wrong secret rejected, a read-only principal's write denied); STS and Lambda are unit-tested and
 verified live, and each graduates to that same probe bar before it counts as proven. Services whose
