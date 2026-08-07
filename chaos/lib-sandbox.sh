@@ -260,6 +260,36 @@ sandbox_teardown_stream() {
   fi
 }
 
+# ---- Subscription variant (subscription-reconnect): open-appsync → JetStream, no-loss oracle ----
+
+# Provision a 2-replica open-appsync engine wired to the platform NATS JetStream, serving a
+# createTodo mutation that triggers an onCreateTodo subscription. Blocks until it is Available.
+sandbox_provision_appsync() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning open-appsync engine (2 replicas → platform NATS JetStream)"
+  kubectl apply -f "$HERE/sandbox/appsync-engine.yaml"
+  kubectl -n "$NS" rollout status deploy/open-appsync-chaos --timeout="${APPSYNC_ROLLOUT_TIMEOUT:-120s}"
+}
+
+# Messages currently on the subscription subject's JetStream stream (authoritative, O(1) — the same
+# nats-box pattern as sandbox_stream_msg_count).
+sandbox_appsync_msg_count() {
+  kubectl -n nats run nats-appsync-cnt-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+    sh -c "nats --server=nats://nats.nats.svc:4222 stream info ${SUB_STREAM:-open_appsync_subscriptions} --json 2>/dev/null | tr ',' '\n' | grep -oE '\"messages\": *[0-9]+' | grep -oE '[0-9]+' | head -1" 2>/dev/null \
+    | grep -oE '[0-9]+' | head -1
+}
+
+sandbox_teardown_appsync() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down open-appsync engine"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/appsync-engine.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    # Return the JetStream stream so it doesn't linger between runs (the engine recreates it on boot).
+    kubectl -n nats run nats-appsync-rm-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+      nats --server=nats://nats.nats.svc:4222 stream rm "${SUB_STREAM:-open_appsync_subscriptions}" -f >/dev/null 2>&1 || true
+  fi
+}
+
 # ---- Deny variant (security-deny): egress fence + negative-invariant oracle ------
 
 # Provision svc-allowed + svc-forbidden + the two SecurityGroups, wait both apps Ready, and deploy
