@@ -59,6 +59,24 @@ spec:
                   type: string
                   default: open_appsync
                   description: "FerretDB database name for dynamodb data sources."
+                limits:
+                  type: object
+                  description: "Hostile-load guards. ON by default even if omitted; a maxDepth/maxCost of 0 keeps the safe default, a negative value opts out of that guard."
+                  properties:
+                    maxDepth:
+                      type: integer
+                      description: "Reject queries whose selection nesting exceeds this (default 10; negative disables)."
+                    maxCost:
+                      type: integer
+                      description: "Reject queries with more than this many fields (default 1000; negative disables)."
+                    persistedOnly:
+                      type: boolean
+                      description: "When true, only pre-registered query documents in persistedQueries run — the strongest posture for a fixed-client deployment."
+                    persistedQueries:
+                      type: array
+                      description: "Allow-listed query documents (for persistedOnly mode)."
+                      items:
+                        type: string
                 dataSources:
                   type: array
                   description: "The data sources resolvers bind to."
@@ -79,11 +97,11 @@ spec:
                         description: "dynamodb: the FerretDB collection (the 'table')."
                 resolvers:
                   type: array
-                  description: "Field → (runtime + data source) bindings. Each carries its request/response mapping templates inline."
+                  description: "Field bindings. A resolver is EITHER a unit resolver (dataSource + request + response) OR a pipeline resolver (functions[], with optional before/after). Malformed resolvers fail closed at load."
                   minItems: 1
                   items:
                     type: object
-                    required: [type, field, dataSource, request, response]
+                    required: [type, field]
                     properties:
                       type:
                         type: string
@@ -92,19 +110,44 @@ spec:
                       field:
                         type: string
                         description: "The GraphQL field name, e.g. getTodo."
-                      dataSource:
-                        type: string
-                        description: "Name of a spec.dataSources entry."
                       runtime:
                         type: string
                         default: appsync-vtl
-                        description: "The resolver runtime (the §2.5 extension point). Today: appsync-vtl. A resolver author's VTL is byte-for-byte identical here — zero retraining."
+                        description: "The resolver runtime (the extension point). Today: appsync-vtl. A resolver author's VTL is byte-for-byte identical here — zero retraining."
+                      dataSource:
+                        type: string
+                        description: "Unit resolver: name of a spec.dataSources entry."
                       request:
                         type: string
-                        description: "The request mapping template source (VTL for appsync-vtl)."
+                        description: "Unit resolver: the request mapping template source (VTL for appsync-vtl)."
                       response:
                         type: string
-                        description: "The response mapping template source (VTL for appsync-vtl)."
+                        description: "Unit resolver: the response mapping template source."
+                      before:
+                        type: string
+                        description: "Pipeline resolver: the before mapping template (sets $ctx.stash / may abort; touches no data source)."
+                      after:
+                        type: string
+                        description: "Pipeline resolver: the after mapping template (shapes the final value from $ctx.prev.result)."
+                      functions:
+                        type: array
+                        description: "Pipeline resolver: ordered functions; each function's response becomes $ctx.prev.result for the next."
+                        items:
+                          type: object
+                          required: [dataSource, request, response]
+                          properties:
+                            dataSource:
+                              type: string
+                              description: "Name of a spec.dataSources entry this function targets."
+                            runtime:
+                              type: string
+                              default: appsync-vtl
+                            request:
+                              type: string
+                              description: "The function's request mapping template source."
+                            response:
+                              type: string
+                              description: "The function's response mapping template source."
             status:
               type: object
               properties:
