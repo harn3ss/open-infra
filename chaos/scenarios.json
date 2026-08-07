@@ -2796,8 +2796,8 @@
       "batch": "nightly",
       "title": "Subscriptions no-loss under engine kill (open-appsync)",
       "category": "GraphQLApi subscriptions + NATS JetStream",
-      "status": "PARKED",
-      "note": "Authored (chaos/scenario-subscription-reconnect.sh); PARKED until a sandbox with NATS JetStream + open-appsync (NATS_URL set) serving a subscription is provisioned. Graduation bar for the open-appsync subscription rung: kill an engine pod mid-stream and prove reconnect/resume with no lost events (durable consumer resumes from its last acked sequence; dups OK per at-least-once). Exits INCONCLUSIVE until the deploy exists — it never false-greens.",
+      "status": "PENDING",
+      "note": "Self-provisioning + runnable (chaos/scenario-subscription-reconnect.sh provisions a 2-replica open-appsync engine wired to the platform NATS JetStream, drives createTodo mutations across an engine-pod kill, and asserts every acknowledged onCreateTodo event survives on the durable subject — the scenario-stream-noloss oracle). Runnable via workflow_dispatch; keyless, so NOT in the lottery. PENDING = authored + runnable, no verified green yet; graduates after its green streak. Proves publish-durability + Service availability across a pod kill; a persistent-WS-subscriber resume variant is a future probe.",
       "chain": {
         "nodes": [
           {
@@ -2844,7 +2844,7 @@
         "invariant": "zero subscription events lost (durable consumer resumes from offset)"
       },
       "lastVerified": "",
-      "verifiedBy": "not yet run (parked)"
+      "verifiedBy": "not yet run (pending first green)"
     }
   ]
 }
