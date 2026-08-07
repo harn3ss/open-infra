@@ -8,7 +8,7 @@ package render
 // render test like TestManagedDB_HibernationAlwaysExplicit would have caught it.
 //
 // Faithful enough without the Crossplane runtime: composition.yaml uses only the
-// sprig funcs re-implemented in sprigLite() (verified: default, sha256sum, trunc,
+// sprig funcs re-implemented in sprigLite (verified: default, sha256sum, trunc,
 // dict, list, join). If a future edit introduces another func, Parse fails loudly
 // (add it here) rather than silently mis-rendering.
 
@@ -141,11 +141,11 @@ func TestHttpApi_NoTLS(t *testing.T) {
 	}
 }
 
-// TestGraphQLApi_RendersConfigAndEngine pins the neutral authoring plane (open-appsync §2): the
-// composition must render (a) a ConfigMap whose config.json + per-resolver .vtl files match the shape
+// TestGraphQLApi_RendersConfigAndEngine pins the neutral authoring plane (open-appsync): the
+// composition must render (a) a ConfigMap whose config.json + per-resolver.vtl files match the shape
 // server.Load reads, carrying the resolver's `runtime`, and (b) an engine Deployment with a config
 // checksum annotation (the reload mechanism) + a Service. The resolver author's VTL must appear
-// verbatim — the load-bearing "specialist learns nothing" promise (§4.1).
+// verbatim — the load-bearing "specialist learns nothing" promise.
 func TestGraphQLApi_RendersConfigAndEngine(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
 	out := render(t, tmpl, graphqlApiCtx(""))
@@ -182,7 +182,7 @@ func TestGraphQLApi_DynamoDBWiresMongo(t *testing.T) {
 	}
 }
 
-// A pipeline resolver + hostile-load limits render into config.json + the per-step .vtl files.
+// A pipeline resolver + hostile-load limits render into config.json + the per-step.vtl files.
 func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
 	out := render(t, tmpl, graphqlApiPipelineCtx())
@@ -200,7 +200,7 @@ func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 	}
 }
 
-// A resolver's field-auth requirement renders into config.json (the §6 field-level authz).
+// A resolver's field-auth requirement renders into config.json (the field-level authz).
 func TestGraphQLApi_FieldAuth(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
 	ctx := map[string]any{
@@ -224,7 +224,7 @@ func TestGraphQLApi_FieldAuth(t *testing.T) {
 	}
 }
 
-// A subscription field renders into config.json + its response .vtl file (the §3 subscription rung).
+// A subscription field renders into config.json + its response.vtl file (the subscription rung).
 func TestGraphQLApi_Subscriptions(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
 	ctx := map[string]any{
@@ -250,7 +250,7 @@ func TestGraphQLApi_Subscriptions(t *testing.T) {
 	}
 }
 
-// An http data source renders its endpoint into config.json (the §5 second call-source).
+// An http data source renders its endpoint into config.json (the second call-source).
 func TestGraphQLApi_HTTPDataSource(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
 	ctx := map[string]any{
@@ -425,7 +425,7 @@ func httpApiCtx(tls bool) map[string]any {
 }
 
 // graphqlApiCtx builds a kind: GraphQLApi with two resolvers. Pass a non-empty mongoURI and the data
-// source becomes dynamodb (FerretDB-backed); empty keeps it in-memory (the §6 default for the bar).
+// source becomes dynamodb (FerretDB-backed); empty keeps it in-memory (the default for the bar).
 func graphqlApiCtx(mongoURI string) map[string]any {
 	dsType := "memory"
 	ds := map[string]any{"name": "notes"}
@@ -467,7 +467,7 @@ func graphqlApiCtx(mongoURI string) map[string]any {
 }
 
 // graphqlApiPipelineCtx builds a kind: GraphQLApi with a pipeline resolver (before → 2 functions →
-// after) and hostile-load limits — the drop-33 §2/§7 surface.
+// after) and hostile-load limits — the / surface.
 func graphqlApiPipelineCtx() map[string]any {
 	spec := map[string]any{
 		"dataSources": []any{map[string]any{"name": "things", "type": "memory"}},
@@ -506,7 +506,7 @@ func graphqlApiPipelineCtx() map[string]any {
 	}
 }
 
-// dbCtx builds the minimal .observed.composite.resource context that reaches the
+// dbCtx builds the minimal.observed.composite.resource context that reaches the
 // managed-Postgres branch (spec.database.engine defaults to postgres). No image =>
 // the workload section is skipped; no storage/securityGroups => those are skipped.
 func dbCtx(stopped, ha bool) map[string]any {

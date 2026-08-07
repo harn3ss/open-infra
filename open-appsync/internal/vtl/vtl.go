@@ -1,5 +1,5 @@
 // Package vtl is a focused interpreter for AWS AppSync resolver mapping templates (Apache Velocity
-// + AppSync's $util/$context). It is the heart of open-appsync (handoff §3.1, piece 2): on a field
+// + AppSync's $util/$context). It is the heart of open-appsync: on a field
 // hit, the REQUEST template turns GraphQL args into a data-source operation, and the RESPONSE
 // template turns the raw result into the GraphQL shape. Fidelity lives or dies in $util (see
 // util.go). Scoped to the constructs real resolver templates use; widened as the probe corpus grows.
@@ -16,12 +16,12 @@ type Engine struct{ util *Util }
 // New returns an Engine with real $util providers. For deterministic probes, set engine.Util fields.
 func New() *Engine { return &Engine{util: NewUtil()} }
 
-// Util exposes the $util providers so a probe can pin autoId()/time.* for byte-exact assertions.
+// Util exposes the $util providers so a probe can pin autoId/time.* for byte-exact assertions.
 func (e *Engine) Util() *Util { return e.util }
 
 // Render evaluates a template against a resolver context (available as $ctx / $context). It returns
 // the rendered string (usually a JSON document), or a *ThrowError if the template called
-// $util.error(). ctx is typically {"args": {...}, "identity": {...}, "source": {...}, "result": ...}.
+// $util.error. ctx is typically {"args": {...}, "identity": {...}, "source": {...}, "result":...}.
 func (e *Engine) Render(tmpl string, ctx map[string]any) (string, error) {
 	items, err := scanTemplate(tmpl)
 	if err != nil {
@@ -42,7 +42,7 @@ func (e *Engine) Render(tmpl string, ctx map[string]any) (string, error) {
 // Validate parses a template into its block tree WITHOUT evaluating it, reporting a structural error
 // (an unterminated #if/#foreach, a malformed #set, a bad expression). It is how the engine fails
 // closed at config load: a resolver whose template does not parse keeps the whole config from serving
-// (handoff §2). It cannot catch errors that only arise from a specific $ctx at render time.
+// . It cannot catch errors that only arise from a specific $ctx at render time.
 func (e *Engine) Validate(tmpl string) error {
 	items, err := scanTemplate(tmpl)
 	if err != nil {
@@ -76,7 +76,7 @@ func scanTemplate(s string) ([]item, error) {
 	i := 0
 	for i < len(s) {
 		c := s[i]
-		// Comments: ## line, #* ... *# block.
+		// Comments: ## line, #*... *# block.
 		if c == '#' && i+1 < len(s) && s[i+1] == '#' {
 			j := strings.IndexByte(s[i:], '\n')
 			if j < 0 {
@@ -171,7 +171,7 @@ func scanRef(s string, i int) (node exprNode, raw string, quiet bool, next int, 
 	if j >= len(s) || !isIdentStart(s[j]) {
 		return nil, "", false, 0, false
 	}
-	// Bare $ident chain: root ident, then (.ident optional(...)) or [ ... ] repeatedly.
+	// Bare $ident chain: root ident, then (.ident optional(...)) or [... ] repeatedly.
 	k := j
 	for k < len(s) && isIdentPart(s[k]) {
 		k++

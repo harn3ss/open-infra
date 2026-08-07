@@ -9,7 +9,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
-// Stage-2 AppSync management (forward-map §8): the translator (AWS verb → patch on the neutral
+// Stage-2 AppSync management: the translator (AWS verb → patch on the neutral
 // GraphQLApi object) is pure and carries the weight of the tests; the handler adds the front-door +
 // negative, exactly like the other shim services. Per-verb graduation: only the verbs proven here are
 // claimed — everything else answers an honest NotImplemented.

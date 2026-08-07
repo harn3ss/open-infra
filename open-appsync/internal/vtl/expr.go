@@ -179,7 +179,7 @@ func evalRef(x refExpr, e *env) (any, error) {
 }
 
 // evalUtilChain walks a $util access: property segments build the method path, the terminal call
-// invokes it (e.g. .dynamodb .toDynamoDBJson(x) → path "dynamodb.toDynamoDBJson").
+// invokes it (e.g..dynamodb.toDynamoDBJson(x) → path "dynamodb.toDynamoDBJson").
 func evalUtilChain(chain []accessor, e *env) (any, error) {
 	path := ""
 	for _, a := range chain {

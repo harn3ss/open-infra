@@ -24,10 +24,10 @@ import (
 //
 // Snapshot endpoints map onto the verb you'd need on the underlying resource:
 //
-//	take/delete a DB snapshot   -> update  applications      (mutating that database)
-//	restore into a new database -> create  applications      (it creates one)
-//	take/delete a VM snapshot   -> update  virtualmachines
-//	restore into a new VM       -> create  virtualmachines
+//	take/delete a DB snapshot -> update applications (mutating that database)
+//	restore into a new database -> create applications (it creates one)
+//	take/delete a VM snapshot -> update virtualmachines
+//	restore into a new VM -> create virtualmachines
 
 // authorize guards a BFF-native handler. Returns false (and writes the response)
 // when the signed-in user may not perform the equivalent action.

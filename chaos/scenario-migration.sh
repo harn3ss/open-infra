@@ -13,7 +13,7 @@
 #
 # Proof-of-fire is the guard against a false green: the apply-sink pod must actually be replaced
 # (kill landed). If it isn't, the run is INCONCLUSIVE, not green — the oracle refuses to bless a
-# fault that didn't fire. Safety (design §3) is independent: sandbox-scoped RBAC, ResourceQuota,
+# fault that didn't fire. Safety is independent: sandbox-scoped RBAC, ResourceQuota,
 # low PriorityClass, the pre-flight guard below, and the fault's own pod-scoped selector.
 set -euo pipefail
 

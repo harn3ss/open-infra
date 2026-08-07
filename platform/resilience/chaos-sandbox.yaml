@@ -1,4 +1,4 @@
-# Nightly Chaos Suite — the containment foundation (safety model, §3 of the design).
+# Nightly Chaos Suite — the containment foundation (the safety model).
 # Nothing the suite does may endanger the one real cluster, so the blast radius is
 # built BEFORE any fault. This file is pure containment: a disposable namespace, a
 # resource cap, an evict-me-first priority, and a ServiceAccount ("runner creds =

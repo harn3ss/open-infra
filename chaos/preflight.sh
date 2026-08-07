@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Pre-flight guard for the Nightly Chaos Suite (design §3, layer 5: the dead-man's
+# Pre-flight guard for the Nightly Chaos Suite (the design, layer 5: the dead-man's
 # switch). Given a kind: FaultInjection manifest, it resolves the effective target and
 # REFUSES to proceed unless the fault can only touch the chaos-sandbox namespace.
 #
 # This is the typo-catcher: a fault that names another namespace, or a label selector
 # that also matches a pod outside the sandbox, aborts here — before anything is applied.
 #
-#   usage: chaos/preflight.sh <faultinjection.yaml>
-#   exit 0 = safe to apply;  exit >0 = ABORT (never apply the fault).
+# usage: chaos/preflight.sh <faultinjection.yaml>
+# exit 0 = safe to apply; exit >0 = ABORT (never apply the fault).
 set -euo pipefail
 
 SANDBOX="${CHAOS_SANDBOX_NS:-chaos-sandbox}"

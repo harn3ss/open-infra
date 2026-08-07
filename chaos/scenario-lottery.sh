@@ -50,7 +50,7 @@ echo "▸ ============================================================"
 # into chaos/nightly-status.json (only the faults ACTUALLY drawn get today's date).
 [ -n "${GITHUB_OUTPUT:-}" ] && { echo "faults=$NAMES"; echo "seed=$SEED"; } >> "$GITHUB_OUTPUT"
 
-# Oracle-partitioned routing (design §5). A draw picks ONE oracle. `convergence` runs the body below
+# Oracle-partitioned routing. A draw picks ONE oracle. `convergence` runs the body below
 # — the counted nightly, unchanged. Any other oracle is GATED (only reachable via LOTTERY_ORACLE=<x>
 # for un-gated shakeout) and delegates to that adapter's runner, which shares the same runOracle judge.
 ORACLE="$(printf '%s' "$DRAW_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["meta"]["oracle"])')"

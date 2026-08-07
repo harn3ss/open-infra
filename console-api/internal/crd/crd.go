@@ -5,9 +5,9 @@
 // but sprinkled with `x-kubernetes-*` vendor extensions and using `nullable:true`
 // rather than a `"null"` type. RJSF wants plain draft-07, so we:
 //
-//   - recursively strip every `x-kubernetes-*` key,
-//   - rewrite `nullable: true` into the draft-07 idiom (add "null" to `type`),
-//   - stamp the top level with `$schema: draft-07`.
+// - recursively strip every `x-kubernetes-*` key,
+// - rewrite `nullable: true` into the draft-07 idiom (add "null" to `type`),
+// - stamp the top level with `$schema: draft-07`.
 //
 // The CRD is read through the same authenticated transport as everything else,
 // so the ServiceAccount's RBAC (it needs get on customresourcedefinitions)

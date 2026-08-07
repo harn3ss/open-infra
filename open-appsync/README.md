@@ -3,8 +3,7 @@
 open-infra's **resolver-first, VTL-faithful** AWS AppSync engine. Its reason to exist: give teams
 locked into AWS AppSync — the ones with **resolver specialists**, VTL templates, and data-source
 wiring — an open, self-hostable door off of it. For that audience, GraphQL wire-compatibility is not
-enough; the value is running their *existing resolver investment* unmodified. (Design of record:
-`open-infra-open-appsync-handoff.md`.)
+enough; the value is running their *existing resolver investment* unmodified.
 
 It is **not** a GraphQL-over-tables engine wearing an AppSync mask — that would be a leaky
 abstraction the moment a specialist writes a resolver the underlying engine can't model. It is a
@@ -20,8 +19,7 @@ genuinely-useful, provably-faithful slice first; widen only after a probe proves
   the VTL request/response lifecycle — the actual value — which must be built regardless. One stack,
   tight control over the resolver cycle.
 - **DynamoDB binding → FerretDB-on-DocumentDB** (the existing open-infra DynamoDB→Mongo parity). The
-  binding translates the VTL-emitted DynamoDB operation into the backing store. (Slice 1 proves the
-  VTL engine with a mock data source; the FerretDB binding is piece 3.)
+  binding translates the VTL-emitted DynamoDB operation into the backing store.
 - **Probe anchor = AWS's *documented* VTL/`$util` behavior.** A live diff against real AWS AppSync
   needs an AWS account — the very thing this frees teams from — so the ground truth is AWS's
   published resolver-template semantics and worked examples (the same discipline as the SigV4 test
@@ -59,7 +57,7 @@ resolver gets is the injected `util` object (backed by the *same* `$util` implem
 drift). A resolver reaching for ambient capability fails closed (proven by a negative probe). Sandboxing
 untrusted user code matters *most* for the least-resourced operator this project serves.
 
-### Step vs lifecycle (the drop-33 fork, decision B)
+### Step vs lifecycle
 
 `runtime.Runtime` is the **step** contract, not "the resolver contract." A step transforms `$ctx`
 (request phase → an *optional* neutral `Operation`; response phase → a value). A **resolver** is a
@@ -118,7 +116,7 @@ registers a **filter** in the per-node **registry** (the one new piece of connec
 **mutation** time the mutation's result is **published** to the field's subject. At **push** time every
 node fans the event out to its local subscribers whose filter matches, shaping each with the
 subscriber's response step. The event source is a **push source (a Bus), not a `datasource.Store`** —
-the §1b line.
+the same call-vs-stream split the data-source contract draws.
 
 Built and proven: the **enhanced filter engine** (`eq/ne/in/contains/beginsWith/ranges`, dotted fields,
 AND-within-filter / OR-across-filters — the genuinely hard part), the **registry** + naive
@@ -170,83 +168,61 @@ result) — authoring with feedback instead of blind. Same mechanism as the corp
 Honest label for this release: *a neutral engine that runs a team's VTL* — **not yet** the AWS
 packaging (authoring) experience.
 
-## Graduation ladder
+## What's built
 
-- **Slice 1 — VTL over one DynamoDB-style data source.** One real VTL resolver runs faithfully
-  end-to-end. Pieces: (1) schema intake, (2) **the VTL engine + `$util`** — the heart, (3) one
-  data-source binding, (4) resolver lifecycle glue, (5) the compatibility probe.
-  - **Done:** piece 2 (the VTL engine + `$util`), piece 4 (the resolver request→execute→response
-    lifecycle), and piece 5 (a docs-anchored corpus) — a real AppSync VTL resolver runs end-to-end
-    against a DynamoDB-style data source and returns the GraphQL result AWS would (proven with the
-    in-memory `dynamodb.MemStore`).
-  - **Also done:** the GraphQL executor (`internal/graphql`) — a real query/mutation string drives
-    the resolvers (field→resolver dispatch, arguments + `$variables`, selection-set projection,
-    `{data, errors}` with resolver-thrown `errorType`). The whole stack — schema intake → execute →
-    resolver lifecycle → `$util` → data source — runs from an actual GraphQL operation.
-  - **Also done:** piece 3 — the FerretDB-backed `dynamodb.Store` (`internal/dynamodb/ferret.go`):
-    translates the VTL-emitted DynamoDB op onto Mongo/FerretDB on one collection, same `Store`
-    interface as MemStore (a resolver runs unchanged against either). Pure translation unit-tested;
-    a live round-trip is `-tags integration` (needs a FerretDB).
-  - **Also done:** `cmd/open-appsync` + `internal/server` (POST /graphql), deployed as the real
-    engine (`components.openAppsync`), so the shim's `appsync` service fronts it end-to-end.
-  - **Also done (this release, Clock B — see below):** the runtime **extension point**
-    (`internal/runtime` + `internal/vtlruntime`), the **`kind: GraphQLApi`** authoring plane with
-    fail-closed load validation, the `/test-resolver` loop, and the runtime **goldens harness**
-    (`probe/goldens/`). All ship labeled experimental.
-  - **Also done (drop-33):** the step/lifecycle refactor (decision B), **pipeline resolvers**
-    (`before → functions → after`, stash + `prev.result` threaded), and **hostile-load hardening**
-    (depth/cost/persisted-query guards, safe by default). All experimental, each on its own bar.
-  - **Also done (drop-34):** the **JavaScript runtime** (`runtime: appsync-js`, goja-sandboxed) — the
-    second, real tenant that **blesses the runtime interface stable** (interface only; JS itself is
-    experimental).
-  - **Also done (drop-35):** the **data-source family** — `datasource.Store` extracted to a neutral
-    package + an **HTTP data source** (`internal/httpsource`), proving `Operation` is genuinely neutral
-    (no lifecycle/engine branches on source type).
-  - **Also done (drop-36):** **field-level authorization** — an `auth` requirement per resolver checked
-    (before the resolver runs) via an impersonated `SubjectAccessReview` (`internal/k8sauth`), the same
-    RBAC boundary as every other front door.
-  - **Also done (drop-37/39), label HELD:** the **subscription** rung (`internal/subscription`) —
-    enhanced-filter engine, connection-scoped registry, Bus port (in-memory + JetStream), the
-    setup-then-push Manager, **and the `graphql-transport-ws` WebSocket front door** (`/graphql-ws`) with
-    mutation auto-publish. Experimental until the node-kill chaos bar is green (see above).
-  - **Also done (drop-38):** **Stage-2 AWS management wire protocol** — the aws-shim translates AppSync
-    management verbs (CreateResolver/UpdateResolver/DeleteResolver/GetResolver/CreateDataSource/
-    DeleteDataSource) into patches on the `GraphQLApi` object, per-verb graduated, front-door + negatives
-    proven.
-  - **"Not yet" (external gates only — not code):** the subscription **node-kill chaos** run (needs the
-    nightly cluster) and the real-AppSync **goldens capture** (Clock A — needs a real AWS account). See
-    `open-infra-open-appsync-forward-map.md`.
-- **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
-  JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
-  clients reconnect/resume.
-- **Rung 3+** — second data source, JS resolvers, pipeline resolvers, a management API, per-group
-  role mapping, query-cost/depth limiting.
+Everything below is implemented and covered by `go test -race ./...`; all of it ships **experimental**
+(see *Maturity* for why, and for the two gates that are still open).
 
-## Status — two independent honesty clocks
+- **The VTL engine + `$util`** and the resolver **request → execute → response** lifecycle — a real
+  AppSync VTL resolver runs end-to-end against a DynamoDB-style data source and returns the GraphQL
+  result AWS would.
+- **The GraphQL executor** (`internal/graphql`): field→resolver dispatch, arguments + `$variables`,
+  selection-set projection, `{data, errors}` with resolver-thrown `errorType`.
+- **Data sources**: an in-memory store and a **FerretDB-backed** DynamoDB-style store
+  (`internal/dynamodb`), plus an **HTTP** source (`internal/httpsource`) — behind the neutral
+  `datasource.Store` contract, with no data-source-type branching in the engine or lifecycle.
+- **The runtime extension point** (`internal/runtime`) with two tenants: **VTL** (`internal/vtlruntime`)
+  and a sandboxed **JavaScript** runtime (`internal/jsruntime`, goja). Two tenants through one front
+  door ⇒ the interface is treated as stable.
+- **Lifecycles**: `unit` and **pipeline** (`before → functions → after`, `stash`/`prev.result`
+  threaded); **subscriptions** (setup-then-push) over an in-memory or **JetStream** bus, with a
+  `graphql-transport-ws` WebSocket front door (`/graphql-ws`).
+- **Field-level authorization** via an impersonated `SubjectAccessReview` (`internal/k8sauth`) — the
+  same RBAC boundary the rest of open-infra uses.
+- **Hostile-load guards** (depth / cost / persisted-query), safe by default.
+- **Authoring**: `kind: GraphQLApi` (renders the engine config, no bespoke controller) + a
+  `/test-resolver` loop; and a **Stage-2 AWS management shim** that translates AppSync management verbs
+  into patches on the `GraphQLApi` object (per-verb).
+- **Compatibility probe**: a docs-anchored VTL/`$util` corpus + a runtime **goldens harness**
+  (`probe/goldens/`).
 
-Do not let them blur: shipping the authoring plane alongside the runtime does **not** make either
-"proven."
+## Maturity — two independent gates
 
-- **Clock A — the runtime.** The runtime runs live end-to-end (SigV4 GraphQL client → aws-shim
-  `appsync` → open-appsync → a real VTL resolver → data source → `{data}`; wrong signature → 401),
-  and the docs-anchored corpus probe is green. It stays **EXPERIMENTAL** until the goldens
-  (`probe/goldens/`) are captured from **real AppSync** and the CI diff is green against them — the
-  one thing that removes the word (see `probe/goldens/README.md`). Today the goldens are seeded from
-  AWS's *documented* behavior, so the harness is proven but the capture is pending (maintainer's
-  account, once).
-- **Clock B — the authoring plane + runtime interface.** `kind: GraphQLApi`, the `internal/runtime`
-  extension point, and `/test-resolver` are a **brand-new experimental rung** on their own bar
-  (`go test -race ./...` green; on-cluster, a resolver authored through Terraform reconciling into the
-  engine config and a live request exercising it, plus the fail-closed negative). Building them does
-  not make them proven; they ship labeled experimental even though the runtime is more mature.
+These are separate on purpose: shipping the authoring plane alongside the runtime does **not** make
+either "proven."
 
-This is **not a full AppSync** — the slice-1 "not yet" list still applies, and each widening graduates
-behind its own probe.
+- **The runtime gate.** The runtime runs live end-to-end (SigV4 GraphQL client → aws-shim `appsync` →
+  open-appsync → a real VTL resolver → data source → `{data}`; wrong signature → 401), and the
+  docs-anchored corpus probe is green. It stays **experimental** until the goldens (`probe/goldens/`)
+  are captured from **real AppSync** and the CI diff is green against them — the one thing that removes
+  the word (see `probe/goldens/README.md`). Today the goldens are seeded from AWS's *documented*
+  behavior, so the harness is proven but the capture is pending (needs a real AppSync account, once).
+- **The authoring plane + runtime interface.** `kind: GraphQLApi`, the extension point, and
+  `/test-resolver` ship experimental on their own bar (`go test -race ./...` green; on-cluster, a
+  resolver authored through Terraform reconciling into the engine config and a live request exercising
+  it, plus the fail-closed negative).
+
+**Subscriptions** carry a further gate: their graduation is a **node-kill chaos scenario** (kill a
+subscription-holding node mid-stream; prove reconnect/resume with no lost and no duplicated events past
+the acked point). The code and the durable JetStream bus are in place; that run is what removes the
+label.
+
+This is **not a full AppSync** — each widening graduates behind its own probe.
 
 ## Layout
 
 - `internal/runtime/` — the runtime extension-point contract (the three frozen terms).
-- `internal/vtl/` — the VTL interpreter + the AppSync `$util` helper library (piece 2, the heart).
+- `internal/vtl/` — the VTL interpreter + the AppSync `$util` helper library (the heart of fidelity).
 - `internal/vtlruntime/` — the VTL tenant of the runtime interface.
 - `internal/jsruntime/` — the JavaScript tenant (goja-sandboxed) of the runtime interface.
 - `internal/resolver/` — the request→execute→response lifecycle (drives any runtime).
@@ -261,5 +237,5 @@ behind its own probe.
 - `internal/graphql/` — the GraphQL parser + executor (field→resolver dispatch, projection).
 - `internal/server/` — config loader (`server.Load`) + HTTP handlers (`/graphql`, `/test-resolver`).
 - `cmd/open-appsync/` — the engine binary.
-- `probe/` — the docs-anchored resolver corpus + probes (piece 5) + the runtime goldens harness
-  (`probe/goldens/`, Clock A).
+- `probe/` — the docs-anchored resolver corpus + probes + the runtime goldens harness
+  (`probe/goldens/`, the runtime gate).

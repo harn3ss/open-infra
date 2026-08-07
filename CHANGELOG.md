@@ -19,7 +19,7 @@ the product's public contract.
   fidelity is anchored on AWS's *documented* behavior (a corpus probe, green in CI), not diffed
   against a live AWS AppSync. (Replaces the earlier Hasura-backed AppSync placeholder, now removed.)
 - **open-appsync — neutral authoring plane, a real runtime extension point, and a test-resolver loop
-  (experimental — a new rung, on its own clock).** Two independent honesty clocks, kept separate: the
+  (experimental — a new rung, on its own bar).** Two independent maturity gates, kept separate: the
   *runtime* de-labels only when its goldens are captured from real AppSync (below); this authoring
   work ships labeled experimental regardless of the runtime's maturity.
   - **The `runtime` field is a genuine extension point** (`internal/runtime`), not a name for AWS's two
@@ -43,7 +43,7 @@ the product's public contract.
   - **`POST /test-resolver`** — the probe harness on user input: submit a resolver + a sample `$ctx`
     and see exactly what its templates produce (the neutral request Operation, and the response when a
     sample result is supplied), errors surfaced with their `errorType`. Authoring with feedback.
-  - **Runtime goldens harness (`probe/goldens/`, Clock A).** The format, the deterministic diff (via
+  - **Runtime goldens harness (`probe/goldens/`, the runtime gate).** The format, the deterministic diff (via
     the engine's injectable `AutoID`/`Now`), and the CI wiring ship now, green against goldens seeded
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
@@ -72,7 +72,7 @@ the product's public contract.
   acknowledged onCreateTodo event survives on the durable subject — the proven `scenario-stream-noloss`
   message-count oracle. Keyless, so it is NOT in the lottery; runnable via workflow_dispatch and
   graduates after its green streak (no verified green yet — the honest PENDING state). And
-  **`probe/goldens/capture.sh`** makes the Clock-A capture one command against a real AWS account (via
+  **`probe/goldens/capture.sh`** makes the runtime-goldens capture one command against a real AWS account (via
   `aws appsync evaluate-mapping-template`). These are the two external gates — the nightly chaos green
   streak and the real-AWS capture — reduced to a single run each; the label stays experimental until
   those runs happen, on the cluster's / the maintainer's clock.
@@ -91,7 +91,7 @@ the product's public contract.
   temporal chaos bar).** Subscriptions invert the lifecycle — subscribe (authorize + register a filter),
   publish (a mutation's result to a subject), push (each node fans out to its matching local
   subscribers) — so they are their own lifecycle, and their event source is a **push source (a Bus),
-  NOT a `datasource.Store`** (the §1b line). Built and unit/integration-proven: the **enhanced
+  NOT a `datasource.Store`** (the same call-vs-stream split the data-source contract draws). Built and unit/integration-proven: the **enhanced
   subscription-filter engine** (eq/ne/in/contains/beginsWith/ranges, dotted fields, AND-within /
   OR-across — the genuinely hard part), the connection-scoped **registry** with naive O(subscribers)
   fanout (a filter index deferred until load proves it's needed), a **Bus port** with an in-memory bus
@@ -129,7 +129,7 @@ the product's public contract.
   It is the second, real, non-VTL tenant of the extension point — and it runs through the exact same
   lifecycle and executor as VTL, coexisting in one registry with no backstage pass (proven end-to-end:
   a JS PutItem + GetItem, a JS resolver beside a VTL one, a JS `util.error()` surfacing its errorType).
-  That second tenant is the bar the forward map set for **calling the runtime interface stable**, so it
+  That second tenant is the bar for **calling the runtime interface stable**, so it
   now is — a statement about the *interface*, distinct from JS-as-a-runtime, which ships experimental
   like any rung. **Sandboxing:** JS runs on goja (pure-Go ECMAScript) with **no** `require`/Node
   APIs/fs/net/fetch/timers — capability-by-injection, deny-by-absence; the only capability is the
@@ -139,7 +139,7 @@ the product's public contract.
   the Terraform provider.
 - **open-appsync — the step/lifecycle fork, pipeline resolvers, and hostile-load hardening
   (experimental; three independent rungs, each on its own bar).**
-  - **The runtime contract is the STEP contract, not the resolver contract (drop-33 fork, decision B).**
+  - **The runtime contract is the STEP contract, not the resolver contract.**
     `runtime.Runtime` was derived from the one shape that existed (unit resolver) and its Out term baked
     in "every step targets a data source" — which pipelines bend and subscriptions break. Resolved
     *before* the Terraform/ConfigMap surface hardened: the Out term is now **optional** (a step may
@@ -668,7 +668,7 @@ interaction that per-kind unit tests miss — found and fixed, then re-verified 
 ### Reliability
 - **Nightly Chaos Suite — the containment foundation.** The road from *"convergence is
   hand-tested"* to *"convergence is proven nightly, or the release is blocked."* This
-  lands the safety model first (design §3): a disposable `chaos-sandbox` namespace with a
+  lands the safety model first: a disposable `chaos-sandbox` namespace with a
   `ResourceQuota` + `LimitRange` + a low non-preempting `PriorityClass` (sandbox pods
   evict first under pressure), and a `chaos-runner` ServiceAccount whose write authority
   is scoped to the sandbox **only** — "runner creds = chaos creds", so a fat-fingered

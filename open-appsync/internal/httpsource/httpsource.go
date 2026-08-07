@@ -1,4 +1,4 @@
-// Package httpsource is a second, non-DynamoDB data source (forward-map §5): it fronts an HTTP
+// Package httpsource is a second, non-DynamoDB data source: it fronts an HTTP
 // endpoint. Its whole reason to exist is the neutrality test — it implements the SAME
 // datasource.Store contract as the DynamoDB store, but its Operation is a completely different
 // document ({"method":"POST","resourcePath":"/x","params":{…}}), and it flows through the exact same

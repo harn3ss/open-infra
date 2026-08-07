@@ -26,7 +26,7 @@ import (
 // host, using transport for authentication. stripPrefix (e.g. "/api/k8s") is
 // removed from the inbound path before forwarding, so that
 //
-//	/api/k8s/apis/openinfra.dev/v1/...  ->  <host>/apis/openinfra.dev/v1/...
+//	/api/k8s/apis/openinfra.dev/v1/... -> <host>/apis/openinfra.dev/v1/...
 //
 // The handler is mounted in the router under the same prefix it strips.
 // Identity is the console user a proxied request should act as. When supplied,
