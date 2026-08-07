@@ -42,8 +42,18 @@ func fromDynamoDB(v any) any {
 			case "S":
 				return val
 			case "N":
-				if s, ok := val.(string); ok {
-					if f, err := strconv.ParseFloat(s, 64); err == nil {
+				// Normalize to float64 regardless of how N arrived: a JSON number (VTL), a JS int64
+				// (goja), or a stringified DynamoDB-SDK value. The un-marshalled result is always a
+				// plain float64, as the response phase expects.
+				switch n := val.(type) {
+				case float64:
+					return n
+				case int64:
+					return float64(n)
+				case int:
+					return float64(n)
+				case string:
+					if f, err := strconv.ParseFloat(n, 64); err == nil {
 						return f
 					}
 				}
