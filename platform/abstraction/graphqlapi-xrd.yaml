@@ -129,6 +129,15 @@ spec:
                       before:
                         type: string
                         description: "Pipeline resolver: the before mapping template (sets $ctx.stash / may abort; touches no data source)."
+                      auth:
+                        type: object
+                        description: "Field-level authorization: the k8s RBAC permission the caller must have (checked via a SubjectAccessReview — the same boundary as every other front door). Omit for a public field."
+                        properties:
+                          group: { type: string, description: "API group, e.g. openinfra.dev." }
+                          resource: { type: string, description: "Resource plural, e.g. graphqlapis." }
+                          verb: { type: string, description: "e.g. get, create." }
+                          namespace: { type: string, description: "Namespace, or empty for cluster-scoped." }
+                          name: { type: string, description: "Optional specific object name." }
                       after:
                         type: string
                         description: "Pipeline resolver: the after mapping template (shapes the final value from $ctx.prev.result)."
