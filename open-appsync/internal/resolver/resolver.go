@@ -16,7 +16,7 @@ package resolver
 import (
 	"context"
 
-	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
+	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
@@ -26,7 +26,7 @@ import (
 // the slice-1 shape; a Lifecycle interface can arrive with the subscription rung.)
 type Resolver struct {
 	Runtime  runtime.Runtime // unit lifecycle: the single step
-	Source   dynamodb.Store  // unit lifecycle: its data source
+	Source   datasource.Store  // unit lifecycle: its data source
 	Pipeline *Pipeline       // if non-nil, run the pipeline lifecycle instead
 }
 
@@ -43,7 +43,7 @@ type Pipeline struct {
 // output becomes $ctx.prev.result for the next stage.
 type Function struct {
 	Runtime runtime.Runtime
-	Source  dynamodb.Store
+	Source  datasource.Store
 }
 
 // Resolve runs the field's lifecycle. rctx is the resolver context ($ctx): it must carry "args" (and
@@ -58,7 +58,7 @@ func (r Resolver) Resolve(reqCtx context.Context, rctx map[string]any) (any, err
 // runStep is one unit step: request phase → (data source, only if an Operation was emitted) → response
 // phase. When the step emits a nil Operation the data source is skipped (the loosened Out term). For a
 // unit resolver whose request always emits an Operation, this is byte-identical to the slice-1 lifecycle.
-func runStep(reqCtx context.Context, rt runtime.Runtime, src dynamodb.Store, rctx map[string]any) (any, error) {
+func runStep(reqCtx context.Context, rt runtime.Runtime, src datasource.Store, rctx map[string]any) (any, error) {
 	op, err := rt.RenderRequest(rctx)
 	if err != nil {
 		return nil, err // includes *vtl.ThrowError from a validation $util.error()

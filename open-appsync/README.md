@@ -77,6 +77,17 @@ The parallel on the data side (`internal/dynamodb`): `Store.Execute` is the **ca
 (DynamoDB/HTTP/Lambda/RDS all fit "call → result"); a subscription's push source is a separate thing,
 not a `Store`.
 
+### Data sources are neutral and first-class
+
+`datasource.Store` (the call-source contract) lives in its own package — not inside `dynamodb` — so
+nothing in the engine or the resolver lifecycle owes anything to one source's shape. Two real,
+differently-shaped call-sources prove it: the DynamoDB-style store (`{"operation":"GetItem",…}`) and an
+HTTP source (`internal/httpsource`, `{"method":"POST","resourcePath":"/x","params":{…}}`). A resolver
+targets either through the **same** lifecycle and executor; **no code path branches on data-source
+type** — only a `Store` implementation knows its own operation shape. Declared on `kind: GraphQLApi`
+via `dataSources[].type: http` + `endpoint`. (A push source — a subscription's event stream — is a
+different kind of thing, not a `Store`; see below.)
+
 ### Hostile-load guards (safe by default)
 
 GraphQL's cost asymmetry (the client composes demand, the server owns cost) makes an unguarded endpoint
@@ -147,10 +158,12 @@ packaging (authoring) experience.
   - **Also done (drop-34):** the **JavaScript runtime** (`runtime: appsync-js`, goja-sandboxed) — the
     second, real tenant that **blesses the runtime interface stable** (interface only; JS itself is
     experimental).
-  - **"Not yet" (flagged, each its own rung/bar):** a second *data source* (HTTP/Lambda), field-level
-    authorization, subscriptions (the chaos-bar rung), the real-AppSync goldens capture (Clock A), and
-    the AWS *management* wire protocol (`CreateResolver`/CloudFormation — Stage 2). See
-    `open-infra-open-appsync-forward-map.md`.
+  - **Also done (drop-35):** the **data-source family** — `datasource.Store` extracted to a neutral
+    package + an **HTTP data source** (`internal/httpsource`), proving `Operation` is genuinely neutral
+    (no lifecycle/engine branches on source type).
+  - **"Not yet" (flagged, each its own rung/bar):** field-level authorization, subscriptions (the
+    chaos-bar rung), the real-AppSync goldens capture (Clock A), and the AWS *management* wire protocol
+    (`CreateResolver`/CloudFormation — Stage 2). See `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
@@ -185,7 +198,9 @@ behind its own probe.
 - `internal/vtlruntime/` — the VTL tenant of the runtime interface.
 - `internal/jsruntime/` — the JavaScript tenant (goja-sandboxed) of the runtime interface.
 - `internal/resolver/` — the request→execute→response lifecycle (drives any runtime).
+- `internal/datasource/` — the neutral call-source contract (`Store`).
 - `internal/dynamodb/` — the DynamoDB-style data source (in-memory + FerretDB-backed).
+- `internal/httpsource/` — an HTTP data source (the second, differently-shaped call-source).
 - `internal/graphql/` — the GraphQL parser + executor (field→resolver dispatch, projection).
 - `internal/server/` — config loader (`server.Load`) + HTTP handlers (`/graphql`, `/test-resolver`).
 - `cmd/open-appsync/` — the engine binary.
