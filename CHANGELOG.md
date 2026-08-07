@@ -48,6 +48,20 @@ the product's public contract.
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
     **only** thing that removes "experimental" from the runtime.
+- **open-appsync — a second runtime tenant: sandboxed JavaScript resolvers, which BLESS the runtime
+  interface stable (the runtime rung is experimental; the interface claim is not).** `runtime:
+  appsync-js` lets a resolver carry a JavaScript module (`request(ctx)`/`response(ctx)`) instead of VTL.
+  It is the second, real, non-VTL tenant of the extension point — and it runs through the exact same
+  lifecycle and executor as VTL, coexisting in one registry with no backstage pass (proven end-to-end:
+  a JS PutItem + GetItem, a JS resolver beside a VTL one, a JS `util.error()` surfacing its errorType).
+  That second tenant is the bar the forward map set for **calling the runtime interface stable**, so it
+  now is — a statement about the *interface*, distinct from JS-as-a-runtime, which ships experimental
+  like any rung. **Sandboxing:** JS runs on goja (pure-Go ECMAScript) with **no** `require`/Node
+  APIs/fs/net/fetch/timers — capability-by-injection, deny-by-absence; the only capability is the
+  injected `util` (the *same* `$util` implementation as VTL — no drift). A resolver reaching for
+  ambient capability fails closed, proven by a negative probe (prove the "no"). A malformed module
+  fails Load closed. Expressible on `kind: GraphQLApi` (`runtime: appsync-js`, module in `request`) and
+  the Terraform provider.
 - **open-appsync — the step/lifecycle fork, pipeline resolvers, and hostile-load hardening
   (experimental; three independent rungs, each on its own bar).**
   - **The runtime contract is the STEP contract, not the resolver contract (drop-33 fork, decision B).**
