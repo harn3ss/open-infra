@@ -1,12 +1,12 @@
 # open-appsync runtime goldens
 
-This directory is the machinery that graduates the **runtime** from *documented-faithful* to
-*behavior-faithful* — the **only** thing that lets the word **"experimental"** come off the runtime.
-Nothing else touches that word.
+This directory graduated the **runtime** from *documented-faithful* to *behavior-faithful*. The cases
+here were **captured from real AWS AppSync** (via `evaluate-mapping-template`) and the CI diff is green
+against them — so open-appsync's `$util`/VTL output is checked against what AppSync *does*, not just
+what it documents. The capture surfaced two real divergences (AppSync emits `N` as a JSON number and
+`NULL` as JSON `null`), which are now fixed in the engine.
 
-Today the corpus probe asserts against what AWS **documents**. These goldens assert against what AWS
-**does**: the exact request objects a real AppSync API emits for the same templates, captured once and
-diffed against forever.
+Re-run `capture.sh` (below) to refresh against AWS whenever the corpus grows or to re-verify.
 
 ## The format
 
@@ -63,6 +63,6 @@ Two things are deliberately **out** of this byte-exact harness and covered by un
 the *format* is checkable, which the VTL unit tests assert) and the `$util.error()` shape (the evaluate
 API surfaces errors less structurally; the corpus probe asserts message + errorType directly).
 
-**Bar to delete "experimental" from the runtime:** every golden is `aws-capture`, the diff is green,
-and each divergence found during capture is fixed or documented. Until then the runtime stays
-experimental — the goldens are seeded from docs, not yet from AWS.
+**Status:** met — every golden is `aws-capture`, the diff is green, and the divergences found during
+capture (`N` as number, `NULL` as null) are fixed in the engine. `TestGoldens_GraduationStatus` reports
+all-captured. Keep it that way: any new corpus case is captured (not hand-authored) before it counts.

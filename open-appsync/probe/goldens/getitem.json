@@ -1,13 +1,21 @@
 {
-  "source": "documented",
-  "description": "GetItem by id — typed key marshalling",
+  "source": "aws-capture",
+  "description": "GetItem by id \u2014 typed key marshalling",
   "template": "getitem.request.vtl",
   "autoId": "11111111-2222-4333-8444-555555555555",
   "now": "2026-08-06T00:00:00Z",
-  "context": { "args": { "id": "123" } },
+  "context": {
+    "args": {
+      "id": "123"
+    }
+  },
   "expected": {
     "version": "2018-05-29",
     "operation": "GetItem",
-    "key": { "id": { "S": "123" } }
+    "key": {
+      "id": {
+        "S": "123"
+      }
+    }
   }
 }

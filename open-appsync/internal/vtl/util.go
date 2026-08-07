@@ -94,7 +94,8 @@ func (u *Util) call(path string, args []any) (result any, err error, ok bool) {
 	case "dynamodb.toString", "dynamodb.toStringJson":
 		return jsonString(map[string]any{"S": toStr(arg(args, 0))}), nil, true
 	case "dynamodb.toNumber", "dynamodb.toNumberJson":
-		return jsonString(map[string]any{"N": numStr(arg(args, 0))}), nil, true
+		n, _ := toNum(arg(args, 0))
+		return jsonString(map[string]any{"N": n}), nil, true
 	case "dynamodb.toBoolean", "dynamodb.toBooleanJson":
 		return jsonString(map[string]any{"BOOL": truthy(arg(args, 0))}), nil, true
 	}
@@ -126,17 +127,22 @@ func (u *Util) ToMapValues(v any) map[string]any { return toMapValues(v) }
 func toDynamoDB(v any) any {
 	switch x := v.(type) {
 	case nil:
-		return map[string]any{"NULL": true}
+		// AppSync emits NULL as JSON `null` (verified against real AppSync), NOT the DynamoDB SDK's
+		// `{"NULL": true}`. open-appsync matches AppSync, since that is what a resolver author's
+		// existing templates were written against.
+		return map[string]any{"NULL": nil}
 	case string:
 		return map[string]any{"S": x}
 	case bool:
 		return map[string]any{"BOOL": x}
+	// AppSync emits N as a JSON number (verified against real AppSync), NOT the DynamoDB SDK's
+	// stringified `{"N": "36"}`. AppSync converts it to the wire string internally.
 	case float64:
-		return map[string]any{"N": numStr(x)}
+		return map[string]any{"N": x}
 	case int:
-		return map[string]any{"N": strconv.Itoa(x)}
+		return map[string]any{"N": x}
 	case int64:
-		return map[string]any{"N": strconv.FormatInt(x, 10)}
+		return map[string]any{"N": x}
 	case []any:
 		list := make([]any, len(x))
 		for i, e := range x {
