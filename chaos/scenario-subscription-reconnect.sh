@@ -13,8 +13,12 @@
 # variant — a persistent WS subscriber that must reconnect and resume with no gap — is a future probe;
 # the durable-consumer resume it depends on is the same JetStream mechanism this exercises.
 #
-# STATUS: PENDING — authored + self-provisioning + runnable (workflow_dispatch), NOT yet verified green
-# and NOT in the lottery (keyless). It graduates like every scenario after its green streak.
+# STATUS: RUNNABLE — self-provisioning, and verified green once by hand on the live cluster
+# (2026-08-07: killed one of two replicas mid-stream; survivor acked 100/100; all 101 events reached
+# sub.onCreateTodo — zero drops). That first run also earned its keep: it caught a real multi-replica
+# bug (both replicas bound the same JetStream *durable* consumer → crash-loop), fixed in the engine's
+# subscription bus (ephemeral fan-out). NOT graduated and NOT in the lottery (keyless): one green run
+# is not the nightly green streak that graduates a scenario.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -37,7 +41,9 @@ sandbox_provision_appsync
 log "pre-flight guard"
 "$HERE/preflight.sh" "$HERE/sandbox/fault-appsync-node-kill.yaml"
 
-engine_uid() { kubectl -n "$NS" get pods -l "$ENGINE_LABEL" -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true; }
+# All current engine pod UIDs (space-separated). mode:one kills one of the replicas, so proof-of-fire
+# must watch the whole set — a single-pod check misses a kill of the pod it isn't watching.
+engine_uids() { kubectl -n "$NS" get pods -l "$ENGINE_LABEL" -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null || true; }
 
 # Drive M createTodo mutations against the engine Service from an ephemeral curl pod; echo how many
 # were ACKNOWLEDGED (returned data.createTodo). One pod runs the whole loop (fast; no pod-per-call).
@@ -63,16 +69,21 @@ done
 [ "$live" = 1 ] || { log "INCONCLUSIVE — canary never reached the subject (subscription pipeline not ready)."; kubectl -n "$NS" get deploy,pods -l "$ENGINE_LABEL" -o wide 2>/dev/null || true; exit "$EXIT_INCONCLUSIVE"; }
 log "proof-of-fire OK — subscription pipeline live (canary acked=${canary})."
 
-BEFORE="$(engine_uid)"
+BEFORE_UIDS="$(engine_uids)"
 log "injecting the engine-pod kill, then driving ${N} mutations across the outage"
 kubectl apply -f "$HERE/sandbox/fault-appsync-node-kill.yaml"
 ACKED="$(drive_mutations 1 "$N")"; ACKED="${ACKED:-0}"
 log "acknowledged mutations during/after the kill: ${ACKED}/${N}"
 
-# Proof-of-fire part 2: an engine pod must actually be replaced.
+# Proof-of-fire part 2: an engine pod must actually be replaced — a pre-kill UID must disappear from
+# the live set (mode:one kills one replica; the survivor's UID stays, so watch for any lost UID).
 replaced=0
-for _ in $(seq 1 30); do
-  a="$(engine_uid)"; [ -n "$a" ] && [ "$a" != "$BEFORE" ] && { replaced=1; break; }
+for _ in $(seq 1 45); do
+  cur=" $(engine_uids) "
+  for u in $BEFORE_UIDS; do
+    case "$cur" in *" $u "*) ;; *) replaced=1 ;; esac
+  done
+  [ "$replaced" = 1 ] && break
   sleep 2
 done
 [ "$replaced" = 1 ] || { log "INCONCLUSIVE — no engine pod was replaced; the kill didn't land."; exit "$EXIT_INCONCLUSIVE"; }
