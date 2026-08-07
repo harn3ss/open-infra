@@ -72,6 +72,86 @@ func TestServer_LoadAndServe(t *testing.T) {
 	}
 }
 
+// A pipeline resolver loads from config (before + 2 functions + after) and serves end-to-end over
+// HTTP — the shape kind: GraphQLApi renders. Threads $ctx.stash and $ctx.prev.result; before emits no
+// Operation.
+func TestServer_PipelineResolver(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("config.json", `{
+	  "dataSources": [{"name":"things","type":"memory"}],
+	  "resolvers": [{
+	    "type":"Mutation","field":"createAndFetch",
+	    "before":"before.vtl","after":"after.vtl",
+	    "functions":[
+	      {"dataSource":"things","request":"put.vtl","response":"resp.vtl"},
+	      {"dataSource":"things","request":"get.vtl","response":"resp.vtl"}
+	    ]
+	  }]
+	}`)
+	write("before.vtl", `#set($d = $ctx.stash.put("tag", $ctx.args.tag))`)
+	write("put.vtl", `{"operation":"PutItem","key":{"id":$util.dynamodb.toDynamoDBJson($util.autoId())},"attributeValues":$util.dynamodb.toMapValuesJson({"name":$ctx.args.name,"tag":$ctx.stash.tag})}`)
+	write("get.vtl", `{"operation":"GetItem","key":{"id":$util.dynamodb.toDynamoDBJson($ctx.prev.result.id)}}`)
+	write("resp.vtl", `$util.toJson($ctx.result)`)
+	write("after.vtl", `$util.toJson($ctx.prev.result)`)
+
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"query": `mutation { createAndFetch(name: "Ada", tag: "work") { name tag } }`})
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+	w := httptest.NewRecorder()
+	Handler(engine)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad JSON: %v (%s)", err, w.Body.String())
+	}
+	if errs, ok := out["errors"]; ok && errs != nil {
+		t.Fatalf("graphql errors: %v", errs)
+	}
+	got := out["data"].(map[string]any)["createAndFetch"].(map[string]any)
+	if got["name"] != "Ada" || got["tag"] != "work" {
+		t.Fatalf("pipeline over HTTP not faithful: %v", got)
+	}
+}
+
+// A limits block on the config is honored end-to-end: a query past maxDepth is rejected over HTTP
+// before the resolver runs (drop-33 §7 wired through Load).
+func TestServer_LimitsEnforced(t *testing.T) {
+	dir := t.TempDir()
+	w := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	w("config.json", `{
+	  "dataSources":[{"name":"t","type":"memory"}],
+	  "limits":{"maxDepth":2},
+	  "resolvers":[{"type":"Query","field":"getTodo","dataSource":"t","request":"get.vtl","response":"resp.vtl"}]
+	}`)
+	w("get.vtl", `{"operation":"GetItem","key":{"id":$util.dynamodb.toDynamoDBJson($ctx.args.id)}}`)
+	w("resp.vtl", `$util.toJson($ctx.result)`)
+
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"query": `query { getTodo(id:"1") { a { b { c } } } }`})
+	rec := httptest.NewRecorder()
+	Handler(engine)(rec, httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body))))
+	var out struct {
+		Errors []struct{ ErrorType string } `json:"errors"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Errors) != 1 || out.Errors[0].ErrorType != "MaxDepthExceeded" {
+		t.Fatalf("expected MaxDepthExceeded, got %s", rec.Body.String())
+	}
+}
+
 func TestServer_Handler_RejectsGET(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"dataSources":[],"resolvers":[]}`), 0o644)
