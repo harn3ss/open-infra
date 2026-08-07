@@ -8,6 +8,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
+	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
 // The top-of-the-stack probe: a REAL GraphQL query/mutation string drives the VTL resolvers against
@@ -17,12 +18,13 @@ import (
 
 func newGraphQLEngine() *graphql.Engine {
 	store := dynamodb.NewMemStore()
+	e := engine() // pinned autoId/time
 	resp := "$util.toJson($ctx.result)"
 	resolvers := map[string]resolver.Resolver{
-		"Mutation.createTodo": {Request: mustCorpus("putitem.request.vtl"), Response: resp, Source: store},
-		"Query.getTodo":       {Request: mustCorpus("getitem.request.vtl"), Response: resp, Source: store},
+		"Mutation.createTodo": {Runtime: vtlruntime.New(e, mustCorpus("putitem.request.vtl"), resp), Source: store},
+		"Query.getTodo":       {Runtime: vtlruntime.New(e, mustCorpus("getitem.request.vtl"), resp), Source: store},
 	}
-	return graphql.New(engine(), resolvers)
+	return graphql.New(resolvers)
 }
 
 // mustCorpus reads a corpus template outside a *testing.T (used in the engine builder).
@@ -65,8 +67,8 @@ func TestGraphQLProbe_MutationThenQuery(t *testing.T) {
 // A resolver-thrown $util.error() surfaces as a GraphQL error entry (with errorType), data null.
 func TestGraphQLProbe_ValidationErrorEntry(t *testing.T) {
 	store := dynamodb.NewMemStore()
-	e := graphql.New(engine(), map[string]resolver.Resolver{
-		"Mutation.createTodo": {Request: mustCorpus("validate.request.vtl"), Response: "$util.toJson($ctx.result)", Source: store},
+	e := graphql.New(map[string]resolver.Resolver{
+		"Mutation.createTodo": {Runtime: vtlruntime.New(engine(), mustCorpus("validate.request.vtl"), "$util.toJson($ctx.result)"), Source: store},
 	})
 	res := e.Execute(context.Background(), `mutation { createTodo(input: {}) { id } }`, nil)
 	if len(res.Errors) != 1 || res.Errors[0].ErrorType != "BadRequest" {
