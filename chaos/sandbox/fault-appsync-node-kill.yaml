@@ -15,4 +15,6 @@ spec:
   type: pod-kill
   target:
     labelSelector: { app: open-appsync-chaos }
-  mode: all
+  # Kill ONE of the two replicas: the survivor keeps the Service serving (so mutations keep getting
+  # acknowledged and published across the outage), while the killed pod is replaced and re-consumes.
+  mode: one
