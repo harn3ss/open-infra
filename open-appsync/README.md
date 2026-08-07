@@ -43,10 +43,21 @@ we never wrote, without asking questions:
 
 VTL is the first tenant (`internal/vtlruntime`) and it plugs in through this interface **with no
 backstage pass** — the resolver lifecycle (`internal/resolver`) drives `runtime.Runtime` and knows
-nothing about VTL. This is the thing AWS structurally can't offer. The interface is **not** blessed as
-stable on one implementation: it is proven with VTL through the front door and a second, trivial
-runtime in tests (`internal/resolver/resolver_test.go`), and stays internal/changeable until a real
-second tenant lands — openness earned by two tenants, not declared on one.
+nothing about VTL. This is the thing AWS structurally can't offer. A **second, real, non-VTL tenant** —
+a sandboxed JavaScript runtime (`internal/jsruntime`, goja) — now runs through the same front door with
+no backstage pass, coexisting with VTL in one registry. Two tenants, not one: **the interface is
+treated as stable going forward.** (That is a statement about the *interface* — JS-as-a-runtime itself
+is still an experimental rung; don't conflate the two.) Openness earned by two tenants, not declared on
+one.
+
+### JavaScript resolvers (`runtime: appsync-js`)
+
+A resolver may declare `runtime: appsync-js` and carry a JavaScript module (exporting `request(ctx)` /
+`response(ctx)`) instead of VTL. It runs on **goja** (pure-Go ECMAScript): no `require`, no Node APIs,
+no fs/net/fetch, no timers — **capability-by-injection, deny-by-absence.** The only capability a
+resolver gets is the injected `util` object (backed by the *same* `$util` implementation as VTL, so no
+drift). A resolver reaching for ambient capability fails closed (proven by a negative probe). Sandboxing
+untrusted user code matters *most* for the least-resourced operator this project serves.
 
 ### Step vs lifecycle (the drop-33 fork, decision B)
 
@@ -133,10 +144,13 @@ packaging (authoring) experience.
   - **Also done (drop-33):** the step/lifecycle refactor (decision B), **pipeline resolvers**
     (`before → functions → after`, stash + `prev.result` threaded), and **hostile-load hardening**
     (depth/cost/persisted-query guards, safe by default). All experimental, each on its own bar.
-  - **"Not yet" (flagged, each its own rung/bar):** subscriptions (chaos bar), JavaScript resolvers
-    (the tenant that blesses the interface stable), a second *data source* (HTTP/Lambda), field-level
-    authorization, the real-AppSync goldens capture (Clock A), and the AWS *management* wire protocol
-    (`CreateResolver`/CloudFormation — Stage 2). See `open-infra-open-appsync-forward-map.md`.
+  - **Also done (drop-34):** the **JavaScript runtime** (`runtime: appsync-js`, goja-sandboxed) — the
+    second, real tenant that **blesses the runtime interface stable** (interface only; JS itself is
+    experimental).
+  - **"Not yet" (flagged, each its own rung/bar):** a second *data source* (HTTP/Lambda), field-level
+    authorization, subscriptions (the chaos-bar rung), the real-AppSync goldens capture (Clock A), and
+    the AWS *management* wire protocol (`CreateResolver`/CloudFormation — Stage 2). See
+    `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
@@ -169,6 +183,7 @@ behind its own probe.
 - `internal/runtime/` — the runtime extension-point contract (the three frozen terms).
 - `internal/vtl/` — the VTL interpreter + the AppSync `$util` helper library (piece 2, the heart).
 - `internal/vtlruntime/` — the VTL tenant of the runtime interface.
+- `internal/jsruntime/` — the JavaScript tenant (goja-sandboxed) of the runtime interface.
 - `internal/resolver/` — the request→execute→response lifecycle (drives any runtime).
 - `internal/dynamodb/` — the DynamoDB-style data source (in-memory + FerretDB-backed).
 - `internal/graphql/` — the GraphQL parser + executor (field→resolver dispatch, projection).
