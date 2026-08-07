@@ -48,6 +48,30 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Stage-2 AppSync management (open-appsync §8): the shim read-modify-writes GraphQLApi claims to apply
+# CreateResolver/CreateDataSource/etc. It is cluster-wide because an apiId can name any team namespace;
+# the CALLER's permission is still enforced per-request by the impersonated SubjectAccessReview
+# ("update graphqlapis" in the target namespace), so this SA capability is only ever exercised on behalf
+# of a caller who already passed that gate — the same trust model as the shim's Secret/User reads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-graphqlapis
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [graphqlapis]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-aws-shim-graphqlapis
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-graphqlapis }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Access-key lookup: read Secrets ONLY in the shim's own namespace (the iam-ak-<id> store). The
 # shim never gets secret access in the console namespace.
 apiVersion: rbac.authorization.k8s.io/v1
