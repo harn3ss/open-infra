@@ -2,7 +2,7 @@
 #
 # Opt-in, OFF by default (components.openAppsync). The aws-shim's `appsync` service fronts this
 # engine (SigV4 → coarse IAM gate → forward to /graphql). It is on a graduation ladder: slice 1 is
-# VTL over one DynamoDB-style data source (see open-appsync/README.md + the handoff). Still
+# VTL over one DynamoDB-style data source (see open-appsync/README.md). Still
 # EXPERIMENTAL / not counted as proven until its end-to-end probe runs on-cluster.
 #
 # This ships a working engine with a DEMO resolver config (a Todo API) backed by an in-memory data

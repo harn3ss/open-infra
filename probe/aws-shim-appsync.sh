@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compatibility probe for the aws-shim AppSync (GraphQL) surface (design handoff §8).
+# Compatibility probe for the aws-shim AppSync (GraphQL) surface.
 #
 # Signs a REAL SigV4 GraphQL request (service `appsync`) and asserts the FRONT DOOR works: the
 # request is authenticated + passes the coarse IAM gate + reaches the open-appsync engine, which

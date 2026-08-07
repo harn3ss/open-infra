@@ -5,29 +5,29 @@
 // runtime we never wrote — but only if the contract underneath is frozen tight enough to implement
 // against without asking us questions.
 //
-// SCOPING (the drop-33 fork, decision B): Runtime is the per-STEP contract, NOT "the resolver
+// SCOPING: Runtime is the per-STEP contract, NOT "the resolver
 // contract". A resolver is a *lifecycle* that composes steps (see internal/resolver): `unit` is one
 // step over a data source; `pipeline` is before → functions → after; `subscription` (later) inverts to
 // setup-then-push. What is shared across all of them — and across VTL/JS — is this one step. Naming it
 // the step contract is what lets pipelines and subscriptions EXTEND open-appsync instead of forking it.
 // The three frozen terms:
 //
-//  1. In    — what a step receives: the resolver $ctx (arguments, identity, source; $ctx.stash shared
-//             across a pipeline's steps; $ctx.prev.result from the previous function; and — for the
-//             response phase — the data-source result at ctx["result"]).
-//  2. Out   — what it emits: a neutral Operation, a shape the data source understands REGARDLESS of
-//             which runtime produced it (today VTL renders this; a JS runtime must render the same).
-//             The Operation is OPTIONAL: a step may return a nil Operation, meaning "this step only
-//             transformed $ctx; do not call a data source". That is how a pipeline's before/after
-//             steps (which touch no source) are the SAME step abstraction as a function.
-//  3. Error — how errors and null propagate: a step returns (value, error); a resolver-thrown error
-//             (e.g. VTL's $util.error()) is returned as a normal error and surfaces on the field.
+// 1. In — what a step receives: the resolver $ctx (arguments, identity, source; $ctx.stash shared
+// across a pipeline's steps; $ctx.prev.result from the previous function; and — for the
+// response phase — the data-source result at ctx["result"]).
+// 2. Out — what it emits: a neutral Operation, a shape the data source understands REGARDLESS of
+// which runtime produced it (today VTL renders this; a JS runtime must render the same).
+// The Operation is OPTIONAL: a step may return a nil Operation, meaning "this step only
+// transformed $ctx; do not call a data source". That is how a pipeline's before/after
+// steps (which touch no source) are the SAME step abstraction as a function.
+// 3. Error — how errors and null propagate: a step returns (value, error); a resolver-thrown error
+// (e.g. VTL's $util.error) is returned as a normal error and surfaces on the field.
 //
 // VTL is the first tenant (internal/vtlruntime) and it plugs in through THIS interface with no
 // backstage pass — if it needed a shortcut the others won't have, the seam would be theatre. It was
 // deliberately NOT blessed stable on one implementation; it is now exercised by a SECOND, real,
 // non-VTL tenant — a sandboxed JavaScript runtime (internal/jsruntime) — through the same front door
-// with no backstage pass (forward-map §4). Two tenants, not one: the interface is treated as STABLE
+// with no backstage pass. Two tenants, not one: the interface is treated as STABLE
 // going forward. (That is a statement about the interface only; JS-as-a-runtime itself is still an
 // experimental rung. Do not conflate the two.) Openness earned by two tenants, not declared on one.
 package runtime
@@ -54,7 +54,7 @@ type Runtime interface {
 }
 
 // Validator is an OPTIONAL capability a runtime may expose so the engine can fail closed at config
-// load (handoff §2 negative-proof bar): validate every template up front and, if one is malformed,
+// load: validate every template up front and, if one is malformed,
 // keep the WHOLE config from serving rather than discovering it on the first request. It is separate
 // from the three-term Runtime contract on purpose — execution and pre-validation are different jobs,
 // and a runtime that genuinely cannot pre-validate simply does not implement this.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario 6: mesh-under-concurrent-chaos (design §5).
+# Nightly Chaos Suite — Scenario 6: mesh-under-concurrent-chaos.
 #
 # THE GRADUATION ACCEPTANCE TEST: the hand-run GameDay, automated. Hit the mesh with
 # capture-kill + partition + sink-kill SIMULTANEOUSLY while the harness is writing, then

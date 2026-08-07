@@ -1,4 +1,4 @@
-# kind: GraphQLApi — open-infra's NEUTRAL GraphQL authoring plane (open-appsync handoff §2).
+# kind: GraphQLApi — open-infra's NEUTRAL GraphQL authoring plane.
 #
 # A GraphQL schema served by mapping templates over data sources IS what a resolver-based engine is —
 # not an AWS concept. So the kind describes the engine's own nouns (a schema, data sources, resolvers),

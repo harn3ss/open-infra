@@ -22,7 +22,7 @@ import (
 // Until now the only way to add a person or change their access was `kubectl apply` of a User
 // plus a hand-made bcrypt-hash Secret. These endpoints put that behind the console — but they
 // are NOT a privilege back door. Every one authorizes the SIGNED-IN user with a
-// SubjectAccessReview against iam.openinfra.dev (see authorize()), so it is exactly as
+// SubjectAccessReview against iam.openinfra.dev (see authorize), so it is exactly as
 // restricted as `kubectl` would be: only members of a group bound to a ClusterRole that grants
 // users/groups (i.e. admins) get through. The console's ServiceAccount does the work, but the
 // human's own RBAC decides whether it happens.
@@ -33,7 +33,7 @@ import (
 
 const (
 	// iamNS is where console identities and their password Secrets live — the console's
-	// own namespace, the same one newAuthStore() and auth_crd.go read from.
+	// own namespace, the same one newAuthStore and auth_crd.go read from.
 	iamPasswordKey = "hash"
 )
 

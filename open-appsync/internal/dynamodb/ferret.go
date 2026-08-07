@@ -11,7 +11,7 @@ import (
 )
 
 // FerretStore is the durable DynamoDB-style Store, backed by FerretDB (MongoDB wire protocol) — the
-// existing open-infra DynamoDB→Mongo parity mapping (piece 3). It translates the VTL-emitted DynamoDB
+// existing open-infra DynamoDB→Mongo parity mapping. It translates the VTL-emitted DynamoDB
 // operation onto Mongo operations against ONE collection (the resolver's data-source "table"), so a
 // resolver's request template output runs against durable storage. It is the exact same Store
 // interface MemStore implements, so a resolver runs unchanged against either.

@@ -1,4 +1,4 @@
-# Scenario 3 — sink-kill (design §5). Kill the apply-sink that applies A's changes into
+# Scenario 3 — sink-kill. Kill the apply-sink that applies A's changes into
 # B, mid-flight, while the harness is writing. The mesh must still converge once the pod
 # returns: the sink resumes from its durable NATS consumer (AckWait redelivers rather
 # than drops) and applies the queued changes. A lost offset or a dropped message shows up

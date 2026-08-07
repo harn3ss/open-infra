@@ -23,7 +23,7 @@ func (f fakeKeys) Lookup(_ context.Context, id string) (awskeys.Key, bool) {
 }
 
 // signedRequest builds a request signed with SigV4 exactly as a real client would, using the
-// package's own Sign (vector-anchored), so authenticate() exercises the true verification path.
+// package's own Sign (vector-anchored), so authenticate exercises the true verification path.
 func signedRequest(t *testing.T, accessKeyID, secretKey string) *http.Request {
 	t.Helper()
 	req, err := http.NewRequest("GET", "http://s3.local/my-bucket/obj.txt", nil)

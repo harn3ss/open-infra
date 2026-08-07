@@ -1,6 +1,6 @@
 // Command open-appsync is open-infra's resolver-first, VTL-faithful AWS AppSync engine (the engine
 // the aws-shim's `appsync` service fronts). It loads a declarative resolver config and serves GraphQL
-// over HTTP at POST /graphql. See open-appsync/README.md and open-infra-open-appsync-handoff.md.
+// over HTTP at POST /graphql. See open-appsync/README.md.
 //
 // UN-PROVEN as a full AppSync: slice 1 is VTL over one DynamoDB-style data source. Un-configured or
 // un-fronted paths fail honestly; nothing is faked.
@@ -53,7 +53,7 @@ func run(logger *slog.Logger) error {
 		logger.Info("connected to FerretDB", slog.String("db", mongoDB.Name()))
 	}
 
-	// Field-level authz (§6): in-cluster, enforce requirements via impersonated SubjectAccessReviews
+	// Field-level authz: in-cluster, enforce requirements via impersonated SubjectAccessReviews
 	// against the shared RBAC boundary. Out of cluster (dev), fall back to no enforcement and say so —
 	// a field's Requirement is then not checked, so this must be logged loudly, not silent.
 	var authorizer authz.Authorizer = authz.AllowAll{}
@@ -65,7 +65,7 @@ func run(logger *slog.Logger) error {
 	}
 	engineOpts := []graphql.Option{graphql.WithAuthorizer(authorizer)}
 
-	// Subscriptions (§3): the bus is the durable JetStream bus when NATS_URL is set (multi-node,
+	// Subscriptions: the bus is the durable JetStream bus when NATS_URL is set (multi-node,
 	// reconnect/resume across a node kill — the path the chaos bar exercises), otherwise a single-node
 	// in-memory bus. If the config declares subscriptions, wire the publisher so a mutation pushes to
 	// its subscribers, and serve the graphql-transport-ws WebSocket below.
@@ -97,9 +97,9 @@ func run(logger *slog.Logger) error {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/graphql", server.Handler(engine))
-	// Authoring aid (handoff §3): render a resolver against a sample $ctx without deploying it.
+	// Authoring aid: render a resolver against a sample $ctx without deploying it.
 	mux.HandleFunc("/test-resolver", server.TestResolverHandler())
-	// Subscriptions over graphql-transport-ws (§3), when the config declares any.
+	// Subscriptions over graphql-transport-ws, when the config declares any.
 	if mgr != nil {
 		if err := mgr.Start(context.Background()); err != nil {
 			return err

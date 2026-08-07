@@ -1,4 +1,4 @@
-# Disposable open-appsync engine for the subscription node-kill scenario (open-appsync §3). Two
+# Disposable open-appsync engine for the subscription node-kill scenario. Two
 # replicas so killing one pod leaves the Service serving; wired to the PLATFORM NATS JetStream
 # (nats.nats.svc), so a mutation's onCreateTodo event rides a durable stream and survives the kill.
 # Blast radius: chaos-sandbox only. Torn down after each run (CHAOS_KEEP=1 to keep for debugging).

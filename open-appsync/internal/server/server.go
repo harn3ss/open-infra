@@ -1,8 +1,8 @@
 // Package server assembles the open-appsync engine from a declarative config directory and serves it
 // over HTTP. The config (a ConfigMap in the deployed component) is: a config.json listing data
-// sources + resolvers, plus the VTL request/response templates as sibling .vtl files (files, not
+// sources + resolvers, plus the VTL request/response templates as sibling.vtl files (files, not
 // inline strings, so templates carry no JSON/YAML escaping). Schema/resolver authoring through an
-// AWS-shaped management API is a later rung; slice 1 takes the resolver set as config, per the handoff.
+// AWS-shaped management API is a later rung; slice 1 takes the resolver set as config,.
 package server
 
 import (
@@ -42,7 +42,7 @@ const (
 type Config struct {
 	DataSources   []DataSourceConfig   `json:"dataSources"`
 	Resolvers     []ResolverConfig     `json:"resolvers"`
-	Subscriptions []SubscriptionConfig `json:"subscriptions"` // Subscription-type fields (§3)
+	Subscriptions []SubscriptionConfig `json:"subscriptions"` // Subscription-type fields
 	Limits        *LimitsConfig        `json:"limits"`        // hostile-load guards; nil = safe defaults
 }
 
@@ -58,7 +58,7 @@ type SubscriptionConfig struct {
 	Auth        authz.Requirement `json:"auth"`
 }
 
-// LimitsConfig is the hostile-load hardening (drop-33 §7) as declared on a GraphQLApi. Guards are ON
+// LimitsConfig is the hostile-load hardening  as declared on a GraphQLApi. Guards are ON
 // by default even when this block is present: maxDepth/maxCost of 0 (or unset) fall back to the safe
 // default; set a NEGATIVE value to deliberately disable a guard (opt-out is explicit, never implicit).
 type LimitsConfig struct {
@@ -92,7 +92,7 @@ type ResolverConfig struct {
 	After     string           `json:"after"`     // filename of the after mapping template (optional)
 	Functions []FunctionConfig `json:"functions"` // ordered pipeline functions
 
-	// Auth is the field-level authorization requirement (§6), enforced by the executor before the
+	// Auth is the field-level authorization requirement, enforced by the executor before the
 	// resolver runs. Zero = public. Checked against the shared k8s RBAC boundary (a SubjectAccessReview).
 	Auth authz.Requirement `json:"auth"`
 }
@@ -254,7 +254,7 @@ func safeLimit(v, def int) int {
 
 // buildResolver assembles one field's lifecycle from its config: a pipeline when Functions is set,
 // otherwise a unit resolver. Every template is validated (fail closed): one malformed template makes
-// the whole Load fail, so the engine never serves a half-broken API (handoff §2).
+// the whole Load fail, so the engine never serves a half-broken API.
 func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.Store, rc ResolverConfig) (resolver.Resolver, error) {
 	if len(rc.Functions) == 0 {
 		src, ok := stores[rc.DataSource]
@@ -333,7 +333,7 @@ func readTemplate(dir, file string) (string, error) {
 	return string(b), err
 }
 
-// buildRuntime selects the runtime for a resolver by its declared `runtime` value (the §2.5 extension
+// buildRuntime selects the runtime for a resolver by its declared `runtime` value (the extension
 // point). Empty defaults to appsync-vtl; an unknown value is rejected (fail closed) rather than
 // silently substituted.
 func buildRuntime(name string, engine *vtl.Engine, request, response string) (runtime.Runtime, error) {
@@ -370,7 +370,7 @@ func Handler(e *graphql.Engine) http.HandlerFunc {
 			return
 		}
 		// The caller's identity is established UPSTREAM (the aws-shim's SigV4→principal) and conveyed as
-		// headers; carry it through the context for field-level authz (§6). The engine never trusts a
+		// headers; carry it through the context for field-level authz. The engine never trusts a
 		// client to assert these directly — in production only the shim, an internal peer, sets them.
 		ctx := authz.NewContext(r.Context(), identityFromHeaders(r))
 		writeJSON(w, http.StatusOK, e.Execute(ctx, body.Query, body.Variables))
@@ -403,7 +403,7 @@ type TestResolverRequest struct {
 }
 
 // TestResolverResponse shows what the templates produce: the neutral request Operation and, if a
-// sample result was supplied, the response value. A resolver-thrown error (e.g. $util.error()) is
+// sample result was supplied, the response value. A resolver-thrown error (e.g. $util.error) is
 // reported with its errorType — the difference between authoring with feedback and authoring blind.
 type TestResolverResponse struct {
 	RequestOp any    `json:"requestOp,omitempty"` // the neutral data-source operation the request phase emits
@@ -412,7 +412,7 @@ type TestResolverResponse struct {
 	ErrorType string `json:"errorType,omitempty"`
 }
 
-// TestResolverHandler exposes the probe harness on user input (handoff §3): POST a resolver + a sample
+// TestResolverHandler exposes the probe harness on user input: POST a resolver + a sample
 // $ctx and get back exactly what its templates render, without deploying it or touching a data source.
 // It is an authoring aid on the engine itself (not an AWS wire API); nothing here mutates state.
 func TestResolverHandler() http.HandlerFunc {

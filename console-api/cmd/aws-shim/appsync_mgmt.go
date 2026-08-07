@@ -11,7 +11,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
-// Stage-2 AppSync MANAGEMENT wire protocol (forward-map §8): the compatibility skin that lets AWS's
+// Stage-2 AppSync MANAGEMENT wire protocol: the compatibility skin that lets AWS's
 // own AppSync tooling — CloudFormation, CDK, `aws appsync create-resolver` — run unchanged by
 // translating AWS management verbs into a PATCH on the neutral kind: GraphQLApi object. This is the
 // edge; it comes AFTER the native model is sound. The neutral core never learns AWS's addressing —

@@ -12,7 +12,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
 
-// Limits are the hostile-load guards (drop-33 §7). GraphQL's cost asymmetry — the client composes
+// Limits are the hostile-load guards. GraphQL's cost asymmetry — the client composes
 // demand, the server owns cost — makes an unguarded endpoint a denial-of-service risk, which matters
 // MOST for the least-resourced operator this project is built for. So these are GraphQL properties
 // (not AppSync ones) enforced in the neutral engine, with defaults that protect an operator who set
@@ -34,7 +34,7 @@ type Publisher interface {
 	PublishForMutation(ctx context.Context, mutationField string, result any)
 }
 
-// ParseSubscription parses a `subscription { field(args) { ... } }` operation and returns the root
+// ParseSubscription parses a `subscription { field(args) {... } }` operation and returns the root
 // field name and its evaluated arguments (resolving $variables) — what the WebSocket handler needs to
 // register a subscriber. It rejects a non-subscription operation.
 func ParseSubscription(query string, variables map[string]any) (field string, args map[string]any, err error) {
@@ -53,7 +53,7 @@ func ParseSubscription(query string, variables map[string]any) (field string, ar
 }
 
 // Engine executes GraphQL operations against a set of resolvers. Resolvers are keyed by
-// "<RootType>.<field>", e.g. "Query.getTodo" / "Mutation.createTodo" (schema intake / piece 1: the
+// "<RootType>.<field>", e.g. "Query.getTodo" / "Mutation.createTodo" (schema intake /: the
 // mapping of a field to the resolver that backs it). Each resolver carries its own runtime, so the
 // executor holds no VTL (or any other runtime) knowledge — it dispatches fields and projects
 // selection sets. It enforces Limits before running any resolver.
@@ -113,7 +113,7 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 		return Result{Errors: []GqlError{{Message: err.Error()}}}
 	}
 	// Hostile-load guards run before any resolver executes: a pathological document must be rejected
-	// without being run (drop-33 §7).
+	// without being run.
 	if ge := e.checkLimits(query, op); ge != nil {
 		return Result{Errors: []GqlError{*ge}}
 	}
@@ -140,7 +140,7 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			data[respKey] = nil
 			continue
 		}
-		// Field-level authorization (§6): consult the shared boundary BEFORE running the resolver. A
+		// Field-level authorization: consult the shared boundary BEFORE running the resolver. A
 		// denial surfaces as Unauthorized with the field null, and the resolver — and its data source —
 		// never runs. This is the lifecycle's job; the runtime step stays auth-unaware.
 		id := authz.FromContext(ctx)

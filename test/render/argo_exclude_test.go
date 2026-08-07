@@ -10,7 +10,7 @@ import (
 
 // The app-of-apps root (platform/root-app.yaml) syncs platform/ with a directory
 // generator: include '{<areas>}/*.yaml', exclude __EXCLUDE__ (from install.sh). Argo's
-// glob does NOT treat '/' as a separator, so '*' spans path segments — every .yaml under
+// glob does NOT treat '/' as a separator, so '*' spans path segments — every.yaml under
 // an included area (top-level OR nested) is picked up. Anything picked up that is not a
 // manifest the API server serves makes Argo abort the WHOLE platform sync, wedging every
 // component until it is fixed.
@@ -22,7 +22,7 @@ import (
 // adding it to that list and the next sync wedges — silently, because nothing here
 // exercises it.
 //
-// This is the guard, in the boundary-checker style: every .yaml under an included area is
+// This is the guard, in the boundary-checker style: every.yaml under an included area is
 // EITHER excluded by install.sh, OR a top-level manifest the root app can legitimately
 // apply. The areas come from root-app.yaml and the globs from install.sh, so the test
 // tracks both sources of truth instead of becoming a third copy to drift.

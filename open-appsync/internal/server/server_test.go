@@ -15,7 +15,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
 )
 
-// Proves the deploy wrapper end-to-end without Mongo: a config dir (memory data source + .vtl
+// Proves the deploy wrapper end-to-end without Mongo: a config dir (memory data source +.vtl
 // template files) loads into an engine, and the HTTP handler runs a real GraphQL mutation+query
 // over POST /graphql — the exact path the aws-shim forwards to.
 func TestServer_LoadAndServe(t *testing.T) {
@@ -129,7 +129,7 @@ func TestServer_PipelineResolver(t *testing.T) {
 }
 
 // A limits block on the config is honored end-to-end: a query past maxDepth is rejected over HTTP
-// before the resolver runs (drop-33 §7 wired through Load).
+// before the resolver runs (wired through Load).
 func TestServer_LimitsEnforced(t *testing.T) {
 	dir := t.TempDir()
 	w := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
@@ -373,7 +373,7 @@ func TestServer_DynamoDBRequiresMongo(t *testing.T) {
 	}
 }
 
-// §2 negative-proof bar: one malformed resolver template must keep the WHOLE config from loading
+// negative-proof bar: one malformed resolver template must keep the WHOLE config from loading
 // (fail closed) — the engine never serves a half-broken API, and the parse error surfaces at load.
 func TestServer_FailsClosedOnMalformedResolver(t *testing.T) {
 	dir := t.TempDir()

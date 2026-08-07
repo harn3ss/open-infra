@@ -30,9 +30,9 @@ import (
 //
 // The identity backend is chosen at install time via AUTH_MODE (see docs/auth.md):
 //
-//	local  (default) — users stored in the console-auth Secret, bcrypt hashed
-//	ldap / oidc      — reserved; implemented in a later phase
-//	none             — NO authentication. Must be set explicitly; logs a loud warning.
+//	local (default) — users stored in the console-auth Secret, bcrypt hashed
+//	ldap / oidc — reserved; implemented in a later phase
+//	none — NO authentication. Must be set explicitly; logs a loud warning.
 //
 // v1 is a gate: every authenticated user currently shares the console's ServiceAccount rights.
 // Per-user authorization (Kubernetes impersonation + IAM-style roles) is the next phase — the
@@ -174,12 +174,12 @@ func (a *authStore) users(ctx context.Context) map[string]userRec {
 // impersonate with (nil = derive them from the role).
 //
 // Order is deliberate:
-//  1. Secret-backed local accounts — ALWAYS accepted in every mode. This keeps the
-//     bootstrap `root` working as break-glass, so a broken CRD, a bad Composition or a
-//     directory outage can never lock you out of your own console.
-//  2. kind: User (iam.openinfra.dev) — the GitOps-managed form, whose spec.groups are
-//     authoritative for authorization.
-//  3. LDAP, when AUTH_MODE=ldap.
+// 1. Secret-backed local accounts — ALWAYS accepted in every mode. This keeps the
+// bootstrap `root` working as break-glass, so a broken CRD, a bad Composition or a
+// directory outage can never lock you out of your own console.
+// 2. kind: User (iam.openinfra.dev) — the GitOps-managed form, whose spec.groups are
+// authoritative for authorization.
+// 3. LDAP, when AUTH_MODE=ldap.
 func (a *authStore) verify(ctx context.Context, user, pass string) (string, []string, bool) {
 	if role, ok := a.verifyLocal(ctx, user, pass); ok {
 		return role, nil, true

@@ -1,10 +1,10 @@
-// Package datasource is the first-class, vendor-neutral data-source contract (forward-map §5). It is
+// Package datasource is the first-class, vendor-neutral data-source contract. It is
 // deliberately its OWN package — not part of internal/dynamodb — so the contract owes nothing to any
 // one source's shape: a resolver can target a DynamoDB-style store, an HTTP endpoint, or a Lambda
 // without the engine or the resolver lifecycle ever branching on which. Only a Store implementation
 // knows its own operation shape.
 //
-// Store is the CALL-source contract (the §1b distinction): a synchronous "give me this Operation, hand
+// Store is the CALL-source contract (the the call-vs-stream split distinction): a synchronous "give me this Operation, hand
 // back a result". It fits DynamoDB, HTTP, Lambda, RDS — everything you *call*. A subscription's push
 // source (a stream of events that call YOU) is a different kind of thing entirely and is NOT a Store.
 package datasource

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// fixedEngine returns an engine with pinned $util.autoId()/time so output is byte-deterministic.
+// fixedEngine returns an engine with pinned $util.autoId/time so output is byte-deterministic.
 func fixedEngine() *Engine {
 	e := New()
 	e.util.AutoID = func() string { return "00000000-0000-4000-8000-000000000000" }

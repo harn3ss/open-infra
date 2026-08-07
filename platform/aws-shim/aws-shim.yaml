@@ -1,17 +1,17 @@
 # open-infra aws-shim — the AWS-SDK interception front door (S3 over MinIO, v1).
 #
 # Opt-in, OFF by default: this whole directory is excluded from the app-of-apps unless
-# components.awsShim: true (install.sh incl()). It is one optional AWS-shaped surface over the
+# components.awsShim: true (install.sh incl). It is one optional AWS-shaped surface over the
 # platform, never a core dependency.
 #
-# Security posture (design handoff §4 — "one policy world", no parallel auth, no god-mode):
-#   - The shim reuses internal/iam, so authorization is the SAME impersonated SubjectAccessReview
-#     the console uses. Its only cluster-wide grant is `create subjectaccessreviews` — which ASKS
-#     the API server a question and grants nothing.
-#   - Least privilege by namespace split: the shim reads access-key Secrets ONLY in its own
-#     namespace, and reads kind: User (never Secrets) in the console namespace to resolve owners.
-#   - It talks to MinIO as a scoped, NON-root service account (no MinIO admin API), minted the
-#     same declarative way as the console/query identities.
+# Security posture:
+# - The shim reuses internal/iam, so authorization is the SAME impersonated SubjectAccessReview
+# the console uses. Its only cluster-wide grant is `create subjectaccessreviews` — which ASKS
+# the API server a question and grants nothing.
+# - Least privilege by namespace split: the shim reads access-key Secrets ONLY in its own
+# namespace, and reads kind: User (never Secrets) in the console namespace to resolve owners.
+# - It talks to MinIO as a scoped, NON-root service account (no MinIO admin API), minted the
+# same declarative way as the console/query identities.
 ---
 apiVersion: v1
 kind: Namespace
@@ -48,7 +48,7 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
-# Stage-2 AppSync management (open-appsync §8): the shim read-modify-writes GraphQLApi claims to apply
+# Stage-2 AppSync management: the shim read-modify-writes GraphQLApi claims to apply
 # CreateResolver/CreateDataSource/etc. It is cluster-wide because an apiId can name any team namespace;
 # the CALLER's permission is still enforced per-request by the impersonated SubjectAccessReview
 # ("update graphqlapis" in the target namespace), so this SA capability is only ever exercised on behalf
