@@ -1,11 +1,10 @@
-//go:build integration
-
 // JetStreamBus is the DURABLE, multi-node Bus (forward-map §3): subscription events ride a NATS
 // JetStream stream, and each engine node consumes them with a DURABLE consumer, so a node kill →
 // reconnect resumes from the last acked sequence with no lost and no duplicated events past that point.
 // That reconnect/resume behaviour is exactly what the node-kill chaos scenario (the rung's graduation
-// bar) exercises — which is why it is temporal and cannot be a unit test. Build-tagged `integration`:
-// it needs a live NATS/JetStream, so it is out of the default unit build (mirrors the FerretDB store).
+// bar) exercises — which is why it is temporal and cannot be a unit test. It compiles into the engine
+// binary (main selects it when NATS_URL is set; otherwise the in-memory bus). Its live test — which
+// needs a running NATS — is build-tagged `integration` (jetstream_integration_test.go).
 package subscription
 
 import (

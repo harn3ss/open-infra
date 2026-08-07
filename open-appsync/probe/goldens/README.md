@@ -41,15 +41,19 @@ still `documented` — that count is the Clock-A gate.
 
 ## Capturing (maintainer, once — needs a real AppSync account, never a user's)
 
-This is the external step §1 leaves on the maintainer's clock:
+This is the external step §1 leaves on the maintainer's clock — now **one command**:
 
-1. Create a throwaway AppSync API with a DynamoDB data source and the corpus resolvers.
-2. Invoke each operation; capture the **request mapping template output** (CloudWatch resolver logs
-   with full request/response logging, or the console's resolver evaluator).
-3. For each case: paste the real request object into `expected`, record the `autoId`/timestamp AWS used
-   into `autoId`/`now`, and flip `source` to `"aws-capture"`.
-4. Re-run `go test ./probe/`. Every divergence the diff surfaces is either fixed in the engine or
-   written down as a known gap.
+```
+AWS_PROFILE=you AWS_REGION=us-east-1 ./capture.sh
+```
+
+`capture.sh` renders every golden's corpus template through real AppSync via the server-side
+`aws appsync evaluate-mapping-template` API (no API/schema to deploy), rewrites each golden as
+`source: aws-capture` with AWS's exact output as `expected`, and pins the generated `autoId` so the CI
+diff is byte-exact. Then re-run `go test ./probe/`: every case now diffs against real AWS, and every
+divergence is either fixed in the engine or written down as a known gap. (Doing it by hand — a throwaway
+API + CloudWatch full-request logging, pasting each request object in — still works and is the fallback
+if the evaluate API is unavailable for a template.)
 
 **Bar to delete "experimental" from the runtime:** every golden is `aws-capture`, the diff is green,
 and each divergence found during capture is fixed or documented. Until then the runtime stays
