@@ -199,6 +199,51 @@ func TestServer_JSFailsClosedOnSyntaxError(t *testing.T) {
 	}
 }
 
+// An http data source loads from config (endpoint field + type "http") and a resolver reaches it
+// end-to-end over HTTP — the second call-source through the same config→Load→executor path.
+func TestServer_HTTPDataSource(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "7", "name": "Grace"})
+	}))
+	defer api.Close()
+
+	dir := t.TempDir()
+	wf := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	wf("config.json", `{
+	  "dataSources":[{"name":"api","type":"http","endpoint":"`+api.URL+`"}],
+	  "resolvers":[{"type":"Query","field":"getUser","dataSource":"api","request":"get.vtl","response":"resp.vtl"}]
+	}`)
+	wf("get.vtl", `{"method":"GET","resourcePath":"/users/$ctx.args.id"}`)
+	wf("resp.vtl", `$util.toJson($ctx.result.body)`)
+
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"query": `query { getUser(id:"7") { id name } }`})
+	rec := httptest.NewRecorder()
+	Handler(engine)(rec, httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body))))
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if errs, ok := out["errors"]; ok && errs != nil {
+		t.Fatalf("http data source errors: %v", errs)
+	}
+	got := out["data"].(map[string]any)["getUser"].(map[string]any)
+	if got["name"] != "Grace" {
+		t.Fatalf("http data source over HTTP not faithful: %v", got)
+	}
+}
+
+// An http data source with no endpoint fails Load closed.
+func TestServer_HTTPRequiresEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "config.json"),
+		[]byte(`{"dataSources":[{"name":"api","type":"http"}],"resolvers":[]}`), 0o644)
+	if _, err := Load(dir, nil); err == nil {
+		t.Fatal("expected Load to fail for an http source with no endpoint")
+	}
+}
+
 func TestServer_Handler_RejectsGET(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"dataSources":[],"resolvers":[]}`), 0o644)
