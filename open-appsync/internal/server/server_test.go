@@ -152,6 +152,53 @@ func TestServer_LimitsEnforced(t *testing.T) {
 	}
 }
 
+// A JS resolver (runtime: appsync-js) loads from config and serves end-to-end over HTTP — the second
+// runtime through the same config→Load→executor path as VTL.
+func TestServer_JSResolver(t *testing.T) {
+	dir := t.TempDir()
+	w := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	w("config.json", `{
+	  "dataSources":[{"name":"t","type":"memory"}],
+	  "resolvers":[{"type":"Mutation","field":"createTodo","dataSource":"t","runtime":"appsync-js","request":"put.js"}]
+	}`)
+	w("put.js", `
+	  function request(ctx){ return { operation:'PutItem',
+	    key:{ id: util.dynamodb.toDynamoDB(util.autoId()) },
+	    attributeValues: util.dynamodb.toMapValues({ name: ctx.args.name }) }; }
+	  function response(ctx){ return ctx.result; }`)
+
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"query": `mutation { createTodo(name:"Ada") { id name } }`})
+	rec := httptest.NewRecorder()
+	Handler(engine)(rec, httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body))))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if errs, ok := out["errors"]; ok && errs != nil {
+		t.Fatalf("js resolver errors: %v", errs)
+	}
+	got := out["data"].(map[string]any)["createTodo"].(map[string]any)
+	if got["name"] != "Ada" || got["id"] == "" {
+		t.Fatalf("js resolver over HTTP not faithful: %v", got)
+	}
+}
+
+// A malformed JS module fails closed at load (syntax error), like a malformed VTL template.
+func TestServer_JSFailsClosedOnSyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	w := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	w("config.json", `{"dataSources":[{"name":"t","type":"memory"}],"resolvers":[{"type":"Query","field":"x","dataSource":"t","runtime":"appsync-js","request":"bad.js"}]}`)
+	w("bad.js", `function request(ctx { return {}; `) // syntax error
+	if _, err := Load(dir, nil); err == nil {
+		t.Fatal("a malformed JS module must fail Load closed")
+	}
+}
+
 func TestServer_Handler_RejectsGET(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"dataSources":[],"resolvers":[]}`), 0o644)

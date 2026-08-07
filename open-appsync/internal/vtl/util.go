@@ -101,6 +101,26 @@ func (u *Util) call(path string, args []any) (result any, err error, ok bool) {
 	return nil, nil, false
 }
 
+// Call invokes a $util method by path (e.g. "toJson", "autoId", "time.nowISO8601") for a runtime that
+// is NOT VTL — the JS runtime reuses this exact dispatcher so the two runtimes can never drift. A
+// $util.error() surfaces as a *ThrowError; an unknown path is an error.
+func (u *Util) Call(path string, args []any) (any, error) {
+	res, err, ok := u.call(path, args)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("util: unknown method %q", path)
+	}
+	return res, nil
+}
+
+// ToDynamoDB / ToMapValues expose the DynamoDB typed marshalling as OBJECTS (not JSON strings) for the
+// JS runtime, which builds operation objects directly rather than interpolating strings into a
+// template. Same underlying conversion as $util.dynamodb.toDynamoDBJson — one implementation, no drift.
+func (u *Util) ToDynamoDB(v any) any             { return toDynamoDB(v) }
+func (u *Util) ToMapValues(v any) map[string]any { return toMapValues(v) }
+
 // toDynamoDB converts a plain value to its DynamoDB typed representation ({"S":…} etc.), recursively.
 // This is the ground-truth shape from AWS's docs — the heart of DynamoDB resolver fidelity.
 func toDynamoDB(v any) any {
