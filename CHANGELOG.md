@@ -48,6 +48,29 @@ the product's public contract.
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
     **only** thing that removes "experimental" from the runtime.
+- **open-appsync — the step/lifecycle fork, pipeline resolvers, and hostile-load hardening
+  (experimental; three independent rungs, each on its own bar).**
+  - **The runtime contract is the STEP contract, not the resolver contract (drop-33 fork, decision B).**
+    `runtime.Runtime` was derived from the one shape that existed (unit resolver) and its Out term baked
+    in "every step targets a data source" — which pipelines bend and subscriptions break. Resolved
+    *before* the Terraform/ConfigMap surface hardened: the Out term is now **optional** (a step may
+    return a nil Operation = "transformed `$ctx` only; no data-source call"), `Runtime` is re-documented
+    as one **step**, and a **lifecycle** layer composes steps. `unit` is byte-identical to slice 1 (its
+    tests pass unchanged). The data-source parallel is named too: `Store.Execute` is the **call-source**
+    contract (DynamoDB/HTTP/Lambda/RDS fit "call → result"); a subscription's push source is a separate
+    thing, not a `Store`. This is what keeps pipelines/subscriptions **extensions**, not forks.
+  - **Pipeline resolvers.** `before → [function…] → after`, with `$ctx.stash` shared across steps and
+    `$ctx.prev.result` threaded function-to-function; `before`/`after` are no-Operation steps. Proven
+    end-to-end (before → 2 functions → after, stash threaded, a before-step that emits no Operation, and
+    an abort that stops the pipeline before any function runs) at the resolver, config-loader, and HTTP
+    levels. Expressible on `kind: GraphQLApi` (`resolvers[].before/after/functions[]`) and in the
+    Terraform provider.
+  - **Hostile-load hardening (safe by default).** The neutral engine now enforces, before any resolver
+    runs: query **depth** limiting, **cost** (field-count) limiting, and an optional **persisted-query**
+    allow-list. Defaults are ON (depth 10, cost 1000); `kind: GraphQLApi`'s `limits` block tunes them; a
+    negative value is an explicit opt-out. Each guard has a negative probe proving the rejection fires.
+    Honest label until each rung graduates: *trusted-client / internal use* — not yet "safe against
+    hostile load" as a blanket claim.
 - **`kind: HttpApi` — an API-Gateway-style HTTP front door.** Declare a `domain` and a list of
   `path → backend` routes onto `kind: Function` or `kind: Application` backends; the composition
   renders one Traefik Ingress with cert-manager TLS. It's the genuine capability expressed as a
