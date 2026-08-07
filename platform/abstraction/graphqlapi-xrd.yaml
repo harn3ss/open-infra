@@ -113,7 +113,7 @@ spec:
                       runtime:
                         type: string
                         default: appsync-vtl
-                        description: "The resolver runtime (the extension point). Today: appsync-vtl. A resolver author's VTL is byte-for-byte identical here — zero retraining."
+                        description: "The resolver runtime (the extension point): appsync-vtl (VTL mapping templates — a resolver author's VTL is byte-for-byte identical, zero retraining) or appsync-js (a sandboxed JavaScript module exporting request(ctx)/response(ctx), carried in the request field)."
                       dataSource:
                         type: string
                         description: "Unit resolver: name of a spec.dataSources entry."
