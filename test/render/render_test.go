@@ -141,6 +141,47 @@ func TestHttpApi_NoTLS(t *testing.T) {
 	}
 }
 
+// TestGraphQLApi_RendersConfigAndEngine pins the neutral authoring plane (open-appsync §2): the
+// composition must render (a) a ConfigMap whose config.json + per-resolver .vtl files match the shape
+// server.Load reads, carrying the resolver's `runtime`, and (b) an engine Deployment with a config
+// checksum annotation (the reload mechanism) + a Service. The resolver author's VTL must appear
+// verbatim — the load-bearing "specialist learns nothing" promise (§4.1).
+func TestGraphQLApi_RendersConfigAndEngine(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	out := render(t, tmpl, graphqlApiCtx(""))
+
+	for _, want := range []string{
+		// (a) config + templates, in the claim namespace, named after the claim.
+		"kind: ConfigMap", "open-appsync-notes-config", "namespace: team-a",
+		`"field": "getNote"`, `"runtime": "appsync-vtl"`, `"dataSource": "notes"`,
+		"Query.getNote.request.vtl:", "Mutation.putNote.response.vtl:",
+		"$util.dynamodb.toDynamoDBJson($ctx.args.id)", // the author's VTL, verbatim
+		// (b) engine + reload + service.
+		"kind: Deployment", "open-appsync-notes", "openinfra.dev/config-checksum:",
+		"readOnlyRootFilesystem: true", "drop: [ALL]",
+		"kind: Service", "targetPort: 8080",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("GraphQLApi render missing %q; got:\n%s", want, grepCtx(out, "open-appsync-notes"))
+		}
+	}
+	// A memory-only API must NOT wire Mongo env.
+	if strings.Contains(out, "MONGO_URI") {
+		t.Errorf("memory-only GraphQLApi must not set MONGO_URI; got:\n%s", grepCtx(out, "env:"))
+	}
+}
+
+// A dynamodb data source with a mongoURI must wire the FerretDB env onto the engine.
+func TestGraphQLApi_DynamoDBWiresMongo(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	out := render(t, tmpl, graphqlApiCtx("mongodb://ferretdb.data.svc:27017"))
+	for _, want := range []string{"MONGO_URI", "mongodb://ferretdb.data.svc:27017", `"type": "dynamodb"`, `"collection": "notes"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dynamodb GraphQLApi missing %q; got:\n%s", want, grepCtx(out, "MONGO"))
+		}
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
@@ -286,6 +327,48 @@ func httpApiCtx(tls bool) map[string]any {
 				"labels": map[string]any{
 					"crossplane.io/claim-name":      "storefront",
 					"crossplane.io/claim-namespace": "shop",
+				},
+			},
+		}}},
+	}
+}
+
+// graphqlApiCtx builds a kind: GraphQLApi with two resolvers. Pass a non-empty mongoURI and the data
+// source becomes dynamodb (FerretDB-backed); empty keeps it in-memory (the §6 default for the bar).
+func graphqlApiCtx(mongoURI string) map[string]any {
+	dsType := "memory"
+	ds := map[string]any{"name": "notes"}
+	if mongoURI != "" {
+		dsType = "dynamodb"
+		ds["collection"] = "notes"
+	}
+	ds["type"] = dsType
+	spec := map[string]any{
+		"dataSources": []any{ds},
+		"resolvers": []any{
+			map[string]any{
+				"type": "Query", "field": "getNote", "dataSource": "notes", "runtime": "appsync-vtl",
+				"request":  "{\n  \"operation\": \"GetItem\",\n  \"key\": { \"id\": $util.dynamodb.toDynamoDBJson($ctx.args.id) }\n}",
+				"response": "$util.toJson($ctx.result)",
+			},
+			map[string]any{
+				"type": "Mutation", "field": "putNote", "dataSource": "notes",
+				"request":  "{\n  \"operation\": \"PutItem\",\n  \"key\": { \"id\": $util.dynamodb.toDynamoDBJson($util.autoId()) },\n  \"attributeValues\": $util.dynamodb.toMapValuesJson($ctx.args.input)\n}",
+				"response": "$util.toJson($ctx.result)",
+			},
+		},
+	}
+	if mongoURI != "" {
+		spec["mongoURI"] = mongoURI
+	}
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000ga",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "notes",
+					"crossplane.io/claim-namespace": "team-a",
 				},
 			},
 		}}},
