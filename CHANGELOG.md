@@ -48,6 +48,16 @@ the product's public contract.
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
     **only** thing that removes "experimental" from the runtime.
+- **open-appsync — the data-source family: a neutral `Store` contract + an HTTP source, proving the
+  operation model is genuinely neutral (experimental).** The call-source contract (`datasource.Store`)
+  moved into its own package — out of `dynamodb` — so nothing in the engine or resolver lifecycle owes
+  anything to one source's shape. A second, differently-shaped call-source (`internal/httpsource`,
+  operations like `{"method":"POST","resourcePath":"/x","params":{…}}`) now flows through the **exact
+  same** lifecycle and executor as the DynamoDB store, coexisting in one engine — with **no code path
+  branching on data-source type** (only a `Store` knows its own shape). This answers the "is the neutral
+  Operation genuinely neutral, or a DynamoDB op in a trench coat" question: genuinely neutral. Declared
+  on `kind: GraphQLApi` via `dataSources[].type: http` + `endpoint`, and mirrored in the Terraform
+  provider. (A subscription's push source remains a separate thing — not a `Store`.)
 - **open-appsync — a second runtime tenant: sandboxed JavaScript resolvers, which BLESS the runtime
   interface stable (the runtime rung is experimental; the interface claim is not).** `runtime:
   appsync-js` lets a resolver carry a JavaScript module (`request(ctx)`/`response(ctx)`) instead of VTL.
