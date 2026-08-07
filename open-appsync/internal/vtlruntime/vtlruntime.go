@@ -10,6 +10,7 @@ package vtlruntime
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
@@ -31,11 +32,17 @@ func New(engine *vtl.Engine, request, response string) *Runtime {
 }
 
 // RenderRequest renders the request template against $ctx and decodes it into a neutral Operation.
-// A $util.error() in the template returns a *vtl.ThrowError (validation abort) and no Operation.
+// A template that renders to nothing (empty, or the literal null) emits NO Operation — a nil return —
+// which the lifecycle reads as "this step only transformed $ctx; do not call a data source" (the
+// loosened Out term; this is how a pipeline before-step is the same abstraction as a function). A
+// $util.error() in the template returns a *vtl.ThrowError (validation abort) and no Operation.
 func (r *Runtime) RenderRequest(ctx map[string]any) (runtime.Operation, error) {
 	out, err := r.engine.Render(r.request, ctx)
 	if err != nil {
 		return nil, err // includes *vtl.ThrowError from a validation $util.error()
+	}
+	if t := strings.TrimSpace(out); t == "" || t == "null" {
+		return nil, nil // no-operation step
 	}
 	var op runtime.Operation
 	if err := json.Unmarshal([]byte(out), &op); err != nil {

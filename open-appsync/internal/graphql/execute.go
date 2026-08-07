@@ -2,23 +2,48 @@ package graphql
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
 
+// Limits are the hostile-load guards (drop-33 §7). GraphQL's cost asymmetry — the client composes
+// demand, the server owns cost — makes an unguarded endpoint a denial-of-service risk, which matters
+// MOST for the least-resourced operator this project is built for. So these are GraphQL properties
+// (not AppSync ones) enforced in the neutral engine, with defaults that protect an operator who set
+// nothing (DefaultLimits). 0 disables a numeric limit — that is opt-OUT, and is never the default.
+type Limits struct {
+	MaxDepth      int             // reject queries whose selection nesting exceeds this (0 = unlimited)
+	MaxCost       int             // reject queries with more than this many fields (0 = unlimited)
+	PersistedOnly bool            // when true, only pre-registered query documents run
+	Persisted     map[string]bool // allow-list of sha256(query) hex digests, for PersistedOnly mode
+}
+
+// DefaultLimits protects an unconfigured operator: bounded depth and cost, arbitrary queries allowed.
+func DefaultLimits() Limits { return Limits{MaxDepth: 10, MaxCost: 1000} }
+
 // Engine executes GraphQL operations against a set of resolvers. Resolvers are keyed by
 // "<RootType>.<field>", e.g. "Query.getTodo" / "Mutation.createTodo" (schema intake / piece 1: the
 // mapping of a field to the resolver that backs it). Each resolver carries its own runtime, so the
 // executor holds no VTL (or any other runtime) knowledge — it dispatches fields and projects
-// selection sets.
+// selection sets. It enforces Limits before running any resolver.
 type Engine struct {
 	resolvers map[string]resolver.Resolver
+	limits    Limits
 }
 
+// New builds an engine with DefaultLimits (safe by default). Use NewWithLimits to configure guards.
 func New(resolvers map[string]resolver.Resolver) *Engine {
-	return &Engine{resolvers: resolvers}
+	return &Engine{resolvers: resolvers, limits: DefaultLimits()}
+}
+
+// NewWithLimits builds an engine with explicit hostile-load guards.
+func NewWithLimits(resolvers map[string]resolver.Resolver, limits Limits) *Engine {
+	return &Engine{resolvers: resolvers, limits: limits}
 }
 
 // GqlError is a GraphQL error entry, carrying AppSync's errorType where the resolver threw one.
@@ -41,6 +66,11 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	op, err := parseQuery(query)
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error()}}}
+	}
+	// Hostile-load guards run before any resolver executes: a pathological document must be rejected
+	// without being run (drop-33 §7).
+	if ge := e.checkLimits(query, op); ge != nil {
+		return Result{Errors: []GqlError{*ge}}
 	}
 	rootType := "Query"
 	if op.opType == "mutation" {
@@ -81,6 +111,52 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 		data[respKey] = project(res, sel.selections)
 	}
 	return Result{Data: data, Errors: errs}
+}
+
+// checkLimits enforces the hostile-load guards against a parsed operation, returning a GraphQL error
+// (with an errorType naming the guard) if the document is rejected, or nil if it may run.
+func (e *Engine) checkLimits(query string, op *operation) *GqlError {
+	if e.limits.PersistedOnly {
+		sum := sha256.Sum256([]byte(query))
+		if !e.limits.Persisted[hex.EncodeToString(sum[:])] {
+			return &GqlError{Message: "only persisted (pre-registered) queries are allowed", ErrorType: "PersistedQueryRequired"}
+		}
+	}
+	if e.limits.MaxDepth > 0 {
+		if d := selectionsDepth(op.selections); d > e.limits.MaxDepth {
+			return &GqlError{Message: fmt.Sprintf("query depth %d exceeds the maximum of %d", d, e.limits.MaxDepth), ErrorType: "MaxDepthExceeded"}
+		}
+	}
+	if e.limits.MaxCost > 0 {
+		if c := selectionsCost(op.selections); c > e.limits.MaxCost {
+			return &GqlError{Message: fmt.Sprintf("query cost %d exceeds the maximum of %d", c, e.limits.MaxCost), ErrorType: "MaxCostExceeded"}
+		}
+	}
+	return nil
+}
+
+// selectionsDepth is the deepest selection-set nesting (top-level fields are depth 1).
+func selectionsDepth(sels []selection) int {
+	max := 0
+	for _, s := range sels {
+		d := 1
+		if len(s.selections) > 0 {
+			d += selectionsDepth(s.selections)
+		}
+		if d > max {
+			max = d
+		}
+	}
+	return max
+}
+
+// selectionsCost is the total number of fields in the query (a simple, honest cost proxy).
+func selectionsCost(sels []selection) int {
+	n := 0
+	for _, s := range sels {
+		n += 1 + selectionsCost(s.selections)
+	}
+	return n
 }
 
 // evalArgs turns parsed argument values into plain Go values, resolving $variables.
