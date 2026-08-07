@@ -1,0 +1,82 @@
+# Disposable open-appsync engine for the subscription node-kill scenario (open-appsync §3). Two
+# replicas so killing one pod leaves the Service serving; wired to the PLATFORM NATS JetStream
+# (nats.nats.svc), so a mutation's onCreateTodo event rides a durable stream and survives the kill.
+# Blast radius: chaos-sandbox only. Torn down after each run (CHAOS_KEEP=1 to keep for debugging).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: open-appsync-chaos-config
+  namespace: chaos-sandbox
+data:
+  config.json: |
+    {
+      "dataSources": [{ "name": "todos", "type": "memory" }],
+      "resolvers": [
+        { "type": "Mutation", "field": "createTodo", "dataSource": "todos", "request": "createTodo.request.vtl", "response": "response.vtl" }
+      ],
+      "subscriptions": [
+        { "field": "onCreateTodo", "response": "response.vtl", "triggeredBy": ["createTodo"] }
+      ]
+    }
+  createTodo.request.vtl: |
+    {
+      "version": "2018-05-29",
+      "operation": "PutItem",
+      "key": { "id": $util.dynamodb.toDynamoDBJson($ctx.args.input.id) },
+      "attributeValues": $util.dynamodb.toMapValuesJson($ctx.args.input)
+    }
+  response.vtl: |
+    $util.toJson($ctx.result)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-appsync-chaos
+  namespace: chaos-sandbox
+  labels: { app: open-appsync-chaos }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: open-appsync-chaos }
+  template:
+    metadata:
+      labels: { app: open-appsync-chaos }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+      containers:
+        - name: engine
+          image: ghcr.io/harn3ss/open-infra-open-appsync:latest
+          imagePullPolicy: Always
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: CONFIG_DIR, value: "/etc/open-appsync" }
+            - { name: NATS_URL, value: "nats://nats.nats.svc:4222" }
+            - { name: NATS_STREAM, value: "open_appsync_subscriptions" }
+            - { name: NATS_SUBJECT_PREFIX, value: "sub" }
+          volumeMounts: [{ name: config, mountPath: /etc/open-appsync }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: config
+          configMap: { name: open-appsync-chaos-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-appsync-chaos
+  namespace: chaos-sandbox
+  labels: { app: open-appsync-chaos }
+spec:
+  type: ClusterIP
+  selector: { app: open-appsync-chaos }
+  ports: [{ name: http, port: 80, targetPort: 8080 }]
