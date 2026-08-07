@@ -1,0 +1,14 @@
+{
+  "source": "documented",
+  "description": "Validation resolver — valid input renders the PutItem op (the #if guard falls through)",
+  "template": "validate.request.vtl",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "now": "2026-08-06T00:00:00Z",
+  "context": { "args": { "input": { "name": "Ada" } } },
+  "expected": {
+    "version": "2018-05-29",
+    "operation": "PutItem",
+    "key": { "id": { "S": "11111111-2222-4333-8444-555555555555" } },
+    "attributeValues": { "name": { "S": "Ada" } }
+  }
+}

@@ -95,3 +95,47 @@ func TestServer_DynamoDBRequiresMongo(t *testing.T) {
 		t.Fatal("expected Load to fail for a dynamodb source with no MONGO_URI")
 	}
 }
+
+// §2 negative-proof bar: one malformed resolver template must keep the WHOLE config from loading
+// (fail closed) — the engine never serves a half-broken API, and the parse error surfaces at load.
+func TestServer_FailsClosedOnMalformedResolver(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("config.json", `{
+	  "dataSources": [{"name":"todos","type":"memory"}],
+	  "resolvers": [
+	    {"type":"Query","field":"getTodo","dataSource":"todos","request":"get.vtl","response":"resp.vtl"}
+	  ]
+	}`)
+	write("get.vtl", "#if($ctx.args.id)\n{\"operation\":\"Scan\"}\n") // no #end — malformed
+	write("resp.vtl", `$util.toJson($ctx.result)`)
+
+	if _, err := Load(dir, nil); err == nil {
+		t.Fatal("Load must fail closed on a malformed resolver template, not serve a broken config")
+	}
+}
+
+// An unknown runtime value is rejected (fail closed), not silently defaulted — so a typo, or a runtime
+// this build doesn't have, can never quietly serve the wrong thing.
+func TestServer_UnknownRuntimeRejected(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		_ = os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644)
+	}
+	write("config.json", `{
+	  "dataSources": [{"name":"todos","type":"memory"}],
+	  "resolvers": [
+	    {"type":"Query","field":"getTodo","dataSource":"todos","runtime":"js","request":"get.vtl","response":"resp.vtl"}
+	  ]
+	}`)
+	write("get.vtl", `{"operation":"Scan"}`)
+	write("resp.vtl", `$util.toJson($ctx.result)`)
+
+	if _, err := Load(dir, nil); err == nil {
+		t.Fatal("Load must reject an unknown runtime value")
+	}
+}

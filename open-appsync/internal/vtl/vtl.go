@@ -39,6 +39,19 @@ func (e *Engine) Render(tmpl string, ctx map[string]any) (string, error) {
 	return b.String(), nil
 }
 
+// Validate parses a template into its block tree WITHOUT evaluating it, reporting a structural error
+// (an unterminated #if/#foreach, a malformed #set, a bad expression). It is how the engine fails
+// closed at config load: a resolver whose template does not parse keeps the whole config from serving
+// (handoff §2). It cannot catch errors that only arise from a specific $ctx at render time.
+func (e *Engine) Validate(tmpl string) error {
+	items, err := scanTemplate(tmpl)
+	if err != nil {
+		return err
+	}
+	_, _, err = buildBlock(items, 0, "")
+	return err
+}
+
 // --- flat scan ---
 
 type item struct {
