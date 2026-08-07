@@ -55,6 +55,14 @@ divergence is either fixed in the engine or written down as a known gap. (Doing 
 API + CloudWatch full-request logging, pasting each request object in — still works and is the fallback
 if the evaluate API is unavailable for a template.)
 
+The current set covers the deterministic, byte-comparable cases: GetItem (simple + composite key),
+PutItem (single + multi-attribute, mixed types), the full `toDynamoDBJson` typed-marshalling surface
+(nested map / list / null / bool / int / negative / float / string), and the response passthrough.
+Two things are deliberately **out** of this byte-exact harness and covered by unit tests instead:
+`$util.time.*` (non-deterministic — `evaluate-mapping-template` gives no way to pin the clock, so only
+the *format* is checkable, which the VTL unit tests assert) and the `$util.error()` shape (the evaluate
+API surfaces errors less structurally; the corpus probe asserts message + errorType directly).
+
 **Bar to delete "experimental" from the runtime:** every golden is `aws-capture`, the diff is green,
 and each divergence found during capture is fixed or documented. Until then the runtime stays
 experimental — the goldens are seeded from docs, not yet from AWS.
