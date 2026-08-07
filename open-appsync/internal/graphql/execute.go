@@ -27,6 +27,31 @@ type Limits struct {
 // DefaultLimits protects an unconfigured operator: bounded depth and cost, arbitrary queries allowed.
 func DefaultLimits() Limits { return Limits{MaxDepth: 10, MaxCost: 1000} }
 
+// Publisher is notified after a mutation field resolves successfully, so a subscription layer can push
+// the result to matching subscribers. It is optional (default: none); the executor stays subscription-
+// unaware beyond this one hook, keeping the coupling minimal.
+type Publisher interface {
+	PublishForMutation(ctx context.Context, mutationField string, result any)
+}
+
+// ParseSubscription parses a `subscription { field(args) { ... } }` operation and returns the root
+// field name and its evaluated arguments (resolving $variables) — what the WebSocket handler needs to
+// register a subscriber. It rejects a non-subscription operation.
+func ParseSubscription(query string, variables map[string]any) (field string, args map[string]any, err error) {
+	op, err := parseQuery(query)
+	if err != nil {
+		return "", nil, err
+	}
+	if op.opType != "subscription" {
+		return "", nil, errors.New("graphql: not a subscription operation")
+	}
+	if len(op.selections) != 1 {
+		return "", nil, errors.New("graphql: a subscription must select exactly one field")
+	}
+	sel := op.selections[0]
+	return sel.name, evalArgs(sel.args, variables), nil
+}
+
 // Engine executes GraphQL operations against a set of resolvers. Resolvers are keyed by
 // "<RootType>.<field>", e.g. "Query.getTodo" / "Mutation.createTodo" (schema intake / piece 1: the
 // mapping of a field to the resolver that backs it). Each resolver carries its own runtime, so the
@@ -36,7 +61,11 @@ type Engine struct {
 	resolvers  map[string]resolver.Resolver
 	limits     Limits
 	authorizer authz.Authorizer
+	publisher  Publisher
 }
+
+// WithPublisher sets the mutation publisher (default: none) — the hook the subscription layer uses.
+func WithPublisher(p Publisher) Option { return func(e *Engine) { e.publisher = p } }
 
 // Option configures an Engine (hostile-load guards, the field authorizer, …).
 type Option func(*Engine)
@@ -136,6 +165,11 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			continue
 		}
 		data[respKey] = project(res, sel.selections)
+		// A successful mutation may trigger subscriptions: hand the unprojected result to the publisher,
+		// which fans it to matching subscribers. The executor stays otherwise subscription-unaware.
+		if rootType == "Mutation" && e.publisher != nil {
+			e.publisher.PublishForMutation(ctx, sel.name, res)
+		}
 	}
 	return Result{Data: data, Errors: errs}
 }

@@ -6,6 +6,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
+	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -38,9 +40,22 @@ const (
 
 // Config is the engine's declarative wiring.
 type Config struct {
-	DataSources []DataSourceConfig `json:"dataSources"`
-	Resolvers   []ResolverConfig   `json:"resolvers"`
-	Limits      *LimitsConfig      `json:"limits"` // hostile-load guards; nil = safe defaults
+	DataSources   []DataSourceConfig   `json:"dataSources"`
+	Resolvers     []ResolverConfig     `json:"resolvers"`
+	Subscriptions []SubscriptionConfig `json:"subscriptions"` // Subscription-type fields (§3)
+	Limits        *LimitsConfig        `json:"limits"`        // hostile-load guards; nil = safe defaults
+}
+
+// SubscriptionConfig is one Subscription-type field: a response mapping (subscriptions have no request
+// phase — the push source calls them), the mutations that trigger it, an optional subject, and an auth
+// requirement checked at subscribe time.
+type SubscriptionConfig struct {
+	Field       string            `json:"field"`
+	Subject     string            `json:"subject"`     // bus subject; defaults to "sub." + field
+	Runtime     string            `json:"runtime"`     // appsync-vtl (default) | appsync-js
+	Response    string            `json:"response"`    // response mapping template filename
+	TriggeredBy []string          `json:"triggeredBy"` // mutation field names that publish to this subscription
+	Auth        authz.Requirement `json:"auth"`
 }
 
 // LimitsConfig is the hostile-load hardening (drop-33 §7) as declared on a GraphQLApi. Guards are ON
@@ -142,6 +157,66 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 	// authorizer wired by main).
 	engineOpts := append([]graphql.Option{graphql.WithLimits(buildLimits(cfg.Limits))}, opts...)
 	return graphql.New(registry, engineOpts...), nil
+}
+
+// LoadSubscriptions reads the config's subscription section and builds a subscription Manager (over the
+// given bus) plus the graphql.Publisher that publishes a mutation's result to the subscriptions it
+// triggers. Returns (nil, nil, nil) when no subscriptions are declared. main wires the returned
+// publisher into the engine (graphql.WithPublisher) and serves the Manager over WebSocket.
+func LoadSubscriptions(dir string, bus subscription.Bus, authorizer authz.Authorizer) (*subscription.Manager, graphql.Publisher, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("open-appsync: read config.json: %w", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("open-appsync: parse config.json: %w", err)
+	}
+	if len(cfg.Subscriptions) == 0 {
+		return nil, nil, nil
+	}
+
+	engine := vtl.New()
+	var fields []subscription.Field
+	trigger := map[string][]string{} // mutation field → subscription fields
+	for _, sc := range cfg.Subscriptions {
+		subject := sc.Subject
+		if subject == "" {
+			subject = "sub." + sc.Field
+		}
+		// A subscription is a single response step (no request phase / data source).
+		rt, err := loadStep(dir, engine, sc.Runtime, "", sc.Response)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open-appsync: subscription %s: %w", sc.Field, err)
+		}
+		fields = append(fields, subscription.Field{Name: sc.Field, Subject: subject, Response: rt, Auth: sc.Auth})
+		for _, mut := range sc.TriggeredBy {
+			trigger[mut] = append(trigger[mut], sc.Field)
+		}
+	}
+	mgr := subscription.NewManager(bus, authorizer, fields)
+	return mgr, &subPublisher{mgr: mgr, trigger: trigger}, nil
+}
+
+// subPublisher adapts a mutation's success into subscription publishes: for each subscription the
+// mutation triggers, it puts the mutation's result onto that subscription's subject.
+type subPublisher struct {
+	mgr     *subscription.Manager
+	trigger map[string][]string
+}
+
+func (p *subPublisher) PublishForMutation(ctx context.Context, mutationField string, result any) {
+	subs := p.trigger[mutationField]
+	if len(subs) == 0 {
+		return
+	}
+	event, ok := result.(map[string]any)
+	if !ok {
+		event = map[string]any{"result": result}
+	}
+	for _, sf := range subs {
+		_ = p.mgr.Publish(ctx, sf, event)
+	}
 }
 
 // buildLimits turns the declarative limits into engine guards, safe by default: a nil block, or a
