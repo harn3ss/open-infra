@@ -77,6 +77,65 @@ func TestServer_LoadAndServe(t *testing.T) {
 	}
 }
 
+// TestServer_IntrospectionFromSchemaFile proves the deploy path for introspection: a schema.graphql
+// sibling file loads into the engine's type graph, and __schema/__type answer over the HTTP handler —
+// plus the introspection toggle is honored from config.
+func TestServer_IntrospectionFromSchemaFile(t *testing.T) {
+	dir := t.TempDir()
+	w := func(n, c string) {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w("config.json", `{
+	  "dataSources": [{"name":"todos","type":"memory"}],
+	  "resolvers": [{"type":"Query","field":"getTodo","dataSource":"todos","request":"get.vtl","response":"resp.vtl"}]
+	}`)
+	w("get.vtl", `{"version":"2018-05-29","operation":"GetItem","key":{"id":$util.dynamodb.toDynamoDBJson($ctx.args.id)}}`)
+	w("resp.vtl", `$util.toJson($ctx.result)`)
+	w("schema.graphql", `
+type Todo { id: ID! name: String! tags: [String!] }
+type Query { getTodo(id: ID!): Todo }
+`)
+
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	res := engine.Execute(context.Background(), `{ __schema { queryType { name } types { name kind } } }`, nil)
+	if len(res.Errors) != 0 {
+		t.Fatalf("introspection errored: %+v", res.Errors)
+	}
+	sch := res.Data["__schema"].(map[string]any)
+	if qt := sch["queryType"].(map[string]any); qt["name"] != "Query" {
+		t.Errorf("queryType = %v", qt)
+	}
+	haveTodo := false
+	for _, ti := range sch["types"].([]any) {
+		if tm := ti.(map[string]any); tm["name"] == "Todo" && tm["kind"] == "OBJECT" {
+			haveTodo = true
+		}
+	}
+	if !haveTodo {
+		t.Error("Todo OBJECT missing from introspected types")
+	}
+
+	// Toggle from config: disabled → introspection refused, resolvers still work.
+	w("config.json", `{
+	  "limits": {"introspection":"disabled"},
+	  "dataSources": [{"name":"todos","type":"memory"}],
+	  "resolvers": [{"type":"Query","field":"getTodo","dataSource":"todos","request":"get.vtl","response":"resp.vtl"}]
+	}`)
+	engine2, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load (disabled): %v", err)
+	}
+	res = engine2.Execute(context.Background(), `{ __schema { queryType { name } } }`, nil)
+	if len(res.Errors) == 0 || res.Errors[0].ErrorType != "IntrospectionDisabled" {
+		t.Errorf("disabled introspection not refused: %+v", res.Errors)
+	}
+}
+
 // A pipeline resolver loads from config (before + 2 functions + after) and serves end-to-end over
 // HTTP — the shape kind: GraphQLApi renders. Threads $ctx.stash and $ctx.prev.result; before emits no
 // Operation.
