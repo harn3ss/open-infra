@@ -48,6 +48,34 @@ stable on one implementation: it is proven with VTL through the front door and a
 runtime in tests (`internal/resolver/resolver_test.go`), and stays internal/changeable until a real
 second tenant lands — openness earned by two tenants, not declared on one.
 
+### Step vs lifecycle (the drop-33 fork, decision B)
+
+`runtime.Runtime` is the **step** contract, not "the resolver contract." A step transforms `$ctx`
+(request phase → an *optional* neutral `Operation`; response phase → a value). A **resolver** is a
+*lifecycle* that composes steps (`internal/resolver`):
+
+- **unit** — one step over one data source (slice 1).
+- **pipeline** — `before → [function…] → after`, with `$ctx.stash` shared across steps and
+  `$ctx.prev.result` threaded from each function to the next. `before`/`after` are steps that emit **no
+  Operation** (they only shape `$ctx`); a function is a unit step over its own source.
+- **subscription** — a later rung; it inverts to setup-then-push (not built).
+
+This is why the Out term is *optional* (a step may return a nil Operation → the lifecycle skips the
+data-source call): it lets pipelines and subscriptions **extend** open-appsync instead of forking it.
+The parallel on the data side (`internal/dynamodb`): `Store.Execute` is the **call-source** contract
+(DynamoDB/HTTP/Lambda/RDS all fit "call → result"); a subscription's push source is a separate thing,
+not a `Store`.
+
+### Hostile-load guards (safe by default)
+
+GraphQL's cost asymmetry (the client composes demand, the server owns cost) makes an unguarded endpoint
+a DoS risk — which matters most for the least-resourced operator. The engine enforces, before any
+resolver runs: **depth** limiting, **cost** (field-count) limiting, and an optional **persisted-query**
+allow-list (only pre-registered documents run). Defaults are ON (`graphql.DefaultLimits`: depth 10,
+cost 1000); a `GraphQLApi`'s `limits` block tunes them; a negative value is an explicit opt-out.
+Honest label: this is what will let open-appsync be called *safe to expose to untrusted clients* — per
+rung, once proven; until then, *trusted-client / internal use*.
+
 ## Authoring: `kind: GraphQLApi` (the neutral plane)
 
 `kind: GraphQLApi` (`openinfra.dev`) is the neutral authoring plane: **one** object carrying a schema
@@ -102,9 +130,13 @@ packaging (authoring) experience.
     (`internal/runtime` + `internal/vtlruntime`), the **`kind: GraphQLApi`** authoring plane with
     fail-closed load validation, the `/test-resolver` loop, and the runtime **goldens harness**
     (`probe/goldens/`). All ship labeled experimental.
-  - **Slice-1 "not yet" (flagged):** subscriptions, a second *data source*, an AWS *management*
-    wire protocol (`CreateResolver`/CloudFormation — Stage 2), JavaScript resolvers, pipeline
-    resolvers.
+  - **Also done (drop-33):** the step/lifecycle refactor (decision B), **pipeline resolvers**
+    (`before → functions → after`, stash + `prev.result` threaded), and **hostile-load hardening**
+    (depth/cost/persisted-query guards, safe by default). All experimental, each on its own bar.
+  - **"Not yet" (flagged, each its own rung/bar):** subscriptions (chaos bar), JavaScript resolvers
+    (the tenant that blesses the interface stable), a second *data source* (HTTP/Lambda), field-level
+    authorization, the real-AppSync goldens capture (Clock A), and the AWS *management* wire protocol
+    (`CreateResolver`/CloudFormation — Stage 2). See `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
