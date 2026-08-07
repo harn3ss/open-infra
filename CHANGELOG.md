@@ -66,9 +66,12 @@ the product's public contract.
   bus now compiles into the engine binary and is selected at runtime when `NATS_URL` is set (durable,
   multi-node, reconnect/resume across a node kill) — otherwise the single-node in-memory bus; its live
   test is `integration`-tagged. The **node-kill chaos scenario** (`chaos/scenario-subscription-
-  reconnect.sh` + its FaultInjection) is authored and registered in the nightly suite as **PARKED** —
-  it exits INCONCLUSIVE until a sandbox with NATS + open-appsync is provisioned, so it never
-  false-greens; its JetStream-message-count oracle mirrors the proven `scenario-stream-noloss`. And
+  reconnect.sh`) is now **self-provisioning and runnable** (status PENDING): it deploys a 2-replica
+  open-appsync engine wired to the platform NATS JetStream (`chaos/sandbox/appsync-engine.yaml` +
+  `lib-sandbox.sh` helpers), drives createTodo mutations across an engine-pod kill, and asserts every
+  acknowledged onCreateTodo event survives on the durable subject — the proven `scenario-stream-noloss`
+  message-count oracle. Keyless, so it is NOT in the lottery; runnable via workflow_dispatch and
+  graduates after its green streak (no verified green yet — the honest PENDING state). And
   **`probe/goldens/capture.sh`** makes the Clock-A capture one command against a real AWS account (via
   `aws appsync evaluate-mapping-template`). These are the two external gates — the nightly chaos green
   streak and the real-AWS capture — reduced to a single run each; the label stays experimental until
