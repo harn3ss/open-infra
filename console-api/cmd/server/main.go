@@ -1,12 +1,12 @@
 // Command server is the open-infra console backend-for-frontend (BFF).
 //
 // It is a single container that:
-//   - serves the embedded React SPA at "/",
-//   - exposes runtime config at /api/config (read from env, not baked into JS),
-//   - reverse-proxies the Kubernetes API at /api/k8s/* using the pod's
-//     ServiceAccount, so the browser never holds cluster credentials,
-//   - streams Kubernetes watches to the browser as SSE at /api/watch,
-//   - serves RJSF-normalized CRD schemas at /api/crd-schema.
+// - serves the embedded React SPA at "/",
+// - exposes runtime config at /api/config (read from env, not baked into JS),
+// - reverse-proxies the Kubernetes API at /api/k8s/* using the pod's
+// ServiceAccount, so the browser never holds cluster credentials,
+// - streams Kubernetes watches to the browser as SSE at /api/watch,
+// - serves RJSF-normalized CRD schemas at /api/crd-schema.
 //
 // Authorization for all cluster operations is the ServiceAccount's RBAC — this
 // process performs no authorization of its own. The SA MUST be narrowly scoped.

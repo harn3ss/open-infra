@@ -12,9 +12,9 @@
 # loss-hit handshake fails within the window. The fraction that fail is therefore a direct,
 # if coarse, estimate of the loss biting the link.
 #
-#   probe-loss.sh lossy  -> exit 0 if a non-trivial FRACTION of samples are impaired
-#   probe-loss.sh clean  -> exit 0 if (near) ALL samples succeed (no loss biting)
-#   (exit 2 = infrastructure error — treat as INCONCLUSIVE, never as green)
+# probe-loss.sh lossy -> exit 0 if a non-trivial FRACTION of samples are impaired
+# probe-loss.sh clean -> exit 0 if (near) ALL samples succeed (no loss biting)
+# (exit 2 = infrastructure error — treat as INCONCLUSIVE, never as green)
 set -uo pipefail
 
 NS="${CHAOS_SANDBOX_NS:-chaos-sandbox}"

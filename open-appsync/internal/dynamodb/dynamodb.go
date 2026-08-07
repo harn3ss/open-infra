@@ -7,7 +7,7 @@
 // It provides two implementations of the neutral datasource.Store contract: MemStore (in-memory,
 // deterministic — the slice-1 probe runs against it) and FerretStore (the real DynamoDB→Mongo binding,
 // integration-tested). Both are DynamoDB-shaped; a non-DynamoDB source (e.g. internal/httpsource) is a
-// different Store with a different operation shape, which is the whole point of §5's neutrality.
+// different Store with a different operation shape, which is the whole point of's neutrality.
 package dynamodb
 
 import (

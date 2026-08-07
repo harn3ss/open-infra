@@ -1,4 +1,4 @@
-// Package probe is open-appsync's compatibility probe (handoff §3.1 piece 5): it runs canonical AWS
+// Package probe is open-appsync's compatibility probe: it runs canonical AWS
 // AppSync resolver mapping templates through the engine and asserts the output matches AWS's
 // DOCUMENTED behavior. The ground truth is AWS's published resolver-template semantics (a live diff
 // against real AWS AppSync needs an AWS account — the very thing open-appsync frees teams from), the
@@ -7,7 +7,7 @@
 // DynamoDB resolver — not Velocity whitespace.
 //
 // This is slice 1's probe: it proves the VTL engine + $util execute real templates faithfully with
-// the request/response mapping. Wiring the templates to an actual FerretDB data source (piece 3) and
+// the request/response mapping. Wiring the templates to an actual FerretDB data source and
 // the GraphQL executor (pieces 1/4) are the next rungs; until this probe is green open-appsync does
 // not count as proven.
 package probe
@@ -35,7 +35,7 @@ func mustTemplate(t *testing.T, name string) string {
 	return string(b)
 }
 
-// engine returns a VTL engine with pinned autoId()/time so output is deterministic.
+// engine returns a VTL engine with pinned autoId/time so output is deterministic.
 func engine() *vtl.Engine {
 	e := vtl.New()
 	e.Util().AutoID = func() string { return "11111111-2222-4333-8444-555555555555" }
@@ -97,7 +97,7 @@ func TestProbe_ResponseTemplate(t *testing.T) {
 }
 
 // TestProbe_ValidateRejects proves the resolver-thrown-error path: a validation template that calls
-// $util.error() aborts with the AppSync error shape (message + errorType) instead of producing an op.
+// $util.error aborts with the AppSync error shape (message + errorType) instead of producing an op.
 func TestProbe_ValidateRejects(t *testing.T) {
 	_, err := engine().Render(mustTemplate(t, "validate.request.vtl"),
 		map[string]any{"args": map[string]any{"input": map[string]any{}}})

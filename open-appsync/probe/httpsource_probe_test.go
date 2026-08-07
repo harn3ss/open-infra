@@ -16,7 +16,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
-// The data-source neutrality proof (forward-map §5): an HTTP data source has a totally different
+// The data-source neutrality proof: an HTTP data source has a totally different
 // Operation shape ({"method":…,"resourcePath":…}) from DynamoDB ({"operation":"GetItem",…}), yet a
 // resolver targets it through the EXACT same resolver lifecycle and executor, with no code path
 // branching on data-source type. If the neutral Operation were "a DynamoDB op in a trench coat" this

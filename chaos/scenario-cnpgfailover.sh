@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario 4: cnpg-failover (design §5).
+# Nightly Chaos Suite — Scenario 4: cnpg-failover.
 #
 # Kill site B's CNPG PRIMARY mid-write. CNPG must promote the replica, the -rw service
 # must follow the new primary, and the mesh must converge across the promotion with no

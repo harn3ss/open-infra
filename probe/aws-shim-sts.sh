@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compatibility probe for the aws-shim STS surface (design handoff §8).
+# Compatibility probe for the aws-shim STS surface.
 #
 # Fires a REAL AWS SDK call (`aws sts get-caller-identity`) at the shim and asserts it returns the
 # CALLER's open-infra identity as an ARN the SDK can parse — plus the negative that earns the trust:

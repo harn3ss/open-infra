@@ -234,7 +234,7 @@ dedicated disposable chaos nodes + a storage fence: the sandbox DBs use the `lon
 StorageClass (`nodeSelector: chaos`), so their replicas land ONLY on chaos nodes, while
 `allowEmptyNodeSelectorVolume: false` keeps every production (empty-selector) volume OFF those
 tagged nodes. Proven both directions live. Losing a chaos-node replica therefore never touches
-production data — the §3 safety bar is met without a separate cluster.
+production data — the containment safety bar is met without a separate cluster.
 
 **Re-add durability.** The segmentation (taint + `openinfra.dev/chaos` label) survives a node
 rebuild because it lives in the k3s agent config. The Longhorn side did not — `tags:[chaos]`,
@@ -248,7 +248,7 @@ self-healing CronJob), so a rebuilt chaos node reacquires its disk and `chaos` t
 **2. The safe alternative — `io-latency` — does not actually inject, and now we know
 exactly why.** Degrading the sandbox's *own* Longhorn-backed volume would have answered the
 same question safely, but every IOChaos sits at `phase: Not Injected/Wait, injectedCount: 0`
-**forever, silently**. Re-tested 2026-07-27 (once the drop-17 cert freeze was in, on the
+**forever, silently**. Re-tested 2026-07-27 (once the cert-manager freeze was in, on the
 hypothesis it shared that root cause — it does **not**). The confirmed root cause is a
 **cgroup-v2 incompatibility in Chaos Mesh 2.7.2**, not certs and not really `toda`:
 

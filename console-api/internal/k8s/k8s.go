@@ -39,9 +39,9 @@ type Client struct {
 // New resolves cluster credentials and builds an authenticated Client.
 //
 // Resolution order:
-//  1. rest.InClusterConfig() — the normal production path, reading the pod's
-//     mounted ServiceAccount token + CA.
-//  2. The kubeconfig at $KUBECONFIG or ~/.kube/config — the local-dev fallback.
+// 1. rest.InClusterConfig — the normal production path, reading the pod's
+// mounted ServiceAccount token + CA.
+// 2. The kubeconfig at $KUBECONFIG or ~/.kube/config — the local-dev fallback.
 //
 // kubeconfigPath, when non-empty, overrides the loader's default search and is
 // useful for tests; pass "" in production.

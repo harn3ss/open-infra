@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario 1: multimaster-partition (design §5).
+# Nightly Chaos Suite — Scenario 1: multimaster-partition.
 #
 # Partition a site off the mesh mid-write, drive conflicting writes through the cut, let
 # the fault expire, and assert the mesh re-converges byte-identical. Red = release blocker.
@@ -9,7 +9,7 @@
 # it — see sandbox/fault-partition.yaml. A real cut shows up as a ~90s diverge-then-
 # converge; a run that finishes in ~13s means nothing was injected.
 #
-# Safety (design §3) is layered and independent of this script: sandbox-scoped RBAC, a
+# Safety is layered and independent of this script: sandbox-scoped RBAC, a
 # ResourceQuota, a low PriorityClass, the fault's own `duration`, AND the pre-flight guard
 # below — which aborts before anything is applied if the fault could reach outside.
 set -euo pipefail

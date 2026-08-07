@@ -35,7 +35,7 @@ import (
 const (
 	snapBucket   = "db-snapshots"
 	snapImage    = "ghcr.io/cloudnative-pg/postgresql:17.0" // pg_dump/pg_restore (postgres + mongo backend)
-	mariadbImage = "mariadb:11.4"                            // mariadb-dump/mariadb (mysql)
+	mariadbImage = "mariadb:11.4"                           // mariadb-dump/mariadb (mysql)
 	mcImage      = "minio/mc:latest"
 	snapEndpoint = "http://minio.minio.svc.cluster.local:9000"
 )
@@ -186,7 +186,7 @@ echo "restoring m/%s/%sdump.sql -> mysql"
 echo "RESTORE OK"`, snapEndpoint, snapBucket, key, snapBucket, key)
 }
 
-// POST /api/databases/{namespace}/{name}/snapshot  — take a snapshot now.
+// POST /api/databases/{namespace}/{name}/snapshot — take a snapshot now.
 func handleSnapshotCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, app := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
@@ -267,7 +267,7 @@ echo "SNAPSHOT OK"`, snapEndpoint, app, key, snapBucket, key)
 	}
 }
 
-// GET /api/snapshots  — list all database snapshots (ready + in-progress).
+// GET /api/snapshots — list all database snapshots (ready + in-progress).
 func handleSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -320,7 +320,7 @@ func handleSnapshotList(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 	}
 }
 
-// POST /api/snapshots/restore  {id, namespace, target}  — restore a snapshot into an
+// POST /api/snapshots/restore {id, namespace, target} — restore a snapshot into an
 // already-created (empty) target database. The console creates the new Application (New
 // Database, engine from the snapshot); this streams the dump back into it once it's up.
 func handleSnapshotRestore(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -397,7 +397,7 @@ echo "RESTORE OK"`, snapEndpoint, snapBucket, key, in.Target, snapBucket, key, r
 	}
 }
 
-// DELETE /api/snapshots?namespace=&name=&id=  — remove a snapshot artifact.
+// DELETE /api/snapshots?namespace=&name=&id= — remove a snapshot artifact.
 func handleSnapshotDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns, name, id := r.URL.Query().Get("namespace"), r.URL.Query().Get("name"), r.URL.Query().Get("id")

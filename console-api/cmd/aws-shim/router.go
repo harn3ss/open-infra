@@ -8,7 +8,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
-// The shim is a router with pluggable per-service handlers (design handoff §2): one front door,
+// The shim is a router with pluggable per-service handlers: one front door,
 // many domain experts. Each AWS service (S3, STS, Lambda, …) is a small handler carrying its own
 // decoder, its own authorization mapping, and its own error DIALECT — S3 speaks XML <Error>, the
 // query-protocol services speak <ErrorResponse>, the JSON-RPC services speak JSON. Adding a

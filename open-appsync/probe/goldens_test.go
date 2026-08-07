@@ -11,7 +11,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
 
-// The runtime goldens harness (handoff §1): render each corpus template and diff it against a checked-
+// The runtime goldens harness: render each corpus template and diff it against a checked-
 // in golden request object. Today the goldens are `source: documented` (authored from AWS's published
 // semantics), so this is green and proves the harness + CI wiring work NOW. When the maintainer
 // captures real AppSync output (once, their account) the goldens flip to `source: aws-capture` and this
@@ -103,7 +103,7 @@ func TestGoldens_MatchCorpusRenders(t *testing.T) {
 	}
 }
 
-// TestGoldens_GraduationStatus reports the Clock-A gate: how many goldens are still authored from docs
+// TestGoldens_GraduationStatus reports the runtime gate: how many goldens are still authored from docs
 // vs captured from real AWS. It never fails (so CI is green while the capture is pending) — it makes
 // the gate visible. The runtime stays labeled experimental until this reports all captured.
 func TestGoldens_GraduationStatus(t *testing.T) {
@@ -117,6 +117,6 @@ func TestGoldens_GraduationStatus(t *testing.T) {
 	total := len(goldens)
 	t.Logf("runtime goldens: %d/%d captured from real AWS (%d still documented)", captured, total, total-captured)
 	if captured < total {
-		t.Skipf("Clock A gate not cleared: %d/%d goldens still documented — runtime stays EXPERIMENTAL until captured from real AppSync (see goldens/README.md)", total-captured, total)
+		t.Skipf("runtime gate not cleared: %d/%d goldens still documented — runtime stays EXPERIMENTAL until captured from real AppSync (see goldens/README.md)", total-captured, total)
 	}
 }

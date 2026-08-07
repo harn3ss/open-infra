@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario 2: clock-skew (the T6 regression, design §5).
+# Nightly Chaos Suite — Scenario 2: clock-skew (the T6 regression, the design).
 #
-# T6 was a MySQL backward-clock lost write. Per the design (§3): NO real clock skew /
+# T6 was a MySQL backward-clock lost write. Per the design: NO real clock skew /
 # TimeChaos. Instead this provisions a disposable MySQL member, installs mm-prep, and
 # forces the physical clock BACKWARD deterministically via the injectable clk_off offset,
 # asserting the HLC still stamps a strictly increasing version (no silent lost write).

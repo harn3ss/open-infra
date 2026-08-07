@@ -16,8 +16,8 @@
 # synced yet), it warns and proceeds — a capacity guard must never itself block a run on
 # a read error. It only ever STOPS a run when it is confident capacity is short.
 #
-#   exit 0  = enough headroom (or the check was skipped) → proceed
-#   exit 42 = INCONCLUSIVE (capacity short) → skip; count as neither red nor green
+# exit 0 = enough headroom (or the check was skipped) → proceed
+# exit 42 = INCONCLUSIVE (capacity short) → skip; count as neither red nor green
 set -uo pipefail
 
 MIN_READY_NODES="${CHAOS_MIN_READY_NODES:-1}"   # usable Ready/schedulable nodes required

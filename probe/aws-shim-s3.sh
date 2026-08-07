@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compatibility probe for the aws-shim S3 surface (design handoff §8).
+# Compatibility probe for the aws-shim S3 surface.
 #
 # This is the trust-earning artifact. It fires REAL AWS SDK calls (the `aws` CLI is a real AWS SDK
 # client) at a deployed shim and asserts BYTE-FAITHFUL behavior — not merely HTTP 200 — because the

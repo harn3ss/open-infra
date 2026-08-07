@@ -14,20 +14,20 @@ import (
 )
 
 // s3Handler fronts MinIO with an S3-faithful, SigV4-enforcing surface. The request path is the
-// design's four parts (handoff §2): authenticate (SigV4 → open-infra principal), authorize (the
+// design's four parts: authenticate (SigV4 → open-infra principal), authorize (the
 // SAME impersonated SubjectAccessReview the console uses), dispatch to MinIO, and re-encode the
 // response in S3's exact byte-shape.
 //
 // Identity bridge — v1 and its graduation path (be explicit, per the design's own discipline):
-//   - Authentication is per-principal and real: the caller's open-infra access key is verified and
-//     resolved to their kind: User identity. This is the shared "one policy world" identity.
-//   - Authorization in v1 is a COARSE, real RBAC gate: read vs. write is decided by the SAME
-//     impersonated SubjectAccessReview everything else uses (see authorizeS3). It is bucket-
-//     agnostic because open-infra has no per-bucket RBAC resource yet — the platform already flags
-//     per-tenant object-storage isolation as an open gap. Per-bucket authorization (a kind: Bucket
-//     or a boundary addition, minting a per-principal scoped MinIO user) is the flagged next
-//     graduation step; until then the shim acts to MinIO as a single scoped, NON-root service
-//     account, and this coarse gate is honest about what it does and does not enforce.
+// - Authentication is per-principal and real: the caller's open-infra access key is verified and
+// resolved to their kind: User identity. This is the shared "one policy world" identity.
+// - Authorization in v1 is a COARSE, real RBAC gate: read vs. write is decided by the SAME
+// impersonated SubjectAccessReview everything else uses (see authorizeS3). It is bucket-
+// agnostic because open-infra has no per-bucket RBAC resource yet — the platform already flags
+// per-tenant object-storage isolation as an open gap. Per-bucket authorization (a kind: Bucket
+// or a boundary addition, minting a per-principal scoped MinIO user) is the flagged next
+// graduation step; until then the shim acts to MinIO as a single scoped, NON-root service
+// account, and this coarse gate is honest about what it does and does not enforce.
 type s3Handler struct {
 	cs      kubernetes.Interface // for the impersonated SubjectAccessReview (iam.CanDo)
 	mc      *minio.Client        // MinIO bridge — a scoped, non-root service account (v1 identity bridge)

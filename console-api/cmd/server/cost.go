@@ -18,10 +18,10 @@ import (
 //
 // Pricing basis (us-east-1 on-demand, overridable via env so you can match your
 // region / negotiated rates):
-//   - compute:  AWS Fargate vCPU-hr + GB-hr (the cleanest per-core/per-GB model)
-//   - GPU:      a single-GPU instance-hour (g4dn.xlarge class)
-//   - storage:  EBS gp3 $/GB-month
-//   - LB:       ALB base $/month
+// - compute: AWS Fargate vCPU-hr + GB-hr (the cleanest per-core/per-GB model)
+// - GPU: a single-GPU instance-hour (g4dn.xlarge class)
+// - storage: EBS gp3 $/GB-month
+// - LB: ALB base $/month
 // Hours/month = 730.
 
 const hoursPerMonth = 730.0
@@ -36,11 +36,11 @@ type costPrices struct {
 
 func loadCostPrices() costPrices {
 	return costPrices{
-		VCPUHour:   getenvFloat("COST_VCPU_HOUR", 0.04048),  // Fargate vCPU-hour
-		GBHour:     getenvFloat("COST_GB_HOUR", 0.004445),   // Fargate GB-hour
-		GPUHour:    getenvFloat("COST_GPU_HOUR", 0.526),     // g4dn.xlarge (1x T4) on-demand
-		EBSGBMonth: getenvFloat("COST_EBS_GB_MONTH", 0.08),  // gp3
-		LBMonth:    getenvFloat("COST_LB_MONTH", 16.43),     // ALB base (~$0.0225/hr)
+		VCPUHour:   getenvFloat("COST_VCPU_HOUR", 0.04048), // Fargate vCPU-hour
+		GBHour:     getenvFloat("COST_GB_HOUR", 0.004445),  // Fargate GB-hour
+		GPUHour:    getenvFloat("COST_GPU_HOUR", 0.526),    // g4dn.xlarge (1x T4) on-demand
+		EBSGBMonth: getenvFloat("COST_EBS_GB_MONTH", 0.08), // gp3
+		LBMonth:    getenvFloat("COST_LB_MONTH", 16.43),    // ALB base (~$0.0225/hr)
 	}
 }
 
@@ -178,7 +178,7 @@ func handleCost(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
 }
 
 func round2(f float64) float64 { return float64(int64(f*100+0.5)) / 100 }
-func f2s(f float64) string      { return strconv.FormatFloat(f, 'f', -1, 64) }
+func f2s(f float64) string     { return strconv.FormatFloat(f, 'f', -1, 64) }
 
 func getenvFloat(key string, def float64) float64 {
 	if v := getenv(key, ""); v != "" {

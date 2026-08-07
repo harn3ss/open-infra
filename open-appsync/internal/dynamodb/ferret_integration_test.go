@@ -3,7 +3,7 @@
 // Live FerretDB/MongoDB round-trip for FerretStore. Not run in normal CI (needs a live server);
 // run against a cluster FerretDB or a local Mongo with:
 //
-//	FERRET_TEST_URI="mongodb://user:pass@host:27017" go test -tags integration ./internal/dynamodb/
+//	FERRET_TEST_URI="mongodb://user:pass@host:27017" go test -tags integration./internal/dynamodb/
 package dynamodb
 
 import (

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compatibility probe for the aws-shim Lambda surface (design handoff §8).
+# Compatibility probe for the aws-shim Lambda surface.
 #
 # Deploys a throwaway kind: Function (an HTTP echo), then fires a REAL AWS SDK call
 # (`aws lambda invoke`) at the shim and asserts the function's response comes back — proving the

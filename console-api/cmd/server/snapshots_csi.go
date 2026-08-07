@@ -28,10 +28,10 @@ const (
 	// longhorn-snapshot (type: snap) is in-volume and dies with the PVC — do NOT use it here.
 	csiSnapClass = "longhorn-backup"
 
-	snapLabel  = "openinfra.dev/snapshot"      // marks VolumeSnapshots we manage
-	annEngine  = "openinfra.dev/snap-engine"   // babelfish | mysql | mongo
-	annSource  = "openinfra.dev/snap-source"   // source Application name
-	annDBName  = "openinfra.dev/snap-dbname"   // logical database name (best effort)
+	snapLabel  = "openinfra.dev/snapshot"    // marks VolumeSnapshots we manage
+	annEngine  = "openinfra.dev/snap-engine" // babelfish | mysql | mongo
+	annSource  = "openinfra.dev/snap-source" // source Application name
+	annDBName  = "openinfra.dev/snap-dbname" // logical database name (best effort)
 	annCreated = "openinfra.dev/snap-createdat"
 )
 
@@ -207,14 +207,14 @@ func csiRestore(ctx context.Context, cs kubernetes.Interface, ns, id, target str
 	}
 	pb, _ := json.Marshal(pvc)
 	if err := cs.CoreV1().RESTClient().Post().
-		AbsPath("/api/v1/namespaces/" + ns + "/persistentvolumeclaims").
+		AbsPath("/api/v1/namespaces/"+ns+"/persistentvolumeclaims").
 		Body(pb).SetHeader("Content-Type", "application/json").Do(ctx).Error(); err != nil &&
 		!strings.Contains(err.Error(), "already exists") {
 		return fmt.Errorf("create restore PVC: %w", err)
 	}
 
 	// 2) create a data-only Application; database.name = the source's logical db so the
-	//    restored physical database matches. StatefulSet adopts the pre-seeded PVC.
+	// restored physical database matches. StatefulSet adopts the pre-seeded PVC.
 	app := map[string]any{
 		"apiVersion": "openinfra.dev/v1", "kind": "Application",
 		"metadata": map[string]any{"name": target, "namespace": ns},
@@ -222,7 +222,7 @@ func csiRestore(ctx context.Context, cs kubernetes.Interface, ns, id, target str
 	}
 	ab, _ := json.Marshal(app)
 	if err := cs.CoreV1().RESTClient().Post().
-		AbsPath("/apis/openinfra.dev/v1/namespaces/" + ns + "/applications").
+		AbsPath("/apis/openinfra.dev/v1/namespaces/"+ns+"/applications").
 		Body(ab).SetHeader("Content-Type", "application/json").Do(ctx).Error(); err != nil &&
 		!strings.Contains(err.Error(), "already exists") {
 		return fmt.Errorf("create restored application: %w", err)

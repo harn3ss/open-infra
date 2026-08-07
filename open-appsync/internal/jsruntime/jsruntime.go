@@ -1,4 +1,4 @@
-// Package jsruntime is the SECOND tenant of the runtime extension point (forward-map §4) — the rung
+// Package jsruntime is the SECOND tenant of the runtime extension point — the rung
 // that earns the stability claim. Drop 32 proved the interface implementable with a trivial
 // staticRuntime; a real, non-VTL, production-shaped runtime proves it SUFFICIENT. It implements
 // runtime.Runtime by running an AppSync-style JavaScript resolver module (exporting request(ctx) and
@@ -36,7 +36,7 @@ func New(util *vtl.Util, source string) (*Runtime, error) {
 	return &Runtime{util: util, program: prog}, nil
 }
 
-// RenderRequest runs request(ctx). It returns a nil Operation when request() returns null/undefined
+// RenderRequest runs request(ctx). It returns a nil Operation when request returns null/undefined
 // (a no-Operation step, the loosened Out term); otherwise the returned object is the neutral Operation.
 func (r *Runtime) RenderRequest(ctx map[string]any) (runtime.Operation, error) {
 	v, err := r.invoke("request", ctx)
@@ -58,7 +58,7 @@ func (r *Runtime) RenderResponse(ctx map[string]any) (any, error) {
 	return r.invoke("response", ctx)
 }
 
-// Validate confirms the module compiles and defines request()/response() functions (fail-closed load).
+// Validate confirms the module compiles and defines request/response functions (fail-closed load).
 func (r *Runtime) Validate() error {
 	vm := goja.New()
 	r.installUtil(vm)
@@ -95,7 +95,7 @@ func (r *Runtime) invoke(fn string, ctx map[string]any) (v any, err error) {
 	return res.Export(), nil
 }
 
-// jsError turns a thrown JS value into a Go error: a util.error() surfaces as its *vtl.ThrowError (so
+// jsError turns a thrown JS value into a Go error: a util.error surfaces as its *vtl.ThrowError (so
 // the field carries the AppSync errorType); anything else (a ReferenceError from touching an absent
 // capability, a TypeError, …) is returned as a plain error — fail closed.
 func jsError(err error) error {

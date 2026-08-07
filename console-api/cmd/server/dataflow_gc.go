@@ -142,4 +142,6 @@ func liveDataFlows(ctx context.Context, host *url.URL, transport http.RoundTripp
 
 type gcStatusError struct{ code int }
 
-func (e *gcStatusError) Error() string { return "dataflows list returned status " + http.StatusText(e.code) }
+func (e *gcStatusError) Error() string {
+	return "dataflows list returned status " + http.StatusText(e.code)
+}

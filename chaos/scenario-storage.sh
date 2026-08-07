@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario 5: storage degradation (design §5 `longhorn-replica-loss`).
+# Nightly Chaos Suite — Scenario 5: storage degradation (the design `longhorn-replica-loss`).
 #
 # Degrade the IO path of the sandbox's Longhorn-backed CNPG member while the harness writes,
 # and assert the mesh still converges — i.e. CDC offsets and the engine survive slow storage.
 #
 # SCOPE, stated honestly: this does NOT kill a real Longhorn replica. Those live in
 # longhorn-system instance-manager pods that host replicas for many REAL volumes (VMs,
-# databases, MinIO), so faulting one would endanger the cluster — forbidden by §3 and
-# refused by the pre-flight guard. Per §10 that experiment needs a separate validation
+# databases, MinIO), so faulting one would endanger the cluster — forbidden by and
+# refused by the pre-flight guard. Per that experiment needs a separate validation
 # cluster. What this DOES cover: the workload-visible half — storage gets slow, does the
 # mesh still converge?
 set -euo pipefail

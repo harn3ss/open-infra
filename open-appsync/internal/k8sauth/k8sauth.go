@@ -1,4 +1,4 @@
-// Package k8sauth is the production Authorizer (forward-map §6): it answers "may this caller access
+// Package k8sauth is the production Authorizer: it answers "may this caller access
 // this field?" with an impersonated Kubernetes SubjectAccessReview — the SAME RBAC + permission
 // boundary the console BFF and the aws-shim's coarse gate use. This is what makes field-level auth
 // "one policy world" and not a parallel rule engine.

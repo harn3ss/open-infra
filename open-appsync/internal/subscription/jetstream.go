@@ -1,4 +1,4 @@
-// JetStreamBus is the DURABLE, multi-node Bus (forward-map §3): subscription events ride a NATS
+// JetStreamBus is the DURABLE, multi-node Bus: subscription events ride a NATS
 // JetStream stream, and each engine node consumes them with a DURABLE consumer, so a node kill →
 // reconnect resumes from the last acked sequence with no lost and no duplicated events past that point.
 // That reconnect/resume behaviour is exactly what the node-kill chaos scenario (the rung's graduation

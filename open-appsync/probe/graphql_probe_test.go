@@ -64,7 +64,7 @@ func TestGraphQLProbe_MutationThenQuery(t *testing.T) {
 	}
 }
 
-// A resolver-thrown $util.error() surfaces as a GraphQL error entry (with errorType), data null.
+// A resolver-thrown $util.error surfaces as a GraphQL error entry (with errorType), data null.
 func TestGraphQLProbe_ValidationErrorEntry(t *testing.T) {
 	store := dynamodb.NewMemStore()
 	e := graphql.New(map[string]resolver.Resolver{

@@ -1,8 +1,8 @@
-// Package subscription is open-appsync's subscription rung (forward-map §3). Subscriptions invert the
+// Package subscription is open-appsync's subscription rung. Subscriptions invert the
 // resolver lifecycle — setup-then-push, not request→response — so they are their own lifecycle, not a
 // unit/pipeline resolver, and their event source is a PUSH source (a stream of mutation events that
-// call you), NOT a datasource.Store (the §1b line). This file is the genuinely hard part the handoff
-// flagged: enhanced subscription FILTER matching. The WebSocket transport is the easy half; the
+// call you), NOT a datasource.Store (that call-vs-stream split). This file is the genuinely hard part:
+// enhanced subscription FILTER matching. The WebSocket transport is the easy half; the
 // durable bus (JetStream) is behind a port (bus.go); the temporal graduation bar (a node-kill chaos
 // run) is external and the label stays experimental until it is green.
 package subscription

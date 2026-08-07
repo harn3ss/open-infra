@@ -1,15 +1,15 @@
-// Package resolver is open-appsync's LIFECYCLE layer (drop-33 fork, decision B): it composes runtime
+// Package resolver is open-appsync's LIFECYCLE layer (the step/lifecycle model): it composes runtime
 // steps into a resolved field value. A step (runtime.Runtime) knows nothing about how it is composed;
 // the lifecycle does. Two lifecycles exist today; subscriptions will be a third:
 //
-//   - unit     — one step over one data source (the shape slice 1 shipped):
-//                request → (data source, if the step emitted an Operation) → response.
-//   - pipeline — before → [function…] → after, with $ctx.stash shared across all steps and
-//                $ctx.prev.result carrying each function's output forward. before/after are steps that
-//                emit NO Operation (they only transform $ctx); a function is a unit step with a source.
+// - unit — one step over one data source (the shape slice 1 shipped):
+// request → (data source, if the step emitted an Operation) → response.
+// - pipeline — before → [function…] → after, with $ctx.stash shared across all steps and
+// $ctx.prev.result carrying each function's output forward. before/after are steps that
+// emit NO Operation (they only transform $ctx); a function is a unit step with a source.
 //
 // A step's request phase may return a nil Operation (the loosened Out term): the lifecycle then skips
-// the data-source call. A validation abort (VTL's $util.error()) is returned as a normal error and
+// the data-source call. A validation abort (VTL's $util.error) is returned as a normal error and
 // surfaces on the field. Nothing here is VTL-aware — any runtime plugs into any lifecycle.
 package resolver
 
@@ -30,7 +30,7 @@ type Resolver struct {
 	Source   datasource.Store // unit lifecycle: its data source
 	Pipeline *Pipeline        // if non-nil, run the pipeline lifecycle instead
 	// Auth is the field's authorization requirement, enforced by the executor BEFORE the resolver runs
-	// (field-level authz, §6). A zero Requirement means public. It lives on the resolver but is checked
+	// (field-level authz,). A zero Requirement means public. It lives on the resolver but is checked
 	// in the executor/lifecycle, never in a runtime step — the step stays auth-unaware.
 	Auth authz.Requirement
 }

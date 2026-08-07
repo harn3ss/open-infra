@@ -13,7 +13,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
-// Hostile-load guards (drop-33 §7): a pathological query must be REJECTED before any resolver runs,
+// Hostile-load guards: a pathological query must be REJECTED before any resolver runs,
 // and the rejection must be proven (prove the "no", not just the "yes"). These are the negatives that
 // make open-appsync safe to expose to untrusted clients.
 
