@@ -37,7 +37,7 @@ spec:
             {{- /* Checksum over schema + every data source + every resolver, so ANY authoring change
                    rolls the pod (the reload mechanism, since the engine reads a directory once). */ -}}
             {{- $blob := $spec.schema | default "" }}
-            {{- range $ds := ($spec.dataSources | default list) }}{{ $blob = printf "%s|ds|%s|%s|%s" $blob $ds.name ($ds.type | default "memory") ($ds.collection | default "") }}{{ end }}
+            {{- range $ds := ($spec.dataSources | default list) }}{{ $blob = printf "%s|ds|%s|%s|%s|%s" $blob $ds.name ($ds.type | default "memory") ($ds.collection | default "") ($ds.endpoint | default "") }}{{ end }}
             {{- range $r := $spec.resolvers }}{{ $blob = printf "%s|r|%s|%s|%s|%s|%s|%s|%s|%s" $blob $r.type $r.field ($r.dataSource | default "") ($r.runtime | default "") ($r.request | default "") ($r.response | default "") ($r.before | default "") ($r.after | default "") }}{{ range $f := ($r.functions | default list) }}{{ $blob = printf "%s|fn|%s|%s|%s|%s" $blob ($f.dataSource | default "") ($f.runtime | default "") ($f.request | default "") ($f.response | default "") }}{{ end }}{{ end }}
             {{- with $spec.limits }}{{ $blob = printf "%s|lim|%v|%v|%v" $blob (.maxDepth | default 0) (.maxCost | default 0) (.persistedOnly | default false) }}{{ range $q := (.persistedQueries | default list) }}{{ $blob = printf "%s|pq|%s" $blob $q }}{{ end }}{{ end }}
             {{- $checksum := $blob | sha256sum | trunc 16 }}
@@ -65,7 +65,7 @@ spec:
                         "limits": { "maxDepth": {{ $spec.limits.maxDepth | default 0 }}, "maxCost": {{ $spec.limits.maxCost | default 0 }}, "persistedOnly": {{ $spec.limits.persistedOnly | default false }}{{ if $spec.limits.persistedQueries }}, "persistedQueries": [{{ range $i, $q := $spec.limits.persistedQueries }}{{ if $i }},{{ end }}{{ $q | quote }}{{ end }}]{{ end }} },
                         {{- end }}
                         "dataSources": [{{ range $i, $ds := ($spec.dataSources | default list) }}{{ if $i }},{{ end }}
-                          { "name": "{{ $ds.name }}", "type": "{{ $ds.type | default "memory" }}"{{ if $ds.collection }}, "collection": "{{ $ds.collection }}"{{ end }} }{{ end }}
+                          { "name": "{{ $ds.name }}", "type": "{{ $ds.type | default "memory" }}"{{ if $ds.collection }}, "collection": "{{ $ds.collection }}"{{ end }}{{ if $ds.endpoint }}, "endpoint": "{{ $ds.endpoint }}"{{ end }} }{{ end }}
                         ],
                         "resolvers": [{{ range $i, $r := $spec.resolvers }}{{ if $i }},{{ end }}
                           {{- if $r.functions }}
