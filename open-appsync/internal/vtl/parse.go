@@ -8,10 +8,10 @@ import (
 
 // A small recursive-descent parser for VTL expressions (directive args + #set right-hand sides +
 // references). Grammar, loosest → tightest:
-//   or → and ('||' and)* ; and → eq ('&&' eq)* ; eq → cmp (('=='|'!=') cmp)* ;
-//   cmp → add (('<'|'>'|'<='|'>=') add)* ; add → unary ('+' unary)* ; unary → '!' unary | postfix ;
-//   postfix → primary ('.' ident ['(' args ')'] | '[' expr ']')* ;
-//   primary → number | string | true|false|null | '$' ident postfix | '(' expr ')' | map | list
+// or → and ('||' and)*; and → eq ('&&' eq)*; eq → cmp (('=='|'!=') cmp)*;
+// cmp → add (('<'|'>'|'<='|'>=') add)*; add → unary ('+' unary)*; unary → '!' unary | postfix;
+// postfix → primary ('.' ident ['(' args ')'] | '[' expr ']')*;
+// primary → number | string | true|false|null | '$' ident postfix | '(' expr ')' | map | list
 
 type token struct {
 	kind string // num str ident op punct dollar kw eof

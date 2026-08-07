@@ -1,11 +1,11 @@
-# Composition for kind: GraphQLApi (open-appsync handoff §2). Renders, with NO bespoke controller
+# Composition for kind: GraphQLApi. Renders, with NO bespoke controller
 # (mirrors kind: HttpApi): (a) a ConfigMap holding config.json + one request/response .vtl file per
 # resolver, in the exact shape open-appsync's server.Load already reads, and (b) the open-appsync engine
 # Deployment + a Service. A checksum annotation over the rendered config rolls the pod on any change
 # (no fsnotify; hot-reload is later polish). The engine stays Kubernetes-free — this Composition is the
 # only k8s-aware thing, so the dependency arrow points inward-only.
 #
-# Fail-closed (§2 negative-proof bar): the engine validates every template on load and refuses to serve
+# Fail-closed (negative-proof bar): the engine validates every template on load and refuses to serve
 # if one is malformed, so a bad resolver keeps the whole API from coming up (the pod stays not-ready and
 # the error is in its logs) — an invalid resolver never serves. It is NOT "rejected at apply instant"
 # (there is no validating webhook; that does not fit the Crossplane flow).

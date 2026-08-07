@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// The test-resolver endpoint (handoff §3): POST a resolver + a sample $ctx, get back the neutral
+// The test-resolver endpoint: POST a resolver + a sample $ctx, get back the neutral
 // request Operation and — when a sample result is supplied — the response value, with no deploy and
 // no data source. This is the authoring-with-feedback loop.
 func post(t *testing.T, body string) TestResolverResponse {
@@ -64,7 +64,7 @@ func TestTestResolver_RequestOnly(t *testing.T) {
 	}
 }
 
-// A $util.error() surfaces with its errorType — the feedback that makes authoring not blind.
+// A $util.error surfaces with its errorType — the feedback that makes authoring not blind.
 func TestTestResolver_SurfacesValidationError(t *testing.T) {
 	out := post(t, `{
 	  "request": "#if($util.isNullOrEmpty($ctx.args.name))$util.error(\"name is required\",\"BadRequest\")#end\n{\"operation\":\"Scan\"}",

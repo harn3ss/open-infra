@@ -4,13 +4,13 @@
 // A browser cannot speak the Kubernetes streaming-watch protocol directly (it
 // holds no credentials and EventSource only does GET), so this handler:
 //
-//  1. Opens a watch against the API server using the authenticated transport
-//     (?watch=true&resourceVersion=<rv>&allowWatchBookmarks=true).
-//  2. Reads the newline-delimited JSON watch.Event stream.
-//  3. Re-emits each event as an SSE `data:` frame, tagging the SSE event id with
-//     the object's resourceVersion so the browser can resume via Last-Event-ID.
-//  4. Detects a "410 Gone" ERROR event and emits `event: expired`, the signal
-//     for the client to drop its cache and relist.
+// 1. Opens a watch against the API server using the authenticated transport
+// (?watch=true&resourceVersion=<rv>&allowWatchBookmarks=true).
+// 2. Reads the newline-delimited JSON watch.Event stream.
+// 3. Re-emits each event as an SSE `data:` frame, tagging the SSE event id with
+// the object's resourceVersion so the browser can resume via Last-Event-ID.
+// 4. Detects a "410 Gone" ERROR event and emits `event: expired`, the signal
+// for the client to drop its cache and relist.
 //
 // The ServiceAccount's RBAC governs what may be watched; an unauthorized watch
 // simply fails upstream and we relay the error.

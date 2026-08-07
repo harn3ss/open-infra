@@ -1,8 +1,8 @@
-# open-appsync runtime goldens (handoff §1)
+# open-appsync runtime goldens
 
 This directory is the machinery that graduates the **runtime** from *documented-faithful* to
-*behavior-faithful* — the **only** thing that lets the word **"experimental"** come off slice-1's
-runtime (handoff §0, Clock A). Nothing else in a release touches that word.
+*behavior-faithful* — the **only** thing that lets the word **"experimental"** come off the runtime.
+Nothing else touches that word.
 
 Today the corpus probe asserts against what AWS **documents**. These goldens assert against what AWS
 **does**: the exact request objects a real AppSync API emits for the same templates, captured once and
@@ -37,11 +37,11 @@ One JSON file per case:
 
 `goldens_test.go` renders every case and diffs it; it is green today against the `documented` cases,
 so the harness and CI wiring are proven now. `TestGoldens_GraduationStatus` reports how many cases are
-still `documented` — that count is the Clock-A gate.
+still `documented` — that count is the runtime gate.
 
 ## Capturing (maintainer, once — needs a real AppSync account, never a user's)
 
-This is the external step §1 leaves on the maintainer's clock — now **one command**:
+This is the external step that graduates the runtime — now **one command**:
 
 ```
 AWS_PROFILE=you AWS_REGION=us-east-1 ./capture.sh

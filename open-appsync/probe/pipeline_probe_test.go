@@ -11,7 +11,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
-// The pipeline lifecycle probe (drop-33 §2): a resolver runs before -> 2 functions -> after end-to-end,
+// The pipeline lifecycle probe: a resolver runs before -> 2 functions -> after end-to-end,
 // with $ctx.stash threaded from the before-step into a function and $ctx.prev.result carried from one
 // function to the next and into the after-step. The before-step emits NO Operation — the direct proof
 // that the loosened Out term is real (a step may transform $ctx without calling a data source).

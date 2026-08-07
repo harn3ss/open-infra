@@ -6,7 +6,7 @@
 //
 // This is the code embodiment of the design's "one policy world, three front doors": the shim
 // does not get its own notion of who-you-are-and-what-you-can-do. Whatever front door a request
-// arrives through, once it has been reduced to Claims it flows through Identity() and CanDo()
+// arrives through, once it has been reduced to Claims it flows through Identity and CanDo
 // here, and the actual decision is made by the API server's RBAC against the impersonated
 // openinfra:<user>/openinfra:<group> identity — the very same ClusterRoles compiled from
 // kind: Policy/Role/Group, bounded by the permission boundary.
@@ -30,7 +30,7 @@ type Claims struct {
 	Role string `json:"role"`
 	// Groups is set for identities that come from a kind: User, whose spec.groups are
 	// authoritative. Empty for Secret-backed accounts, where the role name maps to a fixed
-	// group set via RoleGroups().
+	// group set via RoleGroups.
 	Groups []string `json:"groups,omitempty"`
 }
 
@@ -54,9 +54,9 @@ func GroupsFromSpec(specGroups []string) []string {
 // impersonated as `openinfra:<user>` (namespaced so they can never collide with a real cluster
 // user) and carry group memberships that RBAC binds permissions to.
 //
-//	root / admin  -> openinfra:admins      (full access)
-//	poweruser     -> openinfra:powerusers  (manage resources, not secrets/RBAC)
-//	readonly      -> openinfra:readers     (get/list/watch only)
+//	root / admin -> openinfra:admins (full access)
+//	poweruser -> openinfra:powerusers (manage resources, not secrets/RBAC)
+//	readonly -> openinfra:readers (get/list/watch only)
 //
 // Every principal also gets openinfra:users, for rules that apply to everyone.
 func RoleGroups(role string) []string {

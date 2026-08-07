@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// Bus is the push-source port (the §1b distinction: NOT a datasource.Store). A mutation Publishes an
+// Bus is the push-source port (the the call-vs-stream split distinction: NOT a datasource.Store). A mutation Publishes an
 // event to a subject; every engine node Subscribes to the subject and fans the event out to its local
 // registry. The durable, multi-node implementation is JetStream (jetstream.go, build-tagged), where a
 // subscriber is a durable consumer and reconnect/resume is replay from the last acked sequence — which

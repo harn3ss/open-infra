@@ -11,7 +11,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
-// Field-level authorization (forward-map §6): the executor consults the shared boundary BEFORE running
+// Field-level authorization: the executor consults the shared boundary BEFORE running
 // a field's resolver. These prove the "no" (a denial rejects the field and the resolver never runs) as
 // well as the "yes", and that the check is delegated to the injected Authorizer — not a bespoke rule.
 

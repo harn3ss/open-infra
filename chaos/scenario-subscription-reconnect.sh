@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario: SUBSCRIPTION NO-LOSS UNDER ENGINE KILL (open-appsync §3).
+# Nightly Chaos Suite — Scenario: SUBSCRIPTION NO-LOSS UNDER ENGINE KILL (open-appsync).
 #
 # What it proves (recover-mode, streaming edition — mirrors scenario-stream-noloss.sh): every
 # ACKNOWLEDGED mutation event survives an engine-pod kill on the durable JetStream stream the

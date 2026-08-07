@@ -1,4 +1,4 @@
-# Nightly Chaos Suite — Scenario 1 disposable members (design §3, layer 1).
+# Nightly Chaos Suite — Scenario 1 disposable members.
 # Two throwaway Postgres "sites" in the sandbox, seeded by the harness. The data here
 # is DESIGNED to be destroyed — worst case (total corruption) costs nothing real.
 # wal_level=logical so the Replication engine's Debezium capture can read them.

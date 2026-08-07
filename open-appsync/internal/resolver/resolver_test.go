@@ -11,12 +11,12 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// This is §2.5's "the tell it's real" test: a SECOND runtime — one that is not VTL and lives outside
+// This is the "no backstage pass" test: a SECOND runtime — one that is not VTL and lives outside
 // internal/vtlruntime — implements runtime.Runtime and drives the resolver lifecycle through the exact
 // same public interface, with no backstage pass. If VTL needed a shortcut this stranger can't take,
 // the seam would be theatre; that this trivial runtime runs end-to-end proves the extension point is
 // genuine. (The interface stays internal/changeable until a REAL second tenant lands — this only
-// proves it is implementable, which is the honesty bar for the design, not the stability claim.)
+// proves it is implementable, which is the honesty bar for the interface, not the stability claim.)
 
 // staticRuntime is a deliberately trivial runtime: In → a fixed neutral Operation built from $ctx
 // (ignoring templates entirely), Out → the data-source result passed straight through. It shares

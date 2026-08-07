@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nightly Chaos Suite — Scenario 3: sink-kill (design §5).
+# Nightly Chaos Suite — Scenario 3: sink-kill.
 #
 # Kill the apply-sink MID-FLIGHT (while the harness is writing) and assert the mesh still
 # converges once the pod returns. This exercises durability of the engine's progress: the

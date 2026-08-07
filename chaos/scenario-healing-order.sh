@@ -8,9 +8,9 @@
 # network that heals while the sink is still down) must not drop its NATS consumer, lose its
 # offset, or wedge a half-open connection. Red = release blocker.
 #
-# HEAL_ORDER (default the handoff's example, partition-first):
-#   partition-first : network restored, THEN the sink returns (sink recovers into a healthy net)
-#   sink-first      : sink returns into a STILL-cut network, THEN the partition heals (harsher)
+# HEAL_ORDER (default the design's example, partition-first):
+# partition-first : network restored, THEN the sink returns (sink recovers into a healthy net)
+# sink-first : sink returns into a STILL-cut network, THEN the partition heals (harsher)
 #
 # Oracle: this is cut-class — divergence DURING the overlap is expected; convergence AFTER both
 # heal is mandatory. Proof-of-fire fires BOTH faults independently (sequenced so each is witnessed).

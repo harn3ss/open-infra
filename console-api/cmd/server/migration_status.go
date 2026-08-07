@@ -15,10 +15,10 @@ import (
 
 // Migration/Replication observability: the apply pipeline's live signals come
 // from NATS JetStream (the browser can't reach NATS), so the BFF aggregates them:
-//   - lag      = the apply-sink consumer's pending count (events captured but not
-//                yet applied to the target) — the headline "how far behind" number,
-//   - captured = messages buffered in the stream, broken down per table (subject),
-//   - deadLetter = rows that failed to apply and were dead-lettered.
+// - lag = the apply-sink consumer's pending count (events captured but not
+// yet applied to the target) — the headline "how far behind" number,
+// - captured = messages buffered in the stream, broken down per table (subject),
+// - deadLetter = rows that failed to apply and were dead-lettered.
 // Component (Debezium / apply-sink) health + CR conditions are read by the UI via
 // the k8s proxy; this endpoint adds what only the server can see.
 

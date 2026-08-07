@@ -1,5 +1,5 @@
-// Package graphql is a focused GraphQL query parser + executor for open-appsync (handoff §3.1 piece
-// 1 + the execution half of piece 4). It parses an incoming operation, runs the VTL resolver bound
+// Package graphql is a focused GraphQL query parser + executor for open-appsync (schema intake + the
+// execution half). It parses an incoming operation, runs the VTL resolver bound
 // to each top-level field (Query.<field> / Mutation.<field>), and projects the query's selection set
 // onto the resolver's result — turning "a resolver runs" into "a real GraphQL query runs."
 //

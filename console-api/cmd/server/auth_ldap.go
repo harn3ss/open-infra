@@ -14,14 +14,14 @@ import (
 // `kind: Directory` provisions, so the platform's own AD is the console's identity
 // provider. Configured entirely by env (see docs/auth.md):
 //
-//	LDAP_HOST            dc.example.com (or a Service DNS name)
-//	LDAP_DOMAIN          EXAMPLE.COM — used to build the UPN and the base DN
-//	LDAP_BIND_USER       account used to look the user up (UPN or sAMAccountName)
-//	LDAP_BIND_PASSWORD   its password
-//	LDAP_USER_BASE_DN    optional; defaults to the domain's base DN
-//	LDAP_ADMIN_GROUP     AD group -> admin role      (default: openinfra-admins)
-//	LDAP_POWERUSER_GROUP AD group -> poweruser role  (default: openinfra-powerusers)
-//	LDAP_READONLY_GROUP  AD group -> readonly role   (default: openinfra-readers)
+//	LDAP_HOST dc.example.com (or a Service DNS name)
+//	LDAP_DOMAIN EXAMPLE.COM — used to build the UPN and the base DN
+//	LDAP_BIND_USER account used to look the user up (UPN or sAMAccountName)
+//	LDAP_BIND_PASSWORD its password
+//	LDAP_USER_BASE_DN optional; defaults to the domain's base DN
+//	LDAP_ADMIN_GROUP AD group -> admin role (default: openinfra-admins)
+//	LDAP_POWERUSER_GROUP AD group -> poweruser role (default: openinfra-powerusers)
+//	LDAP_READONLY_GROUP AD group -> readonly role (default: openinfra-readers)
 //
 // The local `root` account in the console-auth Secret always keeps working as
 // break-glass, so a directory outage can't lock you out of your own console.
@@ -98,7 +98,7 @@ func verifyLDAP(c ldapConfig, username, password string) (string, bool) {
 	entry := res.Entries[0]
 
 	// 3. Verify the password by binding as that user. An empty password would be
-	//    an unauthenticated bind (which LDAP accepts) — already rejected above.
+	// an unauthenticated bind (which LDAP accepts) — already rejected above.
 	if err := l.Bind(entry.DN, password); err != nil {
 		return "", false
 	}

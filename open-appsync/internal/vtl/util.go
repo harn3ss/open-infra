@@ -10,16 +10,16 @@ import (
 	"time"
 )
 
-// The AppSync `$util` helper library — the part of VTL fidelity that "lives or dies" (handoff §3.1).
+// The AppSync `$util` helper library — the part of VTL fidelity that "lives or dies".
 // A resolver's templating can be perfect, but if the $util helpers are wrong every real-world
 // resolver breaks. The DynamoDB typed-JSON conversion below is the single most important helper for
 // slice 1; its shape ({"S":…}/{"N":…}/{"M":…}/…) is fixed by AWS's documented behavior and is the
 // probe's ground truth.
 //
-// autoId() and time.* are non-deterministic; they take injectable providers so a probe can pin them
+// autoId and time.* are non-deterministic; they take injectable providers so a probe can pin them
 // and assert byte-exact output (the same discipline as the workflow-script clock ban).
 
-// ThrowError is what $util.error()/$util.appendError() raise — it aborts template rendering with the
+// ThrowError is what $util.error/$util.appendError raise — it aborts template rendering with the
 // AppSync error shape (message + errorType), mirroring how AppSync surfaces a resolver-thrown error.
 type ThrowError struct {
 	Message   string
@@ -103,7 +103,7 @@ func (u *Util) call(path string, args []any) (result any, err error, ok bool) {
 
 // Call invokes a $util method by path (e.g. "toJson", "autoId", "time.nowISO8601") for a runtime that
 // is NOT VTL — the JS runtime reuses this exact dispatcher so the two runtimes can never drift. A
-// $util.error() surfaces as a *ThrowError; an unknown path is an error.
+// $util.error surfaces as a *ThrowError; an unknown path is an error.
 func (u *Util) Call(path string, args []any) (any, error) {
 	res, err, ok := u.call(path, args)
 	if err != nil {

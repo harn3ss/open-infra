@@ -57,11 +57,11 @@ func run(logger *slog.Logger) error {
 	cs := *kc.Clientset
 
 	// Two DIFFERENT namespaces, deliberately split for least privilege:
-	//   - keysNS holds the iam-ak-<id> access-key Secrets. Default is the shim's OWN namespace, so
-	//     the shim's `get secrets` RBAC never reaches the console namespace (where bcrypt password
-	//     hashes and the session-signing key live).
-	//   - usersNS is where kind: User objects live (the console namespace). The shim reads USERS
-	//     there — never Secrets — to resolve an access key's owner to its current groups.
+	// - keysNS holds the iam-ak-<id> access-key Secrets. Default is the shim's OWN namespace, so
+	// the shim's `get secrets` RBAC never reaches the console namespace (where bcrypt password
+	// hashes and the session-signing key live).
+	// - usersNS is where kind: User objects live (the console namespace). The shim reads USERS
+	// there — never Secrets — to resolve an access key's owner to its current groups.
 	keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
 	usersNS := getenv("USERS_NAMESPACE", "open-infra-console")
 	authzNS := getenv("AUTHZ_NAMESPACE", "default")  // namespace the coarse S3 RBAC gate checks

@@ -6,7 +6,7 @@ import (
 )
 
 // S3 wire encoding — the response and error shapes AWS SDKs parse. This is where most of the
-// fidelity sweat lives (design handoff §2/§4): a wrong XML field name, a missing namespace, or a
+// fidelity sweat lives: a wrong XML field name, a missing namespace, or a
 // wrong error Code is a client-side SDK parse error even when the operation itself succeeded, so
 // these shapes are pinned and unit-tested rather than hand-rolled per handler.
 

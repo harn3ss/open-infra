@@ -25,8 +25,8 @@ func vtlResolver(t *testing.T, e *vtl.Engine, req, resp string, src datasource.S
 // End-to-end resolver probe (slice 1's headline): a REAL AppSync VTL resolver (request + response
 // mapping templates, straight from the corpus) runs the full request→execute→response cycle against
 // a DynamoDB-style data source and returns the GraphQL result AWS would. This is the "one resolver,
-// one data source, proven end-to-end" bar from the handoff — with an in-memory store so it's
-// deterministic; the same resolver runs unchanged against the FerretDB binding (piece 3).
+// one data source, proven end-to-end" bar — with an in-memory store so it's
+// deterministic; the same resolver runs unchanged against the FerretDB binding.
 
 // mutation runs a resolver for a create (PutItem) and query runs one for a read (GetItem), sharing
 // the store — proving a written item reads back through faithful marshalling both ways.
@@ -37,7 +37,7 @@ func TestResolverProbe_PutThenGet(t *testing.T) {
 	createTodo := vtlResolver(t, e, "putitem.request.vtl", "response.vtl", store)
 	getTodo := vtlResolver(t, e, "getitem.request.vtl", "response.vtl", store)
 
-	// createTodo(input: {name:"Ada", age:36}) → the written item, id from $util.autoId().
+	// createTodo(input: {name:"Ada", age:36}) → the written item, id from $util.autoId.
 	created, err := createTodo.Resolve(context.Background(), map[string]any{
 		"args": map[string]any{"input": map[string]any{"name": "Ada", "age": float64(36)}},
 	})
@@ -72,7 +72,7 @@ func TestResolverProbe_GetMissingIsNull(t *testing.T) {
 	}
 }
 
-// The validation resolver aborts the whole field with $util.error() before any data-source write —
+// The validation resolver aborts the whole field with $util.error before any data-source write —
 // proving the resolver contract surfaces a thrown error instead of running the operation.
 func TestResolverProbe_ValidationAborts(t *testing.T) {
 	store := dynamodb.NewMemStore()

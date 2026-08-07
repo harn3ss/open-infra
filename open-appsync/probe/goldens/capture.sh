@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Turnkey Clock-A capture (open-appsync forward-map §9): render every golden's corpus template through
+# Turnkey runtime-goldens capture for open-appsync: render every golden's corpus template through
 # REAL AWS AppSync and rewrite the golden as source:aws-capture. Run ONCE, by the maintainer, against
 # your own AWS account — this is the external step that removes "experimental" from the runtime.
 #
-#   AWS_PROFILE=you AWS_REGION=us-east-1 ./capture.sh
+# AWS_PROFILE=you AWS_REGION=us-east-1 ./capture.sh
 #
 # It uses AppSync's server-side `evaluate-mapping-template` API, so NO API/schema needs to be deployed:
 # each corpus template is evaluated against its golden's context and the exact request object AWS
@@ -12,11 +12,11 @@
 # and the CI diff (goldens_test.go) is exact. After running, re-run `go test ./probe/` — every case now
 # diffs against real AWS; any divergence is a real fidelity gap to fix or document.
 #
-# The minimum set worth capturing (per §9 — where documented and actual most plausibly diverge; add a
+# The minimum set worth capturing (where documented and actual most plausibly diverge; add a
 # golden + a corpus template for any not yet present before deleting the label):
-#   - GetItem (typed key), PutItem (autoId + mixed S/N), response passthrough, a validation PutItem;
-#   - $util.dynamodb.toDynamoDBJson on nested map / list / null / bool / number-vs-string;
-#   - the exact $util.error() error shape; $util.time.* formats; a multi-attribute PutItem with mixed types.
+# - GetItem (typed key), PutItem (autoId + mixed S/N), response passthrough, a validation PutItem;
+# - $util.dynamodb.toDynamoDBJson on nested map / list / null / bool / number-vs-string;
+# - the exact $util.error error shape; $util.time.* formats; a multi-attribute PutItem with mixed types.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

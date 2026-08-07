@@ -1,4 +1,4 @@
-// Package authz is field-level authorization for open-appsync (forward-map §6) — the "one policy
+// Package authz is field-level authorization for open-appsync — the "one policy
 // world, now at field granularity" story. It is deliberately a thin PORT with no Kubernetes
 // dependency: the neutral core (the executor) consults an Authorizer before running a field's
 // resolver, and the production Authorizer (internal/k8sauth) bottoms out in a Kubernetes

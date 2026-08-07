@@ -1,4 +1,4 @@
-// Package vtlruntime is the FIRST tenant of the runtime extension point (handoff §2.5): it implements
+// Package vtlruntime is the FIRST tenant of the runtime extension point: it implements
 // runtime.Runtime by rendering AppSync VTL request/response mapping templates. It holds the two
 // templates and a *vtl.Engine and renders them to the neutral Operation / field value the contract
 // asks for — nothing more. It reaches the resolver lifecycle only through the public runtime.Runtime
@@ -35,7 +35,7 @@ func New(engine *vtl.Engine, request, response string) *Runtime {
 // A template that renders to nothing (empty, or the literal null) emits NO Operation — a nil return —
 // which the lifecycle reads as "this step only transformed $ctx; do not call a data source" (the
 // loosened Out term; this is how a pipeline before-step is the same abstraction as a function). A
-// $util.error() in the template returns a *vtl.ThrowError (validation abort) and no Operation.
+// $util.error in the template returns a *vtl.ThrowError (validation abort) and no Operation.
 func (r *Runtime) RenderRequest(ctx map[string]any) (runtime.Operation, error) {
 	out, err := r.engine.Render(r.request, ctx)
 	if err != nil {
@@ -66,7 +66,7 @@ func (r *Runtime) RenderResponse(ctx map[string]any) (any, error) {
 }
 
 // Validate parses both templates without executing them, so a malformed resolver fails the whole
-// config at load rather than on first request (runtime.Validator; handoff §2 fail-closed bar).
+// config at load rather than on first request (runtime.Validator; the fail-closed bar).
 func (r *Runtime) Validate() error {
 	if err := r.engine.Validate(r.request); err != nil {
 		return fmt.Errorf("request template: %w", err)

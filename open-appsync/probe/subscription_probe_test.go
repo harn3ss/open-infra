@@ -10,7 +10,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
-// The subscription lifecycle probe (forward-map §3): the setup-then-push flow proven end-to-end with
+// The subscription lifecycle probe: the setup-then-push flow proven end-to-end with
 // the in-memory bus. A mutation event is Published; only subscribers whose enhanced filter matches
 // receive it, shaped by their response step. Also proves unsubscribe and the subscribe-time auth gate.
 // (The DURABLE path is JetStream; the graduation bar is a node-kill chaos run — held, not claimed.)
