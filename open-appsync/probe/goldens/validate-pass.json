@@ -1,14 +1,28 @@
 {
-  "source": "documented",
-  "description": "Validation resolver — valid input renders the PutItem op (the #if guard falls through)",
+  "source": "aws-capture",
+  "description": "Validation resolver \u2014 valid input renders the PutItem op (the #if guard falls through)",
   "template": "validate.request.vtl",
-  "autoId": "11111111-2222-4333-8444-555555555555",
+  "autoId": "ee66b19a-065f-480e-8c50-10f00ae1d4f7",
   "now": "2026-08-06T00:00:00Z",
-  "context": { "args": { "input": { "name": "Ada" } } },
+  "context": {
+    "args": {
+      "input": {
+        "name": "Ada"
+      }
+    }
+  },
   "expected": {
     "version": "2018-05-29",
     "operation": "PutItem",
-    "key": { "id": { "S": "11111111-2222-4333-8444-555555555555" } },
-    "attributeValues": { "name": { "S": "Ada" } }
+    "key": {
+      "id": {
+        "S": "ee66b19a-065f-480e-8c50-10f00ae1d4f7"
+      }
+    },
+    "attributeValues": {
+      "name": {
+        "S": "Ada"
+      }
+    }
   }
 }

@@ -27,7 +27,12 @@ captured=0
 for g in "$HERE"/*.json; do
   [ -e "$g" ] || continue
   tmpl="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["template"])' "$g")"
-  ctx="$(python3 -c 'import json,sys;print(json.dumps(json.load(open(sys.argv[1]))["context"]))' "$g")"
+  # The golden's context is in open-appsync's $ctx shape (which uses "args"); AWS's evaluate API wants
+  # the canonical AppSync context key "arguments" (of which $ctx.args is the alias). Remap for the call.
+  ctx="$(python3 -c 'import json,sys
+c=json.load(open(sys.argv[1]))["context"]
+if "args" in c: c["arguments"]=c.pop("args")
+print(json.dumps(c))' "$g")"
   tfile="$CORPUS/$tmpl"
   [ -f "$tfile" ] || { echo "!! $tmpl not found in corpus — skipping $(basename "$g")" >&2; continue; }
 

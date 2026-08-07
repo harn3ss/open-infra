@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### AWS compatibility
+- **open-appsync — the runtime is now behavior-faithful: goldens captured from real AWS AppSync, two
+  fidelity bugs fixed.** The runtime goldens (`open-appsync/probe/goldens/`) were captured from a live
+  AppSync account via the `evaluate-mapping-template` API (one turnkey command, `capture.sh`) and the CI
+  diff is green against them — so `$util`/VTL output is checked against what AppSync *does*, not just
+  what it documents. The capture immediately surfaced two real divergences from the DynamoDB-SDK shape
+  we'd assumed, now fixed in the engine: AppSync emits **`N` as a JSON number** (`{"N":36}`, not
+  `{"N":"36"}`) and **`NULL` as JSON `null`** (`{"NULL":null}`, not `{"NULL":true}`); `fromDynamoDB`
+  normalizes either form back to plain values. The corpus was also broadened to the fidelity-critical
+  set (nested map / list / null / bool / int / negative / float / string, composite keys, multi-attribute
+  PutItem). This clears the runtime maturity gate — the runtime is no longer labeled experimental
+  (the authoring plane, JS runtime, and subscriptions keep their own separate gates).
+
 ### Abstractions
 - **open-appsync — open-infra's own AppSync engine (opt-in, experimental, OFF by default).**
   The AppSync surface is aimed at teams locked into AWS AppSync by their resolver investment (VTL
