@@ -157,9 +157,12 @@ result) — authoring with feedback instead of blind. Same mechanism as the corp
   touch that fidelity.
 - **The person wiring resolvers** sees a new *envelope* temporarily: an entry in a `GraphQLApi` object
   instead of `CreateResolver`. Template identical; envelope open-infra-shaped.
-- **Stage 2 (later, at the edge):** an AWS management shim (`CreateResolver` / the CloudFormation type)
-  becomes a patch on this same `GraphQLApi` object, so the AWS person runs existing templates
-  unchanged and never sees the envelope. Neutral core now, zero-retraining at the edge.
+- **Stage 2 (shipped as a front door, per-verb):** the AWS management shim translates `CreateResolver`
+  / `CreateDataSource` / … into a patch on this same `GraphQLApi` object (in the aws-shim, at `/v1/...`),
+  so the AWS person runs existing tooling unchanged and never sees the envelope. It graduates per verb
+  (proven: CreateResolver, UpdateResolver, DeleteResolver, GetResolver, CreateDataSource,
+  DeleteDataSource); the skin owns AWS's `(apiId, typeName, fieldName)` mapping and the neutral core
+  never learns it. Neutral core now, zero-retraining at the edge.
 
 Honest label for this release: *a neutral engine that runs a team's VTL* — **not yet** the AWS
 packaging (authoring) experience.
@@ -203,9 +206,13 @@ packaging (authoring) experience.
     enhanced-filter engine, connection-scoped registry, Bus port (in-memory + JetStream), and the
     setup-then-push Manager. Experimental until the node-kill chaos bar is green + the WS front door is
     wired (see above).
-  - **"Not yet" (flagged, each its own rung/bar):** the subscription **node-kill chaos** run + WS
-    transport, the real-AppSync goldens capture (Clock A), and the AWS *management* wire protocol
-    (`CreateResolver`/CloudFormation — Stage 2). See `open-infra-open-appsync-forward-map.md`.
+  - **Also done (drop-38):** **Stage-2 AWS management wire protocol** — the aws-shim translates AppSync
+    management verbs (CreateResolver/UpdateResolver/DeleteResolver/GetResolver/CreateDataSource/
+    DeleteDataSource) into patches on the `GraphQLApi` object, per-verb graduated, front-door + negatives
+    proven.
+  - **"Not yet" (external gates only):** the subscription **node-kill chaos** run + WS transport, and the
+    real-AppSync **goldens capture** (Clock A) — both need a live cluster / a real AWS account, not more
+    code. See `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
