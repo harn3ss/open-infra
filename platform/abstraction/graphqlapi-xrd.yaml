@@ -90,11 +90,14 @@ spec:
                       type:
                         type: string
                         default: memory
-                        enum: [memory, dynamodb]
-                        description: "memory = ephemeral (dev/demo, the durable claim waits on FerretDB); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI)."
+                        enum: [memory, dynamodb, http]
+                        description: "memory = ephemeral (dev/demo); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint)."
                       collection:
                         type: string
                         description: "dynamodb: the FerretDB collection (the 'table')."
+                      endpoint:
+                        type: string
+                        description: "http: the base URL the resolver's operation ({method, resourcePath, params}) targets."
                 resolvers:
                   type: array
                   description: "Field bindings. A resolver is EITHER a unit resolver (dataSource + request + response) OR a pipeline resolver (functions[], with optional before/after). Malformed resolvers fail closed at load."
