@@ -1,0 +1,79 @@
+{
+  "source": "aws-capture",
+  "description": "JS request \u2014 toDynamoDB typed marshalling across nested map/list/null/bool/number/string",
+  "code": "marshalling.js",
+  "function": "request",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "context": {
+    "args": {
+      "input": {
+        "s": "hello",
+        "n": 36,
+        "neg": -4,
+        "f": 3.5,
+        "b": true,
+        "nul": null,
+        "tags": [
+          "a",
+          "b",
+          7
+        ],
+        "nested": {
+          "k": "v",
+          "deep": {
+            "x": 1
+          }
+        }
+      }
+    }
+  },
+  "expected": {
+    "M": {
+      "neg": {
+        "N": -4
+      },
+      "b": {
+        "BOOL": true
+      },
+      "s": {
+        "S": "hello"
+      },
+      "nul": {
+        "NULL": null
+      },
+      "f": {
+        "N": 3.5
+      },
+      "nested": {
+        "M": {
+          "deep": {
+            "M": {
+              "x": {
+                "N": 1
+              }
+            }
+          },
+          "k": {
+            "S": "v"
+          }
+        }
+      },
+      "n": {
+        "N": 36
+      },
+      "tags": {
+        "L": [
+          {
+            "S": "a"
+          },
+          {
+            "S": "b"
+          },
+          {
+            "N": 7
+          }
+        ]
+      }
+    }
+  }
+}
