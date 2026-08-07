@@ -16,13 +16,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// Store executes a DynamoDB operation (as decoded from a VTL request template) and returns the
-// plain-value result for the response template. The context carries the request deadline/cancellation
-// (a live store — FerretDB — needs it; MemStore ignores it).
+// Store executes a neutral data-source Operation (handoff §2.5: whatever runtime produced it, not
+// "a VTL thing") and returns the plain-value result for the response phase. The context carries the
+// request deadline/cancellation (a live store — FerretDB — needs it; MemStore ignores it).
 type Store interface {
-	Execute(ctx context.Context, op map[string]any) (any, error)
+	Execute(ctx context.Context, op runtime.Operation) (any, error)
 }
 
 // fromDynamoDB is the inverse of $util.dynamodb.toDynamoDBJson: a DynamoDB-typed value → a plain
@@ -85,7 +87,7 @@ type MemStore struct {
 
 func NewMemStore() *MemStore { return &MemStore{items: map[string]map[string]any{}} }
 
-func (s *MemStore) Execute(_ context.Context, op map[string]any) (any, error) {
+func (s *MemStore) Execute(_ context.Context, op runtime.Operation) (any, error) {
 	operation, _ := op["operation"].(string)
 	switch operation {
 	case "GetItem":

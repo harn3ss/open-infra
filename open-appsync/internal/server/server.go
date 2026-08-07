@@ -7,6 +7,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -15,9 +16,16 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
+	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
+	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// runtimeAppsyncVTL is the one runtime slice-1 ships. The field exists (and is validated) so §2.5's
+// future dialects (js, a neutral format) slot in as a new value with no schema change — an unknown
+// runtime fails closed rather than silently defaulting.
+const runtimeAppsyncVTL = "appsync-vtl"
 
 // Config is the engine's declarative wiring.
 type Config struct {
@@ -35,6 +43,7 @@ type ResolverConfig struct {
 	Type       string `json:"type"` // "Query" | "Mutation"
 	Field      string `json:"field"`
 	DataSource string `json:"dataSource"`
+	Runtime    string `json:"runtime"`  // "appsync-vtl" (default). The §2.5 extension point's field.
 	Request    string `json:"request"`  // filename of the request mapping template (relative to the config dir)
 	Response   string `json:"response"` // filename of the response mapping template
 }
@@ -70,6 +79,10 @@ func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
 		}
 	}
 
+	// One VTL engine, shared by every appsync-vtl runtime (it is stateless apart from its $util
+	// providers). A future runtime value builds its own runtime here.
+	engine := vtl.New()
+
 	registry := map[string]resolver.Resolver{}
 	for _, rc := range cfg.Resolvers {
 		src, ok := stores[rc.DataSource]
@@ -84,10 +97,35 @@ func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open-appsync: resolver %s.%s: read response template: %w", rc.Type, rc.Field, err)
 		}
-		registry[rc.Type+"."+rc.Field] = resolver.Resolver{Request: string(req), Response: string(resp), Source: src}
+
+		rt, err := buildRuntime(rc.Runtime, engine, string(req), string(resp))
+		if err != nil {
+			return nil, fmt.Errorf("open-appsync: resolver %s.%s: %w", rc.Type, rc.Field, err)
+		}
+		// Fail closed (handoff §2): one malformed template keeps the WHOLE config from loading, so the
+		// engine never serves it — the error surfaces in the pod (and thus the XR's not-ready status)
+		// rather than on the first request.
+		if v, ok := rt.(runtime.Validator); ok {
+			if err := v.Validate(); err != nil {
+				return nil, fmt.Errorf("open-appsync: resolver %s.%s is invalid, refusing to serve: %w", rc.Type, rc.Field, err)
+			}
+		}
+		registry[rc.Type+"."+rc.Field] = resolver.Resolver{Runtime: rt, Source: src}
 	}
 
-	return graphql.New(vtl.New(), registry), nil
+	return graphql.New(registry), nil
+}
+
+// buildRuntime selects the runtime for a resolver by its declared `runtime` value (the §2.5 extension
+// point). Empty defaults to appsync-vtl; an unknown value is rejected (fail closed) rather than
+// silently substituted.
+func buildRuntime(name string, engine *vtl.Engine, request, response string) (runtime.Runtime, error) {
+	switch name {
+	case "", runtimeAppsyncVTL:
+		return vtlruntime.New(engine, request, response), nil
+	default:
+		return nil, fmt.Errorf("unknown runtime %q (slice 1: %q)", name, runtimeAppsyncVTL)
+	}
 }
 
 // Handler serves GraphQL over HTTP: POST /graphql {query, variables} → {data, errors}. This is the
@@ -112,6 +150,83 @@ func Handler(e *graphql.Engine) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, e.Execute(r.Context(), body.Query, body.Variables))
 	}
+}
+
+// TestResolverRequest is the input to the test-resolver endpoint: a resolver's templates plus a
+// sample $ctx to run them against. `result` is optional — supply it to also see the response phase
+// (the data source is NOT called; you provide the result the response template would see).
+type TestResolverRequest struct {
+	Runtime  string         `json:"runtime"`  // "appsync-vtl" (default)
+	Request  string         `json:"request"`  // request mapping template source
+	Response string         `json:"response"` // response mapping template source
+	Context  map[string]any `json:"context"`  // the $ctx: {"args":…,"identity":…,"source":…}
+	Result   *any           `json:"result"`   // optional sample data-source result → runs the response phase
+}
+
+// TestResolverResponse shows what the templates produce: the neutral request Operation and, if a
+// sample result was supplied, the response value. A resolver-thrown error (e.g. $util.error()) is
+// reported with its errorType — the difference between authoring with feedback and authoring blind.
+type TestResolverResponse struct {
+	RequestOp any    `json:"requestOp,omitempty"` // the neutral data-source operation the request phase emits
+	Response  any    `json:"response,omitempty"`  // the response value (only when `result` was supplied)
+	Error     string `json:"error,omitempty"`
+	ErrorType string `json:"errorType,omitempty"`
+}
+
+// TestResolverHandler exposes the probe harness on user input (handoff §3): POST a resolver + a sample
+// $ctx and get back exactly what its templates render, without deploying it or touching a data source.
+// It is an authoring aid on the engine itself (not an AWS wire API); nothing here mutates state.
+func TestResolverHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, TestResolverResponse{Error: "test-resolver requests must be POST"})
+			return
+		}
+		var req TestResolverRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, TestResolverResponse{Error: "invalid test-resolver body"})
+			return
+		}
+		rt, err := buildRuntime(req.Runtime, vtl.New(), req.Request, req.Response)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, TestResolverResponse{Error: err.Error()})
+			return
+		}
+		ctx := req.Context
+		if ctx == nil {
+			ctx = map[string]any{}
+		}
+
+		op, err := rt.RenderRequest(ctx)
+		if err != nil {
+			writeJSON(w, http.StatusOK, errResp(err))
+			return
+		}
+		out := TestResolverResponse{RequestOp: map[string]any(op)}
+
+		// Only run the response phase if the caller supplied a sample result to feed it.
+		if req.Result != nil {
+			ctx["result"] = *req.Result
+			resp, err := rt.RenderResponse(ctx)
+			if err != nil {
+				writeJSON(w, http.StatusOK, errResp(err))
+				return
+			}
+			out.Response = resp
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// errResp renders a resolver error, unwrapping a *vtl.ThrowError so the errorType is shown.
+func errResp(err error) TestResolverResponse {
+	out := TestResolverResponse{Error: err.Error()}
+	var te *vtl.ThrowError
+	if errors.As(err, &te) {
+		out.Error = te.Message
+		out.ErrorType = te.ErrorType
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -60,6 +60,8 @@ func run(logger *slog.Logger) error {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/graphql", server.Handler(engine))
+	// Authoring aid (handoff §3): render a resolver against a sample $ctx without deploying it.
+	mux.HandleFunc("/test-resolver", server.TestResolverHandler())
 
 	addr := getenv("LISTEN_ADDR", ":8080")
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
