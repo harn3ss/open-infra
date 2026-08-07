@@ -6,6 +6,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +33,17 @@ const runtimeAppsyncVTL = "appsync-vtl"
 type Config struct {
 	DataSources []DataSourceConfig `json:"dataSources"`
 	Resolvers   []ResolverConfig   `json:"resolvers"`
+	Limits      *LimitsConfig      `json:"limits"` // hostile-load guards; nil = safe defaults
+}
+
+// LimitsConfig is the hostile-load hardening (drop-33 §7) as declared on a GraphQLApi. Guards are ON
+// by default even when this block is present: maxDepth/maxCost of 0 (or unset) fall back to the safe
+// default; set a NEGATIVE value to deliberately disable a guard (opt-out is explicit, never implicit).
+type LimitsConfig struct {
+	MaxDepth         int      `json:"maxDepth"`
+	MaxCost          int      `json:"maxCost"`
+	PersistedOnly    bool     `json:"persistedOnly"`
+	PersistedQueries []string `json:"persistedQueries"` // raw query documents; hashed (sha256) at load
 }
 
 type DataSourceConfig struct {
@@ -40,12 +53,28 @@ type DataSourceConfig struct {
 }
 
 type ResolverConfig struct {
-	Type       string `json:"type"` // "Query" | "Mutation"
-	Field      string `json:"field"`
+	Type  string `json:"type"` // "Query" | "Mutation"
+	Field string `json:"field"`
+
+	// Unit resolver (the default): one runtime step over one data source.
 	DataSource string `json:"dataSource"`
-	Runtime    string `json:"runtime"`  // "appsync-vtl" (default). The §2.5 extension point's field.
+	Runtime    string `json:"runtime"`  // "appsync-vtl" (default). The runtime extension point's field.
 	Request    string `json:"request"`  // filename of the request mapping template (relative to the config dir)
 	Response   string `json:"response"` // filename of the response mapping template
+
+	// Pipeline resolver: if Functions is non-empty this is a pipeline lifecycle and the unit fields
+	// above are ignored. Before/After are optional single-template steps (files) that touch no data
+	// source; each function is a unit step over its own data source.
+	Before    string           `json:"before"`    // filename of the before mapping template (optional)
+	After     string           `json:"after"`     // filename of the after mapping template (optional)
+	Functions []FunctionConfig `json:"functions"` // ordered pipeline functions
+}
+
+type FunctionConfig struct {
+	DataSource string `json:"dataSource"`
+	Runtime    string `json:"runtime"` // "appsync-vtl" (default)
+	Request    string `json:"request"`
+	Response   string `json:"response"`
 }
 
 // Load reads config.json + its template files from dir and builds a ready GraphQL engine. mongoDB is
@@ -85,35 +114,128 @@ func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
 
 	registry := map[string]resolver.Resolver{}
 	for _, rc := range cfg.Resolvers {
-		src, ok := stores[rc.DataSource]
-		if !ok {
-			return nil, fmt.Errorf("open-appsync: resolver %s.%s references unknown data source %q", rc.Type, rc.Field, rc.DataSource)
-		}
-		req, err := os.ReadFile(filepath.Join(dir, rc.Request))
-		if err != nil {
-			return nil, fmt.Errorf("open-appsync: resolver %s.%s: read request template: %w", rc.Type, rc.Field, err)
-		}
-		resp, err := os.ReadFile(filepath.Join(dir, rc.Response))
-		if err != nil {
-			return nil, fmt.Errorf("open-appsync: resolver %s.%s: read response template: %w", rc.Type, rc.Field, err)
-		}
-
-		rt, err := buildRuntime(rc.Runtime, engine, string(req), string(resp))
+		res, err := buildResolver(dir, engine, stores, rc)
 		if err != nil {
 			return nil, fmt.Errorf("open-appsync: resolver %s.%s: %w", rc.Type, rc.Field, err)
 		}
-		// Fail closed (handoff §2): one malformed template keeps the WHOLE config from loading, so the
-		// engine never serves it — the error surfaces in the pod (and thus the XR's not-ready status)
-		// rather than on the first request.
-		if v, ok := rt.(runtime.Validator); ok {
-			if err := v.Validate(); err != nil {
-				return nil, fmt.Errorf("open-appsync: resolver %s.%s is invalid, refusing to serve: %w", rc.Type, rc.Field, err)
-			}
-		}
-		registry[rc.Type+"."+rc.Field] = resolver.Resolver{Runtime: rt, Source: src}
+		registry[rc.Type+"."+rc.Field] = res
 	}
 
-	return graphql.New(registry), nil
+	return graphql.NewWithLimits(registry, buildLimits(cfg.Limits)), nil
+}
+
+// buildLimits turns the declarative limits into engine guards, safe by default: a nil block, or a
+// zero/unset numeric limit, keeps the protective default; a NEGATIVE value opts out of that guard.
+func buildLimits(lc *LimitsConfig) graphql.Limits {
+	limits := graphql.DefaultLimits()
+	if lc == nil {
+		return limits
+	}
+	limits.MaxDepth = safeLimit(lc.MaxDepth, limits.MaxDepth)
+	limits.MaxCost = safeLimit(lc.MaxCost, limits.MaxCost)
+	limits.PersistedOnly = lc.PersistedOnly
+	if len(lc.PersistedQueries) > 0 {
+		limits.Persisted = map[string]bool{}
+		for _, q := range lc.PersistedQueries {
+			sum := sha256.Sum256([]byte(q))
+			limits.Persisted[hex.EncodeToString(sum[:])] = true
+		}
+	}
+	return limits
+}
+
+// safeLimit keeps the protective default when a limit is unset (0), applies a positive override, and
+// treats a negative value as an explicit opt-out (unlimited).
+func safeLimit(v, def int) int {
+	switch {
+	case v == 0:
+		return def
+	case v < 0:
+		return 0
+	default:
+		return v
+	}
+}
+
+// buildResolver assembles one field's lifecycle from its config: a pipeline when Functions is set,
+// otherwise a unit resolver. Every template is validated (fail closed): one malformed template makes
+// the whole Load fail, so the engine never serves a half-broken API (handoff §2).
+func buildResolver(dir string, engine *vtl.Engine, stores map[string]dynamodb.Store, rc ResolverConfig) (resolver.Resolver, error) {
+	if len(rc.Functions) == 0 {
+		src, ok := stores[rc.DataSource]
+		if !ok {
+			return resolver.Resolver{}, fmt.Errorf("references unknown data source %q", rc.DataSource)
+		}
+		rt, err := loadStep(dir, engine, rc.Runtime, rc.Request, rc.Response)
+		if err != nil {
+			return resolver.Resolver{}, err
+		}
+		return resolver.Resolver{Runtime: rt, Source: src}, nil
+	}
+
+	// Pipeline lifecycle.
+	p := &resolver.Pipeline{}
+	if rc.Before != "" {
+		// before is a single-template step: its request phase runs (stash/abort), no response phase.
+		rt, err := loadStep(dir, engine, rc.Runtime, rc.Before, "")
+		if err != nil {
+			return resolver.Resolver{}, fmt.Errorf("before: %w", err)
+		}
+		p.Before = rt
+	}
+	for i, fc := range rc.Functions {
+		src, ok := stores[fc.DataSource]
+		if !ok {
+			return resolver.Resolver{}, fmt.Errorf("function %d references unknown data source %q", i, fc.DataSource)
+		}
+		rt, err := loadStep(dir, engine, fc.Runtime, fc.Request, fc.Response)
+		if err != nil {
+			return resolver.Resolver{}, fmt.Errorf("function %d: %w", i, err)
+		}
+		p.Functions = append(p.Functions, resolver.Function{Runtime: rt, Source: src})
+	}
+	if rc.After != "" {
+		// after is a single-template step: its response phase shapes the final value, no request phase.
+		rt, err := loadStep(dir, engine, rc.Runtime, "", rc.After)
+		if err != nil {
+			return resolver.Resolver{}, fmt.Errorf("after: %w", err)
+		}
+		p.After = rt
+	}
+	return resolver.Resolver{Pipeline: p}, nil
+}
+
+// loadStep reads a step's request/response template files (an empty filename means an empty, unused
+// template phase), builds its runtime, and validates it (fail closed on a malformed template).
+func loadStep(dir string, engine *vtl.Engine, runtimeName, reqFile, respFile string) (runtime.Runtime, error) {
+	req, err := readTemplate(dir, reqFile)
+	if err != nil {
+		return nil, fmt.Errorf("read request template: %w", err)
+	}
+	resp, err := readTemplate(dir, respFile)
+	if err != nil {
+		return nil, fmt.Errorf("read response template: %w", err)
+	}
+	rt, err := buildRuntime(runtimeName, engine, req, resp)
+	if err != nil {
+		return nil, err
+	}
+	if v, ok := rt.(runtime.Validator); ok {
+		if err := v.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid, refusing to serve: %w", err)
+		}
+	}
+	return rt, nil
+}
+
+// readTemplate reads a template file, or returns "" for an empty filename (an unused phase of a
+// single-template pipeline step).
+func readTemplate(dir, file string) (string, error) {
+	if file == "" {
+		return "", nil
+	}
+	b, err := os.ReadFile(filepath.Join(dir, file))
+	return string(b), err
 }
 
 // buildRuntime selects the runtime for a resolver by its declared `runtime` value (the §2.5 extension

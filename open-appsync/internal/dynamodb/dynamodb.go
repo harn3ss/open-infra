@@ -20,9 +20,18 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// Store executes a neutral data-source Operation (handoff §2.5: whatever runtime produced it, not
-// "a VTL thing") and returns the plain-value result for the response phase. The context carries the
-// request deadline/cancellation (a live store — FerretDB — needs it; MemStore ignores it).
+// Store is the CALL-source contract: a synchronous "give me this Operation, hand back a result". It
+// executes a neutral data-source Operation (whatever runtime produced it, not "a VTL thing") and
+// returns the plain-value result for the response phase. The context carries the request deadline /
+// cancellation (a live store — FerretDB — needs it; MemStore ignores it).
+//
+// SCOPING (the drop-33 fork, §1b — the data-source parallel to the runtime step/lifecycle split):
+// Store.Execute deliberately covers only sources you CALL — DynamoDB, and later HTTP/Lambda/RDS all
+// fit "call → result". It is NOT the whole data-source contract. A subscription's event source is the
+// inverse: a stream of mutation events that call YOU, where Execute(op)→result is meaningless — the
+// same unit-vs-stream break the runtime contract has, at the same place. That push source is a
+// separate thing under the subscription lifecycle, NOT a Store; do not torture Store into an async
+// shape it should not have.
 type Store interface {
 	Execute(ctx context.Context, op runtime.Operation) (any, error)
 }
