@@ -48,6 +48,18 @@ the product's public contract.
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
     **only** thing that removes "experimental" from the runtime.
+- **open-appsync — field-level authorization: one policy world, now at field granularity
+  (experimental).** A resolver may declare an `auth` requirement (a k8s RBAC verb on a resource). The
+  executor consults an injected authorizer **before** running the field's resolver; on denial the field
+  is `Unauthorized` and null, and the resolver — and its data source — **never runs** (proven by a
+  negative probe). The production authorizer (`internal/k8sauth`) performs an **impersonated
+  `SubjectAccessReview`** against the cluster — the *same* RBAC + permission boundary the console,
+  Terraform, and the aws-shim use, so this is not a parallel rule engine. The caller's identity comes
+  from the shim's SigV4→principal chain (headers `X-OpenInfra-User`/`-Groups`) and is exposed to
+  templates as `$ctx.identity`. Authorization is a lifecycle concern — no auth vocabulary leaks into the
+  neutral runtime/step contract. Out of cluster the engine logs loudly that field auth is not enforced.
+  Expressible on `kind: GraphQLApi` (`resolvers[].auth`) and the Terraform provider. (SAR done over lean
+  REST — no client-go — so the engine stays small and the whole path is httptest-covered.)
 - **open-appsync — the data-source family: a neutral `Store` contract + an HTTP source, proving the
   operation model is genuinely neutral (experimental).** The call-source contract (`datasource.Store`)
   moved into its own package — out of `dynamodb` — so nothing in the engine or resolver lifecycle owes

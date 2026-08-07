@@ -200,6 +200,30 @@ func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 	}
 }
 
+// A resolver's field-auth requirement renders into config.json (the §6 field-level authz).
+func TestGraphQLApi_FieldAuth(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ctx := map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"dataSources": []any{map[string]any{"name": "t", "type": "memory"}},
+				"resolvers": []any{map[string]any{
+					"type": "Query", "field": "getTodo", "dataSource": "t",
+					"request": "{\"operation\":\"Scan\"}", "response": "$util.toJson($ctx.result)",
+					"auth": map[string]any{"group": "openinfra.dev", "resource": "graphqlapis", "verb": "get"},
+				}},
+			},
+			"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+		}}},
+	}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{`"auth"`, `"resource": "graphqlapis"`, `"verb": "get"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("field-auth render missing %q; got:\n%s", want, grepCtx(out, "auth"))
+		}
+	}
+}
+
 // An http data source renders its endpoint into config.json (the §5 second call-source).
 func TestGraphQLApi_HTTPDataSource(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
