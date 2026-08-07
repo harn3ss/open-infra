@@ -1,0 +1,13 @@
+{
+  "source": "documented",
+  "description": "GetItem with a composite (partition + sort) key",
+  "template": "getitem-composite.request.vtl",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "now": "2026-08-06T00:00:00Z",
+  "context": { "args": { "pk": "USER#1", "sk": "PROFILE" } },
+  "expected": {
+    "version": "2018-05-29",
+    "operation": "GetItem",
+    "key": { "pk": { "S": "USER#1" }, "sk": { "S": "PROFILE" } }
+  }
+}
