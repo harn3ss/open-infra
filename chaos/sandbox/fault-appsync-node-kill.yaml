@@ -1,0 +1,18 @@
+# Subscription chain — kill an open-appsync engine pod mid-stream. open-appsync serves GraphQL
+# subscriptions over graphql-transport-ws and rides a NATS JetStream durable stream for the events a
+# mutation publishes. Killing an engine pod while mutations are flowing tests that NO acknowledged
+# subscription event is lost across the outage: each node consumes the JetStream subject with a DURABLE
+# consumer, so a restarted pod resumes from its last acked sequence and every published event still
+# reaches the stream (at-least-once — duplicates OK, a MISSING event is the red).
+#
+# pod-kill is instantaneous; the Deployment restarts the pod. Blast radius: chaos-sandbox only.
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: appsync-node-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: open-appsync-chaos }
+  mode: all
