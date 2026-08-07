@@ -8,16 +8,17 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
 
-// Engine executes GraphQL operations against a set of VTL resolvers. Resolvers are keyed by
+// Engine executes GraphQL operations against a set of resolvers. Resolvers are keyed by
 // "<RootType>.<field>", e.g. "Query.getTodo" / "Mutation.createTodo" (schema intake / piece 1: the
-// mapping of a field to the resolver that backs it).
+// mapping of a field to the resolver that backs it). Each resolver carries its own runtime, so the
+// executor holds no VTL (or any other runtime) knowledge — it dispatches fields and projects
+// selection sets.
 type Engine struct {
-	vtl       *vtl.Engine
 	resolvers map[string]resolver.Resolver
 }
 
-func New(v *vtl.Engine, resolvers map[string]resolver.Resolver) *Engine {
-	return &Engine{vtl: v, resolvers: resolvers}
+func New(resolvers map[string]resolver.Resolver) *Engine {
+	return &Engine{resolvers: resolvers}
 }
 
 // GqlError is a GraphQL error entry, carrying AppSync's errorType where the resolver threw one.
@@ -65,7 +66,7 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			continue
 		}
 		gctx := map[string]any{"args": evalArgs(sel.args, variables)}
-		res, rerr := r.Resolve(ctx, e.vtl, gctx)
+		res, rerr := r.Resolve(ctx, gctx)
 		if rerr != nil {
 			ge := GqlError{Message: rerr.Error(), Path: []any{respKey}}
 			var te *vtl.ThrowError

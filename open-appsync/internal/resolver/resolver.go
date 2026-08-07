@@ -1,44 +1,39 @@
 // Package resolver is open-appsync's resolver lifecycle (handoff §3.1 piece 4): the request-execute-
-// response cycle that IS the AppSync resolver contract. Getting it exactly right is what makes a
-// specialist's existing VTL resolver run unmodified:
+// response cycle that IS the AppSync resolver contract. It drives a runtime.Runtime — it knows
+// nothing about VTL — so any runtime (VTL today, JS or a neutral format later) plugs in the same way:
 //
-//	field hit → render REQUEST template (args → data-source operation)
+//	field hit → runtime.RenderRequest($ctx)  → a neutral data-source Operation
 //	         → data source executes the operation
-//	         → render RESPONSE template (raw result → the GraphQL shape)
+//	         → $ctx.result = result
+//	         → runtime.RenderResponse($ctx)   → the GraphQL field value
 //	         → return
 //
-// A $util.error() in either template aborts the field with the AppSync error shape (a *vtl.ThrowError).
+// A validation abort in the runtime (e.g. VTL's $util.error()) is returned as a normal error and
+// surfaces on the field with the AppSync error shape (a *vtl.ThrowError, unwrapped by the executor).
 package resolver
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
-	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
+	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// Resolver binds a field to its request/response mapping templates and a data source (a unit
-// resolver — pipeline resolvers are a later rung).
+// Resolver binds a field to a runtime (its mapping logic) and a data source (a unit resolver —
+// pipeline resolvers are a later rung).
 type Resolver struct {
-	Request  string
-	Response string
-	Source   dynamodb.Store
+	Runtime runtime.Runtime
+	Source  dynamodb.Store
 }
 
-// Resolve runs the request→execute→response cycle. ctx is the resolver context ($ctx): it must
-// carry "args" (and optionally identity/source); Resolve sets ctx["result"] to the data-source
-// result before rendering the response template, exactly as AppSync does.
-func (r Resolver) Resolve(reqCtx context.Context, e *vtl.Engine, ctx map[string]any) (any, error) {
-	// 1. Request mapping template → a data-source operation document.
-	reqOut, err := e.Render(r.Request, ctx)
+// Resolve runs the request→execute→response cycle. ctx is the resolver context ($ctx): it must carry
+// "args" (and optionally identity/source); Resolve sets ctx["result"] to the data-source result
+// before the response phase, exactly as AppSync does.
+func (r Resolver) Resolve(reqCtx context.Context, ctx map[string]any) (any, error) {
+	// 1. Request phase → a neutral data-source operation (or a validation abort).
+	op, err := r.Runtime.RenderRequest(ctx)
 	if err != nil {
-		return nil, err // includes *vtl.ThrowError from a validation $util.error()
-	}
-	var op map[string]any
-	if err := json.Unmarshal([]byte(reqOut), &op); err != nil {
-		return nil, fmt.Errorf("resolver: request template did not emit a JSON operation: %w\n---\n%s", err, reqOut)
+		return nil, err
 	}
 
 	// 2. Execute against the data source; its (un-marshalled) result becomes $ctx.result.
@@ -48,14 +43,6 @@ func (r Resolver) Resolve(reqCtx context.Context, e *vtl.Engine, ctx map[string]
 	}
 	ctx["result"] = result
 
-	// 3. Response mapping template → the GraphQL field value.
-	respOut, err := e.Render(r.Response, ctx)
-	if err != nil {
-		return nil, err
-	}
-	var v any
-	if err := json.Unmarshal([]byte(respOut), &v); err != nil {
-		return nil, fmt.Errorf("resolver: response template did not emit JSON: %w\n---\n%s", err, respOut)
-	}
-	return v, nil
+	// 3. Response phase → the GraphQL field value.
+	return r.Runtime.RenderResponse(ctx)
 }

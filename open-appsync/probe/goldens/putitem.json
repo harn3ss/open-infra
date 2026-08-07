@@ -1,0 +1,14 @@
+{
+  "source": "documented",
+  "description": "PutItem — autoId key + typed attribute-value marshalling (S, N)",
+  "template": "putitem.request.vtl",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "now": "2026-08-06T00:00:00Z",
+  "context": { "args": { "input": { "name": "Ada", "age": 36 } } },
+  "expected": {
+    "version": "2018-05-29",
+    "operation": "PutItem",
+    "key": { "id": { "S": "11111111-2222-4333-8444-555555555555" } },
+    "attributeValues": { "name": { "S": "Ada" }, "age": { "N": "36" } }
+  }
+}
