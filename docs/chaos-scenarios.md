@@ -10,7 +10,7 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 64 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 6 pending · ⏸️ 0 parked.
+**Tally:** 65 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 6 pending · ⏸️ 1 parked.
 
 **Last nightly:** `capture-kill` ⚪ inconclusive ([2026-08-06](https://github.com/harn3ss/open-infra/actions/runs/31095252929)) · `loss` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `lottery` ⚪ inconclusive ([2026-08-06](https://github.com/harn3ss/open-infra/actions/runs/31095252929)) · `partition` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `sink-failure` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `sink-kill` ⚪ inconclusive ([2026-08-06](https://github.com/harn3ss/open-infra/actions/runs/31095252929)) · `stress-cpu` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `stress-mem` ⚪ inconclusive ([2026-08-06](https://github.com/harn3ss/open-infra/actions/runs/31095252929))
 
@@ -166,6 +166,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS | not recorded · on-demand |
 | [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS | not recorded · on-demand |
 | [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-06 · nightly-lottery |
+| [N21](#s-N21) | Subscriptions no-loss under engine kill (open-appsync) | GraphQLApi subscriptions + NATS JetStream | pool | ⏸️ PARKED | not recorded · not yet run (parked) |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -2077,6 +2078,38 @@ flowchart LR
   FAULT(("⚡ seeded blast (2–4 composed faults)")):::fault
   FAULT -.-> n_b__sandbox_node_02
   ORACLE{{"recover · reconverge under any composed blast"}}:::oracle_recover
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+<a id="s-N21"></a>
+### N21 · Subscriptions no-loss under engine kill (open-appsync) &nbsp; ⏸️ PARKED
+
+**Category:** GraphQLApi subscriptions + NATS JetStream &nbsp;•&nbsp; **Oracle:** recover — zero subscription events lost (durable consumer resumes from offset)
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** not recorded · not yet run (parked)
+
+> Authored (chaos/scenario-subscription-reconnect.sh); PARKED until a sandbox with NATS JetStream + open-appsync (NATS_URL set) serving a subscription is provisioned. Graduation bar for the open-appsync subscription rung: kill an engine pod mid-stream and prove reconnect/resume with no lost events (durable consumer resumes from its last acked sequence; dups OK per at-least-once). Exits INCONCLUSIVE until the deploy exists — it never false-greens.
+
+<details><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  n_client["WS client (graphql-transport-ws)"]
+  n_engine["open-appsync engine"]
+  n_js[["JetStream sub.onCreateTodo"]]
+  n_client -->|"subscribe"| n_engine
+  n_engine -->|"publish on mutation"| n_js
+  n_js -->|"durable resume"| n_engine
+  FAULT(("⚡ kill open-appsync pod mid-stream")):::fault
+  FAULT -.-> n_engine
+  ORACLE{{"recover · zero subscription events lost (durable consumer resumes from offset)"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
