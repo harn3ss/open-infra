@@ -17,6 +17,7 @@ import (
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
+	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
@@ -24,10 +25,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// runtimeAppsyncVTL is the one runtime slice-1 ships. The field exists (and is validated) so §2.5's
-// future dialects (js, a neutral format) slot in as a new value with no schema change — an unknown
-// runtime fails closed rather than silently defaulting.
-const runtimeAppsyncVTL = "appsync-vtl"
+// The runtime values a resolver may declare (the extension point's field). appsync-vtl and appsync-js
+// are the two tenants; an unknown value fails closed rather than silently defaulting.
+const (
+	runtimeAppsyncVTL = "appsync-vtl"
+	runtimeAppsyncJS  = "appsync-js"
+)
 
 // Config is the engine's declarative wiring.
 type Config struct {
@@ -245,8 +248,12 @@ func buildRuntime(name string, engine *vtl.Engine, request, response string) (ru
 	switch name {
 	case "", runtimeAppsyncVTL:
 		return vtlruntime.New(engine, request, response), nil
+	case runtimeAppsyncJS:
+		// A JS resolver is one module (defining request(ctx)/response(ctx)) carried in the request
+		// field; the response field is unused. It shares the engine's $util providers.
+		return jsruntime.New(engine.Util(), request)
 	default:
-		return nil, fmt.Errorf("unknown runtime %q (slice 1: %q)", name, runtimeAppsyncVTL)
+		return nil, fmt.Errorf("unknown runtime %q (available: %q, %q)", name, runtimeAppsyncVTL, runtimeAppsyncJS)
 	}
 }
 

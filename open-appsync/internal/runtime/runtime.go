@@ -24,11 +24,12 @@
 //             (e.g. VTL's $util.error()) is returned as a normal error and surfaces on the field.
 //
 // VTL is the first tenant (internal/vtlruntime) and it plugs in through THIS interface with no
-// backstage pass — if it needed a shortcut the others won't have, the seam would be theatre. The
-// interface is deliberately NOT blessed as a stable/public extension point on one implementation:
-// it is proven with VTL through the front door and (in tests) a second trivial runtime, and stays
-// internal and changeable until a real second tenant lands (JS is the rung that blesses it stable).
-// Openness earned by two tenants, not declared on one.
+// backstage pass — if it needed a shortcut the others won't have, the seam would be theatre. It was
+// deliberately NOT blessed stable on one implementation; it is now exercised by a SECOND, real,
+// non-VTL tenant — a sandboxed JavaScript runtime (internal/jsruntime) — through the same front door
+// with no backstage pass (forward-map §4). Two tenants, not one: the interface is treated as STABLE
+// going forward. (That is a statement about the interface only; JS-as-a-runtime itself is still an
+// experimental rung. Do not conflate the two.) Openness earned by two tenants, not declared on one.
 package runtime
 
 // Operation is the neutral data-source operation — the "Out" term. It is the vendor-neutral document a
