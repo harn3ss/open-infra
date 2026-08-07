@@ -167,14 +167,22 @@ request), so no identity/role/secret header can be smuggled to the engine.
 
 With `components.openAppsync` disabled the `appsync` service returns `502` (no engine to route to).
 
-**Authoring (data plane vs management plane).** What the shim fronts here is the AppSync **data
-plane** (running GraphQL). *Authoring* the API — schemas, resolvers, data sources — is done natively
-through **`kind: GraphQLApi`** (one object carrying inline data sources + resolvers, each declaring a
-`runtime` and its VTL templates), which renders the engine config with no bespoke controller. A
-resolver author's VTL is byte-for-byte identical there — zero retraining. The AWS **management** wire
-protocol (`CreateResolver` / the CloudFormation type) is **Stage 2**: a later shim skin that patches
-the same `GraphQLApi` object, so an AWS user's existing templates deploy unchanged. Native/neutral
-model first; AWS management door second. See [open-appsync/README.md](../open-appsync/README.md).
+**Authoring (data plane vs management plane).** The shim fronts the AppSync **data plane** (running
+GraphQL) *and*, at `/v1/...`, the AppSync **management plane** — told apart by path (both sign for the
+SigV4 service `appsync`). Authoring the API natively is **`kind: GraphQLApi`** (one object carrying
+inline data sources + resolvers, each declaring a `runtime` and its templates), rendered with no
+bespoke controller; a resolver author's VTL is byte-for-byte identical there — zero retraining.
+
+The AWS **management** wire protocol (Stage 2) is the compatibility skin: it translates AWS management
+verbs into a **patch on the neutral `GraphQLApi` object**, so AWS tooling (CloudFormation, CDK,
+`aws appsync ...`) can drive open-infra unchanged. The skin owns AWS's `(apiId, typeName, fieldName)`
+identity mapping (apiId = `<namespace>.<name>`); the neutral kind never learns AWS's addressing. It
+graduates **per verb**, like every shim service — proven so far (front door + negatives):
+`CreateResolver`, `UpdateResolver`, `DeleteResolver`, `GetResolver`, `CreateDataSource`,
+`DeleteDataSource`. An unhandled verb answers an honest `NotImplemented`. The caller is gated by the
+same impersonated `SubjectAccessReview` as every other front door (`update graphqlapis` in the target
+namespace). This is **not** "AppSync management API compatible" — it is exactly the verbs listed.
+Native/neutral model first; AWS door second. See [open-appsync/README.md](../open-appsync/README.md).
 
 **Honest limitations (flagged, not hidden):**
 
