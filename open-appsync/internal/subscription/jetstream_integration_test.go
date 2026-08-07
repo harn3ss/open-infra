@@ -10,7 +10,7 @@ import (
 )
 
 // A live JetStream round-trip: publish → durable subscribe delivers. Needs a running NATS/JetStream at
-// NATS_TEST_URL (e.g. nats://localhost:4222). Run: go test -tags integration ./internal/subscription/.
+// NATS_TEST_URL (e.g. nats://localhost:4222). Run: go test -tags integration./internal/subscription/.
 // The node-kill reconnect/resume proof is the CHAOS scenario (chaos/scenarios/08-*), not a unit test —
 // this only proves the bus wiring end-to-end against real JetStream.
 func TestJetStreamBus_RoundTrip(t *testing.T) {

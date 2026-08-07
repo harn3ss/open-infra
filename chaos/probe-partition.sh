@@ -10,14 +10,14 @@
 # guaranteed listener. We measure the handshake wall-time with busybox `time` (0.01s
 # resolution — busybox `date` has no %N, so `time` is the only sub-second clock we get):
 #
-#   fast connect (< FAST_MAX, default 0.30s)   → up    (healthy)
-#   connects, but slow (>= FAST_MAX)           → slow  (latency degrade — link intact but delayed)
-#   connect fails within CONNECT_TIMEOUT       → down  (cut)
+# fast connect (< FAST_MAX, default 0.30s) → up (healthy)
+# connects, but slow (>= FAST_MAX) → slow (latency degrade — link intact but delayed)
+# connect fails within CONNECT_TIMEOUT → down (cut)
 #
-#   probe-partition.sh up     -> exit 0 if the link is OPEN & fast
-#   probe-partition.sh slow   -> exit 0 if the link is UP but DELAYED
-#   probe-partition.sh down   -> exit 0 if the link is CUT
-#   (exit 2 = infrastructure error — treat as INCONCLUSIVE, never as green)
+# probe-partition.sh up -> exit 0 if the link is OPEN & fast
+# probe-partition.sh slow -> exit 0 if the link is UP but DELAYED
+# probe-partition.sh down -> exit 0 if the link is CUT
+# (exit 2 = infrastructure error — treat as INCONCLUSIVE, never as green)
 set -uo pipefail
 
 NS="${CHAOS_SANDBOX_NS:-chaos-sandbox}"

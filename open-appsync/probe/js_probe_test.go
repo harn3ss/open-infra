@@ -13,7 +13,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
 
-// The SECOND-tenant proof (forward-map §4): a real, non-VTL, production-shaped runtime — AppSync-style
+// The SECOND-tenant proof: a real, non-VTL, production-shaped runtime — AppSync-style
 // JavaScript resolvers on a goja sandbox — runs through the EXACT same lifecycle and executor as VTL,
 // with no backstage pass. This is what earns the interface-stability claim. It also proves the sandbox
 // denies ambient capability (prove the "no").
@@ -82,7 +82,7 @@ func TestJSProbe_PutThenGet(t *testing.T) {
 func TestJSProbe_CoexistsWithVTL(t *testing.T) {
 	store := dynamodb.NewMemStore()
 	e := graphql.New(map[string]resolver.Resolver{
-		"Mutation.createTodo": {Runtime: mustJS(t, jsPut), Source: store},                                            // JS
+		"Mutation.createTodo": {Runtime: mustJS(t, jsPut), Source: store},                                                                         // JS
 		"Query.getTodo":       {Runtime: vtlruntime.New(engine(), mustCorpus("getitem.request.vtl"), "$util.toJson($ctx.result)"), Source: store}, // VTL
 	})
 	id := "11111111-2222-4333-8444-555555555555"
@@ -116,7 +116,7 @@ func TestJSProbe_SandboxDeniesAmbientCapability(t *testing.T) {
 	}
 }
 
-// util.error() in JS surfaces as a resolver error with its errorType (the AppSync error shape).
+// util.error in JS surfaces as a resolver error with its errorType (the AppSync error shape).
 func TestJSProbe_UtilErrorSurfaces(t *testing.T) {
 	src := `function request(ctx){ util.error('name is required','BadRequest'); return {operation:'Scan'}; }
 	        function response(ctx){ return ctx.result; }`

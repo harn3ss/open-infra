@@ -13,7 +13,7 @@ import (
 )
 
 // lambdaHandler fronts AWS Lambda's Invoke over open-infra's kind: Function (Knative Serving). This
-// is the design's designated second service (handoff §7): "one Knative compute path — the backend
+// is the design's designated second service: "one Knative compute path — the backend
 // already speaks the protocol." A Function is a scale-to-zero HTTP workload; Lambda Invoke is, at
 // heart, an HTTP POST of a payload to a named function and a response body back — so the
 // translation is a genuine, thin mapping, not a protocol reimplementation.

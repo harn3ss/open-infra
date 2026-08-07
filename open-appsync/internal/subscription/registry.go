@@ -7,7 +7,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// Subscriber is one open subscription on one node — the connection-scoped state the handoff flagged as
+// Subscriber is one open subscription on one node — the connection-scoped state
 // "the one new piece of state" subscriptions introduce. It holds the client's filter, the response
 // step that shapes each pushed event, the caller's identity, and how to deliver a payload (a channel
 // send / WebSocket write, injected by the transport).

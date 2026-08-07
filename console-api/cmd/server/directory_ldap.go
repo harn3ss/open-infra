@@ -36,8 +36,8 @@ type ldapEntry struct {
 }
 
 type ldapSearchResp struct {
-	BaseDN  string      `json:"baseDN"`  // the base the search actually ran against
-	Domain  string      `json:"domain"`  // the AD domain
+	BaseDN  string      `json:"baseDN"` // the base the search actually ran against
+	Domain  string      `json:"domain"` // the AD domain
 	Entries []ldapEntry `json:"entries"`
 }
 

@@ -2,7 +2,7 @@ package subscription
 
 import "testing"
 
-// Filter matching is the genuinely hard part of the subscription rung (per the handoff), so it carries
+// Filter matching is the genuinely hard part of the subscription rung, so it carries
 // the weight of the unit tests. AppSync semantics: conditions AND within a filter, filters OR within a
 // group, an empty group matches everything.
 

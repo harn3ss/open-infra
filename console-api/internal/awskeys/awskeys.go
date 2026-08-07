@@ -1,5 +1,5 @@
 // Package awskeys is the credential store for SigV4 access keys: the one genuinely-new piece of
-// state the AWS-shim introduces (design handoff §9). It maps an access key ID → (secret access
+// state the AWS-shim introduces. It maps an access key ID → (secret access
 // key, owning principal), backed by a Kubernetes Secret per key.
 //
 // Why a Secret holding the ACTUAL secret (not a hash, the way passwords are stored): SigV4

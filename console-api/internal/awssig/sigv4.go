@@ -3,7 +3,7 @@
 // the client ever transmitting its secret key.
 //
 // This is the security heart of the shim's "verify, don't just parse" rule (design
-// handoff §4). In a SigV4 request the access key ID travels in the clear — it only
+// the design). In a SigV4 request the access key ID travels in the clear — it only
 // NAMES the caller — while the signature rides along, computed from the secret. The
 // secret itself is never on the wire. Verify recomputes that signature from the
 // looked-up secret and constant-time compares it: a caller who merely names a valid
@@ -17,8 +17,8 @@
 // you can look up that key's secret and check the signature (Verify).
 //
 //	cred, err := awssig.ParseAuthorization(r.Header.Get("Authorization"))
-//	secret    := store.SecretFor(cred.AccessKeyID)   // caller owns the key store
-//	err        = awssig.Verify(r, cred, secret)      // ErrSignatureMismatch on a bad sig
+//	secret := store.SecretFor(cred.AccessKeyID) // caller owns the key store
+//	err = awssig.Verify(r, cred, secret) // ErrSignatureMismatch on a bad sig
 //
 // The algorithm is AWS's documented SigV4 procedure (canonical request → string to
 // sign → derived signing key → HMAC-SHA256). It is validated against AWS's published
@@ -219,7 +219,7 @@ func canonicalURI(escapedPath, service string) string {
 	if escapedPath == "" {
 		return "/"
 	}
-	// req.URL.EscapedPath() is already single-encoded. For S3 that is exactly what is signed.
+	// req.URL.EscapedPath is already single-encoded. For S3 that is exactly what is signed.
 	if service == "s3" {
 		return escapedPath
 	}

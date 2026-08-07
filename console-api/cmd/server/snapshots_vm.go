@@ -230,7 +230,7 @@ func handleVMSnapshotDelete(cs kubernetes.Interface, auth *authStore, logger *sl
 	}
 }
 
-// POST /api/vm-snapshots/restore  {id, namespace, target}
+// POST /api/vm-snapshots/restore {id, namespace, target}
 // Restores into a NEW VirtualMachine: pre-seed <target>-root from the snapshot, then create an
 // openinfra VirtualMachine that adopts it (existingRootClaim). Starts Halted so the user boots it.
 func handleVMSnapshotRestore(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -285,7 +285,7 @@ func handleVMSnapshotRestore(cs kubernetes.Interface, auth *authStore, logger *s
 		}
 		pb, _ := json.Marshal(pvc)
 		if err := cs.CoreV1().RESTClient().Post().
-			AbsPath("/api/v1/namespaces/" + in.Namespace + "/persistentvolumeclaims").
+			AbsPath("/api/v1/namespaces/"+in.Namespace+"/persistentvolumeclaims").
 			Body(pb).SetHeader("Content-Type", "application/json").Do(ctx).Error(); err != nil &&
 			!strings.Contains(err.Error(), "already exists") {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create restore PVC: " + err.Error()})
@@ -323,7 +323,7 @@ func handleVMSnapshotRestore(cs kubernetes.Interface, auth *authStore, logger *s
 		}
 		vb, _ := json.Marshal(vm)
 		if err := cs.CoreV1().RESTClient().Post().
-			AbsPath("/apis/openinfra.dev/v1/namespaces/" + in.Namespace + "/virtualmachines").
+			AbsPath("/apis/openinfra.dev/v1/namespaces/"+in.Namespace+"/virtualmachines").
 			Body(vb).SetHeader("Content-Type", "application/json").Do(ctx).Error(); err != nil &&
 			!strings.Contains(err.Error(), "already exists") {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create restored VM: " + err.Error()})

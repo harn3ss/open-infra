@@ -17,24 +17,24 @@ import (
 // (opt-in component `openAppsync`). open-appsync is resolver-first and VTL-faithful — the authoring
 // model AppSync-locked teams actually depend on — NOT a GraphQL-over-tables engine wearing a mask.
 // (An earlier drop fronted a GraphQL-over-tables placeholder here; it was the wrong model for
-// resolver fidelity and has been removed. See open-infra-open-appsync-handoff.md.)
+// resolver fidelity and has been removed.)
 //
 // An SDK/Amplify client with IAM auth signs a `POST {query, variables}` with SigV4 (service
 // `appsync`); the shim verifies that signature (router), runs the coarse platform-membership gate,
 // and forwards the GraphQL body to the engine. Three disciplines are load-bearing:
-//   - the SigV4 verification + the impersonated coarse IAM gate ("one policy world, four front doors");
-//   - the fresh-upstream-request discipline: a brand-new request is built so NO client header is ever
-//     forwarded to the engine (an attacker can't smuggle an identity/role/secret header);
-//   - component-gating: engine absent → 502; OFF unless explicitly enabled.
+// - the SigV4 verification + the impersonated coarse IAM gate ("one policy world, four front doors");
+// - the fresh-upstream-request discipline: a brand-new request is built so NO client header is ever
+// forwarded to the engine (an attacker can't smuggle an identity/role/secret header);
+// - component-gating: engine absent → 502; OFF unless explicitly enabled.
 // open-appsync is our OWN engine, so the shim conveys the verified principal as its auth context
 // (X-OpenInfra-User) and open-appsync enforces fine-grained authz internally against the same
 // principals — no foreign admin secret, no vendor-specific role header.
 type appsyncHandler struct {
 	cs       kubernetes.Interface
 	client   *http.Client
-	endpoint string    // open-appsync engine base URL (…/graphql is appended)
-	authzNS  string    // namespace the coarse platform-membership gate is evaluated in
-	apis     apiStore  // Stage-2 management: read-modify-write of GraphQLApi claims
+	endpoint string   // open-appsync engine base URL (…/graphql is appended)
+	authzNS  string   // namespace the coarse platform-membership gate is evaluated in
+	apis     apiStore // Stage-2 management: read-modify-write of GraphQLApi claims
 	logger   *slog.Logger
 }
 

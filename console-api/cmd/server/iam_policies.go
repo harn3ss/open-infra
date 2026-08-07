@@ -16,7 +16,7 @@ import (
 // Managing kind: Policy and kind: Role from the console (IAM stage 2).
 //
 // Like the Users/Groups endpoints, every handler here authorizes the SIGNED-IN user with a
-// SubjectAccessReview against iam.openinfra.dev before acting (see authorize()), so it is
+// SubjectAccessReview against iam.openinfra.dev before acting (see authorize), so it is
 // admins-only, exactly as restricted as kubectl. The console's ServiceAccount does the work;
 // the human's own RBAC decides whether it happens.
 //
