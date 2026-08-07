@@ -16,6 +16,7 @@ package resolver
 import (
 	"context"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
@@ -25,9 +26,13 @@ import (
 // Lifecycle interface — lets the executor hold a single map and keeps the unit path byte-identical to
 // the slice-1 shape; a Lifecycle interface can arrive with the subscription rung.)
 type Resolver struct {
-	Runtime  runtime.Runtime // unit lifecycle: the single step
-	Source   datasource.Store  // unit lifecycle: its data source
-	Pipeline *Pipeline       // if non-nil, run the pipeline lifecycle instead
+	Runtime  runtime.Runtime  // unit lifecycle: the single step
+	Source   datasource.Store // unit lifecycle: its data source
+	Pipeline *Pipeline        // if non-nil, run the pipeline lifecycle instead
+	// Auth is the field's authorization requirement, enforced by the executor BEFORE the resolver runs
+	// (field-level authz, §6). A zero Requirement means public. It lives on the resolver but is checked
+	// in the executor/lifecycle, never in a runtime step — the step stays auth-unaware.
+	Auth authz.Requirement
 }
 
 // Pipeline is the pipeline lifecycle: a before step, an ordered list of functions, and an after step.
