@@ -182,6 +182,24 @@ func TestGraphQLApi_DynamoDBWiresMongo(t *testing.T) {
 	}
 }
 
+// A pipeline resolver + hostile-load limits render into config.json + the per-step .vtl files.
+func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	out := render(t, tmpl, graphqlApiPipelineCtx())
+	for _, want := range []string{
+		`"limits"`, `"maxDepth": 6`, `"persistedOnly": false`,
+		`"functions"`,
+		"Mutation.createAndFetch.before.vtl:", "Mutation.createAndFetch.after.vtl:",
+		"Mutation.createAndFetch.fn0.request.vtl:", "Mutation.createAndFetch.fn1.request.vtl:",
+		`$ctx.stash.put`,        // before step's VTL, verbatim
+		`$ctx.prev.result.id`,   // fn1 threading, verbatim
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("GraphQLApi pipeline render missing %q; got:\n%s", want, grepCtx(out, "functions"))
+		}
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
@@ -366,6 +384,46 @@ func graphqlApiCtx(mongoURI string) map[string]any {
 			"spec": spec,
 			"metadata": map[string]any{
 				"uid": "00000000-0000-0000-0000-0000000000ga",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "notes",
+					"crossplane.io/claim-namespace": "team-a",
+				},
+			},
+		}}},
+	}
+}
+
+// graphqlApiPipelineCtx builds a kind: GraphQLApi with a pipeline resolver (before → 2 functions →
+// after) and hostile-load limits — the drop-33 §2/§7 surface.
+func graphqlApiPipelineCtx() map[string]any {
+	spec := map[string]any{
+		"dataSources": []any{map[string]any{"name": "things", "type": "memory"}},
+		"limits":      map[string]any{"maxDepth": int64(6), "maxCost": int64(200)},
+		"resolvers": []any{
+			map[string]any{
+				"type": "Mutation", "field": "createAndFetch",
+				"before": "#set($d = $ctx.stash.put(\"tag\", $ctx.args.tag))",
+				"after":  "$util.toJson($ctx.prev.result)",
+				"functions": []any{
+					map[string]any{
+						"dataSource": "things",
+						"request":    "{\"operation\":\"PutItem\",\"key\":{\"id\":$util.dynamodb.toDynamoDBJson($util.autoId())},\"attributeValues\":$util.dynamodb.toMapValuesJson({\"name\":$ctx.args.name,\"tag\":$ctx.stash.tag})}",
+						"response":   "$util.toJson($ctx.result)",
+					},
+					map[string]any{
+						"dataSource": "things",
+						"request":    "{\"operation\":\"GetItem\",\"key\":{\"id\":$util.dynamodb.toDynamoDBJson($ctx.prev.result.id)}}",
+						"response":   "$util.toJson($ctx.result)",
+					},
+				},
+			},
+		},
+	}
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000gp",
 				"labels": map[string]any{
 					"crossplane.io/claim-name":      "notes",
 					"crossplane.io/claim-namespace": "team-a",
