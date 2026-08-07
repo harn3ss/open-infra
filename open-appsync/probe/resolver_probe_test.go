@@ -7,7 +7,19 @@ import (
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
+	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
+	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
 )
+
+// vtlResolver builds a resolver whose appsync-vtl runtime uses the given (deterministic) engine and
+// the named corpus request/response templates — the same wiring server.Load does.
+func vtlResolver(t *testing.T, e *vtl.Engine, req, resp string, src dynamodb.Store) resolver.Resolver {
+	t.Helper()
+	return resolver.Resolver{
+		Runtime: vtlruntime.New(e, mustTemplate(t, req), mustTemplate(t, resp)),
+		Source:  src,
+	}
+}
 
 // End-to-end resolver probe (slice 1's headline): a REAL AppSync VTL resolver (request + response
 // mapping templates, straight from the corpus) runs the full request→execute→response cycle against
@@ -21,19 +33,11 @@ func TestResolverProbe_PutThenGet(t *testing.T) {
 	e := engine() // pinned autoId/time
 	store := dynamodb.NewMemStore()
 
-	createTodo := resolver.Resolver{
-		Request:  mustTemplate(t, "putitem.request.vtl"),
-		Response: mustTemplate(t, "response.vtl"),
-		Source:   store,
-	}
-	getTodo := resolver.Resolver{
-		Request:  mustTemplate(t, "getitem.request.vtl"),
-		Response: mustTemplate(t, "response.vtl"),
-		Source:   store,
-	}
+	createTodo := vtlResolver(t, e, "putitem.request.vtl", "response.vtl", store)
+	getTodo := vtlResolver(t, e, "getitem.request.vtl", "response.vtl", store)
 
 	// createTodo(input: {name:"Ada", age:36}) → the written item, id from $util.autoId().
-	created, err := createTodo.Resolve(context.Background(), e, map[string]any{
+	created, err := createTodo.Resolve(context.Background(), map[string]any{
 		"args": map[string]any{"input": map[string]any{"name": "Ada", "age": float64(36)}},
 	})
 	if err != nil {
@@ -46,7 +50,7 @@ func TestResolverProbe_PutThenGet(t *testing.T) {
 	}
 
 	// getTodo(id) → the same item, read back through fromDynamoDB un-marshalling.
-	got, err := getTodo.Resolve(context.Background(), e, map[string]any{"args": map[string]any{"id": id}})
+	got, err := getTodo.Resolve(context.Background(), map[string]any{"args": map[string]any{"id": id}})
 	if err != nil {
 		t.Fatalf("getTodo: %v", err)
 	}
@@ -57,12 +61,8 @@ func TestResolverProbe_PutThenGet(t *testing.T) {
 
 // A read miss returns null (AppSync GetItem semantics), and the response template passes it through.
 func TestResolverProbe_GetMissingIsNull(t *testing.T) {
-	getTodo := resolver.Resolver{
-		Request:  mustTemplate(t, "getitem.request.vtl"),
-		Response: mustTemplate(t, "response.vtl"),
-		Source:   dynamodb.NewMemStore(),
-	}
-	got, err := getTodo.Resolve(context.Background(), engine(), map[string]any{"args": map[string]any{"id": "nope"}})
+	getTodo := vtlResolver(t, engine(), "getitem.request.vtl", "response.vtl", dynamodb.NewMemStore())
+	got, err := getTodo.Resolve(context.Background(), map[string]any{"args": map[string]any{"id": "nope"}})
 	if err != nil {
 		t.Fatalf("getTodo: %v", err)
 	}
@@ -75,12 +75,8 @@ func TestResolverProbe_GetMissingIsNull(t *testing.T) {
 // proving the resolver contract surfaces a thrown error instead of running the operation.
 func TestResolverProbe_ValidationAborts(t *testing.T) {
 	store := dynamodb.NewMemStore()
-	create := resolver.Resolver{
-		Request:  mustTemplate(t, "validate.request.vtl"),
-		Response: mustTemplate(t, "response.vtl"),
-		Source:   store,
-	}
-	_, err := create.Resolve(context.Background(), engine(), map[string]any{"args": map[string]any{"input": map[string]any{}}})
+	create := vtlResolver(t, engine(), "validate.request.vtl", "response.vtl", store)
+	_, err := create.Resolve(context.Background(), map[string]any{"args": map[string]any{"input": map[string]any{}}})
 	if err == nil {
 		t.Fatal("expected the validation resolver to abort with an error")
 	}
