@@ -181,6 +181,11 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
   result AWS would.
 - **The GraphQL executor** (`internal/graphql`): field→resolver dispatch, arguments + `$variables`,
   selection-set projection, `{data, errors}` with resolver-thrown `errorType`.
+- **An in-memory schema type system + introspection** (`internal/graphql/schema.go`, `introspect.go`):
+  the API's SDL parses into a name→type map where a field's return type is a *reference* carrying its
+  wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are four distinct types), and `__schema` / `__type`
+  are answered by reading that map back out in the spec-mandated shape. See *Introspection* below for
+  the operability gates it graduated on.
 - **Data sources**: an in-memory store and a **FerretDB-backed** DynamoDB-style store
   (`internal/dynamodb`), plus an **HTTP** source (`internal/httpsource`) — behind the neutral
   `datasource.Store` contract, with no data-source-type branching in the engine or lifecycle.
@@ -199,6 +204,38 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
 - **Compatibility probe**: runtime **goldens harnesses** for both runtimes — VTL (`probe/goldens/`) and
   APPSYNC_JS (`probe/goldens-js/`) — whose cases are **captured from real AWS AppSync**
   (`evaluate-mapping-template` / `evaluate-code`) and diffed in CI. Both are behavior-faithful.
+
+## Introspection
+
+Set `spec.schema` (GraphQL SDL) on a `kind: GraphQLApi` and the engine parses it into an in-memory type
+graph and answers **`__schema` / `__type`** over it — so the GraphQL ecosystem (graphql-codegen, Apollo,
+GraphiQL) can build a client schema from the API. The SDL rides to the engine as a `schema.graphql`
+sibling file (kept out of `config.json` to avoid JSON escaping — same reason the `.vtl` templates are
+files). Without a schema the engine still resolves fields; introspection just reports unavailable.
+
+**How it graduated (operability, not fidelity).** Introspection is standard GraphQL — AWS has no dialect
+here — so a byte-match-AWS golden proves little. The bar is instead *does a real tool consume it*:
+
+1. **Conformance** (`probe/introspection_probe_test.go`, `TestIntrospection_CanonicalQueryShape`) — fire
+   the standard introspection query and validate the response is the spec's shape, wrappers exact.
+2. **Real-tool-consumes** (`TestIntrospection_RealToolConsumes` → `probe/introspection/consume.mjs`) —
+   feed the result to **graphql-js `buildClientSchema`** and **graphql-codegen**; assert they reconstruct
+   the schema (`[Todo!]!`, `ID!`, `[String!]`, enum defaults, custom scalars, all three roots survive)
+   and generate TypeScript types. This is the operability golden — the ecosystem builds against
+   open-infra or it doesn't.
+
+**Toggle (security).** Introspection-on lets any client read the whole schema — a tooling boon and a
+recon aid — so it is a toggle, wired into the hostile-load seam: `spec.limits.introspection` is
+`enabled` (default; AWS AppSync's behavior), `disabled` (never), or `authenticated-only` (off for
+untrusted/anonymous callers). `__typename` is unaffected.
+
+**Honest scope.** This graduates **introspection only**. The verbatim introspection query graphql-js
+sends over the wire uses **fragments**, which the parser does not accept yet (fragments are their own
+rung) — so gate #2 consumes the *result* (what codegen/Apollo ultimately do via `buildClientSchema`),
+and pointing a tool at the live endpoint to auto-introspect waits on fragment support. Nested
+`__typename`, directive *execution* (`@skip`/`@include`), variable coercion, and custom-scalar
+validation all lean on this type graph but each graduates on its own evidence — none is promoted by
+proximity.
 
 ## Maturity — two independent gates
 

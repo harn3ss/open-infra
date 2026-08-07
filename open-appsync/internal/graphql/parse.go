@@ -53,6 +53,20 @@ func tokenize(s string) ([]gtok, error) {
 			for i < len(s) && s[i] != '\n' {
 				i++
 			}
+		case c == '"' && i+2 < len(s) && s[i+1] == '"' && s[i+2] == '"':
+			// Block string ("""…"""): SDL descriptions use these. We keep the raw inner text (no
+			// dedent/normalization — descriptions are carried verbatim into introspection).
+			j := i + 3
+			var b strings.Builder
+			for j+2 < len(s) && !(s[j] == '"' && s[j+1] == '"' && s[j+2] == '"') {
+				b.WriteByte(s[j])
+				j++
+			}
+			if j+2 >= len(s) {
+				return nil, fmt.Errorf("graphql: unterminated block string")
+			}
+			toks = append(toks, gtok{"str", strings.TrimSpace(b.String())})
+			i = j + 3
 		case c == '"':
 			j := i + 1
 			var b strings.Builder
@@ -92,7 +106,7 @@ func tokenize(s string) ([]gtok, error) {
 			}
 			toks = append(toks, gtok{"name", s[i:j]})
 			i = j
-		case strings.IndexByte("{}()[]:$!=", c) >= 0:
+		case strings.IndexByte("{}()[]:$!=@|&", c) >= 0: // SDL adds @ (directives), | (unions), & (implements)
 			toks = append(toks, gtok{"punct", string(c)})
 			i++
 		default:
