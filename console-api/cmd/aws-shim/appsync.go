@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -30,8 +32,9 @@ import (
 type appsyncHandler struct {
 	cs       kubernetes.Interface
 	client   *http.Client
-	endpoint string // open-appsync engine base URL (…/graphql is appended)
-	authzNS  string // namespace the coarse platform-membership gate is evaluated in
+	endpoint string    // open-appsync engine base URL (…/graphql is appended)
+	authzNS  string    // namespace the coarse platform-membership gate is evaluated in
+	apis     apiStore  // Stage-2 management: read-modify-write of GraphQLApi claims
 	logger   *slog.Logger
 }
 
@@ -41,8 +44,40 @@ func newAppsyncHandler(cs kubernetes.Interface, endpoint, authzNS string, logger
 		client:   &http.Client{Timeout: 30 * time.Second},
 		endpoint: endpoint,
 		authzNS:  authzNS,
+		apis:     restAPIStore{cs: cs},
 		logger:   logger,
 	}
+}
+
+// restAPIStore reads/writes GraphQLApi claims via the cluster REST client (the same AbsPath mechanism
+// the owner-resolver uses for iam Users), so the shim needs no extra client — its ServiceAccount RBAC
+// is the authority.
+type restAPIStore struct{ cs kubernetes.Interface }
+
+func (s restAPIStore) path(ns, name string) string {
+	return "/apis/openinfra.dev/v1/namespaces/" + ns + "/graphqlapis/" + name
+}
+
+func (s restAPIStore) Get(ctx context.Context, ns, name string) (map[string]any, error) {
+	raw, err := s.cs.CoreV1().RESTClient().Get().AbsPath(s.path(ns, name)).DoRaw(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+func (s restAPIStore) Update(ctx context.Context, ns, name string, obj map[string]any) error {
+	body, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	_, err = s.cs.CoreV1().RESTClient().Put().AbsPath(s.path(ns, name)).
+		SetHeader("Content-Type", "application/json").Body(body).DoRaw(ctx)
+	return err
 }
 
 func (h *appsyncHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
@@ -51,6 +86,13 @@ func (h *appsyncHandler) authFailure(w http.ResponseWriter, _ *http.Request, req
 }
 
 func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	// The management (control) plane and the data plane share the SigV4 service "appsync"; they are
+	// told apart by path. /v1/... is the AWS management API → the Stage-2 skin (patch the GraphQLApi
+	// object). Everything else is the GraphQL data plane → forward to the engine.
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		h.serveManagement(w, r, claims, requestID)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeAppsyncError(w, http.StatusBadRequest, "BadRequestException", requestID, "GraphQL requests must be POST")
 		return
