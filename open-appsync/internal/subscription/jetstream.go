@@ -1,8 +1,9 @@
-// JetStreamBus is the DURABLE, multi-node Bus: subscription events ride a NATS
-// JetStream stream, and each engine node consumes them with a DURABLE consumer, so a node kill →
-// reconnect resumes from the last acked sequence with no lost and no duplicated events past that point.
-// That reconnect/resume behaviour is exactly what the node-kill chaos scenario (the rung's graduation
-// bar) exercises — which is why it is temporal and cannot be a unit test. It compiles into the engine
+// JetStreamBus is the durable, multi-node Bus: subscription events ride a NATS JetStream stream (file
+// storage), and each engine node fans them out to its own WebSocket subscribers via its own EPHEMERAL
+// consumer (see Subscribe for why fan-out, not a shared durable). The events' durability lives in the
+// stream, so a node kill loses only that node's in-flight fan-out and every acknowledged event remains
+// on the stream for the survivors — which is what the node-kill chaos scenario asserts (via the
+// stream's message count), and why that proof is temporal, not a unit test. It compiles into the engine
 // binary (main selects it when NATS_URL is set; otherwise the in-memory bus). Its live test — which
 // needs a running NATS — is build-tagged `integration` (jetstream_integration_test.go).
 package subscription
@@ -58,22 +59,24 @@ func (b *JetStreamBus) Publish(_ context.Context, subject string, event map[stri
 	return err
 }
 
-// Subscribe creates a DURABLE consumer for subject; on reconnect the durable resumes from the last
-// acked message, so events are neither lost nor (past the ack point) duplicated. Manual ack after the
-// handler runs makes delivery at-least-once up to the handler.
+// Subscribe fans a subject's events out to THIS node with its own EPHEMERAL consumer. Subscriptions
+// need fan-out, not load-balancing: every engine replica must see every event so it can match it
+// against ITS OWN connected WebSocket subscribers — so each replica gets an independent consumer
+// (a shared *durable* push consumer is single-active and a second replica binding it errors with
+// "consumer is already bound"). Durability of the events themselves lives in the STREAM (file
+// storage): a node kill loses only that node's in-flight fan-out, and the events remain on the stream
+// for the survivors and any restarted node. (Per-connection gapless replay across a reconnect is a
+// separate, future rung; graphql-ws clients resubscribe on reconnect.)
 func (b *JetStreamBus) Subscribe(_ context.Context, subject string, handler func(map[string]any)) (io.Closer, error) {
-	durable := "openappsync-" + sanitize(subject)
 	sub, err := b.js.Subscribe(subject, func(msg *nats.Msg) {
 		var event map[string]any
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			_ = msg.Nak()
 			return
 		}
 		handler(event)
-		_ = msg.Ack()
-	}, nats.Durable(durable), nats.ManualAck(), nats.DeliverAll())
+	}, nats.DeliverNew(), nats.AckNone())
 	if err != nil {
-		return nil, fmt.Errorf("subscription: durable subscribe %q: %w", subject, err)
+		return nil, fmt.Errorf("subscription: subscribe %q: %w", subject, err)
 	}
 	return jetstreamCloser{sub: sub}, nil
 }
@@ -84,15 +87,3 @@ func (b *JetStreamBus) Close() { b.nc.Drain() }
 type jetstreamCloser struct{ sub *nats.Subscription }
 
 func (c jetstreamCloser) Close() error { return c.sub.Unsubscribe() }
-
-func sanitize(s string) string {
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r == '.' || r == '*' || r == '>' {
-			out = append(out, '_')
-		} else {
-			out = append(out, r)
-		}
-	}
-	return string(out)
-}
