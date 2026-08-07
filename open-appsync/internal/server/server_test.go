@@ -12,6 +12,7 @@ import (
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
+	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
 )
 
 // Proves the deploy wrapper end-to-end without Mongo: a config dir (memory data source + .vtl
@@ -298,6 +299,54 @@ type recordingAuthz struct {
 func (a *recordingAuthz) Authorize(_ context.Context, id authz.Identity, need authz.Requirement) error {
 	a.lastUser, a.lastGroups, a.lastReq = id.Username, id.Groups, need
 	return authz.ErrDenied
+}
+
+// LoadSubscriptions reads the subscription section and builds a working Manager + publisher: a mutation
+// the publisher is told about fans out to a matching subscriber (the config→Load→publish→fanout chain).
+func TestServer_LoadSubscriptions(t *testing.T) {
+	dir := t.TempDir()
+	wf := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	wf("config.json", `{
+	  "dataSources":[{"name":"t","type":"memory"}],
+	  "resolvers":[{"type":"Mutation","field":"createTodo","dataSource":"t","request":"put.vtl","response":"resp.vtl"}],
+	  "subscriptions":[{"field":"onCreateTodo","response":"sub.vtl","triggeredBy":["createTodo"]}]
+	}`)
+	wf("put.vtl", `{"operation":"PutItem","key":{"id":$util.dynamodb.toDynamoDBJson($util.autoId())},"attributeValues":$util.dynamodb.toMapValuesJson($ctx.args.input)}`)
+	wf("resp.vtl", `$util.toJson($ctx.result)`)
+	wf("sub.vtl", `$util.toJson($ctx.result)`)
+
+	mgr, pub, err := LoadSubscriptions(dir, subscription.NewMemBus(), authz.AllowAll{})
+	if err != nil {
+		t.Fatalf("LoadSubscriptions: %v", err)
+	}
+	if mgr == nil || pub == nil {
+		t.Fatal("expected a manager + publisher for a config with subscriptions")
+	}
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	var got any
+	if _, err := mgr.Subscribe(context.Background(), "s1", "onCreateTodo", subscription.FilterGroup{}, func(p any) { got = p }); err != nil {
+		t.Fatal(err)
+	}
+	// The publisher maps the mutation field to the subscription and fans its result out.
+	pub.PublishForMutation(context.Background(), "createTodo", map[string]any{"id": "1", "name": "Ada"})
+	m, ok := got.(map[string]any)
+	if !ok || m["name"] != "Ada" {
+		t.Fatalf("mutation did not fan out to the subscriber: %v", got)
+	}
+}
+
+// No subscriptions declared → LoadSubscriptions returns (nil, nil, nil) so main skips the WS wiring.
+func TestServer_LoadSubscriptions_None(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"dataSources":[],"resolvers":[]}`), 0o644)
+	mgr, pub, err := LoadSubscriptions(dir, subscription.NewMemBus(), authz.AllowAll{})
+	if err != nil || mgr != nil || pub != nil {
+		t.Fatalf("expected (nil,nil,nil) with no subscriptions, got mgr=%v pub=%v err=%v", mgr, pub, err)
+	}
 }
 
 func TestServer_Handler_RejectsGET(t *testing.T) {
