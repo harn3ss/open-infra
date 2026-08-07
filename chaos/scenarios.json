@@ -2790,6 +2790,61 @@
       },
       "lastVerified": "",
       "verifiedBy": "nightly-lottery"
+    },
+    {
+      "id": "N21",
+      "batch": "nightly",
+      "title": "Subscriptions no-loss under engine kill (open-appsync)",
+      "category": "GraphQLApi subscriptions + NATS JetStream",
+      "status": "PARKED",
+      "note": "Authored (chaos/scenario-subscription-reconnect.sh); PARKED until a sandbox with NATS JetStream + open-appsync (NATS_URL set) serving a subscription is provisioned. Graduation bar for the open-appsync subscription rung: kill an engine pod mid-stream and prove reconnect/resume with no lost events (durable consumer resumes from its last acked sequence; dups OK per at-least-once). Exits INCONCLUSIVE until the deploy exists — it never false-greens.",
+      "chain": {
+        "nodes": [
+          {
+            "id": "client",
+            "label": "WS client (graphql-transport-ws)",
+            "kind": "app"
+          },
+          {
+            "id": "engine",
+            "label": "open-appsync engine",
+            "kind": "app"
+          },
+          {
+            "id": "js",
+            "label": "JetStream sub.onCreateTodo",
+            "kind": "stream"
+          }
+        ],
+        "edges": [
+          {
+            "from": "client",
+            "to": "engine",
+            "label": "subscribe"
+          },
+          {
+            "from": "engine",
+            "to": "js",
+            "label": "publish on mutation"
+          },
+          {
+            "from": "js",
+            "to": "engine",
+            "label": "durable resume"
+          }
+        ]
+      },
+      "fault": {
+        "target": "engine",
+        "kind": "PodChaos",
+        "label": "kill open-appsync pod mid-stream"
+      },
+      "oracle": {
+        "mode": "recover",
+        "invariant": "zero subscription events lost (durable consumer resumes from offset)"
+      },
+      "lastVerified": "",
+      "verifiedBy": "not yet run (parked)"
     }
   ]
 }

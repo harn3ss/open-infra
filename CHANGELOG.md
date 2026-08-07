@@ -61,6 +61,18 @@ the product's public contract.
   target namespace, cluster RBAC added for the shim SA), and an unhandled verb answers an honest
   `NotImplemented`. Front door + negatives proven; end-to-end (a real CloudFormation stack) reserved,
   and the docs say exactly the verbs proven — never "AppSync management API compatible".
+- **open-appsync — the durable subscription bus at runtime, the node-kill chaos instrument, and a
+  turnkey goldens capture (the two remaining gates driven as far as code can go).** The NATS JetStream
+  bus now compiles into the engine binary and is selected at runtime when `NATS_URL` is set (durable,
+  multi-node, reconnect/resume across a node kill) — otherwise the single-node in-memory bus; its live
+  test is `integration`-tagged. The **node-kill chaos scenario** (`chaos/scenario-subscription-
+  reconnect.sh` + its FaultInjection) is authored and registered in the nightly suite as **PARKED** —
+  it exits INCONCLUSIVE until a sandbox with NATS + open-appsync is provisioned, so it never
+  false-greens; its JetStream-message-count oracle mirrors the proven `scenario-stream-noloss`. And
+  **`probe/goldens/capture.sh`** makes the Clock-A capture one command against a real AWS account (via
+  `aws appsync evaluate-mapping-template`). These are the two external gates — the nightly chaos green
+  streak and the real-AWS capture — reduced to a single run each; the label stays experimental until
+  those runs happen, on the cluster's / the maintainer's clock.
 - **open-appsync — subscriptions: the WebSocket front door (`graphql-transport-ws`), wiring the rung
   end-to-end (experimental; label still HELD for the chaos bar).** The engine now serves subscriptions
   at **`/graphql-ws`** over the modern graphql-transport-ws protocol (connection_init/ack, subscribe,
