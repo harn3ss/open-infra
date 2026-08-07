@@ -167,6 +167,15 @@ request), so no identity/role/secret header can be smuggled to the engine.
 
 With `components.openAppsync` disabled the `appsync` service returns `502` (no engine to route to).
 
+**Authoring (data plane vs management plane).** What the shim fronts here is the AppSync **data
+plane** (running GraphQL). *Authoring* the API — schemas, resolvers, data sources — is done natively
+through **`kind: GraphQLApi`** (one object carrying inline data sources + resolvers, each declaring a
+`runtime` and its VTL templates), which renders the engine config with no bespoke controller. A
+resolver author's VTL is byte-for-byte identical there — zero retraining. The AWS **management** wire
+protocol (`CreateResolver` / the CloudFormation type) is **Stage 2**: a later shim skin that patches
+the same `GraphQLApi` object, so an AWS user's existing templates deploy unchanged. Native/neutral
+model first; AWS management door second. See [open-appsync/README.md](../open-appsync/README.md).
+
 **Honest limitations (flagged, not hidden):**
 
 - **Authorization is coarse in v1.** The read-vs-write gate is a *real* impersonated
