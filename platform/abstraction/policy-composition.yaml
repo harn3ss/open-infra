@@ -40,7 +40,7 @@ spec:
                    secrets) is DROPPED, so one bad action can't stop the whole ClusterRole
                    from compiling. The BFF rejects unknown resources with a clear message
                    before it gets here; this is the fail-safe. "*" means all of these. */ -}}
-            {{- $known := dict "applications" true "functions" true "models" true "virtualmachines" true "vmimages" true "volumes" true "fileshares" true "directories" true "migrations" true "replications" true "dataflows" true "streams" true "securitygroups" true "faultinjections" true "queries" true "httpapis" true }}
+            {{- $known := dict "applications" true "functions" true "models" true "virtualmachines" true "vmimages" true "volumes" true "fileshares" true "directories" true "migrations" true "replications" true "dataflows" true "streams" true "securitygroups" true "faultinjections" true "queries" true "httpapis" true "graphqlapis" true }}
             {{- /* Build RBAC rules from Allow statements. apiGroups is ALWAYS
                    [openinfra.dev] — that is the boundary, enforced here in one place. */ -}}
             {{- $rules := list }}

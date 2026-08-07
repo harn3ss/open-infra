@@ -1,0 +1,163 @@
+# Composition for kind: GraphQLApi (open-appsync handoff §2). Renders, with NO bespoke controller
+# (mirrors kind: HttpApi): (a) a ConfigMap holding config.json + one request/response .vtl file per
+# resolver, in the exact shape open-appsync's server.Load already reads, and (b) the open-appsync engine
+# Deployment + a Service. A checksum annotation over the rendered config rolls the pod on any change
+# (no fsnotify; hot-reload is later polish). The engine stays Kubernetes-free — this Composition is the
+# only k8s-aware thing, so the dependency arrow points inward-only.
+#
+# Fail-closed (§2 negative-proof bar): the engine validates every template on load and refuses to serve
+# if one is malformed, so a bad resolver keeps the whole API from coming up (the pod stays not-ready and
+# the error is in its logs) — an invalid resolver never serves. It is NOT "rejected at apply instant"
+# (there is no validating webhook; that does not fit the Crossplane flow).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: graphqlapi
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XGraphQLApi }
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef: { name: crossplane-contrib-function-go-templating }
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $image := $spec.image | default "ghcr.io/harn3ss/open-infra-open-appsync:latest" }}
+            {{- $replicas := $spec.replicas | default 1 }}
+            {{- /* Checksum over schema + every data source + every resolver, so ANY authoring change
+                   rolls the pod (the reload mechanism, since the engine reads a directory once). */ -}}
+            {{- $blob := $spec.schema | default "" }}
+            {{- range $ds := ($spec.dataSources | default list) }}{{ $blob = printf "%s|ds|%s|%s|%s" $blob $ds.name ($ds.type | default "memory") ($ds.collection | default "") }}{{ end }}
+            {{- range $r := $spec.resolvers }}{{ $blob = printf "%s|r|%s|%s|%s|%s|%s|%s" $blob $r.type $r.field $r.dataSource ($r.runtime | default "appsync-vtl") $r.request $r.response }}{{ end }}
+            {{- $checksum := $blob | sha256sum | trunc 16 }}
+            ---
+            # --- (a) The engine config: config.json + one .vtl file per resolver's templates ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: open-appsync-{{ $name }}-config
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/graphqlapi: {{ $name }}
+                  data:
+                    config.json: |
+                      {
+                        "dataSources": [{{ range $i, $ds := ($spec.dataSources | default list) }}{{ if $i }},{{ end }}
+                          { "name": "{{ $ds.name }}", "type": "{{ $ds.type | default "memory" }}"{{ if $ds.collection }}, "collection": "{{ $ds.collection }}"{{ end }} }{{ end }}
+                        ],
+                        "resolvers": [{{ range $i, $r := $spec.resolvers }}{{ if $i }},{{ end }}
+                          { "type": "{{ $r.type }}", "field": "{{ $r.field }}", "dataSource": "{{ $r.dataSource }}", "runtime": "{{ $r.runtime | default "appsync-vtl" }}", "request": "{{ $r.type }}.{{ $r.field }}.request.vtl", "response": "{{ $r.type }}.{{ $r.field }}.response.vtl" }{{ end }}
+                        ]
+                      }
+                    {{- range $r := $spec.resolvers }}
+                    {{ $r.type }}.{{ $r.field }}.request.vtl: |
+                      {{- $r.request | nindent 22 }}
+                    {{ $r.type }}.{{ $r.field }}.response.vtl: |
+                      {{- $r.response | nindent 22 }}
+                    {{- end }}
+            ---
+            # --- (b) The open-appsync engine serving THIS API ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: deployment
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: open-appsync-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app: open-appsync-{{ $name }}, openinfra.dev/graphqlapi: {{ $name }} }
+                  spec:
+                    replicas: {{ $replicas }}
+                    selector:
+                      matchLabels: { app: open-appsync-{{ $name }} }
+                    template:
+                      metadata:
+                        labels: { app: open-appsync-{{ $name }} }
+                        annotations:
+                          # Roll the pod whenever the authored config changes (the reload mechanism).
+                          openinfra.dev/config-checksum: "{{ $checksum }}"
+                      spec:
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 65532
+                        containers:
+                          - name: engine
+                            image: {{ $image }}
+                            imagePullPolicy: Always
+                            ports:
+                              - { name: http, containerPort: 8080 }
+                            env:
+                              - { name: LISTEN_ADDR, value: ":8080" }
+                              - { name: CONFIG_DIR, value: "/etc/open-appsync" }
+                              {{- if $spec.mongoURI }}
+                              - { name: MONGO_URI, value: "{{ $spec.mongoURI }}" }
+                              - { name: MONGO_DB, value: "{{ $spec.mongoDB | default "open_appsync" }}" }
+                              {{- end }}
+                            volumeMounts:
+                              - { name: config, mountPath: /etc/open-appsync }
+                            readinessProbe:
+                              httpGet: { path: /healthz, port: 8080 }
+                              initialDelaySeconds: 3
+                              periodSeconds: 10
+                            livenessProbe:
+                              httpGet: { path: /healthz, port: 8080 }
+                              initialDelaySeconds: 15
+                              periodSeconds: 20
+                            securityContext:
+                              readOnlyRootFilesystem: true
+                              allowPrivilegeEscalation: false
+                              capabilities:
+                                drop: [ALL]
+                            resources:
+                              requests: { cpu: 25m, memory: 32Mi }
+                              limits: { cpu: 500m, memory: 256Mi }
+                        volumes:
+                          - name: config
+                            configMap:
+                              name: open-appsync-{{ $name }}-config
+            ---
+            # --- The in-cluster GraphQL endpoint for this API ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: open-appsync-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app: open-appsync-{{ $name }}, openinfra.dev/graphqlapi: {{ $name }} }
+                  spec:
+                    type: ClusterIP
+                    selector: { app: open-appsync-{{ $name }} }
+                    ports:
+                      - { name: http, port: 80, targetPort: 8080 }
+    - step: ready
+      functionRef: { name: crossplane-contrib-function-auto-ready }

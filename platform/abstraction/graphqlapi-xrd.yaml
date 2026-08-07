@@ -1,0 +1,113 @@
+# kind: GraphQLApi — open-infra's NEUTRAL GraphQL authoring plane (open-appsync handoff §2).
+#
+# A GraphQL schema served by mapping templates over data sources IS what a resolver-based engine is —
+# not an AWS concept. So the kind describes the engine's own nouns (a schema, data sources, resolvers),
+# and the AWS-ness lives entirely inside a resolver's `runtime` value ("appsync-vtl" today) and the
+# template it carries. Swap in runtime: js or a neutral format later and the kind never changes. That
+# is the thing AWS structurally can't offer: a runtime is a real, third-party extension point.
+#
+# Deliberately ONE kind (not separate Resolver/DataSource/GraphQLApi objects): those are AWS's
+# MANAGEMENT nouns, and collapsing N sibling Resolver objects into one engine config would need a
+# bespoke controller open-infra doesn't have. One object is both the vendor-neutral model AND the
+# no-controller mechanism — it renders exactly like kind: HttpApi (XRD + go-templating composition).
+#
+# Honest scope (Stage 1): a neutral engine that runs a team's unchanged VTL, wired via THIS object.
+# It is NOT yet the AWS packaging experience — CreateResolver / the CloudFormation type are Stage 2,
+# a shim that later patches this same object at the edge. See open-appsync/README.md.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xgraphqlapis.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XGraphQLApi
+    plural: xgraphqlapis
+  claimNames:
+    kind: GraphQLApi
+    plural: graphqlapis
+  defaultCompositionRef: { name: graphqlapi }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [resolvers]
+              properties:
+                schema:
+                  type: string
+                  description: "Optional GraphQL SDL for the API. Slice-1 executor derives fields from the resolver list; the SDL is carried for authoring/tools and future validation."
+                image:
+                  type: string
+                  default: ghcr.io/harn3ss/open-infra-open-appsync:latest
+                  description: "The open-appsync engine image serving this API."
+                replicas:
+                  type: integer
+                  default: 1
+                mongoURI:
+                  type: string
+                  description: "FerretDB (Mongo wire) endpoint backing `dynamodb` data sources. Required only if a data source is type dynamodb; a dynamodb source with no mongoURI fails closed at load."
+                mongoDB:
+                  type: string
+                  default: open_appsync
+                  description: "FerretDB database name for dynamodb data sources."
+                dataSources:
+                  type: array
+                  description: "The data sources resolvers bind to."
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                        description: "Data source name a resolver references."
+                      type:
+                        type: string
+                        default: memory
+                        enum: [memory, dynamodb]
+                        description: "memory = ephemeral (dev/demo, the durable claim waits on FerretDB); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI)."
+                      collection:
+                        type: string
+                        description: "dynamodb: the FerretDB collection (the 'table')."
+                resolvers:
+                  type: array
+                  description: "Field → (runtime + data source) bindings. Each carries its request/response mapping templates inline."
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [type, field, dataSource, request, response]
+                    properties:
+                      type:
+                        type: string
+                        enum: [Query, Mutation]
+                        description: "The root type this field lives on."
+                      field:
+                        type: string
+                        description: "The GraphQL field name, e.g. getTodo."
+                      dataSource:
+                        type: string
+                        description: "Name of a spec.dataSources entry."
+                      runtime:
+                        type: string
+                        default: appsync-vtl
+                        description: "The resolver runtime (the §2.5 extension point). Today: appsync-vtl. A resolver author's VTL is byte-for-byte identical here — zero retraining."
+                      request:
+                        type: string
+                        description: "The request mapping template source (VTL for appsync-vtl)."
+                      response:
+                        type: string
+                        description: "The response mapping template source (VTL for appsync-vtl)."
+            status:
+              type: object
+              properties:
+                url:
+                  type: string
+                  description: "In-cluster GraphQL endpoint of the engine serving this API."
