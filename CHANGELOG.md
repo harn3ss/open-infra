@@ -7,6 +7,22 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — in-memory schema type system + `__schema`/`__type` introspection.** The API's SDL
+  (`spec.schema` on `kind: GraphQLApi`) now parses into an in-memory type graph — a name→type map where
+  a field's return type is a *reference* carrying its wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are
+  four distinct types) — and `__schema`/`__type` are answered by reading that map back out in the
+  spec-mandated shape. It graduated on **operability, not fidelity** (introspection is standard GraphQL,
+  no AWS byte-string to diff): (1) a conformance test fires the standard introspection query and checks
+  the response shape with wrappers exact; (2) a **real-tool gate** feeds the result to graphql-js
+  `buildClientSchema` + **graphql-codegen** and asserts they reconstruct the schema (`[Todo!]!`, `ID!`,
+  `[String!]`, enum defaults, custom scalars, all three roots survive) and generate TypeScript types.
+  Introspection is a **toggle** wired into the hostile-load seam — `spec.limits.introspection` is
+  `enabled` (default), `disabled`, or `authenticated-only` (off for untrusted callers) — because
+  introspection-on lets any client read the whole schema. The SDL rides to the engine as a
+  `schema.graphql` sibling file. Scope is **introspection only**: the verbatim wire introspection query
+  uses fragments (not accepted yet — their own rung), so the gate consumes the *result*; nested
+  `__typename`, directive execution, variable coercion, and custom-scalar validation lean on this graph
+  but each graduates on its own evidence.
 - **open-appsync — subscription bus is now multi-replica-safe (found by the node-kill chaos setup).**
   Standing up the 2-replica engine for the subscription chaos scenario surfaced a real bug: both
   replicas bound the *same* JetStream **durable** push consumer, and a durable is single-active — the

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
@@ -22,7 +23,21 @@ type Limits struct {
 	MaxCost       int             // reject queries with more than this many fields (0 = unlimited)
 	PersistedOnly bool            // when true, only pre-registered query documents run
 	Persisted     map[string]bool // allow-list of sha256(query) hex digests, for PersistedOnly mode
+
+	// Introspection gates who may read the schema via __schema/__type. Introspection-on lets any client
+	// discover the whole API — great for tooling, a recon aid for an untrusted one — so it is a toggle,
+	// not always-open. "" / IntrospectionEnabled: allowed (AWS AppSync's default; best dev ergonomics).
+	// IntrospectionDisabled: never. IntrospectionAuthenticated: only a non-anonymous caller (off for
+	// untrusted). __typename is unaffected — it names a type, it does not dump the schema.
+	Introspection string
 }
+
+// Introspection toggle values for Limits.Introspection.
+const (
+	IntrospectionEnabled       = "enabled"            // default
+	IntrospectionDisabled      = "disabled"           // never answer __schema/__type
+	IntrospectionAuthenticated = "authenticated-only" // answer only for a non-anonymous caller
+)
 
 // DefaultLimits protects an unconfigured operator: bounded depth and cost, arbitrary queries allowed.
 func DefaultLimits() Limits { return Limits{MaxDepth: 10, MaxCost: 1000} }
@@ -62,10 +77,16 @@ type Engine struct {
 	limits     Limits
 	authorizer authz.Authorizer
 	publisher  Publisher
+	schema     *Schema // parsed SDL type graph; nil = introspection unavailable (no schema supplied)
 }
 
 // WithPublisher sets the mutation publisher (default: none) — the hook the subscription layer uses.
 func WithPublisher(p Publisher) Option { return func(e *Engine) { e.publisher = p } }
+
+// WithSchema attaches the parsed SDL type graph so the engine can answer __schema/__type introspection.
+// Without it, introspection fields return an error (the executor still runs resolvers normally — the
+// type graph is a reader for introspection, not a precondition for execution in this slice).
+func WithSchema(s *Schema) Option { return func(e *Engine) { e.schema = s } }
 
 // Option configures an Engine (hostile-load guards, the field authorizer, …).
 type Option func(*Engine)
@@ -133,6 +154,17 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			data[respKey] = rootType
 			continue
 		}
+		// Introspection meta-fields (Query only). They read the schema graph; the toggle decides who may.
+		if rootType == "Query" && (sel.name == "__schema" || sel.name == "__type") {
+			val, ge := e.introspect(ctx, sel, variables)
+			if ge != nil {
+				errs = append(errs, GqlError{Message: ge.Message, Path: []any{respKey}, ErrorType: ge.ErrorType})
+				data[respKey] = nil
+				continue
+			}
+			data[respKey] = project(val, sel.selections)
+			continue
+		}
 		key := rootType + "." + sel.name
 		r, ok := e.resolvers[key]
 		if !ok {
@@ -174,6 +206,45 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	return Result{Data: data, Errors: errs}
 }
 
+// introspect answers a __schema or __type meta-field, subject to the introspection toggle. It returns
+// the raw introspection value (which the caller projects the selection set onto) or a GraphQL error.
+func (e *Engine) introspect(ctx context.Context, sel selection, variables map[string]any) (any, *GqlError) {
+	if ge := e.introspectionGate(ctx); ge != nil {
+		return nil, ge
+	}
+	if e.schema == nil {
+		return nil, &GqlError{Message: "introspection is unavailable: this API has no schema (SDL) configured", ErrorType: "IntrospectionUnavailable"}
+	}
+	if sel.name == "__schema" {
+		return e.schema.introspectSchema(), nil
+	}
+	// __type(name: "…")
+	nameArg, ok := evalArgs(sel.args, variables)["name"].(string)
+	if !ok || nameArg == "" {
+		return nil, &GqlError{Message: "__type requires a String `name` argument", ErrorType: "ValidationError"}
+	}
+	return e.schema.introspectType(nameArg), nil // nil → the field resolves to null, per spec
+}
+
+// introspectionGate applies the Limits.Introspection toggle: enabled (default) allows all; disabled
+// refuses; authenticated-only refuses an anonymous (untrusted) caller. Returns nil when allowed.
+func (e *Engine) introspectionGate(ctx context.Context) *GqlError {
+	switch e.limits.Introspection {
+	case "", IntrospectionEnabled:
+		return nil
+	case IntrospectionDisabled:
+		return &GqlError{Message: "introspection is disabled on this API", ErrorType: "IntrospectionDisabled"}
+	case IntrospectionAuthenticated:
+		if authz.FromContext(ctx).Username == "" {
+			return &GqlError{Message: "introspection is restricted to authenticated callers", ErrorType: "IntrospectionDisabled"}
+		}
+		return nil
+	default:
+		// An unknown mode fails closed (refuse) rather than silently allowing schema disclosure.
+		return &GqlError{Message: "introspection is disabled on this API", ErrorType: "IntrospectionDisabled"}
+	}
+}
+
 // checkLimits enforces the hostile-load guards against a parsed operation, returning a GraphQL error
 // (with an errorType naming the guard) if the document is rejected, or nil if it may run.
 func (e *Engine) checkLimits(query string, op *operation) *GqlError {
@@ -196,10 +267,16 @@ func (e *Engine) checkLimits(query string, op *operation) *GqlError {
 	return nil
 }
 
-// selectionsDepth is the deepest selection-set nesting (top-level fields are depth 1).
+// selectionsDepth is the deepest selection-set nesting (top-level fields are depth 1). Introspection
+// meta-fields (__schema/__type/__typename) are excluded: their subtree is server-shaped (the ofType
+// chain a tool writes just walks wrappers, bounded by the schema), not client-composed load — and the
+// standard introspection query nests ~7 deep, which would otherwise trip the default guard.
 func selectionsDepth(sels []selection) int {
 	max := 0
 	for _, s := range sels {
+		if strings.HasPrefix(s.name, "__") {
+			continue
+		}
 		d := 1
 		if len(s.selections) > 0 {
 			d += selectionsDepth(s.selections)
@@ -211,10 +288,14 @@ func selectionsDepth(sels []selection) int {
 	return max
 }
 
-// selectionsCost is the total number of fields in the query (a simple, honest cost proxy).
+// selectionsCost is the total number of fields in the query (a simple, honest cost proxy). Introspection
+// meta-fields are excluded for the same reason as depth: their cost is bounded by schema size.
 func selectionsCost(sels []selection) int {
 	n := 0
 	for _, s := range sels {
+		if strings.HasPrefix(s.name, "__") {
+			continue
+		}
 		n += 1 + selectionsCost(s.selections)
 	}
 	return n

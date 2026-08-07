@@ -63,7 +63,7 @@ spec:
                     config.json: |
                       {
                         {{- if $spec.limits }}
-                        "limits": { "maxDepth": {{ $spec.limits.maxDepth | default 0 }}, "maxCost": {{ $spec.limits.maxCost | default 0 }}, "persistedOnly": {{ $spec.limits.persistedOnly | default false }}{{ if $spec.limits.persistedQueries }}, "persistedQueries": [{{ range $i, $q := $spec.limits.persistedQueries }}{{ if $i }},{{ end }}{{ $q | quote }}{{ end }}]{{ end }} },
+                        "limits": { "maxDepth": {{ $spec.limits.maxDepth | default 0 }}, "maxCost": {{ $spec.limits.maxCost | default 0 }}, "persistedOnly": {{ $spec.limits.persistedOnly | default false }}{{ if $spec.limits.introspection }}, "introspection": {{ $spec.limits.introspection | quote }}{{ end }}{{ if $spec.limits.persistedQueries }}, "persistedQueries": [{{ range $i, $q := $spec.limits.persistedQueries }}{{ if $i }},{{ end }}{{ $q | quote }}{{ end }}]{{ end }} },
                         {{- end }}
                         "dataSources": [{{ range $i, $ds := ($spec.dataSources | default list) }}{{ if $i }},{{ end }}
                           { "name": "{{ $ds.name }}", "type": "{{ $ds.type | default "memory" }}"{{ if $ds.collection }}, "collection": "{{ $ds.collection }}"{{ end }}{{ if $ds.endpoint }}, "endpoint": "{{ $ds.endpoint }}"{{ end }} }{{ end }}
@@ -79,6 +79,13 @@ spec:
                           { "field": "{{ $s.field }}"{{ if $s.subject }}, "subject": "{{ $s.subject }}"{{ end }}, "runtime": "{{ $s.runtime | default "appsync-vtl" }}", "response": "{{ $s.field }}.subscription.response.vtl"{{ if $s.triggeredBy }}, "triggeredBy": [{{ range $j, $m := $s.triggeredBy }}{{ if $j }},{{ end }}{{ $m | quote }}{{ end }}]{{ end }}{{ with $s.auth }}, "auth": { "group": "{{ .group | default "" }}", "resource": "{{ .resource | default "" }}", "verb": "{{ .verb | default "" }}", "namespace": "{{ .namespace | default "" }}", "name": "{{ .name | default "" }}" }{{ end }} }{{ end }}
                         ]{{ end }}
                       }
+                    {{- if $spec.schema }}
+                    # The GraphQL SDL, carried as a sibling file (not inlined in config.json, to avoid
+                    # JSON escaping — same reason the .vtl templates are files). The engine parses it into
+                    # its type graph and answers __schema/__type introspection over it.
+                    schema.graphql: |
+                      {{- $spec.schema | nindent 22 }}
+                    {{- end }}
                     {{- range $s := ($spec.subscriptions | default list) }}
                     {{ $s.field }}.subscription.response.vtl: |
                       {{- $s.response | nindent 22 }}
