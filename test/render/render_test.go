@@ -224,6 +224,32 @@ func TestGraphQLApi_FieldAuth(t *testing.T) {
 	}
 }
 
+// A subscription field renders into config.json + its response .vtl file (the §3 subscription rung).
+func TestGraphQLApi_Subscriptions(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ctx := map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"dataSources": []any{map[string]any{"name": "t", "type": "memory"}},
+				"resolvers": []any{map[string]any{
+					"type": "Mutation", "field": "createTodo", "dataSource": "t",
+					"request": "{\"operation\":\"Scan\"}", "response": "$util.toJson($ctx.result)",
+				}},
+				"subscriptions": []any{map[string]any{
+					"field": "onCreateTodo", "response": "$util.toJson($ctx.result)", "triggeredBy": []any{"createTodo"},
+				}},
+			},
+			"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+		}}},
+	}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{`"subscriptions"`, `"field": "onCreateTodo"`, `"triggeredBy"`, "onCreateTodo.subscription.response.vtl:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("subscription render missing %q; got:\n%s", want, grepCtx(out, "subscriptions"))
+		}
+	}
+}
+
 // An http data source renders its endpoint into config.json (the §5 second call-source).
 func TestGraphQLApi_HTTPDataSource(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")

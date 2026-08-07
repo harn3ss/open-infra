@@ -61,6 +61,17 @@ the product's public contract.
   target namespace, cluster RBAC added for the shim SA), and an unhandled verb answers an honest
   `NotImplemented`. Front door + negatives proven; end-to-end (a real CloudFormation stack) reserved,
   and the docs say exactly the verbs proven — never "AppSync management API compatible".
+- **open-appsync — subscriptions: the WebSocket front door (`graphql-transport-ws`), wiring the rung
+  end-to-end (experimental; label still HELD for the chaos bar).** The engine now serves subscriptions
+  at **`/graphql-ws`** over the modern graphql-transport-ws protocol (connection_init/ack, subscribe,
+  next, complete) — proven end-to-end with a real WebSocket client. A subscription's **arguments become
+  an equality filter** (AppSync's default: `onCreateTodo(owner:"ada")` receives only `owner == "ada"`
+  events). A **successful mutation auto-publishes** to the subscriptions it triggers, via a minimal
+  executor publish hook (fires on mutations, never on queries). Declarable on `kind: GraphQLApi`
+  (`spec.subscriptions[]`: field, response, triggeredBy, auth, subject) and mirrored in the Terraform
+  provider; the deployed demo serves `onCreateTodo`. The default engine uses the single-node in-memory
+  bus; the durable multi-node JetStream bus is the `integration`-tagged build. **The label stays held:**
+  the remaining gate is the *temporal* node-kill chaos run — the transport is wired, the proof is not.
 - **open-appsync — subscriptions: the setup-then-push semantic core (experimental; label HELD for a
   temporal chaos bar).** Subscriptions invert the lifecycle — subscribe (authorize + register a filter),
   publish (a mutation's result to a subject), push (each node fans out to its matching local
