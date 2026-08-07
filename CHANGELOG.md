@@ -7,21 +7,47 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
-- **open-appsync — open-infra's own AppSync engine (opt-in; placeholder today, not yet proven).**
+- **open-appsync — open-infra's own AppSync engine (opt-in, experimental, OFF by default).**
   The AppSync surface is aimed at teams locked into AWS AppSync by their resolver investment (VTL
   templates, data-source wiring, `$util` helpers), so the engine is **resolver-first and
   VTL-faithful** by design — not GraphQL-over-tables wearing a mask (that would be a leaky
-  abstraction the moment a specialist writes a resolver it can't model). open-appsync is on its own
-  graduation ladder (subscriptions-over-JetStream is rung 2). **Slice 1 — VTL over one DynamoDB-style
-  data source — runs live:** `components.openAppsync` deploys the real engine (`cmd/open-appsync`),
-  and on-cluster a SigV4-signed GraphQL client → the shim → open-appsync → a real VTL resolver (with
-  the `$util.dynamodb` typed marshalling, `$util.autoId`, etc.) → the data source (in-memory, or
-  FerretDB for durable) → `{data}` — a `createTodo` mutation + `getTodo` query round-trip verified
-  end-to-end. It stays **experimental**: VTL/`$util` fidelity is anchored on AWS's *documented*
-  behavior (a corpus probe, green in CI), not diffed against a live AWS AppSync; and it's not a full
-  AppSync (no subscriptions / multi-data-source / JS or pipeline resolvers / management API yet). OFF
-  by default. (Replaces the earlier Hasura-backed AppSync placeholder, now removed — Hasura's
-  declare-tables model is the wrong fit for resolver-fidelity.)
+  abstraction the moment a specialist writes a resolver it can't model). **Slice 1 — VTL over one
+  DynamoDB-style data source — runs live:** `components.openAppsync` deploys the real engine
+  (`cmd/open-appsync`), and on-cluster a SigV4-signed GraphQL client → the shim → open-appsync → a
+  real VTL resolver (with `$util.dynamodb` typed marshalling, `$util.autoId`, etc.) → the data
+  source (in-memory, or FerretDB for durable) → `{data}`. It stays **experimental**: VTL/`$util`
+  fidelity is anchored on AWS's *documented* behavior (a corpus probe, green in CI), not diffed
+  against a live AWS AppSync. (Replaces the earlier Hasura-backed AppSync placeholder, now removed.)
+- **open-appsync — neutral authoring plane, a real runtime extension point, and a test-resolver loop
+  (experimental — a new rung, on its own clock).** Two independent honesty clocks, kept separate: the
+  *runtime* de-labels only when its goldens are captured from real AppSync (below); this authoring
+  work ships labeled experimental regardless of the runtime's maturity.
+  - **The `runtime` field is a genuine extension point** (`internal/runtime`), not a name for AWS's two
+    dialects. A three-term frozen contract — In (`$ctx`), Out (a **neutral data-source Operation**),
+    Error/null — lets a third party add a runtime we never wrote, which AWS structurally can't allow.
+    VTL is extracted into the *first tenant* (`internal/vtlruntime`) and drives the resolver lifecycle
+    through the public interface with **no backstage pass**; a second, trivial runtime proves the seam
+    in tests. The interface stays internal/changeable until a real second tenant lands.
+  - **`kind: GraphQLApi`** — the neutral authoring plane. **One** object carries a schema plus inline
+    data sources and resolvers, each resolver declaring a `runtime` (today `appsync-vtl`) and its
+    inline request/response templates. It renders exactly like `kind: HttpApi` (XRD + go-templating
+    Composition, **no bespoke controller**) into a ConfigMap in the shape the engine already reads +
+    the engine Deployment/Service, with a config-checksum annotation that rolls the pod on change.
+    Deliberately one kind, not AWS's separate `Resolver`/`DataSource` management nouns. **Fail-closed:**
+    the engine validates every template on load and an **invalid resolver never serves** (the pod stays
+    not-ready with the parse error) — not "rejected at apply instant" (there is no webhook). A
+    specialist's VTL is byte-for-byte identical inside the `runtime` field — **zero retraining**; only
+    the person wiring resolvers sees a new envelope, and Stage 2 (later) makes AWS's `CreateResolver`
+    a patch onto this same object. Grantable via `kind: Policy` (added to the boundary in all its
+    synchronized copies), render-tested, and mirrored in the Terraform provider (`openinfra_graphql_api`).
+  - **`POST /test-resolver`** — the probe harness on user input: submit a resolver + a sample `$ctx`
+    and see exactly what its templates produce (the neutral request Operation, and the response when a
+    sample result is supplied), errors surfaced with their `errorType`. Authoring with feedback.
+  - **Runtime goldens harness (`probe/goldens/`, Clock A).** The format, the deterministic diff (via
+    the engine's injectable `AutoID`/`Now`), and the CI wiring ship now, green against goldens seeded
+    from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
+    Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
+    **only** thing that removes "experimental" from the runtime.
 - **`kind: HttpApi` — an API-Gateway-style HTTP front door.** Declare a `domain` and a list of
   `path → backend` routes onto `kind: Function` or `kind: Application` backends; the composition
   renders one Traefik Ingress with cert-manager TLS. It's the genuine capability expressed as a
