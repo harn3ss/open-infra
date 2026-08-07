@@ -48,6 +48,20 @@ the product's public contract.
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
     **only** thing that removes "experimental" from the runtime.
+- **open-appsync — subscriptions: the setup-then-push semantic core (experimental; label HELD for a
+  temporal chaos bar).** Subscriptions invert the lifecycle — subscribe (authorize + register a filter),
+  publish (a mutation's result to a subject), push (each node fans out to its matching local
+  subscribers) — so they are their own lifecycle, and their event source is a **push source (a Bus),
+  NOT a `datasource.Store`** (the §1b line). Built and unit/integration-proven: the **enhanced
+  subscription-filter engine** (eq/ne/in/contains/beginsWith/ranges, dotted fields, AND-within /
+  OR-across — the genuinely hard part), the connection-scoped **registry** with naive O(subscribers)
+  fanout (a filter index deferred until load proves it's needed), a **Bus port** with an in-memory bus
+  and a **NATS JetStream** bus (`integration`-tagged; a durable consumer gives reconnect/resume), and
+  the **Manager** (setup-then-push, subscribe-time auth gate, filtered fanout — proven end-to-end).
+  **The label is held on purpose:** this rung's graduation bar is *temporal, not a unit test* — a
+  node-kill chaos run proving reconnect/resume with no lost/duplicated events past the ack point, on the
+  nightly clock — plus the WebSocket front door (the "easy half"). The code is done; the proof is not,
+  and the CHANGELOG says exactly that.
 - **open-appsync — field-level authorization: one policy world, now at field granularity
   (experimental).** A resolver may declare an `auth` requirement (a k8s RBAC verb on a resource). The
   executor consults an injected authorizer **before** running the field's resolver; on denial the field
