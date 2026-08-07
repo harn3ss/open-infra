@@ -125,9 +125,8 @@ func parseQuery(s string) (*operation, error) {
 	// Optional: operation type + name + variable definitions.
 	if p.peek().kind == "name" && (p.peek().val == "query" || p.peek().val == "mutation" || p.peek().val == "subscription") {
 		op.opType = p.next().val
-		if op.opType == "subscription" {
-			return nil, fmt.Errorf("graphql: subscriptions are a later rung, not in slice 1")
-		}
+		// subscription operations parse like any other (a root selection set); they are routed to the
+		// subscription lifecycle by the WebSocket handler, not run through the request/response executor.
 		if p.peek().kind == "name" { // operation name
 			p.next()
 		}
