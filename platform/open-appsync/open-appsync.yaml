@@ -31,6 +31,9 @@ data:
       "resolvers": [
         { "type": "Query", "field": "getTodo", "dataSource": "todos", "request": "getTodo.request.vtl", "response": "response.vtl" },
         { "type": "Mutation", "field": "createTodo", "dataSource": "todos", "request": "createTodo.request.vtl", "response": "response.vtl" }
+      ],
+      "subscriptions": [
+        { "field": "onCreateTodo", "response": "response.vtl", "triggeredBy": ["createTodo"] }
       ]
     }
   getTodo.request.vtl: |
