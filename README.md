@@ -62,6 +62,7 @@ CNCF projects — not a reinvention of databases or storage.
 | Kinesis | streaming CDC (`kind: Stream`) | Debezium → NATS JetStream |
 | ElastiCache | cache | Valkey (Redis-compatible) |
 | Lambda | serverless (`kind: Function`) | Knative — scale-to-zero |
+| AppSync | resolver-first GraphQL (`kind: GraphQLApi`) | open-appsync — VTL-faithful engine (experimental) |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
