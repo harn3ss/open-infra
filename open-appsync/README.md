@@ -110,6 +110,29 @@ cost 1000); a `GraphQLApi`'s `limits` block tunes them; a negative value is an e
 Honest label: this is what will let open-appsync be called *safe to expose to untrusted clients* — per
 rung, once proven; until then, *trusted-client / internal use*.
 
+### Subscriptions (setup-then-push — experimental, label held)
+
+Subscriptions **invert** the lifecycle: not request→execute→response, but *setup-then-push*. At
+**subscribe** time a setup step authorizes the caller (the field's `auth`, the same boundary) and
+registers a **filter** in the per-node **registry** (the one new piece of connection-scoped state). At
+**mutation** time the mutation's result is **published** to the field's subject. At **push** time every
+node fans the event out to its local subscribers whose filter matches, shaping each with the
+subscriber's response step. The event source is a **push source (a Bus), not a `datasource.Store`** —
+the §1b line.
+
+Built and unit/integration-proven: the **enhanced filter engine** (`eq/ne/in/contains/beginsWith/
+ranges`, dotted fields, AND-within-filter / OR-across-filters — the genuinely hard part), the
+**registry** + naive O(subscribers) fanout (a filter index is deferred until load proves it's needed),
+the **Bus port** with an in-memory bus (single node) and a **JetStream bus** (`internal/subscription/
+jetstream.go`, build-tag `integration`) where a durable consumer gives reconnect/resume, and the
+**Manager** (the setup-then-push lifecycle, subscribe-time auth gate, publish, filtered fanout).
+
+**Label held (honest):** the graduation bar for this rung is **temporal, not a unit test** — a
+**node-kill chaos scenario** (kill a subscription-holding node mid-stream; prove reconnect/resume with
+no lost and no duplicated events past the acked point, on the nightly clock). Until that is green, and
+until the WebSocket front door (the "easy half") is wired, subscriptions stay **experimental**; the code
+is done, the proof is not.
+
 ## Authoring: `kind: GraphQLApi` (the neutral plane)
 
 `kind: GraphQLApi` (`openinfra.dev`) is the neutral authoring plane: **one** object carrying a schema
@@ -176,9 +199,13 @@ packaging (authoring) experience.
   - **Also done (drop-36):** **field-level authorization** — an `auth` requirement per resolver checked
     (before the resolver runs) via an impersonated `SubjectAccessReview` (`internal/k8sauth`), the same
     RBAC boundary as every other front door.
-  - **"Not yet" (flagged, each its own rung/bar):** subscriptions (the chaos-bar rung), the real-AppSync
-    goldens capture (Clock A), and the AWS *management* wire protocol (`CreateResolver`/CloudFormation —
-    Stage 2). See `open-infra-open-appsync-forward-map.md`.
+  - **Also done (drop-37), label HELD:** the **subscription** semantic core (`internal/subscription`) —
+    enhanced-filter engine, connection-scoped registry, Bus port (in-memory + JetStream), and the
+    setup-then-push Manager. Experimental until the node-kill chaos bar is green + the WS front door is
+    wired (see above).
+  - **"Not yet" (flagged, each its own rung/bar):** the subscription **node-kill chaos** run + WS
+    transport, the real-AppSync goldens capture (Clock A), and the AWS *management* wire protocol
+    (`CreateResolver`/CloudFormation — Stage 2). See `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
@@ -218,6 +245,8 @@ behind its own probe.
 - `internal/httpsource/` — an HTTP data source (the second, differently-shaped call-source).
 - `internal/authz/` — the field-auth port (Requirement/Identity/Authorizer); `internal/k8sauth/` — the
   production SubjectAccessReview authorizer.
+- `internal/subscription/` — the subscription rung: filter engine, registry, Bus (in-memory +
+  JetStream), and the setup-then-push Manager (experimental; chaos-bar held).
 - `internal/graphql/` — the GraphQL parser + executor (field→resolver dispatch, projection).
 - `internal/server/` — config loader (`server.Load`) + HTTP handlers (`/graphql`, `/test-resolver`).
 - `cmd/open-appsync/` — the engine binary.
