@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
@@ -13,7 +14,7 @@ import (
 
 // vtlResolver builds a resolver whose appsync-vtl runtime uses the given (deterministic) engine and
 // the named corpus request/response templates — the same wiring server.Load does.
-func vtlResolver(t *testing.T, e *vtl.Engine, req, resp string, src dynamodb.Store) resolver.Resolver {
+func vtlResolver(t *testing.T, e *vtl.Engine, req, resp string, src datasource.Store) resolver.Resolver {
 	t.Helper()
 	return resolver.Resolver{
 		Runtime: vtlruntime.New(e, mustTemplate(t, req), mustTemplate(t, resp)),
