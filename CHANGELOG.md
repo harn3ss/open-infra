@@ -7,6 +7,15 @@ the product's public contract.
 ## Unreleased
 
 ### AWS compatibility
+- **open-appsync — the JS runtime now runs real APPSYNC_JS unmodified and is behavior-faithful too.**
+  `jsruntime` now accepts a **real APPSYNC_JS module** (`import { util } from '@aws-appsync/utils'` +
+  `export function request/response`) — the only shape AWS accepts (verified: a bare top-level function
+  gets `MISSING_MAPPING_EXPORT`), which goja can't parse. The engine strips the ES-module framing (it
+  injects `util` as a global) so a team's existing APPSYNC_JS resolver runs here unchanged. A second
+  goldens harness (`probe/goldens-js/`) diffs those same modules against real AWS via the `evaluate-code`
+  API and is green — so the JS runtime is now **behavior-faithful, not just implementable** (the shared
+  `$util` means the number/null fixes below applied to it for free). Needs `appsync:EvaluateCode` on the
+  capture principal (read-only, creates nothing).
 - **open-appsync — the runtime is now behavior-faithful: goldens captured from real AWS AppSync, two
   fidelity bugs fixed.** The runtime goldens (`open-appsync/probe/goldens/`) were captured from a live
   AppSync account via the `evaluate-mapping-template` API (one turnkey command, `capture.sh`) and the CI

@@ -1,0 +1,20 @@
+{
+  "source": "aws-capture",
+  "description": "JS request \u2014 GetItem by id (util.dynamodb.toDynamoDB)",
+  "code": "getitem.js",
+  "function": "request",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "context": {
+    "args": {
+      "id": "123"
+    }
+  },
+  "expected": {
+    "operation": "GetItem",
+    "key": {
+      "id": {
+        "S": "123"
+      }
+    }
+  }
+}
