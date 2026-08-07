@@ -88,6 +88,18 @@ type** — only a `Store` implementation knows its own operation shape. Declared
 via `dataSources[].type: http` + `endpoint`. (A push source — a subscription's event stream — is a
 different kind of thing, not a `Store`; see below.)
 
+### Field-level authorization (one policy world)
+
+A resolver may declare an `auth` requirement (a k8s RBAC verb on a resource). The **executor** consults
+an injected `Authorizer` **before** running the field's resolver; on denial the field is `Unauthorized`,
+null, and the resolver — and its data source — never runs. The production `Authorizer`
+(`internal/k8sauth`) performs an **impersonated `SubjectAccessReview`** against the cluster — the *same*
+RBAC + permission boundary the console, Terraform, and the aws-shim use, so this is "one policy world at
+field granularity," not a parallel rule engine. The caller's identity is established upstream (the
+shim's SigV4→principal, conveyed as `X-OpenInfra-User`/`-Groups`) and exposed to templates as
+`$ctx.identity`. Authorization lives in the lifecycle, never in a runtime step — the step stays
+auth-unaware. Out of cluster the engine logs loudly that field auth is **not** enforced.
+
 ### Hostile-load guards (safe by default)
 
 GraphQL's cost asymmetry (the client composes demand, the server owns cost) makes an unguarded endpoint
@@ -161,9 +173,12 @@ packaging (authoring) experience.
   - **Also done (drop-35):** the **data-source family** — `datasource.Store` extracted to a neutral
     package + an **HTTP data source** (`internal/httpsource`), proving `Operation` is genuinely neutral
     (no lifecycle/engine branches on source type).
-  - **"Not yet" (flagged, each its own rung/bar):** field-level authorization, subscriptions (the
-    chaos-bar rung), the real-AppSync goldens capture (Clock A), and the AWS *management* wire protocol
-    (`CreateResolver`/CloudFormation — Stage 2). See `open-infra-open-appsync-forward-map.md`.
+  - **Also done (drop-36):** **field-level authorization** — an `auth` requirement per resolver checked
+    (before the resolver runs) via an impersonated `SubjectAccessReview` (`internal/k8sauth`), the same
+    RBAC boundary as every other front door.
+  - **"Not yet" (flagged, each its own rung/bar):** subscriptions (the chaos-bar rung), the real-AppSync
+    goldens capture (Clock A), and the AWS *management* wire protocol (`CreateResolver`/CloudFormation —
+    Stage 2). See `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
@@ -201,6 +216,8 @@ behind its own probe.
 - `internal/datasource/` — the neutral call-source contract (`Store`).
 - `internal/dynamodb/` — the DynamoDB-style data source (in-memory + FerretDB-backed).
 - `internal/httpsource/` — an HTTP data source (the second, differently-shaped call-source).
+- `internal/authz/` — the field-auth port (Requirement/Identity/Authorizer); `internal/k8sauth/` — the
+  production SubjectAccessReview authorizer.
 - `internal/graphql/` — the GraphQL parser + executor (field→resolver dispatch, projection).
 - `internal/server/` — config loader (`server.Load`) + HTTP handlers (`/graphql`, `/test-resolver`).
 - `cmd/open-appsync/` — the engine binary.

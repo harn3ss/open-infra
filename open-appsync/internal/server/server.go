@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
@@ -74,6 +76,10 @@ type ResolverConfig struct {
 	Before    string           `json:"before"`    // filename of the before mapping template (optional)
 	After     string           `json:"after"`     // filename of the after mapping template (optional)
 	Functions []FunctionConfig `json:"functions"` // ordered pipeline functions
+
+	// Auth is the field-level authorization requirement (§6), enforced by the executor before the
+	// resolver runs. Zero = public. Checked against the shared k8s RBAC boundary (a SubjectAccessReview).
+	Auth authz.Requirement `json:"auth"`
 }
 
 type FunctionConfig struct {
@@ -86,7 +92,7 @@ type FunctionConfig struct {
 // Load reads config.json + its template files from dir and builds a ready GraphQL engine. mongoDB is
 // the FerretDB database backing "dynamodb" data sources; pass nil when only "memory" sources are used
 // (dev/demo/tests) — a "dynamodb" source then errors loudly rather than silently degrading.
-func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
+func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql.Engine, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
 		return nil, fmt.Errorf("open-appsync: read config.json: %w", err)
@@ -132,7 +138,10 @@ func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
 		registry[rc.Type+"."+rc.Field] = res
 	}
 
-	return graphql.NewWithLimits(registry, buildLimits(cfg.Limits)), nil
+	// Limits first (so an explicit WithLimits in opts could override), then caller options (the SAR
+	// authorizer wired by main).
+	engineOpts := append([]graphql.Option{graphql.WithLimits(buildLimits(cfg.Limits))}, opts...)
+	return graphql.New(registry, engineOpts...), nil
 }
 
 // buildLimits turns the declarative limits into engine guards, safe by default: a nil block, or a
@@ -181,7 +190,7 @@ func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.
 		if err != nil {
 			return resolver.Resolver{}, err
 		}
-		return resolver.Resolver{Runtime: rt, Source: src}, nil
+		return resolver.Resolver{Runtime: rt, Source: src, Auth: rc.Auth}, nil
 	}
 
 	// Pipeline lifecycle.
@@ -213,7 +222,7 @@ func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.
 		}
 		p.After = rt
 	}
-	return resolver.Resolver{Pipeline: p}, nil
+	return resolver.Resolver{Pipeline: p, Auth: rc.Auth}, nil
 }
 
 // loadStep reads a step's request/response template files (an empty filename means an empty, unused
@@ -285,8 +294,26 @@ func Handler(e *graphql.Engine) http.HandlerFunc {
 				Errors: []graphql.GqlError{{Message: "invalid GraphQL request body"}}})
 			return
 		}
-		writeJSON(w, http.StatusOK, e.Execute(r.Context(), body.Query, body.Variables))
+		// The caller's identity is established UPSTREAM (the aws-shim's SigV4→principal) and conveyed as
+		// headers; carry it through the context for field-level authz (§6). The engine never trusts a
+		// client to assert these directly — in production only the shim, an internal peer, sets them.
+		ctx := authz.NewContext(r.Context(), identityFromHeaders(r))
+		writeJSON(w, http.StatusOK, e.Execute(ctx, body.Query, body.Variables))
 	}
+}
+
+// identityFromHeaders reads the caller's principal from the shim-set headers: X-OpenInfra-User and a
+// comma-separated X-OpenInfra-Groups.
+func identityFromHeaders(r *http.Request) authz.Identity {
+	id := authz.Identity{Username: r.Header.Get("X-OpenInfra-User")}
+	if g := r.Header.Get("X-OpenInfra-Groups"); g != "" {
+		for _, part := range strings.Split(g, ",") {
+			if s := strings.TrimSpace(part); s != "" {
+				id.Groups = append(id.Groups, s)
+			}
+		}
+	}
+	return id
 }
 
 // TestResolverRequest is the input to the test-resolver endpoint: a resolver's templates plus a

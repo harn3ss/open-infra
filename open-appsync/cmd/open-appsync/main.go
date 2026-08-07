@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
+	"github.com/harn3ss/open-infra/open-appsync/internal/k8sauth"
 	"github.com/harn3ss/open-infra/open-appsync/internal/server"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -49,7 +51,18 @@ func run(logger *slog.Logger) error {
 		logger.Info("connected to FerretDB", slog.String("db", mongoDB.Name()))
 	}
 
-	engine, err := server.Load(configDir, mongoDB)
+	// Field-level authz (§6): in-cluster, enforce requirements via impersonated SubjectAccessReviews
+	// against the shared RBAC boundary. Out of cluster (dev), fall back to no enforcement and say so —
+	// a field's Requirement is then not checked, so this must be logged loudly, not silent.
+	var engineOpts []graphql.Option
+	if sar, err := k8sauth.InCluster(); err == nil {
+		engineOpts = append(engineOpts, graphql.WithAuthorizer(sar))
+		logger.Info("field-level authorization ENABLED (SubjectAccessReview against cluster RBAC)")
+	} else {
+		logger.Warn("field-level authorization NOT enforced — no in-cluster RBAC; field Requirements are ignored", slog.String("reason", err.Error()))
+	}
+
+	engine, err := server.Load(configDir, mongoDB, engineOpts...)
 	if err != nil {
 		return err
 	}
