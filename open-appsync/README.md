@@ -50,12 +50,15 @@ one.
 
 ### JavaScript resolvers (`runtime: appsync-js`)
 
-A resolver may declare `runtime: appsync-js` and carry a JavaScript module (exporting `request(ctx)` /
-`response(ctx)`) instead of VTL. It runs on **goja** (pure-Go ECMAScript): no `require`, no Node APIs,
-no fs/net/fetch, no timers — **capability-by-injection, deny-by-absence.** The only capability a
+A resolver may declare `runtime: appsync-js` and carry a **real APPSYNC_JS module** — `import { util }
+from '@aws-appsync/utils'` + `export function request(ctx)` / `export function response(ctx)`, the exact
+shape AWS requires — and it runs here **unmodified** (the engine strips the ES-module framing goja can't
+parse and injects `util` as a global). It runs on **goja** (pure-Go ECMAScript): no `require`, no Node
+APIs, no fs/net/fetch, no timers — **capability-by-injection, deny-by-absence.** The only capability a
 resolver gets is the injected `util` object (backed by the *same* `$util` implementation as VTL, so no
-drift). A resolver reaching for ambient capability fails closed (proven by a negative probe). Sandboxing
-untrusted user code matters *most* for the least-resourced operator this project serves.
+drift). A resolver reaching for ambient capability fails closed (proven by a negative probe). And it is
+**behavior-faithful**: `probe/goldens-js/` diffs the same modules against real AWS `evaluate-code`.
+Sandboxing untrusted user code matters *most* for the least-resourced operator this project serves.
 
 ### Step vs lifecycle
 
@@ -193,8 +196,9 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
 - **Authoring**: `kind: GraphQLApi` (renders the engine config, no bespoke controller) + a
   `/test-resolver` loop; and a **Stage-2 AWS management shim** that translates AppSync management verbs
   into patches on the `GraphQLApi` object (per-verb).
-- **Compatibility probe**: a VTL/`$util` corpus + a runtime **goldens harness** (`probe/goldens/`) whose
-  cases are **captured from real AWS AppSync** and diffed in CI.
+- **Compatibility probe**: runtime **goldens harnesses** for both runtimes — VTL (`probe/goldens/`) and
+  APPSYNC_JS (`probe/goldens-js/`) — whose cases are **captured from real AWS AppSync**
+  (`evaluate-mapping-template` / `evaluate-code`) and diffed in CI. Both are behavior-faithful.
 
 ## Maturity — two independent gates
 

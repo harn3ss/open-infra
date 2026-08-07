@@ -15,6 +15,7 @@ package jsruntime
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/dop251/goja"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
@@ -27,9 +28,30 @@ type Runtime struct {
 	program *goja.Program
 }
 
-// New compiles the JavaScript resolver module. A syntax error fails here so the config fails closed.
+// Real AWS APPSYNC_JS code is an ES module — `import { util } from '@aws-appsync/utils'` and
+// `export function request/response`. AWS *requires* that shape (a bare top-level function gets
+// MISSING_MAPPING_EXPORT), and goja can't parse `import`/`export` at all. normalizeAppsyncJS bridges
+// the two so a team's EXISTING APPSYNC_JS resolver runs here unmodified: drop the ES imports (we inject
+// `util` as a global) and strip the `export` keyword (the handlers become top-level functions the
+// invoker looks up by name). Byte-for-byte the same source AWS runs — we just remove the module framing
+// goja can't consume.
+var (
+	jsImportLine = regexp.MustCompile(`(?m)^\s*import\b.*$`) // `import ... from '...';`
+	jsExportDecl = regexp.MustCompile(`\bexport\s+(default\s+)?(async\s+function|function|const|let|var|class)\b`)
+	jsExportList = regexp.MustCompile(`(?m)^\s*export\s*\{[^}]*\}\s*;?\s*$`) // `export { request, response };`
+)
+
+func normalizeAppsyncJS(src string) string {
+	src = jsImportLine.ReplaceAllString(src, "")
+	src = jsExportDecl.ReplaceAllString(src, "$2")
+	src = jsExportList.ReplaceAllString(src, "")
+	return src
+}
+
+// New compiles the JavaScript resolver module (accepting real APPSYNC_JS module syntax; see
+// normalizeAppsyncJS). A syntax error fails here so the config fails closed.
 func New(util *vtl.Util, source string) (*Runtime, error) {
-	prog, err := goja.Compile("resolver.js", source, true)
+	prog, err := goja.Compile("resolver.js", normalizeAppsyncJS(source), true)
 	if err != nil {
 		return nil, fmt.Errorf("jsruntime: compile: %w", err)
 	}
