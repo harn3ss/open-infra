@@ -66,6 +66,9 @@ type LimitsConfig struct {
 	MaxCost          int      `json:"maxCost"`
 	PersistedOnly    bool     `json:"persistedOnly"`
 	PersistedQueries []string `json:"persistedQueries"` // raw query documents; hashed (sha256) at load
+	// Introspection: "" | "enabled" (default) | "disabled" | "authenticated-only". Gates who may read
+	// the schema via __schema/__type — a recon-vs-tooling trade-off left to the operator, safe-by-choice.
+	Introspection string `json:"introspection"`
 }
 
 type DataSourceConfig struct {
@@ -153,10 +156,39 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		registry[rc.Type+"."+rc.Field] = res
 	}
 
+	// The optional SDL schema (a schema.graphql sibling file, kept out of config.json to avoid JSON
+	// escaping — same reason the .vtl templates are files). When present, it powers __schema/__type
+	// introspection; when absent, the engine still serves resolvers and introspection reports
+	// unavailable. Fail closed on malformed SDL — the API never serves a half-parsed type graph.
+	engineOpts := []graphql.Option{graphql.WithLimits(buildLimits(cfg.Limits))}
+	sdl, err := readSchemaSDL(dir)
+	if err != nil {
+		return nil, err
+	}
+	if sdl != "" {
+		schema, err := graphql.ParseSchema(sdl)
+		if err != nil {
+			return nil, fmt.Errorf("open-appsync: parse schema.graphql: %w", err)
+		}
+		engineOpts = append(engineOpts, graphql.WithSchema(schema))
+	}
+
 	// Limits first (so an explicit WithLimits in opts could override), then caller options (the SAR
 	// authorizer wired by main).
-	engineOpts := append([]graphql.Option{graphql.WithLimits(buildLimits(cfg.Limits))}, opts...)
+	engineOpts = append(engineOpts, opts...)
 	return graphql.New(registry, engineOpts...), nil
+}
+
+// readSchemaSDL reads the optional schema.graphql from the config dir, returning "" when there is none.
+func readSchemaSDL(dir string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "schema.graphql"))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("open-appsync: read schema.graphql: %w", err)
+	}
+	return string(b), nil
 }
 
 // LoadSubscriptions reads the config's subscription section and builds a subscription Manager (over the
@@ -229,6 +261,7 @@ func buildLimits(lc *LimitsConfig) graphql.Limits {
 	limits.MaxDepth = safeLimit(lc.MaxDepth, limits.MaxDepth)
 	limits.MaxCost = safeLimit(lc.MaxCost, limits.MaxCost)
 	limits.PersistedOnly = lc.PersistedOnly
+	limits.Introspection = lc.Introspection
 	if len(lc.PersistedQueries) > 0 {
 		limits.Persisted = map[string]bool{}
 		for _, q := range lc.PersistedQueries {

@@ -44,7 +44,7 @@ spec:
               properties:
                 schema:
                   type: string
-                  description: "Optional GraphQL SDL for the API. Slice-1 executor derives fields from the resolver list; the SDL is carried for authoring/tools and future validation."
+                  description: "GraphQL SDL for the API. When set, the engine parses it into an in-memory type graph and answers __schema/__type introspection over it — so GraphQL tooling (graphql-codegen, Apollo, GraphiQL) can build a client schema from this API. Optional: the executor still resolves fields from the resolver list without it, but introspection is then unavailable."
                 image:
                   type: string
                   default: ghcr.io/harn3ss/open-infra-open-appsync:latest
@@ -77,6 +77,10 @@ spec:
                       description: "Allow-listed query documents (for persistedOnly mode)."
                       items:
                         type: string
+                    introspection:
+                      type: string
+                      enum: [enabled, disabled, authenticated-only]
+                      description: "Who may read the schema via __schema/__type. enabled (default) — any client, best for tooling; disabled — never; authenticated-only — off for untrusted (anonymous) callers. Requires spec.schema."
                 dataSources:
                   type: array
                   description: "The data sources resolvers bind to."

@@ -1,0 +1,15 @@
+{
+  "name": "open-appsync-introspection-gate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gate #2 for open-appsync introspection: real GraphQL tooling consumes the introspection result (buildClientSchema + graphql-codegen).",
+  "scripts": {
+    "consume": "node consume.mjs introspection.json"
+  },
+  "dependencies": {
+    "@graphql-codegen/core": "^4.0.2",
+    "@graphql-codegen/typescript": "^4.1.6",
+    "graphql": "^16.11.0"
+  }
+}
