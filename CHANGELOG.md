@@ -48,6 +48,19 @@ the product's public contract.
     from AWS's *documented* behavior; a status test reports how many are still documented vs captured.
     Capturing them from a real AppSync account (maintainer, once) and turning the diff green is the
     **only** thing that removes "experimental" from the runtime.
+- **open-appsync — Stage-2 AWS management wire protocol: AWS AppSync tooling drives open-infra
+  unchanged (experimental; per-verb graduation).** The aws-shim now fronts the AppSync **management**
+  plane at `/v1/...` (told apart from the GraphQL data plane by path; both sign for service `appsync`).
+  It translates AWS management verbs into a **patch on the neutral `kind: GraphQLApi` object** —
+  `CreateResolver`, `UpdateResolver`, `DeleteResolver`, `GetResolver`, `CreateDataSource`,
+  `DeleteDataSource` so far — so CloudFormation/CDK/`aws appsync ...` can author on open-infra without
+  changes. The **skin owns AWS's `(apiId, typeName, fieldName)` identity mapping** (apiId =
+  `<namespace>.<name>`); the neutral kind never learns AWS addressing. AWS's `APPSYNC_JS` runtime maps
+  to `appsync-js`, `AMAZON_DYNAMODB`/`HTTP` data-source types to `dynamodb`/`http`. The caller is gated
+  by the same impersonated `SubjectAccessReview` as every other front door (`update graphqlapis` in the
+  target namespace, cluster RBAC added for the shim SA), and an unhandled verb answers an honest
+  `NotImplemented`. Front door + negatives proven; end-to-end (a real CloudFormation stack) reserved,
+  and the docs say exactly the verbs proven — never "AppSync management API compatible".
 - **open-appsync — subscriptions: the setup-then-push semantic core (experimental; label HELD for a
   temporal chaos bar).** Subscriptions invert the lifecycle — subscribe (authorize + register a filter),
   publish (a mutation's result to a subject), push (each node fans out to its matching local
