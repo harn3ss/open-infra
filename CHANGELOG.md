@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Abstractions
+- **open-appsync — subscription bus is now multi-replica-safe (found by the node-kill chaos setup).**
+  Standing up the 2-replica engine for the subscription chaos scenario surfaced a real bug: both
+  replicas bound the *same* JetStream **durable** push consumer, and a durable is single-active — the
+  second replica crash-looped with `consumer is already bound to a subscription`. Subscriptions need
+  **fan-out** (every node must see every event to match its own WebSocket subscribers), not a shared/
+  load-balanced consumer, so each node now uses its own **ephemeral** consumer. Event durability lives
+  in the stream (file storage): a node kill loses only that node's in-flight fan-out; every published
+  event remains for the survivors — which is what the chaos scenario asserts.
+
 ### AWS compatibility
 - **open-appsync — the JS runtime now runs real APPSYNC_JS unmodified and is behavior-faithful too.**
   `jsruntime` now accepts a **real APPSYNC_JS module** (`import { util } from '@aws-appsync/utils'` +
