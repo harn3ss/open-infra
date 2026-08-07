@@ -160,6 +160,39 @@ spec:
                             response:
                               type: string
                               description: "The function's response mapping template source."
+                subscriptions:
+                  type: array
+                  description: "Subscription-type fields (experimental). Each has a response mapping (no request phase — the push source calls it) and the mutations that trigger it. Served over graphql-transport-ws at /graphql-ws."
+                  items:
+                    type: object
+                    required: [field, response]
+                    properties:
+                      field:
+                        type: string
+                        description: "The Subscription field name, e.g. onCreateTodo."
+                      subject:
+                        type: string
+                        description: "Bus subject the events ride; defaults to sub.<field>."
+                      runtime:
+                        type: string
+                        default: appsync-vtl
+                      response:
+                        type: string
+                        description: "The response mapping template that shapes each pushed event."
+                      triggeredBy:
+                        type: array
+                        description: "Mutation field names whose success publishes to this subscription."
+                        items:
+                          type: string
+                      auth:
+                        type: object
+                        description: "Authorization checked at subscribe time (a SubjectAccessReview), like a resolver's auth."
+                        properties:
+                          group: { type: string }
+                          resource: { type: string }
+                          verb: { type: string }
+                          namespace: { type: string }
+                          name: { type: string }
             status:
               type: object
               properties:
