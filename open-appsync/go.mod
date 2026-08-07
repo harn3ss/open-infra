@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/dop251/goja v0.0.0-20260806115107-493f22071ef6
+	github.com/gorilla/websocket v1.5.3
 	github.com/nats-io/nats.go v1.52.0
 	go.mongodb.org/mongo-driver v1.17.9
 )

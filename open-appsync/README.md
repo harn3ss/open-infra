@@ -120,18 +120,21 @@ node fans the event out to its local subscribers whose filter matches, shaping e
 subscriber's response step. The event source is a **push source (a Bus), not a `datasource.Store`** —
 the §1b line.
 
-Built and unit/integration-proven: the **enhanced filter engine** (`eq/ne/in/contains/beginsWith/
-ranges`, dotted fields, AND-within-filter / OR-across-filters — the genuinely hard part), the
-**registry** + naive O(subscribers) fanout (a filter index is deferred until load proves it's needed),
-the **Bus port** with an in-memory bus (single node) and a **JetStream bus** (`internal/subscription/
-jetstream.go`, build-tag `integration`) where a durable consumer gives reconnect/resume, and the
-**Manager** (the setup-then-push lifecycle, subscribe-time auth gate, publish, filtered fanout).
+Built and proven: the **enhanced filter engine** (`eq/ne/in/contains/beginsWith/ranges`, dotted fields,
+AND-within-filter / OR-across-filters — the genuinely hard part), the **registry** + naive
+O(subscribers) fanout (a filter index is deferred until load proves it's needed), the **Bus port** with
+an in-memory bus (single node) and a **JetStream bus** (`internal/subscription/jetstream.go`, build-tag
+`integration`) where a durable consumer gives reconnect/resume, the **Manager** (setup-then-push,
+subscribe-time auth gate, publish, filtered fanout), and the **`graphql-transport-ws` WebSocket front
+door** (`/graphql-ws`) — proven end-to-end with a real client (connection_init/ack, argument-filtered
+subscribe, matching vs non-matching delivery, complete). A successful mutation auto-publishes to the
+subscriptions it triggers (the executor's publish hook). The deployed demo serves `onCreateTodo`.
 
 **Label held (honest):** the graduation bar for this rung is **temporal, not a unit test** — a
 **node-kill chaos scenario** (kill a subscription-holding node mid-stream; prove reconnect/resume with
-no lost and no duplicated events past the acked point, on the nightly clock). Until that is green, and
-until the WebSocket front door (the "easy half") is wired, subscriptions stay **experimental**; the code
-is done, the proof is not.
+no lost and no duplicated events past the acked point, on the nightly clock). The transport is now
+wired and the durable JetStream bus is integration-tested; subscriptions stay **experimental** until
+that chaos run is green. The code is done; the temporal proof is not.
 
 ## Authoring: `kind: GraphQLApi` (the neutral plane)
 
@@ -202,17 +205,17 @@ packaging (authoring) experience.
   - **Also done (drop-36):** **field-level authorization** — an `auth` requirement per resolver checked
     (before the resolver runs) via an impersonated `SubjectAccessReview` (`internal/k8sauth`), the same
     RBAC boundary as every other front door.
-  - **Also done (drop-37), label HELD:** the **subscription** semantic core (`internal/subscription`) —
-    enhanced-filter engine, connection-scoped registry, Bus port (in-memory + JetStream), and the
-    setup-then-push Manager. Experimental until the node-kill chaos bar is green + the WS front door is
-    wired (see above).
+  - **Also done (drop-37/39), label HELD:** the **subscription** rung (`internal/subscription`) —
+    enhanced-filter engine, connection-scoped registry, Bus port (in-memory + JetStream), the
+    setup-then-push Manager, **and the `graphql-transport-ws` WebSocket front door** (`/graphql-ws`) with
+    mutation auto-publish. Experimental until the node-kill chaos bar is green (see above).
   - **Also done (drop-38):** **Stage-2 AWS management wire protocol** — the aws-shim translates AppSync
     management verbs (CreateResolver/UpdateResolver/DeleteResolver/GetResolver/CreateDataSource/
     DeleteDataSource) into patches on the `GraphQLApi` object, per-verb graduated, front-door + negatives
     proven.
-  - **"Not yet" (external gates only):** the subscription **node-kill chaos** run + WS transport, and the
-    real-AppSync **goldens capture** (Clock A) — both need a live cluster / a real AWS account, not more
-    code. See `open-infra-open-appsync-forward-map.md`.
+  - **"Not yet" (external gates only — not code):** the subscription **node-kill chaos** run (needs the
+    nightly cluster) and the real-AppSync **goldens capture** (Clock A — needs a real AWS account). See
+    `open-infra-open-appsync-forward-map.md`.
 - **Rung 2 — subscriptions over JetStream.** AppSync's WebSocket protocol mapped onto NATS
   JetStream; graduates only with a chaos scenario that kills a subscription-holding node and proves
   clients reconnect/resume.
@@ -253,7 +256,8 @@ behind its own probe.
 - `internal/authz/` — the field-auth port (Requirement/Identity/Authorizer); `internal/k8sauth/` — the
   production SubjectAccessReview authorizer.
 - `internal/subscription/` — the subscription rung: filter engine, registry, Bus (in-memory +
-  JetStream), and the setup-then-push Manager (experimental; chaos-bar held).
+  JetStream), and the setup-then-push Manager (experimental; chaos-bar held). The WebSocket front door
+  (`graphql-transport-ws`) is `internal/server/subscription_ws.go` (`/graphql-ws`).
 - `internal/graphql/` — the GraphQL parser + executor (field→resolver dispatch, projection).
 - `internal/server/` — config loader (`server.Load`) + HTTP handlers (`/graphql`, `/test-resolver`).
 - `cmd/open-appsync/` — the engine binary.

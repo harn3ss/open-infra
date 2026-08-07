@@ -16,9 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/k8sauth"
 	"github.com/harn3ss/open-infra/open-appsync/internal/server"
+	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -54,12 +56,24 @@ func run(logger *slog.Logger) error {
 	// Field-level authz (§6): in-cluster, enforce requirements via impersonated SubjectAccessReviews
 	// against the shared RBAC boundary. Out of cluster (dev), fall back to no enforcement and say so —
 	// a field's Requirement is then not checked, so this must be logged loudly, not silent.
-	var engineOpts []graphql.Option
+	var authorizer authz.Authorizer = authz.AllowAll{}
 	if sar, err := k8sauth.InCluster(); err == nil {
-		engineOpts = append(engineOpts, graphql.WithAuthorizer(sar))
+		authorizer = sar
 		logger.Info("field-level authorization ENABLED (SubjectAccessReview against cluster RBAC)")
 	} else {
 		logger.Warn("field-level authorization NOT enforced — no in-cluster RBAC; field Requirements are ignored", slog.String("reason", err.Error()))
+	}
+	engineOpts := []graphql.Option{graphql.WithAuthorizer(authorizer)}
+
+	// Subscriptions (§3): a single-node in-memory bus (the durable multi-node path is JetStream, the
+	// integration-tested build). If the config declares subscriptions, wire the publisher so a mutation
+	// pushes to its subscribers, and serve the graphql-transport-ws WebSocket below.
+	mgr, publisher, err := server.LoadSubscriptions(configDir, subscription.NewMemBus(), authorizer)
+	if err != nil {
+		return err
+	}
+	if mgr != nil {
+		engineOpts = append(engineOpts, graphql.WithPublisher(publisher))
 	}
 
 	engine, err := server.Load(configDir, mongoDB, engineOpts...)
@@ -75,6 +89,15 @@ func run(logger *slog.Logger) error {
 	mux.HandleFunc("/graphql", server.Handler(engine))
 	// Authoring aid (handoff §3): render a resolver against a sample $ctx without deploying it.
 	mux.HandleFunc("/test-resolver", server.TestResolverHandler())
+	// Subscriptions over graphql-transport-ws (§3), when the config declares any.
+	if mgr != nil {
+		if err := mgr.Start(context.Background()); err != nil {
+			return err
+		}
+		defer mgr.Stop()
+		mux.HandleFunc("/graphql-ws", server.SubscriptionHandler(mgr))
+		logger.Info("subscriptions enabled (graphql-transport-ws at /graphql-ws)")
+	}
 
 	addr := getenv("LISTEN_ADDR", ":8080")
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
