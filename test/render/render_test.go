@@ -200,6 +200,29 @@ func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 	}
 }
 
+// An http data source renders its endpoint into config.json (the §5 second call-source).
+func TestGraphQLApi_HTTPDataSource(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ctx := map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"dataSources": []any{map[string]any{"name": "api", "type": "http", "endpoint": "https://api.example.com"}},
+				"resolvers": []any{map[string]any{
+					"type": "Query", "field": "getUser", "dataSource": "api",
+					"request": "{\"method\":\"GET\",\"resourcePath\":\"/u\"}", "response": "$util.toJson($ctx.result.body)",
+				}},
+			},
+			"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+		}}},
+	}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{`"type": "http"`, `"endpoint": "https://api.example.com"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("http data source render missing %q; got:\n%s", want, grepCtx(out, "dataSources"))
+		}
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
