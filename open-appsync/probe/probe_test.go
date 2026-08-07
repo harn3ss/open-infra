@@ -81,7 +81,7 @@ func TestProbe_PutItemRequest(t *testing.T) {
 	want := asJSON(t, `{
 	  "version":"2018-05-29","operation":"PutItem",
 	  "key":{"id":{"S":"11111111-2222-4333-8444-555555555555"}},
-	  "attributeValues":{"name":{"S":"Ada"},"age":{"N":"36"}}
+	  "attributeValues":{"name":{"S":"Ada"},"age":{"N":36}}
 	}`)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PutItem request not faithful:\n got %v\nwant %v", got, want)

@@ -1,8 +1,8 @@
 {
-  "source": "documented",
-  "description": "PutItem with a multi-attribute item — mixed S / N / BOOL / float / list / nested map",
+  "source": "aws-capture",
+  "description": "PutItem with a multi-attribute item \u2014 mixed S / N / BOOL / float / list / nested map",
   "template": "putitem-multi.request.vtl",
-  "autoId": "11111111-2222-4333-8444-555555555555",
+  "autoId": "c93832ed-a6cf-4e4c-87b5-17f1bda6b18a",
   "now": "2026-08-06T00:00:00Z",
   "context": {
     "args": {
@@ -11,22 +11,54 @@
         "age": 36,
         "active": true,
         "score": 9.5,
-        "tags": ["x", "y"],
-        "meta": { "role": "admin" }
+        "tags": [
+          "x",
+          "y"
+        ],
+        "meta": {
+          "role": "admin"
+        }
       }
     }
   },
   "expected": {
     "version": "2018-05-29",
     "operation": "PutItem",
-    "key": { "id": { "S": "11111111-2222-4333-8444-555555555555" } },
+    "key": {
+      "id": {
+        "S": "c93832ed-a6cf-4e4c-87b5-17f1bda6b18a"
+      }
+    },
     "attributeValues": {
-      "name": { "S": "Ada" },
-      "age": { "N": "36" },
-      "active": { "BOOL": true },
-      "score": { "N": "9.5" },
-      "tags": { "L": [ { "S": "x" }, { "S": "y" } ] },
-      "meta": { "M": { "role": { "S": "admin" } } }
+      "score": {
+        "N": 9.5
+      },
+      "meta": {
+        "M": {
+          "role": {
+            "S": "admin"
+          }
+        }
+      },
+      "name": {
+        "S": "Ada"
+      },
+      "active": {
+        "BOOL": true
+      },
+      "age": {
+        "N": 36
+      },
+      "tags": {
+        "L": [
+          {
+            "S": "x"
+          },
+          {
+            "S": "y"
+          }
+        ]
+      }
     }
   }
 }
