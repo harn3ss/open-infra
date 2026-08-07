@@ -4,9 +4,10 @@
 // stored typed item back to plain values before the response template runs, so this does too
 // (fromDynamoDB), and stores/operates in plain-value space.
 //
-// Store is an interface with two implementations: MemStore (in-memory, deterministic — the slice-1
-// probe runs against it) and, behind the same interface, a FerretDB-backed store (the real
-// DynamoDB→Mongo binding, integration-tested; the flagged piece-3 production path).
+// It provides two implementations of the neutral datasource.Store contract: MemStore (in-memory,
+// deterministic — the slice-1 probe runs against it) and FerretStore (the real DynamoDB→Mongo binding,
+// integration-tested). Both are DynamoDB-shaped; a non-DynamoDB source (e.g. internal/httpsource) is a
+// different Store with a different operation shape, which is the whole point of §5's neutrality.
 package dynamodb
 
 import (
@@ -17,24 +18,16 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// Store is the CALL-source contract: a synchronous "give me this Operation, hand back a result". It
-// executes a neutral data-source Operation (whatever runtime produced it, not "a VTL thing") and
-// returns the plain-value result for the response phase. The context carries the request deadline /
-// cancellation (a live store — FerretDB — needs it; MemStore ignores it).
-//
-// SCOPING (the drop-33 fork, §1b — the data-source parallel to the runtime step/lifecycle split):
-// Store.Execute deliberately covers only sources you CALL — DynamoDB, and later HTTP/Lambda/RDS all
-// fit "call → result". It is NOT the whole data-source contract. A subscription's event source is the
-// inverse: a stream of mutation events that call YOU, where Execute(op)→result is meaningless — the
-// same unit-vs-stream break the runtime contract has, at the same place. That push source is a
-// separate thing under the subscription lifecycle, NOT a Store; do not torture Store into an async
-// shape it should not have.
-type Store interface {
-	Execute(ctx context.Context, op runtime.Operation) (any, error)
-}
+// MemStore and FerretStore implement the neutral datasource.Store contract (the call-source seam;
+// that interface lives in internal/datasource, not here, so the contract is not DynamoDB-shaped).
+var (
+	_ datasource.Store = (*MemStore)(nil)
+	_ datasource.Store = (*FerretStore)(nil)
+)
 
 // fromDynamoDB is the inverse of $util.dynamodb.toDynamoDBJson: a DynamoDB-typed value → a plain
 // value. AppSync applies this to the stored item before the response template sees it.

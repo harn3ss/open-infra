@@ -15,8 +15,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
+	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
@@ -51,8 +53,9 @@ type LimitsConfig struct {
 
 type DataSourceConfig struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"`       // "dynamodb" (FerretDB-backed) | "memory" (ephemeral, dev/demo)
+	Type       string `json:"type"`       // "memory" | "dynamodb" (FerretDB-backed) | "http"
 	Collection string `json:"collection"` // dynamodb: the FerretDB collection ("table")
+	Endpoint   string `json:"endpoint"`   // http: the base URL the resolver's operation targets
 }
 
 type ResolverConfig struct {
@@ -93,7 +96,7 @@ func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
 		return nil, fmt.Errorf("open-appsync: parse config.json: %w", err)
 	}
 
-	stores := map[string]dynamodb.Store{}
+	stores := map[string]datasource.Store{}
 	for _, ds := range cfg.DataSources {
 		switch ds.Type {
 		case "memory":
@@ -106,8 +109,13 @@ func Load(dir string, mongoDB *mongo.Database) (*graphql.Engine, error) {
 				return nil, fmt.Errorf("open-appsync: data source %q (dynamodb) needs a collection", ds.Name)
 			}
 			stores[ds.Name] = dynamodb.NewFerretStore(mongoDB.Collection(ds.Collection))
+		case "http":
+			if ds.Endpoint == "" {
+				return nil, fmt.Errorf("open-appsync: data source %q (http) needs an endpoint", ds.Name)
+			}
+			stores[ds.Name] = httpsource.New(ds.Endpoint)
 		default:
-			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (slice 1: memory | dynamodb)", ds.Name, ds.Type)
+			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | dynamodb | http)", ds.Name, ds.Type)
 		}
 	}
 
@@ -163,7 +171,7 @@ func safeLimit(v, def int) int {
 // buildResolver assembles one field's lifecycle from its config: a pipeline when Functions is set,
 // otherwise a unit resolver. Every template is validated (fail closed): one malformed template makes
 // the whole Load fail, so the engine never serves a half-broken API (handoff §2).
-func buildResolver(dir string, engine *vtl.Engine, stores map[string]dynamodb.Store, rc ResolverConfig) (resolver.Resolver, error) {
+func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.Store, rc ResolverConfig) (resolver.Resolver, error) {
 	if len(rc.Functions) == 0 {
 		src, ok := stores[rc.DataSource]
 		if !ok {
