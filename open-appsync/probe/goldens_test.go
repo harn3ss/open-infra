@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
 
@@ -118,5 +119,111 @@ func TestGoldens_GraduationStatus(t *testing.T) {
 	t.Logf("runtime goldens: %d/%d captured from real AWS (%d still documented)", captured, total, total-captured)
 	if captured < total {
 		t.Skipf("runtime gate not cleared: %d/%d goldens still documented — runtime stays EXPERIMENTAL until captured from real AppSync (see goldens/README.md)", total-captured, total)
+	}
+}
+
+// --- JavaScript (APPSYNC_JS) runtime goldens: the same behavior-faithful diff for the JS tenant,
+// captured from real AWS via `evaluate-code`. The corpus files are REAL APPSYNC_JS modules (import +
+// export); jsruntime accepts them unmodified, so the same source runs on AWS and here. See
+// goldens-js/README.md.
+
+//go:embed goldens-js/*.json goldens-js/*.js
+var jsGoldenFS embed.FS
+
+type jsGolden struct {
+	Source      string         `json:"source"`
+	Description string         `json:"description"`
+	Code        string         `json:"code"`     // an APPSYNC_JS module file in goldens-js/
+	Function    string         `json:"function"` // "request" | "response"
+	AutoID      string         `json:"autoId"`
+	Context     map[string]any `json:"context"`
+	Expected    any            `json:"expected"`
+}
+
+func loadJSGoldens(t *testing.T) map[string]jsGolden {
+	t.Helper()
+	entries, err := jsGoldenFS.ReadDir("goldens-js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]jsGolden{}
+	for _, e := range entries {
+		if e.IsDir() || path.Ext(e.Name()) != ".json" {
+			continue
+		}
+		b, err := jsGoldenFS.ReadFile("goldens-js/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var g jsGolden
+		if err := json.Unmarshal(b, &g); err != nil {
+			t.Fatalf("js golden %s: %v", e.Name(), err)
+		}
+		out[e.Name()] = g
+	}
+	if len(out) == 0 {
+		t.Fatal("no JS goldens found")
+	}
+	return out
+}
+
+func TestJSGoldens_MatchCode(t *testing.T) {
+	for name, g := range loadJSGoldens(t) {
+		name, g := name, g
+		t.Run(name, func(t *testing.T) {
+			code, err := jsGoldenFS.ReadFile("goldens-js/" + g.Code)
+			if err != nil {
+				t.Fatalf("js golden references missing code %q: %v", g.Code, err)
+			}
+			u := vtl.NewUtil()
+			u.AutoID = func() string { return g.AutoID }
+			rt, err := jsruntime.New(u, string(code))
+			if err != nil {
+				t.Fatalf("compile %s: %v", g.Code, err)
+			}
+			var got any
+			switch g.Function {
+			case "request":
+				op, err := rt.RenderRequest(g.Context)
+				if err != nil {
+					t.Fatalf("request %s: %v", g.Code, err)
+				}
+				got = map[string]any(op)
+			case "response":
+				v, err := rt.RenderResponse(g.Context)
+				if err != nil {
+					t.Fatalf("response %s: %v", g.Code, err)
+				}
+				got = v
+			default:
+				t.Fatalf("golden %q: unknown function %q", name, g.Function)
+			}
+			// Round-trip both sides through JSON so numeric types line up (float64 both sides).
+			var want any
+			eb, _ := json.Marshal(g.Expected)
+			_ = json.Unmarshal(eb, &want)
+			gb, _ := json.Marshal(got)
+			_ = json.Unmarshal(gb, &got)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%s diverges from JS golden %q [%s]:\n got %v\nwant %v", g.Code, name, g.Source, got, want)
+			}
+		})
+	}
+}
+
+// TestJSGoldens_GraduationStatus makes the JS runtime gate visible (mirrors the VTL one): how many JS
+// goldens are captured from real AWS vs authored from docs. Never fails; skips while any are pending.
+func TestJSGoldens_GraduationStatus(t *testing.T) {
+	goldens := loadJSGoldens(t)
+	captured := 0
+	for _, g := range goldens {
+		if g.Source == "aws-capture" {
+			captured++
+		}
+	}
+	total := len(goldens)
+	t.Logf("JS goldens: %d/%d captured from real AWS (%d still documented)", captured, total, total-captured)
+	if captured < total {
+		t.Skipf("JS runtime gate not cleared: %d/%d still documented (see goldens-js/README.md)", total-captured, total)
 	}
 }

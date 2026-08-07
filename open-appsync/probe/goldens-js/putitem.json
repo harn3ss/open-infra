@@ -1,0 +1,59 @@
+{
+  "source": "aws-capture",
+  "description": "JS request \u2014 PutItem with autoId key + toMapValues (mixed S/N/BOOL/list/map)",
+  "code": "putitem.js",
+  "function": "request",
+  "autoId": "f4c22b87-67e2-4db8-9b4d-5e56d7405f6f",
+  "context": {
+    "args": {
+      "input": {
+        "name": "Ada",
+        "age": 36,
+        "active": true,
+        "tags": [
+          "x",
+          "y"
+        ],
+        "meta": {
+          "role": "admin"
+        }
+      }
+    }
+  },
+  "expected": {
+    "operation": "PutItem",
+    "key": {
+      "id": {
+        "S": "f4c22b87-67e2-4db8-9b4d-5e56d7405f6f"
+      }
+    },
+    "attributeValues": {
+      "meta": {
+        "M": {
+          "role": {
+            "S": "admin"
+          }
+        }
+      },
+      "name": {
+        "S": "Ada"
+      },
+      "active": {
+        "BOOL": true
+      },
+      "age": {
+        "N": 36
+      },
+      "tags": {
+        "L": [
+          {
+            "S": "x"
+          },
+          {
+            "S": "y"
+          }
+        ]
+      }
+    }
+  }
+}

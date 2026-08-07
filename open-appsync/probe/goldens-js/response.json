@@ -1,0 +1,19 @@
+{
+  "source": "aws-capture",
+  "description": "JS response \u2014 passthrough of the data-source result",
+  "code": "response.js",
+  "function": "response",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "context": {
+    "result": {
+      "id": "123",
+      "name": "Ada",
+      "age": 36
+    }
+  },
+  "expected": {
+    "id": "123",
+    "name": "Ada",
+    "age": 36
+  }
+}
