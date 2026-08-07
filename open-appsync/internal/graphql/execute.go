@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
@@ -32,18 +33,33 @@ func DefaultLimits() Limits { return Limits{MaxDepth: 10, MaxCost: 1000} }
 // executor holds no VTL (or any other runtime) knowledge — it dispatches fields and projects
 // selection sets. It enforces Limits before running any resolver.
 type Engine struct {
-	resolvers map[string]resolver.Resolver
-	limits    Limits
+	resolvers  map[string]resolver.Resolver
+	limits     Limits
+	authorizer authz.Authorizer
 }
 
-// New builds an engine with DefaultLimits (safe by default). Use NewWithLimits to configure guards.
-func New(resolvers map[string]resolver.Resolver) *Engine {
-	return &Engine{resolvers: resolvers, limits: DefaultLimits()}
+// Option configures an Engine (hostile-load guards, the field authorizer, …).
+type Option func(*Engine)
+
+// WithLimits sets the hostile-load guards (default: DefaultLimits).
+func WithLimits(l Limits) Option { return func(e *Engine) { e.limits = l } }
+
+// WithAuthorizer sets the field-level authorizer (default: authz.AllowAll — no enforcement).
+func WithAuthorizer(a authz.Authorizer) Option { return func(e *Engine) { e.authorizer = a } }
+
+// New builds an engine: safe-by-default limits and no field-auth enforcement (AllowAll) unless
+// options say otherwise. The variadic options keep New(resolvers) valid.
+func New(resolvers map[string]resolver.Resolver, opts ...Option) *Engine {
+	e := &Engine{resolvers: resolvers, limits: DefaultLimits(), authorizer: authz.AllowAll{}}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
-// NewWithLimits builds an engine with explicit hostile-load guards.
+// NewWithLimits builds an engine with explicit hostile-load guards (kept for existing callers).
 func NewWithLimits(resolvers map[string]resolver.Resolver, limits Limits) *Engine {
-	return &Engine{resolvers: resolvers, limits: limits}
+	return New(resolvers, WithLimits(limits))
 }
 
 // GqlError is a GraphQL error entry, carrying AppSync's errorType where the resolver threw one.
@@ -95,7 +111,18 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			data[respKey] = nil
 			continue
 		}
-		gctx := map[string]any{"args": evalArgs(sel.args, variables)}
+		// Field-level authorization (§6): consult the shared boundary BEFORE running the resolver. A
+		// denial surfaces as Unauthorized with the field null, and the resolver — and its data source —
+		// never runs. This is the lifecycle's job; the runtime step stays auth-unaware.
+		id := authz.FromContext(ctx)
+		if !r.Auth.IsZero() {
+			if err := e.authorizer.Authorize(ctx, id, r.Auth); err != nil {
+				errs = append(errs, GqlError{Message: err.Error(), Path: []any{respKey}, ErrorType: "Unauthorized"})
+				data[respKey] = nil
+				continue
+			}
+		}
+		gctx := map[string]any{"args": evalArgs(sel.args, variables), "identity": identityMap(id)}
 		res, rerr := r.Resolve(ctx, gctx)
 		if rerr != nil {
 			ge := GqlError{Message: rerr.Error(), Path: []any{respKey}}
@@ -157,6 +184,16 @@ func selectionsCost(sels []selection) int {
 		n += 1 + selectionsCost(s.selections)
 	}
 	return n
+}
+
+// identityMap exposes the caller as $ctx.identity for mapping templates (username + groups), mirroring
+// AppSync's $ctx.identity. Empty for an anonymous caller.
+func identityMap(id authz.Identity) map[string]any {
+	groups := make([]any, len(id.Groups))
+	for i, g := range id.Groups {
+		groups[i] = g
+	}
+	return map[string]any{"username": id.Username, "groups": groups}
 }
 
 // evalArgs turns parsed argument values into plain Go values, resolving $variables.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
+	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 )
 
 // Proves the deploy wrapper end-to-end without Mongo: a config dir (memory data source + .vtl
@@ -242,6 +246,58 @@ func TestServer_HTTPRequiresEndpoint(t *testing.T) {
 	if _, err := Load(dir, nil); err == nil {
 		t.Fatal("expected Load to fail for an http source with no endpoint")
 	}
+}
+
+// Field auth end-to-end: a resolver with an `auth` block, an injected authorizer, and the caller's
+// identity from headers — a denied caller gets Unauthorized and the resolver never runs.
+func TestServer_FieldAuthDeniesOverHTTP(t *testing.T) {
+	dir := t.TempDir()
+	wf := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	wf("config.json", `{
+	  "dataSources":[{"name":"t","type":"memory"}],
+	  "resolvers":[{"type":"Query","field":"getTodo","dataSource":"t","request":"get.vtl","response":"resp.vtl",
+	    "auth":{"group":"openinfra.dev","resource":"graphqlapis","verb":"get"}}]
+	}`)
+	wf("get.vtl", `{"operation":"GetItem","key":{"id":$util.dynamodb.toDynamoDBJson($ctx.args.id)}}`)
+	wf("resp.vtl", `$util.toJson($ctx.result)`)
+
+	seen := &recordingAuthz{}
+	engine, err := Load(dir, nil, graphql.WithAuthorizer(seen))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"query": `query { getTodo(id:"1") { id } }`})
+	req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+	req.Header.Set("X-OpenInfra-User", "mallory")
+	req.Header.Set("X-OpenInfra-Groups", "guests, readers")
+	rec := httptest.NewRecorder()
+	Handler(engine)(rec, req)
+
+	var out struct {
+		Errors []struct{ ErrorType string } `json:"errors"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Errors) != 1 || out.Errors[0].ErrorType != "Unauthorized" {
+		t.Fatalf("expected Unauthorized, got %s", rec.Body.String())
+	}
+	// Identity was parsed from headers and passed to the authorizer.
+	if seen.lastUser != "mallory" || len(seen.lastGroups) != 2 {
+		t.Fatalf("identity from headers not delivered: user=%q groups=%v", seen.lastUser, seen.lastGroups)
+	}
+	if seen.lastReq.Resource != "graphqlapis" {
+		t.Fatalf("auth block from config not delivered: %+v", seen.lastReq)
+	}
+}
+
+type recordingAuthz struct {
+	lastUser   string
+	lastGroups []string
+	lastReq    authz.Requirement
+}
+
+func (a *recordingAuthz) Authorize(_ context.Context, id authz.Identity, need authz.Requirement) error {
+	a.lastUser, a.lastGroups, a.lastReq = id.Username, id.Groups, need
+	return authz.ErrDenied
 }
 
 func TestServer_Handler_RejectsGET(t *testing.T) {
