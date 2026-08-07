@@ -38,12 +38,12 @@ func TestToDynamoDB_TypedShapes(t *testing.T) {
 	}
 	want := map[string]string{
 		"string": `{"S":"hello"}`,
-		"int":    `{"N":"5"}`,
-		"float":  `{"N":"3.5"}`,
+		"int":    `{"N":5}`,
+		"float":  `{"N":3.5}`,
 		"bool":   `{"BOOL":true}`,
-		"null":   `{"NULL":true}`,
-		"list":   `{"L":[{"S":"a"},{"N":"1"}]}`,
-		"map":    `{"M":{"id":{"S":"a"},"n":{"N":"2"}}}`,
+		"null":   `{"NULL":null}`,
+		"list":   `{"L":[{"S":"a"},{"N":1}]}`,
+		"map":    `{"M":{"id":{"S":"a"},"n":{"N":2}}}`,
 	}
 	for k, w := range want {
 		if got[k] != w {

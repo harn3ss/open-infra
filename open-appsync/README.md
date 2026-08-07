@@ -193,20 +193,22 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
 - **Authoring**: `kind: GraphQLApi` (renders the engine config, no bespoke controller) + a
   `/test-resolver` loop; and a **Stage-2 AWS management shim** that translates AppSync management verbs
   into patches on the `GraphQLApi` object (per-verb).
-- **Compatibility probe**: a docs-anchored VTL/`$util` corpus + a runtime **goldens harness**
-  (`probe/goldens/`).
+- **Compatibility probe**: a VTL/`$util` corpus + a runtime **goldens harness** (`probe/goldens/`) whose
+  cases are **captured from real AWS AppSync** and diffed in CI.
 
 ## Maturity — two independent gates
 
 These are separate on purpose: shipping the authoring plane alongside the runtime does **not** make
 either "proven."
 
-- **The runtime gate.** The runtime runs live end-to-end (SigV4 GraphQL client → aws-shim `appsync` →
-  open-appsync → a real VTL resolver → data source → `{data}`; wrong signature → 401), and the
-  docs-anchored corpus probe is green. It stays **experimental** until the goldens (`probe/goldens/`)
-  are captured from **real AppSync** and the CI diff is green against them — the one thing that removes
-  the word (see `probe/goldens/README.md`). Today the goldens are seeded from AWS's *documented*
-  behavior, so the harness is proven but the capture is pending (needs a real AppSync account, once).
+- **The runtime gate — CLEARED (behavior-faithful).** The runtime runs live end-to-end (SigV4 GraphQL
+  client → aws-shim `appsync` → open-appsync → a real VTL resolver → data source → `{data}`; wrong
+  signature → 401), and its `$util`/VTL output is now **diffed against real AWS AppSync**: the goldens
+  in `probe/goldens/` were captured from a live account (via `evaluate-mapping-template`) and the CI
+  diff is green against them. That capture surfaced and fixed two real divergences from the DynamoDB SDK
+  shape we'd initially assumed — AppSync emits `N` as a JSON number and `NULL` as JSON `null` — so the
+  runtime is **behavior-faithful, not just documented-faithful**. (Re-run `probe/goldens/capture.sh` to
+  refresh against AWS.)
 - **The authoring plane + runtime interface.** `kind: GraphQLApi`, the extension point, and
   `/test-resolver` ship experimental on their own bar (`go test -race ./...` green; on-cluster, a
   resolver authored through Terraform reconciling into the engine config and a live request exercising
