@@ -1,0 +1,33 @@
+{
+  "source": "documented",
+  "description": "toDynamoDBJson typed marshalling — nested map, list, null, bool, int, negative, float, string",
+  "template": "marshalling.request.vtl",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "now": "2026-08-06T00:00:00Z",
+  "context": {
+    "args": {
+      "input": {
+        "s": "hello",
+        "n": 36,
+        "neg": -4,
+        "f": 3.5,
+        "b": true,
+        "nul": null,
+        "tags": ["a", "b", 7],
+        "nested": { "k": "v", "deep": { "x": 1 } }
+      }
+    }
+  },
+  "expected": {
+    "M": {
+      "s": { "S": "hello" },
+      "n": { "N": "36" },
+      "neg": { "N": "-4" },
+      "f": { "N": "3.5" },
+      "b": { "BOOL": true },
+      "nul": { "NULL": true },
+      "tags": { "L": [ { "S": "a" }, { "S": "b" }, { "N": "7" } ] },
+      "nested": { "M": { "k": { "S": "v" }, "deep": { "M": { "x": { "N": "1" } } } } }
+    }
+  }
+}

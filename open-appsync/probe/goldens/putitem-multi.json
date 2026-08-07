@@ -1,0 +1,32 @@
+{
+  "source": "documented",
+  "description": "PutItem with a multi-attribute item — mixed S / N / BOOL / float / list / nested map",
+  "template": "putitem-multi.request.vtl",
+  "autoId": "11111111-2222-4333-8444-555555555555",
+  "now": "2026-08-06T00:00:00Z",
+  "context": {
+    "args": {
+      "input": {
+        "name": "Ada",
+        "age": 36,
+        "active": true,
+        "score": 9.5,
+        "tags": ["x", "y"],
+        "meta": { "role": "admin" }
+      }
+    }
+  },
+  "expected": {
+    "version": "2018-05-29",
+    "operation": "PutItem",
+    "key": { "id": { "S": "11111111-2222-4333-8444-555555555555" } },
+    "attributeValues": {
+      "name": { "S": "Ada" },
+      "age": { "N": "36" },
+      "active": { "BOOL": true },
+      "score": { "N": "9.5" },
+      "tags": { "L": [ { "S": "x" }, { "S": "y" } ] },
+      "meta": { "M": { "role": { "S": "admin" } } }
+    }
+  }
+}
