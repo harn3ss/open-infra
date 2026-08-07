@@ -65,10 +65,20 @@ func run(logger *slog.Logger) error {
 	}
 	engineOpts := []graphql.Option{graphql.WithAuthorizer(authorizer)}
 
-	// Subscriptions (§3): a single-node in-memory bus (the durable multi-node path is JetStream, the
-	// integration-tested build). If the config declares subscriptions, wire the publisher so a mutation
-	// pushes to its subscribers, and serve the graphql-transport-ws WebSocket below.
-	mgr, publisher, err := server.LoadSubscriptions(configDir, subscription.NewMemBus(), authorizer)
+	// Subscriptions (§3): the bus is the durable JetStream bus when NATS_URL is set (multi-node,
+	// reconnect/resume across a node kill — the path the chaos bar exercises), otherwise a single-node
+	// in-memory bus. If the config declares subscriptions, wire the publisher so a mutation pushes to
+	// its subscribers, and serve the graphql-transport-ws WebSocket below.
+	var bus subscription.Bus = subscription.NewMemBus()
+	if uri := os.Getenv("NATS_URL"); uri != "" {
+		jsb, err := subscription.NewJetStreamBus(uri, getenv("NATS_STREAM", "open_appsync_subscriptions"), getenv("NATS_SUBJECT_PREFIX", "sub"))
+		if err != nil {
+			return err
+		}
+		bus = jsb
+		logger.Info("subscriptions using durable NATS JetStream bus", slog.String("nats", uri))
+	}
+	mgr, publisher, err := server.LoadSubscriptions(configDir, bus, authorizer)
 	if err != nil {
 		return err
 	}
