@@ -15,7 +15,7 @@ func TestFlatten_NamedSpreadExpands(t *testing.T) {
 		"F": {name: "F", typeCondition: "Todo", selections: []selection{{name: "id"}, {name: "name"}}},
 	}
 	in := []selection{{name: "getTodo", selections: []selection{{fragmentSpread: "F"}, {name: "age"}}}}
-	out, err := flattenSelections(in, frags, nil, map[string]bool{})
+	out, err := flattenSelections(in, frags, nil, nil, map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestFlatten_InlineFragmentExpands(t *testing.T) {
 		{inline: true, typeCondition: "Todo", selections: []selection{{name: "id"}}},
 		{inline: true, selections: []selection{{name: "name"}}}, // untyped inline
 	}}}
-	out, err := flattenSelections(in, nil, nil, map[string]bool{})
+	out, err := flattenSelections(in, nil, nil, nil, map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestFlatten_InlineFragmentExpands(t *testing.T) {
 
 func TestFlatten_UnknownFragmentErrors(t *testing.T) {
 	in := []selection{{name: "x", selections: []selection{{fragmentSpread: "Nope"}}}}
-	if _, err := flattenSelections(in, map[string]fragmentDef{}, nil, map[string]bool{}); err == nil {
+	if _, err := flattenSelections(in, map[string]fragmentDef{}, nil, nil, map[string]bool{}); err == nil {
 		t.Fatal("expected an unknown-fragment error")
 	}
 }
@@ -54,7 +54,7 @@ func TestFlatten_CycleDetected(t *testing.T) {
 		"B": {name: "B", selections: []selection{{fragmentSpread: "A"}}},
 	}
 	in := []selection{{name: "x", selections: []selection{{fragmentSpread: "A"}}}}
-	if _, err := flattenSelections(in, frags, nil, map[string]bool{}); err == nil {
+	if _, err := flattenSelections(in, frags, nil, nil, map[string]bool{}); err == nil {
 		t.Fatal("expected a fragment-cycle error")
 	}
 }
@@ -63,7 +63,7 @@ func TestFlatten_SiblingReuseIsNotACycle(t *testing.T) {
 	// The same fragment used twice as siblings is fine (not a cycle).
 	frags := map[string]fragmentDef{"F": {name: "F", selections: []selection{{name: "id"}}}}
 	in := []selection{{name: "x", selections: []selection{{fragmentSpread: "F"}, {fragmentSpread: "F"}}}}
-	out, err := flattenSelections(in, frags, nil, map[string]bool{})
+	out, err := flattenSelections(in, frags, nil, nil, map[string]bool{})
 	if err != nil {
 		t.Fatalf("sibling reuse should not error: %v", err)
 	}
@@ -76,17 +76,17 @@ func TestFlatten_TypeConditionMustExistWhenSchemaPresent(t *testing.T) {
 	s := mustParse(t)
 	frags := map[string]fragmentDef{"F": {name: "F", typeCondition: "Ghost", selections: []selection{{name: "id"}}}}
 	in := []selection{{name: "x", selections: []selection{{fragmentSpread: "F"}}}}
-	if _, err := flattenSelections(in, frags, s, map[string]bool{}); err == nil {
+	if _, err := flattenSelections(in, frags, s, nil, map[string]bool{}); err == nil {
 		t.Fatal("expected error: type condition on a non-existent type")
 	}
 	// A condition on a real type is accepted...
 	frags["F"] = fragmentDef{name: "F", typeCondition: "Todo", selections: []selection{{name: "id"}}}
-	if _, err := flattenSelections(in, frags, s, map[string]bool{}); err != nil {
+	if _, err := flattenSelections(in, frags, s, nil, map[string]bool{}); err != nil {
 		t.Errorf("real type condition should be accepted: %v", err)
 	}
 	// ...and a condition on an introspection meta-type is always valid.
 	frags["F"] = fragmentDef{name: "F", typeCondition: "__Type", selections: []selection{{name: "kind"}}}
-	if _, err := flattenSelections(in, frags, s, map[string]bool{}); err != nil {
+	if _, err := flattenSelections(in, frags, s, nil, map[string]bool{}); err != nil {
 		t.Errorf("__Type condition should be valid: %v", err)
 	}
 }

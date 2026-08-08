@@ -56,6 +56,14 @@ type selection struct {
 	fragmentSpread string // non-empty → this selection is `...<fragmentSpread>`
 	inline         bool   // true → this selection is an inline fragment
 	typeCondition  string // inline fragment's `on Type` (may be "" for an untyped `... { }`)
+	directives     []directive
+}
+
+// directive is a query-side directive applied to a selection, e.g. @skip(if: $big). Its args are
+// unevaluated value nodes (the `if` may be a variable), evaluated at execution against the variables.
+type directive struct {
+	name string
+	args map[string]valueNode
 }
 
 // valueNode is a GraphQL argument value: literal, enum, $variable, list, or object.
@@ -402,21 +410,34 @@ func (p *gparser) parseFragmentSelection() (selection, error) {
 			return selection{}, fmt.Errorf("graphql: expected a type after `... on`")
 		}
 		cond := p.next().val
+		dirs, err := p.parseQueryDirectives()
+		if err != nil {
+			return selection{}, err
+		}
 		sels, err := p.parseSelectionSet()
 		if err != nil {
 			return selection{}, err
 		}
-		return selection{inline: true, typeCondition: cond, selections: sels}, nil
+		return selection{inline: true, typeCondition: cond, selections: sels, directives: dirs}, nil
 	}
-	if p.isPunct("{") { // untyped inline fragment: ... { … }
+	if p.isPunct("@") || p.isPunct("{") { // untyped inline fragment: ... directives? { … }
+		dirs, err := p.parseQueryDirectives()
+		if err != nil {
+			return selection{}, err
+		}
 		sels, err := p.parseSelectionSet()
 		if err != nil {
 			return selection{}, err
 		}
-		return selection{inline: true, selections: sels}, nil
+		return selection{inline: true, selections: sels, directives: dirs}, nil
 	}
-	if p.peek().kind == "name" { // fragment spread: ...Name
-		return selection{fragmentSpread: p.next().val}, nil
+	if p.peek().kind == "name" { // fragment spread: ...Name directives?
+		name := p.next().val
+		dirs, err := p.parseQueryDirectives()
+		if err != nil {
+			return selection{}, err
+		}
+		return selection{fragmentSpread: name, directives: dirs}, nil
 	}
 	return selection{}, fmt.Errorf("graphql: expected a fragment name, `on`, or `{` after `...`")
 }
@@ -441,6 +462,13 @@ func (p *gparser) parseField() (selection, error) {
 		}
 		sel.args = args
 	}
+	if p.isPunct("@") {
+		dirs, err := p.parseQueryDirectives()
+		if err != nil {
+			return selection{}, err
+		}
+		sel.directives = dirs
+	}
 	if p.isPunct("{") {
 		sub, err := p.parseSelectionSet()
 		if err != nil {
@@ -449,6 +477,29 @@ func (p *gparser) parseField() (selection, error) {
 		sel.selections = sub
 	}
 	return sel, nil
+}
+
+// parseQueryDirectives parses zero or more `@name(arg: value, …)` directives applied to a selection.
+// Args are kept as unevaluated value nodes so a variable `if` can be resolved at execution.
+func (p *gparser) parseQueryDirectives() ([]directive, error) {
+	var dirs []directive
+	for p.isPunct("@") {
+		p.next() // @
+		name, err := p.expectName()
+		if err != nil {
+			return nil, err
+		}
+		d := directive{name: name, args: map[string]valueNode{}}
+		if p.isPunct("(") {
+			args, err := p.parseArgs()
+			if err != nil {
+				return nil, err
+			}
+			d.args = args
+		}
+		dirs = append(dirs, d)
+	}
+	return dirs, nil
 }
 
 func (p *gparser) parseArgs() (map[string]valueNode, error) {
@@ -561,9 +612,18 @@ func (p *gparser) accept(kind, val string) bool {
 // condition: precise polymorphic dispatch (applying `on Type` only to matching runtime objects) waits on
 // interface/union runtime typing — a later rung — and does not affect well-formed queries against a
 // matching shape (including the introspection query).
-func flattenSelections(sels []selection, frags map[string]fragmentDef, schema *Schema, open map[string]bool) ([]selection, error) {
+func flattenSelections(sels []selection, frags map[string]fragmentDef, schema *Schema, vars map[string]any, open map[string]bool) ([]selection, error) {
 	var out []selection
 	for _, sel := range sels {
+		// @skip/@include are evaluated here (they need the coerced variables): a skipped selection —
+		// field, spread, or inline fragment — is dropped entirely.
+		skip, err := shouldSkip(sel.directives, vars)
+		if err != nil {
+			return nil, err
+		}
+		if skip {
+			continue
+		}
 		switch {
 		case sel.fragmentSpread != "":
 			name := sel.fragmentSpread
@@ -578,7 +638,7 @@ func flattenSelections(sels []selection, frags map[string]fragmentDef, schema *S
 				return nil, err
 			}
 			open[name] = true
-			exp, err := flattenSelections(frag.selections, frags, schema, open)
+			exp, err := flattenSelections(frag.selections, frags, schema, vars, open)
 			delete(open, name)
 			if err != nil {
 				return nil, err
@@ -588,14 +648,14 @@ func flattenSelections(sels []selection, frags map[string]fragmentDef, schema *S
 			if err := checkTypeCondition(schema, sel.typeCondition); err != nil {
 				return nil, err
 			}
-			exp, err := flattenSelections(sel.selections, frags, schema, open)
+			exp, err := flattenSelections(sel.selections, frags, schema, vars, open)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, exp...)
 		default: // a field: flatten its own sub-selections
 			f := sel
-			sub, err := flattenSelections(sel.selections, frags, schema, open)
+			sub, err := flattenSelections(sel.selections, frags, schema, vars, open)
 			if err != nil {
 				return nil, err
 			}
@@ -604,6 +664,46 @@ func flattenSelections(sels []selection, frags map[string]fragmentDef, schema *S
 		}
 	}
 	return out, nil
+}
+
+// shouldSkip evaluates the @skip/@include directives on a selection against the variables, returning
+// whether the selection should be dropped. Both directives take a required Boolean `if`; a missing or
+// non-boolean `if` is a validation error. Other (unknown) directives are ignored — execution of custom
+// directives is not in scope; @skip/@include are the spec's built-in conditional inclusion directives.
+func shouldSkip(directives []directive, vars map[string]any) (bool, error) {
+	for _, d := range directives {
+		switch d.name {
+		case "skip":
+			b, err := boolDirectiveArg(d, vars)
+			if err != nil {
+				return false, err
+			}
+			if b {
+				return true, nil
+			}
+		case "include":
+			b, err := boolDirectiveArg(d, vars)
+			if err != nil {
+				return false, err
+			}
+			if !b {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func boolDirectiveArg(d directive, vars map[string]any) (bool, error) {
+	v, ok := d.args["if"]
+	if !ok {
+		return false, fmt.Errorf("graphql: @%s requires a Boolean `if` argument", d.name)
+	}
+	b, ok := evalValue(v, vars).(bool)
+	if !ok {
+		return false, fmt.Errorf("graphql: @%s `if` must be a Boolean", d.name)
+	}
+	return b, nil
 }
 
 // checkTypeCondition errors if a fragment/inline type condition names a type absent from the schema. A
