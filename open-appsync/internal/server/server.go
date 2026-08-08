@@ -183,6 +183,19 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 	return graphql.New(registry, engineOpts...), nil
 }
 
+// dedupe returns the input with duplicate strings removed, preserving first-seen order.
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // readSchemaSDL reads the optional schema.graphql from the config dir, returning "" when there is none.
 func readSchemaSDL(dir string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "schema.graphql"))
@@ -212,6 +225,23 @@ func LoadSubscriptions(dir string, bus subscription.Bus, authorizer authz.Author
 		return nil, nil, nil
 	}
 
+	// SDL-native triggers: @aws_subscribe(mutations:) on the schema's Subscription fields, merged with
+	// the config's triggeredBy (AppSync parity — an imported schema's triggers work without duplication).
+	schemaTriggers := map[string][]string{} // subscription field → mutations
+	if sdl, err := readSchemaSDL(dir); err != nil {
+		return nil, nil, err
+	} else if sdl != "" {
+		schema, err := graphql.ParseSchema(sdl)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open-appsync: parse schema.graphql: %w", err)
+		}
+		for mut, subs := range schema.SubscriptionTriggers() {
+			for _, sub := range subs {
+				schemaTriggers[sub] = append(schemaTriggers[sub], mut)
+			}
+		}
+	}
+
 	engine := vtl.New()
 	var fields []subscription.Field
 	trigger := map[string][]string{} // mutation field → subscription fields
@@ -226,7 +256,8 @@ func LoadSubscriptions(dir string, bus subscription.Bus, authorizer authz.Author
 			return nil, nil, fmt.Errorf("open-appsync: subscription %s: %w", sc.Field, err)
 		}
 		fields = append(fields, subscription.Field{Name: sc.Field, Subject: subject, Response: rt, Auth: sc.Auth})
-		for _, mut := range sc.TriggeredBy {
+		// Config triggeredBy plus any @aws_subscribe-declared mutations for this field (deduped).
+		for _, mut := range dedupe(append(append([]string{}, sc.TriggeredBy...), schemaTriggers[sc.Field]...)) {
 			trigger[mut] = append(trigger[mut], sc.Field)
 		}
 	}
