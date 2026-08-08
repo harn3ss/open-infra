@@ -398,8 +398,9 @@ func Handler(e *graphql.Engine) http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Query     string         `json:"query"`
-			Variables map[string]any `json:"variables"`
+			Query         string         `json:"query"`
+			OperationName string         `json:"operationName"`
+			Variables     map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, graphql.Result{
@@ -410,7 +411,7 @@ func Handler(e *graphql.Engine) http.HandlerFunc {
 		// headers; carry it through the context for field-level authz. The engine never trusts a
 		// client to assert these directly — in production only the shim, an internal peer, sets them.
 		ctx := authz.NewContext(r.Context(), identityFromHeaders(r))
-		writeJSON(w, http.StatusOK, e.Execute(ctx, body.Query, body.Variables))
+		writeJSON(w, http.StatusOK, e.ExecuteOp(ctx, body.Query, body.OperationName, body.Variables))
 	}
 }
 
