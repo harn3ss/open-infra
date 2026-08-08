@@ -80,7 +80,7 @@ type DataSourceConfig struct {
 }
 
 type ResolverConfig struct {
-	Type  string `json:"type"` // "Query" | "Mutation"
+	Type  string `json:"type"` // "Query" | "Mutation" (root), or any object type (e.g. "Post") for a per-field resolver
 	Field string `json:"field"`
 
 	// Unit resolver (the default): one runtime step over one data source.
