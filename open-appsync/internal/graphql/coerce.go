@@ -1,14 +1,16 @@
 package graphql
 
 // Variable coercion: validate and normalize the supplied variables against their declared operation
-// types BEFORE any resolver runs. Until now the var-def block was parsed-and-ignored and variables were
-// substituted raw; the type graph makes real coercion possible — check each value against its *wrapped*
-// type (`ID!` rejects null, `[Post!]!` rejects a bare null, an enum rejects an off-list value, an input
-// object rejects unknown/missing-required fields), apply defaults, and reject with a validation error.
+// types BEFORE any resolver runs — check each value against its *wrapped* type (`ID!` rejects null,
+// `[Post!]!` rejects a bare null, an enum rejects an off-list value, an input object rejects
+// unknown/missing-required fields), apply defaults, and reject with a validation error. The GraphQL spec
+// pins these rules, so there is a single right answer.
 //
-// The GraphQL spec pins these rules, so there is a single right answer. Scope: this coerces the
-// wrapper/nullability/enum/input-object layer. Custom-scalar VALUE validation (AWSDateTime format, …) is
-// a separate rung (item 4) — a custom scalar's value passes through here unvalidated.
+// Custom scalars go through a NEUTRAL validation seam: the core validates *that a scalar validates* by
+// consulting a per-scalar-name validator, but knows nothing about any vendor's scalar. Specific rules
+// (AWSDateTime format, AWSJSON well-formedness, …) live at the edge as registered ScalarValidators (see
+// internal/awsscalars), wired in by the server — not baked into this core. A custom scalar with no
+// registered validator passes through unvalidated.
 
 import (
 	"fmt"
@@ -16,17 +18,26 @@ import (
 	"strconv"
 )
 
-// coerceVariables coerces the raw variables against the operation's variable definitions. Only declared
+// ScalarValidator validates and may normalize a value for a custom scalar, returning the coerced value
+// or an error. Registered per scalar name; keeps the engine core vendor-neutral.
+type ScalarValidator func(value any) (any, error)
+
+// coercer coerces values against the type graph, consulting the scalar validators for custom scalars.
+type coercer struct {
+	schema     *Schema
+	validators map[string]ScalarValidator
+}
+
+// variables coerces the raw variables against the operation's variable definitions. Only declared
 // variables appear in the result; a missing required variable, a type mismatch, or a bad default is a
-// validation error. A nil/absent schema still coerces the structural + built-in-scalar layer; enum and
-// input-object validation additionally need the schema (their shape lives there).
-func coerceVariables(defs []variableDef, vars map[string]any, schema *Schema) (map[string]any, *GqlError) {
+// validation error.
+func (c coercer) variables(defs []variableDef, vars map[string]any) (map[string]any, *GqlError) {
 	out := map[string]any{}
 	for _, d := range defs {
 		raw, provided := vars[d.name]
 		if !provided {
 			if d.hasDefault {
-				cv, err := coerceValue(evalValue(d.defaultValue, nil), d.typ, schema, "$"+d.name+" (default)")
+				cv, err := c.value(evalValue(d.defaultValue, nil), d.typ, "$"+d.name+" (default)")
 				if err != nil {
 					return nil, err
 				}
@@ -38,7 +49,7 @@ func coerceVariables(defs []variableDef, vars map[string]any, schema *Schema) (m
 			}
 			continue // nullable, no default → simply unset
 		}
-		cv, err := coerceValue(raw, d.typ, schema, "$"+d.name)
+		cv, err := c.value(raw, d.typ, "$"+d.name)
 		if err != nil {
 			return nil, err
 		}
@@ -47,14 +58,14 @@ func coerceVariables(defs []variableDef, vars map[string]any, schema *Schema) (m
 	return out, nil
 }
 
-// coerceValue coerces one value against a (possibly wrapped) type reference.
-func coerceValue(val any, tr typeRef, schema *Schema, path string) (any, *GqlError) {
+// value coerces one value against a (possibly wrapped) type reference.
+func (c coercer) value(val any, tr typeRef, path string) (any, *GqlError) {
 	switch tr.kind {
 	case kindNonNull:
 		if val == nil {
 			return nil, varErr("%s must not be null (type %s)", path, typeRefString(tr))
 		}
-		return coerceValue(val, *tr.elem, schema, path)
+		return c.value(val, *tr.elem, path)
 	case kindList:
 		if val == nil {
 			return nil, nil
@@ -62,7 +73,7 @@ func coerceValue(val any, tr typeRef, schema *Schema, path string) (any, *GqlErr
 		if list, ok := val.([]any); ok {
 			out := make([]any, len(list))
 			for i, e := range list {
-				cv, err := coerceValue(e, *tr.elem, schema, fmt.Sprintf("%s[%d]", path, i))
+				cv, err := c.value(e, *tr.elem, fmt.Sprintf("%s[%d]", path, i))
 				if err != nil {
 					return nil, err
 				}
@@ -71,19 +82,19 @@ func coerceValue(val any, tr typeRef, schema *Schema, path string) (any, *GqlErr
 			return out, nil
 		}
 		// A single value where a list is expected coerces to a one-element list (spec list input coercion).
-		cv, err := coerceValue(val, *tr.elem, schema, path)
+		cv, err := c.value(val, *tr.elem, path)
 		if err != nil {
 			return nil, err
 		}
 		return []any{cv}, nil
 	default:
-		return coerceNamed(val, tr.name, schema, path)
+		return c.named(val, tr.name, path)
 	}
 }
 
-// coerceNamed coerces a value against a named type: the built-in scalars by name, then (with a schema)
-// enums and input objects. A nullable named type accepts null.
-func coerceNamed(val any, name string, schema *Schema, path string) (any, *GqlError) {
+// named coerces a value against a named type: the built-in scalars by name, then (with a schema) enums,
+// input objects, and custom scalars (via a registered validator). A nullable named type accepts null.
+func (c coercer) named(val any, name, path string) (any, *GqlError) {
 	if val == nil {
 		return nil, nil
 	}
@@ -127,8 +138,8 @@ func coerceNamed(val any, name string, schema *Schema, path string) (any, *GqlEr
 		}
 		return nil, varErr("%s expected an ID (String or Int), got %s", path, jsonKind(val))
 	}
-	if schema != nil {
-		if nt := schema.types[name]; nt != nil {
+	if c.schema != nil {
+		if nt := c.schema.types[name]; nt != nil {
 			switch nt.kind {
 			case kindEnum:
 				s, ok := val.(string)
@@ -142,18 +153,28 @@ func coerceNamed(val any, name string, schema *Schema, path string) (any, *GqlEr
 				}
 				return nil, varErr("%s: %q is not a valid value for enum %s", path, s, name)
 			case kindInputObject:
-				return coerceInputObject(val, nt, schema, path)
+				return c.inputObject(val, nt, path)
+			case kindScalar:
+				// Custom scalar: run its registered validator if one exists (neutral seam); otherwise pass
+				// through — value validation is opt-in per scalar, not baked into the core.
+				if v, ok := c.validators[name]; ok {
+					out, err := v(val)
+					if err != nil {
+						return nil, varErr("%s: invalid %s: %v", path, name, err)
+					}
+					return out, nil
+				}
 			}
 		}
 	}
-	// Custom scalar / unknown type / no schema: value validation is out of scope here — pass through.
+	// Unknown type / no schema / unvalidated custom scalar: pass through.
 	return val, nil
 }
 
-// coerceInputObject coerces a value against an input object type: every field is coerced against its
-// declared type, unknown fields are rejected, missing required (NON_NULL, no default) fields are an
-// error, and declared defaults are applied for absent fields.
-func coerceInputObject(val any, nt *namedType, schema *Schema, path string) (any, *GqlError) {
+// inputObject coerces a value against an input object type: every field is coerced against its declared
+// type, unknown fields are rejected, missing required (NON_NULL, no default) fields are an error, and
+// declared defaults are applied for absent fields.
+func (c coercer) inputObject(val any, nt *namedType, path string) (any, *GqlError) {
 	m, ok := val.(map[string]any)
 	if !ok {
 		return nil, varErr("%s expected input object %s, got %s", path, nt.name, jsonKind(val))
@@ -173,7 +194,7 @@ func coerceInputObject(val any, nt *namedType, schema *Schema, path string) (any
 		raw, provided := m[f.name]
 		if !provided {
 			if f.hasDefault {
-				cv, err := coerceValue(evalValue(f.defaultVal, nil), f.typ, schema, fieldPath+" (default)")
+				cv, err := c.value(evalValue(f.defaultVal, nil), f.typ, fieldPath+" (default)")
 				if err != nil {
 					return nil, err
 				}
@@ -185,7 +206,7 @@ func coerceInputObject(val any, nt *namedType, schema *Schema, path string) (any
 			}
 			continue
 		}
-		cv, err := coerceValue(raw, f.typ, schema, fieldPath)
+		cv, err := c.value(raw, f.typ, fieldPath)
 		if err != nil {
 			return nil, err
 		}
