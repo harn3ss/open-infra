@@ -246,8 +246,14 @@ collection is currently unconditional, which is correct for well-formed queries 
 `__typename` resolves at every nesting level (root and nested/list), returning the concrete type name
 from the type graph — the field Apollo/Relay caches require — and stays outside the introspection toggle.
 
-**Honest scope.** Directive *execution* (`@skip`/`@include`) and custom-scalar value validation lean on
-this type graph but each graduates on its own evidence — none is promoted by proximity.
+**Custom-scalar validation (neutral seam).** Coercion runs a per-scalar validator for declared custom
+scalars: the core validates *that a scalar validates* via a registered `ScalarValidator` and knows
+nothing about any vendor's scalar; AWS rules (AWSDateTime, AWSJSON, AWSEmail, …) live at the edge in
+`internal/awsscalars` and the server wires them in. Two clocks, not conflated: Tier-0 best-effort
+*format* validation ships now; Tier-1 AppSync-byte-exact scalar fidelity is a separate future golden.
+
+**Honest scope.** Directive *execution* (`@skip`/`@include`) and AWS-scalar *fidelity* lean on this type
+graph but each graduates on its own evidence — none is promoted by proximity.
 
 ## Maturity — two independent gates
 
