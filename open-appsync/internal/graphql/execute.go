@@ -141,9 +141,19 @@ type Result struct {
 // top-level field runs its resolver (request→execute→response); a resolver error becomes a GraphQL
 // error with that field's path and its data set to null, exactly as AppSync surfaces it.
 func (e *Engine) Execute(ctx context.Context, query string, variables map[string]any) Result {
-	op, err := parseQuery(query)
+	return e.ExecuteOp(ctx, query, "", variables)
+}
+
+// ExecuteOp is Execute with an explicit operationName, needed when the document carries more than one
+// operation (the GraphQL-over-HTTP `operationName`). An empty name selects the sole operation.
+func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, variables map[string]any) Result {
+	doc, err := parseDocument(query)
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error()}}}
+	}
+	op, err := doc.selectOperation(operationName)
+	if err != nil {
+		return Result{Errors: []GqlError{{Message: err.Error(), ErrorType: "ValidationError"}}}
 	}
 	// Coerce the supplied variables against their declared types (defaults applied, required checked,
 	// mismatches rejected) before they are substituted into arguments OR read by @skip/@include. The
