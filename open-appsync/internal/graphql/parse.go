@@ -3,10 +3,12 @@
 // to each top-level field (Query.<field> / Mutation.<field>), and projects the query's selection set
 // onto the resolver's result — turning "a resolver runs" into "a real GraphQL query runs."
 //
-// Scoped to the slice-1 subset: one operation per document; top-level resolver fields; arguments
-// (scalars / $variables / object & list literals); nested selection sets projected structurally from
-// the resolver result. Fragments, directives, aliases-on-everything, and per-nested-field resolvers
-// are later rungs. Stdlib only — no GraphQL dependency.
+// Scope: one operation per document (plus any number of fragment definitions); top-level resolver
+// fields; arguments (scalars / $variables / object & list literals); nested selection sets projected
+// structurally from the resolver result; named + inline fragments (expanded to fields before execution).
+// Directives (@skip/@include execution), aliases-on-everything, per-nested-field resolvers, and
+// polymorphic fragment type-condition dispatch (interfaces/unions) are later rungs. Stdlib only — no
+// GraphQL dependency.
 package graphql
 
 import (
@@ -15,17 +17,34 @@ import (
 	"strings"
 )
 
-// operation is a parsed GraphQL operation.
+// operation is a parsed GraphQL operation plus any fragment definitions in the same document.
 type operation struct {
-	opType     string // "query" | "mutation"
+	opType     string // "query" | "mutation" | "subscription"
 	selections []selection
+	fragments  map[string]fragmentDef // named fragments in the document, by name
 }
 
+// fragmentDef is a `fragment Name on Type { … }` definition.
+type fragmentDef struct {
+	name          string
+	typeCondition string
+	selections    []selection
+}
+
+// selection is one entry in a selection set: a field, a fragment spread (`...Name`), or an inline
+// fragment (`... on Type { … }` / `... { … }`). The three are distinguished by which fields are set:
+// a field has `name`; a spread has `fragmentSpread`; an inline fragment has `inline` true. Spreads and
+// inline fragments are expanded away by flattenSelections before execution, so the executor and
+// project() only ever see fields.
 type selection struct {
 	alias      string
 	name       string
 	args       map[string]valueNode
 	selections []selection
+
+	fragmentSpread string // non-empty → this selection is `...<fragmentSpread>`
+	inline         bool   // true → this selection is an inline fragment
+	typeCondition  string // inline fragment's `on Type` (may be "" for an untyped `... { }`)
 }
 
 // valueNode is a GraphQL argument value: literal, $variable, list, or object.
@@ -106,6 +125,13 @@ func tokenize(s string) ([]gtok, error) {
 			}
 			toks = append(toks, gtok{"name", s[i:j]})
 			i = j
+		case c == '.': // the only multi-char punct: `...` (fragment spread / inline fragment)
+			if i+2 < len(s) && s[i+1] == '.' && s[i+2] == '.' {
+				toks = append(toks, gtok{"punct", "..."})
+				i += 3
+			} else {
+				return nil, fmt.Errorf("graphql: unexpected char %q", ".")
+			}
 		case strings.IndexByte("{}()[]:$!=@|&", c) >= 0: // SDL adds @ (directives), | (unions), & (implements)
 			toks = append(toks, gtok{"punct", string(c)})
 			i++
@@ -134,9 +160,40 @@ func parseQuery(s string) (*operation, error) {
 		return nil, err
 	}
 	p := &gparser{toks: toks}
-	op := &operation{opType: "query"}
+	op := &operation{opType: "query", fragments: map[string]fragmentDef{}}
 
-	// Optional: operation type + name + variable definitions.
+	// A document is a list of definitions: one operation (this slice supports one) plus any number of
+	// fragment definitions, in any order (the canonical introspection query puts fragments after the op).
+	gotOp := false
+	for p.peek().kind != "eof" {
+		t := p.peek()
+		switch {
+		case t.kind == "name" && t.val == "fragment":
+			fd, err := p.parseFragmentDef()
+			if err != nil {
+				return nil, err
+			}
+			op.fragments[fd.name] = fd
+		case (t.kind == "name" && (t.val == "query" || t.val == "mutation" || t.val == "subscription")) || (t.kind == "punct" && t.val == "{"):
+			if gotOp {
+				return nil, fmt.Errorf("graphql: only one operation per document is supported")
+			}
+			if err := p.parseOperationInto(op); err != nil {
+				return nil, err
+			}
+			gotOp = true
+		default:
+			return nil, fmt.Errorf("graphql: expected an operation or a fragment definition, got %q", t.val)
+		}
+	}
+	if !gotOp {
+		return nil, fmt.Errorf("graphql: document has no operation")
+	}
+	return op, nil
+}
+
+// parseOperationInto parses one operation (optional type/name/variable-definitions + selection set).
+func (p *gparser) parseOperationInto(op *operation) error {
 	if p.peek().kind == "name" && (p.peek().val == "query" || p.peek().val == "mutation" || p.peek().val == "subscription") {
 		op.opType = p.next().val
 		// subscription operations parse like any other (a root selection set); they are routed to the
@@ -146,19 +203,42 @@ func parseQuery(s string) (*operation, error) {
 		}
 		if p.isPunct("(") { // variable definitions — parsed and ignored (values come at execution)
 			if err := p.skipBalanced("(", ")"); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
 	if !p.isPunct("{") {
-		return nil, fmt.Errorf("graphql: expected a selection set '{'")
+		return fmt.Errorf("graphql: expected a selection set '{'")
 	}
 	sels, err := p.parseSelectionSet()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	op.selections = sels
-	return op, nil
+	return nil
+}
+
+// parseFragmentDef parses `fragment Name on Type { … }`.
+func (p *gparser) parseFragmentDef() (fragmentDef, error) {
+	p.next() // fragment
+	if p.peek().kind != "name" || p.peek().val == "on" {
+		return fragmentDef{}, fmt.Errorf("graphql: expected a fragment name after `fragment`")
+	}
+	fd := fragmentDef{name: p.next().val}
+	if !(p.peek().kind == "name" && p.peek().val == "on") {
+		return fragmentDef{}, fmt.Errorf("graphql: expected `on Type` in fragment %q", fd.name)
+	}
+	p.next() // on
+	if p.peek().kind != "name" {
+		return fragmentDef{}, fmt.Errorf("graphql: expected a type condition in fragment %q", fd.name)
+	}
+	fd.typeCondition = p.next().val
+	sels, err := p.parseSelectionSet()
+	if err != nil {
+		return fragmentDef{}, err
+	}
+	fd.selections = sels
+	return fd, nil
 }
 
 func (p *gparser) parseSelectionSet() ([]selection, error) {
@@ -170,7 +250,15 @@ func (p *gparser) parseSelectionSet() ([]selection, error) {
 		if p.peek().kind == "eof" {
 			return nil, fmt.Errorf("graphql: unterminated selection set")
 		}
-		s, err := p.parseField()
+		var (
+			s   selection
+			err error
+		)
+		if p.isPunct("...") {
+			s, err = p.parseFragmentSelection()
+		} else {
+			s, err = p.parseField()
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -178,6 +266,35 @@ func (p *gparser) parseSelectionSet() ([]selection, error) {
 	}
 	p.next() // }
 	return sels, nil
+}
+
+// parseFragmentSelection parses either a fragment spread (`...Name`) or an inline fragment
+// (`... on Type { … }` or an untyped `... { … }`), having already peeked the `...`.
+func (p *gparser) parseFragmentSelection() (selection, error) {
+	p.next() // ...
+	if p.peek().kind == "name" && p.peek().val == "on" {
+		p.next() // on
+		if p.peek().kind != "name" {
+			return selection{}, fmt.Errorf("graphql: expected a type after `... on`")
+		}
+		cond := p.next().val
+		sels, err := p.parseSelectionSet()
+		if err != nil {
+			return selection{}, err
+		}
+		return selection{inline: true, typeCondition: cond, selections: sels}, nil
+	}
+	if p.isPunct("{") { // untyped inline fragment: ... { … }
+		sels, err := p.parseSelectionSet()
+		if err != nil {
+			return selection{}, err
+		}
+		return selection{inline: true, selections: sels}, nil
+	}
+	if p.peek().kind == "name" { // fragment spread: ...Name
+		return selection{fragmentSpread: p.next().val}, nil
+	}
+	return selection{}, fmt.Errorf("graphql: expected a fragment name, `on`, or `{` after `...`")
 }
 
 func (p *gparser) parseField() (selection, error) {
@@ -311,6 +428,78 @@ func (p *gparser) accept(kind, val string) bool {
 	}
 	return false
 }
+
+// flattenSelections expands fragment spreads and inline fragments into a flat list of field selections,
+// recursively (so nested selection sets come out fragment-free too — the executor and project() then
+// never see a fragment). It detects unknown fragments and fragment cycles (a fragment that transitively
+// spreads itself, which would otherwise recurse forever). When schema is non-nil, it also validates that
+// each `on Type` condition names a real type. Field collection is unconditional with respect to the type
+// condition: precise polymorphic dispatch (applying `on Type` only to matching runtime objects) waits on
+// interface/union runtime typing — a later rung — and does not affect well-formed queries against a
+// matching shape (including the introspection query).
+func flattenSelections(sels []selection, frags map[string]fragmentDef, schema *Schema, open map[string]bool) ([]selection, error) {
+	var out []selection
+	for _, sel := range sels {
+		switch {
+		case sel.fragmentSpread != "":
+			name := sel.fragmentSpread
+			frag, ok := frags[name]
+			if !ok {
+				return nil, fmt.Errorf("graphql: unknown fragment %q", name)
+			}
+			if open[name] {
+				return nil, fmt.Errorf("graphql: fragment cycle detected at %q", name)
+			}
+			if err := checkTypeCondition(schema, frag.typeCondition); err != nil {
+				return nil, err
+			}
+			open[name] = true
+			exp, err := flattenSelections(frag.selections, frags, schema, open)
+			delete(open, name)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, exp...)
+		case sel.inline:
+			if err := checkTypeCondition(schema, sel.typeCondition); err != nil {
+				return nil, err
+			}
+			exp, err := flattenSelections(sel.selections, frags, schema, open)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, exp...)
+		default: // a field: flatten its own sub-selections
+			f := sel
+			sub, err := flattenSelections(sel.selections, frags, schema, open)
+			if err != nil {
+				return nil, err
+			}
+			f.selections = sub
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// checkTypeCondition errors if a fragment/inline type condition names a type absent from the schema. A
+// nil schema or empty condition (untyped inline fragment) is a no-op.
+func checkTypeCondition(schema *Schema, cond string) error {
+	if schema == nil || cond == "" {
+		return nil
+	}
+	if strings.HasPrefix(cond, "__") {
+		// Introspection meta-types (__Type, __Schema, __InputValue, …) are implicitly part of every
+		// schema per spec — the canonical wire introspection query's fragments are `on __Type` etc. — so
+		// a condition on one is always valid even though we don't list them in the user type map.
+		return nil
+	}
+	if _, ok := schema.types[cond]; !ok {
+		return fmt.Errorf("graphql: fragment type condition %q is not a type in the schema", cond)
+	}
+	return nil
+}
+
 func (p *gparser) skipBalanced(open, close string) error {
 	if !p.accept("punct", open) {
 		return fmt.Errorf("graphql: expected %q", open)
