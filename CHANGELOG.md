@@ -7,6 +7,15 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — custom-scalar validation (neutral seam).** Variable coercion now runs a per-scalar
+  validator for declared custom scalars: the engine core validates *that a scalar validates* via a
+  registered `ScalarValidator`, but knows nothing about any vendor's scalar — AWS rules live at the edge
+  in `internal/awsscalars` (AWSDateTime, AWSDate, AWSTime, AWSTimestamp, AWSEmail, AWSJSON, AWSURL,
+  AWSPhone, AWSIPAddress) and the server wires them in. A declared scalar with no validator passes
+  through (opt-in per scalar); a malformed value is a `ValidationError`. **Two clocks, not conflated:**
+  Tier-0 best-effort *format* validation ships now (green, no AWS); Tier-1 byte-exact fidelity to
+  AppSync's scalar coercion is a separate **fidelity golden** (the scoped-IAM capture dance) for later —
+  nothing here claims AppSync-exact behavior.
 - **open-appsync — nested `__typename`.** `__typename` now resolves at every nesting level (not just the
   root), returning the concrete type name threaded from the type graph — the field Apollo/Relay caches
   require. Projection carries each object's type through the schema (a field's declared return type,
