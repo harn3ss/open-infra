@@ -94,14 +94,14 @@ spec:
                       type:
                         type: string
                         default: memory
-                        enum: [memory, dynamodb, http]
-                        description: "memory = ephemeral (dev/demo); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint)."
+                        enum: [memory, dynamodb, http, lambda]
+                        description: "memory = ephemeral (dev/demo); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint)."
                       collection:
                         type: string
                         description: "dynamodb: the FerretDB collection (the 'table')."
                       endpoint:
                         type: string
-                        description: "http: the base URL the resolver's operation ({method, resourcePath, params}) targets."
+                        description: "http: the base URL the resolver's operation ({method, resourcePath, params}) targets. lambda: the function (kind: Function) URL invoked with the resolver's payload."
                 resolvers:
                   type: array
                   description: "Field bindings. A resolver is EITHER a unit resolver (dataSource + request + response) OR a pipeline resolver (functions[], with optional before/after). Malformed resolvers fail closed at load."
