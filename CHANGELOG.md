@@ -7,6 +7,16 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — interfaces & unions (polymorphic dispatch).** Execution now follows the GraphQL
+  spec's per-object CollectFields: fragment type conditions are applied at resolution time against each
+  object's *concrete* type, so `... on Dog { bark }` contributes only to Dog objects and `... on Cat { meow }`
+  only to Cats — and each element of a union/interface list resolves independently. The concrete type is
+  taken from a `__typename` field in the resolver result (the convention for abstract fields), falling
+  back to the declared type when concrete; an abstract value with no hint stays lenient (fields aren't
+  dropped). `__typename` reports the concrete type. This replaced the earlier upfront unconditional
+  fragment flattening for execution (that flatten pass is retained only to validate fragments/cycles and
+  bound depth/cost); type conditions on object types are unaffected. Interface `implements` and union
+  membership both satisfy a condition.
 - **open-appsync — Lambda data source.** A resolver can now be backed by `type: lambda`, invoking a
   `kind: Function` (Knative) over HTTP with AppSync's Lambda-invoke shape
   (`{"operation":"Invoke","payload":…}`): the function receives the payload and its JSON response becomes
