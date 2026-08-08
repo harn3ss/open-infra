@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
+	"github.com/harn3ss/open-infra/open-appsync/internal/awsscalars"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
@@ -170,7 +171,10 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		if err != nil {
 			return nil, fmt.Errorf("open-appsync: parse schema.graphql: %w", err)
 		}
-		engineOpts = append(engineOpts, graphql.WithSchema(schema))
+		// Register AppSync's custom-scalar validators at the edge (the engine core stays vendor-neutral).
+		// Only scalars the schema declares are ever consulted; these are best-effort FORMAT checks, not
+		// AWS-byte-exact fidelity (see internal/awsscalars for the two clocks).
+		engineOpts = append(engineOpts, graphql.WithSchema(schema), graphql.WithScalarValidators(awsscalars.Validators()))
 	}
 
 	// Limits first (so an explicit WithLimits in opts could override), then caller options (the SAR
