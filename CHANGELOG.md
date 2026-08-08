@@ -7,6 +7,15 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — per-nested-field resolvers.** A field below the root can now carry its own resolver:
+  declare a resolver with `type: <ObjectType>` (e.g. `Post.author`) and, when that field is selected, it
+  runs with the parent object as `$ctx.source`; its result is projected against the field's
+  sub-selections recursively (deeper nested resolvers fire too). Projection became resolver-aware
+  (`Engine.projectValue`/`resolveObject`): a field with a registered `<Type>.<field>` resolver runs it,
+  a field without one is read structurally from the parent result (unchanged default, so existing APIs
+  behave identically). Field-level auth and error paths (null the field, report the path) apply at every
+  depth, and nested `__typename` keeps resolving. The `GraphQLApi` resolver `type` is no longer enum-
+  restricted to Query/Mutation. Interface/union polymorphic dispatch remains a later rung.
 - **open-appsync — `@skip` / `@include` directive execution.** The query parser now accepts directives
   on fields, fragment spreads, and inline fragments (it previously errored on `@` in a query), and the
   executor evaluates the spec's built-in conditional-inclusion directives against the coerced variables:
