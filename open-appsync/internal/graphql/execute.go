@@ -149,6 +149,13 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	if ge := e.checkLimits(query, selections); ge != nil {
 		return Result{Errors: []GqlError{*ge}}
 	}
+	// Coerce the supplied variables against their declared types (defaults applied, required checked,
+	// mismatches rejected) before they are substituted into arguments. The coerced map replaces the raw.
+	coerced, ge := coerceVariables(op.varDefs, variables, e.schema)
+	if ge != nil {
+		return Result{Errors: []GqlError{*ge}}
+	}
+	variables = coerced
 	rootType := "Query"
 	if op.opType == "mutation" {
 		rootType = "Mutation"
@@ -335,6 +342,8 @@ func evalValue(v valueNode, vars map[string]any) any {
 	switch v.kind {
 	case "scalar":
 		return v.val
+	case "enum":
+		return v.val // the enum value's name, as a string
 	case "var":
 		return vars[v.val.(string)]
 	case "list":
