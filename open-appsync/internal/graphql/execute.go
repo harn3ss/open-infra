@@ -214,7 +214,7 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			data[respKey] = nil
 			continue
 		}
-		data[respKey] = project(res, sel.selections)
+		data[respKey] = projectTyped(res, sel.selections, namedFieldType(e.schema, rootType, sel.name), e.schema)
 		// A successful mutation may trigger subscriptions: hand the unprojected result to the publisher,
 		// which fans it to matching subscribers. The executor stays otherwise subscription-unaware.
 		if rootType == "Mutation" && e.publisher != nil {
@@ -364,10 +364,21 @@ func evalValue(v valueNode, vars map[string]any) any {
 	return nil
 }
 
-// project applies a selection set to a resolver result: it picks the selected sub-fields from the
-// result object (recursing into nested objects/lists). An empty selection set returns the value as a
-// leaf. Nested per-field resolvers are a later rung; slice 1 projects structurally from the result.
+// project applies a selection set to a value with no type context (used for introspection results,
+// which carry their own shape). It cannot resolve a nested __typename (that needs the type graph); use
+// projectTyped for resolver results.
 func project(res any, sels []selection) any {
+	return projectTyped(res, sels, "", nil)
+}
+
+// projectTyped applies a selection set to a resolver result, threading the current object's concrete
+// type name through the type graph so a nested __typename resolves to that type. It picks the selected
+// sub-fields (recursing into nested objects/lists); an empty selection set returns the value as a leaf.
+// typeName is the named type of the object being projected ("" when unknown, e.g. no schema — then a
+// nested __typename resolves to null rather than guessing). Per-field resolvers and polymorphic
+// (interface/union) __typename discrimination are later rungs; for object types the declared type is the
+// concrete type.
+func projectTyped(res any, sels []selection, typeName string, schema *Schema) any {
 	if len(sels) == 0 {
 		return res
 	}
@@ -379,16 +390,50 @@ func project(res any, sels []selection) any {
 			if s.alias != "" {
 				respKey = s.alias
 			}
-			out[respKey] = project(v[s.name], s.selections)
+			if s.name == "__typename" { // the concrete type of THIS object (not gated by the introspection toggle)
+				if typeName != "" {
+					out[respKey] = typeName
+				} else {
+					out[respKey] = nil
+				}
+				continue
+			}
+			out[respKey] = projectTyped(v[s.name], s.selections, namedFieldType(schema, typeName, s.name), schema)
 		}
 		return out
 	case []any:
 		out := make([]any, len(v))
 		for i, e := range v {
-			out[i] = project(e, sels)
+			out[i] = projectTyped(e, sels, typeName, schema) // list elements share the element type
 		}
 		return out
 	default:
 		return res // scalar (selection set on a scalar is ignored)
 	}
+}
+
+// namedFieldType returns the named type of typeName's field's return type (unwrapping LIST/NON_NULL), or
+// "" when the schema, type, or field is unknown.
+func namedFieldType(schema *Schema, typeName, field string) string {
+	if schema == nil || typeName == "" {
+		return ""
+	}
+	nt := schema.types[typeName]
+	if nt == nil {
+		return ""
+	}
+	for _, f := range nt.fields {
+		if f.name == field {
+			return namedOf(f.typ)
+		}
+	}
+	return ""
+}
+
+// namedOf unwraps LIST/NON_NULL wrappers to the underlying named type's name.
+func namedOf(tr typeRef) string {
+	for tr.kind != "" {
+		tr = *tr.elem
+	}
+	return tr.name
 }
