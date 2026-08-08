@@ -163,10 +163,9 @@ func (s *Schema) introspectType(name string) any {
 	return nil
 }
 
-// standardDirectives reports the three directives every GraphQL schema declares (spec §3.13). @deprecated
-// is honored (fields/enum values carry isDeprecated/deprecationReason); execution of @skip/@include is a
-// separate rung — they are reported here because the introspection schema mandates the directive list,
-// and every conformant schema includes these built-ins.
+// standardDirectives reports the three directives every GraphQL schema declares (spec §3.13). All three
+// are honored: @skip/@include are executed (conditional inclusion), and @deprecated surfaces on fields /
+// enum values via isDeprecated/deprecationReason.
 func standardDirectives() []any {
 	boolNonNull := map[string]any{"kind": kindNonNull, "name": nil, "ofType": map[string]any{"kind": kindScalar, "name": "Boolean", "ofType": nil}}
 	stringType := map[string]any{"kind": kindScalar, "name": "String", "ofType": nil}

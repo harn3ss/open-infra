@@ -252,8 +252,12 @@ nothing about any vendor's scalar; AWS rules (AWSDateTime, AWSJSON, AWSEmail, �
 `internal/awsscalars` and the server wires them in. Two clocks, not conflated: Tier-0 best-effort
 *format* validation ships now; Tier-1 AppSync-byte-exact scalar fidelity is a separate future golden.
 
-**Honest scope.** Directive *execution* (`@skip`/`@include`) and AWS-scalar *fidelity* lean on this type
-graph but each graduates on its own evidence — none is promoted by proximity.
+`@skip(if:)` / `@include(if:)` are **executed** — evaluated against the coerced variables on fields,
+fragment spreads, and inline fragments; a skipped selection is dropped before execution.
+
+**Honest scope.** Per-nested-field resolvers (below-root `Type.field`), interface/union polymorphic
+dispatch, custom directive execution, and AWS-scalar *fidelity* lean on this type graph but each
+graduates on its own evidence — none is promoted by proximity.
 
 ## Maturity — two independent gates
 
