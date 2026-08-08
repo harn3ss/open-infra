@@ -7,6 +7,11 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — multiple operations per document + `operationName`.** A document may now carry more
+  than one named operation; the GraphQL-over-HTTP `operationName` selects which runs (a multi-operation
+  document with no `operationName` is an ambiguity error, an unknown name is an error). Single-operation
+  documents are unaffected. The HTTP handler threads `operationName`; the parser became a document
+  (many operations + shared fragments) with an operation selector.
 - **open-appsync — per-nested-field resolvers.** A field below the root can now carry its own resolver:
   declare a resolver with `type: <ObjectType>` (e.g. `Post.author`) and, when that field is selected, it
   runs with the parent object as `$ctx.source`; its result is projected against the field's
