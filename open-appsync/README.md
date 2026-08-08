@@ -267,8 +267,16 @@ parent object as `$ctx.source`, and its result is projected against the field's 
 (recursively — deeper nested resolvers fire too). A field with no registered resolver is read
 structurally from the parent result (the default). Field-level auth and error paths apply at every depth.
 
-**Honest scope.** Interface/union polymorphic dispatch, custom directive execution, and AWS-scalar
-*fidelity* lean on this type graph but each graduates on its own evidence — none is promoted by proximity.
+**Interfaces & unions (polymorphic dispatch).** Execution follows the spec's per-object CollectFields:
+at each object level, fragment type conditions (`... on Dog`) are applied against that object's *concrete*
+type, so `... on Dog { bark }` only contributes to Dog objects and `... on Cat { meow }` only to Cats —
+each element of a `[Animal!]!` union list resolves independently. The concrete type comes from a
+`__typename` field in the resolver result (the convention for abstract fields), falling back to the
+declared type when it is concrete; an abstract value with no hint is handled leniently (fields aren't
+dropped). `__typename` reports the concrete type.
+
+**Honest scope.** Custom directive execution and AWS-scalar *fidelity* lean on this type graph but each
+graduates on its own evidence — none is promoted by proximity.
 
 ## Maturity — two independent gates
 
