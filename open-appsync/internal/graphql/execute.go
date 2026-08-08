@@ -61,7 +61,7 @@ func ParseSubscription(query string, variables map[string]any) (field string, ar
 		return "", nil, errors.New("graphql: not a subscription operation")
 	}
 	// Expand fragments so a subscription authored with a spread still resolves to its single field.
-	selections, err := flattenSelections(op.selections, op.fragments, nil, map[string]bool{})
+	selections, err := flattenSelections(op.selections, op.fragments, nil, variables, map[string]bool{})
 	if err != nil {
 		return "", nil, err
 	}
@@ -145,9 +145,18 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error()}}}
 	}
-	// Expand fragment spreads / inline fragments into plain fields before anything else, so the guards
-	// and the executor work on a fragment-free selection tree (unknown fragment / cycle → a rejected doc).
-	selections, err := flattenSelections(op.selections, op.fragments, e.schema, map[string]bool{})
+	// Coerce the supplied variables against their declared types (defaults applied, required checked,
+	// mismatches rejected) before they are substituted into arguments OR read by @skip/@include. The
+	// coerced map replaces the raw.
+	coerced, ge := (coercer{schema: e.schema, validators: e.validators}).variables(op.varDefs, variables)
+	if ge != nil {
+		return Result{Errors: []GqlError{*ge}}
+	}
+	variables = coerced
+	// Expand fragments and apply @skip/@include (which read the coerced variables), so the guards and
+	// the executor work on a fragment-free, directive-resolved selection tree (unknown fragment / cycle /
+	// bad directive → a rejected doc).
+	selections, err := flattenSelections(op.selections, op.fragments, e.schema, variables, map[string]bool{})
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error(), ErrorType: "ValidationError"}}}
 	}
@@ -156,13 +165,6 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	if ge := e.checkLimits(query, selections); ge != nil {
 		return Result{Errors: []GqlError{*ge}}
 	}
-	// Coerce the supplied variables against their declared types (defaults applied, required checked,
-	// mismatches rejected) before they are substituted into arguments. The coerced map replaces the raw.
-	coerced, ge := (coercer{schema: e.schema, validators: e.validators}).variables(op.varDefs, variables)
-	if ge != nil {
-		return Result{Errors: []GqlError{*ge}}
-	}
-	variables = coerced
 	rootType := "Query"
 	if op.opType == "mutation" {
 		rootType = "Mutation"
