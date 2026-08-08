@@ -181,6 +181,12 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
   result AWS would.
 - **The GraphQL executor** (`internal/graphql`): field→resolver dispatch, arguments + `$variables`,
   selection-set projection, `{data, errors}` with resolver-thrown `errorType`.
+- **Fragments** (named `...F` + inline `... on T { }`) expanded before execution, with unknown-fragment
+  and cycle rejection; and **variable coercion** — the declared operation variables are validated and
+  normalized against their wrapped types before any resolver runs (`ID!` rejects null, `[String!]`
+  rejects a null element, an enum rejects an off-list value, an input object rejects unknown/missing-
+  required fields; defaults applied), rejecting mismatches with a `ValidationError`. Custom-scalar
+  *value* validation is deferred (see below); the wrapper/nullability/enum/input-object layer is coerced.
 - **An in-memory schema type system + introspection** (`internal/graphql/schema.go`, `introspect.go`):
   the API's SDL parses into a name→type map where a field's return type is a *reference* carrying its
   wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are four distinct types), and `__schema` / `__type`
@@ -237,9 +243,9 @@ introspection corner above: gate #2 now feeds the **verbatim wire introspection 
 (applying `on Type` only to matching runtime objects for interfaces/unions) is a later rung; field
 collection is currently unconditional, which is correct for well-formed queries against a matching shape.
 
-**Honest scope.** Nested `__typename`, directive *execution* (`@skip`/`@include`), variable coercion,
-and custom-scalar validation all lean on this type graph but each graduates on its own evidence — none is
-promoted by proximity.
+**Honest scope.** Nested `__typename`, directive *execution* (`@skip`/`@include`), and custom-scalar
+value validation all lean on this type graph but each graduates on its own evidence — none is promoted by
+proximity.
 
 ## Maturity — two independent gates
 
