@@ -7,6 +7,15 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — variable coercion against the type graph.** Operation variables were parsed-and-
+  ignored and substituted raw; they are now validated and normalized against their declared **wrapped**
+  types before any resolver runs. `ID!` rejects null, `[String!]` rejects a null element, a single value
+  coerces to a one-element list (spec rule), `ID` accepts an Int (serialized to String), an enum rejects
+  an off-list value, and an **input object** rejects unknown fields / missing-required fields and applies
+  declared field defaults — recursively. Missing-required variables, type mismatches, and bad defaults
+  are rejected with a `ValidationError`; the coerced map replaces the raw variables for execution.
+  Custom-scalar *value* validation (AWSDateTime format, …) stays a separate rung — a custom scalar's
+  value passes through unvalidated here. (The SDL and operation parsers now share one `parseTypeRef`.)
 - **open-appsync — GraphQL fragments (named + inline), and the introspection gate now consumes the
   verbatim wire query.** The parser accepts fragment spreads (`...Name`) and inline fragments
   (`... on Type { }` / untyped `... { }`), plus top-level `fragment Name on Type { }` definitions; they

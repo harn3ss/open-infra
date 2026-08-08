@@ -22,6 +22,17 @@ type operation struct {
 	opType     string // "query" | "mutation" | "subscription"
 	selections []selection
 	fragments  map[string]fragmentDef // named fragments in the document, by name
+	varDefs    []variableDef          // operation variable definitions ($name: Type = default)
+}
+
+// variableDef is one operation variable definition: `$name: Type = default`. The type is a wrapped
+// typeRef so coercion can enforce nullability/list structure; the default (if any) is an unevaluated
+// value literal.
+type variableDef struct {
+	name         string
+	typ          typeRef
+	defaultValue valueNode
+	hasDefault   bool
 }
 
 // fragmentDef is a `fragment Name on Type { … }` definition.
@@ -47,10 +58,10 @@ type selection struct {
 	typeCondition  string // inline fragment's `on Type` (may be "" for an untyped `... { }`)
 }
 
-// valueNode is a GraphQL argument value: literal, $variable, list, or object.
+// valueNode is a GraphQL argument value: literal, enum, $variable, list, or object.
 type valueNode struct {
-	kind string // "scalar" | "var" | "list" | "object"
-	val  any    // scalar Go value; var name (string); []valueNode; map[string]valueNode
+	kind string // "scalar" | "enum" | "var" | "list" | "object"
+	val  any    // scalar Go value; enum name (string); var name (string); []valueNode; map[string]valueNode
 }
 
 // --- lexer ---
@@ -201,10 +212,12 @@ func (p *gparser) parseOperationInto(op *operation) error {
 		if p.peek().kind == "name" { // operation name
 			p.next()
 		}
-		if p.isPunct("(") { // variable definitions — parsed and ignored (values come at execution)
-			if err := p.skipBalanced("(", ")"); err != nil {
+		if p.isPunct("(") { // variable definitions ($name: Type = default) — parsed and coerced at execution
+			defs, err := p.parseVarDefs()
+			if err != nil {
 				return err
 			}
+			op.varDefs = defs
 		}
 	}
 	if !p.isPunct("{") {
@@ -216,6 +229,117 @@ func (p *gparser) parseOperationInto(op *operation) error {
 	}
 	op.selections = sels
 	return nil
+}
+
+// parseVarDefs parses an operation's `( $name: Type = default, … )` variable definition block.
+func (p *gparser) parseVarDefs() ([]variableDef, error) {
+	p.next() // (
+	var defs []variableDef
+	for !p.isPunct(")") {
+		if p.peek().kind == "eof" {
+			return nil, fmt.Errorf("graphql: unterminated variable definitions")
+		}
+		if !p.accept("punct", "$") {
+			return nil, fmt.Errorf("graphql: expected a variable ($name) in the variable definitions")
+		}
+		name, err := p.expectName()
+		if err != nil {
+			return nil, err
+		}
+		if !p.accept("punct", ":") {
+			return nil, fmt.Errorf("graphql: expected ':' after variable $%s", name)
+		}
+		tr, err := p.parseTypeRef()
+		if err != nil {
+			return nil, err
+		}
+		d := variableDef{name: name, typ: tr}
+		if p.accept("punct", "=") {
+			dv, err := p.parseValue()
+			if err != nil {
+				return nil, err
+			}
+			d.defaultValue = dv
+			d.hasDefault = true
+		}
+		defs = append(defs, d)
+	}
+	p.next() // )
+	return defs, nil
+}
+
+// literalString serializes a value literal to its canonical GraphQL form — enum values unquoted, strings
+// quoted — for introspection's defaultValue reporting (which is a String of the GraphQL literal).
+func literalString(v valueNode) string {
+	switch v.kind {
+	case "enum":
+		return v.val.(string)
+	case "var":
+		return "$" + v.val.(string)
+	case "list":
+		parts := []string{}
+		for _, e := range v.val.([]valueNode) {
+			parts = append(parts, literalString(e))
+		}
+		return "[" + join(parts, ", ") + "]"
+	case "object":
+		parts := []string{}
+		for k, e := range v.val.(map[string]valueNode) {
+			parts = append(parts, k+": "+literalString(e))
+		}
+		return "{" + join(parts, ", ") + "}"
+	default: // scalar
+		switch x := v.val.(type) {
+		case nil:
+			return "null"
+		case string:
+			return strconv.Quote(x)
+		case bool:
+			if x {
+				return "true"
+			}
+			return "false"
+		case float64:
+			return strconv.FormatFloat(x, 'g', -1, 64)
+		default:
+			return fmt.Sprintf("%v", x)
+		}
+	}
+}
+
+// expectName consumes and returns a name token, erroring otherwise.
+func (p *gparser) expectName() (string, error) {
+	if p.peek().kind != "name" {
+		return "", fmt.Errorf("graphql: expected a name, got %q", p.peek().val)
+	}
+	return p.next().val, nil
+}
+
+// parseTypeRef parses a (possibly wrapped) type reference: Name, [Inner], and a trailing ! on either —
+// shared by the SDL parser and the operation variable-definition parser.
+func (p *gparser) parseTypeRef() (typeRef, error) {
+	var tr typeRef
+	if p.accept("punct", "[") {
+		inner, err := p.parseTypeRef()
+		if err != nil {
+			return typeRef{}, err
+		}
+		if !p.accept("punct", "]") {
+			return typeRef{}, fmt.Errorf("graphql: expected ']' closing a list type")
+		}
+		tr = typeRef{kind: kindList, elem: &inner}
+	} else {
+		name, err := p.expectName()
+		if err != nil {
+			return typeRef{}, err
+		}
+		tr = typeRef{name: name}
+	}
+	if p.accept("punct", "!") {
+		inner := tr
+		tr = typeRef{kind: kindNonNull, elem: &inner}
+	}
+	return tr, nil
 }
 
 // parseFragmentDef parses `fragment Name on Type { … }`.
@@ -372,7 +496,7 @@ func (p *gparser) parseValue() (valueNode, error) {
 		case "null":
 			return valueNode{kind: "scalar", val: nil}, nil
 		}
-		return valueNode{kind: "scalar", val: t.val}, nil // enum value → its name
+		return valueNode{kind: "enum", val: t.val}, nil // a bare name is an enum value
 	case p.isPunct("$"):
 		p.next()
 		if p.peek().kind != "name" {
