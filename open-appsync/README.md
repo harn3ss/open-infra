@@ -196,8 +196,11 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
   are answered by reading that map back out in the spec-mandated shape. See *Introspection* below for
   the operability gates it graduated on.
 - **Data sources**: an in-memory store and a **FerretDB-backed** DynamoDB-style store
-  (`internal/dynamodb`), plus an **HTTP** source (`internal/httpsource`) — behind the neutral
-  `datasource.Store` contract, with no data-source-type branching in the engine or lifecycle.
+  (`internal/dynamodb`), an **HTTP** source (`internal/httpsource`), and a **Lambda** source
+  (`internal/lambdasource` — invokes a `kind: Function` over HTTP with AppSync's Invoke payload shape) —
+  all behind the neutral `datasource.Store` contract, with no data-source-type branching in the engine or
+  lifecycle. (Lambda is green-light-one: the caller is proven with zero AWS; full AppSync→Lambda→DB→JSON
+  round-trip fidelity against a live function is a separate later bar.)
 - **The runtime extension point** (`internal/runtime`) with two tenants: **VTL** (`internal/vtlruntime`)
   and a sandboxed **JavaScript** runtime (`internal/jsruntime`, goja). Two tenants through one front
   door ⇒ the interface is treated as stable.

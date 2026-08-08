@@ -24,6 +24,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
+	"github.com/harn3ss/open-infra/open-appsync/internal/lambdasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
@@ -74,9 +75,9 @@ type LimitsConfig struct {
 
 type DataSourceConfig struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"`       // "memory" | "dynamodb" (FerretDB-backed) | "http"
+	Type       string `json:"type"`       // "memory" | "dynamodb" (FerretDB-backed) | "http" | "lambda"
 	Collection string `json:"collection"` // dynamodb: the FerretDB collection ("table")
-	Endpoint   string `json:"endpoint"`   // http: the base URL the resolver's operation targets
+	Endpoint   string `json:"endpoint"`   // http: base URL; lambda: the function (kind: Function) URL
 }
 
 type ResolverConfig struct {
@@ -139,8 +140,13 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 				return nil, fmt.Errorf("open-appsync: data source %q (http) needs an endpoint", ds.Name)
 			}
 			stores[ds.Name] = httpsource.New(ds.Endpoint)
+		case "lambda":
+			if ds.Endpoint == "" {
+				return nil, fmt.Errorf("open-appsync: data source %q (lambda) needs an endpoint (the function URL)", ds.Name)
+			}
+			stores[ds.Name] = lambdasource.New(ds.Endpoint)
 		default:
-			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | dynamodb | http)", ds.Name, ds.Type)
+			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | dynamodb | http | lambda)", ds.Name, ds.Type)
 		}
 	}
 
