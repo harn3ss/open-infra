@@ -7,6 +7,13 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — nested `__typename`.** `__typename` now resolves at every nesting level (not just the
+  root), returning the concrete type name threaded from the type graph — the field Apollo/Relay caches
+  require. Projection carries each object's type through the schema (a field's declared return type,
+  wrappers unwrapped); a list element takes the element type. It stays outside the introspection toggle
+  (it names a type, it doesn't dump the schema) and resolves to null when there is no schema rather than
+  guessing. Polymorphic (interface/union) `__typename` discrimination is a later rung — for object types
+  the declared type is the concrete type.
 - **open-appsync — variable coercion against the type graph.** Operation variables were parsed-and-
   ignored and substituted raw; they are now validated and normalized against their declared **wrapped**
   types before any resolver runs. `ID!` rejects null, `[String!]` rejects a null element, a single value
