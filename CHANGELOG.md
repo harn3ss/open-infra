@@ -7,6 +7,13 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — `@skip` / `@include` directive execution.** The query parser now accepts directives
+  on fields, fragment spreads, and inline fragments (it previously errored on `@` in a query), and the
+  executor evaluates the spec's built-in conditional-inclusion directives against the coerced variables:
+  `@skip(if: true)` and `@include(if: false)` drop the selection (whole spread/inline included) before
+  execution; a missing or non-boolean `if` is a `ValidationError`. Introspection already reported these
+  built-ins; they are now honored, not just described. Custom (non-built-in) directive execution remains
+  a separate rung.
 - **open-appsync — custom-scalar validation (neutral seam).** Variable coercion now runs a per-scalar
   validator for declared custom scalars: the engine core validates *that a scalar validates* via a
   registered `ScalarValidator`, but knows nothing about any vendor's scalar — AWS rules live at the edge
