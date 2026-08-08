@@ -229,13 +229,17 @@ recon aid — so it is a toggle, wired into the hostile-load seam: `spec.limits.
 `enabled` (default; AWS AppSync's behavior), `disabled` (never), or `authenticated-only` (off for
 untrusted/anonymous callers). `__typename` is unaffected.
 
-**Honest scope.** This graduates **introspection only**. The verbatim introspection query graphql-js
-sends over the wire uses **fragments**, which the parser does not accept yet (fragments are their own
-rung) — so gate #2 consumes the *result* (what codegen/Apollo ultimately do via `buildClientSchema`),
-and pointing a tool at the live endpoint to auto-introspect waits on fragment support. Nested
-`__typename`, directive *execution* (`@skip`/`@include`), variable coercion, and custom-scalar
-validation all lean on this type graph but each graduates on its own evidence — none is promoted by
-proximity.
+**Fragments (named + inline).** The parser accepts fragment spreads (`...Name`) and inline fragments
+(`... on Type { }`); they are expanded to plain fields before execution, with unknown-fragment and
+fragment-cycle rejection and (when a schema is present) type-condition existence checks. This closes the
+introspection corner above: gate #2 now feeds the **verbatim wire introspection query** graphql-js sends
+(fragment-laden) straight through the parser+executor, not a hand-inlined stand-in. Polymorphic dispatch
+(applying `on Type` only to matching runtime objects for interfaces/unions) is a later rung; field
+collection is currently unconditional, which is correct for well-formed queries against a matching shape.
+
+**Honest scope.** Nested `__typename`, directive *execution* (`@skip`/`@include`), variable coercion,
+and custom-scalar validation all lean on this type graph but each graduates on its own evidence — none is
+promoted by proximity.
 
 ## Maturity — two independent gates
 

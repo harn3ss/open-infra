@@ -7,6 +7,16 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — GraphQL fragments (named + inline), and the introspection gate now consumes the
+  verbatim wire query.** The parser accepts fragment spreads (`...Name`) and inline fragments
+  (`... on Type { }` / untyped `... { }`), plus top-level `fragment Name on Type { }` definitions; they
+  are expanded to plain fields before execution, with **unknown-fragment** and **fragment-cycle**
+  rejection and — when a schema is present — **type-condition existence** checks (`on Type` must name a
+  real type; introspection meta-types like `__Type` are implicitly valid). This closes the corner the
+  introspection rung noted: gate #2 now feeds the **verbatim wire introspection query** graphql-js emits
+  (fragment-laden) straight through the parser+executor, not a hand-inlined stand-in, and the real-tool
+  gate consumes *that* output. Polymorphic type-condition dispatch (interfaces/unions) is a later rung —
+  field collection is unconditional, correct for well-formed queries against a matching shape.
 - **open-appsync — in-memory schema type system + `__schema`/`__type` introspection.** The API's SDL
   (`spec.schema` on `kind: GraphQLApi`) now parses into an in-memory type graph — a name→type map where
   a field's return type is a *reference* carrying its wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are
