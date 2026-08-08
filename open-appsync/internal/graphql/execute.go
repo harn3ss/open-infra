@@ -60,10 +60,15 @@ func ParseSubscription(query string, variables map[string]any) (field string, ar
 	if op.opType != "subscription" {
 		return "", nil, errors.New("graphql: not a subscription operation")
 	}
-	if len(op.selections) != 1 {
+	// Expand fragments so a subscription authored with a spread still resolves to its single field.
+	selections, err := flattenSelections(op.selections, op.fragments, nil, map[string]bool{})
+	if err != nil {
+		return "", nil, err
+	}
+	if len(selections) != 1 {
 		return "", nil, errors.New("graphql: a subscription must select exactly one field")
 	}
-	sel := op.selections[0]
+	sel := selections[0]
 	return sel.name, evalArgs(sel.args, variables), nil
 }
 
@@ -133,9 +138,15 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error()}}}
 	}
+	// Expand fragment spreads / inline fragments into plain fields before anything else, so the guards
+	// and the executor work on a fragment-free selection tree (unknown fragment / cycle → a rejected doc).
+	selections, err := flattenSelections(op.selections, op.fragments, e.schema, map[string]bool{})
+	if err != nil {
+		return Result{Errors: []GqlError{{Message: err.Error(), ErrorType: "ValidationError"}}}
+	}
 	// Hostile-load guards run before any resolver executes: a pathological document must be rejected
 	// without being run.
-	if ge := e.checkLimits(query, op); ge != nil {
+	if ge := e.checkLimits(query, selections); ge != nil {
 		return Result{Errors: []GqlError{*ge}}
 	}
 	rootType := "Query"
@@ -145,7 +156,7 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 
 	data := map[string]any{}
 	var errs []GqlError
-	for _, sel := range op.selections {
+	for _, sel := range selections {
 		respKey := sel.name
 		if sel.alias != "" {
 			respKey = sel.alias
@@ -247,7 +258,7 @@ func (e *Engine) introspectionGate(ctx context.Context) *GqlError {
 
 // checkLimits enforces the hostile-load guards against a parsed operation, returning a GraphQL error
 // (with an errorType naming the guard) if the document is rejected, or nil if it may run.
-func (e *Engine) checkLimits(query string, op *operation) *GqlError {
+func (e *Engine) checkLimits(query string, selections []selection) *GqlError {
 	if e.limits.PersistedOnly {
 		sum := sha256.Sum256([]byte(query))
 		if !e.limits.Persisted[hex.EncodeToString(sum[:])] {
@@ -255,12 +266,12 @@ func (e *Engine) checkLimits(query string, op *operation) *GqlError {
 		}
 	}
 	if e.limits.MaxDepth > 0 {
-		if d := selectionsDepth(op.selections); d > e.limits.MaxDepth {
+		if d := selectionsDepth(selections); d > e.limits.MaxDepth {
 			return &GqlError{Message: fmt.Sprintf("query depth %d exceeds the maximum of %d", d, e.limits.MaxDepth), ErrorType: "MaxDepthExceeded"}
 		}
 	}
 	if e.limits.MaxCost > 0 {
-		if c := selectionsCost(op.selections); c > e.limits.MaxCost {
+		if c := selectionsCost(selections); c > e.limits.MaxCost {
 			return &GqlError{Message: fmt.Sprintf("query cost %d exceeds the maximum of %d", c, e.limits.MaxCost), ErrorType: "MaxCostExceeded"}
 		}
 	}
