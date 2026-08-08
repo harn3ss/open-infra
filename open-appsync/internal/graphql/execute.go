@@ -163,21 +163,29 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 		return Result{Errors: []GqlError{*ge}}
 	}
 	variables = coerced
-	// Expand fragments and apply @skip/@include (which read the coerced variables), so the guards and
-	// the executor work on a fragment-free, directive-resolved selection tree (unknown fragment / cycle /
-	// bad directive → a rejected doc).
-	selections, err := flattenSelections(op.selections, op.fragments, e.schema, variables, map[string]bool{})
+	// Validate fragments (unknown / cycle), apply @skip/@include, and bound the query: flattenSelections
+	// expands every fragment unconditionally, which is a safe UPPER bound for the depth/cost guards and
+	// catches malformed documents before anything runs. (Type-conditional collection for actual execution
+	// happens per object in collectFields — see below.)
+	flat, err := flattenSelections(op.selections, op.fragments, e.schema, variables, map[string]bool{})
 	if err != nil {
 		return Result{Errors: []GqlError{{Message: err.Error(), ErrorType: "ValidationError"}}}
 	}
-	// Hostile-load guards run before any resolver executes: a pathological document must be rejected
-	// without being run.
-	if ge := e.checkLimits(query, selections); ge != nil {
+	if ge := e.checkLimits(query, flat); ge != nil {
 		return Result{Errors: []GqlError{*ge}}
 	}
 	rootType := "Query"
 	if op.opType == "mutation" {
 		rootType = "Mutation"
+	}
+
+	// Collect the root fields for the root type, applying fragment type conditions + directives. The root
+	// type is concrete, so all its type conditions apply, but this is the same collectFields the nested
+	// levels use — one execution model.
+	ec := &execCtx{ctx: ctx, vars: variables, frags: op.fragments}
+	selections, err := e.collectFields(op.selections, rootType, ec, map[string]bool{})
+	if err != nil {
+		return Result{Errors: []GqlError{{Message: err.Error(), ErrorType: "ValidationError"}}}
 	}
 
 	data := map[string]any{}
@@ -199,7 +207,12 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 				data[respKey] = nil
 				continue
 			}
-			data[respKey] = project(val, sel.selections)
+			// Project the introspection result through the fragment-aware path with an unknown type, so
+			// the wire introspection query's fragments (on __Type / __InputValue) expand (leniently — the
+			// meta-objects aren't in the user type graph) and no per-field resolvers fire.
+			pv, verrs := e.projectValue(ec, val, sel.selections, "", []any{respKey})
+			data[respKey] = pv
+			errs = append(errs, verrs...)
 			continue
 		}
 		key := rootType + "." + sel.name
@@ -233,7 +246,7 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 			data[respKey] = nil
 			continue
 		}
-		val, nerrs := e.projectValue(ctx, res, sel.selections, namedFieldType(e.schema, rootType, sel.name), variables, []any{respKey})
+		val, nerrs := e.projectValue(ec, res, sel.selections, namedFieldType(e.schema, rootType, sel.name), []any{respKey})
 		data[respKey] = val
 		errs = append(errs, nerrs...)
 		// A successful mutation may trigger subscriptions: hand the unprojected result to the publisher,
@@ -385,71 +398,124 @@ func evalValue(v valueNode, vars map[string]any) any {
 	return nil
 }
 
-// project applies a selection set to a value with no type context (used for introspection results,
-// which carry their own shape). It cannot resolve a nested __typename (that needs the type graph); use
-// projectTyped for resolver results.
-func project(res any, sels []selection) any {
-	return projectTyped(res, sels, "", nil)
+// execCtx carries the per-request state threaded through nested resolution: the caller context, the
+// coerced variables (for args + directives), and the document's fragments (for per-object collection).
+type execCtx struct {
+	ctx   context.Context
+	vars  map[string]any
+	frags map[string]fragmentDef
 }
 
-// projectTyped applies a selection set to a resolver result, threading the current object's concrete
-// type name through the type graph so a nested __typename resolves to that type. It picks the selected
-// sub-fields (recursing into nested objects/lists); an empty selection set returns the value as a leaf.
-// typeName is the named type of the object being projected ("" when unknown, e.g. no schema — then a
-// nested __typename resolves to null rather than guessing). Per-field resolvers and polymorphic
-// (interface/union) __typename discrimination are later rungs; for object types the declared type is the
-// concrete type.
-func projectTyped(res any, sels []selection, typeName string, schema *Schema) any {
-	if len(sels) == 0 {
-		return res
-	}
-	switch v := res.(type) {
-	case map[string]any:
-		out := map[string]any{}
-		for _, s := range sels {
-			respKey := s.name
-			if s.alias != "" {
-				respKey = s.alias
+// collectFields is the GraphQL CollectFields for one object: it expands the selection set's fragment
+// spreads and inline fragments into a flat field list, including a fragment ONLY when its type condition
+// applies to concreteType (polymorphic dispatch for interfaces/unions) and its @skip/@include allow it.
+// It does NOT recurse into a field's own sub-selections — those are collected when that field's value is
+// resolved, against that value's concrete type.
+func (e *Engine) collectFields(sels []selection, concreteType string, ec *execCtx, open map[string]bool) ([]selection, error) {
+	var out []selection
+	for _, sel := range sels {
+		skip, err := shouldSkip(sel.directives, ec.vars)
+		if err != nil {
+			return nil, err
+		}
+		if skip {
+			continue
+		}
+		switch {
+		case sel.fragmentSpread != "":
+			frag, ok := ec.frags[sel.fragmentSpread]
+			if !ok {
+				return nil, fmt.Errorf("graphql: unknown fragment %q", sel.fragmentSpread)
 			}
-			if s.name == "__typename" { // the concrete type of THIS object (not gated by the introspection toggle)
-				if typeName != "" {
-					out[respKey] = typeName
-				} else {
-					out[respKey] = nil
-				}
+			if open[sel.fragmentSpread] {
+				return nil, fmt.Errorf("graphql: fragment cycle detected at %q", sel.fragmentSpread)
+			}
+			if !e.typeConditionApplies(frag.typeCondition, concreteType) {
 				continue
 			}
-			out[respKey] = projectTyped(v[s.name], s.selections, namedFieldType(schema, typeName, s.name), schema)
+			open[sel.fragmentSpread] = true
+			sub, err := e.collectFields(frag.selections, concreteType, ec, open)
+			delete(open, sel.fragmentSpread)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+		case sel.inline:
+			if !e.typeConditionApplies(sel.typeCondition, concreteType) {
+				continue
+			}
+			sub, err := e.collectFields(sel.selections, concreteType, ec, open)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+		default:
+			out = append(out, sel)
 		}
-		return out
-	case []any:
-		out := make([]any, len(v))
-		for i, e := range v {
-			out[i] = projectTyped(e, sels, typeName, schema) // list elements share the element type
-		}
-		return out
-	default:
-		return res // scalar (selection set on a scalar is ignored)
 	}
+	return out, nil
+}
+
+// typeConditionApplies reports whether a fragment's `on Type` condition applies to an object of
+// concreteType: no condition applies to all; an exact match applies; an object type applies to any
+// interface it implements or any union it belongs to. When the concrete type is unknown ("" — an
+// abstract field whose resolver gave no __typename hint, or no schema) it is lenient (applies), so
+// fields are not silently dropped.
+func (e *Engine) typeConditionApplies(cond, concreteType string) bool {
+	if cond == "" || cond == concreteType || concreteType == "" {
+		return true
+	}
+	if e.schema == nil {
+		return true
+	}
+	if nt := e.schema.types[concreteType]; nt != nil {
+		for _, iface := range nt.interfaces {
+			if iface == cond {
+				return true
+			}
+		}
+	}
+	if ct := e.schema.types[cond]; ct != nil && ct.kind == kindUnion {
+		for _, member := range ct.possibleTypes {
+			if member == concreteType {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// concreteTypeOf determines an object's concrete type for polymorphic dispatch: a `__typename` string in
+// the value wins (the convention a resolver uses for an interface/union field), else the field's declared
+// type when it is concrete; an abstract declared type with no hint yields "" (unknown → lenient).
+func (e *Engine) concreteTypeOf(value map[string]any, declaredType string) string {
+	if tn, ok := value["__typename"].(string); ok && tn != "" {
+		return tn
+	}
+	if e.schema != nil {
+		if nt := e.schema.types[declaredType]; nt != nil && (nt.kind == kindInterface || nt.kind == kindUnion) {
+			return "" // abstract, no hint
+		}
+	}
+	return declaredType
 }
 
 // projectValue projects a resolved value against a selection set, running per-field resolvers for any
-// nested field that has one registered. It is the resolver-aware counterpart of projectTyped (used for
-// resolver results); introspection results keep the pure-structural project(). An empty selection set
-// returns the value as a leaf; a list projects element-wise. typeName is the value's named type (from
-// the type graph), which keys nested resolvers and resolves a nested __typename.
-func (e *Engine) projectValue(ctx context.Context, val any, sels []selection, typeName string, vars map[string]any, path []any) (any, []GqlError) {
+// nested field that has one registered. It is the resolver-aware counterpart of the introspection
+// project(). An empty selection set returns the value as a leaf; a list projects element-wise (each
+// element resolving its own concrete type). declaredType is the field's type from the graph.
+func (e *Engine) projectValue(ec *execCtx, val any, sels []selection, declaredType string, path []any) (any, []GqlError) {
 	if len(sels) == 0 {
 		return val, nil
 	}
 	switch v := val.(type) {
 	case map[string]any:
-		return e.resolveObject(ctx, typeName, v, sels, vars, path)
+		return e.resolveObject(ec, e.concreteTypeOf(v, declaredType), v, sels, path)
 	case []any:
 		out := make([]any, len(v))
 		var errs []GqlError
 		for i, elem := range v {
-			ev, eerrs := e.projectValue(ctx, elem, sels, typeName, vars, append(append([]any{}, path...), i))
+			ev, eerrs := e.projectValue(ec, elem, sels, declaredType, append(append([]any{}, path...), i))
 			out[i] = ev
 			errs = append(errs, eerrs...)
 		}
@@ -459,50 +525,54 @@ func (e *Engine) projectValue(ctx context.Context, val any, sels []selection, ty
 	}
 }
 
-// resolveObject resolves each selected field on an object of type typeName. A field with a registered
-// resolver "<typeName>.<field>" runs it (with $ctx.source = this object) — that is the per-nested-field
-// resolver — then projects the result against the field's sub-selections. A field without a resolver is
-// read structurally from the object (the default: the parent resolver already produced the value). A
-// nested __typename resolves to typeName; nested field auth is enforced exactly as at the root.
-func (e *Engine) resolveObject(ctx context.Context, typeName string, source map[string]any, sels []selection, vars map[string]any, path []any) (map[string]any, []GqlError) {
+// resolveObject resolves each selected field on an object of concreteType. It first collects the fields
+// that apply to this object (fragment type conditions + directives). A field with a registered resolver
+// "<concreteType>.<field>" runs it (with $ctx.source = this object) — the per-nested-field resolver —
+// then projects the result against the field's sub-selections. A field without a resolver is read
+// structurally from the object. __typename resolves to concreteType; field auth is enforced as at root.
+func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[string]any, sels []selection, path []any) (map[string]any, []GqlError) {
+	fields, err := e.collectFields(sels, concreteType, ec, map[string]bool{})
+	if err != nil {
+		return nil, []GqlError{{Message: err.Error(), Path: path, ErrorType: "ValidationError"}}
+	}
 	out := map[string]any{}
 	var errs []GqlError
-	for _, sel := range sels {
+	for _, sel := range fields {
 		respKey := sel.name
 		if sel.alias != "" {
 			respKey = sel.alias
 		}
 		if sel.name == "__typename" {
-			if typeName != "" {
-				out[respKey] = typeName
+			if concreteType != "" {
+				out[respKey] = concreteType
 			} else {
 				out[respKey] = nil
 			}
 			continue
 		}
 		childPath := append(append([]any{}, path...), respKey)
-		fieldType := namedFieldType(e.schema, typeName, sel.name)
+		fieldType := namedFieldType(e.schema, concreteType, sel.name)
 
-		r, ok := e.resolvers[typeName+"."+sel.name]
-		if !ok || typeName == "" {
+		r, ok := e.resolvers[concreteType+"."+sel.name]
+		if !ok || concreteType == "" {
 			// No per-field resolver: project the value the parent resolver already produced.
-			v, verrs := e.projectValue(ctx, source[sel.name], sel.selections, fieldType, vars, childPath)
+			v, verrs := e.projectValue(ec, source[sel.name], sel.selections, fieldType, childPath)
 			out[respKey] = v
 			errs = append(errs, verrs...)
 			continue
 		}
 
 		// Per-nested-field resolver. Field-level auth is enforced before it runs, exactly as at the root.
-		id := authz.FromContext(ctx)
+		id := authz.FromContext(ec.ctx)
 		if !r.Auth.IsZero() {
-			if err := e.authorizer.Authorize(ctx, id, r.Auth); err != nil {
+			if err := e.authorizer.Authorize(ec.ctx, id, r.Auth); err != nil {
 				errs = append(errs, GqlError{Message: err.Error(), Path: childPath, ErrorType: "Unauthorized"})
 				out[respKey] = nil
 				continue
 			}
 		}
-		rctx := map[string]any{"args": evalArgs(sel.args, vars), "identity": identityMap(id), "source": source}
-		res, rerr := r.Resolve(ctx, rctx)
+		rctx := map[string]any{"args": evalArgs(sel.args, ec.vars), "identity": identityMap(id), "source": source}
+		res, rerr := r.Resolve(ec.ctx, rctx)
 		if rerr != nil {
 			ge := GqlError{Message: rerr.Error(), Path: childPath}
 			var te *vtl.ThrowError
@@ -514,7 +584,7 @@ func (e *Engine) resolveObject(ctx context.Context, typeName string, source map[
 			out[respKey] = nil
 			continue
 		}
-		v, verrs := e.projectValue(ctx, res, sel.selections, fieldType, vars, childPath)
+		v, verrs := e.projectValue(ec, res, sel.selections, fieldType, childPath)
 		out[respKey] = v
 		errs = append(errs, verrs...)
 	}
