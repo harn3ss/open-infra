@@ -223,7 +223,9 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 			data[respKey] = nil
 			continue
 		}
-		data[respKey] = projectTyped(res, sel.selections, namedFieldType(e.schema, rootType, sel.name), e.schema)
+		val, nerrs := e.projectValue(ctx, res, sel.selections, namedFieldType(e.schema, rootType, sel.name), variables, []any{respKey})
+		data[respKey] = val
+		errs = append(errs, nerrs...)
 		// A successful mutation may trigger subscriptions: hand the unprojected result to the publisher,
 		// which fans it to matching subscribers. The executor stays otherwise subscription-unaware.
 		if rootType == "Mutation" && e.publisher != nil {
@@ -419,6 +421,94 @@ func projectTyped(res any, sels []selection, typeName string, schema *Schema) an
 	default:
 		return res // scalar (selection set on a scalar is ignored)
 	}
+}
+
+// projectValue projects a resolved value against a selection set, running per-field resolvers for any
+// nested field that has one registered. It is the resolver-aware counterpart of projectTyped (used for
+// resolver results); introspection results keep the pure-structural project(). An empty selection set
+// returns the value as a leaf; a list projects element-wise. typeName is the value's named type (from
+// the type graph), which keys nested resolvers and resolves a nested __typename.
+func (e *Engine) projectValue(ctx context.Context, val any, sels []selection, typeName string, vars map[string]any, path []any) (any, []GqlError) {
+	if len(sels) == 0 {
+		return val, nil
+	}
+	switch v := val.(type) {
+	case map[string]any:
+		return e.resolveObject(ctx, typeName, v, sels, vars, path)
+	case []any:
+		out := make([]any, len(v))
+		var errs []GqlError
+		for i, elem := range v {
+			ev, eerrs := e.projectValue(ctx, elem, sels, typeName, vars, append(append([]any{}, path...), i))
+			out[i] = ev
+			errs = append(errs, eerrs...)
+		}
+		return out, errs
+	default:
+		return val, nil // scalar (selection set on a scalar is ignored)
+	}
+}
+
+// resolveObject resolves each selected field on an object of type typeName. A field with a registered
+// resolver "<typeName>.<field>" runs it (with $ctx.source = this object) — that is the per-nested-field
+// resolver — then projects the result against the field's sub-selections. A field without a resolver is
+// read structurally from the object (the default: the parent resolver already produced the value). A
+// nested __typename resolves to typeName; nested field auth is enforced exactly as at the root.
+func (e *Engine) resolveObject(ctx context.Context, typeName string, source map[string]any, sels []selection, vars map[string]any, path []any) (map[string]any, []GqlError) {
+	out := map[string]any{}
+	var errs []GqlError
+	for _, sel := range sels {
+		respKey := sel.name
+		if sel.alias != "" {
+			respKey = sel.alias
+		}
+		if sel.name == "__typename" {
+			if typeName != "" {
+				out[respKey] = typeName
+			} else {
+				out[respKey] = nil
+			}
+			continue
+		}
+		childPath := append(append([]any{}, path...), respKey)
+		fieldType := namedFieldType(e.schema, typeName, sel.name)
+
+		r, ok := e.resolvers[typeName+"."+sel.name]
+		if !ok || typeName == "" {
+			// No per-field resolver: project the value the parent resolver already produced.
+			v, verrs := e.projectValue(ctx, source[sel.name], sel.selections, fieldType, vars, childPath)
+			out[respKey] = v
+			errs = append(errs, verrs...)
+			continue
+		}
+
+		// Per-nested-field resolver. Field-level auth is enforced before it runs, exactly as at the root.
+		id := authz.FromContext(ctx)
+		if !r.Auth.IsZero() {
+			if err := e.authorizer.Authorize(ctx, id, r.Auth); err != nil {
+				errs = append(errs, GqlError{Message: err.Error(), Path: childPath, ErrorType: "Unauthorized"})
+				out[respKey] = nil
+				continue
+			}
+		}
+		rctx := map[string]any{"args": evalArgs(sel.args, vars), "identity": identityMap(id), "source": source}
+		res, rerr := r.Resolve(ctx, rctx)
+		if rerr != nil {
+			ge := GqlError{Message: rerr.Error(), Path: childPath}
+			var te *vtl.ThrowError
+			if errors.As(rerr, &te) {
+				ge.Message = te.Message
+				ge.ErrorType = te.ErrorType
+			}
+			errs = append(errs, ge)
+			out[respKey] = nil
+			continue
+		}
+		v, verrs := e.projectValue(ctx, res, sel.selections, fieldType, vars, childPath)
+		out[respKey] = v
+		errs = append(errs, verrs...)
+	}
+	return out, errs
 }
 
 // namedFieldType returns the named type of typeName's field's return type (unwrapping LIST/NON_NULL), or

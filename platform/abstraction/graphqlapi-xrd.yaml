@@ -112,8 +112,7 @@ spec:
                     properties:
                       type:
                         type: string
-                        enum: [Query, Mutation]
-                        description: "The root type this field lives on."
+                        description: "The type this field lives on: Query or Mutation for a root resolver, or any object type (e.g. Post) for a per-nested-field resolver that runs when that field is selected below the root — it receives the parent object as $ctx.source."
                       field:
                         type: string
                         description: "The GraphQL field name, e.g. getTodo."
