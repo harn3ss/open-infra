@@ -17,7 +17,6 @@ package graphql
 import (
 	"fmt"
 	"sort"
-	"strconv"
 )
 
 // __TypeKind enum values (GraphQL spec §3.4.1).
@@ -43,12 +42,13 @@ type typeRef struct {
 }
 
 type fieldDef struct {
-	name              string
-	description       string
-	args              []inputValueDef
-	typ               typeRef
-	deprecated        bool
-	deprecationReason string
+	name               string
+	description        string
+	args               []inputValueDef
+	typ                typeRef
+	deprecated         bool
+	deprecationReason  string
+	subscribeMutations []string // @aws_subscribe(mutations:) — set on Subscription-type fields
 }
 
 type inputValueDef struct {
@@ -311,7 +311,8 @@ func (p *sdlParser) parseFieldDef() (fieldDef, error) {
 		return fieldDef{}, err
 	}
 	f.typ = tr
-	f.deprecated, f.deprecationReason = p.parseDirectives()
+	di := p.parseDirectives()
+	f.deprecated, f.deprecationReason, f.subscribeMutations = di.deprecated, di.reason, di.subscribeMutations
 	return f, nil
 }
 
@@ -404,8 +405,8 @@ func (p *sdlParser) parseEnum(desc string) (*namedType, error) {
 		if err != nil {
 			return nil, err
 		}
-		dep, reason := p.parseDirectives()
-		nt.enumValues = append(nt.enumValues, enumValueDef{name: v, description: vdesc, deprecated: dep, deprecationReason: reason})
+		di := p.parseDirectives()
+		nt.enumValues = append(nt.enumValues, enumValueDef{name: v, description: vdesc, deprecated: di.deprecated, deprecationReason: di.reason})
 	}
 	p.next() // }
 	return nt, nil
@@ -435,17 +436,26 @@ func (p *sdlParser) parseUnion(desc string) (*namedType, error) {
 	return nt, nil
 }
 
-// parseDirectives consumes zero or more `@name(args)` directives applied to a definition. It captures
-// @deprecated(reason:) — the one directive introspection reports per field/enum value — and skips the
-// rest (e.g. AppSync's @aws_* auth directives), returning whether @deprecated was present.
-func (p *sdlParser) parseDirectives() (deprecated bool, reason string) {
+// directiveInfo is what the SDL parser extracts from a definition's directives.
+type directiveInfo struct {
+	deprecated         bool
+	reason             string
+	subscribeMutations []string // @aws_subscribe(mutations: [...]) on a Subscription field
+}
+
+// parseDirectives consumes zero or more `@name(args)` directives applied to a definition. It captures the
+// two directives the engine acts on — @deprecated(reason:) (reported by introspection) and
+// @aws_subscribe(mutations:) (AppSync's SDL-native subscription trigger declaration) — and skips the
+// rest (e.g. AppSync's @aws_* auth directives, which are a separate rung).
+func (p *sdlParser) parseDirectives() directiveInfo {
+	var info directiveInfo
 	for p.isPunct("@") {
 		p.next() // @
 		name := ""
 		if p.peek().kind == "name" {
 			name = p.next().val
 		}
-		args := map[string]string{}
+		args := map[string]valueNode{}
 		if p.isPunct("(") {
 			p.next()
 			for !p.isPunct(")") && p.peek().kind != "eof" {
@@ -454,20 +464,34 @@ func (p *sdlParser) parseDirectives() (deprecated bool, reason string) {
 					an = p.next().val
 				}
 				p.accept("punct", ":")
-				lit, _ := p.readLiteral()
-				args[an] = lit
+				v, err := p.parseValue()
+				if err != nil {
+					break
+				}
+				args[an] = v
 			}
 			p.accept("punct", ")")
 		}
-		if name == "deprecated" {
-			deprecated = true
-			reason = "No longer supported" // the spec default
+		switch name {
+		case "deprecated":
+			info.deprecated = true
+			info.reason = "No longer supported" // the spec default
 			if r, ok := args["reason"]; ok {
-				reason = unquote(r)
+				if s, ok := r.val.(string); ok {
+					info.reason = s
+				}
+			}
+		case "aws_subscribe":
+			if m, ok := args["mutations"]; ok && m.kind == "list" {
+				for _, e := range m.val.([]valueNode) {
+					if s, ok := e.val.(string); ok {
+						info.subscribeMutations = append(info.subscribeMutations, s)
+					}
+				}
 			}
 		}
 	}
-	return deprecated, reason
+	return info
 }
 
 // skipDirectiveDefinition consumes a top-level `directive @name(args) [repeatable] on LOC | LOC`.
@@ -502,66 +526,6 @@ func (p *sdlParser) skipDirectiveDefinition() error {
 	return nil
 }
 
-// readLiteral reads a GraphQL value literal and returns its canonical string form for defaultValue
-// reporting. It preserves the enum-vs-string distinction (a bare name is an enum value → unquoted; a
-// string token → quoted) that a value parser would lose.
-func (p *sdlParser) readLiteral() (string, error) {
-	t := p.peek()
-	switch {
-	case t.kind == "str":
-		p.next()
-		return strconv.Quote(t.val), nil
-	case t.kind == "int" || t.kind == "float":
-		p.next()
-		return t.val, nil
-	case t.kind == "name":
-		p.next()
-		return t.val, nil // true/false/null or an enum value — all unquoted
-	case p.isPunct("["):
-		p.next()
-		var elems []string
-		for !p.isPunct("]") {
-			if p.peek().kind == "eof" {
-				return "", fmt.Errorf("graphql: SDL: unterminated list literal")
-			}
-			e, err := p.readLiteral()
-			if err != nil {
-				return "", err
-			}
-			elems = append(elems, e)
-		}
-		p.next()
-		return "[" + join(elems, ", ") + "]", nil
-	case p.isPunct("{"):
-		p.next()
-		var pairs []string
-		for !p.isPunct("}") {
-			if p.peek().kind == "eof" {
-				return "", fmt.Errorf("graphql: SDL: unterminated object literal")
-			}
-			k, err := p.expectName()
-			if err != nil {
-				return "", err
-			}
-			p.accept("punct", ":")
-			v, err := p.readLiteral()
-			if err != nil {
-				return "", err
-			}
-			pairs = append(pairs, k+": "+v)
-		}
-		p.next()
-		return "{" + join(pairs, ", ") + "}", nil
-	case p.isPunct("$"):
-		// A variable in a default is invalid GraphQL, but tolerate rather than crash the parse.
-		p.next()
-		if p.peek().kind == "name" {
-			return "$" + p.next().val, nil
-		}
-	}
-	return "", fmt.Errorf("graphql: SDL: unexpected literal token %q", t.val)
-}
-
 // --- small helpers ---
 
 func join(parts []string, sep string) string {
@@ -575,11 +539,24 @@ func join(parts []string, sep string) string {
 	return out
 }
 
-func unquote(s string) string {
-	if u, err := strconv.Unquote(s); err == nil {
-		return u
+// SubscriptionTriggers maps each mutation field to the subscription fields it triggers, derived from
+// @aws_subscribe(mutations: [...]) on the Subscription root type's fields — the SDL-native equivalent of
+// a subscription's config `triggeredBy`. Empty when the schema declares none.
+func (s *Schema) SubscriptionTriggers() map[string][]string {
+	out := map[string][]string{}
+	if s.subscriptionType == "" {
+		return out
 	}
-	return s
+	sub := s.types[s.subscriptionType]
+	if sub == nil {
+		return out
+	}
+	for _, f := range sub.fields {
+		for _, mut := range f.subscribeMutations {
+			out[mut] = append(out[mut], f.name)
+		}
+	}
+	return out
 }
 
 // sortedTypeNames returns the type map's names in a stable order (deterministic introspection output).

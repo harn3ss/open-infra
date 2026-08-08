@@ -7,6 +7,13 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — `@aws_subscribe` SDL directive (AppSync subscription-trigger parity).** A Subscription
+  field may declare its triggering mutations natively in the SDL — `onCreateTodo: Todo @aws_subscribe(mutations: ["createTodo"])`
+  — instead of (or in addition to) a subscription's config `triggeredBy`. The SDL parser captures it into
+  `Schema.SubscriptionTriggers()`, and `LoadSubscriptions` merges those triggers with the config's
+  (deduped), so an imported AppSync schema's subscription wiring works without duplication. Verified
+  end-to-end: a `createTodo` publish reaches an `onCreateTodo` subscriber when the trigger is declared
+  ONLY in the SDL.
 - **open-appsync — multiple operations per document + `operationName`.** A document may now carry more
   than one named operation; the GraphQL-over-HTTP `operationName` selects which runs (a multi-operation
   document with no `operationName` is an ambiguity error, an unknown name is an error). Single-operation
