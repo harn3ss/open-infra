@@ -7,6 +7,14 @@ the product's public contract.
 ## Unreleased
 
 ### Abstractions
+- **open-appsync — Lambda data source.** A resolver can now be backed by `type: lambda`, invoking a
+  `kind: Function` (Knative) over HTTP with AppSync's Lambda-invoke shape
+  (`{"operation":"Invoke","payload":…}`): the function receives the payload and its JSON response becomes
+  `$ctx.result`. Implemented as a third `datasource.Store` (`internal/lambdasource`) with no engine/
+  lifecycle branching (neutrality holds). Green-light-one — the caller is unit-proven against a stub
+  function with zero AWS, and end-to-end through Load→HTTP; full AppSync→Lambda→DB→JSON round-trip
+  fidelity against a live function is a separate later bar. BatchInvoke fails loud (not supported yet).
+  `GraphQLApi` data-source `type` gains `lambda` (endpoint = the function URL).
 - **open-appsync — `@aws_subscribe` SDL directive (AppSync subscription-trigger parity).** A Subscription
   field may declare its triggering mutations natively in the SDL — `onCreateTodo: Todo @aws_subscribe(mutations: ["createTodo"])`
   — instead of (or in addition to) a subscription's config `triggeredBy`. The SDL parser captures it into
