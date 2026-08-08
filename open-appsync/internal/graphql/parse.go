@@ -17,11 +17,19 @@ import (
 	"strings"
 )
 
-// operation is a parsed GraphQL operation plus any fragment definitions in the same document.
+// document is a parsed GraphQL document: one or more operations plus any fragment definitions shared
+// across them.
+type document struct {
+	ops       []*operation
+	fragments map[string]fragmentDef
+}
+
+// operation is a parsed GraphQL operation plus (once selected) the document's fragment definitions.
 type operation struct {
 	opType     string // "query" | "mutation" | "subscription"
+	name       string // operation name (for multi-operation documents + operationName selection)
 	selections []selection
-	fragments  map[string]fragmentDef // named fragments in the document, by name
+	fragments  map[string]fragmentDef // the document's named fragments, by name
 	varDefs    []variableDef          // operation variable definitions ($name: Type = default)
 }
 
@@ -173,17 +181,16 @@ type gparser struct {
 	i    int
 }
 
-func parseQuery(s string) (*operation, error) {
+// parseDocument parses a whole document: any number of operations + fragment definitions, in any order.
+// Each returned operation carries the document's fragments.
+func parseDocument(s string) (*document, error) {
 	toks, err := tokenize(s)
 	if err != nil {
 		return nil, err
 	}
 	p := &gparser{toks: toks}
-	op := &operation{opType: "query", fragments: map[string]fragmentDef{}}
+	doc := &document{fragments: map[string]fragmentDef{}}
 
-	// A document is a list of definitions: one operation (this slice supports one) plus any number of
-	// fragment definitions, in any order (the canonical introspection query puts fragments after the op).
-	gotOp := false
 	for p.peek().kind != "eof" {
 		t := p.peek()
 		switch {
@@ -192,23 +199,54 @@ func parseQuery(s string) (*operation, error) {
 			if err != nil {
 				return nil, err
 			}
-			op.fragments[fd.name] = fd
+			doc.fragments[fd.name] = fd
 		case (t.kind == "name" && (t.val == "query" || t.val == "mutation" || t.val == "subscription")) || (t.kind == "punct" && t.val == "{"):
-			if gotOp {
-				return nil, fmt.Errorf("graphql: only one operation per document is supported")
-			}
+			op := &operation{opType: "query"}
 			if err := p.parseOperationInto(op); err != nil {
 				return nil, err
 			}
-			gotOp = true
+			doc.ops = append(doc.ops, op)
 		default:
 			return nil, fmt.Errorf("graphql: expected an operation or a fragment definition, got %q", t.val)
 		}
 	}
-	if !gotOp {
+	if len(doc.ops) == 0 {
 		return nil, fmt.Errorf("graphql: document has no operation")
 	}
-	return op, nil
+	for _, op := range doc.ops {
+		op.fragments = doc.fragments
+	}
+	return doc, nil
+}
+
+// selectOperation picks the operation to run: by name when operationName is given, else the sole
+// operation. A multi-operation document with no operationName is ambiguous (spec) and errors.
+func (d *document) selectOperation(operationName string) (*operation, error) {
+	if operationName != "" {
+		for _, op := range d.ops {
+			if op.name == operationName {
+				return op, nil
+			}
+		}
+		return nil, fmt.Errorf("graphql: no operation named %q in the document", operationName)
+	}
+	if len(d.ops) == 1 {
+		return d.ops[0], nil
+	}
+	return nil, fmt.Errorf("graphql: this document has %d operations; an operationName is required to choose one", len(d.ops))
+}
+
+// parseQuery parses a single-operation document (used by the subscription parser). It errors on a
+// multi-operation document.
+func parseQuery(s string) (*operation, error) {
+	doc, err := parseDocument(s)
+	if err != nil {
+		return nil, err
+	}
+	if len(doc.ops) != 1 {
+		return nil, fmt.Errorf("graphql: expected a single operation, got %d", len(doc.ops))
+	}
+	return doc.ops[0], nil
 }
 
 // parseOperationInto parses one operation (optional type/name/variable-definitions + selection set).
@@ -218,7 +256,7 @@ func (p *gparser) parseOperationInto(op *operation) error {
 		// subscription operations parse like any other (a root selection set); they are routed to the
 		// subscription lifecycle by the WebSocket handler, not run through the request/response executor.
 		if p.peek().kind == "name" { // operation name
-			p.next()
+			op.name = p.next().val
 		}
 		if p.isPunct("(") { // variable definitions ($name: Type = default) — parsed and coerced at execution
 			defs, err := p.parseVarDefs()
