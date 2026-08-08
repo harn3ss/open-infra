@@ -243,9 +243,11 @@ introspection corner above: gate #2 now feeds the **verbatim wire introspection 
 (applying `on Type` only to matching runtime objects for interfaces/unions) is a later rung; field
 collection is currently unconditional, which is correct for well-formed queries against a matching shape.
 
-**Honest scope.** Nested `__typename`, directive *execution* (`@skip`/`@include`), and custom-scalar
-value validation all lean on this type graph but each graduates on its own evidence — none is promoted by
-proximity.
+`__typename` resolves at every nesting level (root and nested/list), returning the concrete type name
+from the type graph — the field Apollo/Relay caches require — and stays outside the introspection toggle.
+
+**Honest scope.** Directive *execution* (`@skip`/`@include`) and custom-scalar value validation lean on
+this type graph but each graduates on its own evidence — none is promoted by proximity.
 
 ## Maturity — two independent gates
 
