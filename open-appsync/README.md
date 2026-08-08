@@ -187,6 +187,9 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
   rejects a null element, an enum rejects an off-list value, an input object rejects unknown/missing-
   required fields; defaults applied), rejecting mismatches with a `ValidationError`. Custom-scalar
   *value* validation is deferred (see below); the wrapper/nullability/enum/input-object layer is coerced.
+- **`@skip`/`@include` execution** and **per-nested-field resolvers** — a below-root `Type.field` can run
+  its own resolver with the parent as `$ctx.source`, recursively, with structural fallback and auth at
+  every depth.
 - **An in-memory schema type system + introspection** (`internal/graphql/schema.go`, `introspect.go`):
   the API's SDL parses into a name→type map where a field's return type is a *reference* carrying its
   wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are four distinct types), and `__schema` / `__type`
@@ -255,9 +258,14 @@ nothing about any vendor's scalar; AWS rules (AWSDateTime, AWSJSON, AWSEmail, �
 `@skip(if:)` / `@include(if:)` are **executed** — evaluated against the coerced variables on fields,
 fragment spreads, and inline fragments; a skipped selection is dropped before execution.
 
-**Honest scope.** Per-nested-field resolvers (below-root `Type.field`), interface/union polymorphic
-dispatch, custom directive execution, and AWS-scalar *fidelity* lean on this type graph but each
-graduates on its own evidence — none is promoted by proximity.
+**Per-nested-field resolvers.** A field below the root can carry its own resolver (declare a resolver
+with `type: <ObjectType>`, e.g. `Post.author`): when that field is selected, its resolver runs with the
+parent object as `$ctx.source`, and its result is projected against the field's sub-selections
+(recursively — deeper nested resolvers fire too). A field with no registered resolver is read
+structurally from the parent result (the default). Field-level auth and error paths apply at every depth.
+
+**Honest scope.** Interface/union polymorphic dispatch, custom directive execution, and AWS-scalar
+*fidelity* lean on this type graph but each graduates on its own evidence — none is promoted by proximity.
 
 ## Maturity — two independent gates
 
