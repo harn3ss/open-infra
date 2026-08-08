@@ -16,7 +16,7 @@ func def(n string, t typeRef) variableDef { return variableDef{name: n, typ: t} 
 // coerceOne runs one variable definition through coerceVariables against the sample schema.
 func coerceOne(t *testing.T, d variableDef, vars map[string]any) (any, *GqlError) {
 	t.Helper()
-	out, err := coerceVariables([]variableDef{d}, vars, mustParse(t))
+	out, err := (coercer{schema: mustParse(t)}).variables([]variableDef{d}, vars)
 	if err != nil {
 		return nil, err
 	}

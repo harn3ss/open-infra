@@ -82,7 +82,8 @@ type Engine struct {
 	limits     Limits
 	authorizer authz.Authorizer
 	publisher  Publisher
-	schema     *Schema // parsed SDL type graph; nil = introspection unavailable (no schema supplied)
+	schema     *Schema                    // parsed SDL type graph; nil = introspection unavailable (no schema supplied)
+	validators map[string]ScalarValidator // custom-scalar validators by scalar name (neutral seam; edge-registered)
 }
 
 // WithPublisher sets the mutation publisher (default: none) — the hook the subscription layer uses.
@@ -92,6 +93,12 @@ func WithPublisher(p Publisher) Option { return func(e *Engine) { e.publisher = 
 // Without it, introspection fields return an error (the executor still runs resolvers normally — the
 // type graph is a reader for introspection, not a precondition for execution in this slice).
 func WithSchema(s *Schema) Option { return func(e *Engine) { e.schema = s } }
+
+// WithScalarValidators registers custom-scalar validators by scalar name (the neutral validation seam).
+// The core stays vendor-neutral; AWS scalar rules are registered here by the edge (see internal/awsscalars).
+func WithScalarValidators(v map[string]ScalarValidator) Option {
+	return func(e *Engine) { e.validators = v }
+}
 
 // Option configures an Engine (hostile-load guards, the field authorizer, …).
 type Option func(*Engine)
@@ -151,7 +158,7 @@ func (e *Engine) Execute(ctx context.Context, query string, variables map[string
 	}
 	// Coerce the supplied variables against their declared types (defaults applied, required checked,
 	// mismatches rejected) before they are substituted into arguments. The coerced map replaces the raw.
-	coerced, ge := coerceVariables(op.varDefs, variables, e.schema)
+	coerced, ge := (coercer{schema: e.schema, validators: e.validators}).variables(op.varDefs, variables)
 	if ge != nil {
 		return Result{Errors: []GqlError{*ge}}
 	}
