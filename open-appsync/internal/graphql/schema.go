@@ -55,7 +55,9 @@ type inputValueDef struct {
 	name         string
 	description  string
 	typ          typeRef
-	defaultValue string // GraphQL literal as a string (e.g. `LOW`, `"x"`, `false`), or "" if none
+	defaultValue string    // GraphQL literal as a string (for introspection), e.g. `LOW`, `"x"`; "" if none
+	defaultVal   valueNode // the parsed default (for input coercion)
+	hasDefault   bool
 }
 
 type enumValueDef struct {
@@ -206,12 +208,7 @@ func rootName(block map[string]string, op, def string, types map[string]*namedTy
 
 type sdlParser struct{ gparser }
 
-func (p *sdlParser) expectName() (string, error) {
-	if p.peek().kind != "name" {
-		return "", fmt.Errorf("graphql: SDL: expected a name, got %q", p.peek().val)
-	}
-	return p.next().val, nil
-}
+// expectName and parseTypeRef are inherited from the embedded gparser (shared with the operation parser).
 
 // maybeDescription consumes a leading string token used as a description, returning "" if none.
 func (p *sdlParser) maybeDescription() string {
@@ -350,40 +347,16 @@ func (p *sdlParser) parseInputValueDef() (inputValueDef, error) {
 	}
 	iv := inputValueDef{name: name, description: desc, typ: tr}
 	if p.accept("punct", "=") {
-		lit, err := p.readLiteral()
+		dv, err := p.parseValue()
 		if err != nil {
 			return inputValueDef{}, err
 		}
-		iv.defaultValue = lit
+		iv.defaultVal = dv
+		iv.hasDefault = true
+		iv.defaultValue = literalString(dv) // canonical literal for introspection
 	}
 	p.parseDirectives()
 	return iv, nil
-}
-
-// parseTypeRef parses a (possibly wrapped) type reference: Name, [Inner], and a trailing ! on either.
-func (p *sdlParser) parseTypeRef() (typeRef, error) {
-	var tr typeRef
-	if p.accept("punct", "[") {
-		inner, err := p.parseTypeRef()
-		if err != nil {
-			return typeRef{}, err
-		}
-		if !p.accept("punct", "]") {
-			return typeRef{}, fmt.Errorf("graphql: SDL: expected ']' closing a list type")
-		}
-		tr = typeRef{kind: kindList, elem: &inner}
-	} else {
-		name, err := p.expectName()
-		if err != nil {
-			return typeRef{}, err
-		}
-		tr = typeRef{name: name}
-	}
-	if p.accept("punct", "!") {
-		inner := tr
-		tr = typeRef{kind: kindNonNull, elem: &inner}
-	}
-	return tr, nil
 }
 
 func (p *sdlParser) parseInput(desc string) (*namedType, error) {
