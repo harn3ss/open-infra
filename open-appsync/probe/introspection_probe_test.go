@@ -10,14 +10,14 @@ package probe
 //	  (graphql-js buildClientSchema + graphql-codegen) and assert the ecosystem builds a client schema
 //	  and TypeScript types from it. THIS is the proof that matters — a real tool consumes it or it fails.
 //
-// Honest scope note: the verbatim canonical introspection query graphql-js emits uses FRAGMENTS, which
-// this engine's parser does not accept yet (fragments are their own rung). So gate #1 fires a
-// fragment-free but semantically identical introspection query, and gate #2 consumes the RESULT (what
-// codegen/Apollo ultimately do via buildClientSchema). Pointing a tool at the LIVE endpoint to
-// auto-introspect waits on fragment support — a separate item, not part of introspection's graduation.
+// The parser now accepts fragments, so the gate feeds the VERBATIM wire introspection query graphql-js
+// sends (fragment-laden) straight through the parser+executor — TestIntrospection_WireQueryShape — which
+// closes the corner an earlier slice noted (it had to consume the result of a hand-inlined query because
+// fragments weren't parsed yet). The fragment-free variant is kept as a second, independent check.
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -27,6 +27,14 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 )
+
+// wireIntrospectionQuery is the VERBATIM query graphql-js's getIntrospectionQuery() emits — the
+// fragment-laden document a real client sends over the wire. It's committed as a file (regenerate with
+// `node -e "import('graphql').then(g=>process.stdout.write(g.getIntrospectionQuery()))"`) and embedded so
+// the gate feeds the real thing through the parser+executor, not a hand-inlined stand-in.
+//
+//go:embed introspection/introspection-query.graphql
+var wireIntrospectionQuery string
 
 const introspectionSDL = `
 "A unit of work to track."
@@ -186,6 +194,38 @@ func TestIntrospection_CanonicalQueryShape(t *testing.T) {
 	}
 
 	// Emit the result for gate #2 (buildClientSchema / codegen consume this).
+	writeIntrospectionResult(t, res.Data)
+}
+
+// TestIntrospection_WireQueryShape is the honest close of the fragment corner: feed the VERBATIM
+// fragment-laden introspection query graphql-js sends through the parser+executor and assert it produces
+// the same spec shape. It also (re)writes the emitted result from the wire query, so gate #2 consumes
+// what a real client's query actually returns.
+func TestIntrospection_WireQueryShape(t *testing.T) {
+	e := introspectionEngine(t)
+	res := e.Execute(context.Background(), wireIntrospectionQuery, nil)
+	if len(res.Errors) != 0 {
+		t.Fatalf("wire introspection query returned errors: %+v", res.Errors)
+	}
+	schema, ok := res.Data["__schema"].(map[string]any)
+	if !ok {
+		t.Fatal("no __schema from the wire query")
+	}
+	if qt, _ := schema["queryType"].(map[string]any); qt["name"] != "Query" {
+		t.Errorf("wire queryType.name = %v, want Query", qt["name"])
+	}
+	types := map[string]map[string]any{}
+	for _, ti := range schema["types"].([]any) {
+		tm := ti.(map[string]any)
+		types[tm["name"].(string)] = tm
+	}
+	if types["Todo"] == nil || types["Todo"]["kind"] != "OBJECT" {
+		t.Errorf("wire query: Todo OBJECT missing (%v)", types["Todo"])
+	}
+	// The fragment-heavy TypeRef chain must still surface the wrappers.
+	assertWrappers(t, fieldType(t, types["Query"], "listTodos"), []string{"NON_NULL", "LIST", "NON_NULL", "Todo"})
+
+	// Emit from the WIRE query so gate #2 consumes exactly what a real client receives.
 	writeIntrospectionResult(t, res.Data)
 }
 
