@@ -117,11 +117,17 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if claims.Sub != "" {
-		req.Header.Set("X-OpenInfra-User", claims.Sub)
-	}
-	if len(claims.Groups) > 0 {
-		req.Header.Set("X-OpenInfra-Groups", strings.Join(claims.Groups, ","))
+	// Convey the principal as iam.Identity resolves it — the SINGLE definition of "who this is to the API
+	// server", the same one this handler's coarse gate (iam.CanDo) authorized against. That means the
+	// NAMESPACED user (openinfra:<sub>), never the raw, attacker-influenced subject: otherwise the engine's
+	// field-level SAR would impersonate a raw sub, and a sub equal to a privileged cluster identity (e.g.
+	// a kube-system ServiceAccount) would pass field gates the real caller must fail. Groups are already
+	// namespaced + comma-free (iam.GroupsFromSpec), so the comma-joined header round-trips losslessly.
+	if user, groups, ok := iam.Identity(claims); ok {
+		req.Header.Set("X-OpenInfra-User", user)
+		if len(groups) > 0 {
+			req.Header.Set("X-OpenInfra-Groups", strings.Join(groups, ","))
+		}
 	}
 	// Tag the auth mode so open-appsync can enforce the field's @aws_* directive: the mode gate passes
 	// and the field's SAR then runs against the principal above. SigV4 requests are aws_iam (the default);

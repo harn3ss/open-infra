@@ -235,14 +235,17 @@ spec:
                       - { name: http, port: 80, targetPort: 8080 }
             ---
             # --- Ingress isolation: the engine answers only its legitimate front doors ---
-            # The GraphQL data plane's real front door is the aws-shim (SigV4/JWT), so arbitrary
-            # cross-namespace callers should never reach the engine's ClusterIP directly and bypass that
-            # authentication. Default-deny ingress, allowing only: same namespace, the console BFF (its
-            # Test Resolver posts to /test-resolver), Prometheus (scrapes /metrics), and the shim. Ingress
-            # is evaluated post-DNAT by Cilium identity, so a standard NetworkPolicy is correct here; ports
-            # match the pod's container port (8080), not the Service port. Egress is left open — resolvers
-            # reach arbitrary data-source hosts (http/rds/opensearch/lambda), NATS, FerretDB and the API
-            # server (SAR), and a standard egress policy would silently drop in-cluster ClusterIPs (pre-DNAT).
+            # The engine TRUSTS the X-OpenInfra-* identity headers the aws-shim sets (that is how field-mode
+            # enforcement conveys a verified principal), so any pod that can reach :8080 could FORGE them and
+            # impersonate. Ingress must therefore be POD-scoped, not merely namespace-scoped: allow only the
+            # aws-shim (SigV4/JWT/Lambda-authorizer front door), the console BFF (Test Resolver posts to
+            # /test-resolver), and Prometheus (scrapes /metrics) — each an explicit namespace+pod pair. No
+            # blanket same-namespace allow: a co-tenant pod must not be able to forge identity; the shim is
+            # the sole authenticating door, and kubelet health probes are node-sourced (exempt). Ingress is
+            # evaluated post-DNAT by Cilium identity, so a standard NetworkPolicy is correct; ports match the
+            # pod's container port (8080), not the Service port. Egress is left open — resolvers reach
+            # arbitrary data-source hosts (http/rds/opensearch/lambda), NATS, FerretDB and the API server
+            # (SAR), and a standard egress policy would silently drop in-cluster ClusterIPs (pre-DNAT).
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -262,11 +265,15 @@ spec:
                     policyTypes: [Ingress]
                     ingress:
                       - from:
-                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
-                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
-                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                          # The aws-shim — the authenticating front door (the only sender of trusted identity).
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
                             podSelector: { matchLabels: { app: aws-shim } }
+                          # The console BFF — Test Resolver posts to /test-resolver.
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
+                            podSelector: { matchLabels: { app: console } }
+                          # Prometheus — scrapes /metrics.
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
                         ports:
                           - { protocol: TCP, port: 8080 }
     - step: ready

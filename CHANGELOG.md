@@ -62,11 +62,12 @@ the product's public contract.
   automatically through one ServiceMonitor, installed and removed with the monitoring stack. Metric
   labels are bounded so a crafted query or header cannot explode cardinality, and no request content
   is recorded.
-- **open-appsync — default-deny ingress for the engine.** Each GraphQLApi now renders an ingress-only
-  NetworkPolicy so the engine's ClusterIP answers only its legitimate front doors — the aws-shim (the
-  SigV4/JWT/Lambda-authorizer front door), the console BFF (Test Resolver), Prometheus (metrics), and its
-  own namespace — on the pod port. Arbitrary cross-namespace callers can no longer reach the engine
-  directly and forge the auth-mode headers that mode enforcement trusts (defense in depth; SC-7 boundary
+- **open-appsync — default-deny, pod-scoped ingress for the engine.** Each GraphQLApi renders an
+  ingress-only NetworkPolicy so the engine's ClusterIP answers only its legitimate front doors, each
+  scoped to a specific namespace **and pod**: the aws-shim (the SigV4/JWT/Lambda-authorizer front door),
+  the console BFF (Test Resolver), and Prometheus (metrics). Because the engine trusts the identity headers
+  the shim sets, any pod that could reach it might forge them — so there is no blanket same-namespace
+  allow: a co-tenant pod cannot reach the engine and impersonate (defense in depth; SC-7 boundary
   protection, secure by default). Egress stays open so resolvers reach their data-source hosts.
 
 ### AWS compatibility
