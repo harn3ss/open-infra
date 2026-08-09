@@ -534,7 +534,11 @@ func authenticate(r *http.Request, apiKeys map[string]authz.Identity) (authz.Ide
 		}
 		return authz.Identity{}, "" // presented but invalid → authenticate nothing
 	}
-	return identityFromHeaders(r), ""
+	// Otherwise the identity AND auth mode come from the trusted upstream (the aws-shim's SigV4→principal),
+	// conveyed as headers on the SAME trust boundary as the identity headers: only the shim / an internal
+	// peer sets them; the engine is not exposed directly. The shim tags a SigV4-authenticated request as
+	// aws_iam (X-OpenInfra-Auth-Mode), so @aws_iam fields gate on it, then SAR runs against the principal.
+	return identityFromHeaders(r), r.Header.Get("X-OpenInfra-Auth-Mode")
 }
 
 // identityFromHeaders reads the caller's principal from the shim-set headers: X-OpenInfra-User and a

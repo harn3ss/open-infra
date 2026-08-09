@@ -73,6 +73,62 @@ type Query { getTodo(id: ID!): Todo @aws_api_key }
 	}
 }
 
+// An @aws_iam field is reachable when the request carries the shim's X-OpenInfra-Auth-Mode: aws_iam
+// (SigV4-authenticated), and denied otherwise. Same trust boundary as the identity headers.
+func TestIAM_HTTPGate(t *testing.T) {
+	dir := t.TempDir()
+	w := func(n, c string) {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w("config.json", `{
+	  "dataSources": [{"name":"todos","type":"memory"}],
+	  "resolvers": [{"type":"Query","field":"getTodo","dataSource":"todos","request":"get.vtl","response":"resp.vtl"}]
+	}`)
+	w("get.vtl", `{"version":"2018-05-29","operation":"GetItem","key":{"id":$util.dynamodb.toDynamoDBJson($ctx.args.id)}}`)
+	w("resp.vtl", `$util.toJson($ctx.result)`)
+	w("schema.graphql", `
+type Todo { id: ID! }
+type Query { getTodo(id: ID!): Todo @aws_iam }
+`)
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	h := Handler(engine)
+
+	post := func(mode string) []map[string]any {
+		body, _ := json.Marshal(map[string]any{"query": `query { getTodo(id: "x") { id } }`})
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body)))
+		if mode != "" {
+			req.Header.Set("X-OpenInfra-User", "system:serviceaccount:demo:caller")
+			req.Header.Set("X-OpenInfra-Auth-Mode", mode)
+		}
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		var out struct {
+			Errors []map[string]any `json:"errors"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.Errors
+	}
+	unauth := func(errs []map[string]any) bool {
+		for _, e := range errs {
+			if e["errorType"] == "Unauthorized" {
+				return true
+			}
+		}
+		return false
+	}
+	if !unauth(post("")) {
+		t.Error("no auth mode → @aws_iam field must be Unauthorized")
+	}
+	if unauth(post("aws_iam")) {
+		t.Error("X-OpenInfra-Auth-Mode: aws_iam → @aws_iam field must pass the gate")
+	}
+}
+
 func TestLoadAPIKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "apikeys.json")
