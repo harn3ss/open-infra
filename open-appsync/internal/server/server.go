@@ -27,6 +27,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/lambdasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/nonesource"
+	"github.com/harn3ss/open-infra/open-appsync/internal/opensearchsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/rdssource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
@@ -78,7 +79,7 @@ type LimitsConfig struct {
 
 type DataSourceConfig struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"`       // "memory" | "none" | "dynamodb" (FerretDB) | "http" | "lambda" | "rds" (Postgres)
+	Type       string `json:"type"`       // memory | none | dynamodb (FerretDB) | http | lambda | rds (Postgres) | opensearch
 	Collection string `json:"collection"` // dynamodb: the FerretDB collection ("table")
 	Endpoint   string `json:"endpoint"`   // http: base URL; lambda: the function (kind: Function) URL
 	// rds: the DSN comes from a Secret injected as env APPSYNC_RDS_DSN_<NAME>, never the CR.
@@ -153,6 +154,15 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 				return nil, fmt.Errorf("open-appsync: data source %q (lambda) needs an endpoint (the function URL)", ds.Name)
 			}
 			stores[ds.Name] = lambdasource.New(ds.Endpoint)
+		case "opensearch":
+			if ds.Endpoint == "" {
+				return nil, fmt.Errorf("open-appsync: data source %q (opensearch) needs an endpoint (the domain URL)", ds.Name)
+			}
+			// Optional HTTP basic auth from the data source's connectionSecret, injected as env
+			// APPSYNC_OPENSEARCH_USER_/PASS_<NAME> (empty = no auth, e.g. an in-cluster domain).
+			user := os.Getenv("APPSYNC_OPENSEARCH_USER_" + rdsEnvKey(ds.Name))
+			pass := os.Getenv("APPSYNC_OPENSEARCH_PASS_" + rdsEnvKey(ds.Name))
+			stores[ds.Name] = opensearchsource.New(ds.Endpoint, user, pass)
 		case "rds":
 			// The connection string carries credentials, so it comes from a Secret (never the CR): the
 			// composition injects it as env APPSYNC_RDS_DSN_<NAME> from the data source's connectionSecret.
@@ -166,7 +176,7 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 			}
 			stores[ds.Name] = st
 		default:
-			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | none | dynamodb | http | lambda | rds)", ds.Name, ds.Type)
+			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | none | dynamodb | http | lambda | rds | opensearch)", ds.Name, ds.Type)
 		}
 	}
 

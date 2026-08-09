@@ -39,7 +39,9 @@ the product's public contract.
   resolved entirely in the mapping templates (the request template's `payload` becomes `$ctx.result`) —
   for pub/sub-only fields, local computation, and stitching. Added a **Lambda** source (`type: lambda`):
   a resolver invokes a `kind: Function` over HTTP with AppSync's Invoke payload shape and the function's
-  JSON response becomes `$ctx.result`. Added an **RDS** source (`type: rds`): SQL over
+  JSON response becomes `$ctx.result`. Added an **OpenSearch** source (`type: opensearch`): search/index
+  requests to an OpenSearch domain in AppSync's `{operation, path, params}` shape, returning the response
+  JSON, with optional HTTP basic auth from a Secret. Added an **RDS** source (`type: rds`): SQL over
   PostgreSQL/Aurora-PostgreSQL in AppSync's
   `{statements, variableMap}` shape, with `:name` parameters bound safely (never interpolated) and rows
   returned as JSON; the connection string comes from a Secret (`connectionSecret`), never the CR. Both sit
