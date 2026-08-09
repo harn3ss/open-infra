@@ -97,8 +97,8 @@ spec:
                       type:
                         type: string
                         default: memory
-                        enum: [memory, none, dynamodb, http, lambda, rds]
-                        description: "memory = ephemeral (dev/demo); none = no backend, resolved in the mapping templates (pub/sub-only fields, local computation); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint); rds = SQL over PostgreSQL/Aurora-PostgreSQL (needs a connectionSecret with the DSN)."
+                        enum: [memory, none, dynamodb, http, lambda, rds, opensearch]
+                        description: "memory = ephemeral (dev/demo); none = no backend, resolved in the mapping templates (pub/sub-only fields, local computation); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint); rds = SQL over PostgreSQL/Aurora-PostgreSQL (needs a connectionSecret with the DSN); opensearch = search against an OpenSearch domain (needs an endpoint; optional basic auth via connectionSecret keys username/password)."
                       collection:
                         type: string
                         description: "dynamodb: the FerretDB collection (the 'table')."
@@ -107,7 +107,7 @@ spec:
                         description: "http: the base URL the resolver's operation ({method, resourcePath, params}) targets. lambda: the function (kind: Function) URL invoked with the resolver's payload."
                       connectionSecret:
                         type: string
-                        description: "rds: name of a Secret (this API's namespace) with a `dsn` key holding the PostgreSQL connection string (e.g. postgres://user:pass@host:5432/db?sslmode=require). The DSN carries credentials, so it lives in a Secret, never in this spec; the engine reads it from an injected env var."
+                        description: "Name of a Secret (this API's namespace) holding this source's credentials, kept out of the spec. rds: a `dsn` key with the PostgreSQL connection string (e.g. postgres://user:pass@host:5432/db?sslmode=require). opensearch: optional `username`/`password` keys for HTTP basic auth. The engine reads these from injected env vars."
                 resolvers:
                   type: array
                   description: "Field bindings. A resolver is EITHER a unit resolver (dataSource + request + response) OR a pipeline resolver (functions[], with optional before/after). Malformed resolvers fail closed at load."
