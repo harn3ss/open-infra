@@ -1,0 +1,31 @@
+# Scrapes every open-appsync engine (kind: GraphQLApi) for Prometheus metrics.
+#
+# One ServiceMonitor covers all APIs: each engine Service carries the label
+# openinfra.dev/graphqlapi=<name>, so an Exists match selects them all — a new GraphQLApi is
+# scraped the moment its Service appears, with no per-API wiring. The `release` label is what the
+# kube-prometheus-stack Prometheus selects ServiceMonitors by; namespaceSelector.any lets it reach
+# engine Services in any team namespace. Lives in platform/observability/, so it is installed and
+# removed together with the monitoring stack (components.observability) — a cluster without
+# Prometheus never gets a dangling ServiceMonitor.
+#
+# The engine serves /metrics on its normal :8080 http port (no secrets — bounded labels, counts and
+# latencies). Metric families: openappsync_graphql_* (requests/latency/in-flight by outcome+mode),
+# openappsync_datasource_* (Execute count/latency by source type+outcome), openappsync_subscription_connections.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: open-appsync
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchExpressions:
+      - key: openinfra.dev/graphqlapi
+        operator: Exists
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

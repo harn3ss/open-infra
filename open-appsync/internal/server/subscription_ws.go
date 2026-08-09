@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
+	"github.com/harn3ss/open-infra/open-appsync/internal/metrics"
 	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
 )
 
@@ -33,6 +34,9 @@ func SubscriptionHandler(mgr *subscription.Manager) http.HandlerFunc {
 		if err != nil {
 			return // Upgrade already wrote the error
 		}
+		// Track the live-connection gauge for the length of the connection (serve blocks until close).
+		metrics.IncSubscriptions()
+		defer metrics.DecSubscriptions()
 		c := &wsConn{conn: conn, mgr: mgr, ctx: authz.NewContext(r.Context(), identityFromHeaders(r)), subs: map[string]func(){}}
 		c.serve()
 	}

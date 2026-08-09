@@ -55,6 +55,13 @@ the product's public contract.
 - **open-appsync — multi-replica subscriptions.** Each engine replica consumes the subscription event
   stream with its own ephemeral consumer, so subscriptions fan out correctly when the engine runs more
   than one replica; event durability remains in the stream.
+- **open-appsync — Prometheus metrics.** The engine now exposes `/metrics`: request rate, error rate,
+  latency and concurrency (by outcome and authentication mode); per-data-source-type backend health
+  (Execute count and latency by source type and outcome, captured behind the neutral data-source
+  contract); and live subscription connections. The platform's Prometheus discovers every engine
+  automatically through one ServiceMonitor, installed and removed with the monitoring stack. Metric
+  labels are bounded so a crafted query or header cannot explode cardinality, and no request content
+  is recorded.
 
 ### AWS compatibility
 - **open-appsync — the JS runtime now runs real APPSYNC_JS unmodified and is behavior-faithful too.**
