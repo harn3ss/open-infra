@@ -86,17 +86,14 @@ func TestAuthDirectives_ReportedAdvisoryInIntrospection(t *testing.T) {
 			t.Errorf("%q locations = %v, want OBJECT + FIELD_DEFINITION", name, d["locations"])
 		}
 	}
-	// api-key + iam are ENFORCED now; the remaining three are still advisory (loudly labeled).
-	for _, name := range []string{"aws_api_key", "aws_iam"} {
+	// api-key + iam + oidc + cognito are ENFORCED now; only aws_lambda is still advisory.
+	for _, name := range []string{"aws_api_key", "aws_iam", "aws_oidc", "aws_cognito_user_pools"} {
 		if desc, _ := dirs[name]["description"].(string); !strings.Contains(desc, "ENFORCED") {
 			t.Errorf("%q description should say ENFORCED, got %q", name, desc)
 		}
 	}
-	for _, name := range []string{"aws_oidc", "aws_lambda", "aws_cognito_user_pools"} {
-		desc, _ := dirs[name]["description"].(string)
-		if !strings.Contains(desc, "NOT enforce") && !strings.Contains(desc, "advisory") {
-			t.Errorf("%q description must loudly say not-enforced/advisory, got %q", name, desc)
-		}
+	if desc, _ := dirs["aws_lambda"]["description"].(string); !strings.Contains(desc, "NOT enforce") && !strings.Contains(desc, "advisory") {
+		t.Errorf("aws_lambda description must loudly say not-enforced/advisory, got %q", desc)
 	}
 	// cognito carries its cognito_groups arg.
 	cognito := dirs["aws_cognito_user_pools"]
