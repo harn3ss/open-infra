@@ -120,10 +120,14 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	if claims.Sub != "" {
 		req.Header.Set("X-OpenInfra-User", claims.Sub)
 	}
-	// This data-plane request was authenticated by SigV4 (the router verified the signature) — i.e. AWS
-	// IAM auth. Tag it so open-appsync can enforce @aws_iam fields: the mode gate passes and the field's
-	// SAR then runs against the principal above. Same trust boundary as X-OpenInfra-User (shim-set only).
-	req.Header.Set("X-OpenInfra-Auth-Mode", "aws_iam")
+	if len(claims.Groups) > 0 {
+		req.Header.Set("X-OpenInfra-Groups", strings.Join(claims.Groups, ","))
+	}
+	// Tag the auth mode so open-appsync can enforce the field's @aws_* directive: the mode gate passes
+	// and the field's SAR then runs against the principal above. SigV4 requests are aws_iam (the default);
+	// an OIDC/Cognito bearer-JWT request carries its mode via the request context (set by the router).
+	// Same trust boundary as X-OpenInfra-User — only the shim sets these; the engine isn't exposed.
+	req.Header.Set("X-OpenInfra-Auth-Mode", forwardedMode(r.Context()))
 
 	resp, err := h.client.Do(req)
 	if err != nil {
