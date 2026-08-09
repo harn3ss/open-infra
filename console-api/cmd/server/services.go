@@ -555,3 +555,44 @@ func handleFunctionInvoke(cs kubernetes.Interface, logger *slog.Logger) http.Han
 		})
 	}
 }
+
+// handleGraphQLTestResolver proxies the console's "Test resolver" action to a GraphQLApi's engine
+// (its POST /test-resolver), which renders the request/response mapping templates against a sample
+// $ctx WITHOUT touching a data source. The engine Service is named open-appsync-<name> in the API's
+// namespace (per the GraphQLApi composition) — we verify it exists so this can't be pointed at an
+// arbitrary in-cluster host, then forward the JSON body and return the engine's JSON verbatim.
+func handleGraphQLTestResolver(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ns := chi.URLParam(r, "namespace")
+		name := chi.URLParam(r, "name")
+		svc := "open-appsync-" + name
+		if _, err := cs.CoreV1().Services(ns).Get(r.Context(), svc, metav1.GetOptions{}); err != nil {
+			writeError(w, http.StatusNotFound, "graphql api engine service not found")
+			return
+		}
+
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		target := fmt.Sprintf("http://%s.%s.svc.cluster.local/test-resolver", svc, ns)
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(body)))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad request: "+err.Error())
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			logger.Error("graphql test-resolver", slog.String("error", err.Error()))
+			writeError(w, http.StatusBadGateway, "engine unreachable: "+err.Error())
+			return
+		}
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
+	}
+}
