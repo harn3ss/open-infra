@@ -270,6 +270,18 @@ export function GraphQLApiDetailPage() {
                   ? s?.limits?.introspection ?? "enabled"
                   : "unavailable (no schema)"}
               </DetailRow>
+              <DetailRow label="API-key auth (@aws_api_key)">
+                {s?.apiKeysSecret ? (
+                  <span className="text-xs text-muted-foreground">
+                    enforced · keys from Secret <code>{s.apiKeysSecret}</code>{" "}
+                    <span>(each key impersonates its mapped identity)</span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    no API keys configured
+                  </span>
+                )}
+              </DetailRow>
               {s?.limits ? (
                 <DetailRow label="Hostile-load guards">
                   <span className="text-xs text-muted-foreground">

@@ -275,15 +275,25 @@ each element of a `[Animal!]!` union list resolves independently. The concrete t
 declared type when it is concrete; an abstract value with no hint is handled leniently (fields aren't
 dropped). `__typename` reports the concrete type.
 
-**AWS auth directives — ADVISORY ONLY (declared, not enforced).** The SDL parses AppSync's five auth
-directives (`@aws_api_key`, `@aws_iam`, `@aws_cognito_user_pools(cognito_groups:)`, `@aws_oidc`,
-`@aws_lambda`) on types and fields, reports them in introspection, and **loudly logs at load that they
-are not enforced**. This lets an imported AppSync schema load and stay honest; it grants and denies
-nothing. Enforcement is being added **per-mode via the engine's one policy world (k8s SAR)**, in order
-**api-key → `@aws_iam` → Cognito/OIDC → Lambda-authorizer** — never a parallel auth layer. A cost to
-state plainly to a migrator: enforcement will **relocate authority** — `@aws_cognito_user_pools(cognito_groups:)`
-stops meaning "check the JWT" and starts meaning "check k8s RBAC via SAR," so group rules are
-re-expressed as RBAC bindings.
+**AWS auth directives.** The SDL parses AppSync's five auth directives (`@aws_api_key`, `@aws_iam`,
+`@aws_cognito_user_pools(cognito_groups:)`, `@aws_oidc`, `@aws_lambda`) on types and fields and reports
+them in introspection. They graduate to enforcement **one mode at a time, via the engine's one policy
+world (k8s SAR)** — order api-key → `@aws_iam` → Cognito/OIDC → Lambda-authorizer — never a parallel auth
+layer.
+
+- **`@aws_api_key` — ENFORCED.** The engine authenticates a request by its `x-api-key` header against
+  configured keys; **an API key IS an identity** — a valid key authenticates the request AS the k8s
+  principal it maps to (auth mode `aws_api_key`), and that identity then flows into the field's SAR auth
+  (one policy world). A field gated only by `@aws_api_key` requires a valid key; a field that also lists
+  a not-yet-enforced mode stays advisory (never over-denied). Keys map key→identity in a **Secret**
+  (`spec.apiKeysSecret`), never plaintext in the CR.
+- **`@aws_iam` / `@aws_oidc` / `@aws_lambda` / `@aws_cognito_user_pools` — ADVISORY** (declared, parsed,
+  reported; **loudly logged as not-enforced at load**). They grant and deny nothing yet; access is via
+  resolver SAR auth until each graduates.
+
+A cost to state plainly to a migrator: SAR enforcement **relocates authority** —
+`@aws_cognito_user_pools(cognito_groups:)` will stop meaning "check the JWT" and start meaning "check
+k8s RBAC via SAR," so group rules are re-expressed as RBAC bindings.
 
 **Honest scope.** Custom directive execution and AWS-scalar *fidelity* lean on this type graph but each
 graduates on its own evidence — none is promoted by proximity.

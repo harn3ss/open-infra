@@ -71,15 +71,12 @@ func TestAuthDirectives_ReportedAdvisoryInIntrospection(t *testing.T) {
 		dm := d.(map[string]any)
 		dirs[dm["name"].(string)] = dm
 	}
+	// All five reported, on OBJECT + FIELD_DEFINITION.
 	for _, name := range []string{"aws_api_key", "aws_iam", "aws_oidc", "aws_lambda", "aws_cognito_user_pools"} {
 		d, ok := dirs[name]
 		if !ok {
 			t.Errorf("auth directive %q missing from introspection", name)
 			continue
-		}
-		desc, _ := d["description"].(string)
-		if !strings.Contains(desc, "NOT enforce") && !strings.Contains(desc, "advisory") {
-			t.Errorf("%q description must loudly say not-enforced/advisory, got %q", name, desc)
 		}
 		locs := map[string]bool{}
 		for _, l := range d["locations"].([]any) {
@@ -87,6 +84,16 @@ func TestAuthDirectives_ReportedAdvisoryInIntrospection(t *testing.T) {
 		}
 		if !locs["OBJECT"] || !locs["FIELD_DEFINITION"] {
 			t.Errorf("%q locations = %v, want OBJECT + FIELD_DEFINITION", name, d["locations"])
+		}
+	}
+	// api-key is ENFORCED now; the other four are still advisory (loudly labeled not-enforced).
+	if desc, _ := dirs["aws_api_key"]["description"].(string); !strings.Contains(desc, "ENFORCED") {
+		t.Errorf("aws_api_key description should say ENFORCED, got %q", desc)
+	}
+	for _, name := range []string{"aws_iam", "aws_oidc", "aws_lambda", "aws_cognito_user_pools"} {
+		desc, _ := dirs[name]["description"].(string)
+		if !strings.Contains(desc, "NOT enforce") && !strings.Contains(desc, "advisory") {
+			t.Errorf("%q description must loudly say not-enforced/advisory, got %q", name, desc)
 		}
 	}
 	// cognito carries its cognito_groups arg.
