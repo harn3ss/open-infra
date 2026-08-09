@@ -264,14 +264,16 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 	return Result{Data: data, Errors: errs}
 }
 
-// enforcedAuthModes are the AppSync auth modes open-appsync actually enforces today; the rest stay
-// advisory (parsed + reported, not enforced). Modes graduate into this set one at a time
-// (api-key → iam → cognito/oidc → lambda) — see the auth-directive decision.
+// enforcedAuthModes are the AppSync auth modes open-appsync actually enforces. Modes graduated into this
+// set one at a time (api-key → iam → cognito/oidc → lambda) — see the auth-directive decision. With
+// aws_lambda now enforced, all five AWS auth modes gate fields; the aws-shim validates each mode and
+// forwards the mapped identity, and the field's SAR check decides (one policy world).
 var enforcedAuthModes = map[string]bool{
 	authz.ModeAPIKey:  true,
 	authz.ModeIAM:     true,
 	authz.ModeOIDC:    true,
 	authz.ModeCognito: true,
+	authz.ModeLambda:  true,
 }
 
 // checkFieldAuth enforces a field's auth rules (the neutral form of its `@aws_*` directives). It fires
