@@ -160,10 +160,12 @@ func TestGraphQLApi_RendersConfigAndEngine(t *testing.T) {
 		"kind: Deployment", "open-appsync-notes", "openinfra.dev/config-checksum:",
 		"readOnlyRootFilesystem: true", "drop: [ALL]",
 		"kind: Service", "targetPort: 8080",
-		// (c) ingress isolation: default-deny with the four legitimate front doors, on the pod port.
+		// (c) ingress isolation: default-deny, each front door POD-scoped (namespace+pod), on the pod port.
 		"kind: NetworkPolicy", "policyTypes: [Ingress]",
-		"open-infra-console", "kubernetes.io/metadata.name: monitoring",
-		"open-infra-aws-shim", "app: aws-shim", "port: 8080",
+		"open-infra-aws-shim", "app: aws-shim",
+		"open-infra-console", "app: console",
+		"kubernetes.io/metadata.name: monitoring", "app.kubernetes.io/name: prometheus",
+		"port: 8080",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("GraphQLApi render missing %q; got:\n%s", want, grepCtx(out, "open-appsync-notes"))
@@ -172,6 +174,12 @@ func TestGraphQLApi_RendersConfigAndEngine(t *testing.T) {
 	// A memory-only API must NOT wire Mongo env.
 	if strings.Contains(out, "MONGO_URI") {
 		t.Errorf("memory-only GraphQLApi must not set MONGO_URI; got:\n%s", grepCtx(out, "env:"))
+	}
+	// The netpol must NOT carry a blanket same-namespace allow: a co-tenant pod could otherwise forge
+	// identity headers. The only namespaceSelectors are in the netpol, so the API's own namespace name
+	// appearing as a metadata.name selector would mean the same-ns peer is still present.
+	if strings.Contains(out, "kubernetes.io/metadata.name: team-a") {
+		t.Errorf("netpol still has a blanket same-namespace allow (co-tenant could forge identity):\n%s", grepCtx(out, "metadata.name"))
 	}
 }
 

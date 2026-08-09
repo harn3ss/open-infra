@@ -43,7 +43,14 @@ type Claims struct {
 func GroupsFromSpec(specGroups []string) []string {
 	out := make([]string, 0, len(specGroups)+1)
 	for _, g := range specGroups {
-		if g = strings.TrimSpace(g); g != "" {
+		g = strings.TrimSpace(g)
+		// Drop any entry containing a comma. Group values are carried to the engine in a comma-joined
+		// header that the engine re-splits, so a comma inside one value would smuggle a SECOND group
+		// across the hop (e.g. "x,system:masters" → an un-namespaced system:masters, cluster-admin).
+		// No real k8s group name contains a comma, and this is the single choke point every front door
+		// (SigV4 owner, OIDC/Cognito token, @aws_lambda authorizer) funnels through — so rejecting it
+		// here fails the injected entry closed everywhere at once.
+		if g != "" && !strings.Contains(g, ",") {
 			out = append(out, "openinfra:"+g)
 		}
 	}
