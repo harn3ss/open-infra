@@ -297,6 +297,29 @@ func TestGraphQLApi_RDSDataSource(t *testing.T) {
 	}
 }
 
+// An opensearch data source with a connectionSecret injects optional basic-auth env from that Secret.
+func TestGraphQLApi_OpenSearchDataSource(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ctx := map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"dataSources": []any{map[string]any{"name": "search", "type": "opensearch", "endpoint": "https://os.example.com", "connectionSecret": "os-creds"}},
+				"resolvers": []any{map[string]any{
+					"type": "Query", "field": "find", "dataSource": "search",
+					"request": "{\"operation\":\"POST\",\"path\":\"/i/_search\"}", "response": "$util.toJson($ctx.result)",
+				}},
+			},
+			"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+		}}},
+	}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{`"type": "opensearch"`, "APPSYNC_OPENSEARCH_USER_SEARCH", "APPSYNC_OPENSEARCH_PASS_SEARCH", `name: "os-creds"`, "key: username", "key: password"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("opensearch data source render missing %q; got:\n%s", want, grepCtx(out, "OPENSEARCH"))
+		}
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
