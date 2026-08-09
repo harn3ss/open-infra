@@ -8,9 +8,9 @@ package render
 // render test like TestManagedDB_HibernationAlwaysExplicit would have caught it.
 //
 // Faithful enough without the Crossplane runtime: composition.yaml uses only the
-// sprig funcs re-implemented in sprigLite (verified: default, sha256sum, trunc,
-// dict, list, join). If a future edit introduces another func, Parse fails loudly
-// (add it here) rather than silently mis-rendering.
+// sprig funcs re-implemented in sprigLite (default, sha256sum, trunc, dict, list,
+// join, quote, nindent, upper, replace, …). If a future edit introduces another
+// func, Parse fails loudly (add it here) rather than silently mis-rendering.
 
 import (
 	"bytes"
@@ -191,8 +191,8 @@ func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 		`"functions"`,
 		"Mutation.createAndFetch.before.vtl:", "Mutation.createAndFetch.after.vtl:",
 		"Mutation.createAndFetch.fn0.request.vtl:", "Mutation.createAndFetch.fn1.request.vtl:",
-		`$ctx.stash.put`,        // before step's VTL, verbatim
-		`$ctx.prev.result.id`,   // fn1 threading, verbatim
+		`$ctx.stash.put`,      // before step's VTL, verbatim
+		`$ctx.prev.result.id`, // fn1 threading, verbatim
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("GraphQLApi pipeline render missing %q; got:\n%s", want, grepCtx(out, "functions"))
@@ -273,6 +273,30 @@ func TestGraphQLApi_HTTPDataSource(t *testing.T) {
 	}
 }
 
+// An rds data source injects its DSN into the engine as env APPSYNC_RDS_DSN_<NAME> from a Secret
+// (connectionSecret) — the credentials never appear in the CR/config.
+func TestGraphQLApi_RDSDataSource(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ctx := map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"dataSources": []any{map[string]any{"name": "orders-db", "type": "rds", "connectionSecret": "orders-dsn"}},
+				"resolvers": []any{map[string]any{
+					"type": "Query", "field": "getOrder", "dataSource": "orders-db",
+					"request": "{\"statements\":[\"SELECT 1\"]}", "response": "$util.toJson($ctx.result)",
+				}},
+			},
+			"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+		}}},
+	}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{"APPSYNC_RDS_DSN_ORDERS_DB", `name: "orders-dsn"`, "key: dsn"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rds data source render missing %q; got:\n%s", want, grepCtx(out, "APPSYNC_RDS_DSN"))
+		}
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
@@ -322,8 +346,8 @@ func TestQuery_SecurityHardening(t *testing.T) {
 		"runAsUser: 65532",
 		"type: RuntimeDefault", // seccompProfile
 		"readOnlyRootFilesystem: true",
-		"drop: [ALL]",       // capabilities
-		"query-runner-s3",   // least-privilege S3 identity
+		"drop: [ALL]",     // capabilities
+		"query-runner-s3", // least-privilege S3 identity
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("query pod lost a hardening guarantee: %q missing from the rendered Job.\n"+
@@ -691,6 +715,9 @@ func sprigLite() template.FuncMap {
 			}
 			return strings.Join(parts, sep)
 		},
+		"upper": func(s string) string { return strings.ToUpper(s) },
+		// sprig's replace is replace(old, new, src) — used piped: `s | replace "-" "_"`.
+		"replace": func(old, new, src string) string { return strings.ReplaceAll(src, old, new) },
 	}
 }
 
