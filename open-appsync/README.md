@@ -116,8 +116,10 @@ rung, once proven; until then, *trusted-client / internal use*.
 The engine exposes Prometheus metrics at `/metrics` (on the same port as `/graphql`) for in-cluster
 scraping — operability is not a later concern for the audience this is built for. The platform's
 Prometheus discovers every engine automatically via a single ServiceMonitor
-(`platform/observability/open-appsync-servicemonitor.yaml`), installed and removed with the monitoring
-stack. Metric families:
+(`platform/observability/open-appsync-servicemonitor.yaml`), and a Grafana dashboard
+(`platform/observability/open-appsync-dashboard.yaml` — request/error/latency, per-data-source-type
+backend health, live subscriptions, templated by namespace + API) is auto-imported, both installed and
+removed with the monitoring stack. Metric families:
 
 - `openappsync_graphql_requests_total{outcome, mode}` and `openappsync_graphql_request_duration_seconds{outcome}`
   — request rate, error rate and latency, split by outcome and authentication mode.
