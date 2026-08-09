@@ -70,6 +70,14 @@ jobs:
           # no go.sum, and go.mod changes are what invalidate the module cache anyway.
           cache-dependency-path: ${{ matrix.module }}/go.mod
 
+      - name: gofmt (must be clean)
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
       - name: go vet
         working-directory: ${{ matrix.module }}
         run: go vet ./...
