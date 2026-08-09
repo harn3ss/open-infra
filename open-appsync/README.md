@@ -200,11 +200,13 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
   (`internal/httpsource`), a **Lambda** source (`internal/lambdasource` — invokes a `kind: Function` over
   HTTP with AppSync's Invoke payload shape), an **RDS** source (`internal/rdssource` — SQL over
   PostgreSQL/Aurora-PostgreSQL in AppSync's `{statements, variableMap}` shape, named params bound safely,
-  rows returned as JSON), and an **OpenSearch** source (`internal/opensearchsource` — search/index
+  rows returned as JSON), an **OpenSearch** source (`internal/opensearchsource` — search/index
   requests to an OpenSearch domain in AppSync's `{operation, path, params}` shape, returning the response
-  JSON; optional basic auth) — all behind the neutral `datasource.Store` contract, with no
-  data-source-type branching in the engine or lifecycle. Byte-exact fidelity against a live AWS round trip
-  is a separate future item, tracked per source.
+  JSON; optional basic auth), and an **EventBridge** source (`internal/eventbridgesource` — `PutEvents`
+  publishes each entry to the NATS event bus, returning a PutEvents-shaped receipt with per-entry
+  `EventId`/`FailedEntryCount`; a *publish* source, not call-and-return) — all behind the neutral
+  `datasource.Store` contract, with no data-source-type branching in the engine or lifecycle. Byte-exact
+  fidelity against a live AWS round trip is a separate future item, tracked per source.
 - **The runtime extension point** (`internal/runtime`) with two tenants: **VTL** (`internal/vtlruntime`)
   and a sandboxed **JavaScript** runtime (`internal/jsruntime`, goja). Two tenants through one front
   door ⇒ the interface is treated as stable.
