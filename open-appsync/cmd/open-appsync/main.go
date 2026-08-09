@@ -19,6 +19,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/k8sauth"
+	"github.com/harn3ss/open-infra/open-appsync/internal/metrics"
 	"github.com/harn3ss/open-infra/open-appsync/internal/server"
 	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -96,6 +97,10 @@ func run(logger *slog.Logger) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// Prometheus metrics for in-cluster scraping (the platform's kube-prometheus-stack picks this up
+	// via a ServiceMonitor). Same :8080 listener as /graphql — the metrics carry no secrets (bounded
+	// labels, counts + latencies only). A future engine NetworkPolicy must allow the monitoring namespace.
+	mux.Handle("/metrics", metrics.Handler())
 	// API-key authentication (@aws_api_key): load key→identity from the mounted Secret file, if any.
 	// THE KEY IS AN IDENTITY — each key impersonates a k8s principal (see server.LoadAPIKeys). Path via
 	// APPSYNC_API_KEYS_FILE (the composition mounts the API's Secret there).

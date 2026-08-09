@@ -111,6 +111,25 @@ cost 1000); a `GraphQLApi`'s `limits` block tunes them; a negative value is an e
 Honest label: this is what will let open-appsync be called *safe to expose to untrusted clients* — per
 rung, once proven; until then, *trusted-client / internal use*.
 
+### Observability (Prometheus metrics)
+
+The engine exposes Prometheus metrics at `/metrics` (on the same port as `/graphql`) for in-cluster
+scraping — operability is not a later concern for the audience this is built for. The platform's
+Prometheus discovers every engine automatically via a single ServiceMonitor
+(`platform/observability/open-appsync-servicemonitor.yaml`), installed and removed with the monitoring
+stack. Metric families:
+
+- `openappsync_graphql_requests_total{outcome, mode}` and `openappsync_graphql_request_duration_seconds{outcome}`
+  — request rate, error rate and latency, split by outcome and authentication mode.
+- `openappsync_graphql_requests_in_flight` — concurrency.
+- `openappsync_datasource_requests_total{type, outcome}` and `openappsync_datasource_request_duration_seconds{type}`
+  — per-data-source-type backend health (which source is slow, which is erroring), captured behind the
+  neutral `Store` contract so a source stays metrics-unaware.
+- `openappsync_subscription_connections` — live WebSocket subscribers.
+
+Labels are deliberately bounded (outcome, the eight known source types, an auth-mode allow-list) so a
+crafted query or header can't explode metric cardinality. The metrics carry no request content.
+
 ### Subscriptions (setup-then-push — experimental, label held)
 
 Subscriptions **invert** the lifecycle: not request→execute→response, but *setup-then-push*. At
