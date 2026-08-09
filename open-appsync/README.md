@@ -341,10 +341,11 @@ its parent is still gated. Legacy `@aws_auth(cognito_groups:)` is honored as the
 - **Header trust is the linchpin.** The engine trusts `X-OpenInfra-User`/`-Groups`/`-Auth-Mode` for the
   iam/oidc/cognito modes because only the aws-shim (which verified the SigV4 signature or the JWT) sets
   them. `@aws_api_key` is different — the engine validates the key itself. Field-mode enforcement is only
-  as strong as the guarantee that the engine's HTTP port is reachable **only** via the shim — otherwise a
-  direct caller could forge the mode headers. The composition enforces this: each engine renders a
-  default-deny ingress **NetworkPolicy** allowing only the shim, the console BFF, Prometheus, and its own
-  namespace on the pod port (egress stays open for data sources).
+  as strong as the guarantee that the engine's HTTP port is reachable **only** by pods that may set them —
+  otherwise a direct caller could forge the mode headers. The composition enforces this: each engine
+  renders a default-deny ingress **NetworkPolicy** that is **pod-scoped** (namespace + pod), allowing only
+  the aws-shim, the console BFF, and Prometheus — no blanket same-namespace allow, so a co-tenant pod
+  can't forge identity (egress stays open for data sources).
 - **Residual:** the shim does not yet check `token_use` (id vs access token). Audience enforcement is the
   control — scope `OIDC_AUDIENCE` tightly. Management (`/v1/`) is never reachable via a data-plane JWT.
 
