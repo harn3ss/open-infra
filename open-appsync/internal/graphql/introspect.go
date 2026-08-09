@@ -197,7 +197,7 @@ func standardDirectives() []any {
 // added per-mode (api-key → iam → cognito/oidc → lambda); until a mode flips, declaring it grants
 // nothing and denies nothing.
 func awsAuthDirectiveDefs() []any {
-	const advisory = "AppSync auth mode, DECLARED-ONLY: open-appsync parses and reports this directive but does NOT enforce it yet (advisory). Field access is governed by the resolver's SAR auth, not this directive."
+	const lambdaEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a request the aws-shim authenticated via the API's Lambda authorizer (a kind: Function the shim invokes); the authorizer's returned identity (username/groups) then flows into the field's SAR auth (one policy world). The authorizer's deniedFields/ttlOverride are NOT honored — field-level control is the resolver's SAR auth, not the authorizer."
 	const apiKeyEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a valid API key, which authenticates the request AS the key's mapped k8s identity; that identity then flows into the field's SAR auth (one policy world)."
 	const iamEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a request authenticated via SigV4/IAM by the aws-shim; the shim's principal identity then flows into the field's SAR auth (one policy world)."
 	const oidcEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a request authenticated by a valid OIDC/Cognito JWT that the aws-shim verified (issuer/audience/expiry/signature); the token's subject + groups flow into the field's SAR auth (one policy world). @aws_cognito_user_pools(cognito_groups:) additionally requires the caller to be in one of the listed groups (fail-closed)."
@@ -212,7 +212,7 @@ func awsAuthDirectiveDefs() []any {
 		def("aws_api_key", apiKeyEnforced, []any{}),
 		def("aws_iam", iamEnforced, []any{}),
 		def("aws_oidc", oidcEnforced, []any{}),
-		def("aws_lambda", advisory, []any{}),
+		def("aws_lambda", lambdaEnforced, []any{}),
 		def("aws_cognito_user_pools", oidcEnforced, groupsArg),
 	}
 }

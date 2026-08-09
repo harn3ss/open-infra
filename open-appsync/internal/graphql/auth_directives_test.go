@@ -86,14 +86,16 @@ func TestAuthDirectives_ReportedAdvisoryInIntrospection(t *testing.T) {
 			t.Errorf("%q locations = %v, want OBJECT + FIELD_DEFINITION", name, d["locations"])
 		}
 	}
-	// api-key + iam + oidc + cognito are ENFORCED now; only aws_lambda is still advisory.
-	for _, name := range []string{"aws_api_key", "aws_iam", "aws_oidc", "aws_cognito_user_pools"} {
+	// All five AWS auth modes are ENFORCED now (aws_lambda graduated: the shim validates the API's
+	// Lambda authorizer and forwards the mapped identity, the field's SAR check decides).
+	for _, name := range []string{"aws_api_key", "aws_iam", "aws_oidc", "aws_cognito_user_pools", "aws_lambda"} {
 		if desc, _ := dirs[name]["description"].(string); !strings.Contains(desc, "ENFORCED") {
 			t.Errorf("%q description should say ENFORCED, got %q", name, desc)
 		}
 	}
-	if desc, _ := dirs["aws_lambda"]["description"].(string); !strings.Contains(desc, "NOT enforce") && !strings.Contains(desc, "advisory") {
-		t.Errorf("aws_lambda description must loudly say not-enforced/advisory, got %q", desc)
+	// The Lambda authorizer's deniedFields/ttlOverride are deliberately not honored — say so plainly.
+	if desc, _ := dirs["aws_lambda"]["description"].(string); !strings.Contains(desc, "deniedFields") {
+		t.Errorf("aws_lambda description must state deniedFields is not honored, got %q", desc)
 	}
 	// cognito carries its cognito_groups arg.
 	cognito := dirs["aws_cognito_user_pools"]
