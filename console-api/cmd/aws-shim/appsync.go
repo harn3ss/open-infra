@@ -120,6 +120,10 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	if claims.Sub != "" {
 		req.Header.Set("X-OpenInfra-User", claims.Sub)
 	}
+	// This data-plane request was authenticated by SigV4 (the router verified the signature) — i.e. AWS
+	// IAM auth. Tag it so open-appsync can enforce @aws_iam fields: the mode gate passes and the field's
+	// SAR then runs against the principal above. Same trust boundary as X-OpenInfra-User (shim-set only).
+	req.Header.Set("X-OpenInfra-Auth-Mode", "aws_iam")
 
 	resp, err := h.client.Do(req)
 	if err != nil {
