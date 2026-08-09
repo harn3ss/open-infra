@@ -124,7 +124,7 @@ func baseExcludes(t *testing.T) []string {
 // manifests/ file — exactly the semantics root-app.yaml documents.
 func excludedByArgo(rel string, globs []string) bool {
 	for _, g := range globs {
-		q := regexp.QuoteMeta(g)          // escapes '.', '-', … and turns '*' into '\*'
+		q := regexp.QuoteMeta(g) // escapes '.', '-', … and turns '*' into '\*'
 		q = strings.ReplaceAll(q, `\*`, `.*`)
 		if regexp.MustCompile("^" + q + "$").MatchString(rel) {
 			return true

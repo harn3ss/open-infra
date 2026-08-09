@@ -1,21 +1,23 @@
 // applysink — open-infra's generic CDC apply-sink + schema-sync.
 //
 // MODE=stream (default): consume Debezium change events (unwrapped JSON) from
-//   NATS JetStream and apply them to a target SQL database (Postgres / MySQL /
-//   SQL Server) as idempotent upserts/deletes. Generic: target table from the
-//   subject, columns + PK discovered by introspecting the TARGET. Failed
-//   messages retry up to MAX_DELIVER, then dead-letter to dlq.<subject>.
+//
+//	NATS JetStream and apply them to a target SQL database (Postgres / MySQL /
+//	SQL Server) as idempotent upserts/deletes. Generic: target table from the
+//	subject, columns + PK discovered by introspecting the TARGET. Failed
+//	messages retry up to MAX_DELIVER, then dead-letter to dlq.<subject>.
 //
 // MODE=schema-sync: introspect the source tables and CREATE the equivalent
-//   tables on the target (auto-create). Same-engine = verbatim DDL; cross-engine
-//   uses the type-mapping matrix.
+//
+//	tables on the target (auto-create). Same-engine = verbatim DDL; cross-engine
+//	uses the type-mapping matrix.
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"bytes"
 	"io"
 	"log"
 	"net/http"
