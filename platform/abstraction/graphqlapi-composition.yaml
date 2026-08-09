@@ -167,6 +167,13 @@ spec:
                               - name: APPSYNC_RDS_DSN_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
                                 valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: dsn } }
                               {{- end }}
+                              {{- if and (eq ($ds.type | default "memory") "opensearch") $ds.connectionSecret }}
+                              # opensearch data source {{ $ds.name }}: optional basic auth from its connectionSecret.
+                              - name: APPSYNC_OPENSEARCH_USER_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
+                                valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: username, optional: true } }
+                              - name: APPSYNC_OPENSEARCH_PASS_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
+                                valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: password, optional: true } }
+                              {{- end }}
                               {{- end }}
                             volumeMounts:
                               - { name: config, mountPath: /etc/open-appsync }
