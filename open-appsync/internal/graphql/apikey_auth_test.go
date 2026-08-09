@@ -35,8 +35,12 @@ func TestAPIKeyAuth_FieldGate(t *testing.T) {
 		"Query.iamOnly": mk(),
 	}, WithSchema(schema))
 
+	withMode := func(mode string) context.Context {
+		return authz.WithMode(authz.NewContext(context.Background(), authz.Identity{Username: "u"}), mode)
+	}
 	anon := context.Background()
-	keyed := authz.WithMode(authz.NewContext(context.Background(), authz.Identity{Username: "system:serviceaccount:demo:reader"}), authz.ModeAPIKey)
+	apiKey := withMode(authz.ModeAPIKey)
+	iam := withMode(authz.ModeIAM)
 
 	unauthorized := func(ctx context.Context, q string) bool {
 		res := e.Execute(ctx, q, nil)
@@ -48,23 +52,30 @@ func TestAPIKeyAuth_FieldGate(t *testing.T) {
 		return false
 	}
 
-	// keyed: requires api-key mode.
-	if !unauthorized(anon, `{ keyed }`) {
-		t.Error("@aws_api_key field must deny an anonymous (non-api-key) request")
-	}
-	if unauthorized(keyed, `{ keyed }`) {
-		t.Error("@aws_api_key field must allow an api-key-authenticated request")
-	}
-	// mixed (@aws_api_key @aws_iam): iam not enforced yet → stays advisory → not gated.
-	if unauthorized(anon, `{ mixed }`) {
-		t.Error("a field mixing in a not-yet-enforced mode must stay advisory (not denied)")
-	}
-	// iamOnly + pub: advisory / public → allowed.
-	if unauthorized(anon, `{ iamOnly }`) {
-		t.Error("@aws_iam-only field is advisory, must not be denied")
-	}
+	// pub: public → always allowed.
 	if unauthorized(anon, `{ pub }`) {
 		t.Error("public field must not be denied")
+	}
+	// keyed (@aws_api_key): only api-key mode passes.
+	if !unauthorized(anon, `{ keyed }`) || !unauthorized(iam, `{ keyed }`) {
+		t.Error("@aws_api_key field must deny anon and iam-mode requests")
+	}
+	if unauthorized(apiKey, `{ keyed }`) {
+		t.Error("@aws_api_key field must allow an api-key request")
+	}
+	// iamOnly (@aws_iam): only iam mode passes (now enforced).
+	if !unauthorized(anon, `{ iamOnly }`) || !unauthorized(apiKey, `{ iamOnly }`) {
+		t.Error("@aws_iam field must deny anon and api-key-mode requests")
+	}
+	if unauthorized(iam, `{ iamOnly }`) {
+		t.Error("@aws_iam field must allow an iam request")
+	}
+	// mixed (@aws_api_key @aws_iam): both modes enforced → either passes, anon denied.
+	if !unauthorized(anon, `{ mixed }`) {
+		t.Error("a field requiring api-key OR iam must deny an anonymous request")
+	}
+	if unauthorized(apiKey, `{ mixed }`) || unauthorized(iam, `{ mixed }`) {
+		t.Error("a field requiring api-key OR iam must allow either mode")
 	}
 }
 

@@ -86,11 +86,13 @@ func TestAuthDirectives_ReportedAdvisoryInIntrospection(t *testing.T) {
 			t.Errorf("%q locations = %v, want OBJECT + FIELD_DEFINITION", name, d["locations"])
 		}
 	}
-	// api-key is ENFORCED now; the other four are still advisory (loudly labeled not-enforced).
-	if desc, _ := dirs["aws_api_key"]["description"].(string); !strings.Contains(desc, "ENFORCED") {
-		t.Errorf("aws_api_key description should say ENFORCED, got %q", desc)
+	// api-key + iam are ENFORCED now; the remaining three are still advisory (loudly labeled).
+	for _, name := range []string{"aws_api_key", "aws_iam"} {
+		if desc, _ := dirs[name]["description"].(string); !strings.Contains(desc, "ENFORCED") {
+			t.Errorf("%q description should say ENFORCED, got %q", name, desc)
+		}
 	}
-	for _, name := range []string{"aws_iam", "aws_oidc", "aws_lambda", "aws_cognito_user_pools"} {
+	for _, name := range []string{"aws_oidc", "aws_lambda", "aws_cognito_user_pools"} {
 		desc, _ := dirs[name]["description"].(string)
 		if !strings.Contains(desc, "NOT enforce") && !strings.Contains(desc, "advisory") {
 			t.Errorf("%q description must loudly say not-enforced/advisory, got %q", name, desc)
