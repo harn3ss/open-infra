@@ -193,14 +193,12 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
 - **An in-memory schema type system + introspection** (`internal/graphql/schema.go`, `introspect.go`):
   the API's SDL parses into a name→type map where a field's return type is a *reference* carrying its
   wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are four distinct types), and `__schema` / `__type`
-  are answered by reading that map back out in the spec-mandated shape. See *Introspection* below for
-  the operability gates it graduated on.
+  are answered by reading that map back out in the spec-mandated shape. See *Introspection* below.
 - **Data sources**: an in-memory store and a **FerretDB-backed** DynamoDB-style store
   (`internal/dynamodb`), an **HTTP** source (`internal/httpsource`), and a **Lambda** source
   (`internal/lambdasource` — invokes a `kind: Function` over HTTP with AppSync's Invoke payload shape) —
   all behind the neutral `datasource.Store` contract, with no data-source-type branching in the engine or
-  lifecycle. (Lambda is green-light-one: the caller is proven with zero AWS; full AppSync→Lambda→DB→JSON
-  round-trip fidelity against a live function is a separate later bar.)
+  lifecycle. Byte-exact fidelity against a live AWS round trip is a separate future item, tracked per source.
 - **The runtime extension point** (`internal/runtime`) with two tenants: **VTL** (`internal/vtlruntime`)
   and a sandboxed **JavaScript** runtime (`internal/jsruntime`, goja). Two tenants through one front
   door ⇒ the interface is treated as stable.
@@ -225,29 +223,18 @@ GraphiQL) can build a client schema from the API. The SDL rides to the engine as
 sibling file (kept out of `config.json` to avoid JSON escaping — same reason the `.vtl` templates are
 files). Without a schema the engine still resolves fields; introspection just reports unavailable.
 
-**How it graduated (operability, not fidelity).** Introspection is standard GraphQL — AWS has no dialect
-here — so a byte-match-AWS golden proves little. The bar is instead *does a real tool consume it*:
+Introspection is standard GraphQL, so correctness is validated two ways: the response shape matches the
+spec (wrappers exact), and real tooling — graphql-js `buildClientSchema` and graphql-codegen — reconstructs
+the schema and generates TypeScript types from it (`probe/introspection/`).
 
-1. **Conformance** (`probe/introspection_probe_test.go`, `TestIntrospection_CanonicalQueryShape`) — fire
-   the standard introspection query and validate the response is the spec's shape, wrappers exact.
-2. **Real-tool-consumes** (`TestIntrospection_RealToolConsumes` → `probe/introspection/consume.mjs`) —
-   feed the result to **graphql-js `buildClientSchema`** and **graphql-codegen**; assert they reconstruct
-   the schema (`[Todo!]!`, `ID!`, `[String!]`, enum defaults, custom scalars, all three roots survive)
-   and generate TypeScript types. This is the operability golden — the ecosystem builds against
-   open-infra or it doesn't.
+**Toggle (security).** Introspection lets any client read the whole schema — useful for tooling, a recon
+aid otherwise — so it is a toggle on the hostile-load seam: `spec.limits.introspection` is `enabled`
+(default), `disabled`, or `authenticated-only` (off for anonymous callers). `__typename` is unaffected.
 
-**Toggle (security).** Introspection-on lets any client read the whole schema — a tooling boon and a
-recon aid — so it is a toggle, wired into the hostile-load seam: `spec.limits.introspection` is
-`enabled` (default; AWS AppSync's behavior), `disabled` (never), or `authenticated-only` (off for
-untrusted/anonymous callers). `__typename` is unaffected.
-
-**Fragments (named + inline).** The parser accepts fragment spreads (`...Name`) and inline fragments
-(`... on Type { }`); they are expanded to plain fields before execution, with unknown-fragment and
-fragment-cycle rejection and (when a schema is present) type-condition existence checks. This closes the
-introspection corner above: gate #2 now feeds the **verbatim wire introspection query** graphql-js sends
-(fragment-laden) straight through the parser+executor, not a hand-inlined stand-in. Polymorphic dispatch
-(applying `on Type` only to matching runtime objects for interfaces/unions) is a later rung; field
-collection is currently unconditional, which is correct for well-formed queries against a matching shape.
+**Fragments (named + inline).** Fragment spreads (`...Name`) and inline fragments (`... on Type { }`) are
+supported — expanded to fields before execution, with unknown-fragment and fragment-cycle rejection and
+type-condition validation against the schema. The standard (fragment-based) introspection query runs
+directly. Type-conditional collection for interfaces/unions is described under *Interfaces & unions* below.
 
 `__typename` resolves at every nesting level (root and nested/list), returning the concrete type name
 from the type graph — the field Apollo/Relay caches require — and stays outside the introspection toggle.
@@ -255,8 +242,8 @@ from the type graph — the field Apollo/Relay caches require — and stays outs
 **Custom-scalar validation (neutral seam).** Coercion runs a per-scalar validator for declared custom
 scalars: the core validates *that a scalar validates* via a registered `ScalarValidator` and knows
 nothing about any vendor's scalar; AWS rules (AWSDateTime, AWSJSON, AWSEmail, …) live at the edge in
-`internal/awsscalars` and the server wires them in. Two clocks, not conflated: Tier-0 best-effort
-*format* validation ships now; Tier-1 AppSync-byte-exact scalar fidelity is a separate future golden.
+`internal/awsscalars`. Format validation is enforced today; AWS-byte-exact scalar behavior is a separate
+future item.
 
 `@skip(if:)` / `@include(if:)` are **executed** — evaluated against the coerced variables on fields,
 fragment spreads, and inline fragments; a skipped selection is dropped before execution.
@@ -307,7 +294,7 @@ runs on **every** field — root and nested, whether or not the field has its ow
 scalar (`secret: String @aws_iam`) read structurally from its parent is still gated. Legacy
 `@aws_auth(cognito_groups:)` is honored as the Cognito mode.
 
-**Auth security notes (read before relying on it):**
+**Operating notes:**
 - **Group vocabulary.** The shim namespaces a token's groups to open-infra's RBAC vocabulary
   (`openinfra:<group>`, via the shared `iam.GroupsFromSpec`) before they become identity — so an
   untrusted claim can't collide with a real cluster group (`system:masters`) and an empty claim is
