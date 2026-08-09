@@ -299,6 +299,7 @@ export interface GraphQLApiSpec {
   replicas?: number;
   mongoURI?: string;
   mongoDB?: string;
+  apiKeysSecret?: string; // Secret holding apikeys.json (key→identity) for @aws_api_key auth
   limits?: GraphQLLimits;
   dataSources?: GraphQLDataSource[];
   resolvers: GraphQLResolver[];
