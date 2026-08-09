@@ -57,7 +57,7 @@ spec:
                   description: "FerretDB (Mongo wire) endpoint backing `dynamodb` data sources. Required only if a data source is type dynamodb; a dynamodb source with no mongoURI fails closed at load."
                 apiKeysSecret:
                   type: string
-                  description: "Name of a Secret (in this API's namespace) holding apikeys.json — a JSON array of {key, username, groups}. Enables @aws_api_key auth. THE KEY IS AN IDENTITY: presenting a key authenticates the request AS the mapped k8s identity (username/groups), whose SAR then authorizes @aws_api_key fields (one policy world). Keep key material in this Secret, never in the spec. Other auth modes (@aws_iam/@aws_oidc/@aws_lambda/@aws_cognito_user_pools) are parsed + reported but not yet enforced (advisory)."
+                  description: "Name of a Secret (in this API's namespace) holding apikeys.json — a JSON array of {key, username, groups}. Enables @aws_api_key auth. THE KEY IS AN IDENTITY: presenting a key authenticates the request AS the mapped k8s identity (username/groups), whose SAR then authorizes @aws_api_key fields (one policy world). Keep key material in this Secret, never in the spec. @aws_iam/@aws_oidc/@aws_cognito_user_pools are likewise enforced when their directives appear (each through the same SAR boundary); @aws_lambda is advisory (parsed + reported, not enforced)."
                 mongoDB:
                   type: string
                   default: open_appsync
