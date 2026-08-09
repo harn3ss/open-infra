@@ -97,14 +97,17 @@ spec:
                       type:
                         type: string
                         default: memory
-                        enum: [memory, dynamodb, http, lambda]
-                        description: "memory = ephemeral (dev/demo); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint)."
+                        enum: [memory, dynamodb, http, lambda, rds]
+                        description: "memory = ephemeral (dev/demo); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint); rds = SQL over PostgreSQL/Aurora-PostgreSQL (needs a connectionSecret with the DSN)."
                       collection:
                         type: string
                         description: "dynamodb: the FerretDB collection (the 'table')."
                       endpoint:
                         type: string
                         description: "http: the base URL the resolver's operation ({method, resourcePath, params}) targets. lambda: the function (kind: Function) URL invoked with the resolver's payload."
+                      connectionSecret:
+                        type: string
+                        description: "rds: name of a Secret (this API's namespace) with a `dsn` key holding the PostgreSQL connection string (e.g. postgres://user:pass@host:5432/db?sslmode=require). The DSN carries credentials, so it lives in a Secret, never in this spec; the engine reads it from an injected env var."
                 resolvers:
                   type: array
                   description: "Field bindings. A resolver is EITHER a unit resolver (dataSource + request + response) OR a pipeline resolver (functions[], with optional before/after). Malformed resolvers fail closed at load."

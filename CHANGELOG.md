@@ -35,11 +35,14 @@ the product's public contract.
   Enforcing these relocates authorization to Kubernetes RBAC — group rules become RBAC bindings — which a
   migrating schema must account for. `@aws_subscribe` declares a subscription's triggering mutations in
   the SDL.
-- **open-appsync — data sources.** Added a Lambda source (`type: lambda`): a resolver invokes a
+- **open-appsync — data sources.** Added a **Lambda** source (`type: lambda`): a resolver invokes a
   `kind: Function` over HTTP with AppSync's Invoke payload shape and the function's JSON response becomes
-  `$ctx.result`, behind the same neutral data-source contract as the DynamoDB and HTTP sources. Custom
-  scalars are validated through a neutral per-scalar seam, with AWS scalar formats (AWSDateTime, AWSJSON,
-  and others) supplied at the edge; byte-exact AWS scalar behavior remains a later fidelity item.
+  `$ctx.result`. Added an **RDS** source (`type: rds`): SQL over PostgreSQL/Aurora-PostgreSQL in AppSync's
+  `{statements, variableMap}` shape, with `:name` parameters bound safely (never interpolated) and rows
+  returned as JSON; the connection string comes from a Secret (`connectionSecret`), never the CR. Both sit
+  behind the same neutral data-source contract as the DynamoDB and HTTP sources. Custom scalars are
+  validated through a neutral per-scalar seam, with AWS scalar formats (AWSDateTime, AWSJSON, and others)
+  supplied at the edge. Byte-exact fidelity against a live AWS round trip is a separate later item per source.
 - **open-appsync — multi-replica subscriptions.** Each engine replica consumes the subscription event
   stream with its own ephemeral consumer, so subscriptions fan out correctly when the engine runs more
   than one replica; event durability remains in the stream.
