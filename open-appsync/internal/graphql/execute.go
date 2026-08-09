@@ -267,33 +267,69 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 // enforcedAuthModes are the AppSync auth modes open-appsync actually enforces today; the rest stay
 // advisory (parsed + reported, not enforced). Modes graduate into this set one at a time
 // (api-key → iam → cognito/oidc → lambda) — see the auth-directive decision.
-var enforcedAuthModes = map[string]bool{authz.ModeAPIKey: true, authz.ModeIAM: true}
+var enforcedAuthModes = map[string]bool{
+	authz.ModeAPIKey:  true,
+	authz.ModeIAM:     true,
+	authz.ModeOIDC:    true,
+	authz.ModeCognito: true,
+}
 
-// checkFieldAuth enforces a field's `@aws_*` auth-mode gate. It fires ONLY when EVERY declared mode on
-// the field is one we enforce (currently just api-key), so a field that also lists a not-yet-enforced
-// mode stays advisory and is never over-denied. When it fires, the request's authenticated mode must be
-// one of the field's declared modes; the mapped identity then flows into the normal SAR check
+// checkFieldAuth enforces a field's auth rules (the neutral form of its `@aws_*` directives). It fires
+// ONLY when EVERY rule's mode is one we enforce, so a field that also lists a not-yet-enforced mode stays
+// advisory and is never over-denied. When it fires, the request must satisfy at least ONE rule: its
+// authenticated mode matches the rule's mode AND — if the rule carries requiredGroups — the caller
+// belongs to one of them. The group check is FAIL-CLOSED: a caller with missing/empty groups cannot
+// satisfy a group-restricted rule. The mapped identity then flows into the normal SAR check
 // (resolver.Auth), keeping authorization in the one policy world.
 func (e *Engine) checkFieldAuth(ctx context.Context, parentType, fieldName string) *GqlError {
 	if e.schema == nil {
 		return nil
 	}
-	modes := e.schema.fieldAuthModes(parentType, fieldName)
-	if len(modes) == 0 {
+	rules := e.schema.fieldAuthRules(parentType, fieldName)
+	if len(rules) == 0 {
 		return nil
 	}
-	for _, m := range modes {
-		if !enforcedAuthModes[m] {
+	for _, r := range rules {
+		if !enforcedAuthModes[r.mode] {
 			return nil // advisory: a mode we don't enforce yet is present — don't gate this field
 		}
 	}
 	reqMode := authz.Mode(ctx)
-	for _, m := range modes {
-		if m == reqMode {
-			return nil
+	callerGroups := authz.FromContext(ctx).Groups
+	modes := make([]string, 0, len(rules))
+	for _, r := range rules {
+		modes = append(modes, r.mode)
+		if r.mode != reqMode {
+			continue
 		}
+		if len(r.requiredGroups) == 0 {
+			return nil // mode matches, no group restriction
+		}
+		if groupsIntersect(callerGroups, r.requiredGroups) {
+			return nil // mode matches AND caller is in a required group
+		}
+		// mode matches but the group check fails (incl. caller with no groups) → this rule denies;
+		// fall through so another rule may still satisfy the request (fail-closed if none does).
 	}
 	return &GqlError{Message: "this field requires " + strings.Join(modes, " or ") + " authentication", ErrorType: "Unauthorized"}
+}
+
+// groupsIntersect reports whether the caller belongs to any of the required groups. An empty caller set
+// (missing/unparseable groups) never intersects — the group check is fail-closed.
+func groupsIntersect(caller, required []string) bool {
+	if len(caller) == 0 || len(required) == 0 {
+		return false
+	}
+	have := make(map[string]bool, len(caller))
+	for _, g := range caller {
+		have[g] = true
+	}
+	for _, g := range required {
+		if have[g] {
+			return true
+		}
+	}
+	return false
 }
 
 // introspect answers a __schema or __type meta-field, subject to the introspection toggle. It returns
@@ -591,6 +627,16 @@ func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[stri
 		childPath := append(append([]any{}, path...), respKey)
 		fieldType := namedFieldType(e.schema, concreteType, sel.name)
 
+		// AppSync auth-mode/group gate — enforced for EVERY selected field regardless of whether it has
+		// its own resolver. A sensitive scalar (e.g. `secret: String @aws_iam`) is usually resolverless,
+		// read structurally from the parent result; its directive must still gate it, or it would be
+		// silently public. So the gate runs BEFORE the resolver-vs-structural branch below.
+		if ge := e.checkFieldAuth(ec.ctx, concreteType, sel.name); ge != nil {
+			errs = append(errs, GqlError{Message: ge.Message, Path: childPath, ErrorType: ge.ErrorType})
+			out[respKey] = nil
+			continue
+		}
+
 		r, ok := e.resolvers[concreteType+"."+sel.name]
 		if !ok || concreteType == "" {
 			// No per-field resolver: project the value the parent resolver already produced.
@@ -600,13 +646,7 @@ func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[stri
 			continue
 		}
 
-		// AppSync auth-mode gate, enforced before the nested resolver runs, exactly as at the root.
-		if ge := e.checkFieldAuth(ec.ctx, concreteType, sel.name); ge != nil {
-			errs = append(errs, GqlError{Message: ge.Message, Path: childPath, ErrorType: ge.ErrorType})
-			out[respKey] = nil
-			continue
-		}
-		// Per-nested-field resolver. Field-level auth is enforced before it runs, exactly as at the root.
+		// Per-nested-field resolver. Field-level SAR auth is enforced before it runs, as at the root.
 		id := authz.FromContext(ec.ctx)
 		if !r.Auth.IsZero() {
 			if err := e.authorizer.Authorize(ec.ctx, id, r.Auth); err != nil {

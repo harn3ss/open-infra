@@ -273,6 +273,13 @@ spec:
             # no admin secret: the shim conveys the verified principal and open-appsync enforces authz
             # internally. Absent (component disabled) → the appsync service returns 502.
             - { name: GRAPHQL_ENDPOINT, value: "http://open-appsync.open-infra-open-appsync.svc.cluster.local:80" }
+          # OPTIONAL OIDC/Cognito auth for the AppSync data plane (@aws_oidc / @aws_cognito_user_pools).
+          # Off unless OIDC_ISSUER is set. Provide these via a ConfigMap named `aws-shim-oidc` in this
+          # namespace (envFrom optional=true, so the shim runs fine without it): OIDC_ISSUER,
+          # OIDC_AUDIENCE (required when issuer is set), OIDC_MODE (aws_oidc | aws_cognito_user_pools),
+          # and optionally OIDC_GROUPS_CLAIM (explicit override always wins; else inferred from issuer).
+          envFrom:
+            - configMapRef: { name: aws-shim-oidc, optional: true }
           readinessProbe:
             httpGet: { path: /healthz, port: 4566 }
             initialDelaySeconds: 5

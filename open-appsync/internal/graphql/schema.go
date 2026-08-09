@@ -510,7 +510,15 @@ func (p *sdlParser) parseDirectives() directiveInfo {
 			}
 		default:
 			if authDirectiveNames[name] {
-				aa := appliedAuth{name: name}
+				// Legacy @aws_auth(cognito_groups:) is the pre-@aws_cognito_user_pools spelling of the same
+				// Cognito-group restriction — normalize it to the enforced cognito mode so its group check
+				// runs (leaving it as a distinct un-enforced mode would silently make the field public, and
+				// would even downgrade a sibling @aws_cognito_user_pools rule via the advisory short-circuit).
+				mode := name
+				if mode == "aws_auth" {
+					mode = "aws_cognito_user_pools"
+				}
+				aa := appliedAuth{name: mode}
 				if g, ok := args["cognito_groups"]; ok && g.kind == "list" {
 					for _, e := range g.val.([]valueNode) {
 						if s, ok := e.val.(string); ok {
@@ -615,10 +623,21 @@ func (s *Schema) DeclaredAuthDirectives() []string {
 	return out
 }
 
-// fieldAuthModes returns the effective AppSync auth-mode names declared for parentType.fieldName — the
-// field's own auth directives, or (AppSync-style: a field's modes override its type's default) the
-// parent type's. Empty means no auth directive (public / unrestricted).
-func (s *Schema) fieldAuthModes(parentType, fieldName string) []string {
+// authRule is a NEUTRAL field authorization requirement the executor enforces: a request must be in
+// `mode` and, when requiredGroups is non-empty, the caller must belong to at least one of them. The
+// SCHEMA layer (here) is the only place that knows AppSync's directive vocabulary — it translates each
+// applied directive into a rule (e.g. @aws_cognito_user_pools(cognito_groups: […]) →
+// {mode:"aws_cognito_user_pools", requiredGroups:[…]}). The executor treats `mode` as an opaque string
+// and `requiredGroups` as generic group names; it never learns the word "Cognito".
+type authRule struct {
+	mode           string
+	requiredGroups []string
+}
+
+// fieldAuthRules returns the effective auth rules for parentType.fieldName — the field's own auth
+// directives, or (AppSync-style: a field's directives override its type's default) the parent type's.
+// Empty means no auth directive (public / unrestricted).
+func (s *Schema) fieldAuthRules(parentType, fieldName string) []authRule {
 	nt := s.types[parentType]
 	if nt == nil {
 		return nil
@@ -626,18 +645,20 @@ func (s *Schema) fieldAuthModes(parentType, fieldName string) []string {
 	for _, f := range nt.fields {
 		if f.name == fieldName {
 			if len(f.authDirectives) > 0 {
-				return authNames(f.authDirectives)
+				return toAuthRules(f.authDirectives)
 			}
 			break
 		}
 	}
-	return authNames(nt.authDirectives) // type-level default
+	return toAuthRules(nt.authDirectives) // type-level default
 }
 
-func authNames(as []appliedAuth) []string {
-	out := make([]string, 0, len(as))
+// toAuthRules translates parsed auth directives into neutral rules. This is the single translation seam:
+// cognito_groups becomes a generic requiredGroups list, so the executor stays vendor-neutral.
+func toAuthRules(as []appliedAuth) []authRule {
+	out := make([]authRule, 0, len(as))
 	for _, a := range as {
-		out = append(out, a.name)
+		out = append(out, authRule{mode: a.name, requiredGroups: a.cognitoGroups})
 	}
 	return out
 }

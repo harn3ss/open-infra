@@ -82,10 +82,37 @@ func run(logger *slog.Logger) error {
 		resolve: newOwnerResolver(cs, usersNS),
 	}
 
+	// Optional OIDC/Cognito JWT auth for the AppSync data plane (the one non-SigV4 path). Enabled when
+	// OIDC_ISSUER is set. Audience is REQUIRED (no unaudienced tokens). The mode is EXPLICIT
+	// (OIDC_MODE, default aws_oidc); the issuer only picks the default groups-claim name.
+	var jwtAuth *jwtAuthenticator
+	if issuer := getenv("OIDC_ISSUER", ""); issuer != "" {
+		audience := getenv("OIDC_AUDIENCE", "")
+		if audience == "" {
+			logger.Error("OIDC_ISSUER is set but OIDC_AUDIENCE is empty — refusing to enable JWT auth without audience enforcement")
+			os.Exit(1)
+		}
+		mode := getenv("OIDC_MODE", "aws_oidc")
+		if mode != "aws_oidc" && mode != "aws_cognito_user_pools" {
+			logger.Error("OIDC_MODE must be aws_oidc or aws_cognito_user_pools", "got", mode)
+			os.Exit(1)
+		}
+		groupsClaim := resolveGroupsClaim(getenv("OIDC_GROUPS_CLAIM", ""), issuer)
+		discCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ja, err := newJWTAuthenticator(discCtx, issuer, audience, groupsClaim, mode)
+		cancel()
+		if err != nil {
+			logger.Error("OIDC init failed", "issuer", issuer, "error", err.Error())
+			os.Exit(1)
+		}
+		jwtAuth = ja
+		logger.Info("appsync OIDC/JWT auth enabled", "issuer", issuer, "mode", mode, "groupsClaim", groupsClaim)
+	}
+
 	// The service registry: one front door, many domain experts (keyed by the AWS service name the
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
-	router := newRouter(logger, auth, map[string]awsService{
+	router := newRouter(logger, auth, jwtAuth, map[string]awsService{
 		"s3":      &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
 		"sts":     &stsHandler{account: account, logger: logger},
 		"lambda":  newLambdaHandler(cs, fnNS, svcSuffix, logger),
@@ -133,7 +160,7 @@ func run(logger *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRouter(logger *slog.Logger, auth *authenticator, services map[string]awsService) http.Handler {
+func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, services map[string]awsService) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -151,7 +178,7 @@ func newRouter(logger *slog.Logger, auth *authenticator, services map[string]aws
 		names = append(names, n)
 	}
 	logger.Info("aws services registered", "services", names)
-	r.Handle("/*", &serviceRouter{auth: auth, services: services, logger: logger})
+	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, services: services, logger: logger})
 	return r
 }
 
