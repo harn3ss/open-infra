@@ -504,6 +504,33 @@ export function getFunctionRoutes(
   );
 }
 
+/** Test a resolver against a GraphQLApi's engine (its POST /test-resolver): render the
+ *  request/response templates against a sample $ctx WITHOUT touching a data source. The BFF proxies to
+ *  the in-cluster engine Service the browser can't reach. */
+export interface TestResolverRequest {
+  runtime?: string; // appsync-vtl (default) | appsync-js
+  request: string; // request mapping template source (or the JS module)
+  response?: string; // response mapping template source
+  context?: unknown; // the $ctx: { args, identity, source }
+  result?: unknown; // optional sample data-source result → also runs the response phase
+}
+export interface TestResolverResponse {
+  requestOp?: unknown; // the neutral data-source operation the request phase emits
+  response?: unknown; // the response value (only when `result` was supplied)
+  error?: string;
+  errorType?: string;
+}
+export function testResolver(
+  namespace: string,
+  name: string,
+  req: TestResolverRequest,
+): Promise<TestResolverResponse> {
+  return request<TestResolverResponse>(
+    `/graphqlapis/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/test-resolver`,
+    { method: "POST", body: JSON.stringify(req) },
+  );
+}
+
 /* ------------------------------ Query (Athena) --------------------------- */
 
 export interface QueryResult {

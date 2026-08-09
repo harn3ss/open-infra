@@ -207,6 +207,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 			Get("/functions/{namespace}/{name}/routes", handleFunctionRoutes(*client.Clientset, logger))
 		api.With(middleware.Timeout(65*time.Second)).
 			Post("/functions/{namespace}/{name}/invoke", handleFunctionInvoke(*client.Clientset, logger))
+		api.With(middleware.Timeout(35*time.Second)).
+			Post("/graphqlapis/{namespace}/{name}/test-resolver", handleGraphQLTestResolver(*client.Clientset, logger))
 		api.With(middleware.Timeout(10*time.Second)).
 			Post("/queues/publish", handleQueuePublish(logger))
 		api.With(middleware.Timeout(15*time.Second)).
