@@ -26,6 +26,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/lambdasource"
+	"github.com/harn3ss/open-infra/open-appsync/internal/rdssource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
@@ -76,9 +77,10 @@ type LimitsConfig struct {
 
 type DataSourceConfig struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"`       // "memory" | "dynamodb" (FerretDB-backed) | "http" | "lambda"
+	Type       string `json:"type"`       // "memory" | "dynamodb" (FerretDB) | "http" | "lambda" | "rds" (Postgres)
 	Collection string `json:"collection"` // dynamodb: the FerretDB collection ("table")
 	Endpoint   string `json:"endpoint"`   // http: base URL; lambda: the function (kind: Function) URL
+	// rds: the DSN comes from a Secret injected as env APPSYNC_RDS_DSN_<NAME>, never the CR.
 }
 
 type ResolverConfig struct {
@@ -146,8 +148,20 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 				return nil, fmt.Errorf("open-appsync: data source %q (lambda) needs an endpoint (the function URL)", ds.Name)
 			}
 			stores[ds.Name] = lambdasource.New(ds.Endpoint)
+		case "rds":
+			// The connection string carries credentials, so it comes from a Secret (never the CR): the
+			// composition injects it as env APPSYNC_RDS_DSN_<NAME> from the data source's connectionSecret.
+			dsn := os.Getenv("APPSYNC_RDS_DSN_" + rdsEnvKey(ds.Name))
+			if dsn == "" {
+				return nil, fmt.Errorf("open-appsync: data source %q (rds) needs a DSN via env APPSYNC_RDS_DSN_%s (from its connectionSecret)", ds.Name, rdsEnvKey(ds.Name))
+			}
+			st, err := rdssource.NewPostgres(dsn)
+			if err != nil {
+				return nil, fmt.Errorf("open-appsync: data source %q (rds): %w", ds.Name, err)
+			}
+			stores[ds.Name] = st
 		default:
-			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | dynamodb | http | lambda)", ds.Name, ds.Type)
+			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | dynamodb | http | lambda | rds)", ds.Name, ds.Type)
 		}
 	}
 
@@ -195,6 +209,23 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 	// authorizer wired by main).
 	engineOpts = append(engineOpts, opts...)
 	return graphql.New(registry, engineOpts...), nil
+}
+
+// rdsEnvKey turns a data-source name into the suffix of its DSN env var (upper-case, non-alphanumerics
+// to "_") — e.g. "orders-db" → "ORDERS_DB", read as APPSYNC_RDS_DSN_ORDERS_DB.
+func rdsEnvKey(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 32)
+		case (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
 }
 
 // dedupe returns the input with duplicate strings removed, preserving first-seen order.

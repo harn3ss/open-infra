@@ -161,6 +161,13 @@ spec:
                               # to the k8s identity it impersonates — THE KEY IS AN IDENTITY.
                               - { name: APPSYNC_API_KEYS_FILE, value: "/etc/open-appsync-apikeys/apikeys.json" }
                               {{- end }}
+                              {{- range $ds := ($spec.dataSources | default list) }}
+                              {{- if eq ($ds.type | default "memory") "rds" }}
+                              # rds data source {{ $ds.name }}: DSN from its connectionSecret (key `dsn`), never the CR.
+                              - name: APPSYNC_RDS_DSN_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
+                                valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: dsn } }
+                              {{- end }}
+                              {{- end }}
                             volumeMounts:
                               - { name: config, mountPath: /etc/open-appsync }
                               {{- if $spec.apiKeysSecret }}
