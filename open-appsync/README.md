@@ -290,12 +290,37 @@ layer.
   aws_iam`. The engine gates `@aws_iam` fields on that mode (trusted on the same boundary as the identity
   headers — only the shim sets them) and runs the field's SAR against the principal. No new credential
   store — SigV4 is the credential, the shim is the verifier.
-- **`@aws_oidc` / `@aws_lambda` / `@aws_cognito_user_pools` — ADVISORY** (declared, parsed, reported;
-  **loudly logged as not-enforced at load**). They grant and deny nothing yet; access is via resolver
-  SAR auth until each graduates.
+- **`@aws_oidc` / `@aws_cognito_user_pools` — ENFORCED.** The aws-shim verifies an OIDC/Cognito **JWT**
+  (via `coreos/go-oidc`: JWKS discovery + signature/issuer/audience/expiry; alg:none and unknown keys
+  rejected) and forwards the subject + groups + mode in the same header shape. The engine gates the field
+  on the mode; `@aws_cognito_user_pools(cognito_groups: […])` additionally requires the caller's groups
+  to intersect the listed groups — **fail-closed** (a caller with no groups is denied). Config is shim-
+  global (`OIDC_ISSUER`/`OIDC_AUDIENCE`/`OIDC_MODE`, `OIDC_GROUPS_CLAIM` override wins; the issuer only
+  picks the default claim name). The group vocabulary stays neutral — the schema layer translates the
+  directive into a generic group requirement the executor enforces; the engine never learns "Cognito."
+- **`@aws_lambda` — ADVISORY** (declared, parsed, reported; **loudly logged as not-enforced at load**). It
+  grants and denies nothing yet; access is via resolver SAR auth until it graduates.
 
 A field is gated only when EVERY mode it lists is enforced (so a field mixing in a not-yet-enforced mode
-stays advisory, never over-denied); a valid request must use one of the field's declared modes.
+stays advisory, never over-denied); a valid request must use one of the field's declared modes. The gate
+runs on **every** field — root and nested, whether or not the field has its own resolver — so a sensitive
+scalar (`secret: String @aws_iam`) read structurally from its parent is still gated. Legacy
+`@aws_auth(cognito_groups:)` is honored as the Cognito mode.
+
+**Auth security notes (read before relying on it):**
+- **Group vocabulary.** The shim namespaces a token's groups to open-infra's RBAC vocabulary
+  (`openinfra:<group>`, via the shared `iam.GroupsFromSpec`) before they become identity — so an
+  untrusted claim can't collide with a real cluster group (`system:masters`) and an empty claim is
+  unprivileged, not a default role. Consequently a field's `cognito_groups` must name the **open-infra**
+  group (e.g. `["openinfra:Admins"]`), not the raw IdP group — the authority-relocation cost, fail-closed
+  on mismatch. The engine matches by neutral string intersection.
+- **Header trust is the linchpin.** The engine trusts `X-OpenInfra-User`/`-Groups`/`-Auth-Mode` for the
+  iam/oidc/cognito modes because only the aws-shim (which verified the SigV4 signature or the JWT) sets
+  them. `@aws_api_key` is different — the engine validates the key itself. Field-mode enforcement is only
+  as strong as the guarantee that the engine's HTTP port is reachable **only** via the shim; restrict it
+  with a NetworkPolicy (a direct caller could otherwise forge the mode headers).
+- **Residual:** the shim does not yet check `token_use` (id vs access token). Audience enforcement is the
+  control — scope `OIDC_AUDIENCE` tightly. Management (`/v1/`) is never reachable via a data-plane JWT.
 
 A cost to state plainly to a migrator: SAR enforcement **relocates authority** —
 `@aws_cognito_user_pools(cognito_groups:)` will stop meaning "check the JWT" and start meaning "check
