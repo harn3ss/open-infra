@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -181,6 +182,12 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		// Only scalars the schema declares are ever consulted; these are best-effort FORMAT checks, not
 		// AWS-byte-exact fidelity (see internal/awsscalars for the two clocks).
 		engineOpts = append(engineOpts, graphql.WithSchema(schema), graphql.WithScalarValidators(awsscalars.Validators()))
+		// LOUDLY label AppSync auth directives as declared-but-not-enforced (advisory). They parse and are
+		// reported in introspection, but open-appsync does not enforce them yet — access control is via
+		// resolver SAR auth. Enforcement is being added per-mode (api-key → iam → cognito/oidc → lambda).
+		if declared := schema.DeclaredAuthDirectives(); len(declared) > 0 {
+			log.Printf("open-appsync: WARNING: schema declares AppSync auth directives %v that are NOT ENFORCED (advisory only) — field access is governed by resolver SAR auth, not these directives", declared)
+		}
 	}
 
 	// Limits first (so an explicit WithLimits in opts could override), then caller options (the SAR

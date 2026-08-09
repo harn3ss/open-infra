@@ -48,7 +48,8 @@ type fieldDef struct {
 	typ                typeRef
 	deprecated         bool
 	deprecationReason  string
-	subscribeMutations []string // @aws_subscribe(mutations:) — set on Subscription-type fields
+	subscribeMutations []string      // @aws_subscribe(mutations:) — set on Subscription-type fields
+	authDirectives     []appliedAuth // AppSync auth directives on this field (advisory, not enforced)
 }
 
 type inputValueDef struct {
@@ -70,14 +71,15 @@ type enumValueDef struct {
 // namedType is one entry in the type map: every `type`/`scalar`/`enum`/`input`/`interface`/`union` in
 // the SDL becomes one of these. The graph is these plus the typeRefs that point between them.
 type namedType struct {
-	kind          string // SCALAR | OBJECT | INTERFACE | UNION | ENUM | INPUT_OBJECT
-	name          string
-	description   string
-	fields        []fieldDef      // OBJECT, INTERFACE
-	inputFields   []inputValueDef // INPUT_OBJECT
-	enumValues    []enumValueDef  // ENUM
-	interfaces    []string        // OBJECT: implemented interface names
-	possibleTypes []string        // UNION members / INTERFACE implementors
+	kind           string // SCALAR | OBJECT | INTERFACE | UNION | ENUM | INPUT_OBJECT
+	name           string
+	description    string
+	fields         []fieldDef      // OBJECT, INTERFACE
+	inputFields    []inputValueDef // INPUT_OBJECT
+	enumValues     []enumValueDef  // ENUM
+	interfaces     []string        // OBJECT: implemented interface names
+	possibleTypes  []string        // UNION members / INTERFACE implementors
+	authDirectives []appliedAuth   // AppSync auth directives on this type (advisory, not enforced)
 }
 
 // Schema is the parsed type system: the name→type map plus the three root operation type names. It also
@@ -271,7 +273,7 @@ func (p *sdlParser) parseObjectLike(desc, keyword string) (*namedType, error) {
 			}
 		}
 	}
-	p.parseDirectives()
+	nt.authDirectives = p.parseDirectives().authDirectives
 	if !p.accept("punct", "{") {
 		return nil, fmt.Errorf("graphql: SDL: expected '{' in %s %s", keyword, name)
 	}
@@ -313,6 +315,7 @@ func (p *sdlParser) parseFieldDef() (fieldDef, error) {
 	f.typ = tr
 	di := p.parseDirectives()
 	f.deprecated, f.deprecationReason, f.subscribeMutations = di.deprecated, di.reason, di.subscribeMutations
+	f.authDirectives = di.authDirectives
 	return f, nil
 }
 
@@ -436,11 +439,27 @@ func (p *sdlParser) parseUnion(desc string) (*namedType, error) {
 	return nt, nil
 }
 
+// appliedAuth is one AppSync auth directive applied to a type or field (e.g. @aws_iam,
+// @aws_cognito_user_pools(cognito_groups: [...])). ADVISORY ONLY today — open-appsync parses and reports
+// these but does NOT enforce them yet (field access is governed by resolver SAR auth); enforcement is
+// being added per-mode, in order api-key → iam → cognito/oidc → lambda.
+type appliedAuth struct {
+	name          string   // "aws_api_key" | "aws_iam" | "aws_cognito_user_pools" | "aws_oidc" | "aws_lambda" | "aws_auth"
+	cognitoGroups []string // cognito_groups arg (aws_cognito_user_pools / legacy aws_auth)
+}
+
+// authDirectiveNames are the AppSync auth directives recognized (parsed + reported, not yet enforced).
+var authDirectiveNames = map[string]bool{
+	"aws_api_key": true, "aws_iam": true, "aws_cognito_user_pools": true,
+	"aws_oidc": true, "aws_lambda": true, "aws_auth": true,
+}
+
 // directiveInfo is what the SDL parser extracts from a definition's directives.
 type directiveInfo struct {
 	deprecated         bool
 	reason             string
-	subscribeMutations []string // @aws_subscribe(mutations: [...]) on a Subscription field
+	subscribeMutations []string      // @aws_subscribe(mutations: [...]) on a Subscription field
+	authDirectives     []appliedAuth // AppSync auth directives (advisory)
 }
 
 // parseDirectives consumes zero or more `@name(args)` directives applied to a definition. It captures the
@@ -488,6 +507,18 @@ func (p *sdlParser) parseDirectives() directiveInfo {
 						info.subscribeMutations = append(info.subscribeMutations, s)
 					}
 				}
+			}
+		default:
+			if authDirectiveNames[name] {
+				aa := appliedAuth{name: name}
+				if g, ok := args["cognito_groups"]; ok && g.kind == "list" {
+					for _, e := range g.val.([]valueNode) {
+						if s, ok := e.val.(string); ok {
+							aa.cognitoGroups = append(aa.cognitoGroups, s)
+						}
+					}
+				}
+				info.authDirectives = append(info.authDirectives, aa)
 			}
 		}
 	}
@@ -556,6 +587,31 @@ func (s *Schema) SubscriptionTriggers() map[string][]string {
 			out[mut] = append(out[mut], f.name)
 		}
 	}
+	return out
+}
+
+// DeclaredAuthDirectives returns the distinct AppSync auth directive names applied anywhere in the
+// schema (on types or fields), sorted. Empty if none. Used to loudly warn at load that these are
+// DECLARED but NOT ENFORCED yet (advisory) — see [[auth-directives-decision]]: enforcement is being
+// added per-mode via SAR (api-key → iam → cognito/oidc → lambda).
+func (s *Schema) DeclaredAuthDirectives() []string {
+	seen := map[string]bool{}
+	note := func(as []appliedAuth) {
+		for _, a := range as {
+			seen[a.name] = true
+		}
+	}
+	for _, nt := range s.types {
+		note(nt.authDirectives)
+		for _, f := range nt.fields {
+			note(f.authDirectives)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Strings(out)
 	return out
 }
 
