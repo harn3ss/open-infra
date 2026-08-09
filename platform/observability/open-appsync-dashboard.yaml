@@ -1,0 +1,207 @@
+# Grafana dashboard for the open-appsync engine (kind: GraphQLApi), auto-imported by the
+# kube-prometheus-stack Grafana sidecar (label grafana_dashboard=1). It visualizes the metrics the
+# engine exposes at /metrics (scraped by open-appsync-servicemonitor.yaml): request rate/errors/
+# latency/concurrency, per-data-source-type backend health, and live subscription connections.
+#
+# Templated by `namespace` and `api` — `api` is the scrape `service` label the ServiceMonitor
+# produces (open-appsync-<name>), so one dashboard serves every GraphQLApi. Panels sum across
+# replicas for an API-level view.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-open-appsync-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  open-appsync.json: |
+    {
+      "uid": "openinfra-open-appsync",
+      "title": "open-infra / open-appsync (GraphQL engine)",
+      "tags": ["open-infra", "open-appsync"],
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "query": "label_values(openappsync_graphql_requests_total, namespace)",
+            "refresh": 2,
+            "sort": 1,
+            "includeAll": false
+          },
+          {
+            "name": "api",
+            "label": "API (service)",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "query": "label_values(openappsync_graphql_requests_total{namespace=\"$namespace\"}, service)",
+            "refresh": 2,
+            "sort": 1,
+            "includeAll": false
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "GraphQL request rate by outcome",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(openappsync_graphql_requests_total{namespace=\"$namespace\", service=\"$api\"}[5m])) by (outcome)",
+              "legendFormat": "{{outcome}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "GraphQL request latency (quantiles)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.50, sum(rate(openappsync_graphql_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$api\"}[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "refId": "B",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.95, sum(rate(openappsync_graphql_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$api\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            },
+            {
+              "refId": "C",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.99, sum(rate(openappsync_graphql_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$api\"}[5m])) by (le))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Error ratio (5m)",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(openappsync_graphql_requests_total{namespace=\"$namespace\", service=\"$api\", outcome=\"error\"}[5m])) / clamp_min(sum(rate(openappsync_graphql_requests_total{namespace=\"$namespace\", service=\"$api\"}[5m])), 1e-09)",
+              "legendFormat": "error ratio"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Requests in flight",
+          "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(openappsync_graphql_requests_in_flight{namespace=\"$namespace\", service=\"$api\"})",
+              "legendFormat": "in flight"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Live subscription connections",
+          "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(openappsync_subscription_connections{namespace=\"$namespace\", service=\"$api\"})",
+              "legendFormat": "connections"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "GraphQL request rate by auth mode",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(openappsync_graphql_requests_total{namespace=\"$namespace\", service=\"$api\"}[5m])) by (mode)",
+              "legendFormat": "{{mode}}"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Data-source request rate by type",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(openappsync_datasource_requests_total{namespace=\"$namespace\", service=\"$api\"}[5m])) by (type)",
+              "legendFormat": "{{type}}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Data-source p95 latency by type",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.95, sum(rate(openappsync_datasource_request_duration_seconds_bucket{namespace=\"$namespace\", service=\"$api\"}[5m])) by (le, type))",
+              "legendFormat": "{{type}}"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Data-source error rate by type",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(openappsync_datasource_requests_total{namespace=\"$namespace\", service=\"$api\", outcome=\"error\"}[5m])) by (type)",
+              "legendFormat": "{{type}}"
+            }
+          ]
+        }
+      ]
+    }
