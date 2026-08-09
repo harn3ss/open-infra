@@ -3,8 +3,10 @@ module github.com/harn3ss/open-infra/open-appsync
 go 1.26.0
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/dop251/goja v0.0.0-20260806115107-493f22071ef6
 	github.com/gorilla/websocket v1.5.3
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/nats-io/nats.go v1.52.0
 	go.mongodb.org/mongo-driver v1.17.9
 )
@@ -14,6 +16,9 @@ require (
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/nats-io/nkeys v0.4.15 // indirect
