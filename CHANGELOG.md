@@ -20,6 +20,17 @@ the product's public contract.
   `graphqlapis`). Built + wired + type-checks + BFF builds; **UX not yet verified in a browser**.
 
 ### Abstractions
+- **open-appsync — AWS auth directives, ADVISORY ONLY (declared, not enforced).** The SDL parser now
+  recognizes AppSync's five auth directives — `@aws_api_key`, `@aws_iam`,
+  `@aws_cognito_user_pools(cognito_groups:)`, `@aws_oidc`, `@aws_lambda` — on types and fields, captures
+  them on the type graph, reports their definitions in introspection **each loudly labeled
+  declared-only/not-enforced**, and **logs a WARNING at load** naming the declared modes. This lets an
+  imported AppSync schema load and stay honest — it grants and denies nothing yet; field access remains
+  governed by resolver SAR auth. Enforcement will be added **per-mode via the one policy world (k8s
+  SAR)** in order api-key → `@aws_iam` → Cognito/OIDC → Lambda-authorizer — never a parallel auth layer.
+  A cost stated plainly for migrators: enforcement **relocates authority** —
+  `@aws_cognito_user_pools(cognito_groups:)` will mean "check k8s RBAC via SAR," not "check the JWT," so
+  group rules become RBAC bindings.
 - **open-appsync — interfaces & unions (polymorphic dispatch).** Execution now follows the GraphQL
   spec's per-object CollectFields: fragment type conditions are applied at resolution time against each
   object's *concrete* type, so `... on Dog { bark }` contributes only to Dog objects and `... on Cat { meow }`

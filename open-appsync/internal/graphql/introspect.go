@@ -172,7 +172,7 @@ func standardDirectives() []any {
 	ifArg := func() []any {
 		return []any{map[string]any{"name": "if", "description": nil, "type": boolNonNull, "defaultValue": nil}}
 	}
-	return []any{
+	dirs := []any{
 		map[string]any{
 			"name": "skip", "description": "Directs the executor to skip this field or fragment when the `if` argument is true.",
 			"locations": []any{"FIELD", "FRAGMENT_SPREAD", "INLINE_FRAGMENT"}, "args": ifArg(), "isRepeatable": false,
@@ -187,6 +187,30 @@ func standardDirectives() []any {
 			"args":         []any{map[string]any{"name": "reason", "description": nil, "type": stringType, "defaultValue": `"No longer supported"`}},
 			"isRepeatable": false,
 		},
+	}
+	return append(dirs, awsAuthDirectiveDefs()...)
+}
+
+// awsAuthDirectiveDefs reports AppSync's auth directives so an imported schema's directives are visible
+// to tooling. ADVISORY ONLY: each description states plainly that open-appsync parses and reports the
+// directive but does NOT enforce it yet — access control is via resolver SAR auth. Enforcement is being
+// added per-mode (api-key → iam → cognito/oidc → lambda); until a mode flips, declaring it grants
+// nothing and denies nothing.
+func awsAuthDirectiveDefs() []any {
+	const advisory = "AppSync auth mode, DECLARED-ONLY: open-appsync parses and reports this directive but does NOT enforce it yet (advisory). Field access is governed by the resolver's SAR auth, not this directive."
+	authLocations := []any{"OBJECT", "FIELD_DEFINITION"}
+	stringType := map[string]any{"kind": kindScalar, "name": "String", "ofType": nil}
+	listOfString := map[string]any{"kind": kindList, "name": nil, "ofType": stringType}
+	groupsArg := []any{map[string]any{"name": "cognito_groups", "description": nil, "type": listOfString, "defaultValue": nil}}
+	def := func(name string, args []any) map[string]any {
+		return map[string]any{"name": name, "description": advisory, "locations": authLocations, "args": args, "isRepeatable": false}
+	}
+	return []any{
+		def("aws_api_key", []any{}),
+		def("aws_iam", []any{}),
+		def("aws_oidc", []any{}),
+		def("aws_lambda", []any{}),
+		def("aws_cognito_user_pools", groupsArg),
 	}
 }
 
