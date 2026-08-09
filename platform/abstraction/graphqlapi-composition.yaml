@@ -233,5 +233,41 @@ spec:
                     selector: { app: open-appsync-{{ $name }} }
                     ports:
                       - { name: http, port: 80, targetPort: 8080 }
+            ---
+            # --- Ingress isolation: the engine answers only its legitimate front doors ---
+            # The GraphQL data plane's real front door is the aws-shim (SigV4/JWT), so arbitrary
+            # cross-namespace callers should never reach the engine's ClusterIP directly and bypass that
+            # authentication. Default-deny ingress, allowing only: same namespace, the console BFF (its
+            # Test Resolver posts to /test-resolver), Prometheus (scrapes /metrics), and the shim. Ingress
+            # is evaluated post-DNAT by Cilium identity, so a standard NetworkPolicy is correct here; ports
+            # match the pod's container port (8080), not the Service port. Egress is left open — resolvers
+            # reach arbitrary data-source hosts (http/rds/opensearch/lambda), NATS, FerretDB and the API
+            # server (SAR), and a standard egress policy would silently drop in-cluster ClusterIPs (pre-DNAT).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: open-appsync-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app: open-appsync-{{ $name }}, openinfra.dev/graphqlapi: {{ $name }} }
+                  spec:
+                    podSelector: { matchLabels: { app: open-appsync-{{ $name }} } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+                            podSelector: { matchLabels: { app: aws-shim } }
+                        ports:
+                          - { protocol: TCP, port: 8080 }
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }

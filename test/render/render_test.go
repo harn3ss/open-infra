@@ -160,6 +160,10 @@ func TestGraphQLApi_RendersConfigAndEngine(t *testing.T) {
 		"kind: Deployment", "open-appsync-notes", "openinfra.dev/config-checksum:",
 		"readOnlyRootFilesystem: true", "drop: [ALL]",
 		"kind: Service", "targetPort: 8080",
+		// (c) ingress isolation: default-deny with the four legitimate front doors, on the pod port.
+		"kind: NetworkPolicy", "policyTypes: [Ingress]",
+		"open-infra-console", "kubernetes.io/metadata.name: monitoring",
+		"open-infra-aws-shim", "app: aws-shim", "port: 8080",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("GraphQLApi render missing %q; got:\n%s", want, grepCtx(out, "open-appsync-notes"))
