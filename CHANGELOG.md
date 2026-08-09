@@ -44,8 +44,12 @@ the product's public contract.
   JSON, with optional HTTP basic auth from a Secret. Added an **RDS** source (`type: rds`): SQL over
   PostgreSQL/Aurora-PostgreSQL in AppSync's
   `{statements, variableMap}` shape, with `:name` parameters bound safely (never interpolated) and rows
-  returned as JSON; the connection string comes from a Secret (`connectionSecret`), never the CR. Both sit
-  behind the same neutral data-source contract as the DynamoDB and HTTP sources. Custom scalars are
+  returned as JSON; the connection string comes from a Secret (`connectionSecret`), never the CR. Added an
+  **EventBridge** source (`type: eventbridge`): a `PutEvents` operation publishes each entry to the
+  platform NATS event bus and returns a PutEvents-shaped receipt (per-entry `EventId`, or an error entry,
+  with `FailedEntryCount`) — a *publish* source rather than call-and-return, wired to the platform NATS by
+  default (or a NATS URL via `endpoint`). All sit behind the same neutral data-source contract as the
+  DynamoDB and HTTP sources. Custom scalars are
   validated through a neutral per-scalar seam, with AWS scalar formats (AWSDateTime, AWSJSON, and others)
   supplied at the edge. Byte-exact fidelity against a live AWS round trip is a separate later item per source.
 - **open-appsync — multi-replica subscriptions.** Each engine replica consumes the subscription event

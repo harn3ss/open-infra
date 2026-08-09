@@ -22,6 +22,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/awsscalars"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
+	"github.com/harn3ss/open-infra/open-appsync/internal/eventbridgesource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
@@ -79,7 +80,7 @@ type LimitsConfig struct {
 
 type DataSourceConfig struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"`       // memory | none | dynamodb (FerretDB) | http | lambda | rds (Postgres) | opensearch
+	Type       string `json:"type"`       // memory|none|dynamodb(FerretDB)|http|lambda|rds(Postgres)|opensearch|eventbridge
 	Collection string `json:"collection"` // dynamodb: the FerretDB collection ("table")
 	Endpoint   string `json:"endpoint"`   // http: base URL; lambda: the function (kind: Function) URL
 	// rds: the DSN comes from a Secret injected as env APPSYNC_RDS_DSN_<NAME>, never the CR.
@@ -154,6 +155,21 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 				return nil, fmt.Errorf("open-appsync: data source %q (lambda) needs an endpoint (the function URL)", ds.Name)
 			}
 			stores[ds.Name] = lambdasource.New(ds.Endpoint)
+		case "eventbridge":
+			// Publish source: fire events to open-infra's event bus (NATS). Uses the engine's NATS_URL
+			// (same backbone as subscriptions); ds.Endpoint overrides it. The result is a PutEvents receipt.
+			natsURL := ds.Endpoint
+			if natsURL == "" {
+				natsURL = os.Getenv("NATS_URL")
+			}
+			if natsURL == "" {
+				return nil, fmt.Errorf("open-appsync: data source %q (eventbridge) needs NATS (set NATS_URL or the data source endpoint)", ds.Name)
+			}
+			pub, err := eventbridgesource.NewNATSPublisher(natsURL)
+			if err != nil {
+				return nil, fmt.Errorf("open-appsync: data source %q (eventbridge): %w", ds.Name, err)
+			}
+			stores[ds.Name] = eventbridgesource.New(pub)
 		case "opensearch":
 			if ds.Endpoint == "" {
 				return nil, fmt.Errorf("open-appsync: data source %q (opensearch) needs an endpoint (the domain URL)", ds.Name)
@@ -176,7 +192,7 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 			}
 			stores[ds.Name] = st
 		default:
-			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | none | dynamodb | http | lambda | rds | opensearch)", ds.Name, ds.Type)
+			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | none | dynamodb | http | lambda | rds | opensearch | eventbridge)", ds.Name, ds.Type)
 		}
 	}
 
