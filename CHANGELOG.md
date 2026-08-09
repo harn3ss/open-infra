@@ -35,9 +35,12 @@ the product's public contract.
   Enforcing these relocates authorization to Kubernetes RBAC — group rules become RBAC bindings — which a
   migrating schema must account for. `@aws_subscribe` declares a subscription's triggering mutations in
   the SDL.
-- **open-appsync — data sources.** Added a **Lambda** source (`type: lambda`): a resolver invokes a
-  `kind: Function` over HTTP with AppSync's Invoke payload shape and the function's JSON response becomes
-  `$ctx.result`. Added an **RDS** source (`type: rds`): SQL over PostgreSQL/Aurora-PostgreSQL in AppSync's
+- **open-appsync — data sources.** Added a **NONE** source (`type: none`): a resolver with no backend,
+  resolved entirely in the mapping templates (the request template's `payload` becomes `$ctx.result`) —
+  for pub/sub-only fields, local computation, and stitching. Added a **Lambda** source (`type: lambda`):
+  a resolver invokes a `kind: Function` over HTTP with AppSync's Invoke payload shape and the function's
+  JSON response becomes `$ctx.result`. Added an **RDS** source (`type: rds`): SQL over
+  PostgreSQL/Aurora-PostgreSQL in AppSync's
   `{statements, variableMap}` shape, with `:name` parameters bound safely (never interpolated) and rows
   returned as JSON; the connection string comes from a Secret (`connectionSecret`), never the CR. Both sit
   behind the same neutral data-source contract as the DynamoDB and HTTP sources. Custom scalars are

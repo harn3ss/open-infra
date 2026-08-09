@@ -97,8 +97,8 @@ spec:
                       type:
                         type: string
                         default: memory
-                        enum: [memory, dynamodb, http, lambda, rds]
-                        description: "memory = ephemeral (dev/demo); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint); rds = SQL over PostgreSQL/Aurora-PostgreSQL (needs a connectionSecret with the DSN)."
+                        enum: [memory, none, dynamodb, http, lambda, rds]
+                        description: "memory = ephemeral (dev/demo); none = no backend, resolved in the mapping templates (pub/sub-only fields, local computation); dynamodb = FerretDB-backed (needs a collection + spec.mongoURI); http = an HTTP endpoint (needs an endpoint); lambda = invoke a kind: Function over HTTP (needs the function URL as endpoint); rds = SQL over PostgreSQL/Aurora-PostgreSQL (needs a connectionSecret with the DSN)."
                       collection:
                         type: string
                         description: "dynamodb: the FerretDB collection (the 'table')."
