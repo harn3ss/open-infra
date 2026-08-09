@@ -200,6 +200,7 @@ func awsAuthDirectiveDefs() []any {
 	const advisory = "AppSync auth mode, DECLARED-ONLY: open-appsync parses and reports this directive but does NOT enforce it yet (advisory). Field access is governed by the resolver's SAR auth, not this directive."
 	const apiKeyEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a valid API key, which authenticates the request AS the key's mapped k8s identity; that identity then flows into the field's SAR auth (one policy world)."
 	const iamEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a request authenticated via SigV4/IAM by the aws-shim; the shim's principal identity then flows into the field's SAR auth (one policy world)."
+	const oidcEnforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a request authenticated by a valid OIDC/Cognito JWT that the aws-shim verified (issuer/audience/expiry/signature); the token's subject + groups flow into the field's SAR auth (one policy world). @aws_cognito_user_pools(cognito_groups:) additionally requires the caller to be in one of the listed groups (fail-closed)."
 	authLocations := []any{"OBJECT", "FIELD_DEFINITION"}
 	stringType := map[string]any{"kind": kindScalar, "name": "String", "ofType": nil}
 	listOfString := map[string]any{"kind": kindList, "name": nil, "ofType": stringType}
@@ -210,9 +211,9 @@ func awsAuthDirectiveDefs() []any {
 	return []any{
 		def("aws_api_key", apiKeyEnforced, []any{}),
 		def("aws_iam", iamEnforced, []any{}),
-		def("aws_oidc", advisory, []any{}),
+		def("aws_oidc", oidcEnforced, []any{}),
 		def("aws_lambda", advisory, []any{}),
-		def("aws_cognito_user_pools", advisory, groupsArg),
+		def("aws_cognito_user_pools", oidcEnforced, groupsArg),
 	}
 }
 

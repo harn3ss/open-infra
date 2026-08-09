@@ -20,6 +20,30 @@ the product's public contract.
   `graphqlapis`). Built + wired + type-checks + BFF builds; **UX not yet verified in a browser**.
 
 ### Abstractions
+- **open-appsync — `@aws_oidc` + `@aws_cognito_user_pools` auth ENFORCED (JWT verified at the shim).**
+  Auth modes #3/#4 graduate. The aws-shim gains a bearer-JWT path for the AppSync data plane (the one
+  non-SigV4 auth, scoped structurally to appsync — every appsync request is now valid SigV4 OR valid
+  JWT, never neither): it verifies an OIDC/Cognito token with **coreos/go-oidc** (JWKS discovery +
+  signature/issuer/audience/expiry; alg:none and unknown keys rejected) and forwards the subject +
+  groups + mode in the IAM-identical header shape. The engine gates `@aws_oidc`/`@aws_cognito_user_pools`
+  fields on the mode, and `@aws_cognito_user_pools(cognito_groups: […])` additionally requires the
+  caller's groups to intersect the listed groups — **fail-closed** (missing/empty groups deny; tested
+  explicitly). The group check stays **vendor-neutral**: the schema layer translates the directive into a
+  generic required-groups rule (`authRule{mode, requiredGroups}`); the executor never learns the word
+  "Cognito." Config is shim-global (`OIDC_ISSUER`/`OIDC_AUDIENCE` [required]/`OIDC_MODE`; `OIDC_GROUPS_CLAIM`
+  override always wins, else the issuer picks only the default claim name — nothing else security-relevant
+  is inferred), wired via an optional `aws-shim-oidc` ConfigMap. Earned the "enforced" label with the
+  negatives red-then-green: **expired, wrong-aud, wrong-iss, alg:none, unknown-key**, plus the empty-groups
+  denial. An adversarial security pass on the diff caught and fixed four real holes before ship: (1) the
+  engine gated nested fields only when they had their own resolver — a resolverless `secret @aws_iam`
+  scalar was silently public (now gated on every field, root + nested); (2) legacy `@aws_auth` was parsed
+  but un-enforced, making its fields public and downgrading a sibling `@aws_cognito_user_pools` (now
+  normalized to the enforced Cognito mode); (3) the shim forwarded raw token groups into k8s impersonation
+  — a claim of `system:masters` → cluster-admin (now namespaced via `iam.GroupsFromSpec`, so `cognito_groups`
+  name open-infra groups); (4) an empty groups claim fell through to a default role (now the unprivileged
+  authenticated set). Management (`/v1/`) is unreachable via a data-plane JWT. Only `@aws_lambda` remains
+  advisory. Introspection labels updated accordingly. Known residual: no `token_use` check (audience is the
+  control); mode-header trust assumes the engine is reachable only via the shim (restrict with a NetworkPolicy).
 - **open-appsync — `@aws_iam` auth ENFORCED (SigV4 is the credential, the shim is the verifier).** The
   second auth mode graduates from advisory to enforced. IAM auth is what the aws-shim already does: it
   verifies the request's SigV4 signature and forwards the principal as `X-OpenInfra-User`. It now also
