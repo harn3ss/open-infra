@@ -284,12 +284,18 @@ layer.
 - **`@aws_api_key` — ENFORCED.** The engine authenticates a request by its `x-api-key` header against
   configured keys; **an API key IS an identity** — a valid key authenticates the request AS the k8s
   principal it maps to (auth mode `aws_api_key`), and that identity then flows into the field's SAR auth
-  (one policy world). A field gated only by `@aws_api_key` requires a valid key; a field that also lists
-  a not-yet-enforced mode stays advisory (never over-denied). Keys map key→identity in a **Secret**
-  (`spec.apiKeysSecret`), never plaintext in the CR.
-- **`@aws_iam` / `@aws_oidc` / `@aws_lambda` / `@aws_cognito_user_pools` — ADVISORY** (declared, parsed,
-  reported; **loudly logged as not-enforced at load**). They grant and deny nothing yet; access is via
-  resolver SAR auth until each graduates.
+  (one policy world). Keys map key→identity in a **Secret** (`spec.apiKeysSecret`), never plaintext in the CR.
+- **`@aws_iam` — ENFORCED.** IAM auth is exactly what the aws-shim already does: it verifies the request's
+  **SigV4** signature and forwards the principal (`X-OpenInfra-User`) tagged with `X-OpenInfra-Auth-Mode:
+  aws_iam`. The engine gates `@aws_iam` fields on that mode (trusted on the same boundary as the identity
+  headers — only the shim sets them) and runs the field's SAR against the principal. No new credential
+  store — SigV4 is the credential, the shim is the verifier.
+- **`@aws_oidc` / `@aws_lambda` / `@aws_cognito_user_pools` — ADVISORY** (declared, parsed, reported;
+  **loudly logged as not-enforced at load**). They grant and deny nothing yet; access is via resolver
+  SAR auth until each graduates.
+
+A field is gated only when EVERY mode it lists is enforced (so a field mixing in a not-yet-enforced mode
+stays advisory, never over-denied); a valid request must use one of the field's declared modes.
 
 A cost to state plainly to a migrator: SAR enforcement **relocates authority** —
 `@aws_cognito_user_pools(cognito_groups:)` will stop meaning "check the JWT" and start meaning "check

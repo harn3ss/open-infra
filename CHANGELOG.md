@@ -20,6 +20,16 @@ the product's public contract.
   `graphqlapis`). Built + wired + type-checks + BFF builds; **UX not yet verified in a browser**.
 
 ### Abstractions
+- **open-appsync — `@aws_iam` auth ENFORCED (SigV4 is the credential, the shim is the verifier).** The
+  second auth mode graduates from advisory to enforced. IAM auth is what the aws-shim already does: it
+  verifies the request's SigV4 signature and forwards the principal as `X-OpenInfra-User`. It now also
+  tags that request `X-OpenInfra-Auth-Mode: aws_iam`; the engine gates `@aws_iam` fields on that mode
+  (trusted on the SAME boundary as the identity headers — only the shim/an internal peer sets them) and
+  runs the field's SAR against the principal (one policy world). No new credential store. `aws_iam`
+  joins `enforcedAuthModes`, so a field mixing `@aws_api_key @aws_iam` is now enforced too (either mode
+  passes); a field still listing a not-yet-enforced mode stays advisory (never over-denied). Introspection
+  now labels api-key + iam ENFORCED; @aws_oidc/@aws_lambda/@aws_cognito_user_pools remain advisory. Next:
+  Cognito/OIDC.
 - **open-appsync — `@aws_api_key` auth ENFORCED (an API key is an identity).** The first auth mode to
   graduate from advisory to enforced, via the one policy world (SAR). The engine authenticates a request
   by its `x-api-key` header against configured keys; a valid key authenticates the request AS the k8s
