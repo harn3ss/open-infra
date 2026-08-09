@@ -7,180 +7,42 @@ the product's public contract.
 ## Unreleased
 
 ### Console
-- **GraphQLApi console feature — the human door for open-appsync.** `kind: GraphQLApi` had no console
-  page (created only by manifest); it now has one, modeled on the Functions feature: a **GraphQL** entry
-  under Compute, a live list page (rows → detail; the only list action is "New GraphQL API" via the
-  generic create dialog), and a detail page with a tab group — **Test / Overview / Schema / Resolvers /
-  Data sources / Subscriptions / YAML** and delete in a red **Danger Zone** tab. The **Test** tab is a
-  resolver playground: it renders a resolver's request/response mapping templates against a sample
-  `$ctx` via the engine's `POST /test-resolver` (no data source touched), prefilling from any declared
-  resolver. A new BFF route `POST /api/graphqlapis/{ns}/{name}/test-resolver` proxies to the API's
-  in-cluster engine Service (`open-appsync-<name>`, existence-verified so it can't be aimed elsewhere);
-  list/get/create/delete ride the generic RBAC-gated `/api/k8s` proxy (console roles already cover
-  `graphqlapis`). Built + wired + type-checks + BFF builds; **UX not yet verified in a browser**.
+- **`kind: GraphQLApi` console feature.** A **GraphQL** section under Compute: a live list, and a detail
+  page with **Test / Overview / Schema / Resolvers / Data sources / Subscriptions / YAML** tabs and a
+  Danger Zone. The **Test** tab renders a resolver's request/response mapping templates against a sample
+  `$ctx` (no data source touched) via the engine's `/test-resolver`, proxied through a BFF route that
+  verifies the target engine Service. List, create, and delete use the standard RBAC-gated Kubernetes proxy.
 
 ### Abstractions
-- **open-appsync — `@aws_oidc` + `@aws_cognito_user_pools` auth ENFORCED (JWT verified at the shim).**
-  Auth modes #3/#4 graduate. The aws-shim gains a bearer-JWT path for the AppSync data plane (the one
-  non-SigV4 auth, scoped structurally to appsync — every appsync request is now valid SigV4 OR valid
-  JWT, never neither): it verifies an OIDC/Cognito token with **coreos/go-oidc** (JWKS discovery +
-  signature/issuer/audience/expiry; alg:none and unknown keys rejected) and forwards the subject +
-  groups + mode in the IAM-identical header shape. The engine gates `@aws_oidc`/`@aws_cognito_user_pools`
-  fields on the mode, and `@aws_cognito_user_pools(cognito_groups: […])` additionally requires the
-  caller's groups to intersect the listed groups — **fail-closed** (missing/empty groups deny; tested
-  explicitly). The group check stays **vendor-neutral**: the schema layer translates the directive into a
-  generic required-groups rule (`authRule{mode, requiredGroups}`); the executor never learns the word
-  "Cognito." Config is shim-global (`OIDC_ISSUER`/`OIDC_AUDIENCE` [required]/`OIDC_MODE`; `OIDC_GROUPS_CLAIM`
-  override always wins, else the issuer picks only the default claim name — nothing else security-relevant
-  is inferred), wired via an optional `aws-shim-oidc` ConfigMap. Earned the "enforced" label with the
-  negatives red-then-green: **expired, wrong-aud, wrong-iss, alg:none, unknown-key**, plus the empty-groups
-  denial. An adversarial security pass on the diff caught and fixed four real holes before ship: (1) the
-  engine gated nested fields only when they had their own resolver — a resolverless `secret @aws_iam`
-  scalar was silently public (now gated on every field, root + nested); (2) legacy `@aws_auth` was parsed
-  but un-enforced, making its fields public and downgrading a sibling `@aws_cognito_user_pools` (now
-  normalized to the enforced Cognito mode); (3) the shim forwarded raw token groups into k8s impersonation
-  — a claim of `system:masters` → cluster-admin (now namespaced via `iam.GroupsFromSpec`, so `cognito_groups`
-  name open-infra groups); (4) an empty groups claim fell through to a default role (now the unprivileged
-  authenticated set). Management (`/v1/`) is unreachable via a data-plane JWT. Only `@aws_lambda` remains
-  advisory. Introspection labels updated accordingly. Known residual: no `token_use` check (audience is the
-  control); mode-header trust assumes the engine is reachable only via the shim (restrict with a NetworkPolicy).
-- **open-appsync — `@aws_iam` auth ENFORCED (SigV4 is the credential, the shim is the verifier).** The
-  second auth mode graduates from advisory to enforced. IAM auth is what the aws-shim already does: it
-  verifies the request's SigV4 signature and forwards the principal as `X-OpenInfra-User`. It now also
-  tags that request `X-OpenInfra-Auth-Mode: aws_iam`; the engine gates `@aws_iam` fields on that mode
-  (trusted on the SAME boundary as the identity headers — only the shim/an internal peer sets them) and
-  runs the field's SAR against the principal (one policy world). No new credential store. `aws_iam`
-  joins `enforcedAuthModes`, so a field mixing `@aws_api_key @aws_iam` is now enforced too (either mode
-  passes); a field still listing a not-yet-enforced mode stays advisory (never over-denied). Introspection
-  now labels api-key + iam ENFORCED; @aws_oidc/@aws_lambda/@aws_cognito_user_pools remain advisory. Next:
-  Cognito/OIDC.
-- **open-appsync — `@aws_api_key` auth ENFORCED (an API key is an identity).** The first auth mode to
-  graduate from advisory to enforced, via the one policy world (SAR). The engine authenticates a request
-  by its `x-api-key` header against configured keys; a valid key authenticates the request AS the k8s
-  identity it maps to (auth mode `aws_api_key`), and that identity flows into the field's existing SAR
-  auth — so authorization stays in the one policy world (proven: a deny authorizer still denies a valid
-  api-key request whose field carries a SAR requirement). A field gated **only** by `@aws_api_key`
-  requires a valid key; a field that also lists a not-yet-enforced mode stays advisory (never
-  over-denied). Keys map key→identity in a **Secret** referenced by `spec.apiKeysSecret` (composition
-  mounts it; `APPSYNC_API_KEYS_FILE`) — never plaintext in the CR; the XRD/config/console all flag that
-  the key IS an identity. The other four directives remain advisory (introspection now labels api-key
-  ENFORCED and the rest advisory; the load-time warning names only the still-advisory ones).
-- **open-appsync — AWS auth directives, ADVISORY ONLY (declared, not enforced).** The SDL parser now
-  recognizes AppSync's five auth directives — `@aws_api_key`, `@aws_iam`,
-  `@aws_cognito_user_pools(cognito_groups:)`, `@aws_oidc`, `@aws_lambda` — on types and fields, captures
-  them on the type graph, reports their definitions in introspection **each loudly labeled
-  declared-only/not-enforced**, and **logs a WARNING at load** naming the declared modes. This lets an
-  imported AppSync schema load and stay honest — it grants and denies nothing yet; field access remains
-  governed by resolver SAR auth. Enforcement will be added **per-mode via the one policy world (k8s
-  SAR)** in order api-key → `@aws_iam` → Cognito/OIDC → Lambda-authorizer — never a parallel auth layer.
-  A cost stated plainly for migrators: enforcement **relocates authority** —
-  `@aws_cognito_user_pools(cognito_groups:)` will mean "check k8s RBAC via SAR," not "check the JWT," so
-  group rules become RBAC bindings.
-- **open-appsync — interfaces & unions (polymorphic dispatch).** Execution now follows the GraphQL
-  spec's per-object CollectFields: fragment type conditions are applied at resolution time against each
-  object's *concrete* type, so `... on Dog { bark }` contributes only to Dog objects and `... on Cat { meow }`
-  only to Cats — and each element of a union/interface list resolves independently. The concrete type is
-  taken from a `__typename` field in the resolver result (the convention for abstract fields), falling
-  back to the declared type when concrete; an abstract value with no hint stays lenient (fields aren't
-  dropped). `__typename` reports the concrete type. This replaced the earlier upfront unconditional
-  fragment flattening for execution (that flatten pass is retained only to validate fragments/cycles and
-  bound depth/cost); type conditions on object types are unaffected. Interface `implements` and union
-  membership both satisfy a condition.
-- **open-appsync — Lambda data source.** A resolver can now be backed by `type: lambda`, invoking a
-  `kind: Function` (Knative) over HTTP with AppSync's Lambda-invoke shape
-  (`{"operation":"Invoke","payload":…}`): the function receives the payload and its JSON response becomes
-  `$ctx.result`. Implemented as a third `datasource.Store` (`internal/lambdasource`) with no engine/
-  lifecycle branching (neutrality holds). Green-light-one — the caller is unit-proven against a stub
-  function with zero AWS, and end-to-end through Load→HTTP; full AppSync→Lambda→DB→JSON round-trip
-  fidelity against a live function is a separate later bar. BatchInvoke fails loud (not supported yet).
-  `GraphQLApi` data-source `type` gains `lambda` (endpoint = the function URL).
-- **open-appsync — `@aws_subscribe` SDL directive (AppSync subscription-trigger parity).** A Subscription
-  field may declare its triggering mutations natively in the SDL — `onCreateTodo: Todo @aws_subscribe(mutations: ["createTodo"])`
-  — instead of (or in addition to) a subscription's config `triggeredBy`. The SDL parser captures it into
-  `Schema.SubscriptionTriggers()`, and `LoadSubscriptions` merges those triggers with the config's
-  (deduped), so an imported AppSync schema's subscription wiring works without duplication. Verified
-  end-to-end: a `createTodo` publish reaches an `onCreateTodo` subscriber when the trigger is declared
-  ONLY in the SDL.
-- **open-appsync — multiple operations per document + `operationName`.** A document may now carry more
-  than one named operation; the GraphQL-over-HTTP `operationName` selects which runs (a multi-operation
-  document with no `operationName` is an ambiguity error, an unknown name is an error). Single-operation
-  documents are unaffected. The HTTP handler threads `operationName`; the parser became a document
-  (many operations + shared fragments) with an operation selector.
-- **open-appsync — per-nested-field resolvers.** A field below the root can now carry its own resolver:
-  declare a resolver with `type: <ObjectType>` (e.g. `Post.author`) and, when that field is selected, it
-  runs with the parent object as `$ctx.source`; its result is projected against the field's
-  sub-selections recursively (deeper nested resolvers fire too). Projection became resolver-aware
-  (`Engine.projectValue`/`resolveObject`): a field with a registered `<Type>.<field>` resolver runs it,
-  a field without one is read structurally from the parent result (unchanged default, so existing APIs
-  behave identically). Field-level auth and error paths (null the field, report the path) apply at every
-  depth, and nested `__typename` keeps resolving. The `GraphQLApi` resolver `type` is no longer enum-
-  restricted to Query/Mutation. Interface/union polymorphic dispatch remains a later rung.
-- **open-appsync — `@skip` / `@include` directive execution.** The query parser now accepts directives
-  on fields, fragment spreads, and inline fragments (it previously errored on `@` in a query), and the
-  executor evaluates the spec's built-in conditional-inclusion directives against the coerced variables:
-  `@skip(if: true)` and `@include(if: false)` drop the selection (whole spread/inline included) before
-  execution; a missing or non-boolean `if` is a `ValidationError`. Introspection already reported these
-  built-ins; they are now honored, not just described. Custom (non-built-in) directive execution remains
-  a separate rung.
-- **open-appsync — custom-scalar validation (neutral seam).** Variable coercion now runs a per-scalar
-  validator for declared custom scalars: the engine core validates *that a scalar validates* via a
-  registered `ScalarValidator`, but knows nothing about any vendor's scalar — AWS rules live at the edge
-  in `internal/awsscalars` (AWSDateTime, AWSDate, AWSTime, AWSTimestamp, AWSEmail, AWSJSON, AWSURL,
-  AWSPhone, AWSIPAddress) and the server wires them in. A declared scalar with no validator passes
-  through (opt-in per scalar); a malformed value is a `ValidationError`. **Two clocks, not conflated:**
-  Tier-0 best-effort *format* validation ships now (green, no AWS); Tier-1 byte-exact fidelity to
-  AppSync's scalar coercion is a separate **fidelity golden** (the scoped-IAM capture dance) for later —
-  nothing here claims AppSync-exact behavior.
-- **open-appsync — nested `__typename`.** `__typename` now resolves at every nesting level (not just the
-  root), returning the concrete type name threaded from the type graph — the field Apollo/Relay caches
-  require. Projection carries each object's type through the schema (a field's declared return type,
-  wrappers unwrapped); a list element takes the element type. It stays outside the introspection toggle
-  (it names a type, it doesn't dump the schema) and resolves to null when there is no schema rather than
-  guessing. Polymorphic (interface/union) `__typename` discrimination is a later rung — for object types
-  the declared type is the concrete type.
-- **open-appsync — variable coercion against the type graph.** Operation variables were parsed-and-
-  ignored and substituted raw; they are now validated and normalized against their declared **wrapped**
-  types before any resolver runs. `ID!` rejects null, `[String!]` rejects a null element, a single value
-  coerces to a one-element list (spec rule), `ID` accepts an Int (serialized to String), an enum rejects
-  an off-list value, and an **input object** rejects unknown fields / missing-required fields and applies
-  declared field defaults — recursively. Missing-required variables, type mismatches, and bad defaults
-  are rejected with a `ValidationError`; the coerced map replaces the raw variables for execution.
-  Custom-scalar *value* validation (AWSDateTime format, …) stays a separate rung — a custom scalar's
-  value passes through unvalidated here. (The SDL and operation parsers now share one `parseTypeRef`.)
-- **open-appsync — GraphQL fragments (named + inline), and the introspection gate now consumes the
-  verbatim wire query.** The parser accepts fragment spreads (`...Name`) and inline fragments
-  (`... on Type { }` / untyped `... { }`), plus top-level `fragment Name on Type { }` definitions; they
-  are expanded to plain fields before execution, with **unknown-fragment** and **fragment-cycle**
-  rejection and — when a schema is present — **type-condition existence** checks (`on Type` must name a
-  real type; introspection meta-types like `__Type` are implicitly valid). This closes the corner the
-  introspection rung noted: gate #2 now feeds the **verbatim wire introspection query** graphql-js emits
-  (fragment-laden) straight through the parser+executor, not a hand-inlined stand-in, and the real-tool
-  gate consumes *that* output. Polymorphic type-condition dispatch (interfaces/unions) is a later rung —
-  field collection is unconditional, correct for well-formed queries against a matching shape.
-- **open-appsync — in-memory schema type system + `__schema`/`__type` introspection.** The API's SDL
-  (`spec.schema` on `kind: GraphQLApi`) now parses into an in-memory type graph — a name→type map where
-  a field's return type is a *reference* carrying its wrappers (`Post`, `Post!`, `[Post]`, `[Post!]!` are
-  four distinct types) — and `__schema`/`__type` are answered by reading that map back out in the
-  spec-mandated shape. It graduated on **operability, not fidelity** (introspection is standard GraphQL,
-  no AWS byte-string to diff): (1) a conformance test fires the standard introspection query and checks
-  the response shape with wrappers exact; (2) a **real-tool gate** feeds the result to graphql-js
-  `buildClientSchema` + **graphql-codegen** and asserts they reconstruct the schema (`[Todo!]!`, `ID!`,
-  `[String!]`, enum defaults, custom scalars, all three roots survive) and generate TypeScript types.
-  Introspection is a **toggle** wired into the hostile-load seam — `spec.limits.introspection` is
-  `enabled` (default), `disabled`, or `authenticated-only` (off for untrusted callers) — because
-  introspection-on lets any client read the whole schema. The SDL rides to the engine as a
-  `schema.graphql` sibling file. Scope is **introspection only**: the verbatim wire introspection query
-  uses fragments (not accepted yet — their own rung), so the gate consumes the *result*; nested
-  `__typename`, directive execution, variable coercion, and custom-scalar validation lean on this graph
-  but each graduates on its own evidence.
-- **open-appsync — subscription bus is now multi-replica-safe (found by the node-kill chaos setup).**
-  Standing up the 2-replica engine for the subscription chaos scenario surfaced a real bug: both
-  replicas bound the *same* JetStream **durable** push consumer, and a durable is single-active — the
-  second replica crash-looped with `consumer is already bound to a subscription`. Subscriptions need
-  **fan-out** (every node must see every event to match its own WebSocket subscribers), not a shared/
-  load-balanced consumer, so each node now uses its own **ephemeral** consumer. Event durability lives
-  in the stream (file storage): a node kill loses only that node's in-flight fan-out; every published
-  event remains for the survivors — which is what the chaos scenario asserts.
+- **open-appsync — GraphQL query execution.** Named and inline fragments (with unknown-fragment and
+  cycle rejection); variable coercion against declared wrapped types (nullability, lists, enums, and
+  input objects with defaults; mismatches rejected as `ValidationError`); nested `__typename`;
+  `@skip`/`@include`; per-nested-field resolvers (a field declared with `type: <ObjectType>` runs its own
+  resolver with the parent object as `$ctx.source`); interface/union polymorphic dispatch (type
+  conditions applied against each object's concrete type); and multiple operations per document selected
+  by `operationName`.
+- **open-appsync — schema type system + introspection.** `spec.schema` (SDL) parses into an in-memory
+  type graph; `__schema`/`__type` answer over it, and standard GraphQL tooling (graphql-js
+  `buildClientSchema`, graphql-codegen) builds a client schema and TypeScript types from the result.
+  Introspection is a toggle on the hostile-load seam — `spec.limits.introspection`: `enabled` (default),
+  `disabled`, or `authenticated-only`.
+- **open-appsync — AWS auth directives.** The five AppSync auth directives are parsed and reported in
+  introspection. Four are enforced through open-infra's single policy world (Kubernetes SAR):
+  `@aws_api_key` (a key maps to a Kubernetes identity, configured in a Secret), `@aws_iam` (SigV4 verified
+  at the aws-shim), and `@aws_oidc` / `@aws_cognito_user_pools` (OIDC/Cognito JWT verified at the shim;
+  `@aws_cognito_user_pools(cognito_groups:)` requires the caller's groups to include one of the named
+  open-infra groups, fail-closed). `@aws_lambda` (Lambda authorizer) is parsed but not yet enforced.
+  Enforcing these relocates authorization to Kubernetes RBAC — group rules become RBAC bindings — which a
+  migrating schema must account for. `@aws_subscribe` declares a subscription's triggering mutations in
+  the SDL.
+- **open-appsync — data sources.** Added a Lambda source (`type: lambda`): a resolver invokes a
+  `kind: Function` over HTTP with AppSync's Invoke payload shape and the function's JSON response becomes
+  `$ctx.result`, behind the same neutral data-source contract as the DynamoDB and HTTP sources. Custom
+  scalars are validated through a neutral per-scalar seam, with AWS scalar formats (AWSDateTime, AWSJSON,
+  and others) supplied at the edge; byte-exact AWS scalar behavior remains a later fidelity item.
+- **open-appsync — multi-replica subscriptions.** Each engine replica consumes the subscription event
+  stream with its own ephemeral consumer, so subscriptions fan out correctly when the engine runs more
+  than one replica; event durability remains in the stream.
 
 ### AWS compatibility
 - **open-appsync — the JS runtime now runs real APPSYNC_JS unmodified and is behavior-faithful too.**
@@ -189,9 +51,8 @@ the product's public contract.
   gets `MISSING_MAPPING_EXPORT`), which goja can't parse. The engine strips the ES-module framing (it
   injects `util` as a global) so a team's existing APPSYNC_JS resolver runs here unchanged. A second
   goldens harness (`probe/goldens-js/`) diffs those same modules against real AWS via the `evaluate-code`
-  API and is green — so the JS runtime is now **behavior-faithful, not just implementable** (the shared
-  `$util` means the number/null fixes below applied to it for free). Needs `appsync:EvaluateCode` on the
-  capture principal (read-only, creates nothing).
+  API and is green — so the JS runtime is **behavior-faithful**, sharing the same `$util` as the VTL
+  runtime.
 - **open-appsync — the runtime is now behavior-faithful: goldens captured from real AWS AppSync, two
   fidelity bugs fixed.** The runtime goldens (`open-appsync/probe/goldens/`) were captured from a live
   AppSync account via the `evaluate-mapping-template` API (one turnkey command, `capture.sh`) and the CI
