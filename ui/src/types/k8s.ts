@@ -243,6 +243,77 @@ export type OpenInfraFunction = K8sObject<FunctionSpec, ApplicationStatus>;
 export const FUNCTIONS_PLURAL = "functions";
 export const FUNCTIONS_CRD_NAME = "functions.openinfra.dev";
 
+/* ------------------------ open-infra GraphQLApi CRD ----------------------- */
+
+export interface GraphQLDataSource {
+  name: string;
+  type?: "memory" | "dynamodb" | "http" | "lambda";
+  collection?: string;
+  endpoint?: string;
+}
+export interface GraphQLResolverAuth {
+  group?: string;
+  resource?: string;
+  verb?: string;
+  namespace?: string;
+  name?: string;
+}
+export interface GraphQLFunctionStep {
+  dataSource: string;
+  runtime?: string;
+  request: string;
+  response: string;
+}
+export interface GraphQLResolver {
+  type: string; // Query | Mutation (root) or any object type (per-nested-field resolver)
+  field: string;
+  runtime?: string; // appsync-vtl (default) | appsync-js
+  // Unit resolver:
+  dataSource?: string;
+  request?: string;
+  response?: string;
+  // Pipeline resolver:
+  before?: string;
+  after?: string;
+  functions?: GraphQLFunctionStep[];
+  auth?: GraphQLResolverAuth;
+}
+export interface GraphQLSubscription {
+  field: string;
+  subject?: string;
+  runtime?: string;
+  response: string;
+  triggeredBy?: string[];
+  auth?: GraphQLResolverAuth;
+}
+export interface GraphQLLimits {
+  maxDepth?: number;
+  maxCost?: number;
+  persistedOnly?: boolean;
+  persistedQueries?: string[];
+  introspection?: "enabled" | "disabled" | "authenticated-only";
+}
+export interface GraphQLApiSpec {
+  schema?: string; // GraphQL SDL (enables __schema/__type introspection)
+  image?: string;
+  replicas?: number;
+  mongoURI?: string;
+  mongoDB?: string;
+  limits?: GraphQLLimits;
+  dataSources?: GraphQLDataSource[];
+  resolvers: GraphQLResolver[];
+  subscriptions?: GraphQLSubscription[];
+}
+export interface GraphQLApiStatus {
+  url?: string; // in-cluster GraphQL endpoint of the engine
+  conditions?: Condition[];
+}
+
+/** open-appsync GraphQL API (resolver-first, VTL/JS-faithful AppSync engine). */
+export type GraphQLApi = K8sObject<GraphQLApiSpec, GraphQLApiStatus>;
+export const GRAPHQLAPIS_PLURAL = "graphqlapis";
+export const GRAPHQLAPIS_CRD_NAME = "graphqlapis.openinfra.dev";
+
 /* -------------------------- open-infra Model CRD -------------------------- */
 
 export interface ModelSpec {
