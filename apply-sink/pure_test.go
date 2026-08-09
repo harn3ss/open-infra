@@ -302,12 +302,12 @@ func TestMapType(t *testing.T) {
 func TestBoundKeyType(t *testing.T) {
 	cases := []struct{ engine, in, want string }{
 		{"mysql", "TEXT", "VARCHAR(255)"},
-		{"mysql", "text", "VARCHAR(255)"},   // case-insensitive
+		{"mysql", "text", "VARCHAR(255)"}, // case-insensitive
 		{"mysql", "LONGTEXT", "VARCHAR(255)"},
 		{"mysql", "MEDIUMTEXT", "VARCHAR(255)"},
 		{"mysql", "BLOB", "VARCHAR(255)"},
 		{"mysql", "JSON", "VARCHAR(255)"},
-		{"mariadb", "TEXT", "VARCHAR(255)"}, // driverName folds mariadb->mysql
+		{"mariadb", "TEXT", "VARCHAR(255)"},     // driverName folds mariadb->mysql
 		{"mysql", "VARCHAR(64)", "VARCHAR(64)"}, // already bounded -> unchanged
 		{"mysql", "INT", "INT"},                 // non-LOB -> unchanged
 		{"mysql", "bigint", "bigint"},
