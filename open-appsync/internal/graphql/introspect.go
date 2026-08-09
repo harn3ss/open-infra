@@ -198,19 +198,20 @@ func standardDirectives() []any {
 // nothing and denies nothing.
 func awsAuthDirectiveDefs() []any {
 	const advisory = "AppSync auth mode, DECLARED-ONLY: open-appsync parses and reports this directive but does NOT enforce it yet (advisory). Field access is governed by the resolver's SAR auth, not this directive."
+	const enforced = "AppSync auth mode, ENFORCED: a field marked with this (and no not-yet-enforced mode) requires a valid API key, which authenticates the request AS the key's mapped k8s identity; that identity then flows into the field's SAR auth (one policy world)."
 	authLocations := []any{"OBJECT", "FIELD_DEFINITION"}
 	stringType := map[string]any{"kind": kindScalar, "name": "String", "ofType": nil}
 	listOfString := map[string]any{"kind": kindList, "name": nil, "ofType": stringType}
 	groupsArg := []any{map[string]any{"name": "cognito_groups", "description": nil, "type": listOfString, "defaultValue": nil}}
-	def := func(name string, args []any) map[string]any {
-		return map[string]any{"name": name, "description": advisory, "locations": authLocations, "args": args, "isRepeatable": false}
+	def := func(name, desc string, args []any) map[string]any {
+		return map[string]any{"name": name, "description": desc, "locations": authLocations, "args": args, "isRepeatable": false}
 	}
 	return []any{
-		def("aws_api_key", []any{}),
-		def("aws_iam", []any{}),
-		def("aws_oidc", []any{}),
-		def("aws_lambda", []any{}),
-		def("aws_cognito_user_pools", groupsArg),
+		def("aws_api_key", enforced, []any{}),
+		def("aws_iam", advisory, []any{}),
+		def("aws_oidc", advisory, []any{}),
+		def("aws_lambda", advisory, []any{}),
+		def("aws_cognito_user_pools", advisory, groupsArg),
 	}
 }
 
