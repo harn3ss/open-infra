@@ -6,6 +6,7 @@ import {
   CNPG_GROUP,
   CNPG_VERSION,
   FUNCTIONS_PLURAL,
+  GRAPHQLAPIS_PLURAL,
   KUBEVIRT_GROUP,
   KUBEVIRT_VERSION,
   MODELS_PLURAL,
@@ -69,6 +70,9 @@ export const openinfraPaths = {
   functions: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FUNCTIONS_PLURAL}`,
   function: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${FUNCTIONS_PLURAL}/${name}`,
+  graphqlapis: (ns?: string) => `${oiGV}${nsSegment(ns)}/${GRAPHQLAPIS_PLURAL}`,
+  graphqlapi: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${GRAPHQLAPIS_PLURAL}/${name}`,
   models: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MODELS_PLURAL}`,
   model: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${MODELS_PLURAL}/${name}`,

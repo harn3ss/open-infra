@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Console
+- **GraphQLApi console feature — the human door for open-appsync.** `kind: GraphQLApi` had no console
+  page (created only by manifest); it now has one, modeled on the Functions feature: a **GraphQL** entry
+  under Compute, a live list page (rows → detail; the only list action is "New GraphQL API" via the
+  generic create dialog), and a detail page with a tab group — **Test / Overview / Schema / Resolvers /
+  Data sources / Subscriptions / YAML** and delete in a red **Danger Zone** tab. The **Test** tab is a
+  resolver playground: it renders a resolver's request/response mapping templates against a sample
+  `$ctx` via the engine's `POST /test-resolver` (no data source touched), prefilling from any declared
+  resolver. A new BFF route `POST /api/graphqlapis/{ns}/{name}/test-resolver` proxies to the API's
+  in-cluster engine Service (`open-appsync-<name>`, existence-verified so it can't be aimed elsewhere);
+  list/get/create/delete ride the generic RBAC-gated `/api/k8s` proxy (console roles already cover
+  `graphqlapis`). Built + wired + type-checks + BFF builds; **UX not yet verified in a browser**.
+
 ### Abstractions
 - **open-appsync — interfaces & unions (polymorphic dispatch).** Execution now follows the GraphQL
   spec's per-object CollectFields: fragment type conditions are applied at resolution time against each

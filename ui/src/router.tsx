@@ -11,6 +11,8 @@ import { ApplicationsPage } from "@/features/applications/applications-page";
 import { ApplicationDetailPage } from "@/features/applications/application-detail-page";
 import { FunctionsPage } from "@/features/functions/functions-page";
 import { FunctionDetailPage } from "@/features/functions/function-detail-page";
+import { GraphQLApisPage } from "@/features/graphql/graphqlapis-page";
+import { GraphQLApiDetailPage } from "@/features/graphql/graphqlapi-detail-page";
 import { ModelsPage } from "@/features/models/models-page";
 import { ModelDetailPage } from "@/features/models/model-detail-page";
 import { VmsPage } from "@/features/vms/vms-page";
@@ -94,6 +96,18 @@ const functionDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/functions/$namespace/$name",
   component: FunctionDetailPage,
+});
+
+const graphqlapisRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/graphql",
+  component: GraphQLApisPage,
+});
+
+const graphqlapiDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/graphql/$namespace/$name",
+  component: GraphQLApiDetailPage,
 });
 
 const modelsRoute = createRoute({
@@ -373,6 +387,8 @@ const routeTree = rootRoute.addChildren([
   applicationDetailRoute,
   functionsRoute,
   functionDetailRoute,
+  graphqlapisRoute,
+  graphqlapiDetailRoute,
   modelsRoute,
   modelDetailRoute,
   vmsRoute,
