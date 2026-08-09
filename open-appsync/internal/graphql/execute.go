@@ -267,7 +267,7 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 // enforcedAuthModes are the AppSync auth modes open-appsync actually enforces today; the rest stay
 // advisory (parsed + reported, not enforced). Modes graduate into this set one at a time
 // (api-key → iam → cognito/oidc → lambda) — see the auth-directive decision.
-var enforcedAuthModes = map[string]bool{authz.ModeAPIKey: true}
+var enforcedAuthModes = map[string]bool{authz.ModeAPIKey: true, authz.ModeIAM: true}
 
 // checkFieldAuth enforces a field's `@aws_*` auth-mode gate. It fires ONLY when EVERY declared mode on
 // the field is one we enforce (currently just api-key), so a field that also lists a not-yet-enforced
