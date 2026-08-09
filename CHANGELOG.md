@@ -62,8 +62,24 @@ the product's public contract.
   automatically through one ServiceMonitor, installed and removed with the monitoring stack. Metric
   labels are bounded so a crafted query or header cannot explode cardinality, and no request content
   is recorded.
+- **open-appsync — default-deny ingress for the engine.** Each GraphQLApi now renders an ingress-only
+  NetworkPolicy so the engine's ClusterIP answers only its legitimate front doors — the aws-shim (the
+  SigV4/JWT/Lambda-authorizer front door), the console BFF (Test Resolver), Prometheus (metrics), and its
+  own namespace — on the pod port. Arbitrary cross-namespace callers can no longer reach the engine
+  directly and forge the auth-mode headers that mode enforcement trusts (defense in depth; SC-7 boundary
+  protection, secure by default). Egress stays open so resolvers reach their data-source hosts.
 
 ### AWS compatibility
+- **open-appsync — @aws_lambda enforced: all five AWS auth modes now gate fields.** The last auth mode
+  graduated. The aws-shim invokes the API's **Lambda authorizer** (a `kind: Function`) with the caller's
+  token in AppSync's authorizer event shape; on `isAuthorized` the authorizer's `resolverContext` supplies
+  the subject + groups, which the shim namespaces and forwards as auth mode `aws_lambda`, and the engine
+  gates `@aws_lambda` fields on it and runs the field's SAR — the same one policy world as every other
+  mode, never a parallel auth layer. Any authorizer error or denial fails closed. It is mutually exclusive
+  with OIDC/Cognito (both own the single non-SigV4 token path). The authorizer's `deniedFields` and
+  `ttlOverride` are deliberately **not** honored — honoring `deniedFields` would relocate field
+  authorization into the tenant's Lambda, outside the one policy world; field-level control stays with the
+  resolver's SAR auth. (Migration cost stated where it's configured and in introspection.)
 - **open-appsync — the JS runtime now runs real APPSYNC_JS unmodified and is behavior-faithful too.**
   `jsruntime` now accepts a **real APPSYNC_JS module** (`import { util } from '@aws-appsync/utils'` +
   `export function request/response`) — the only shape AWS accepts (verified: a bare top-level function
