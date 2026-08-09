@@ -18,6 +18,13 @@ metadata:
   namespace: monitoring
   labels:
     release: kube-prometheus-stack
+  annotations:
+    # ServiceMonitor's CRD comes from the kube-prometheus-stack child app (a later sync-wave), but the
+    # root app-of-apps applies this raw manifest too — so skip the dry-run when the CRD isn't registered
+    # yet, or a fresh/DR sync aborts before the stack that would install the CRD ever runs. Same pattern
+    # as every other raw CRD-kind manifest in this repo (the XRDs, cluster-issuer, ...).
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   namespaceSelector:
     any: true
