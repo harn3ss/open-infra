@@ -152,6 +152,13 @@ spec:
                             env:
                               - { name: LISTEN_ADDR, value: ":8080" }
                               - { name: CONFIG_DIR, value: "/etc/open-appsync" }
+                              # Subscriptions and the eventbridge data source ride the platform NATS bus.
+                              {{- $needsNats := false }}
+                              {{- if $spec.subscriptions }}{{ $needsNats = true }}{{ end }}
+                              {{- range $ds := ($spec.dataSources | default list) }}{{- if eq ($ds.type | default "memory") "eventbridge" }}{{ $needsNats = true }}{{ end }}{{- end }}
+                              {{- if $needsNats }}
+                              - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              {{- end }}
                               {{- if $spec.mongoURI }}
                               - { name: MONGO_URI, value: "{{ $spec.mongoURI }}" }
                               - { name: MONGO_DB, value: "{{ $spec.mongoDB | default "open_appsync" }}" }
