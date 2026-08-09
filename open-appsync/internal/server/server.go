@@ -26,6 +26,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/lambdasource"
+	"github.com/harn3ss/open-infra/open-appsync/internal/nonesource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/rdssource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
@@ -77,7 +78,7 @@ type LimitsConfig struct {
 
 type DataSourceConfig struct {
 	Name       string `json:"name"`
-	Type       string `json:"type"`       // "memory" | "dynamodb" (FerretDB) | "http" | "lambda" | "rds" (Postgres)
+	Type       string `json:"type"`       // "memory" | "none" | "dynamodb" (FerretDB) | "http" | "lambda" | "rds" (Postgres)
 	Collection string `json:"collection"` // dynamodb: the FerretDB collection ("table")
 	Endpoint   string `json:"endpoint"`   // http: base URL; lambda: the function (kind: Function) URL
 	// rds: the DSN comes from a Secret injected as env APPSYNC_RDS_DSN_<NAME>, never the CR.
@@ -130,6 +131,10 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		switch ds.Type {
 		case "memory":
 			stores[ds.Name] = dynamodb.NewMemStore()
+		case "none":
+			// No backend: the resolver's mapping templates do all the work (pub/sub-only fields, local
+			// computation, stitching). The request template's `payload` becomes $ctx.result.
+			stores[ds.Name] = nonesource.New()
 		case "dynamodb":
 			if mongoDB == nil {
 				return nil, fmt.Errorf("open-appsync: data source %q is type dynamodb but no MONGO_URI is configured", ds.Name)
@@ -161,7 +166,7 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 			}
 			stores[ds.Name] = st
 		default:
-			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | dynamodb | http | lambda | rds)", ds.Name, ds.Type)
+			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | none | dynamodb | http | lambda | rds)", ds.Name, ds.Type)
 		}
 	}
 
