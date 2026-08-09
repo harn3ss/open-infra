@@ -320,6 +320,32 @@ func TestGraphQLApi_OpenSearchDataSource(t *testing.T) {
 	}
 }
 
+// An eventbridge data source wires the engine to the platform NATS bus; a plain API does not.
+func TestGraphQLApi_EventBridgeWiresNats(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ebCtx := func(dsType string) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"dataSources": []any{map[string]any{"name": "bus", "type": dsType}},
+				"resolvers": []any{map[string]any{
+					"type": "Mutation", "field": "emit", "dataSource": "bus",
+					"request": "{\"operation\":\"PutEvents\",\"events\":[]}", "response": "$util.toJson($ctx.result)",
+				}},
+			},
+			"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+		}}}}
+	}
+	eb := render(t, tmpl, ebCtx("eventbridge"))
+	if !strings.Contains(eb, `"type": "eventbridge"`) || !strings.Contains(eb, "nats://nats.nats.svc.cluster.local:4222") {
+		t.Errorf("eventbridge api must wire NATS_URL; got:\n%s", grepCtx(eb, "NATS_URL"))
+	}
+	// A plain (memory) API must NOT get NATS_URL.
+	plain := render(t, tmpl, ebCtx("memory"))
+	if strings.Contains(plain, "NATS_URL") {
+		t.Errorf("a plain API must not wire NATS_URL; got:\n%s", grepCtx(plain, "NATS_URL"))
+	}
+}
+
 // TestManagedDB_BabelfishEngine guards the SQL-Server-compatible engine: it must render
 // a StatefulSet on the pinned Babelfish image with a TDS (1433) connection secret, and
 // must NOT fall through to the CNPG Postgres path.
