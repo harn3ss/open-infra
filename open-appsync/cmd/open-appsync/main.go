@@ -96,7 +96,18 @@ func run(logger *slog.Logger) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/graphql", server.Handler(engine))
+	// API-key authentication (@aws_api_key): load key→identity from the mounted Secret file, if any.
+	// THE KEY IS AN IDENTITY — each key impersonates a k8s principal (see server.LoadAPIKeys). Path via
+	// APPSYNC_API_KEYS_FILE (the composition mounts the API's Secret there).
+	apiKeys, err := server.LoadAPIKeys(os.Getenv("APPSYNC_API_KEYS_FILE"))
+	if err != nil {
+		logger.Error("load api keys", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	if len(apiKeys) > 0 {
+		logger.Info("api-key auth enabled", slog.Int("keys", len(apiKeys)))
+	}
+	mux.HandleFunc("/graphql", server.Handler(engine, server.WithAPIKeys(apiKeys)))
 	// Authoring aid: render a resolver against a sample $ctx without deploying it.
 	mux.HandleFunc("/test-resolver", server.TestResolverHandler())
 	// Subscriptions over graphql-transport-ws, when the config declares any.

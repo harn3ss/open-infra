@@ -20,6 +20,17 @@ the product's public contract.
   `graphqlapis`). Built + wired + type-checks + BFF builds; **UX not yet verified in a browser**.
 
 ### Abstractions
+- **open-appsync — `@aws_api_key` auth ENFORCED (an API key is an identity).** The first auth mode to
+  graduate from advisory to enforced, via the one policy world (SAR). The engine authenticates a request
+  by its `x-api-key` header against configured keys; a valid key authenticates the request AS the k8s
+  identity it maps to (auth mode `aws_api_key`), and that identity flows into the field's existing SAR
+  auth — so authorization stays in the one policy world (proven: a deny authorizer still denies a valid
+  api-key request whose field carries a SAR requirement). A field gated **only** by `@aws_api_key`
+  requires a valid key; a field that also lists a not-yet-enforced mode stays advisory (never
+  over-denied). Keys map key→identity in a **Secret** referenced by `spec.apiKeysSecret` (composition
+  mounts it; `APPSYNC_API_KEYS_FILE`) — never plaintext in the CR; the XRD/config/console all flag that
+  the key IS an identity. The other four directives remain advisory (introspection now labels api-key
+  ENFORCED and the rest advisory; the load-time warning names only the still-advisory ones).
 - **open-appsync — AWS auth directives, ADVISORY ONLY (declared, not enforced).** The SDL parser now
   recognizes AppSync's five auth directives — `@aws_api_key`, `@aws_iam`,
   `@aws_cognito_user_pools(cognito_groups:)`, `@aws_oidc`, `@aws_lambda` — on types and fields, captures

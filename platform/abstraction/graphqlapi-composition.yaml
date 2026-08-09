@@ -156,8 +156,16 @@ spec:
                               - { name: MONGO_URI, value: "{{ $spec.mongoURI }}" }
                               - { name: MONGO_DB, value: "{{ $spec.mongoDB | default "open_appsync" }}" }
                               {{- end }}
+                              {{- if $spec.apiKeysSecret }}
+                              # API-key auth (@aws_api_key): the mounted Secret's apikeys.json maps each key
+                              # to the k8s identity it impersonates — THE KEY IS AN IDENTITY.
+                              - { name: APPSYNC_API_KEYS_FILE, value: "/etc/open-appsync-apikeys/apikeys.json" }
+                              {{- end }}
                             volumeMounts:
                               - { name: config, mountPath: /etc/open-appsync }
+                              {{- if $spec.apiKeysSecret }}
+                              - { name: apikeys, mountPath: /etc/open-appsync-apikeys, readOnly: true }
+                              {{- end }}
                             readinessProbe:
                               httpGet: { path: /healthz, port: 8080 }
                               initialDelaySeconds: 3
@@ -178,6 +186,11 @@ spec:
                           - name: config
                             configMap:
                               name: open-appsync-{{ $name }}-config
+                          {{- if $spec.apiKeysSecret }}
+                          - name: apikeys
+                            secret:
+                              secretName: {{ $spec.apiKeysSecret }}
+                          {{- end }}
             ---
             # --- The in-cluster GraphQL endpoint for this API ---
             apiVersion: kubernetes.crossplane.io/v1alpha2

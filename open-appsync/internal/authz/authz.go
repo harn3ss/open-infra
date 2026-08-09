@@ -52,9 +52,21 @@ type AllowAll struct{}
 
 func (AllowAll) Authorize(context.Context, Identity, Requirement) error { return nil }
 
-// --- carrying the caller's identity through the request context ---
+// Auth modes — the AppSync auth mode a request was authenticated with, mirrored to the SDL auth
+// directives. Set SERVER-SIDE at the HTTP boundary from a validated credential (never trusted from the
+// client, exactly like the identity), and read by the executor to enforce a field's `@aws_*` mode gate.
+const (
+	ModeAPIKey  = "aws_api_key" // request presented a valid API key → impersonates the key's mapped identity
+	ModeIAM     = "aws_iam"
+	ModeOIDC    = "aws_oidc"
+	ModeLambda  = "aws_lambda"
+	ModeCognito = "aws_cognito_user_pools"
+)
+
+// --- carrying the caller's identity + auth mode through the request context ---
 
 type ctxKey struct{}
+type modeKey struct{}
 
 // NewContext returns ctx carrying the caller's identity (set by the HTTP boundary from the request).
 func NewContext(ctx context.Context, id Identity) context.Context {
@@ -67,4 +79,18 @@ func FromContext(ctx context.Context) Identity {
 		return id
 	}
 	return Identity{}
+}
+
+// WithMode returns ctx tagged with the auth mode the request was authenticated with (e.g. ModeAPIKey).
+// Set only server-side from a validated credential.
+func WithMode(ctx context.Context, mode string) context.Context {
+	return context.WithValue(ctx, modeKey{}, mode)
+}
+
+// Mode returns the request's authenticated auth mode, or "" if none (anonymous / header-identity).
+func Mode(ctx context.Context) string {
+	if m, ok := ctx.Value(modeKey{}).(string); ok {
+		return m
+	}
+	return ""
 }
