@@ -222,6 +222,12 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 			data[respKey] = nil
 			continue
 		}
+		// AppSync auth-mode gate (@aws_api_key, …): enforce the field's declared mode before running.
+		if ge := e.checkFieldAuth(ctx, rootType, sel.name); ge != nil {
+			errs = append(errs, GqlError{Message: ge.Message, Path: []any{respKey}, ErrorType: ge.ErrorType})
+			data[respKey] = nil
+			continue
+		}
 		// Field-level authorization: consult the shared boundary BEFORE running the resolver. A
 		// denial surfaces as Unauthorized with the field null, and the resolver — and its data source —
 		// never runs. This is the lifecycle's job; the runtime step stays auth-unaware.
@@ -256,6 +262,38 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 		}
 	}
 	return Result{Data: data, Errors: errs}
+}
+
+// enforcedAuthModes are the AppSync auth modes open-appsync actually enforces today; the rest stay
+// advisory (parsed + reported, not enforced). Modes graduate into this set one at a time
+// (api-key → iam → cognito/oidc → lambda) — see the auth-directive decision.
+var enforcedAuthModes = map[string]bool{authz.ModeAPIKey: true}
+
+// checkFieldAuth enforces a field's `@aws_*` auth-mode gate. It fires ONLY when EVERY declared mode on
+// the field is one we enforce (currently just api-key), so a field that also lists a not-yet-enforced
+// mode stays advisory and is never over-denied. When it fires, the request's authenticated mode must be
+// one of the field's declared modes; the mapped identity then flows into the normal SAR check
+// (resolver.Auth), keeping authorization in the one policy world.
+func (e *Engine) checkFieldAuth(ctx context.Context, parentType, fieldName string) *GqlError {
+	if e.schema == nil {
+		return nil
+	}
+	modes := e.schema.fieldAuthModes(parentType, fieldName)
+	if len(modes) == 0 {
+		return nil
+	}
+	for _, m := range modes {
+		if !enforcedAuthModes[m] {
+			return nil // advisory: a mode we don't enforce yet is present — don't gate this field
+		}
+	}
+	reqMode := authz.Mode(ctx)
+	for _, m := range modes {
+		if m == reqMode {
+			return nil
+		}
+	}
+	return &GqlError{Message: "this field requires " + strings.Join(modes, " or ") + " authentication", ErrorType: "Unauthorized"}
 }
 
 // introspect answers a __schema or __type meta-field, subject to the introspection toggle. It returns
@@ -562,6 +600,12 @@ func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[stri
 			continue
 		}
 
+		// AppSync auth-mode gate, enforced before the nested resolver runs, exactly as at the root.
+		if ge := e.checkFieldAuth(ec.ctx, concreteType, sel.name); ge != nil {
+			errs = append(errs, GqlError{Message: ge.Message, Path: childPath, ErrorType: ge.ErrorType})
+			out[respKey] = nil
+			continue
+		}
 		// Per-nested-field resolver. Field-level auth is enforced before it runs, exactly as at the root.
 		id := authz.FromContext(ec.ctx)
 		if !r.Auth.IsZero() {

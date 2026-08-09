@@ -182,11 +182,12 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		// Only scalars the schema declares are ever consulted; these are best-effort FORMAT checks, not
 		// AWS-byte-exact fidelity (see internal/awsscalars for the two clocks).
 		engineOpts = append(engineOpts, graphql.WithSchema(schema), graphql.WithScalarValidators(awsscalars.Validators()))
-		// LOUDLY label AppSync auth directives as declared-but-not-enforced (advisory). They parse and are
-		// reported in introspection, but open-appsync does not enforce them yet — access control is via
-		// resolver SAR auth. Enforcement is being added per-mode (api-key → iam → cognito/oidc → lambda).
-		if declared := schema.DeclaredAuthDirectives(); len(declared) > 0 {
-			log.Printf("open-appsync: WARNING: schema declares AppSync auth directives %v that are NOT ENFORCED (advisory only) — field access is governed by resolver SAR auth, not these directives", declared)
+		// LOUDLY label the AppSync auth directives that are still advisory (declared-but-not-enforced).
+		// @aws_api_key IS enforced now (see the engine); the rest are parsed + reported in introspection
+		// but grant/deny nothing yet — access is via resolver SAR auth. Order: api-key → iam →
+		// cognito/oidc → lambda.
+		if advisory := schema.AdvisoryAuthDirectives(); len(advisory) > 0 {
+			log.Printf("open-appsync: WARNING: schema declares AppSync auth directives %v that are NOT ENFORCED (advisory only) — field access is governed by resolver SAR auth, not these directives", advisory)
 		}
 	}
 
@@ -207,6 +208,45 @@ func dedupe(in []string) []string {
 		}
 	}
 	return out
+}
+
+// APIKeyEntry is one configured API key: its secret VALUE and the k8s identity that key impersonates.
+// THE KEY IS AN IDENTITY — presenting `value` authenticates a request AS {username, groups}, whose SAR
+// then authorizes @aws_api_key fields (one policy world). These come from a k8s SECRET (never a
+// ConfigMap/CR, never plaintext in the GraphQLApi spec).
+type APIKeyEntry struct {
+	Value    string   `json:"key"`      // the secret API key value a client presents as x-api-key
+	Username string   `json:"username"` // the k8s identity to impersonate, e.g. system:serviceaccount:ns:sa
+	Groups   []string `json:"groups"`   // optional RBAC groups for that identity
+}
+
+// LoadAPIKeys reads an API-key file (a mounted k8s Secret, JSON array of APIKeyEntry) and returns a
+// value→identity map for server.WithAPIKeys. Missing file → nil map (API-key auth simply off). Because
+// THE KEY IS AN IDENTITY, each entry names the k8s principal the key impersonates; keep this file in a
+// Secret, not a ConfigMap.
+func LoadAPIKeys(path string) (map[string]authz.Identity, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open-appsync: read api keys: %w", err)
+	}
+	var entries []APIKeyEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("open-appsync: parse api keys: %w", err)
+	}
+	keys := map[string]authz.Identity{}
+	for _, e := range entries {
+		if e.Value == "" {
+			continue
+		}
+		keys[e.Value] = authz.Identity{Username: e.Username, Groups: e.Groups}
+	}
+	return keys, nil
 }
 
 // readSchemaSDL reads the optional schema.graphql from the config dir, returning "" when there is none.
@@ -430,11 +470,32 @@ func buildRuntime(name string, engine *vtl.Engine, request, response string) (ru
 	}
 }
 
+// handlerOptions configures Handler. Kept variadic so existing Handler(e) callers are unaffected.
+type handlerOptions struct {
+	apiKeys map[string]authz.Identity
+}
+
+// HandlerOption configures the GraphQL HTTP handler.
+type HandlerOption func(*handlerOptions)
+
+// WithAPIKeys wires API-key authentication (@aws_api_key). The map is API key SECRET VALUE → the k8s
+// identity that key impersonates — because an API KEY IS AN IDENTITY here: a request presenting a valid
+// x-api-key is authenticated AS that identity (auth mode aws_api_key), and that identity then flows
+// into the field's SAR auth (one policy world). A presented-but-unknown key authenticates nothing (the
+// @aws_api_key gate then denies). Keys must come from a k8s Secret — never plaintext in a ConfigMap/CR.
+func WithAPIKeys(keys map[string]authz.Identity) HandlerOption {
+	return func(o *handlerOptions) { o.apiKeys = keys }
+}
+
 // Handler serves GraphQL over HTTP: POST /graphql {query, variables} → {data, errors}. This is the
 // endpoint the aws-shim's `appsync` service forwards to (it appends /graphql), and a GraphQL client
 // can hit directly. GraphQL errors are returned in-band ({errors:[…]}), so the HTTP status is 200
 // even for a resolver error, per GraphQL-over-HTTP convention.
-func Handler(e *graphql.Engine) http.HandlerFunc {
+func Handler(e *graphql.Engine, opts ...HandlerOption) http.HandlerFunc {
+	var o handlerOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, graphql.Result{
@@ -451,12 +512,29 @@ func Handler(e *graphql.Engine) http.HandlerFunc {
 				Errors: []graphql.GqlError{{Message: "invalid GraphQL request body"}}})
 			return
 		}
-		// The caller's identity is established UPSTREAM (the aws-shim's SigV4→principal) and conveyed as
-		// headers; carry it through the context for field-level authz. The engine never trusts a
-		// client to assert these directly — in production only the shim, an internal peer, sets them.
-		ctx := authz.NewContext(r.Context(), identityFromHeaders(r))
+		// Authenticate the request: a valid x-api-key impersonates its mapped identity (mode aws_api_key);
+		// otherwise the identity comes from the shim-set X-OpenInfra-* headers. The engine never trusts a
+		// client to assert identity/mode directly — only a validated key or the trusted shim sets them.
+		id, mode := authenticate(r, o.apiKeys)
+		ctx := authz.NewContext(r.Context(), id)
+		if mode != "" {
+			ctx = authz.WithMode(ctx, mode)
+		}
 		writeJSON(w, http.StatusOK, e.ExecuteOp(ctx, body.Query, body.OperationName, body.Variables))
 	}
+}
+
+// authenticate resolves the request's identity + auth mode. A valid x-api-key wins (impersonates the
+// mapped identity, mode aws_api_key); a presented-but-unknown key yields anonymous/no-mode (so an
+// @aws_api_key field denies); no key falls back to the shim-set header identity (no api-key mode).
+func authenticate(r *http.Request, apiKeys map[string]authz.Identity) (authz.Identity, string) {
+	if key := r.Header.Get("X-Api-Key"); key != "" {
+		if id, ok := apiKeys[key]; ok {
+			return id, authz.ModeAPIKey
+		}
+		return authz.Identity{}, "" // presented but invalid → authenticate nothing
+	}
+	return identityFromHeaders(r), ""
 }
 
 // identityFromHeaders reads the caller's principal from the shim-set headers: X-OpenInfra-User and a

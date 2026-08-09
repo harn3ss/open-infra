@@ -615,6 +615,45 @@ func (s *Schema) DeclaredAuthDirectives() []string {
 	return out
 }
 
+// fieldAuthModes returns the effective AppSync auth-mode names declared for parentType.fieldName — the
+// field's own auth directives, or (AppSync-style: a field's modes override its type's default) the
+// parent type's. Empty means no auth directive (public / unrestricted).
+func (s *Schema) fieldAuthModes(parentType, fieldName string) []string {
+	nt := s.types[parentType]
+	if nt == nil {
+		return nil
+	}
+	for _, f := range nt.fields {
+		if f.name == fieldName {
+			if len(f.authDirectives) > 0 {
+				return authNames(f.authDirectives)
+			}
+			break
+		}
+	}
+	return authNames(nt.authDirectives) // type-level default
+}
+
+func authNames(as []appliedAuth) []string {
+	out := make([]string, 0, len(as))
+	for _, a := range as {
+		out = append(out, a.name)
+	}
+	return out
+}
+
+// AdvisoryAuthDirectives returns the declared auth directives that open-appsync does NOT enforce yet
+// (declared set minus the enforced modes) — what the load-time warning should name.
+func (s *Schema) AdvisoryAuthDirectives() []string {
+	var out []string
+	for _, d := range s.DeclaredAuthDirectives() {
+		if !enforcedAuthModes[d] {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // sortedTypeNames returns the type map's names in a stable order (deterministic introspection output).
 func (s *Schema) sortedTypeNames() []string {
 	names := make([]string, 0, len(s.types))
