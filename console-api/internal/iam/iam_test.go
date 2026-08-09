@@ -11,6 +11,25 @@ import (
 	ktesting "k8s.io/client-go/testing"
 )
 
+// GroupsFromSpec namespaces every group and, critically, drops any entry containing a comma — the
+// wire delimiter — so a hostile group value can't smuggle a second (un-namespaced) group across the
+// comma-joined X-OpenInfra-Groups header the engine re-splits (a cluster-admin privesc vector).
+func TestGroupsFromSpec(t *testing.T) {
+	got := GroupsFromSpec([]string{"admins", " ops ", "", "x,system:masters", "openinfra:foo,cluster-admin"})
+	want := map[string]bool{"openinfra:admins": true, "openinfra:ops": true, "openinfra:users": true}
+	if len(got) != len(want) {
+		t.Fatalf("GroupsFromSpec = %v, want exactly %v (comma-bearing entries dropped)", got, want)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected group %q (a comma-bearing entry must be dropped, not retained/split)", g)
+		}
+		if g == "system:masters" || g == "cluster-admin" {
+			t.Errorf("a smuggled group %q survived GroupsFromSpec", g)
+		}
+	}
+}
+
 func TestRoleGroups(t *testing.T) {
 	cases := map[string][]string{
 		"root":      {"openinfra:admins", "openinfra:users"},

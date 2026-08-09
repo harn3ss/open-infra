@@ -68,11 +68,44 @@ func TestAppsync_ForwardsToEngine_NeverClientHeaders(t *testing.T) {
 	if gotPath != "/graphql" {
 		t.Errorf("engine ingress path = %q, want /graphql", gotPath)
 	}
-	if gotUser != "erin" {
-		t.Errorf("X-OpenInfra-User=%q want erin (verified principal as auth context)", gotUser)
+	// The forwarded user is NAMESPACED (openinfra:<sub>) — the exact identity iam.Identity authorizes at
+	// the coarse gate and the engine's field SAR will impersonate — never the raw subject.
+	if gotUser != "openinfra:erin" {
+		t.Errorf("X-OpenInfra-User=%q want openinfra:erin (namespaced principal, matching iam.Identity)", gotUser)
 	}
 	if forwardedSmuggled {
 		t.Error("a client-supplied header was forwarded to the engine — fresh-request discipline broken")
+	}
+}
+
+// A comma inside a group value must NOT cross the shim→engine hop as a second group: the header the
+// engine re-splits on commas would otherwise let an authorizer/token-supplied "x,system:masters"
+// re-materialize system:masters (cluster-admin). GroupsFromSpec drops any comma-bearing entry, so the
+// forwarded X-OpenInfra-Groups value never contains an un-namespaced smuggled group.
+func TestAppsync_GroupCommaInjectionBlocked(t *testing.T) {
+	var gotGroups string
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotGroups = r.Header.Get("X-OpenInfra-Groups")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{}}`)
+	}))
+	defer engine.Close()
+
+	h := newAppsyncHandler(csWithSAR(true), engine.URL, "default", discardLogger())
+	req := httptest.NewRequest("POST", "http://appsync/graphql", strings.NewReader(`{"query":"{ x }"}`))
+	// Simulate what an authorizer/token supplied: GroupsFromSpec is the choke point every front door uses.
+	claims := iam.Claims{Sub: "mallory", Groups: iam.GroupsFromSpec([]string{"x,system:masters", "openinfra:admins,cluster-admin"})}
+	h.serve(httptest.NewRecorder(), req, claims, "req-inj")
+
+	// Re-split exactly as the engine (open-appsync identityFromHeaders) does, and assert no smuggled group.
+	for _, g := range strings.Split(gotGroups, ",") {
+		g = strings.TrimSpace(g)
+		if g == "system:masters" || g == "cluster-admin" {
+			t.Fatalf("smuggled group %q crossed the hop; forwarded header was %q", g, gotGroups)
+		}
+	}
+	if !strings.Contains(gotGroups, "openinfra:users") {
+		t.Errorf("legitimate base group missing; forwarded header was %q", gotGroups)
 	}
 }
 
