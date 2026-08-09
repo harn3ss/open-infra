@@ -293,9 +293,9 @@ dropped). `__typename` reports the concrete type.
 
 **AWS auth directives.** The SDL parses AppSync's five auth directives (`@aws_api_key`, `@aws_iam`,
 `@aws_cognito_user_pools(cognito_groups:)`, `@aws_oidc`, `@aws_lambda`) on types and fields and reports
-them in introspection. They graduate to enforcement **one mode at a time, via the engine's one policy
-world (k8s SAR)** — order api-key → `@aws_iam` → Cognito/OIDC → Lambda-authorizer — never a parallel auth
-layer.
+them in introspection. All five are now enforced **via the engine's one policy world (k8s SAR)** —
+graduated one mode at a time (api-key → `@aws_iam` → Cognito/OIDC → Lambda-authorizer) — never a parallel
+auth layer.
 
 - **`@aws_api_key` — ENFORCED.** The engine authenticates a request by its `x-api-key` header against
   configured keys; **an API key IS an identity** — a valid key authenticates the request AS the k8s
@@ -314,14 +314,22 @@ layer.
   global (`OIDC_ISSUER`/`OIDC_AUDIENCE`/`OIDC_MODE`, `OIDC_GROUPS_CLAIM` override wins; the issuer only
   picks the default claim name). The group vocabulary stays neutral — the schema layer translates the
   directive into a generic group requirement the executor enforces; the engine never learns "Cognito."
-- **`@aws_lambda` — ADVISORY** (declared, parsed, reported; **loudly logged as not-enforced at load**). It
-  grants and denies nothing yet; access is via resolver SAR auth until it graduates.
+- **`@aws_lambda` — ENFORCED.** The aws-shim invokes the API's **Lambda authorizer** (a `kind: Function`,
+  named by the shim-global `LAMBDA_AUTHORIZER_FUNCTION`) with the caller's token in AppSync's authorizer
+  event shape. On `isAuthorized: true` the authorizer's returned `resolverContext` supplies the subject +
+  groups, which the shim namespaces (`iam.GroupsFromSpec`) and forwards with `X-OpenInfra-Auth-Mode:
+  aws_lambda`; the engine gates `@aws_lambda` fields on that mode and runs the field's SAR. Any authorizer
+  error/denial fails closed, as hard as a bad signature. It is **mutually exclusive with OIDC/Cognito** —
+  both claim the single non-SigV4 token path, so the shim refuses to start with both configured.
+  **Authority-relocation cost, stated plainly:** the authorizer's `deniedFields` and `ttlOverride` are
+  **not** honored — honoring `deniedFields` would make the tenant's Lambda a parallel field-authorization
+  layer outside the one policy world. Field-level control stays with the resolver's SAR auth; a migrator
+  relying on `deniedFields` must move that logic into the field `auth` requirements.
 
-A field is gated only when EVERY mode it lists is enforced (so a field mixing in a not-yet-enforced mode
-stays advisory, never over-denied); a valid request must use one of the field's declared modes. The gate
-runs on **every** field — root and nested, whether or not the field has its own resolver — so a sensitive
-scalar (`secret: String @aws_iam`) read structurally from its parent is still gated. Legacy
-`@aws_auth(cognito_groups:)` is honored as the Cognito mode.
+Every AWS mode is now enforced, so a field is gated whenever it lists any of them; a valid request must
+use one of the field's declared modes. The gate runs on **every** field — root and nested, whether or not
+the field has its own resolver — so a sensitive scalar (`secret: String @aws_iam`) read structurally from
+its parent is still gated. Legacy `@aws_auth(cognito_groups:)` is honored as the Cognito mode.
 
 **Operating notes:**
 - **Group vocabulary.** The shim namespaces a token's groups to open-infra's RBAC vocabulary
@@ -333,8 +341,10 @@ scalar (`secret: String @aws_iam`) read structurally from its parent is still ga
 - **Header trust is the linchpin.** The engine trusts `X-OpenInfra-User`/`-Groups`/`-Auth-Mode` for the
   iam/oidc/cognito modes because only the aws-shim (which verified the SigV4 signature or the JWT) sets
   them. `@aws_api_key` is different — the engine validates the key itself. Field-mode enforcement is only
-  as strong as the guarantee that the engine's HTTP port is reachable **only** via the shim; restrict it
-  with a NetworkPolicy (a direct caller could otherwise forge the mode headers).
+  as strong as the guarantee that the engine's HTTP port is reachable **only** via the shim — otherwise a
+  direct caller could forge the mode headers. The composition enforces this: each engine renders a
+  default-deny ingress **NetworkPolicy** allowing only the shim, the console BFF, Prometheus, and its own
+  namespace on the pod port (egress stays open for data sources).
 - **Residual:** the shim does not yet check `token_use` (id vs access token). Audience enforcement is the
   control — scope `OIDC_AUDIENCE` tightly. Management (`/v1/`) is never reachable via a data-plane JWT.
 

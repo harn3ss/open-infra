@@ -45,10 +45,11 @@ type awsService interface {
 // signed for. The target service is read from the SigV4 credential scope (…/<service>/aws4_request)
 // — the client always names it there — so routing needs no fragile host/path sniffing.
 type serviceRouter struct {
-	auth     *authenticator
-	jwt      *jwtAuthenticator     // OIDC/Cognito verifier for the appsync data plane; nil = JWT auth off
-	services map[string]awsService // keyed by AWS service name: "s3", "sts", "lambda", "appsync"
-	logger   *slog.Logger
+	auth       *authenticator
+	jwt        *jwtAuthenticator     // OIDC/Cognito verifier for the appsync data plane; nil = JWT auth off
+	lambdaAuth *lambdaAuthorizer     // @aws_lambda authorizer Function for the appsync data plane; nil = off
+	services   map[string]awsService // keyed by AWS service name: "s3", "sts", "lambda", "appsync"
+	logger     *slog.Logger
 }
 
 func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,14 +58,20 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	authHdr := r.Header.Get("Authorization")
 	cred, err := awssig.ParseAuthorization(authHdr)
 	if err != nil {
-		// Not SigV4. The AppSync data plane ALSO accepts an OIDC/Cognito bearer JWT — the ONLY non-SigV4
-		// path, scoped structurally to appsync. So every appsync request is valid SigV4 OR valid JWT,
-		// never neither: a bearer token that fails verification is rejected as hard as a bad signature.
-		if tok, ok := bearerToken(authHdr); ok {
+		// Not SigV4. The AppSync data plane accepts ONE non-SigV4 mode, whichever is configured on this
+		// shim: a Lambda authorizer (an opaque custom token) OR an OIDC/Cognito bearer JWT — never both
+		// (main refuses to start with both). So every appsync request is valid SigV4 OR valid via the one
+		// configured token mode, never neither: a token that fails is rejected as hard as a bad signature.
+		if rt.lambdaAuth != nil {
+			if strings.TrimSpace(authHdr) != "" {
+				rt.serveAppsyncLambda(w, r, strings.TrimSpace(authHdr), requestID)
+				return
+			}
+		} else if tok, ok := bearerToken(authHdr); ok {
 			rt.serveAppsyncJWT(w, r, tok, requestID)
 			return
 		}
-		// No parseable SigV4 and not a bearer JWT — we can't know the intended service or its error
+		// No parseable SigV4 and no usable token — we can't know the intended service or its error
 		// dialect. Default to an S3-shaped 403 (most unauthenticated probing is S3-shaped).
 		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 		return
@@ -117,6 +124,35 @@ func (rt *serviceRouter) serveAppsyncJWT(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	appsvc.serve(w, r.WithContext(withForwardedMode(r.Context(), mode)), claims, requestID)
+}
+
+// serveAppsyncLambda handles the @aws_lambda authorizer path for the appsync data plane. It mirrors
+// serveAppsyncJWT's fail-closed discipline exactly: if appsync isn't fronted, or the request targets the
+// management plane, or no authorizer is configured, or the authorizer denies/errors, it rejects with
+// appsync's dialect as hard as a bad SigV4 signature. On authorize it dispatches with the authorizer's
+// principal and forwarded mode aws_lambda; the engine then gates @aws_lambda fields and runs the field SAR.
+func (rt *serviceRouter) serveAppsyncLambda(w http.ResponseWriter, r *http.Request, token, requestID string) {
+	appsvc, ok := rt.services["appsync"]
+	if !ok {
+		writeUnsupportedService(w, "appsync", requestID)
+		return
+	}
+	// The management plane (/v1/...) is control-plane — IAM/console only, never a data-plane token.
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		appsvc.authFailure(w, r, requestID)
+		return
+	}
+	if rt.lambdaAuth == nil {
+		appsvc.authFailure(w, r, requestID)
+		return
+	}
+	claims, err := rt.lambdaAuth.verify(r.Context(), token)
+	if err != nil {
+		rt.logger.Warn("appsync lambda authorizer rejected", "error", err.Error())
+		appsvc.authFailure(w, r, requestID)
+		return
+	}
+	appsvc.serve(w, r.WithContext(withForwardedMode(r.Context(), "aws_lambda")), claims, requestID)
 }
 
 // writeUnsupportedService reports a not-fronted service. It uses an S3-style error body as a

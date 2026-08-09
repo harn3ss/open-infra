@@ -109,10 +109,30 @@ func run(logger *slog.Logger) error {
 		logger.Info("appsync OIDC/JWT auth enabled", "issuer", issuer, "mode", mode, "groupsClaim", groupsClaim)
 	}
 
+	// Optional @aws_lambda authorizer for the AppSync data plane (the fifth AWS auth mode). Enabled when
+	// LAMBDA_AUTHORIZER_FUNCTION names a kind: Function the shim invokes to authorize each request. It is
+	// MUTUALLY EXCLUSIVE with OIDC/JWT: both own the single non-SigV4 token path, so enabling both is a
+	// misconfiguration the shim refuses to start with (the token would be ambiguous). The authorizer's
+	// returned identity (resolverContext) maps into the one policy world; its deniedFields/ttlOverride are
+	// deliberately NOT honored — see lambda_authorizer.go.
+	var lambdaAuth *lambdaAuthorizer
+	if fn := getenv("LAMBDA_AUTHORIZER_FUNCTION", ""); fn != "" {
+		if jwtAuth != nil {
+			logger.Error("LAMBDA_AUTHORIZER_FUNCTION and OIDC_ISSUER are both set — the shim's non-SigV4 token path is single-mode; enable only one")
+			os.Exit(1)
+		}
+		laNS := getenv("LAMBDA_AUTHORIZER_NAMESPACE", fnNS)
+		userClaim := getenv("LAMBDA_AUTHORIZER_USER_CLAIM", "sub")
+		groupsClaim := getenv("LAMBDA_AUTHORIZER_GROUPS_CLAIM", "groups")
+		lambdaAuth = newLambdaAuthorizer(fn, laNS, svcSuffix, userClaim, groupsClaim)
+		logger.Info("appsync Lambda authorizer enabled", "function", fn, "namespace", laNS,
+			"userClaim", userClaim, "groupsClaim", groupsClaim)
+	}
+
 	// The service registry: one front door, many domain experts (keyed by the AWS service name the
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
-	router := newRouter(logger, auth, jwtAuth, map[string]awsService{
+	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":      &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
 		"sts":     &stsHandler{account: account, logger: logger},
 		"lambda":  newLambdaHandler(cs, fnNS, svcSuffix, logger),
@@ -160,7 +180,7 @@ func run(logger *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, services map[string]awsService) http.Handler {
+func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -178,7 +198,7 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		names = append(names, n)
 	}
 	logger.Info("aws services registered", "services", names)
-	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, services: services, logger: logger})
+	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, logger: logger})
 	return r
 }
 
