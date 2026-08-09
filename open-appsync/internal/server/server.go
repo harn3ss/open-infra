@@ -27,6 +27,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/jsruntime"
 	"github.com/harn3ss/open-infra/open-appsync/internal/lambdasource"
+	"github.com/harn3ss/open-infra/open-appsync/internal/metrics"
 	"github.com/harn3ss/open-infra/open-appsync/internal/nonesource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/opensearchsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/rdssource"
@@ -194,6 +195,9 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		default:
 			return nil, fmt.Errorf("open-appsync: data source %q has unknown type %q (memory | none | dynamodb | http | lambda | rds | opensearch | eventbridge)", ds.Name, ds.Type)
 		}
+		// Meter every source uniformly: each Execute is counted + timed under the bounded `type` label,
+		// behind the neutral Store contract — the source and the engine stay metrics-unaware.
+		stores[ds.Name] = metrics.MeteredStore(ds.Type, stores[ds.Name])
 	}
 
 	// One VTL engine, shared by every appsync-vtl runtime (it is stateless apart from its $util
@@ -582,7 +586,14 @@ func Handler(e *graphql.Engine, opts ...HandlerOption) http.HandlerFunc {
 		if mode != "" {
 			ctx = authz.WithMode(ctx, mode)
 		}
-		writeJSON(w, http.StatusOK, e.ExecuteOp(ctx, body.Query, body.OperationName, body.Variables))
+		// Deferred so the in-flight gauge is released and the request counted even if execution panics
+		// (net/http recovers per-request); a panic counts as an error. isErr is set once the result is known.
+		isErr := true
+		done := metrics.GraphQLStarted(mode)
+		defer func() { done(isErr) }()
+		result := e.ExecuteOp(ctx, body.Query, body.OperationName, body.Variables)
+		isErr = len(result.Errors) > 0
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
