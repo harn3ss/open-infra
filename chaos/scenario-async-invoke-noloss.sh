@@ -83,8 +83,12 @@ accepted="$(sandbox_async_accepted)"; accepted="${accepted:-0}"
 log "proof-of-fire OK — a shim pod was killed and replaced; ${accepted} invocations accepted."
 
 # Oracle: every ACCEPTED invocation must reach the DLQ (delivery to a non-existent function always
-# fails), across the kill. DLQ >= accepted. No accepted invocation may vanish; duplicates are fine.
-log "asserting the DLQ received every accepted invocation (>= ${accepted})"
+# fails), across the kill — DLQ >= accepted (no loss). AND the DLQ must not wildly exceed accepted —
+# an implausibly high count means a runaway dead-letter loop or a mis-targeted/missing stream (a real
+# live run caught exactly this via a DLQ-subject collision), so bound it above too. Duplicates from the
+# kill are fine within the ceiling.
+ceil=$(( accepted * 4 ))
+log "asserting the DLQ received every accepted invocation (${accepted} <= DLQ <= ${ceil})"
 deadline=$(( SECONDS + DLQ_TIMEOUT )); dlq=0
 while [ "$SECONDS" -lt "$deadline" ]; do
   dlq="$(sandbox_async_dlq_count)"; dlq="${dlq:-0}"
@@ -93,10 +97,14 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   sleep 10
 done
 
-if [ "$dlq" -ge "$accepted" ]; then
-  log "PASS — every accepted async invocation (${dlq} >= ${accepted}) reached the DLQ across a shim kill (durable work stream held; no silent loss; dups OK)."
-  exit 0
+if [ "$dlq" -lt "$accepted" ]; then
+  log "FAIL — DLQ received only ${dlq}/${accepted} after the kill (LOST accepted invocations — release blocker)."
+  kubectl -n "$NS" get faultinjection,pods -l "$SHIM_LABEL" -o wide 2>/dev/null || true
+  exit 1
 fi
-log "FAIL — DLQ received only ${dlq}/${accepted} after the kill (LOST accepted invocations — release blocker)."
-kubectl -n "$NS" get faultinjection,pods -l "$SHIM_LABEL" -o wide 2>/dev/null || true
-exit 1
+if [ "$dlq" -gt "$ceil" ]; then
+  log "FAIL — DLQ holds ${dlq} for ${accepted} accepted invocations (> ${ceil}): runaway dead-letter loop or wrong/missing DLQ stream."
+  exit 1
+fi
+log "PASS — every accepted async invocation reached the DLQ (${accepted} <= ${dlq} <= ${ceil}) across a shim kill (durable work stream held; no silent loss; dups OK)."
+exit 0
