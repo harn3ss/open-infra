@@ -2,6 +2,8 @@ package graphql
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +74,51 @@ func TestCaching_MutationNeverCached(t *testing.T) {
 	e.ExecuteOp(ctx, m, "", nil)
 	if calls != 2 {
 		t.Fatalf("a mutation must never be cached; data-source calls=%d, want 2", calls)
+	}
+}
+
+// A cache HIT must be byte-identical to a MISS — including large integers that JSON's default float64
+// decode would truncate (BIGINT / snowflake ids, nanosecond timestamps).
+func TestCaching_NumberPrecisionHitEqualsMiss(t *testing.T) {
+	big := int64(9007199254740993) // 2^53 + 1 — lossy as float64
+	e := New(map[string]resolver.Resolver{
+		"Query.getBig": {
+			Runtime: stubRuntime{}, Source: countingStore{n: new(int), result: map[string]any{"id": big}},
+			Caching: &resolver.CachingConfig{TTL: time.Minute, Keys: []string{"arguments.x"}},
+		},
+	}, WithCache(cache.NewMem()))
+	ctx := authz.NewContext(context.Background(), authz.Identity{Username: "u"})
+	q := `{ getBig(x: "1") { id } }`
+	mustJSON := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	miss := mustJSON(e.ExecuteOp(ctx, q, "", nil).Data)
+	hit := mustJSON(e.ExecuteOp(ctx, q, "", nil).Data)
+	if miss != hit {
+		t.Fatalf("cache HIT must be byte-identical to MISS:\n miss=%s\n hit =%s", miss, hit)
+	}
+	if !strings.Contains(hit, "9007199254740993") {
+		t.Fatalf("large integer lost precision through the cache: %s", hit)
+	}
+}
+
+// A caching block with NO author keys must still fold the arguments, so distinct-argument calls don't
+// collide onto one entry (the second being served the first's data).
+func TestCaching_EmptyKeysFoldsArguments(t *testing.T) {
+	var calls int
+	e := New(map[string]resolver.Resolver{
+		"Query.getThing": {
+			Runtime: stubRuntime{}, Source: countingStore{n: &calls, result: map[string]any{"id": "x"}},
+			Caching: &resolver.CachingConfig{TTL: time.Minute}, // no Keys
+		},
+	}, WithCache(cache.NewMem()))
+	ctx := authz.NewContext(context.Background(), authz.Identity{Username: "u"})
+	e.ExecuteOp(ctx, `{ getThing(id: "1") { id } }`, "", nil)
+	e.ExecuteOp(ctx, `{ getThing(id: "2") { id } }`, "", nil) // different args → must NOT collide
+	if calls != 2 {
+		t.Fatalf("empty keys must still fold arguments (no collision); data-source calls=%d, want 2", calls)
+	}
+	e.ExecuteOp(ctx, `{ getThing(id: "1") { id } }`, "", nil) // repeat → hit
+	if calls != 2 {
+		t.Fatalf("a repeated argument must hit the cache; calls=%d, want 2", calls)
 	}
 }
 
