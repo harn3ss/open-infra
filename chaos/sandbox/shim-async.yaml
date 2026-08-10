@@ -1,0 +1,58 @@
+# Disposable aws-shim for the async-invoke no-loss scenario (N22). Two replicas wired to the platform
+# NATS JetStream so the shim's durable async-delivery worker runs; killing one replica mid-drain must
+# not lose any accepted async invocation (each is delivered or dead-lettered — never silently dropped).
+#
+# This exercises the async DELIVERY WORKER (LAMBDA_ASYNC → worker → function-or-DLQ) under a pod kill.
+# It does NOT drive the SigV4 HTTP front door — the scenario publishes invocations straight to the work
+# stream — so the shim needs neither access keys nor invoke RBAC here; the default ServiceAccount and a
+# DUMMY MinIO secret (the shim builds a MinIO client at startup but never connects it on this path) are
+# enough for it to boot and run the worker. Blast radius: chaos-sandbox only.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-shim-chaos-minio
+  namespace: chaos-sandbox
+stringData:
+  accessKey: chaos-dummy
+  secretKey: chaos-dummy-secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-shim-chaos
+  namespace: chaos-sandbox
+  labels: { app: aws-shim-chaos }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: aws-shim-chaos }
+  template:
+    metadata:
+      labels: { app: aws-shim-chaos }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+      containers:
+        - name: shim
+          image: ghcr.io/harn3ss/open-infra-aws-shim:latest
+          imagePullPolicy: Always
+          ports: [{ name: s3, containerPort: 4566 }]
+          env:
+            - { name: LISTEN_ADDR, value: ":4566" }
+            # The event bus: enables the durable async (Event) delivery worker under test.
+            - { name: NATS_URL, value: "nats://nats.nats.svc:4222" }
+            - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
+            - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: aws-shim-chaos-minio, key: accessKey } } }
+            - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: aws-shim-chaos-minio, key: secretKey } } }
+            - { name: FUNCTIONS_NAMESPACE, value: "chaos-sandbox" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 4566 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
