@@ -49,8 +49,15 @@ func NewJetStream(url, bucket string) (*JetStream, error) {
 	if err != nil {
 		kv, err = js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, TTL: bucketMaxAge, History: 1})
 		if err != nil {
-			nc.Close()
-			return nil, err
+			// Another replica may have created the bucket between our Get and Create (multi-replica
+			// startup) — CreateKeyValue then fails "already in use". Try to open it once more before
+			// giving up, so a lost creation race doesn't strand this replica on the fallback cache.
+			if kv2, err2 := js.KeyValue(bucket); err2 == nil {
+				kv = kv2
+			} else {
+				nc.Close()
+				return nil, err
+			}
 		}
 	}
 	return &JetStream{nc: nc, kv: kv, now: time.Now}, nil
