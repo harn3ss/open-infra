@@ -5,12 +5,21 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
+
+// fnNameRE is exactly the RFC-1123 label a kind: Function / Knative Service name can be. Validating the
+// function name at the parse choke point (which feeds BOTH the sync target URL and the async subject +
+// header) stops a crafted name — "evil.com#", "host:port?", anything with a URL-authority-breaking
+// character — from escaping the constructed cluster-local URL and redirecting the POST off-cluster.
+// iam.CanDo cannot be relied on for this: a namespace-wide `get`/`create functions` grant authorizes
+// any name.
+var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
 // lambdaHandler fronts AWS Lambda's Invoke over open-infra's kind: Function (Knative Serving). This
 // is the design's designated second service: "one Knative compute path — the backend
@@ -23,9 +32,10 @@ import (
 // and forwards the payload; the function's response body is returned verbatim. Errors use Lambda's
 // JSON dialect (x-amzn-errortype header + a JSON message body).
 //
-// v1 scope: RequestResponse only (synchronous); functions are resolved in a single configured
-// namespace; a downstream HTTP error is surfaced as Lambda's X-Amz-Function-Error. Async (Event)
-// invocation, qualifiers/versions, and cross-namespace resolution are the flagged next steps.
+// Invocation types: RequestResponse (synchronous), Event (asynchronous — durably queued via
+// asyncInvoker), and DryRun (authorize-only) are all supported. Functions are resolved in a single
+// configured namespace; a downstream HTTP error is surfaced as Lambda's X-Amz-Function-Error.
+// Qualifiers/versions and cross-namespace resolution are the flagged next steps.
 type lambdaHandler struct {
 	cs        kubernetes.Interface
 	client    *http.Client
@@ -59,10 +69,11 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		return
 	}
 
-	// Authorize through the shared impersonated SubjectAccessReview — one policy world. Invoking is
-	// a read-level use of the function (it does not mutate the Function resource), so it maps to
-	// `get` on functions; a principal who cannot see the function cannot invoke it.
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "get", "openinfra.dev", "functions", h.fnNS, name); !allowed {
+	// Authorize through the shared impersonated SubjectAccessReview — one policy world. Invoking EXECUTES
+	// the function's code (with side effects — pointedly for async Event invokes), so it maps to `create`
+	// on functions, NOT `get`: read-only principals (openinfra:readers hold only get/list/watch) must not
+	// be able to run a function; powerusers/admins hold create. Applies to all invocation types.
+	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, name); !allowed {
 		h.logger.Warn("lambda denied", "user", claims.Sub, "function", name, "reason", reason)
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
 			"not authorized to invoke function '"+name+"'")
@@ -147,7 +158,7 @@ func parseInvokePath(r *http.Request) (string, bool) {
 		return "", false
 	}
 	name, rest, found := strings.Cut(p, "/")
-	if !found || rest != "invocations" || name == "" {
+	if !found || rest != "invocations" || !fnNameRE.MatchString(name) {
 		return "", false
 	}
 	return name, true

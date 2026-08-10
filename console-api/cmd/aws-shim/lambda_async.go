@@ -51,13 +51,24 @@ func newAsyncInvoker(url, fnNS, svcSuffix string, maxDeliver int, logger *slog.L
 	}
 	// The async work stream and the dead-letter stream. AddStream on an existing stream returns an
 	// "already in use" error we intentionally ignore (idempotent setup across replicas/restarts).
+	//
+	// WorkQueuePolicy: a message leaves the stream once the (single) durable worker Acks or Terms it, so
+	// only genuinely-pending work occupies the byte budget — delivered and dead-lettered invocations do
+	// not linger. DiscardNew: when a real backlog exceeds the cap, PublishMsg is REJECTED (publish()
+	// returns the error → the handler returns 500), rather than DiscardOld silently evicting the oldest
+	// still-undelivered invocation that already got a 202. That is the difference between honest
+	// backpressure and silent loss of accepted work. (NB: NATS cannot change Retention on an existing
+	// stream; a stream created by an older build must be deleted to pick this up — the async feature is
+	// new, so no such stream exists yet.)
 	_, _ = js.AddStream(&nats.StreamConfig{
 		Name: asyncStream, Subjects: []string{asyncSubjectAll},
-		Storage: nats.FileStorage, Discard: nats.DiscardOld, MaxBytes: 256 * 1024 * 1024,
+		Storage: nats.FileStorage, Retention: nats.WorkQueuePolicy, Discard: nats.DiscardNew,
+		MaxBytes: 256 * 1024 * 1024,
 	})
+	// The DLQ also refuses-when-full: dropping the oldest dead-letters would defeat the last-resort net.
 	_, _ = js.AddStream(&nats.StreamConfig{
 		Name: "LAMBDA_ASYNC_DLQ", Subjects: []string{"dlq.lambda.async.>"},
-		Storage: nats.FileStorage, Discard: nats.DiscardOld, MaxBytes: 64 * 1024 * 1024,
+		Storage: nats.FileStorage, Discard: nats.DiscardNew, MaxBytes: 64 * 1024 * 1024,
 	})
 	if maxDeliver < 1 {
 		maxDeliver = 3
@@ -110,18 +121,31 @@ func (a *asyncInvoker) run(ctx context.Context) {
 			continue
 		}
 		for _, m := range msgs {
-			a.deliver(ctx, m)
+			if ctx.Err() != nil {
+				// Shutting down: return un-started work for redelivery rather than aborting it, and don't
+				// start new deliveries. In-flight deliveries use their own context (below), so they finish.
+				_ = m.Nak()
+				continue
+			}
+			a.deliver(m)
 		}
 	}
 }
 
-// deliver POSTs one queued invocation to its function. 2xx → ack; otherwise nak to retry until
-// MaxDeliver, then dead-letter and terminate so it is never redelivered.
-func (a *asyncInvoker) deliver(ctx context.Context, m *nats.Msg) {
+// deliver POSTs one queued invocation to its function. It uses its OWN bounded context — NOT the
+// shutdown context — so a SIGTERM never aborts an in-flight function call mid-delivery (which would
+// leave it un-acked and cause a redelivery / double-invoke on the next boot). 2xx → ack; a transient
+// failure → delayed (backing-off) nak until MaxDeliver; then dead-letter — but only Term once the
+// dead-letter is durably stored (see deadLetter), so a failed DLQ write never drops the invocation.
+func (a *asyncInvoker) deliver(m *nats.Msg) {
 	name := m.Header.Get("X-Fn-Name")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.urlFor(name), bytes.NewReader(m.Data))
+	dctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(dctx, http.MethodPost, a.urlFor(name), bytes.NewReader(m.Data))
 	if err != nil {
-		_ = m.Nak()
+		// A malformed name can never build a valid URL — retrying is pointless; dead-letter now rather
+		// than nak-loop forever (there is no consumer-level MaxDeliver backstop).
+		a.deadLetter(m, name, "unbuildable request URL: "+err.Error())
 		return
 	}
 	if ct := m.Header.Get("Content-Type"); ct != "" {
@@ -142,16 +166,32 @@ func (a *asyncInvoker) deliver(ctx context.Context, m *nats.Msg) {
 		attempts = int(md.NumDelivered)
 	}
 	if attempts >= a.maxDeliver {
-		a.logger.Warn("lambda async DEAD-LETTER", "function", name, "attempts", attempts)
-		dlq := nats.NewMsg("dlq." + m.Subject)
-		dlq.Data = m.Data
-		dlq.Header = m.Header
-		_, _ = a.js.PublishMsg(dlq)
-		_ = m.Term() // stop redelivery permanently
+		a.deadLetter(m, name, "max delivery attempts exhausted")
 		return
 	}
-	a.logger.Warn("lambda async delivery failed, will retry", "function", name, "attempt", attempts)
-	_ = m.Nak()
+	// Back off before redelivery so a cold-starting / rolling-deployed function isn't dead-lettered
+	// within milliseconds — it is commonly Ready seconds later (AWS async spaces retries over minutes).
+	delay := time.Duration(attempts) * 10 * time.Second
+	a.logger.Warn("lambda async delivery failed, will retry", "function", name, "attempt", attempts,
+		"retryInS", int(delay.Seconds()))
+	_ = m.NakWithDelay(delay)
+}
+
+// deadLetter publishes the invocation to its DLQ subject and terminates redelivery ONLY on a successful
+// DLQ write. If the DLQ write fails (quorum loss, missing stream, full DLQ) it naks to keep the message
+// for a later retry — a failed dead-letter must never silently drop an accepted invocation.
+func (a *asyncInvoker) deadLetter(m *nats.Msg, name, reason string) {
+	dlq := nats.NewMsg("dlq." + m.Subject)
+	dlq.Data = m.Data
+	dlq.Header = m.Header
+	if _, err := a.js.PublishMsg(dlq); err != nil {
+		a.logger.Error("lambda async DLQ publish failed — keeping the invocation for retry",
+			"function", name, "reason", reason, "error", err.Error())
+		_ = m.NakWithDelay(30 * time.Second)
+		return
+	}
+	a.logger.Warn("lambda async DEAD-LETTER", "function", name, "reason", reason)
+	_ = m.Term() // durably dead-lettered — now stop redelivery permanently
 }
 
 // Close drains the NATS connection.
