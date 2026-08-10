@@ -300,6 +300,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(20*time.Second)).Get("/audit", handleAudit(cs, auth, logger))
 		// Audit integrity — the last automated verification of the tamper-evident off-site chain.
 		api.With(middleware.Timeout(15*time.Second)).Get("/audit/integrity", handleAuditIntegrity(cs, auth, logger))
+		// Data-classification compliance — labelled workloads vs their class's handling requirements.
+		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/classification", handleClassificationCompliance(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

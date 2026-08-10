@@ -186,11 +186,13 @@ Delivered so far:
 - **Audit off-siting** — hash-chained, WORM (object-lock) tamper-evident copy of the audit log,
   verifiable from the console, with an optional external sink (AU-9/AU-9(2)/AU-9(3)/AU-11). See
   [`audit-offsite.md`](audit-offsite.md).
+- **`kind: DataClassification`** — a data-categorization scheme (RA-2) with a compliance auditor that
+  checks tagged workloads against their class's handling requirements. See
+  [`data-classification.md`](data-classification.md).
 
 Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
 
-1. **`kind: DataClassification`** — label data and enforce handling by classification.
-2. **Encryption with customer-managed keys** — at-rest encryption keyed by the operator
+1. **Encryption with customer-managed keys** — at-rest encryption keyed by the operator
    (SC-28), data-residency pinning.
 3. **Crypto-erase** — NIST SP 800-88 destruction with a tamper-evident certificate (MP-6),
    recorded in the off-site audit chain above.
