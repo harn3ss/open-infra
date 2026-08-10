@@ -37,6 +37,8 @@ spec:
                 image: { type: string, description: "Container image that serves HTTP (CI replaces the tag)" }
                 port:  { type: integer, default: 8080, description: "Container port the function listens on" }
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
+                memory:  { type: string, description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob. Set as both request and limit. Unset = cluster default." }
+                timeout: { type: integer, description: "Max wall-clock seconds per request (Knative revision timeout) — the AWS Lambda timeout knob. Unset = Knative default (300s)." }
                 # Reachable on the LAN via the Knative gateway (default). Set false
                 # to make the function cluster-local (in-cluster callers only).
                 expose: { type: boolean, default: true }

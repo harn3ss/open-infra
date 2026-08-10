@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"text/template"
@@ -191,6 +192,31 @@ func TestGraphQLApi_DynamoDBWiresMongo(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("dynamodb GraphQLApi missing %q; got:\n%s", want, grepCtx(out, "MONGO"))
 		}
+	}
+}
+
+// A kind: Function renders memory (→ container resources) and timeout (→ Knative revision timeout) —
+// the AWS Lambda memory/timeout parity knobs — without spuriously requesting a GPU on a CPU function.
+func TestFunction_MemoryAndTimeout(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"image":   "ghcr.io/x/fn:latest",
+			"memory":  "512Mi",
+			"timeout": int64(60),
+		},
+		"metadata": map[string]any{"labels": map[string]any{
+			"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "team-a"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{"kind: Service", "timeoutSeconds: 60", "resources:", `memory: "512Mi"`, "requests:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Function render missing %q; got:\n%s", want, grepCtx(out, "resources"))
+		}
+	}
+	// A CPU function must NOT request a GPU device.
+	if strings.Contains(out, "nvidia.com/gpu") {
+		t.Errorf("a memory-only (CPU) function must not request a GPU:\n%s", grepCtx(out, "resources"))
 	}
 }
 
@@ -752,6 +778,21 @@ func sprigLite() template.FuncMap {
 			return d
 		},
 		"list": func(v ...any) []any { return v },
+		// sprig's int: coerce any scalar to an int (compositions use `gt (int $gpu) 0`).
+		"int": func(v any) int {
+			switch n := v.(type) {
+			case int:
+				return n
+			case int64:
+				return int(n)
+			case float64:
+				return int(n)
+			case string:
+				i, _ := strconv.Atoi(n)
+				return i
+			}
+			return 0
+		},
 		// query-composition.yaml quotes user-supplied SQL into the Job env. Faithful to
 		// sprig: %q on the string form (the render assertions only need the value present).
 		"quote": func(v ...any) string {
