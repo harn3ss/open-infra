@@ -1,0 +1,261 @@
+# Audit off-siting — the tamper-evident, immutable copy of the "who did what" record.
+#
+# The k3s API-server audit log is the authoritative audit trail (it carries impersonatedUser, so
+# console / kubectl / Terraform / Argo actions all attribute to a person). promtail already ships
+# it to Loki for the console's CloudTrail view — but Loki is in-cluster and mutable: whoever holds
+# the cluster can delete or alter it. Government audit-protection controls want that record copied
+# to a separate system, protected from modification, and provably un-altered:
+#
+#   NIST SP 800-53  AU-9    Protection of Audit Information
+#                   AU-9(2) store on a separate physical/logical system  (the WORM bucket / off-site)
+#                   AU-9(3) cryptographic protection                     (the hash chain)
+#                   AU-10   non-repudiation                              (per-person attribution + chain)
+#                   AU-11   audit record retention                       (COMPLIANCE lock, default ~7y)
+#
+# audit-offsite (console-api/cmd/audit-offsite, sharing internal/auditchain with the console) reads
+# the audit log at its SOURCE (the file on the server node, so off-siting does not depend on Loki),
+# and ships it in hash-CHAINED segments to a MinIO bucket under COMPLIANCE Object Lock — undeletable
+# by anyone, including root, until retention expires. A verify pass re-derives the whole chain from
+# the segments' own contents, so any deleted / reordered / edited segment (or record) is detected,
+# and publishes the result for the console's Audit → Integrity view. See docs/audit-offsite.md.
+#
+# ── Provisioning (minio namespace): mint a WRITE-BUT-NOT-DELETE MinIO identity + the locked bucket ──
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: audit-offsite-setup
+  namespace: minio
+---
+# The setup Job runs in `minio` (to read the root creds via env) but writes the scoped credential
+# Secret into `monitoring` (where the CronJobs run). This cross-namespace RoleBinding grants exactly
+# that: manage the one Secret, nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: audit-offsite-setup
+  namespace: monitoring
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: audit-offsite-setup
+  namespace: monitoring
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: audit-offsite-setup }
+subjects:
+  - kind: ServiceAccount
+    name: audit-offsite-setup
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: audit-offsite-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: audit-offsite-setup
+      restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
+        - name: fetch-mc
+          image: minio/mc:latest
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+      containers:
+        - name: setup
+          image: alpine/k8s:1.30.0 # kubectl (native); mc from the shared volume
+          command: [/bin/sh, -c]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+          env:
+            - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+            - { name: BUCKET, value: "openinfra-audit" }
+          args:
+            - |
+              set -eu
+              [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
+              MC=/mc/mc
+              "$MC" alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+
+              # 1) The WORM bucket. --with-lock enables Object Lock (and versioning, which it
+              #    requires). We do NOT set a bucket-DEFAULT retention: only segments get per-object
+              #    COMPLIANCE retention (set by the exporter), leaving status/latest.json writable.
+              echo "ensuring locked bucket $BUCKET…"
+              "$MC" mb --with-lock "m/$BUCKET" 2>/dev/null || echo "  bucket exists"
+
+              # 2) A scoped identity that can WRITE and SET RETENTION but never DELETE and never
+              #    bypass a lock. (COMPLIANCE mode blocks deletes for everyone anyway — this is
+              #    defense in depth and least privilege: the exporter cannot even attempt a delete.)
+              cat >/tmp/policy.json <<'JSON'
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": ["s3:PutObject","s3:GetObject","s3:PutObjectRetention","s3:GetObjectRetention","s3:GetObjectLegalHold","s3:ListMultipartUploadParts","s3:AbortMultipartUpload"],
+                    "Resource": ["arn:aws:s3:::openinfra-audit/*"]
+                  },
+                  {
+                    "Effect": "Allow",
+                    "Action": ["s3:ListBucket","s3:GetBucketLocation","s3:GetBucketVersioning","s3:GetBucketObjectLockConfiguration"],
+                    "Resource": ["arn:aws:s3:::openinfra-audit"]
+                  }
+                ]
+              }
+              JSON
+              "$MC" admin policy create m audit-offsite-writer /tmp/policy.json >/dev/null 2>&1 || \
+                "$MC" admin policy create m audit-offsite-writer /tmp/policy.json >/dev/null || true
+
+              AK="openinfra-audit-offsite"
+              # Reuse the existing secret across reruns for stable creds; else generate.
+              SK=$(kubectl get secret audit-offsite-minio-creds -n monitoring -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d || true)
+              [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              "$MC" admin user add m "$AK" "$SK" >/dev/null 2>&1 || "$MC" admin user add m "$AK" "$SK" >/dev/null
+              "$MC" admin policy attach m audit-offsite-writer --user "$AK" >/dev/null 2>&1 || true
+
+              # 3) Hand the scoped creds to the CronJobs (in monitoring).
+              kubectl create secret generic audit-offsite-minio-creds -n monitoring \
+                --from-literal=accessKey="$AK" --from-literal=secretKey="$SK" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+              echo "audit off-site ready (bucket $BUCKET locked; identity $AK: put+retain, no delete)"
+---
+# ── Runtime (monitoring namespace): ship every 5 min, verify hourly ──
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: audit-offsite
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: audit-offsite
+  namespace: monitoring
+rules:
+  # The ship cursor (byte offset + chain head) is a ConfigMap. That is the ONLY k8s object this
+  # identity touches — it cannot read secrets or anything else.
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: audit-offsite
+  namespace: monitoring
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: audit-offsite }
+subjects:
+  - kind: ServiceAccount
+    name: audit-offsite
+    namespace: monitoring
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: audit-offsite-ship
+  namespace: monitoring
+spec:
+  schedule: "*/5 * * * *" # ship new audit records every 5 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: audit-offsite
+          restartPolicy: Never
+          # The audit log lives ONLY on the k3s server node, as a 0600 root-owned file. Pin here and
+          # read it read-only — same access promtail already has. This is the one component that
+          # needs root (to read the file); it drops every capability and runs on a read-only rootfs.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          securityContext: { runAsUser: 0, runAsNonRoot: false }
+          containers:
+            - name: ship
+              image: ghcr.io/harn3ss/open-infra-audit-offsite:latest
+              args: ["ship"]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              env:
+                - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
+                - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: accessKey } } }
+                - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
+                - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+                - { name: STATE_NAMESPACE, value: "monitoring" }
+                - { name: RETENTION_DAYS, value: "2555" } # ~7 years (AU-11); segments are undeletable until then
+                # ── Off-site copy (AU-9(2)): point these at an EXTERNAL, operator-controlled S3 to
+                #    keep a second immutable copy outside this cluster. Left unset = single WORM copy.
+                # - { name: OFFSITE_ENDPOINT, value: "s3.us-gov-west-1.amazonaws.com" }
+                # - { name: OFFSITE_SECURE, value: "true" }
+                # - { name: OFFSITE_BUCKET, value: "my-agency-audit-vault" }
+                # - { name: OFFSITE_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-offsite-creds, key: accessKey } } }
+                # - { name: OFFSITE_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-offsite-creds, key: secretKey } } }
+              resources:
+                requests: { cpu: 20m, memory: 48Mi }
+                limits: { cpu: 500m, memory: 256Mi }
+              volumeMounts:
+                - { name: k3s-audit, mountPath: /var/lib/rancher/k3s/server/logs, readOnly: true }
+          volumes:
+            - name: k3s-audit
+              hostPath:
+                path: /var/lib/rancher/k3s/server/logs
+                type: DirectoryOrCreate
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: audit-offsite-verify
+  namespace: monitoring
+spec:
+  schedule: "0 * * * *" # re-verify the whole chain hourly
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 600
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: audit-offsite
+          restartPolicy: Never
+          # Verify only reads MinIO — no host file, no root, no node pin.
+          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          containers:
+            - name: verify
+              image: ghcr.io/harn3ss/open-infra-audit-offsite:latest
+              args: ["verify"]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              env:
+                - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
+                - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: accessKey } } }
+                - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
+                - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+              resources:
+                requests: { cpu: 20m, memory: 48Mi }
+                limits: { cpu: 500m, memory: 256Mi }
