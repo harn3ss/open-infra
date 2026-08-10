@@ -32,9 +32,16 @@ type asyncInvoker struct {
 const (
 	asyncStream     = "LAMBDA_ASYNC"
 	asyncSubjectAll = "lambda.async.>"
-	asyncSubjectPre = "lambda.async." // per-function subject: lambda.async.<name>
-	asyncDurable    = "lambda-async-worker"
-	asyncAckWait    = 2 * time.Minute // > the delivery client timeout, so no redelivery mid-POST
+	asyncSubjectPre = "lambda.async." // per-function work subject: lambda.async.<name>
+	asyncDLQStream  = "LAMBDA_ASYNC_DLQ"
+	asyncDLQAll     = "lambda.dlq.>"
+	// Dead-letter subject. Deliberately NOT under "dlq.*" (that overlaps the platform-wide "dlq.>"
+	// stream apply-sink owns — JetStream forbids overlapping stream subjects, so our DLQ stream would
+	// silently fail to create and our dead-letters would pollute a shared stream) and NOT under
+	// "lambda.async.*" (that would be re-consumed by the work stream — an infinite dead-letter loop).
+	asyncDLQPre  = "lambda.dlq." // per-function dead-letter subject: lambda.dlq.<name>
+	asyncDurable = "lambda-async-worker"
+	asyncAckWait = 2 * time.Minute // > the delivery client timeout, so no redelivery mid-POST
 )
 
 // newAsyncInvoker connects to NATS, ensures the async work stream + a DLQ stream exist, and returns a
@@ -67,7 +74,7 @@ func newAsyncInvoker(url, fnNS, svcSuffix string, maxDeliver int, logger *slog.L
 	})
 	// The DLQ also refuses-when-full: dropping the oldest dead-letters would defeat the last-resort net.
 	_, _ = js.AddStream(&nats.StreamConfig{
-		Name: "LAMBDA_ASYNC_DLQ", Subjects: []string{"dlq.lambda.async.>"},
+		Name: asyncDLQStream, Subjects: []string{asyncDLQAll},
 		Storage: nats.FileStorage, Discard: nats.DiscardNew, MaxBytes: 64 * 1024 * 1024,
 	})
 	if maxDeliver < 1 {
@@ -181,7 +188,10 @@ func (a *asyncInvoker) deliver(m *nats.Msg) {
 // DLQ write. If the DLQ write fails (quorum loss, missing stream, full DLQ) it naks to keep the message
 // for a later retry — a failed dead-letter must never silently drop an accepted invocation.
 func (a *asyncInvoker) deadLetter(m *nats.Msg, name, reason string) {
-	dlq := nats.NewMsg("dlq." + m.Subject)
+	if name == "" {
+		name = "unknown" // never build a trailing-dot (invalid) subject
+	}
+	dlq := nats.NewMsg(asyncDLQPre + name)
 	dlq.Data = m.Data
 	dlq.Header = m.Header
 	if _, err := a.js.PublishMsg(dlq); err != nil {
