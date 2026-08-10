@@ -60,6 +60,11 @@ Requirements a class does not ask for are skipped; requirements that cannot yet 
 reported `unknown` rather than passed silently. As the encryption and backup features land, their
 checks move from `unknown` to real verification.
 
+**Coverage today.** The auditor evaluates labelled **Deployments and StatefulSets**. Managed
+databases (CloudNativePG `Cluster`s), `Volume`s, `FileShare`s, and object buckets are not yet
+evaluated — label those and they will simply not appear in the report until their evaluators are
+added. This is a reporting scope, stated so it is not mistaken for full coverage.
+
 ## Control mapping
 
 - **RA-2** Security Categorization — the levels + the taxonomy.
