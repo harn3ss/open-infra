@@ -167,7 +167,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS | not recorded · on-demand |
 | [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-09 · nightly-lottery |
 | [N21](#s-N21) | Subscriptions no-loss under engine kill (open-appsync) | GraphQLApi subscriptions + NATS JetStream | pool | ⏳ PENDING | not recorded · not yet run (pending first green) |
-| [N22](#s-N22) | Async Lambda invoke no-loss under shim kill | Lambda (aws-shim) async invoke + NATS JetStream | pool | ⏳ PENDING | not recorded · not yet run (pending first green) |
+| [N22](#s-N22) | Async Lambda invoke no-loss under shim kill | Lambda (aws-shim) async invoke + NATS JetStream | pool | ⏳ PENDING | 2026-08-10 · hand-driven live run (green once; pending the nightly streak) |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -2122,13 +2122,13 @@ flowchart LR
 <a id="s-N22"></a>
 ### N22 · Async Lambda invoke no-loss under shim kill &nbsp; ⏳ PENDING
 
-**Category:** Lambda (aws-shim) async invoke + NATS JetStream &nbsp;•&nbsp; **Oracle:** recover — every accepted async invocation is delivered or dead-lettered (DLQ >= accepted); none silently lost
+**Category:** Lambda (aws-shim) async invoke + NATS JetStream &nbsp;•&nbsp; **Oracle:** recover — every accepted async invocation is delivered or dead-lettered (accepted <= DLQ <= 4x); none silently lost, no runaway
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** not recorded · not yet run (pending first green)
+**Verified:** 2026-08-10 · hand-driven live run (green once; pending the nightly streak)
 
-> Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts every accepted invocation reaches the dead-letter stream — DLQ >= accepted, no silent loss; duplicates OK). Runnable via workflow_dispatch; keyless, so NOT in the lottery. PENDING = authored + runnable, no verified green yet; graduates after its green streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.
+> Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts the dead-letter stream covers every accepted invocation without a runaway — accepted <= DLQ <= 4x). Runnable via workflow_dispatch; keyless, so NOT in the lottery. RAN GREEN ONCE on the live cluster (killed 1 of 2 replicas mid-drain; all 31 accepted invocations reached the DLQ, no loss, no runaway). That first run caught a REAL bug: the async DLQ used subjects dlq.lambda.async.> which OVERLAP apply-sink's platform-wide dlq.> stream, so the DLQ stream silently failed to create and the oracle passed vacuously — fixed to lambda.dlq.> (overlaps neither dlq.> nor the work subject). STATUS PENDING = green-once, not yet the nightly streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -2143,7 +2143,7 @@ flowchart LR
   n_shim -->|"dead-letter after retries"| n_dlq
   FAULT(("⚡ kill aws-shim pod mid-drain")):::fault
   FAULT -.-> n_shim
-  ORACLE{{"recover · every accepted async invocation is delivered or dead-lettered (DLQ >= accepted); none silently lost"}}:::oracle_recover
+  ORACLE{{"recover · every accepted async invocation is delivered or dead-lettered (accepted <= DLQ <= 4x); none silently lost, no runaway"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
