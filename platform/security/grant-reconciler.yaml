@@ -1,0 +1,96 @@
+# Expiry reconciler for kind: Grant (temporal access). A CronJob sweeps every minute and DELETES any
+# Grant whose metadata.creationTimestamp + spec.duration has passed (or whose duration exceeds the hard
+# cap) — deleting the Grant makes Crossplane tear down its ClusterRoleBinding, so access ends on its own.
+# This is the "self-destructing privilege" half of temporal access; the grant itself is declarative.
+#
+# Least privilege: the reconciler's ONLY power is get/list/delete on grants.iam.openinfra.dev — it can
+# revoke a temporary grant but cannot read secrets, touch other RBAC, or grant anything.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grant-reconciler
+  namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-grant-reconciler
+rules:
+  - apiGroups: [iam.openinfra.dev]
+    resources: [grants]
+    verbs: [get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-grant-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-grant-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: grant-reconciler
+    namespace: crossplane-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grant-reconciler
+  namespace: crossplane-system
+spec:
+  schedule: "* * * * *" # every minute — ~1-minute expiry granularity
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 110
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: grant-reconciler
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          containers:
+            - name: reconcile
+              image: alpine/k8s:1.30.2
+              imagePullPolicy: IfNotPresent
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: GRANT_MAX_DURATION_SECONDS, value: "86400" } # hard cap: 24h
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              volumeMounts: [{ name: tmp, mountPath: /tmp }]
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { cpu: 200m, memory: 128Mi }
+              command: [/bin/sh, -ceu]
+              args:
+                - |
+                  now=$(date -u +%s)
+                  max="${GRANT_MAX_DURATION_SECONDS:-86400}"
+                  # Go-duration (e.g. 30m, 4h, 1h30m) → seconds.
+                  dur2secs() { echo "$1" | awk '{s=0;d=$0;while(match(d,/[0-9]+[hms]/)){v=substr(d,RSTART,RLENGTH);n=substr(v,1,length(v)-1);u=substr(v,length(v));if(u=="h")s+=n*3600;else if(u=="m")s+=n*60;else s+=n;d=substr(d,RSTART+RLENGTH)}print s}'; }
+                  kubectl get grants.iam.openinfra.dev -A -o json \
+                    | jq -r '.items[] | [.metadata.namespace, .metadata.name, .metadata.creationTimestamp, (.spec.duration // "")] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r ns name created dur; do
+                        secs=$(dur2secs "$dur")
+                        if [ -z "$secs" ] || [ "$secs" -le 0 ] || [ "$secs" -gt "$max" ]; then
+                          echo "revoking $ns/$name — invalid or over-cap duration '$dur' (cap ${max}s)"
+                          kubectl -n "$ns" delete grant "$name" --ignore-not-found; continue
+                        fi
+                        created_epoch=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+                        [ "$created_epoch" -eq 0 ] && continue
+                        expiry=$((created_epoch + secs))
+                        if [ "$now" -ge "$expiry" ]; then
+                          echo "revoking $ns/$name — expired at $(date -u -d "@$expiry" +%FT%TZ)"
+                          kubectl -n "$ns" delete grant "$name" --ignore-not-found
+                        fi
+                      done
+          volumes:
+            - name: tmp
+              emptyDir: {}
