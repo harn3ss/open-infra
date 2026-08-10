@@ -103,6 +103,32 @@ func TestSecurityGroup_AlwaysAllowsConsole(t *testing.T) {
 	}
 }
 
+// kind: Grant (temporal access) renders ONE ClusterRoleBinding binding openinfra:<subject> to the
+// requested ClusterRole, carrying the reason + duration annotations the reconciler and audit rely on.
+func TestGrant_RendersTimeBoundedBinding(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/grant-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"subject":     map[string]any{"kind": "User", "name": "alice"},
+			"clusterRole": "openinfra-role-dev",
+			"duration":    "4h",
+			"reason":      "oncall incident 1234",
+		},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "jit-alice"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{
+		"kind: ClusterRoleBinding", "openinfra-grant-jit-alice",
+		"name: openinfra-role-dev",              // roleRef
+		"kind: User", `name: "openinfra:alice"`, // subject bound as the namespaced identity
+		"openinfra.dev/grant-duration:", "openinfra.dev/grant-reason:", "oncall incident 1234",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Grant render missing %q; got:\n%s", want, grepCtx(out, "grant"))
+		}
+	}
+}
+
 func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(true))
@@ -920,7 +946,7 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 	// Plurals intentionally NOT granted to powerusers. Identity/policy kinds belong here:
 	// managing them is privilege escalation, which is why AWS's PowerUser excludes iam:*.
 	excluded := map[string]bool{
-		"users": true, "groups": true, "policies": true, "roles": true,
+		"users": true, "groups": true, "policies": true, "roles": true, "grants": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")

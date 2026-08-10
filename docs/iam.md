@@ -228,6 +228,32 @@ hand-authored documents (AWS's own docs warn "you should not compare JSON policy
 strings"); don't hide inherited permissions on a second tab; don't let a policy that grants nothing
 save silently; don't put the correctness-checking tool on a different page from the editor.
 
+## `kind: Grant` — temporal (just-in-time) access
+
+A `Grant` binds a subject (a `kind: User` or `kind: Group`) to a ClusterRole **for a bounded time**, then
+revokes itself — open-infra's answer to standing privilege, and the analog of AWS STS AssumeRole with a
+session duration. It is the same mechanism as `kind: Group` (one `ClusterRoleBinding` of `openinfra:<subject>`
+to the role, subject to the same bind fence — a Grant can never confer more than a Group can), plus a clock.
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Grant
+metadata: { name: jit-alice, namespace: platform }
+spec:
+  subject: { kind: User, name: alice }
+  clusterRole: open-infra-poweruser   # or openinfra-role-<yourRole>
+  duration: 4h                         # Go duration; hard-capped at 24h
+  reason: "oncall incident 1234"       # recorded for audit (AC-2(2))
+```
+
+Expiry is enforced by a reconciler (`platform/security/grant-reconciler.yaml`, a once-a-minute CronJob whose
+only power is get/list/**delete** on `grants`): when `creationTimestamp + duration` has passed — or the
+duration exceeds the 24h cap — it deletes the Grant, and Crossplane tears down the binding, so access ends
+with no one having to remember to revoke it. The binding's create and delete both land in the audit log, and
+the reason rides as an annotation. Government control mapping: **AC-2(2)** (temporary accounts), **AC-6(2)/(5)**
+(least privilege + elevation), **AU** (the grant is audited). Like the other IAM kinds it is deliberately not
+in the Terraform provider (identity is console/GitOps-managed — see [`terraform.md`]).
+
 ## Status
 
 | Stage | State |
@@ -243,6 +269,7 @@ save silently; don't put the correctness-checking tool on a different page from 
 | Policies / Roles UI | ✅ shipped — Security & Identity → Policies / Roles (author, attach/detach, admins-only via SAR) |
 | `Deny` + conditions via VAP | ⬜ not started |
 | Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
+| `kind: Grant` (temporal / JIT access) | ✅ shipped — time-bounded binding, self-revoking reconciler (24h cap), reason audited; console UI is a follow-up (creatable via GitOps/kubectl/BFF) |
 
 ## See also
 
