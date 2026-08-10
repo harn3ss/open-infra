@@ -77,6 +77,11 @@ spec:
                 boundTo:
                   type: string
                   description: The Kubernetes subject the grant bound (openinfra:<name>).
+                message:
+                  type: string
+                  description: >-
+                    Set when the grant confers nothing — e.g. the requested clusterRole is outside
+                    the grantable ceiling (a kind: Role or a bounded built-in console role).
       additionalPrinterColumns:
         - name: Subject
           type: string
