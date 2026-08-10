@@ -1,6 +1,7 @@
 package graphql
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -281,14 +282,32 @@ func (e *Engine) resolveWithCache(ctx context.Context, parentType, field string,
 	if r.Caching == nil || parentType == "Mutation" {
 		return r.Resolve(ctx, gctx)
 	}
-	keyValues := make([]any, 0, len(r.Caching.Keys))
-	for _, k := range r.Caching.Keys {
-		keyValues = append(keyValues, cache.ResolveKeyPath(gctx, k))
+	var keyValues []any
+	if len(r.Caching.Keys) == 0 {
+		// No author-declared caching keys: fold the field's FULL arguments (FULL_REQUEST-style), so
+		// distinct calls — getThing(id:1) vs getThing(id:2) — can't collide onto one entry. An
+		// argument-less field yields an empty map: still a stable, cacheable key.
+		keyValues = []any{gctx["args"]}
+	} else {
+		keyValues = make([]any, 0, len(r.Caching.Keys))
+		for _, k := range r.Caching.Keys {
+			keyValues = append(keyValues, cache.ResolveKeyPath(gctx, k))
+		}
 	}
-	key := cache.Key(parentType+"."+field, id.Username, id.Groups, keyValues)
-	if cached, ok := e.cache.Get(ctx, key); ok {
+	key, ok := cache.Key(parentType+"."+field, id.Username, id.Groups, keyValues)
+	if !ok {
+		// Key not canonically derivable (e.g. a non-finite argument) — best-effort: run the resolver,
+		// never fall back to a degenerate shared key that would cross identities/resolvers.
+		return r.Resolve(ctx, gctx)
+	}
+	if cached, hit := e.cache.Get(ctx, key); hit {
+		// Decode with UseNumber so a cached integer re-serializes to its EXACT original text: a HIT must
+		// be byte-identical to a MISS, and json's default float64 would truncate integers > 2^53
+		// (BIGINT ids, snowflake ids, nanosecond timestamps).
+		dec := json.NewDecoder(bytes.NewReader(cached))
+		dec.UseNumber()
 		var v any
-		if err := json.Unmarshal(cached, &v); err == nil {
+		if err := dec.Decode(&v); err == nil {
 			return v, nil
 		}
 		// A corrupt entry is a miss: fall through and run the resolver.
@@ -697,7 +716,10 @@ func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[stri
 			}
 		}
 		rctx := map[string]any{"args": evalArgs(sel.args, ec.vars), "identity": identityMap(id), "source": source}
-		res, rerr := r.Resolve(ec.ctx, rctx)
+		// Per-nested-field resolvers honor caching too (config on any object-type resolver, not just root).
+		// concreteType is never "Mutation" here, so the Mutation-skip is a no-op; rctx carries source, so
+		// source.* caching keys resolve. Without a CachingConfig this is exactly r.Resolve.
+		res, rerr := e.resolveWithCache(ec.ctx, concreteType, sel.name, r, id, rctx)
 		if rerr != nil {
 			ge := GqlError{Message: rerr.Error(), Path: childPath}
 			var te *vtl.ThrowError
