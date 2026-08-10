@@ -76,8 +76,8 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
 | AU-3 Content of Audit Records | Records carry actor (`impersonatedUser`), verb, resource, timestamp, and response code; privileged writes are captured at **`RequestResponse`** (full request + response body). | Implemented |
 | AU-6 Audit Review & Analysis | Console **Audit** view, filterable by user / resource / time, merging the API-server log with console IAM actions. | Implemented |
 | AU-8 Time Stamps | `requestReceivedTimestamp` on every record. | Implemented |
-| AU-9 Protection of Audit Information | Shipped to Loki off the writable node; hash-chain + signing + WORM object-lock for tamper-evidence is **roadmap**. | Partial |
-| AU-11 / AU-4 Retention & Capacity | Loki retention today; long-term + off-site retention is **roadmap**. | Partial |
+| AU-9 / AU-9(2) / AU-9(3) Protection of Audit Information | The audit log is shipped off the writable node in a **hash chain** to a **WORM (Object Lock, COMPLIANCE) bucket** — undeletable by anyone, including root, until retention expires — and verified back into a broken/reordered/edited-detects result surfaced in the console. An optional external S3 sink keeps a copy on a separate system (AU-9(2)). See [`audit-offsite.md`](audit-offsite.md). | Implemented (external off-site copy is operator-configured) |
+| AU-11 / AU-4 Retention & Capacity | Loki retention for the queryable view; the off-site WORM segments carry a default ~7-year COMPLIANCE retention (configurable) that cannot be shortened. | Implemented |
 | AU-12 Audit Record Generation | k3s API-server audit log + console `iam:` logs → promtail → Loki. | Implemented |
 
 ### IA — Identification & Authentication
@@ -179,18 +179,24 @@ Babelfish image, for instance, ships at 0 fixable CVEs).
 
 ## Roadmap — the government feature track
 
+Delivered so far:
+
+- **`kind: Grant`** — temporal, auto-expiring access grants (AC-2(2)/AC-6 just-in-time). See
+  [`iam.md`](iam.md#kind-grant--temporal-just-in-time-access).
+- **Audit off-siting** — hash-chained, WORM (object-lock) tamper-evident copy of the audit log,
+  verifiable from the console, with an optional external sink (AU-9/AU-9(2)/AU-9(3)/AU-11). See
+  [`audit-offsite.md`](audit-offsite.md).
+
 Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
 
-1. **Audit hardening** — Loki retention → long-term + off-site; hash-chain + signing + WORM
-   (object-lock) for tamper-evidence (AU-9); decide on read-event capture.
+1. **`kind: DataClassification`** — label data and enforce handling by classification.
 2. **Encryption with customer-managed keys** — at-rest encryption keyed by the operator
    (SC-28), data-residency pinning.
-3. **`kind: Grant`** — temporal, auto-expiring access grants (AC-2/AC-6 just-in-time).
-4. **`kind: DataClassification`** — label data and enforce handling by classification.
-5. **Crypto-erase** — NIST SP 800-88 destruction with a tamper-evident certificate (MP-6).
-6. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
+3. **Crypto-erase** — NIST SP 800-88 destruction with a tamper-evident certificate (MP-6),
+   recorded in the off-site audit chain above.
+4. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
    report generated from the live cluster.
-7. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
+5. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
    Mesh, and every opt-in dangerous capability, and tightens defaults for an authorization
    boundary.
 
