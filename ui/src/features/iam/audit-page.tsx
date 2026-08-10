@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ScrollText, RefreshCw } from "lucide-react";
+import { ScrollText, RefreshCw, ShieldCheck, ShieldAlert, ShieldQuestion } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
 import { formatTimestamp, age } from "@/lib/format";
-import { listAuditEvents, type AuditEvent } from "@/lib/api";
+import { listAuditEvents, getAuditIntegrity, type AuditEvent } from "@/lib/api";
 
 const WINDOWS = [
   { value: "1h", label: "Last hour" },
@@ -28,6 +28,62 @@ function verbTone(verb: string): string {
   if (verb.startsWith("delete") || verb === "deleted") return "bg-destructive/15 text-destructive";
   if (verb.startsWith("create") || verb === "created") return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
   return "bg-primary/15 text-primary";
+}
+
+// The tamper-evidence banner: the last automated verification of the off-site, WORM-locked,
+// hash-chained copy of this same audit trail (audit-offsite / AU-9). Green when the chain is
+// intact, red when a segment was altered/removed, muted while it has not yet run.
+function IntegrityBanner() {
+  const { data } = useQuery({
+    queryKey: ["audit-integrity"],
+    queryFn: getAuditIntegrity,
+    refetchInterval: 60000,
+  });
+  if (!data) return null;
+
+  if (!data.available) {
+    return (
+      <Card className="border-muted">
+        <CardContent className="flex items-center gap-3 p-4 text-sm text-muted-foreground">
+          <ShieldQuestion className="size-5 shrink-0" />
+          <span>
+            Tamper-evident off-site: <span className="font-medium">{data.note || "not yet verified"}</span>. Once the
+            off-siter has run, this shows whether the immutable copy of the audit trail is intact.
+          </span>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const r = data.report?.result;
+  const ok = r?.ok;
+  const checked = data.ageSeconds != null ? `${Math.floor(data.ageSeconds / 60)}m ago` : "recently";
+  return (
+    <Card className={ok ? "border-emerald-500/40" : "border-destructive"}>
+      <CardContent className="flex flex-wrap items-center gap-3 p-4 text-sm">
+        {ok ? (
+          <ShieldCheck className="size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <ShieldAlert className="size-5 shrink-0 text-destructive" />
+        )}
+        {ok ? (
+          <span className="text-emerald-700 dark:text-emerald-300">
+            Off-site audit chain <span className="font-semibold">verified intact</span>
+            {r ? ` — ${r.count} segments, ${r.records} records, head #${r.headSeq}` : ""}.
+          </span>
+        ) : (
+          <span className="text-destructive">
+            Off-site audit chain <span className="font-semibold">BROKEN</span>
+            {r?.brokenAt != null ? ` at segment #${r.brokenAt}` : ""}
+            {r?.reason ? `: ${r.reason}` : ""}. The immutable record may have been tampered with — investigate.
+          </span>
+        )}
+        <Badge variant="outline" className="ml-auto font-normal text-muted-foreground">
+          checked {checked}
+        </Badge>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function AuditPage() {
@@ -59,6 +115,8 @@ export function AuditPage() {
           </Button>
         }
       />
+
+      <IntegrityBanner />
 
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 p-4">

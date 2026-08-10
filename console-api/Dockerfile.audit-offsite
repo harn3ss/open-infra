@@ -1,0 +1,19 @@
+# open-infra audit-offsite — ships the API-server audit log to a WORM object store as a
+# hash-chained, tamper-evident sequence, and verifies that chain (NIST AU-9 / AU-9(2)/(3) / AU-10).
+#
+# It lives in the console-api Go module so it shares internal/auditchain with the console's
+# integrity endpoint — ONE chain implementation, verified identically on both sides. This image
+# builds only ./cmd/audit-offsite: a small static binary on distroless, like aws-shim/apply-sink.
+# Build context is console-api/.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /audit-offsite ./cmd/audit-offsite
+
+FROM gcr.io/distroless/static-debian12
+USER 65532:65532
+COPY --from=build /audit-offsite /audit-offsite
+ENTRYPOINT ["/audit-offsite"]
