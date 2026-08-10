@@ -2905,6 +2905,66 @@
       },
       "lastVerified": "2026-08-10",
       "verifiedBy": "hand-driven live run (green once; pending the nightly streak)"
+    },
+    {
+      "id": "N23",
+      "batch": "nightly",
+      "title": "Async Lambda invoke delivered (happy path) under shim kill",
+      "category": "Lambda (aws-shim) async invoke + Knative Function + NATS JetStream",
+      "status": "PENDING",
+      "note": "Sibling of N22 for the SUCCESS path. chaos/scenario-async-invoke-delivered.sh provisions a 2-replica aws-shim on the platform NATS plus a real echo kind: Function (Knative, min 1), publishes async Event invocations at the function across a shim-pod kill, and asserts every accepted invocation is DELIVERED: the WorkQueue work stream drains to 0 (each acked on 2xx) AND the DLQ stays 0 (none dead-lettered), with accepted == everything published. N22 proves nothing is silently lost (all reach the DLQ when delivery fails); N23 proves delivery actually succeeds under the kill — together the full at-least-once guarantee. RAN GREEN ONCE on the live cluster (all 31 accepted invocations delivered, work drained to 0, DLQ 0, across a shim kill). Runnable via workflow_dispatch; keyless, so NOT in the lottery. STATUS PENDING (graduates after the nightly streak). Gotcha the first run caught: wait on the Function CLAIM (Ready cascades from the Knative service), not the ksvc — Crossplane creates the ksvc a few seconds after apply, so a bare `wait ksvc` races and errors 'not found'. Follow-ups: a SigV4 HTTP front-door variant, and a scale-from-zero (min 0) delivery variant.",
+      "chain": {
+        "nodes": [
+          {
+            "id": "client",
+            "label": "async invoke (Event)",
+            "kind": "app"
+          },
+          {
+            "id": "shim",
+            "label": "aws-shim async worker",
+            "kind": "app"
+          },
+          {
+            "id": "work",
+            "label": "JetStream LAMBDA_ASYNC",
+            "kind": "stream"
+          },
+          {
+            "id": "fn",
+            "label": "echo Function (Knative)",
+            "kind": "function"
+          }
+        ],
+        "edges": [
+          {
+            "from": "client",
+            "to": "work",
+            "label": "enqueue (202)"
+          },
+          {
+            "from": "shim",
+            "to": "work",
+            "label": "durable consume"
+          },
+          {
+            "from": "shim",
+            "to": "fn",
+            "label": "deliver (2xx → ack)"
+          }
+        ]
+      },
+      "fault": {
+        "target": "shim",
+        "kind": "PodChaos",
+        "label": "kill aws-shim pod mid-drain"
+      },
+      "oracle": {
+        "mode": "recover",
+        "invariant": "every accepted async invocation is delivered (work stream drains to 0, DLQ stays 0); none lost or dead-lettered"
+      },
+      "lastVerified": "2026-08-10",
+      "verifiedBy": "hand-driven live run (green once; pending the nightly streak)"
     }
   ]
 }
