@@ -254,15 +254,19 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		}
 	}
 
-	// Per-resolver response cache: enable an in-memory backend when any resolver declares caching, else
-	// leave it disabled (Noop). The backend is best-effort and never affects correctness; a shared
-	// (multi-replica) NATS-KV backend is a separate later rung — see internal/cache.
+	// Per-resolver response cache: enabled when any resolver declares caching. Prefer the SHARED NATS
+	// JetStream KV backend (all replicas see the same entries) when NATS is configured; otherwise, or if
+	// NATS is unreachable, fall back to the per-process in-memory backend. The cache is best-effort and
+	// never affects correctness, so a NATS failure degrades to per-replica caching, not a broken engine.
+	cachingConfigured := false
 	for _, rc := range cfg.Resolvers {
 		if buildCaching(rc.Caching) != nil {
-			engineOpts = append(engineOpts, graphql.WithCache(cache.NewMem()))
-			log.Printf("open-appsync: per-resolver response caching enabled (in-memory; per-replica until the shared NATS-KV backend graduates)")
+			cachingConfigured = true
 			break
 		}
+	}
+	if cachingConfigured {
+		engineOpts = append(engineOpts, graphql.WithCache(buildCache()))
 	}
 
 	// Limits first (so an explicit WithLimits in opts could override), then caller options (the SAR
@@ -519,6 +523,29 @@ func buildCaching(c *CachingConfig) *resolver.CachingConfig {
 		return nil
 	}
 	return &resolver.CachingConfig{TTL: time.Duration(c.TTLSeconds) * time.Second, Keys: c.Keys}
+}
+
+// buildCache selects the response-cache backend: the SHARED NATS JetStream KV bucket when NATS_URL is
+// set (per-API bucket via APPSYNC_CACHE_BUCKET so distinct APIs don't collide), otherwise the per-process
+// in-memory cache. A NATS/KV failure logs loudly and degrades to in-memory — caching is best-effort, so
+// this becomes per-replica rather than broken.
+func buildCache() cache.Cache {
+	natsURL := os.Getenv("NATS_URL")
+	if natsURL == "" {
+		log.Printf("open-appsync: response caching enabled (in-memory, per-replica — set NATS for a shared cache)")
+		return cache.NewMem()
+	}
+	bucket := os.Getenv("APPSYNC_CACHE_BUCKET")
+	if bucket == "" {
+		bucket = "open_appsync_cache"
+	}
+	jc, err := cache.NewJetStream(natsURL, bucket)
+	if err != nil {
+		log.Printf("open-appsync: response caching: NATS KV unavailable (%v) — using per-replica in-memory cache", err)
+		return cache.NewMem()
+	}
+	log.Printf("open-appsync: response caching enabled (shared NATS JetStream KV bucket %q)", bucket)
+	return jc
 }
 
 // loadStep reads a step's request/response template files (an empty filename means an empty, unused

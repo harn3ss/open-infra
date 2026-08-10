@@ -146,11 +146,14 @@ The cache key ALWAYS folds in the **caller identity** (username + groups), on to
 identities even if the author omits an identity key — deliberately safer than AppSync, where omitting
 `$context.identity` from `cachingKeys` silently shares one entry across all callers.
 
-Backend: an in-memory cache — fully correct and shared for a single-replica engine (the default), and
-per-replica (never wrong, just a lower hit rate) under multiple replicas. A shared NATS JetStream KV
-backend, so all replicas see the same entries like AppSync's external cache, is the next rung — it
-graduates separately (a per-API bucket + a live round-trip test), exactly as the subscription bus went
-`MemBus → JetStreamBus`.
+Backend: two, behind one contract, selected at load. When the engine has NATS, caching uses a **shared
+NATS JetStream KV** bucket (one per API) so every replica reads and writes the same entries — the
+multi-replica analog of AppSync's external cache. Without NATS, or if NATS is unreachable, it falls back
+to a **per-process in-memory** cache (fully correct for a single replica; per-replica, never wrong, under
+many). Both are best-effort, so a NATS failure degrades to per-replica caching rather than a broken
+engine. Per-resolver TTLs are enforced at the application layer (the bucket max-age is a storage
+backstop). The shared backend's live round-trip is integration-tested (`-tags integration`, `NATS_TEST_URL`);
+proving the multi-replica property under a node kill is the same chaos-streak bar the subscription bus holds.
 
 ### Subscriptions (setup-then-push — experimental, label held)
 

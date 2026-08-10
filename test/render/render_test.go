@@ -210,7 +210,11 @@ func TestGraphQLApi_ResolverCaching(t *testing.T) {
 			"crossplane.io/claim-name": "notes", "crossplane.io/claim-namespace": "team-a"}},
 	}}}}
 	out := render(t, tmpl, ctx)
-	for _, want := range []string{`"caching"`, `"ttlSeconds": 60`, `"arguments.id"`, `"identity.sub"`} {
+	for _, want := range []string{
+		`"caching"`, `"ttlSeconds": 60`, `"arguments.id"`, `"identity.sub"`,
+		// caching wires the shared cache backend: NATS + a per-API KV bucket.
+		"nats://nats.nats.svc.cluster.local:4222", "APPSYNC_CACHE_BUCKET", "open_appsync_cache_notes",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("resolver caching render missing %q; got:\n%s", want, grepCtx(out, "caching"))
 		}

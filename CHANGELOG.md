@@ -77,9 +77,12 @@ the product's public contract.
   resolver — correctness never depends on it) and **never caches Mutations**. The cache key always folds
   in the caller identity on top of the author's `$context` keys, so per-user data can't be served across
   callers even if an identity key is omitted — safer than AppSync, where omitting it silently shares one
-  entry. Backed by an in-memory cache (per replica) today; a shared NATS-KV backend (all replicas, like
-  AppSync's external cache) is a separately-graduating later rung. This completes the data-source /
-  caching breadth: memory, none, dynamodb, http, lambda, rds, opensearch, eventbridge, plus caching.
+  entry. Two backends behind one contract, chosen at load: a **shared NATS JetStream KV** bucket (one per
+  API) when the engine has NATS, so every replica sees the same entries like AppSync's external cache;
+  otherwise a per-process in-memory cache (per-replica, never wrong). Both are best-effort, so a NATS
+  failure degrades to per-replica caching, not a broken engine; the shared backend's live round-trip is
+  integration-tested. This completes the data-source / caching breadth: memory, none, dynamodb, http,
+  lambda, rds, opensearch, eventbridge, plus caching.
 - **open-appsync — @aws_lambda enforced: all five AWS auth modes now gate fields.** The last auth mode
   graduated. The aws-shim invokes the API's **Lambda authorizer** (a `kind: Function`) with the caller's
   token in AppSync's authorizer event shape; on `isAuthorized` the authorizer's `resolverContext` supplies
