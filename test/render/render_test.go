@@ -194,6 +194,29 @@ func TestGraphQLApi_DynamoDBWiresMongo(t *testing.T) {
 	}
 }
 
+// A resolver with a caching block renders its ttl + keys into config.json.
+func TestGraphQLApi_ResolverCaching(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"dataSources": []any{map[string]any{"name": "notes", "type": "memory"}},
+			"resolvers": []any{map[string]any{
+				"type": "Query", "field": "getNote", "dataSource": "notes",
+				"request": "$util.toJson({})", "response": "$util.toJson($ctx.result)",
+				"caching": map[string]any{"ttlSeconds": int64(60), "keys": []any{"arguments.id", "identity.sub"}},
+			}},
+		},
+		"metadata": map[string]any{"uid": "u", "labels": map[string]any{
+			"crossplane.io/claim-name": "notes", "crossplane.io/claim-namespace": "team-a"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{`"caching"`, `"ttlSeconds": 60`, `"arguments.id"`, `"identity.sub"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("resolver caching render missing %q; got:\n%s", want, grepCtx(out, "caching"))
+		}
+	}
+}
+
 // A pipeline resolver + hostile-load limits render into config.json + the per-step.vtl files.
 func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")

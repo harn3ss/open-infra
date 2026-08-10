@@ -169,6 +169,18 @@ spec:
                             response:
                               type: string
                               description: "The function's response mapping template source."
+                      caching:
+                        type: object
+                        description: "Per-resolver response caching (AppSync's caching behavior). Ignored on Mutation resolvers — they are never cached. The caller identity is ALWAYS folded into the cache key, so per-user data is never served across callers even if `keys` omits it (safer than AppSync, where omitting the identity key silently shares one entry). Backed by an in-memory cache (per replica) today; a shared multi-replica backend is a later rung."
+                        properties:
+                          ttlSeconds:
+                            type: integer
+                            description: "How long a cached response lives, in seconds. 0 or unset disables caching for this resolver."
+                          keys:
+                            type: array
+                            description: "$context paths that, with the caller identity, form the cache key — e.g. arguments.id, identity.sub, source.tenantId. Omit to cache arguments-agnostically (one entry per caller for the whole field)."
+                            items:
+                              type: string
                 subscriptions:
                   type: array
                   description: "Subscription-type fields (experimental). Each has a response mapping (no request phase — the push source calls it) and the mutations that trigger it. Served over graphql-transport-ws at /graphql-ws."
