@@ -15,6 +15,7 @@ package resolver
 
 import (
 	"context"
+	"time"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
@@ -33,6 +34,18 @@ type Resolver struct {
 	// (field-level authz,). A zero Requirement means public. It lives on the resolver but is checked
 	// in the executor/lifecycle, never in a runtime step — the step stays auth-unaware.
 	Auth authz.Requirement
+	// Caching, when non-nil, enables per-resolver response caching (AppSync's caching behavior). Like
+	// Auth it is config the EXECUTOR acts on, not the step: the executor checks the cache before running
+	// the resolver and stores the result after. A zero/nil Caching means no caching.
+	Caching *CachingConfig
+}
+
+// CachingConfig configures per-resolver response caching. TTL is how long an entry lives; Keys are
+// $context paths (e.g. "arguments.id") that — together with the caller identity, which the executor
+// always folds in — form the cache key.
+type CachingConfig struct {
+	TTL  time.Duration
+	Keys []string
 }
 
 // Pipeline is the pipeline lifecycle: a before step, an ordered list of functions, and an after step.

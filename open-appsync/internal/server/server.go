@@ -17,9 +17,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/awsscalars"
+	"github.com/harn3ss/open-infra/open-appsync/internal/cache"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/eventbridgesource"
@@ -107,6 +109,18 @@ type ResolverConfig struct {
 	// Auth is the field-level authorization requirement, enforced by the executor before the
 	// resolver runs. Zero = public. Checked against the shared k8s RBAC boundary (a SubjectAccessReview).
 	Auth authz.Requirement `json:"auth"`
+
+	// Caching, when set, enables per-resolver response caching (AppSync's caching behavior). Ignored for
+	// Mutation resolvers (never cached). See CachingConfig.
+	Caching *CachingConfig `json:"caching"`
+}
+
+// CachingConfig is the JSON shape of a resolver's caching block: a TTL in seconds and the $context
+// caching keys. The executor always folds the caller identity into the key, so per-user data is never
+// shared across callers even if keys omits it.
+type CachingConfig struct {
+	TTLSeconds int      `json:"ttlSeconds"`
+	Keys       []string `json:"keys"`
 }
 
 type FunctionConfig struct {
@@ -237,6 +251,17 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 		// cognito/oidc → lambda.
 		if advisory := schema.AdvisoryAuthDirectives(); len(advisory) > 0 {
 			log.Printf("open-appsync: WARNING: schema declares AppSync auth directives %v that are NOT ENFORCED (advisory only) — field access is governed by resolver SAR auth, not these directives", advisory)
+		}
+	}
+
+	// Per-resolver response cache: enable an in-memory backend when any resolver declares caching, else
+	// leave it disabled (Noop). The backend is best-effort and never affects correctness; a shared
+	// (multi-replica) NATS-KV backend is a separate later rung — see internal/cache.
+	for _, rc := range cfg.Resolvers {
+		if buildCaching(rc.Caching) != nil {
+			engineOpts = append(engineOpts, graphql.WithCache(cache.NewMem()))
+			log.Printf("open-appsync: per-resolver response caching enabled (in-memory; per-replica until the shared NATS-KV backend graduates)")
+			break
 		}
 	}
 
@@ -452,7 +477,7 @@ func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.
 		if err != nil {
 			return resolver.Resolver{}, err
 		}
-		return resolver.Resolver{Runtime: rt, Source: src, Auth: rc.Auth}, nil
+		return resolver.Resolver{Runtime: rt, Source: src, Auth: rc.Auth, Caching: buildCaching(rc.Caching)}, nil
 	}
 
 	// Pipeline lifecycle.
@@ -484,7 +509,16 @@ func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.
 		}
 		p.After = rt
 	}
-	return resolver.Resolver{Pipeline: p, Auth: rc.Auth}, nil
+	return resolver.Resolver{Pipeline: p, Auth: rc.Auth, Caching: buildCaching(rc.Caching)}, nil
+}
+
+// buildCaching translates a resolver's JSON caching block into the lifecycle config, or nil when absent
+// or non-positive (no caching). TTL is carried in seconds on the wire, a time.Duration in the engine.
+func buildCaching(c *CachingConfig) *resolver.CachingConfig {
+	if c == nil || c.TTLSeconds <= 0 {
+		return nil
+	}
+	return &resolver.CachingConfig{TTL: time.Duration(c.TTLSeconds) * time.Second, Keys: c.Keys}
 }
 
 // loadStep reads a step's request/response template files (an empty filename means an empty, unused
