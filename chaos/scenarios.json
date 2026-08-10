@@ -2845,6 +2845,66 @@
       },
       "lastVerified": "",
       "verifiedBy": "not yet run (pending first green)"
+    },
+    {
+      "id": "N22",
+      "batch": "nightly",
+      "title": "Async Lambda invoke no-loss under shim kill",
+      "category": "Lambda (aws-shim) async invoke + NATS JetStream",
+      "status": "PENDING",
+      "note": "Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts every accepted invocation reaches the dead-letter stream — DLQ >= accepted, no silent loss; duplicates OK). Runnable via workflow_dispatch; keyless, so NOT in the lottery. PENDING = authored + runnable, no verified green yet; graduates after its green streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.",
+      "chain": {
+        "nodes": [
+          {
+            "id": "client",
+            "label": "async invoke (Event)",
+            "kind": "app"
+          },
+          {
+            "id": "shim",
+            "label": "aws-shim async worker",
+            "kind": "app"
+          },
+          {
+            "id": "work",
+            "label": "JetStream LAMBDA_ASYNC",
+            "kind": "stream"
+          },
+          {
+            "id": "dlq",
+            "label": "JetStream LAMBDA_ASYNC_DLQ",
+            "kind": "stream"
+          }
+        ],
+        "edges": [
+          {
+            "from": "client",
+            "to": "work",
+            "label": "enqueue (202)"
+          },
+          {
+            "from": "shim",
+            "to": "work",
+            "label": "durable consume"
+          },
+          {
+            "from": "shim",
+            "to": "dlq",
+            "label": "dead-letter after retries"
+          }
+        ]
+      },
+      "fault": {
+        "target": "shim",
+        "kind": "PodChaos",
+        "label": "kill aws-shim pod mid-drain"
+      },
+      "oracle": {
+        "mode": "recover",
+        "invariant": "every accepted async invocation is delivered or dead-lettered (DLQ >= accepted); none silently lost"
+      },
+      "lastVerified": "",
+      "verifiedBy": "not yet run (pending first green)"
     }
   ]
 }
