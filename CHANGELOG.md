@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Security & compliance
+- **Audit off-siting — a tamper-evident, immutable copy of the audit trail.** The API-server audit log is
+  now shipped off the node it is written on, as a SHA-256 **hash chain** of segments, into a MinIO bucket
+  under **Object Lock (COMPLIANCE mode)** — undeletable by anyone, including root, until retention expires
+  (default ~7 years). An hourly job re-verifies the whole chain from the segments' own contents and the
+  console **Audit** page shows whether it is intact; any deleted, reordered, or edited segment (or record)
+  is detected. An optional external S3 sink keeps a copy on a separate system. Controls: AU-9, AU-9(2),
+  AU-9(3), AU-11. See [`docs/audit-offsite.md`]. Part of the government feature track (issue #71).
+
 ### Console
 - **`kind: GraphQLApi` console feature.** A **GraphQL** section under Compute: a live list, and a detail
   page with **Test / Overview / Schema / Resolvers / Data sources / Subscriptions / YAML** tabs and a

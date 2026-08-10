@@ -906,3 +906,28 @@ export function listAuditEvents(params: {
   const qs = q.toString();
   return request<AuditEvent[]>(`/audit${qs ? `?${qs}` : ""}`);
 }
+
+/** The tamper-evident off-site chain's last automated verification (AU-9). */
+export interface AuditIntegrity {
+  available: boolean;
+  note?: string;
+  ageSeconds?: number;
+  report?: {
+    verifiedAt: string;
+    bucket: string;
+    result: {
+      ok: boolean;
+      count: number;
+      baseSeq: number;
+      headSeq: number;
+      headHash: string;
+      records: number;
+      brokenAt?: number;
+      reason?: string;
+    };
+  };
+}
+
+export function getAuditIntegrity(): Promise<AuditIntegrity> {
+  return request<AuditIntegrity>(`/audit/integrity`);
+}
