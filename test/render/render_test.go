@@ -165,6 +165,38 @@ func TestGrant_DeniesRoleOutsideCeiling(t *testing.T) {
 	}
 }
 
+// kind: DataClassification renders a ConfigMap mirror in the console namespace carrying the level
+// and handling requirements, so the compliance auditor can read the taxonomy by label.
+func TestDataClassification_RendersConfigMapMirror(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/dataclassification-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"level":       "restricted",
+			"description": "CUI / regulated",
+			"requires": map[string]any{
+				"encryptionAtRest":   true,
+				"networkRestricted":  true,
+				"noPublicExposure":   true,
+				"residencyNodeLabel": "openinfra.dev/residency",
+				"retentionDays":      2555,
+			},
+		},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "restricted"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{
+		"kind: ConfigMap", "name: openinfra-dataclass-restricted", "namespace: open-infra-console",
+		"openinfra.dev/dataclass: restricted",
+		`level: "restricted"`, `encryptionAtRest: "true"`, `networkRestricted: "true"`,
+		`residencyNodeLabel: "openinfra.dev/residency"`, `retentionDays: "2555"`,
+		"ready: true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("DataClassification render missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(true))
@@ -982,8 +1014,10 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 
 	// Plurals intentionally NOT granted to powerusers. Identity/policy kinds belong here:
 	// managing them is privilege escalation, which is why AWS's PowerUser excludes iam:*.
+	// DataClassification is a central security-team categorization scheme, not a project knob.
 	excluded := map[string]bool{
 		"users": true, "groups": true, "policies": true, "roles": true, "grants": true,
+		"dataclassifications": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")
