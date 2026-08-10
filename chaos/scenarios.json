@@ -2852,7 +2852,7 @@
       "title": "Async Lambda invoke no-loss under shim kill",
       "category": "Lambda (aws-shim) async invoke + NATS JetStream",
       "status": "PENDING",
-      "note": "Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts every accepted invocation reaches the dead-letter stream — DLQ >= accepted, no silent loss; duplicates OK). Runnable via workflow_dispatch; keyless, so NOT in the lottery. PENDING = authored + runnable, no verified green yet; graduates after its green streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.",
+      "note": "Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts the dead-letter stream covers every accepted invocation without a runaway — accepted <= DLQ <= 4x). Runnable via workflow_dispatch; keyless, so NOT in the lottery. RAN GREEN ONCE on the live cluster (killed 1 of 2 replicas mid-drain; all 31 accepted invocations reached the DLQ, no loss, no runaway). That first run caught a REAL bug: the async DLQ used subjects dlq.lambda.async.> which OVERLAP apply-sink's platform-wide dlq.> stream, so the DLQ stream silently failed to create and the oracle passed vacuously — fixed to lambda.dlq.> (overlaps neither dlq.> nor the work subject). STATUS PENDING = green-once, not yet the nightly streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.",
       "chain": {
         "nodes": [
           {
@@ -2901,10 +2901,10 @@
       },
       "oracle": {
         "mode": "recover",
-        "invariant": "every accepted async invocation is delivered or dead-lettered (DLQ >= accepted); none silently lost"
+        "invariant": "every accepted async invocation is delivered or dead-lettered (accepted <= DLQ <= 4x); none silently lost, no runaway"
       },
-      "lastVerified": "",
-      "verifiedBy": "not yet run (pending first green)"
+      "lastVerified": "2026-08-10",
+      "verifiedBy": "hand-driven live run (green once; pending the nightly streak)"
     }
   ]
 }
