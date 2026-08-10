@@ -940,3 +940,27 @@ export interface AuditIntegrity {
 export function getAuditIntegrity(): Promise<AuditIntegrity> {
   return request<AuditIntegrity>(`/audit/integrity`);
 }
+
+/** DataClassification compliance (NIST RA-2): labelled workloads vs their class's handling rules. */
+export interface ClassRuleCheck {
+  rule: string;
+  status: "pass" | "fail" | "unknown" | "n/a";
+  detail: string;
+}
+export interface ClassifiedResource {
+  namespace: string;
+  name: string;
+  kind: string;
+  class: string;
+  level: string;
+  compliant: boolean;
+  checks: ClassRuleCheck[];
+}
+export interface ClassCompliance {
+  classes: { name: string; level: string }[];
+  resources: ClassifiedResource[];
+}
+
+export function getClassificationCompliance(): Promise<ClassCompliance> {
+  return request<ClassCompliance>(`/compliance/classification`);
+}
