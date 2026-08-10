@@ -1,0 +1,69 @@
+# The compiler for kind: Grant — one Grant claim becomes one ClusterRoleBinding binding
+# openinfra:<subject> to the requested ClusterRole, carrying the reason + duration as annotations for
+# the audit trail and the expiry reconciler. Same binding mechanism as kind: Group (so the same bind
+# fence applies); the only difference is that a reconciler deletes the Grant when it expires, which
+# tears the binding down with it.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: grant
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: iam.openinfra.dev/v1
+    kind: XGrant
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $subject := $spec.subject }}
+            {{- $subjectName := printf "openinfra:%s" $subject.name }}
+            ---
+            # Bind the subject (a User or a Group, as an openinfra:* assertion) to the granted
+            # ClusterRole. The reason + duration ride as annotations: the audit log captures the
+            # ClusterRoleBinding create/delete, and the reconciler reads the duration to expire it.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: grant-binding
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: rbac.authorization.k8s.io/v1
+                  kind: ClusterRoleBinding
+                  metadata:
+                    name: openinfra-grant-{{ $name }}
+                    labels:
+                      openinfra.dev/iam-grant: {{ $name }}
+                    annotations:
+                      openinfra.dev/grant-reason: "{{ $spec.reason | default "" }}"
+                      openinfra.dev/grant-duration: "{{ $spec.duration }}"
+                  roleRef:
+                    apiGroup: rbac.authorization.k8s.io
+                    kind: ClusterRole
+                    name: {{ $spec.clusterRole }}
+                  subjects:
+                    - kind: {{ $subject.kind }}
+                      name: "{{ $subjectName }}"
+                      apiGroup: rbac.authorization.k8s.io
+            ---
+            apiVersion: iam.openinfra.dev/v1
+            kind: XGrant
+            status:
+              ready: true
+              boundTo: "{{ $subjectName }}"

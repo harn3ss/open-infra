@@ -1,0 +1,92 @@
+# kind: Grant — TEMPORAL access. A time-bounded binding of a subject (a User or a Group) to a
+# ClusterRole, which is automatically REVOKED when it expires. This is open-infra's just-in-time /
+# STS-AssumeRole-with-duration analog: grant someone poweruser for four hours with a recorded reason,
+# and the grant self-destructs — no standing privilege, a full audit trail of who held what, when, why.
+#
+# Mechanism (identical to kind: Group, plus a clock): the composition renders ONE ClusterRoleBinding
+# binding openinfra:<subject> to the chosen ClusterRole. A reconciler (platform/security/grant-reconciler)
+# deletes the Grant once metadata.creationTimestamp + spec.duration has passed; Crossplane then removes
+# the composed binding, so access ends WITHOUT anyone having to remember to revoke it. The binding can
+# only reference a ClusterRole within the openinfra.dev permission boundary or one of the fenced console
+# roles — the same hard ceiling every kind: Group is subject to (see provider-setup.yaml). Government
+# control mapping: AC-2(2) temporary accounts, AC-6(2)/(5) least privilege + elevation, AU on the grant.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xgrants.iam.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: iam.openinfra.dev
+  names:
+    kind: XGrant
+    plural: xgrants
+  claimNames:
+    kind: Grant
+    plural: grants
+  defaultCompositionRef:
+    name: grant
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                subject:
+                  type: object
+                  description: Who the access is granted to.
+                  properties:
+                    kind:
+                      type: string
+                      enum: [User, Group]
+                      description: "Whether `name` is a kind: User (a person) or a kind: Group."
+                    name:
+                      type: string
+                      description: "The User or Group name; bound as the Kubernetes subject openinfra:<name>."
+                  required: [kind, name]
+                clusterRole:
+                  type: string
+                  description: >-
+                    The ClusterRole to grant, e.g. `openinfra-role-<yourRole>` (a kind: Role) or a
+                    built-in console role (`open-infra-readonly` / `open-infra-poweruser`). Bounded by
+                    the same bind fence as kind: Group — only roles within the openinfra.dev boundary or
+                    the fenced console roles can be granted.
+                duration:
+                  type: string
+                  description: >-
+                    How long the grant lasts from creation, as a Go duration (e.g. "30m", "4h", "8h").
+                    The reconciler deletes the Grant — and thus the binding — once creation + duration
+                    has passed. Cap enforced by the reconciler (GRANT_MAX_DURATION, default 24h).
+                reason:
+                  type: string
+                  description: Justification for the elevation, recorded for audit (AC-2(2)/AU).
+              required: [subject, clusterRole, duration]
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                boundTo:
+                  type: string
+                  description: The Kubernetes subject the grant bound (openinfra:<name>).
+      additionalPrinterColumns:
+        - name: Subject
+          type: string
+          jsonPath: .spec.subject.name
+        - name: Role
+          type: string
+          jsonPath: .spec.clusterRole
+        - name: Duration
+          type: string
+          jsonPath: .spec.duration
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
