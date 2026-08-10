@@ -39,6 +39,16 @@ type Segment struct {
 	RecordsHash string   `json:"recordsHash"` // hash over Records (see HashRecords)
 	Hash        string   `json:"hash"`        // the chain link: hash over all fields above
 	Records     []string `json:"records"`     // the raw audit-log lines, verbatim
+
+	// Operational resume state — where in the source file this segment ends, and the file's
+	// identity when it was written. These are how the shipper resumes from the BUCKET HEAD (the
+	// WORM record of truth) instead of a mutable side cursor, so a crash between the object write
+	// and any state write cannot fork the chain. They are deliberately NOT part of the hash: they
+	// describe the shipper's position, not the audit evidence, and verification must not depend on
+	// them. The shipper reads them from the locked ORIGINAL version of the head, so they are as
+	// trustworthy as the WORM lock.
+	EndOffset   int64  `json:"endOffset"`   // byte offset in the source file just past this segment
+	SourceInode uint64 `json:"sourceInode"` // inode of the source file, to detect rotation across runs
 }
 
 // HashRecords hashes a slice of records unambiguously: it hashes the hash of each record and
