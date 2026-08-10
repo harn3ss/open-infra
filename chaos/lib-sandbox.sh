@@ -311,6 +311,14 @@ sandbox_async_accepted() {
     | grep -oE '[0-9]+' | head -1
 }
 
+# Messages currently PENDING on the work stream (WorkQueue removes each on ack/term). Drains to 0 once
+# every accepted invocation has been delivered-and-acked or dead-lettered — the delivered-path oracle.
+sandbox_async_work_count() {
+  kubectl -n nats run nats-async-wc-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+    sh -c "nats --server=nats://nats.nats.svc:4222 stream info LAMBDA_ASYNC --json 2>/dev/null | tr ',' '\n' | grep -oE '\"messages\": *[0-9]+' | grep -oE '[0-9]+' | head -1" 2>/dev/null \
+    | grep -oE '[0-9]+' | head -1
+}
+
 # Messages currently in the dead-letter stream. With a non-existent target function every accepted
 # invocation must fail delivery and land here — so DLQ >= accepted is the no-loss invariant.
 sandbox_async_dlq_count() {

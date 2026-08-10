@@ -10,7 +10,7 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 66 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 8 pending · ⏸️ 0 parked.
+**Tally:** 67 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 9 pending · ⏸️ 0 parked.
 
 **Last nightly:** `capture-kill` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231)) · `isolation` ⚪ inconclusive ([2026-08-08](https://github.com/harn3ss/open-infra/actions/runs/31249761635)) · `loss` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `lottery` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231)) · `partition` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `sink-failure` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `sink-kill` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231)) · `stress-cpu` ⚪ inconclusive ([2026-08-08](https://github.com/harn3ss/open-infra/actions/runs/31249761635)) · `stress-mem` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231))
 
@@ -168,6 +168,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-09 · nightly-lottery |
 | [N21](#s-N21) | Subscriptions no-loss under engine kill (open-appsync) | GraphQLApi subscriptions + NATS JetStream | pool | ⏳ PENDING | not recorded · not yet run (pending first green) |
 | [N22](#s-N22) | Async Lambda invoke no-loss under shim kill | Lambda (aws-shim) async invoke + NATS JetStream | pool | ⏳ PENDING | 2026-08-10 · hand-driven live run (green once; pending the nightly streak) |
+| [N23](#s-N23) | Async Lambda invoke delivered (happy path) under shim kill | Lambda (aws-shim) async invoke + Knative Function + NATS JetStream | pool | ⏳ PENDING | 2026-08-10 · hand-driven live run (green once; pending the nightly streak) |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -2144,6 +2145,39 @@ flowchart LR
   FAULT(("⚡ kill aws-shim pod mid-drain")):::fault
   FAULT -.-> n_shim
   ORACLE{{"recover · every accepted async invocation is delivered or dead-lettered (accepted <= DLQ <= 4x); none silently lost, no runaway"}}:::oracle_recover
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+<a id="s-N23"></a>
+### N23 · Async Lambda invoke delivered (happy path) under shim kill &nbsp; ⏳ PENDING
+
+**Category:** Lambda (aws-shim) async invoke + Knative Function + NATS JetStream &nbsp;•&nbsp; **Oracle:** recover — every accepted async invocation is delivered (work stream drains to 0, DLQ stays 0); none lost or dead-lettered
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** 2026-08-10 · hand-driven live run (green once; pending the nightly streak)
+
+> Sibling of N22 for the SUCCESS path. chaos/scenario-async-invoke-delivered.sh provisions a 2-replica aws-shim on the platform NATS plus a real echo kind: Function (Knative, min 1), publishes async Event invocations at the function across a shim-pod kill, and asserts every accepted invocation is DELIVERED: the WorkQueue work stream drains to 0 (each acked on 2xx) AND the DLQ stays 0 (none dead-lettered), with accepted == everything published. N22 proves nothing is silently lost (all reach the DLQ when delivery fails); N23 proves delivery actually succeeds under the kill — together the full at-least-once guarantee. RAN GREEN ONCE on the live cluster (all 31 accepted invocations delivered, work drained to 0, DLQ 0, across a shim kill). Runnable via workflow_dispatch; keyless, so NOT in the lottery. STATUS PENDING (graduates after the nightly streak). Gotcha the first run caught: wait on the Function CLAIM (Ready cascades from the Knative service), not the ksvc — Crossplane creates the ksvc a few seconds after apply, so a bare `wait ksvc` races and errors 'not found'. Follow-ups: a SigV4 HTTP front-door variant, and a scale-from-zero (min 0) delivery variant.
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  n_client["async invoke (Event)"]
+  n_shim["aws-shim async worker"]
+  n_work[["JetStream LAMBDA_ASYNC"]]
+  n_fn(["echo Function (Knative)"])
+  n_client -->|"enqueue (202)"| n_work
+  n_shim -->|"durable consume"| n_work
+  n_shim -->|"deliver (2xx → ack)"| n_fn
+  FAULT(("⚡ kill aws-shim pod mid-drain")):::fault
+  FAULT -.-> n_shim
+  ORACLE{{"recover · every accepted async invocation is delivered (work stream drains to 0, DLQ stays 0); none lost or dead-lettered"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;

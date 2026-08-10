@@ -1,0 +1,14 @@
+# A throwaway HTTP echo Function (kind: Function → Knative) for the delivered-path async scenario (N23):
+# the target the shim's async worker delivers invocations to. It returns 200 for any request, so a
+# healthy run drains the work stream with an empty DLQ. min 1 keeps it warm through the burst + kill, so
+# the oracle measures delivery durability, not Knative cold-start timing. Blast radius: chaos-sandbox.
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: echo
+  namespace: chaos-sandbox
+spec:
+  image: "mendhak/http-https-echo:37"
+  port: 8080
+  expose: false
+  scaling: { min: 1, max: 5, target: 100 }
