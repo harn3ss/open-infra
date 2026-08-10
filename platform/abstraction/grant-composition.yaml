@@ -32,6 +32,19 @@ spec:
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $subject := $spec.subject }}
             {{- $subjectName := printf "openinfra:%s" $subject.name }}
+            {{- $cr := $spec.clusterRole }}
+            {{/*
+              Ceiling on what a Grant may confer. A Grant may name ONLY a kind: Role
+              (openinfra-role-*, itself bounded by the Policy permission boundary) or one of the two
+              bounded built-in console roles. It may NOT name open-infra-console (full console admin,
+              which carries secrets CRUD) or any provider/setup ClusterRole: the Crossplane provider
+              SA holds broad permissions (secrets, RBAC), so Kubernetes' RBAC "cover" rule would let
+              it create a binding to such a role WITHOUT the fenced `bind` verb — leaking cluster-wide
+              secrets/RBAC through a temporal grant. If the requested role is not on the allowlist we
+              render NO binding (fail-safe: the Grant confers nothing) and say so in status.
+            */}}
+            {{- $allowed := or (hasPrefix "openinfra-role-" $cr) (eq $cr "open-infra-readonly") (eq $cr "open-infra-poweruser") }}
+            {{- if $allowed }}
             ---
             # Bind the subject (a User or a Group, as an openinfra:* assertion) to the granted
             # ClusterRole. The reason + duration ride as annotations: the audit log captures the
@@ -56,7 +69,7 @@ spec:
                   roleRef:
                     apiGroup: rbac.authorization.k8s.io
                     kind: ClusterRole
-                    name: {{ $spec.clusterRole }}
+                    name: {{ $cr }}
                   subjects:
                     - kind: {{ $subject.kind }}
                       name: "{{ $subjectName }}"
@@ -67,3 +80,13 @@ spec:
             status:
               ready: true
               boundTo: "{{ $subjectName }}"
+            {{- else }}
+            ---
+            # Requested role is outside the grantable ceiling — confer nothing.
+            apiVersion: iam.openinfra.dev/v1
+            kind: XGrant
+            status:
+              ready: false
+              boundTo: ""
+              message: "clusterRole '{{ $cr }}' is not grantable; use a kind: Role (openinfra-role-*) or open-infra-readonly / open-infra-poweruser"
+            {{- end }}

@@ -1,0 +1,51 @@
+# Alerts that make the kind: Grant expiry reconciler a MONITORED control, not a silent single point
+# of failure. Temporal access only ends because a once-a-minute CronJob deletes expired grants; if
+# that job stops running (suspended, failing, evicted) grants would linger as standing privilege
+# with nothing to notice. These rules surface exactly that:
+#
+#   GrantReconcilerNotRunning — the CronJob has not completed successfully within ~15 minutes.
+#   GrantReconcilerFailing    — its most recent Job failed.
+#
+# Both map to NIST AC-2(2) (automatic termination of temporary access) / AU-6 (audit review): the
+# mechanism that terminates access must itself be observed. The reconciler ALSO fails safe on bad
+# input (invalid/over-cap durations, unparseable timestamps are revoked, not kept), so these alerts
+# are about the job's liveness, not its per-grant decisions.
+#
+# `release: kube-prometheus-stack` is how that stack's Prometheus discovers PrometheusRules. The CRD
+# ships with the stack (a later sync-wave), so skip the dry-run + defer the wave like the other raw
+# monitoring manifests, or a fresh/DR sync aborts before the CRD exists.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: grant-reconciler
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  groups:
+    - name: iam-grant-reconciler
+      rules:
+        - alert: GrantReconcilerNotRunning
+          # No successful completion in 15 min (it should complete every minute). kube-state-metrics
+          # exposes the last successful schedule/completion of the CronJob's Jobs.
+          expr: |
+            time() - max(kube_job_status_completion_time{job_name=~"grant-reconciler.*", namespace="crossplane-system"}) > 900
+            or absent(kube_job_status_completion_time{job_name=~"grant-reconciler.*", namespace="crossplane-system"})
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "Grant expiry reconciler is not running"
+            description: >-
+              The kind: Grant expiry reconciler has not completed successfully in over 15 minutes.
+              Temporary access grants will NOT expire until it recovers — treat any active grants as
+              standing privilege until then.
+        - alert: GrantReconcilerFailing
+          expr: kube_job_status_failed{job_name=~"grant-reconciler.*", namespace="crossplane-system"} > 0
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "Grant expiry reconciler Job is failing"
+            description: "The most recent grant-reconciler Job failed; expired grants may not be revoked."
