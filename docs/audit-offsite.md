@@ -21,11 +21,16 @@ un-altered — which is what NIST SP 800-53 asks of audit records:
 - **ship** (every 5 min) reads the audit log **at its source** — the file on the k3s server node,
   read-only, not from Loki — so off-siting does not depend on the integrity of the in-cluster log
   store. It appends the new records as the next **segment** in a hash chain and writes that segment
-  to a MinIO bucket under **Object Lock in COMPLIANCE mode**: the object cannot be deleted or
-  overwritten by anyone — including the MinIO root user or a cluster admin — until its retention
-  expires. If an external sink is configured, it writes there too before advancing.
-- **verify** (hourly) reads every segment back and re-derives the whole chain **from the segments'
-  own contents**, trusting nothing it is told, and publishes the result for the console.
+  to a MinIO bucket under **Object Lock in COMPLIANCE mode**, so that object *version* cannot be
+  deleted, overwritten in place, or have its retention shortened by anyone — including the MinIO
+  root user or a cluster admin — until retention expires. ship resumes from the **bucket head** (the
+  WORM record of truth), not a mutable side cursor, so a crash between writes can never fork the
+  chain; rotation is detected by file **inode**, not size, so a rotated-then-regrown log can't cause
+  a silent gap. If an external sink is configured, it writes there too.
+- **verify** (hourly) reads every segment's **locked original version** back and re-derives the whole
+  chain **from the segments' own contents**, trusting nothing it is told, then records the verified
+  head (seq + hash) in a Kubernetes **ConfigMap anchor** — a different trust domain than the object
+  bucket — and publishes the result for the console.
 
 ### The hash chain (tamper-evidence)
 
@@ -41,25 +46,41 @@ function with a table of unit tests covering edit / reforge / delete / reorder /
 Front-truncation (old segments aging past retention and dropping off the front) is allowed and
 distinguished from a mid-chain hole by a non-zero base sequence.
 
-### Immutability (WORM) vs. tamper-evidence (chain)
+### Immutability (WORM) vs. tamper-evidence (chain) — stated precisely
 
-These are two independent guarantees, deliberately:
+These are two independent guarantees, and it is worth being exact about what each does and does not
+cover, because the interesting adversary here is a *privileged insider* (AU-9's whole point):
 
-- **Immutability** is the object store's: COMPLIANCE-mode Object Lock physically prevents deletion
-  or overwrite of a shipped segment until retention expires. The exporter's MinIO identity is
-  further scoped to *put and set retention, never delete* — least privilege on top of the lock.
-- **Tamper-evidence** is the chain's: even if someone with full control of the bucket managed to
-  remove or forge segments, `Verify` — run by the CronJob, by the console, or by anyone with read
-  access — recomputes the chain and surfaces the break.
+- **Immutability** is the object store's, and it protects a specific object **version**:
+  COMPLIANCE-mode Object Lock means a shipped segment version cannot be deleted, overwritten in
+  place, or have its retention shortened until retention expires — not even by MinIO root. The
+  exporter's identity is further scoped to *put and set-retention, never delete*.
+  - What lock does **not** prevent: S3 versioning still lets a bucket-writer lay down a *newer*
+    version, or a delete marker, that shadows the locked original at the "latest" layer. So a naive
+    "read latest" would be fooled even though the original survives.
+- **Tamper-evidence** is this system's, and it is built to see through exactly that:
+  - `verify` reads each segment's **oldest (locked) version**, never "latest", so a shadowing
+    overwrite cannot change what is verified; and it **counts** any delete marker or
+    content-differing newer version as a detected tamper attempt.
+  - the chain links each segment to the previous by hash, so an edit/reorder/mid-chain deletion of
+    the locked originals (were it even possible) breaks it.
+  - the verified head (seq + hash) is anchored in a Kubernetes ConfigMap — a **different trust
+    domain** than the bucket — and the console requires the bucket's reported head to match the
+    anchor and be fresh before it shows green. Forging the record undetectably would require
+    compromising **both** the object bucket and Kubernetes RBAC. The strongest anchor is the
+    optional external off-site bucket (AU-9(2)): a copy the cluster cannot reach at all.
 
-Neither claims to make tampering *impossible*; together they make already-shipped records
-undeletable for the retention window and make any tampering **detectable**.
+Neither makes tampering *impossible*. Together they make already-shipped record versions undeletable
+for the retention window and make any tampering **detectable** — including by a bucket-privileged
+insider, which is the case that matters.
 
 ## Seeing it in the console
 
-The **Audit** page shows a banner from `/api/audit/integrity` (admin-gated): green when the last
-automated verification found the chain intact (with segment/record counts and the head sequence),
-red with the break location if not, muted until the off-siter has run once.
+The **Audit** page shows a banner from `/api/audit/integrity` (admin-gated). It does **not** trust
+the bucket's published status on its own — it cross-checks the reported head against the ConfigMap
+anchor (a different trust domain) and requires the verification to be fresh. Green means: chain
+verified, no shadowing versions, anchor agrees, recent. Red names the reason — a chain break, a
+shadowing attempt, an anchor mismatch, or a stale verification.
 
 ## Configuration
 
@@ -79,7 +100,14 @@ on the `audit-offsite-ship` CronJob:
 - The ship job needs to read a `0600` root-owned file on the server node, so it runs as root,
   read-only, with every capability dropped — the same access `promtail` already has.
 - Between a segment being shipped and the next run, records live only on the node and in Loki; keep
-  the interval short. A log rotation restarts the cursor and is a bounded coverage gap (logged),
-  not an integrity gap — the chain stays contiguous.
+  the interval short. A log rotation restarts at offset 0 of the new file and is a bounded coverage
+  gap (logged), not an integrity gap — the chain stays contiguous.
+- **Scope of the immutable copy.** The off-sited, tamper-evident record is the **k3s API-server
+  audit log**. It records every mutation, and for impersonated calls (console/kubectl/Terraform/Argo)
+  it carries `impersonatedUser`, so those attribute to a **person** even in the WORM copy. The
+  console's extra `iam:` person-attribution for *BFF-native* IAM actions lives only in Loki and is
+  **not** in the WORM copy — there, such an action attributes to the console ServiceAccount (the
+  action itself is still captured). AU-10 person-level non-repudiation therefore holds for
+  impersonated k8s actions; treat the Loki `iam:` stream as enrichment, not as tamper-evident.
 - The queryable **Audit** view is still Loki; off-siting protects the *record of truth*, it does
   not change day-to-day querying.

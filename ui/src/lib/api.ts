@@ -910,11 +910,20 @@ export function listAuditEvents(params: {
 /** The tamper-evident off-site chain's last automated verification (AU-9). */
 export interface AuditIntegrity {
   available: boolean;
+  /** The trustworthy verdict: chain verified AND cross-domain anchor agrees AND fresh. */
+  intact: boolean;
+  /** Did the bucket status agree with the k8s anchor (a different trust domain)? */
+  anchorMatch?: boolean;
   note?: string;
   ageSeconds?: number;
   report?: {
     verifiedAt: string;
     bucket: string;
+    shadowVersions: number;
+    anchor: string;
+    intact: boolean;
+    headSeq: number;
+    headHash: string;
     result: {
       ok: boolean;
       count: number;

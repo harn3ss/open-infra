@@ -149,6 +149,25 @@ func TestBuildSegment_LinksToPrev(t *testing.T) {
 	}
 }
 
+// The operational resume fields (EndOffset/SourceInode) must NOT be part of the hash — they
+// describe the shipper's position, not the audit evidence, and verification must not depend on them.
+func TestVerify_OperationalFieldsDoNotAffectHash(t *testing.T) {
+	segs := buildChain(t, 3)
+	// Set resume metadata after the fact; the chain must still verify unchanged.
+	for i := range segs {
+		segs[i].EndOffset = int64(1000 * (i + 1))
+		segs[i].SourceInode = 424242
+	}
+	if r := Verify(segs); !r.OK {
+		t.Fatalf("resume metadata must not affect verification: %+v", r)
+	}
+	// And the segment hash is independent of them.
+	s := segs[1]
+	if s.Hash != segmentHash(s.Seq, s.PrevHash, s.Count, s.FirstTS, s.LastTS, s.RecordsHash) {
+		t.Fatal("segment hash must be independent of EndOffset/SourceInode")
+	}
+}
+
 func TestHashRecords_OrderAndSplitSensitive(t *testing.T) {
 	// Different order → different hash.
 	if HashRecords([]string{"a", "b"}) == HashRecords([]string{"b", "a"}) {

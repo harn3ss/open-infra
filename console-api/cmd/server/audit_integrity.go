@@ -9,25 +9,50 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
 // The audit-integrity view — the tamper-evidence half of the Audit page.
 //
-// audit-offsite (a CronJob) ships the API-server audit log to a WORM bucket as a hash chain and
-// periodically re-verifies it, publishing the outcome to status/latest.json. This endpoint reads
-// that outcome so the console can show whether the off-site audit record is intact, when it was
-// last checked, and where the chain head is. It is a READ of the last automated verification: the
-// authoritative, tamper-evident record is the locked segments themselves, which the CronJob (and
-// anyone with read access) verifies from their contents alone — see docs/audit-offsite.md.
+// audit-offsite (a CronJob) ships the API-server audit log to a WORM bucket as a hash chain,
+// verifies it (reading each segment's LOCKED ORIGINAL version, so a shadowing overwrite can't fool
+// it), and publishes the outcome to status/latest.json. It ALSO records the verified head (seq +
+// hash) in a Kubernetes ConfigMap — a different trust domain than the object bucket.
+//
+// This endpoint does not trust status/latest.json on its own (a bucket-writer could forge it).
+// It cross-checks the bucket's reported head against the ConfigMap anchor and requires the two to
+// agree AND the verification to be fresh before it reports the trail intact. Forging the banner
+// green would therefore require compromising BOTH the bucket and Kubernetes RBAC. See
+// docs/audit-offsite.md.
 //
 // Admin-gated with the same SubjectAccessReview as the rest of the Audit view.
 
+// maxIntegrityStale is how old the last verification may be before we stop trusting it (verify runs
+// hourly; allow a few misses before flagging).
+const maxIntegrityStale = 3 * time.Hour
+
 type auditIntegrityResp struct {
-	Available  bool            `json:"available"`            // false until audit-offsite has verified once
-	Note       string          `json:"note,omitempty"`       // why it is unavailable, if so
-	Report     json.RawMessage `json:"report,omitempty"`     // the verifier's statusReport, verbatim
-	AgeSeconds *int64          `json:"ageSeconds,omitempty"` // how stale the verification is
+	Available   bool            `json:"available"`             // false until audit-offsite has verified once
+	Intact      bool            `json:"intact"`                // the trustworthy verdict: report intact AND anchor agrees AND fresh
+	AnchorMatch *bool           `json:"anchorMatch,omitempty"` // did the bucket status agree with the k8s anchor?
+	Note        string          `json:"note,omitempty"`        // why unavailable / not trusted, if so
+	AgeSeconds  *int64          `json:"ageSeconds,omitempty"`  // how stale the verification is
+	Report      json.RawMessage `json:"report,omitempty"`      // the verifier's statusReport, verbatim
+}
+
+// bucketStatus mirrors the fields audit-offsite writes to status/latest.json that we cross-check.
+type bucketStatus struct {
+	Intact     bool   `json:"intact"`
+	HeadSeq    int    `json:"headSeq"`
+	HeadHash   string `json:"headHash"`
+	VerifiedAt string `json:"verifiedAt"`
+}
+
+// anchorState mirrors the audit-offsite-anchor ConfigMap.
+type anchorState struct {
+	HeadSeq  int    `json:"headSeq"`
+	HeadHash string `json:"headHash"`
 }
 
 func handleAuditIntegrity(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -53,20 +78,51 @@ func handleAuditIntegrity(cs kubernetes.Interface, auth *authStore, logger *slog
 		defer func() { _ = obj.Close() }()
 		data, err := io.ReadAll(obj)
 		if err != nil {
-			// A GetObject on a missing key surfaces the error only on read.
 			writeJSON(w, http.StatusOK, auditIntegrityResp{Available: false, Note: "audit off-siting has not run yet"})
 			return
 		}
 
-		resp := auditIntegrityResp{Available: true, Report: json.RawMessage(data)}
-		var probe struct {
-			VerifiedAt string `json:"verifiedAt"`
+		var bs bucketStatus
+		if json.Unmarshal(data, &bs) != nil {
+			writeJSON(w, http.StatusOK, auditIntegrityResp{Available: false, Note: "unreadable verification status"})
+			return
 		}
-		if json.Unmarshal(data, &probe) == nil && probe.VerifiedAt != "" {
-			if t, err := time.Parse(time.RFC3339, probe.VerifiedAt); err == nil {
+
+		resp := auditIntegrityResp{Available: true, Report: json.RawMessage(data)}
+
+		// Freshness.
+		fresh := true
+		if bs.VerifiedAt != "" {
+			if t, perr := time.Parse(time.RFC3339, bs.VerifiedAt); perr == nil {
 				age := int64(time.Since(t).Seconds())
 				resp.AgeSeconds = &age
+				fresh = time.Since(t) <= maxIntegrityStale
 			}
+		}
+
+		// Cross-domain anchor: the bucket status must agree with the ConfigMap the CronJob writes in
+		// the monitoring namespace (which a bucket-only attacker cannot reach).
+		anchorNS := getenv("AUDIT_ANCHOR_NAMESPACE", "monitoring")
+		match := false
+		anchorNote := ""
+		if cm, aerr := cs.CoreV1().ConfigMaps(anchorNS).Get(ctx, "audit-offsite-anchor", metav1.GetOptions{}); aerr == nil {
+			var as anchorState
+			if json.Unmarshal([]byte(cm.Data["anchor.json"]), &as) == nil {
+				match = as.HeadHash != "" && as.HeadHash == bs.HeadHash && as.HeadSeq == bs.HeadSeq
+				if !match {
+					anchorNote = "bucket status disagrees with the cross-domain anchor — possible tampering"
+				}
+			}
+		} else {
+			anchorNote = "no cross-domain anchor recorded yet"
+		}
+		resp.AnchorMatch = &match
+
+		resp.Intact = bs.Intact && match && fresh
+		if !resp.Intact && anchorNote != "" {
+			resp.Note = anchorNote
+		} else if !resp.Intact && !fresh {
+			resp.Note = "last verification is stale"
 		}
 		writeJSON(w, http.StatusOK, resp)
 	}

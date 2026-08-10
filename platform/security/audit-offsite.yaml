@@ -94,7 +94,19 @@ spec:
               #    requires). We do NOT set a bucket-DEFAULT retention: only segments get per-object
               #    COMPLIANCE retention (set by the exporter), leaving status/latest.json writable.
               echo "ensuring locked bucket $BUCKET…"
-              "$MC" mb --with-lock "m/$BUCKET" 2>/dev/null || echo "  bucket exists"
+              "$MC" mb --with-lock "m/$BUCKET" 2>/dev/null || echo "  bucket already exists"
+              # ASSERT Object Lock is actually active. It can only be enabled at creation — a
+              # pre-existing UNLOCKED bucket, or a backend that ignores --with-lock, would silently
+              # downgrade the immutability guarantee to "retained but overwritable". Fail hard so the
+              # feature is never quietly toothless.
+              LOCK=$("$MC" stat --json "m/$BUCKET" | jq -r '.ObjectLock.enabled // ""')
+              if [ "$LOCK" != "Enabled" ]; then
+                echo "ERROR: bucket $BUCKET does NOT have Object Lock enabled (got '$LOCK')." >&2
+                echo "       Object Lock cannot be added after creation — delete the bucket and re-run," >&2
+                echo "       or set AUDIT_BUCKET to a fresh name. Refusing to run without WORM." >&2
+                exit 1
+              fi
+              echo "  object lock: ACTIVE (COMPLIANCE retention set per-object by the exporter)"
 
               # 2) A scoped identity that can WRITE and SET RETENTION but never DELETE and never
               #    bypass a lock. (COMPLIANCE mode blocks deletes for everyone anyway — this is
@@ -145,8 +157,10 @@ metadata:
   name: audit-offsite
   namespace: monitoring
 rules:
-  # The ship cursor (byte offset + chain head) is a ConfigMap. That is the ONLY k8s object this
-  # identity touches — it cannot read secrets or anything else.
+  # verify records the verified head (seq + hash) in a ConfigMap (audit-offsite-anchor) — a
+  # different trust domain than the object bucket, so the console can cross-check the two. That
+  # ConfigMap is the ONLY k8s object this identity touches; it cannot read secrets or anything else.
+  # (ship holds no k8s state at all — it resumes from the WORM bucket head.)
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, create, update, patch]
