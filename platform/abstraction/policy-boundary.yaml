@@ -44,3 +44,4 @@ excluded:
   - groups:   "identity object — a Policy granting on it would be privilege escalation"
   - policies: "a Policy that could grant on Policies could widen its own boundary"
   - roles:    "a Role is what binds the boundary to a person — granting on it escalates"
+  - grants:   "a Grant confers a Role for a time — granting on it is temporal privilege escalation"
