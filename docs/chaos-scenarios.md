@@ -10,7 +10,7 @@ resource *chain*, injects a real fault at a marked point (⚡), and asserts a bu
 systems-level **invariant** — not just "did it come back up". This page is generated from
 [`chaos/scenarios.json`](../chaos/scenarios.json); it can never drift from the source-of-truth.
 
-**Tally:** 65 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 7 pending · ⏸️ 0 parked.
+**Tally:** 66 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 8 pending · ⏸️ 0 parked.
 
 **Last nightly:** `capture-kill` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231)) · `isolation` ⚪ inconclusive ([2026-08-08](https://github.com/harn3ss/open-infra/actions/runs/31249761635)) · `loss` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `lottery` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231)) · `partition` ⚪ inconclusive ([2026-08-04](https://github.com/harn3ss/open-infra/actions/runs/30902857565)) · `sink-failure` 🟢 success ([2026-08-03](https://github.com/harn3ss/open-infra/actions/runs/30810979399)) · `sink-kill` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231)) · `stress-cpu` ⚪ inconclusive ([2026-08-08](https://github.com/harn3ss/open-infra/actions/runs/31249761635)) · `stress-mem` ⚪ inconclusive ([2026-08-09](https://github.com/harn3ss/open-infra/actions/runs/31305063231))
 
@@ -167,6 +167,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS | not recorded · on-demand |
 | [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-08-09 · nightly-lottery |
 | [N21](#s-N21) | Subscriptions no-loss under engine kill (open-appsync) | GraphQLApi subscriptions + NATS JetStream | pool | ⏳ PENDING | not recorded · not yet run (pending first green) |
+| [N22](#s-N22) | Async Lambda invoke no-loss under shim kill | Lambda (aws-shim) async invoke + NATS JetStream | pool | ⏳ PENDING | not recorded · not yet run (pending first green) |
 
 > **Sandbox nodes** column: which of `sandbox-node-01/02/03` a scenario used. `pool` = a single pod scheduler-placed within the 3-node sandbox; numbers = a resource spread across those specific nodes (see the per-scenario subgraphs).
 
@@ -2110,6 +2111,39 @@ flowchart LR
   FAULT(("⚡ kill open-appsync pod mid-stream")):::fault
   FAULT -.-> n_engine
   ORACLE{{"recover · zero subscription events lost (durable consumer resumes from offset)"}}:::oracle_recover
+  classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
+  classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
+  classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  classDef oracle_deny fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+```
+
+</details>
+
+<a id="s-N22"></a>
+### N22 · Async Lambda invoke no-loss under shim kill &nbsp; ⏳ PENDING
+
+**Category:** Lambda (aws-shim) async invoke + NATS JetStream &nbsp;•&nbsp; **Oracle:** recover — every accepted async invocation is delivered or dead-lettered (DLQ >= accepted); none silently lost
+
+**Ran on:** scheduler-placed within the sandbox-node-01…03 pool
+
+**Verified:** not recorded · not yet run (pending first green)
+
+> Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts every accepted invocation reaches the dead-letter stream — DLQ >= accepted, no silent loss; duplicates OK). Runnable via workflow_dispatch; keyless, so NOT in the lottery. PENDING = authored + runnable, no verified green yet; graduates after its green streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.
+
+<details open><summary>diagram — chain, ⚡ fault, oracle</summary>
+
+```mermaid
+flowchart LR
+  n_client["async invoke (Event)"]
+  n_shim["aws-shim async worker"]
+  n_work[["JetStream LAMBDA_ASYNC"]]
+  n_dlq[["JetStream LAMBDA_ASYNC_DLQ"]]
+  n_client -->|"enqueue (202)"| n_work
+  n_shim -->|"durable consume"| n_work
+  n_shim -->|"dead-letter after retries"| n_dlq
+  FAULT(("⚡ kill aws-shim pod mid-drain")):::fault
+  FAULT -.-> n_shim
+  ORACLE{{"recover · every accepted async invocation is delivered or dead-lettered (DLQ >= accepted); none silently lost"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;

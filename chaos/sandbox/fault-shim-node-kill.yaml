@@ -1,0 +1,21 @@
+# Async-invoke chain — kill an aws-shim pod mid-drain. The shim runs a durable JetStream pull consumer
+# (lambda-async-worker) that delivers each queued async (Event) Lambda invocation to its function and
+# dead-letters after retries. Killing one of the two shim replicas while invocations are draining tests
+# that NO accepted invocation is lost across the outage: the work stream is WorkQueue-retained and the
+# consumer is durable, so an un-acked in-flight message is redelivered (by the survivor / restarted pod)
+# and every accepted invocation still ends up delivered or in the DLQ (at-least-once — duplicates OK,
+# a MISSING invocation is the red).
+#
+# pod-kill is instantaneous; the Deployment restarts the pod. Blast radius: chaos-sandbox only.
+apiVersion: openinfra.dev/v1
+kind: FaultInjection
+metadata:
+  name: shim-node-kill
+  namespace: chaos-sandbox
+spec:
+  type: pod-kill
+  target:
+    labelSelector: { app: aws-shim-chaos }
+  # Kill ONE of the two replicas: the survivor keeps draining the durable queue while the killed pod is
+  # replaced and rejoins the shared consumer.
+  mode: one

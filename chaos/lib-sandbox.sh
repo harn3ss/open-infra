@@ -290,6 +290,55 @@ sandbox_teardown_appsync() {
   fi
 }
 
+# ---- Async-invoke variant (async-invoke-noloss): aws-shim durable async worker → JetStream, no-loss ----
+
+# Provision a 2-replica aws-shim wired to the platform NATS JetStream — its durable async (Event)
+# delivery worker is what's under test. Blocks until Available. The work + DLQ streams (LAMBDA_ASYNC,
+# LAMBDA_ASYNC_DLQ) are created by the shim on boot; teardown returns them so each run starts fresh.
+sandbox_provision_shim_async() {
+  "$HERE/preflight-capacity.sh"   # abort INCONCLUSIVE (not red) if the cluster lacks headroom
+  log "provisioning aws-shim (2 replicas → platform NATS JetStream async worker)"
+  kubectl apply -f "$HERE/sandbox/shim-async.yaml"
+  kubectl -n "$NS" rollout status deploy/aws-shim-chaos --timeout="${SHIM_ROLLOUT_TIMEOUT:-120s}"
+}
+
+# Total invocations ACCEPTED onto the work stream. last_seq is monotonic — the authoritative count of
+# what was durably enqueued, unaffected by WorkQueue removal-on-ack (so it stays correct as the worker
+# drains). This is the denominator of the no-loss oracle.
+sandbox_async_accepted() {
+  kubectl -n nats run nats-async-seq-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+    sh -c "nats --server=nats://nats.nats.svc:4222 stream info LAMBDA_ASYNC --json 2>/dev/null | tr ',' '\n' | grep -oE '\"last_seq\": *[0-9]+' | grep -oE '[0-9]+' | head -1" 2>/dev/null \
+    | grep -oE '[0-9]+' | head -1
+}
+
+# Messages currently in the dead-letter stream. With a non-existent target function every accepted
+# invocation must fail delivery and land here — so DLQ >= accepted is the no-loss invariant.
+sandbox_async_dlq_count() {
+  kubectl -n nats run nats-async-dlq-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+    sh -c "nats --server=nats://nats.nats.svc:4222 stream info LAMBDA_ASYNC_DLQ --json 2>/dev/null | tr ',' '\n' | grep -oE '\"messages\": *[0-9]+' | grep -oE '[0-9]+' | head -1" 2>/dev/null \
+    | grep -oE '[0-9]+' | head -1
+}
+
+# Publish COUNT async invocations for function NAME straight onto the work stream (lambda.async.<name>),
+# each carrying the X-Fn-Name header the worker reads — byte-identical to what the shim's Event path
+# enqueues, so this drives the worker without needing the SigV4 HTTP front door.
+sandbox_publish_async() {
+  local name="$1" count="$2"
+  kubectl -n nats run "nats-async-pub-$$-$RANDOM" --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+    sh -c "for i in \$(seq 1 $count); do nats --server=nats://nats.nats.svc:4222 pub 'lambda.async.$name' 'invoke' -H 'X-Fn-Name:$name' >/dev/null 2>&1; done" >/dev/null 2>&1 || true
+}
+
+sandbox_teardown_shim_async() {
+  kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  if [ "${CHAOS_KEEP:-0}" != "1" ]; then
+    log "tearing down aws-shim (async)"
+    kubectl -n "$NS" delete -f "$HERE/sandbox/shim-async.yaml" --ignore-not-found >/dev/null 2>&1 || true
+    # Return both streams so the next run starts clean (the shim recreates them on boot).
+    kubectl -n nats run nats-async-rm-$$ --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+      sh -c "nats --server=nats://nats.nats.svc:4222 stream rm LAMBDA_ASYNC -f; nats --server=nats://nats.nats.svc:4222 stream rm LAMBDA_ASYNC_DLQ -f" >/dev/null 2>&1 || true
+  fi
+}
+
 # ---- Deny variant (security-deny): egress fence + negative-invariant oracle ------
 
 # Provision svc-allowed + svc-forbidden + the two SecurityGroups, wait both apps Ready, and deploy
