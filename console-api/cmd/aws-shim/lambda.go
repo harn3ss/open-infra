@@ -29,17 +29,19 @@ import (
 type lambdaHandler struct {
 	cs        kubernetes.Interface
 	client    *http.Client
-	fnNS      string // namespace kind: Function / Knative Services live in
-	svcSuffix string // cluster DNS suffix; endpoint = http://<name>.<fnNS>.<svcSuffix>
+	fnNS      string        // namespace kind: Function / Knative Services live in
+	svcSuffix string        // cluster DNS suffix; endpoint = http://<name>.<fnNS>.<svcSuffix>
+	async     *asyncInvoker // durable async (Event) delivery; nil = async unavailable (no NATS)
 	logger    *slog.Logger
 }
 
-func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, logger *slog.Logger) *lambdaHandler {
+func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, async *asyncInvoker, logger *slog.Logger) *lambdaHandler {
 	return &lambdaHandler{
 		cs:        cs,
 		client:    &http.Client{Timeout: 60 * time.Second},
 		fnNS:      fnNS,
 		svcSuffix: svcSuffix,
+		async:     async,
 		logger:    logger,
 	}
 }
@@ -64,6 +66,38 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		h.logger.Warn("lambda denied", "user", claims.Sub, "function", name, "reason", reason)
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
 			"not authorized to invoke function '"+name+"'")
+		return
+	}
+
+	// Invocation type (X-Amz-Invocation-Type): RequestResponse (default) runs synchronously below;
+	// DryRun validates permissions only; Event queues the payload for durable async delivery and returns
+	// 202 immediately. The authorization check above already ran, so DryRun is complete right here.
+	switch r.Header.Get("X-Amz-Invocation-Type") {
+	case "DryRun":
+		w.Header().Set("x-amzn-RequestId", requestID)
+		w.WriteHeader(http.StatusNoContent) // 204 — authorized, not executed
+		return
+	case "Event":
+		if h.async == nil {
+			writeLambdaError(w, http.StatusServiceUnavailable, "ServiceException", requestID,
+				"asynchronous (Event) invocation requires the event bus (set NATS_URL on the shim)")
+			return
+		}
+		// Async payloads are read into a durable queue message; cap at AWS's 256 KB async limit.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256*1024))
+		if err != nil {
+			writeLambdaError(w, http.StatusRequestEntityTooLarge, "RequestTooLargeException", requestID,
+				"async invocation payload exceeds the 256 KB limit")
+			return
+		}
+		if err := h.async.publish(name, r.Header.Get("Content-Type"), body, requestID); err != nil {
+			h.logger.Warn("lambda async enqueue failed", "function", name, "error", err.Error())
+			writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID,
+				"could not enqueue the asynchronous invocation")
+			return
+		}
+		w.Header().Set("x-amzn-RequestId", requestID)
+		w.WriteHeader(http.StatusAccepted) // 202, empty body — AWS's async invoke response
 		return
 	}
 

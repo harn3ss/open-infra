@@ -21,10 +21,16 @@ spec:
   image: ghcr.io/me/api
   port: 8080
   scaling: { min: 0, max: 10, target: 100 }   # min 0 = scale to zero; target = concurrent req/pod
+  # memory: 512Mi                              # guaranteed memory (AWS Lambda's memory-size knob)
+  # timeout: 60                                # max seconds per request (AWS Lambda's timeout knob)
   # gpu: 1                                     # serverless GPU inference
   # queues: [events]                           # event-driven (injects NATS_URL + OPENINFRA_QUEUES)
   # secrets: [orders-db-app]                   # connect to an app's DB/bucket
 ```
+
+`memory` (a Kubernetes quantity) is set as both the container request and limit — the analog of
+Lambda's memory dial (open-infra does not couple CPU to it the way AWS does). `timeout` becomes the
+Knative revision timeout — the analog of Lambda's per-invoke timeout.
 
 `open-infra init function` scaffolds this. It compiles to a Knative Service with
 KPA autoscaling.
@@ -66,6 +72,25 @@ The platform runs a small **pump** (a durable JetStream consumer) that POSTs eac
 change event to the function; the function cold-starts on demand and scales back to
 zero when the stream is idle. Return 2xx to ack (at-least-once otherwise). Details +
 the event format: [`docs/streaming.md`](streaming.md#trigger-a-function-the-lambda-on-kinesis-pattern).
+
+## AWS Lambda invoke (via the aws-shim)
+
+With the `aws-shim` enabled, the AWS SDK / CLI can invoke a Function by name — `aws lambda invoke`
+targets `kind: Function` over its Knative address. All three invocation types are supported:
+
+- **`RequestResponse`** (default) — synchronous: the shim forwards the payload and streams the
+  function's response back; a function-side error is signalled with `X-Amz-Function-Error`.
+- **`Event`** (asynchronous) — the shim enqueues the payload to a durable JetStream stream and returns
+  `202` immediately; a background worker delivers it to the function, **retries** on failure, and
+  **dead-letters** (to `dlq.lambda.async.<fn>`) after the delivery cap. It survives a shim restart and
+  is shared across shim replicas. Requires the shim to have NATS; without it, `Event` is refused (`503`)
+  rather than silently dropped.
+- **`DryRun`** — runs the authorization check (the shared SubjectAccessReview) and returns `204` without
+  invoking — a permission probe.
+
+Every invoke is authorized through the one policy world (a SAR: `get` on the `functions` resource), the
+same boundary as every other front door. Management APIs (`CreateFunction`, versions/aliases, layers)
+are deliberately not fronted — Functions are managed declaratively as `kind: Function`.
 
 ## External access
 

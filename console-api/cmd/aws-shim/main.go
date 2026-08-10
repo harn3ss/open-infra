@@ -129,13 +129,26 @@ func run(logger *slog.Logger) error {
 			"userClaim", userClaim, "groupsClaim", groupsClaim)
 	}
 
+	// Optional durable async (Event) Lambda invocation. When the shim has NATS, Event invokes are queued
+	// to JetStream and a background worker delivers them (retries + dead-letter); without NATS, Event
+	// invocations are refused honestly (no durable queue) while synchronous invoke still works.
+	var asyncInv *asyncInvoker
+	if natsURL := getenv("NATS_URL", ""); natsURL != "" {
+		if ai, err := newAsyncInvoker(natsURL, fnNS, svcSuffix, 3, logger); err != nil {
+			logger.Error("async Lambda (Event) invocation disabled — NATS connect failed", "error", err.Error())
+		} else {
+			asyncInv = ai
+			logger.Info("async Lambda (Event) invocation enabled", "nats", natsURL)
+		}
+	}
+
 	// The service registry: one front door, many domain experts (keyed by the AWS service name the
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":      &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
 		"sts":     &stsHandler{account: account, logger: logger},
-		"lambda":  newLambdaHandler(cs, fnNS, svcSuffix, logger),
+		"lambda":  newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger),
 		"appsync": newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 	})
 
@@ -169,6 +182,10 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if asyncInv != nil {
+		go asyncInv.run(ctx) // durable async-invoke delivery worker; exits when ctx is cancelled
+		defer asyncInv.Close()
+	}
 	select {
 	case err := <-serverErr:
 		return err
