@@ -908,7 +908,7 @@ func sprigLite() template.FuncMap {
 		},
 		"upper": func(s string) string { return strings.ToUpper(s) },
 		// sprig's replace is replace(old, new, src) — used piped: `s | replace "-" "_"`.
-		"replace": func(old, new, src string) string { return strings.ReplaceAll(src, old, new) },
+		"replace":   func(old, new, src string) string { return strings.ReplaceAll(src, old, new) },
 		"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
 	}
 }
