@@ -1,0 +1,92 @@
+# kind: DataClassification — a named data-handling policy (NIST RA-2 Security Categorization).
+#
+# A DataClassification declares a sensitivity level and the handling REQUIREMENTS that data at that
+# level must meet — encryption at rest, network restriction, no public exposure, backup, residency,
+# retention. Data-bearing resources (a kind: Application with a database, a Volume, a FileShare, …)
+# are tagged with the label `openinfra.dev/classification: <name>`, and a compliance auditor
+# (console → Security & Identity → Data Classification, /api/compliance/classification) reports which
+# tagged resources meet their class's requirements and which do not.
+#
+# This is the taxonomy + the categorization; enforcement is detect-and-report today (like AWS Config
+# rules), with the mechanically-checkable requirements evaluated live. It is deliberately admin/
+# security-team-managed (excluded from what a kind: Policy can grant) — a categorization scheme is
+# set centrally, not by every project. Government controls: RA-2 (categorization), MP-3 (media
+# marking), AC-4 / SC-28 (the handling requirements it expresses).
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdataclassifications.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XDataClassification
+    plural: xdataclassifications
+  claimNames:
+    kind: DataClassification
+    plural: dataclassifications
+  defaultCompositionRef:
+    name: dataclassification
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                level:
+                  type: string
+                  enum: [public, internal, confidential, restricted]
+                  description: >-
+                    Sensitivity level, ordered low→high. `restricted` is the most sensitive
+                    (e.g. regulated / CUI); `public` the least.
+                description:
+                  type: string
+                  description: What data this class covers, shown in the console.
+                requires:
+                  type: object
+                  description: The handling requirements data at this level must meet.
+                  properties:
+                    encryptionAtRest:
+                      type: boolean
+                      description: Data must be encrypted at rest (evaluated once encryption ships).
+                    networkRestricted:
+                      type: boolean
+                      description: The resource must be covered by a SecurityGroup / NetworkPolicy.
+                    noPublicExposure:
+                      type: boolean
+                      description: The resource must not be reachable via a LoadBalancer or public ingress.
+                    backup:
+                      type: boolean
+                      description: The resource must have a backup / snapshot policy.
+                    residencyNodeLabel:
+                      type: string
+                      description: >-
+                        If set, the resource must be pinned (nodeSelector/placement) to nodes carrying
+                        this label — data-residency enforcement (e.g. openinfra.dev/residency).
+                    retentionDays:
+                      type: integer
+                      description: Minimum retention for data / its audit records at this level.
+              required: [level]
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                level:
+                  type: string
+      additionalPrinterColumns:
+        - name: Level
+          type: string
+          jsonPath: .spec.level
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
