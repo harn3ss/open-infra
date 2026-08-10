@@ -163,6 +163,26 @@ func TestLambda_ParseInvokePath(t *testing.T) {
 	}
 }
 
+// The function name is validated to an RFC-1123 label so a crafted name can't break out of the
+// constructed cluster-local URL authority (SSRF) or poison the async NATS subject.
+func TestLambda_FunctionNameValidation(t *testing.T) {
+	valid := []string{"hello", "my-fn", "a", "fn123", "a-b-c", "orders-processor"}
+	invalid := []string{
+		"evil.com#", "attacker:8080", "a.b", "a_b", "UPPER", "-lead", "trail-", "", "a b", "a/b",
+		"foo?x=1", "foo@bar", "%2e%2e",
+	}
+	for _, n := range valid {
+		if !fnNameRE.MatchString(n) {
+			t.Errorf("valid function name %q was rejected", n)
+		}
+	}
+	for _, n := range invalid {
+		if fnNameRE.MatchString(n) {
+			t.Errorf("invalid function name %q was accepted (SSRF / subject-injection risk)", n)
+		}
+	}
+}
+
 func TestLambda_ErrorDialectIsJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", "r-1", "nope")
