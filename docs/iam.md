@@ -232,8 +232,7 @@ save silently; don't put the correctness-checking tool on a different page from 
 
 A `Grant` binds a subject (a `kind: User` or `kind: Group`) to a ClusterRole **for a bounded time**, then
 revokes itself — open-infra's answer to standing privilege, and the analog of AWS STS AssumeRole with a
-session duration. It is the same mechanism as `kind: Group` (one `ClusterRoleBinding` of `openinfra:<subject>`
-to the role, subject to the same bind fence — a Grant can never confer more than a Group can), plus a clock.
+session duration. It renders one `ClusterRoleBinding` of `openinfra:<subject>` to the role, plus a clock.
 
 ```yaml
 apiVersion: iam.openinfra.dev/v1
@@ -246,13 +245,33 @@ spec:
   reason: "oncall incident 1234"       # recorded for audit (AC-2(2))
 ```
 
+**What a Grant may confer (the ceiling).** Unlike `kind: Group` — a permanent, admin-only act that can bind
+any role — a Grant is restricted to a deliberately narrow allowlist: a `kind: Role` (`openinfra-role-*`, itself
+bounded by the [Policy permission boundary](#kind-policy--the-permission-boundary)) or one of the two bounded
+built-in console roles (`open-infra-readonly`, `open-infra-poweruser`). It may **not** name `open-infra-console`
+(full console admin) or any provider/setup ClusterRole. This matters because the Crossplane provider that
+creates the binding holds broad permissions itself, and Kubernetes' RBAC "cover" rule would otherwise let it
+bind a subject to a secrets/RBAC-bearing role *without* the fenced `bind` verb — a temporal path to cluster-wide
+secrets. The composition enforces the allowlist by rendering **no binding at all** for a disallowed role (the
+Grant then confers nothing and says so in `status.message`); a render test guards it.
+
 Expiry is enforced by a reconciler (`platform/security/grant-reconciler.yaml`, a once-a-minute CronJob whose
 only power is get/list/**delete** on `grants`): when `creationTimestamp + duration` has passed — or the
-duration exceeds the 24h cap — it deletes the Grant, and Crossplane tears down the binding, so access ends
-with no one having to remember to revoke it. The binding's create and delete both land in the audit log, and
-the reason rides as an annotation. Government control mapping: **AC-2(2)** (temporary accounts), **AC-6(2)/(5)**
-(least privilege + elevation), **AU** (the grant is audited). Like the other IAM kinds it is deliberately not
-in the Terraform provider (identity is console/GitOps-managed — see [`terraform.md`]).
+duration is invalid/over the 24h cap — it deletes the Grant, and Crossplane tears down the binding, so access
+ends with no one having to remember to revoke it. All time math runs in `jq` (`now` / `fromdateiso8601`) and
+the duration must match a strict integer Go-duration form; anything unparseable, non-positive, over-cap, or
+with an unreadable timestamp is **revoked, not kept** (fail-safe). The binding's create and delete both land in
+the audit log, and the reason rides as an annotation.
+
+**The reconciler is the single enforcement point for expiry**, so it is monitored: a `PrometheusRule`
+(`platform/observability/grant-reconciler-alerts.yaml`) fires `GrantReconcilerNotRunning` if it stops
+completing — until then, treat active grants as standing privilege. Teardown is also asynchronous (delete
+Grant → Crossplane removes the binding), so a binding can outlive its Grant by the provider's reconcile lag,
+and indefinitely if the provider is unhealthy; the same alerting is the backstop.
+
+Government control mapping: **AC-2(2)** (temporary accounts), **AC-6(2)/(5)** (least privilege + elevation),
+**AU** (the grant is audited). Like the other IAM kinds it is deliberately not in the Terraform provider
+(identity is console/GitOps-managed — see [`terraform.md`]).
 
 ## Status
 
@@ -269,7 +288,7 @@ in the Terraform provider (identity is console/GitOps-managed — see [`terrafor
 | Policies / Roles UI | ✅ shipped — Security & Identity → Policies / Roles (author, attach/detach, admins-only via SAR) |
 | `Deny` + conditions via VAP | ⬜ not started |
 | Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
-| `kind: Grant` (temporal / JIT access) | ✅ shipped — time-bounded binding, self-revoking reconciler (24h cap), reason audited; console UI is a follow-up (creatable via GitOps/kubectl/BFF) |
+| `kind: Grant` (temporal / JIT access) | ✅ shipped — time-bounded binding, self-revoking reconciler (jq-based expiry + strict 24h cap, verified against the runtime image), role allowlist enforced in the composition, reconciler-liveness alert; console UI is a follow-up (creatable via GitOps/kubectl/BFF) |
 
 ## See also
 

@@ -16,11 +16,13 @@ the product's public contract.
 ### Abstractions
 - **`kind: Grant` — temporal (just-in-time) access.** A Grant binds a User or Group to a ClusterRole for
   a bounded duration with a recorded reason, then revokes itself — the analog of AWS STS AssumeRole with a
-  session duration, and an answer to standing privilege. It uses the same binding mechanism (and the same
-  bind fence) as `kind: Group`, so it can never confer more than a Group could; a once-a-minute reconciler
-  whose only power is deleting Grants removes it when `creation + duration` passes (hard-capped at 24h),
-  and Crossplane tears down the binding with it. The grant and its revocation are audited. Government
-  controls: AC-2(2), AC-6(2)/(5), AU. Part of the government feature track (issue #71).
+  session duration, and an answer to standing privilege. What it can confer is deliberately narrow: a
+  `kind: Role` or one of the two bounded built-in console roles, never full admin or a provider role (the
+  composition renders no binding otherwise). A once-a-minute reconciler removes a Grant when
+  `creation + duration` passes (hard-capped at 24h; anything invalid or over-cap is revoked, not kept), and
+  Crossplane tears down the binding with it; the reconciler is itself alerted on so expiry can't silently
+  stall. The grant and its revocation are audited. Government controls: AC-2(2), AC-6(2)/(5), AU. Part of the
+  government feature track (issue #71).
 - **open-appsync — GraphQL query execution.** Named and inline fragments (with unknown-fragment and
   cycle rejection); variable coercion against declared wrapped types (nullability, lists, enums, and
   input objects with defaults; mismatches rejected as `ValidationError`); nested `__typename`;
