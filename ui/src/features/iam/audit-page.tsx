@@ -56,8 +56,15 @@ function IntegrityBanner() {
   }
 
   const r = data.report?.result;
-  const ok = r?.ok;
+  // Trust the cross-checked verdict (chain OK + k8s anchor agrees + fresh), not the raw chain result.
+  const ok = data.intact;
   const checked = data.ageSeconds != null ? `${Math.floor(data.ageSeconds / 60)}m ago` : "recently";
+  // Explain a red banner precisely.
+  let reason = data.note || r?.reason || "";
+  if (!ok && r?.brokenAt != null) reason = `chain broken at segment #${r.brokenAt}${r.reason ? `: ${r.reason}` : ""}`;
+  else if (!ok && data.report && data.report.shadowVersions > 0)
+    reason = `${data.report.shadowVersions} object-lock shadowing attempt(s) detected`;
+  else if (!ok && data.anchorMatch === false) reason = data.note || "bucket status disagrees with the cross-domain anchor";
   return (
     <Card className={ok ? "border-emerald-500/40" : "border-destructive"}>
       <CardContent className="flex flex-wrap items-center gap-3 p-4 text-sm">
@@ -73,9 +80,8 @@ function IntegrityBanner() {
           </span>
         ) : (
           <span className="text-destructive">
-            Off-site audit chain <span className="font-semibold">BROKEN</span>
-            {r?.brokenAt != null ? ` at segment #${r.brokenAt}` : ""}
-            {r?.reason ? `: ${r.reason}` : ""}. The immutable record may have been tampered with — investigate.
+            Off-site audit chain <span className="font-semibold">NOT verified intact</span>
+            {reason ? `: ${reason}` : ""}. Investigate the immutable record.
           </span>
         )}
         <Badge variant="outline" className="ml-auto font-normal text-muted-foreground">
