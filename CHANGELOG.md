@@ -71,6 +71,15 @@ the product's public contract.
   protection, secure by default). Egress stays open so resolvers reach their data-source hosts.
 
 ### AWS compatibility
+- **open-appsync — per-resolver response caching.** A resolver can declare `caching: { ttlSeconds, keys }`
+  (AppSync's caching behavior): the engine serves a cached response and skips the data source on a hit,
+  and stores the result for the TTL on a miss. It is best-effort (a miss or backend error just runs the
+  resolver — correctness never depends on it) and **never caches Mutations**. The cache key always folds
+  in the caller identity on top of the author's `$context` keys, so per-user data can't be served across
+  callers even if an identity key is omitted — safer than AppSync, where omitting it silently shares one
+  entry. Backed by an in-memory cache (per replica) today; a shared NATS-KV backend (all replicas, like
+  AppSync's external cache) is a separately-graduating later rung. This completes the data-source /
+  caching breadth: memory, none, dynamodb, http, lambda, rds, opensearch, eventbridge, plus caching.
 - **open-appsync — @aws_lambda enforced: all five AWS auth modes now gate fields.** The last auth mode
   graduated. The aws-shim invokes the API's **Lambda authorizer** (a `kind: Function`) with the caller's
   token in AppSync's authorizer event shape; on `isAuthorized` the authorizer's `resolverContext` supplies
