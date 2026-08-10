@@ -7,6 +7,15 @@ the product's public contract.
 ## Unreleased
 
 ### Security & compliance
+- **`kind: DataClassification` — categorize data, then check its handling.** A DataClassification names
+  a sensitivity level (public→restricted) and the handling requirements data at that level must meet
+  (encryption at rest, network restriction, no public exposure, backup, residency, retention). Tag a
+  workload with `openinfra.dev/classification=<name>` and the console **Security & Identity → Data
+  Classification** page (and `/api/compliance/classification`) reports whether it meets its class —
+  checking public exposure, network restriction, and residency from the live cluster today, and
+  reporting not-yet-verifiable requirements honestly as unknown. Admin/security-team managed (not
+  grantable by a Policy). Controls: RA-2, MP-3, AC-4/SC-28. See [`docs/data-classification.md`].
+  Part of the government feature track (issue #71).
 - **Audit off-siting — a tamper-evident, immutable copy of the audit trail.** The API-server audit log is
   now shipped off the node it is written on, as a SHA-256 **hash chain** of segments, into a MinIO bucket
   under **Object Lock (COMPLIANCE mode)** — undeletable by anyone, including root, until retention expires
