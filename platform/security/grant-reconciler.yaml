@@ -71,25 +71,37 @@ spec:
               command: [/bin/sh, -ceu]
               args:
                 - |
-                  now=$(date -u +%s)
                   max="${GRANT_MAX_DURATION_SECONDS:-86400}"
-                  # Go-duration (e.g. 30m, 4h, 1h30m) → seconds.
-                  dur2secs() { echo "$1" | awk '{s=0;d=$0;while(match(d,/[0-9]+[hms]/)){v=substr(d,RSTART,RLENGTH);n=substr(v,1,length(v)-1);u=substr(v,length(v));if(u=="h")s+=n*3600;else if(u=="m")s+=n*60;else s+=n;d=substr(d,RSTART+RLENGTH)}print s}'; }
-                  kubectl get grants.iam.openinfra.dev -A -o json \
-                    | jq -r '.items[] | [.metadata.namespace, .metadata.name, .metadata.creationTimestamp, (.spec.duration // "")] | @tsv' \
-                    | while IFS="$(printf '\t')" read -r ns name created dur; do
-                        secs=$(dur2secs "$dur")
-                        if [ -z "$secs" ] || [ "$secs" -le 0 ] || [ "$secs" -gt "$max" ]; then
-                          echo "revoking $ns/$name — invalid or over-cap duration '$dur' (cap ${max}s)"
-                          kubectl -n "$ns" delete grant "$name" --ignore-not-found; continue
-                        fi
-                        created_epoch=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
-                        [ "$created_epoch" -eq 0 ] && continue
-                        expiry=$((created_epoch + secs))
-                        if [ "$now" -ge "$expiry" ]; then
-                          echo "revoking $ns/$name — expired at $(date -u -d "@$expiry" +%FT%TZ)"
-                          kubectl -n "$ns" delete grant "$name" --ignore-not-found
-                        fi
+                  # ALL time math is done in jq, deliberately NOT in the shell:
+                  #   * busybox `date -d` (this image) CANNOT parse the RFC3339 creationTimestamp —
+                  #     it fails, and the old code swallowed that and kept the grant forever;
+                  #   * busybox awk emitted scientific notation for huge durations, which then broke
+                  #     the shell numeric comparison and skipped the over-cap revoke (and crashed).
+                  # jq's `now` / `fromdateiso8601` parse correctly and jq compares numerically. The
+                  # duration must match a STRICT Go-duration form (integer h/m/s) or it is revoked —
+                  # so "0.5h", "abc", "", scientific notation, etc. all fail safe to revoke, never
+                  # to a longer-than-intended life. Fail-safe throughout: anything we cannot make
+                  # sense of (bad duration, over cap, unparseable timestamp) is REVOKED, not kept.
+                  kubectl get grants.iam.openinfra.dev -A -o json | jq -r --argjson max "$max" '
+                    def dursecs:
+                      if test("^([0-9]+h)?([0-9]+m)?([0-9]+s)?$") then
+                        ([scan("([0-9]+)([hms])") | (.[0]|tonumber) * ({"h":3600,"m":60,"s":1}[.[1]])] | add) // 0
+                      else -1 end;
+                    now as $now
+                    | .items[]
+                    | .metadata.namespace as $ns
+                    | .metadata.name as $name
+                    | ((.spec.duration // "") | dursecs) as $secs
+                    | ((.metadata.creationTimestamp // "") | (try fromdateiso8601 catch -1)) as $created
+                    | (if ($secs <= 0 or $secs > $max) then "revoke:invalid-or-over-cap"
+                       elif ($created < 0) then "revoke:unparseable-timestamp"
+                       elif ($now >= ($created + $secs)) then "revoke:expired"
+                       else "keep" end) as $action
+                    | select($action != "keep")
+                    | [$ns, $name, $action] | @tsv
+                  ' | while IFS="$(printf '\t')" read -r ns name action; do
+                        echo "revoking $ns/$name ($action)"
+                        kubectl -n "$ns" delete grant "$name" --ignore-not-found
                       done
           volumes:
             - name: tmp

@@ -129,6 +129,42 @@ func TestGrant_RendersTimeBoundedBinding(t *testing.T) {
 	}
 }
 
+// A Grant naming a role OUTSIDE the grantable ceiling (a provider/setup role, open-infra-console,
+// or anything not openinfra-role-*/readonly/poweruser) must render NO ClusterRoleBinding — the
+// fail-safe that keeps a temporal grant from leaking cluster-wide secrets/RBAC via the RBAC
+// "cover" rule. It reports the refusal in status instead.
+func TestGrant_DeniesRoleOutsideCeiling(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/grant-composition.yaml")
+	for _, role := range []string{"openinfra-provider-kubernetes", "openinfra-bucket-setup", "open-infra-console", "cluster-admin"} {
+		ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"subject":     map[string]any{"kind": "User", "name": "mallory"},
+				"clusterRole": role,
+				"duration":    "4h",
+			},
+			"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "jit-mallory"}},
+		}}}}
+		out := render(t, tmpl, ctx)
+		if strings.Contains(out, "kind: ClusterRoleBinding") {
+			t.Errorf("Grant for disallowed role %q rendered a ClusterRoleBinding; got:\n%s", role, out)
+		}
+		if !strings.Contains(out, "is not grantable") {
+			t.Errorf("Grant for disallowed role %q should report refusal in status; got:\n%s", role, out)
+		}
+	}
+	// The two bounded built-in console roles ARE allowed (readonly, poweruser).
+	for _, role := range []string{"open-infra-readonly", "open-infra-poweruser"} {
+		ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec":     map[string]any{"subject": map[string]any{"kind": "User", "name": "alice"}, "clusterRole": role, "duration": "1h"},
+			"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "jit-alice"}},
+		}}}}
+		out := render(t, tmpl, ctx)
+		if !strings.Contains(out, "kind: ClusterRoleBinding") {
+			t.Errorf("Grant for allowed built-in role %q should render a binding; got:\n%s", role, out)
+		}
+	}
+}
+
 func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(true))
@@ -873,6 +909,7 @@ func sprigLite() template.FuncMap {
 		"upper": func(s string) string { return strings.ToUpper(s) },
 		// sprig's replace is replace(old, new, src) — used piped: `s | replace "-" "_"`.
 		"replace": func(old, new, src string) string { return strings.ReplaceAll(src, old, new) },
+		"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
 	}
 }
 
