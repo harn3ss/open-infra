@@ -152,12 +152,20 @@ spec:
                             env:
                               - { name: LISTEN_ADDR, value: ":8080" }
                               - { name: CONFIG_DIR, value: "/etc/open-appsync" }
-                              # Subscriptions and the eventbridge data source ride the platform NATS bus.
+                              # Subscriptions, the eventbridge data source, and the shared response cache ride
+                              # the platform NATS bus.
                               {{- $needsNats := false }}
+                              {{- $hasCaching := false }}
                               {{- if $spec.subscriptions }}{{ $needsNats = true }}{{ end }}
                               {{- range $ds := ($spec.dataSources | default list) }}{{- if eq ($ds.type | default "memory") "eventbridge" }}{{ $needsNats = true }}{{ end }}{{- end }}
+                              {{- range $r := ($spec.resolvers | default list) }}{{- if $r.caching }}{{ $needsNats = true }}{{ $hasCaching = true }}{{ end }}{{- end }}
                               {{- if $needsNats }}
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                              {{- end }}
+                              {{- if $hasCaching }}
+                              # Response caching uses a per-API NATS KV bucket, so distinct APIs on the shared
+                              # NATS never collide; without NATS the engine falls back to a per-replica cache.
+                              - { name: APPSYNC_CACHE_BUCKET, value: "open_appsync_cache_{{ $name | replace "." "_" }}" }
                               {{- end }}
                               {{- if $spec.mongoURI }}
                               - { name: MONGO_URI, value: "{{ $spec.mongoURI }}" }
