@@ -72,6 +72,10 @@ spec:
                           {{- end }}
                         {{- end }}
                       spec:
+                        {{- if $spec.timeout }}
+                        # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
+                        timeoutSeconds: {{ $spec.timeout }}
+                        {{- end }}
                         {{- if gt (int $gpu) 0 }}
                         runtimeClassName: nvidia
                         nodeSelector: { openinfra.dev/gpu: "true" }
@@ -95,9 +99,19 @@ spec:
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
-                            {{- if gt (int $gpu) 0 }}
+                            {{- if or $spec.memory (gt (int $gpu) 0) }}
+                            # memory → guaranteed container memory (the AWS Lambda memory knob); gpu → device limit.
                             resources:
-                              limits: { nvidia.com/gpu: {{ $gpu }} }
+                              {{- if $spec.memory }}
+                              requests: { memory: {{ $spec.memory | quote }} }
+                              {{- end }}
+                              limits:
+                                {{- if $spec.memory }}
+                                memory: {{ $spec.memory | quote }}
+                                {{- end }}
+                                {{- if gt (int $gpu) 0 }}
+                                nvidia.com/gpu: {{ $gpu }}
+                                {{- end }}
                             {{- end }}
             {{- if $spec.trigger }}
             {{- $tstream := $spec.trigger.stream }}

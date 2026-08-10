@@ -71,6 +71,16 @@ the product's public contract.
   protection, secure by default). Egress stays open so resolvers reach their data-source hosts.
 
 ### AWS compatibility
+- **Lambda — async (`Event`) + `DryRun` invocation, and per-function memory/timeout.** The aws-shim's
+  Lambda service now supports all three invocation types: `RequestResponse` (synchronous, as before),
+  `Event` (asynchronous — the shim durably queues the payload to JetStream and returns `202`; a
+  background worker delivers it to the function with retries and dead-lettering, surviving shim restarts
+  and shared across replicas; refused with `503` if the shim has no NATS, never silently dropped), and
+  `DryRun` (runs the authorization SubjectAccessReview and returns `204` without invoking). `kind:
+  Function` gains `memory` (a Kubernetes quantity → guaranteed container memory) and `timeout` (seconds →
+  the Knative revision timeout) — the AWS Lambda memory-size and timeout knobs — mirrored in the
+  Terraform provider. Management APIs (CreateFunction, versions/aliases, layers) remain deliberately
+  un-fronted; Functions are managed declaratively as `kind: Function`.
 - **open-appsync — per-resolver response caching.** A resolver can declare `caching: { ttlSeconds, keys }`
   (AppSync's caching behavior): the engine serves a cached response and skips the data source on a hit,
   and stores the result for the TTL on a miss. It is best-effort (a miss or backend error just runs the
