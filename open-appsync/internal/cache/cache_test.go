@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -36,6 +38,22 @@ func TestMem_HitMissExpiry(t *testing.T) {
 	}
 }
 
+// The in-memory cache is hard-bounded: cache keys embed client-controlled argument values, so an
+// unbounded map would be an OOM DoS. Writing many distinct keys must never exceed the ceiling.
+func TestMem_BoundedSize(t *testing.T) {
+	m := NewMem()
+	ctx := context.Background()
+	for i := 0; i < maxMemEntries*2; i++ {
+		m.Set(ctx, "key-"+strconv.Itoa(i), []byte("v"), time.Hour)
+	}
+	m.mu.RLock()
+	n := len(m.entries)
+	m.mu.RUnlock()
+	if n > maxMemEntries {
+		t.Fatalf("cache grew to %d entries, exceeding the %d ceiling", n, maxMemEntries)
+	}
+}
+
 func TestNoop_AlwaysMisses(t *testing.T) {
 	var c Cache = Noop{}
 	c.Set(context.Background(), "k", []byte("v"), time.Minute)
@@ -48,26 +66,38 @@ func TestNoop_AlwaysMisses(t *testing.T) {
 // cached response can never be served across identities.
 func TestKey_IdentityIsolation(t *testing.T) {
 	args := []any{map[string]any{"id": "1"}}
-	alice := Key("Query.getThing", "alice", []string{"openinfra:users"}, args)
-	bob := Key("Query.getThing", "bob", []string{"openinfra:users"}, args)
+	mustKey := func(tf, u string, g []string, kv []any) string {
+		k, ok := Key(tf, u, g, kv)
+		if !ok {
+			t.Fatalf("Key(%s,%s) unexpectedly not derivable", tf, u)
+		}
+		return k
+	}
+	alice := mustKey("Query.getThing", "alice", []string{"openinfra:users"}, args)
+	bob := mustKey("Query.getThing", "bob", []string{"openinfra:users"}, args)
 	if alice == bob {
 		t.Fatal("different usernames must produce different cache keys (no cross-identity leak)")
 	}
 	// Same caller + same inputs → same key (a real hit).
-	if alice != Key("Query.getThing", "alice", []string{"openinfra:users"}, args) {
+	if alice != mustKey("Query.getThing", "alice", []string{"openinfra:users"}, args) {
 		t.Fatal("identical inputs must produce a stable key")
 	}
 	// Group membership is part of identity — a different group set is a different key.
-	if alice == Key("Query.getThing", "alice", []string{"openinfra:admins"}, args) {
+	if alice == mustKey("Query.getThing", "alice", []string{"openinfra:admins"}, args) {
 		t.Fatal("different groups must produce different cache keys")
 	}
 	// Different args → different key.
-	if alice == Key("Query.getThing", "alice", []string{"openinfra:users"}, []any{map[string]any{"id": "2"}}) {
+	if alice == mustKey("Query.getThing", "alice", []string{"openinfra:users"}, []any{map[string]any{"id": "2"}}) {
 		t.Fatal("different arguments must produce different cache keys")
 	}
 	// Group order must not matter (keys are canonicalized).
-	if Key("Q.f", "u", []string{"a", "b"}, nil) != Key("Q.f", "u", []string{"b", "a"}, nil) {
+	if mustKey("Q.f", "u", []string{"a", "b"}, nil) != mustKey("Q.f", "u", []string{"b", "a"}, nil) {
 		t.Fatal("group order must not change the key")
+	}
+	// A non-encodable key value (non-finite float) is NOT derivable → caller must skip caching, never
+	// collapse to a shared constant key.
+	if _, ok := Key("Q.f", "u", nil, []any{math.Inf(1)}); ok {
+		t.Fatal("a non-finite key value must make Key un-derivable (ok=false), not a shared constant")
 	}
 }
 

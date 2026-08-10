@@ -37,8 +37,12 @@ func (Noop) Get(context.Context, string) ([]byte, bool)         { return nil, fa
 func (Noop) Set(context.Context, string, []byte, time.Duration) {}
 
 // Mem is a per-process in-memory cache with per-entry expiry — the single-node/dev backend. It is
-// goroutine-safe. Expired entries are ignored on read and lazily overwritten; a background sweeper is
-// unnecessary for the engine's scale (bounded by distinct cache keys, each short-lived).
+// goroutine-safe and HARD-BOUNDED by maxMemEntries: cache keys include client-controlled argument
+// values, so the key space is attacker-influenced and must not grow without limit. On a write at the
+// cap it first sweeps expired entries, then evicts one if still full — best-effort, so eviction never
+// affects correctness (a dropped entry is just a future miss).
+const maxMemEntries = 10000
+
 type Mem struct {
 	mu      sync.RWMutex
 	entries map[string]memEntry
@@ -68,8 +72,24 @@ func (m *Mem) Set(_ context.Context, key string, value []byte, ttl time.Duration
 		return
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.entries[key]; !exists && len(m.entries) >= maxMemEntries {
+		// At the ceiling and adding a new key: reclaim expired entries first.
+		now := m.now()
+		for k, e := range m.entries {
+			if now.After(e.expiresAt) {
+				delete(m.entries, k)
+			}
+		}
+		// Still full (all live) — evict one (map iteration is randomized) to hold a strict ceiling.
+		if len(m.entries) >= maxMemEntries {
+			for k := range m.entries {
+				delete(m.entries, k)
+				break
+			}
+		}
+	}
 	m.entries[key] = memEntry{value: value, expiresAt: m.now().Add(ttl)}
-	m.mu.Unlock()
 }
 
 // Key derives a stable, collision-resistant cache key for a resolver invocation. It ALWAYS folds in the
@@ -77,8 +97,10 @@ func (m *Mem) Set(_ context.Context, key string, value []byte, ttl time.Duration
 // across identities even if the author forgot an identity caching key — safer by default than AppSync,
 // where omitting $context.identity from cachingKeys silently shares one entry across all callers. The
 // author's caching keys (resolved $context paths) add further specificity. The result is a hex SHA-256,
-// safe for any KV key charset.
-func Key(typeField, username string, groups []string, keyValues []any) string {
+// safe for any KV key charset. ok is false when the inputs are not canonically encodable (e.g. a
+// non-finite float from an overflowing argument literal) — the caller MUST then skip caching rather than
+// share a degenerate constant key, which would collapse distinct identities/resolvers onto one entry.
+func Key(typeField, username string, groups []string, keyValues []any) (key string, ok bool) {
 	sortedGroups := append([]string(nil), groups...)
 	sort.Strings(sortedGroups)
 	// A canonical, unambiguous encoding: JSON of a fixed-shape struct. Distinct inputs cannot collide
@@ -89,9 +111,12 @@ func Key(typeField, username string, groups []string, keyValues []any) string {
 		G []string `json:"g"`
 		K []any    `json:"k"`
 	}{F: typeField, U: username, G: sortedGroups, K: keyValues}
-	b, _ := json.Marshal(payload)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), true
 }
 
 // ResolveKeyPath reads a $context path (as used in caching keys) out of the resolver's context map.

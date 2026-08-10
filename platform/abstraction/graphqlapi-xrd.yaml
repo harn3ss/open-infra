@@ -178,7 +178,7 @@ spec:
                             description: "How long a cached response lives, in seconds. 0 or unset disables caching for this resolver."
                           keys:
                             type: array
-                            description: "$context paths that, with the caller identity, form the cache key — e.g. arguments.id, identity.sub, source.tenantId. Omit to cache arguments-agnostically (one entry per caller for the whole field)."
+                            description: "$context paths that, with the caller identity, form the cache key — e.g. arguments.id, identity.sub, source.tenantId. Omit to fold ALL of the field's arguments into the key (per-caller, per-argument-set), so distinct arguments never collide."
                             items:
                               type: string
                 subscriptions:
