@@ -132,6 +132,26 @@ removed with the monitoring stack. Metric families:
 Labels are deliberately bounded (outcome, the eight known source types, an auth-mode allow-list) so a
 crafted query or header can't explode metric cardinality. The metrics carry no request content.
 
+### Response caching (per-resolver)
+
+A resolver may declare `caching: { ttlSeconds, keys }` — AppSync's per-resolver caching. Before running
+the resolver the engine checks a response cache; on a hit it returns the cached value and the data
+source **never runs**; on a miss it runs the resolver and stores the result for `ttlSeconds`. It is
+**best-effort**: a miss, a corrupt entry, or a backend failure just runs the resolver — correctness never
+depends on the cache. **Mutations are never cached** (a hit would suppress the side effect and its
+subscription publish).
+
+The cache key ALWAYS folds in the **caller identity** (username + groups), on top of the author's `keys`
+(resolved `$context` paths like `arguments.id`). So per-user data can never be served across
+identities even if the author omits an identity key — deliberately safer than AppSync, where omitting
+`$context.identity` from `cachingKeys` silently shares one entry across all callers.
+
+Backend: an in-memory cache — fully correct and shared for a single-replica engine (the default), and
+per-replica (never wrong, just a lower hit rate) under multiple replicas. A shared NATS JetStream KV
+backend, so all replicas see the same entries like AppSync's external cache, is the next rung — it
+graduates separately (a per-API bucket + a live round-trip test), exactly as the subscription bus went
+`MemBus → JetStreamBus`.
+
 ### Subscriptions (setup-then-push — experimental, label held)
 
 Subscriptions **invert** the lifecycle: not request→execute→response, but *setup-then-push*. At

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
+	"github.com/harn3ss/open-infra/open-appsync/internal/cache"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
@@ -84,6 +86,7 @@ type Engine struct {
 	publisher  Publisher
 	schema     *Schema                    // parsed SDL type graph; nil = introspection unavailable (no schema supplied)
 	validators map[string]ScalarValidator // custom-scalar validators by scalar name (neutral seam; edge-registered)
+	cache      cache.Cache                // per-resolver response cache (default Noop = disabled)
 }
 
 // WithPublisher sets the mutation publisher (default: none) — the hook the subscription layer uses.
@@ -109,10 +112,14 @@ func WithLimits(l Limits) Option { return func(e *Engine) { e.limits = l } }
 // WithAuthorizer sets the field-level authorizer (default: authz.AllowAll — no enforcement).
 func WithAuthorizer(a authz.Authorizer) Option { return func(e *Engine) { e.authorizer = a } }
 
+// WithCache sets the per-resolver response cache (default: cache.Noop — caching disabled). A resolver
+// caches only if it ALSO carries a CachingConfig; the cache is best-effort and never affects correctness.
+func WithCache(c cache.Cache) Option { return func(e *Engine) { e.cache = c } }
+
 // New builds an engine: safe-by-default limits and no field-auth enforcement (AllowAll) unless
 // options say otherwise. The variadic options keep New(resolvers) valid.
 func New(resolvers map[string]resolver.Resolver, opts ...Option) *Engine {
-	e := &Engine{resolvers: resolvers, limits: DefaultLimits(), authorizer: authz.AllowAll{}}
+	e := &Engine{resolvers: resolvers, limits: DefaultLimits(), authorizer: authz.AllowAll{}, cache: cache.Noop{}}
 	for _, o := range opts {
 		o(e)
 	}
@@ -240,7 +247,7 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 			}
 		}
 		gctx := map[string]any{"args": evalArgs(sel.args, variables), "identity": identityMap(id)}
-		res, rerr := r.Resolve(ctx, gctx)
+		res, rerr := e.resolveWithCache(ctx, rootType, sel.name, r, id, gctx)
 		if rerr != nil {
 			ge := GqlError{Message: rerr.Error(), Path: []any{respKey}}
 			var te *vtl.ThrowError
@@ -262,6 +269,38 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 		}
 	}
 	return Result{Data: data, Errors: errs}
+}
+
+// resolveWithCache runs a resolver, transparently applying per-resolver response caching when the
+// resolver carries a CachingConfig. It is skipped entirely for Mutations — they have side effects and
+// may publish to subscriptions, so a cache hit that suppressed the run would be a correctness bug — and
+// when no config is set. The cache is BEST-EFFORT: a miss, a corrupt entry, or a marshalling failure
+// just runs the resolver; errors are never cached. The cache key ALWAYS folds in the caller identity
+// (via cache.Key), so a cached response can never be served across identities.
+func (e *Engine) resolveWithCache(ctx context.Context, parentType, field string, r resolver.Resolver, id authz.Identity, gctx map[string]any) (any, error) {
+	if r.Caching == nil || parentType == "Mutation" {
+		return r.Resolve(ctx, gctx)
+	}
+	keyValues := make([]any, 0, len(r.Caching.Keys))
+	for _, k := range r.Caching.Keys {
+		keyValues = append(keyValues, cache.ResolveKeyPath(gctx, k))
+	}
+	key := cache.Key(parentType+"."+field, id.Username, id.Groups, keyValues)
+	if cached, ok := e.cache.Get(ctx, key); ok {
+		var v any
+		if err := json.Unmarshal(cached, &v); err == nil {
+			return v, nil
+		}
+		// A corrupt entry is a miss: fall through and run the resolver.
+	}
+	res, err := r.Resolve(ctx, gctx)
+	if err != nil {
+		return nil, err
+	}
+	if b, mErr := json.Marshal(res); mErr == nil {
+		e.cache.Set(ctx, key, b, r.Caching.TTL)
+	}
+	return res, nil
 }
 
 // enforcedAuthModes are the AppSync auth modes open-appsync actually enforces. Modes graduated into this
