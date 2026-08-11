@@ -964,3 +964,20 @@ export interface ClassCompliance {
 export function getClassificationCompliance(): Promise<ClassCompliance> {
   return request<ClassCompliance>(`/compliance/classification`);
 }
+
+/** Customer-owned encryption keys (kind: EncryptionKey, Vault Transit). SC-12/13/28(1). */
+export interface EncryptionKey {
+  name: string;
+  description: string;
+  keyType: string;
+  rotationDays: number;
+  vaultKeyPath: string;
+  provisioned: boolean;
+  latestVersion: number;
+  lastRotated?: string;
+  lastChecked?: string;
+}
+
+export function getEncryptionKeys(): Promise<EncryptionKey[]> {
+  return request<EncryptionKey[]>(`/encryption/keys`);
+}
