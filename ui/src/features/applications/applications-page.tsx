@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { type ColumnDef, type SortingState } from "@tanstack/react-table";
 import { Boxes, Plus, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
@@ -14,16 +14,15 @@ import {
   LoadingState,
 } from "@/components/common/states";
 import { ApplicationDetail } from "@/features/applications/application-detail";
-import { NewApplicationDialog } from "@/features/applications/new-application-dialog";
 import { applicationHealth } from "@/features/applications/application-status";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useDeleteResource } from "@/hooks/use-delete-resource";
 import { useListFilter } from "@/hooks/use-list-filter";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { useNamespace } from "@/lib/namespace-context";
 import { age } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import type { Application, K8sObject } from "@/types/k8s";
+import type { Application } from "@/types/k8s";
 
 export function ApplicationsPage() {
   const { scoped } = useNamespace();
@@ -31,17 +30,6 @@ export function ApplicationsPage() {
 
   const { items, isLoading, isError, error, live, refetch } =
     useK8sWatch<Application>(listPath);
-
-  // Namespaces for the "New Application" dialog selector.
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = useMemo(
-    () =>
-      nsWatch.items
-        .map((n) => n.metadata.name)
-        .filter((n): n is string => Boolean(n))
-        .sort((a, b) => a.localeCompare(b)),
-    [nsWatch.items],
-  );
 
   const { filtered } = useListFilter(items, (a) => [
     a.metadata.name,
@@ -55,7 +43,7 @@ export function ApplicationsPage() {
   ]);
   const [selected, setSelected] = useState<Application | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [newOpen, setNewOpen] = useState(false);
+  const navigate = useNavigate();
   const [toDelete, setToDelete] = useState<Application | null>(null);
 
   const deleteMutation = useDeleteResource(listPath);
@@ -158,7 +146,7 @@ export function ApplicationsPage() {
             <Button variant="outline" size="icon" onClick={refetch} aria-label="Refresh">
               <RefreshCw className="size-4" />
             </Button>
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/applications/new" })}>
               <Plus className="size-4" />
               New Application
             </Button>
@@ -176,7 +164,7 @@ export function ApplicationsPage() {
           title="No Applications yet"
           description="Create your first Application to spin up an autoscaling, HTTPS service with optional database, buckets, and queues."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/applications/new" })}>
               <Plus className="size-4" />
               New Application
             </Button>
@@ -212,14 +200,6 @@ export function ApplicationsPage() {
         open={detailOpen}
         onOpenChange={setDetailOpen}
         onDelete={(app) => setToDelete(app)}
-      />
-
-      <NewApplicationDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        defaultNamespace={scoped}
-        namespaces={namespaces}
-        listPath={listPath}
       />
 
       <ConfirmDialog
