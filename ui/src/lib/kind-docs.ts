@@ -11,6 +11,7 @@ export function docsUrl(file: string): string {
 /** kind → docs file (under docs/). Kinds without a dedicated doc are simply omitted (no link shown). */
 const KIND_DOC_FILE: Record<string, string> = {
   Application: "quickstart.md",
+  Database: "databases.md",
   VirtualMachine: "virtual-machines.md",
   Function: "serverless.md",
   Model: "gpu.md",
@@ -20,6 +21,7 @@ const KIND_DOC_FILE: Record<string, string> = {
   Migration: "migrations.md",
   Replication: "replication.md",
   DataFlow: "dataflow.md",
+  FaultInjection: "chaos.md",
   SecurityGroup: "security-groups.md",
   Directory: "auth.md",
   EncryptionKey: "encryption.md",

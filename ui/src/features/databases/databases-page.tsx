@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { NewDatabaseDialog } from "@/features/databases/new-database-dialog";
 import { claimHealth } from "@/lib/resource-health";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
@@ -147,6 +148,7 @@ export function DatabasesPage() {
       plural="Databases"
       emptyTitle="No Databases yet"
       emptyDescription="Add a `database:` block to an Application (engine: postgres or mongo), or click New Database."
+      docsHref={kindDocsUrl("Database")}
       headerActions={
         <Button onClick={() => setNewOpen(true)}>
           <Plus className="size-4" />
