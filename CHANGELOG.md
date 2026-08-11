@@ -53,6 +53,13 @@ the product's public contract.
   AU-9(3), AU-11. See [`docs/audit-offsite.md`]. Part of the government feature track (issue #71).
 
 ### Console
+- **Resource creation, rewritten (issue #96).** Creating a resource is moving from cramped modal
+  pop-ups to a full-page, schema-driven experience: essential fields up front with everything else
+  under a collapsed **Advanced settings**, optional fields marked (rather than required), inline help
+  drawn from each field's CRD description, a live **YAML preview** of exactly what will be applied, and
+  a Create button that is never disabled — it validates and shows precise inline errors. **Application**
+  is the first resource on the new flow (a full page at `/applications/new`); the remaining kinds
+  follow, all sharing one create framework instead of a bespoke dialog each.
 - **`kind: GraphQLApi` console feature.** A **GraphQL** section under Compute: a live list, and a detail
   page with **Test / Overview / Schema / Resolvers / Data sources / Subscriptions / YAML** tabs and a
   Danger Zone. The **Test** tab renders a resolver's request/response mapping templates against a sample
