@@ -39,7 +39,11 @@ func main() {
 		outDir = "/tmp"
 	}
 
-	a := attest.Assemble(context.Background(), cs, consoleNS)
+	anchorNS := os.Getenv("AUDIT_ANCHOR_NAMESPACE")
+	if anchorNS == "" {
+		anchorNS = "monitoring"
+	}
+	a := attest.Assemble(context.Background(), cs, consoleNS, anchorNS)
 	a.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 
 	blob, err := json.MarshalIndent(a, "", "  ")

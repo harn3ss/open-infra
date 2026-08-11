@@ -19,7 +19,7 @@ func handleAttestation(cs kubernetes.Interface, auth *authStore, logger *slog.Lo
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "users", auth.ns, "") {
 			return
 		}
-		a := attest.Assemble(r.Context(), cs, auth.ns)
+		a := attest.Assemble(r.Context(), cs, auth.ns, getenv("AUDIT_ANCHOR_NAMESPACE", "monitoring"))
 		a.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 		writeJSON(w, http.StatusOK, a)
 	}

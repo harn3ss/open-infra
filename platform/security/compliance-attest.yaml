@@ -134,8 +134,13 @@ spec:
                   "$MC" alias set audit "$MINIO_URL" "$AK" "$SK" >/dev/null
 
                   # Date-stamped, immutable snapshot. The stamp is read from the generated document, so
-                  # the object key matches its content.
-                  day=$(jq -r '.generatedAt' /out/attestation.json | cut -dT -f1)
+                  # the object key matches its content. Guard against a missing/empty stamp so we never
+                  # write a garbage key like attestations//… or attestations/null/….
+                  day=$(jq -r '.generatedAt // ""' /out/attestation.json)
+                  day="${day%%T*}"
+                  case "$day" in
+                    ""|null) echo "attestation has no generatedAt — refusing to store" >&2; exit 1 ;;
+                  esac
                   base="attestations/${day}"
                   for f in attestation.json attestation.md; do
                     "$MC" cp "/out/$f" "audit/$AUDIT_BUCKET/$base/$f" >/dev/null
