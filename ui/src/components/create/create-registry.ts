@@ -17,12 +17,21 @@ export interface SectionSpec {
   advanced?: boolean;
 }
 
+export interface CredentialSpec {
+  /** Top-level spec property that is an endpoint object carrying a passwordSecretRef. */
+  path: string;
+  /** Password field label, e.g. "Source database password". */
+  label: string;
+}
+
 export interface CreateKindSpec {
   kind: string;
   crdName: string;
   description: string;
   /** Ordered sections. The first (non-advanced) is the primary/essential group. */
   sections: SectionSpec[];
+  /** Endpoint objects whose password is collected + stored as a Secret (the ref is filled on create). */
+  credentials?: CredentialSpec[];
   uiSchema?: UiSchema;
 }
 
@@ -47,6 +56,48 @@ export const VIRTUALMACHINE_CREATE: CreateKindSpec = {
     sshKey: { "ui:placeholder": "ssh-ed25519 AAAA… (injected via cloud-init on Linux)" },
     cpuModel: { "ui:placeholder": "host-passthrough (or e.g. Broadwell-noTSX for live migration)" },
   },
+};
+
+export const STREAM_CREATE: CreateKindSpec = {
+  kind: "Stream",
+  crdName: "streams.openinfra.dev",
+  description: "Tap a database's change log (CDC) and publish every row change to the event bus.",
+  sections: [{ title: "Source database", fields: ["source"] }],
+  credentials: [{ path: "source", label: "Source database password" }],
+  uiSchema: { source: { "ui:title": "", host: { "ui:placeholder": "db.internal" } } },
+};
+
+export const MIGRATION_CREATE: CreateKindSpec = {
+  kind: "Migration",
+  crdName: "migrations.openinfra.dev",
+  description: "Load and/or continuously replicate data from a source database into a target (AWS DMS-style).",
+  sections: [
+    { title: "Source database", fields: ["source"] },
+    { title: "Target database", fields: ["target"] },
+    { title: "What to migrate", fields: ["mode", "tables"] },
+  ],
+  credentials: [
+    { path: "source", label: "Source database password" },
+    { path: "target", label: "Target database password" },
+  ],
+  uiSchema: { source: { "ui:title": "" }, target: { "ui:title": "" } },
+};
+
+export const REPLICATION_CREATE: CreateKindSpec = {
+  kind: "Replication",
+  crdName: "replications.openinfra.dev",
+  description: "Keep two database sites in sync both ways (multi-master), with conflict handling.",
+  sections: [
+    { title: "Site A", fields: ["siteA"] },
+    { title: "Site B", fields: ["siteB"] },
+    { title: "Tables", fields: ["tables"] },
+    { title: "Advanced", fields: ["versionColumn", "originColumn", "scheduling"], advanced: true },
+  ],
+  credentials: [
+    { path: "siteA", label: "Site A database password" },
+    { path: "siteB", label: "Site B database password" },
+  ],
+  uiSchema: { siteA: { "ui:title": "" }, siteB: { "ui:title": "" }, scheduling: { "ui:title": "" } },
 };
 
 export const FUNCTION_CREATE: CreateKindSpec = {

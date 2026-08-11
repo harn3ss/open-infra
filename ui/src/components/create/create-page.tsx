@@ -18,7 +18,7 @@ import {
 import { ErrorState, LoadingState, Spinner } from "@/components/common/states";
 import { ExpandableSection } from "@/components/create/expandable-section";
 import { createTemplates } from "@/components/create/rjsf-templates";
-import type { SectionSpec } from "@/components/create/create-registry";
+import type { CredentialSpec, SectionSpec } from "@/components/create/create-registry";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
@@ -40,6 +40,12 @@ export interface CreatePageConfig {
   sections: SectionSpec[];
   /** RJSF layout hints (ui:order, ui:widget, ui:placeholder, …). */
   uiSchema?: UiSchema;
+  /**
+   * Endpoint objects that carry a `passwordSecretRef` (e.g. "source", "target", "siteA"). For each,
+   * the page collects a password, creates a Kubernetes Secret, and fills the ref — so the plaintext
+   * lives only in the Secret, never in the resource spec.
+   */
+  credentials?: CredentialSpec[];
   /** k8s create path for a namespace, e.g. openinfraPaths.applications. */
   createPath: (ns: string) => string;
   /** list path (k8s) to invalidate after create. */
@@ -68,10 +74,14 @@ export function CreatePage(cfg: CreatePageConfig) {
     [nsWatch.items],
   );
 
+  const creds = cfg.credentials ?? [];
+
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(scoped ?? "default");
   const [nameTouched, setNameTouched] = useState(false);
   const [formData, setFormData] = useState<Record<string, unknown>>({});
+  const [passwords, setPasswords] = useState<Record<string, string>>({});
+  const [credTouched, setCredTouched] = useState(false);
   const [liveValidate, setLiveValidate] = useState(false);
 
   const schemaQuery = useQuery({
@@ -84,22 +94,69 @@ export function CreatePage(cfg: CreatePageConfig) {
     const raw = schemaQuery.data as Record<string, unknown> | undefined;
     if (!raw) return null;
     const props = raw["properties"] as Record<string, unknown> | undefined;
-    if (props && "spec" in props) return props["spec"] as RJSFSchema;
-    return raw as RJSFSchema;
+    const spec = (props && "spec" in props ? props["spec"] : raw) as RJSFSchema;
+    if (creds.length === 0) return spec;
+    // Hide passwordSecretRef from the endpoint forms — the Credentials section handles it, and we
+    // fill the ref on submit. Clone so we never mutate the cached query data.
+    const clone = JSON.parse(JSON.stringify(spec)) as RJSFSchema;
+    const cprops = (clone.properties ?? {}) as Record<string, { properties?: Record<string, unknown>; required?: string[] }>;
+    for (const c of creds) {
+      const ep = cprops[c.path];
+      if (ep?.properties) delete ep.properties.passwordSecretRef;
+      if (ep && Array.isArray(ep.required)) ep.required = ep.required.filter((r) => r !== "passwordSecretRef");
+    }
+    return clone;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schemaQuery.data]);
+
+  const secretNameFor = (path: string) => `${name || "resource"}-${path.replace(/\./g, "-")}-creds`;
+
+  // Overlay the passwordSecretRef into each credentialed endpoint (for both the YAML preview and the
+  // actual create) — the ref, never the plaintext.
+  const specWithRefs = (base: Record<string, unknown>): Record<string, unknown> => {
+    if (creds.length === 0) return base;
+    const s = { ...base } as Record<string, unknown>;
+    for (const c of creds) {
+      const ep = s[c.path];
+      if (ep && typeof ep === "object") {
+        s[c.path] = { ...(ep as object), passwordSecretRef: { name: secretNameFor(c.path), key: "password" } };
+      }
+    }
+    return s;
+  };
 
   const manifest = useMemo(
     (): K8sObject => ({
       apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
       kind: cfg.kind,
       metadata: { name: name || `my-${cfg.kind.toLowerCase()}`, namespace },
-      spec: formData,
+      spec: specWithRefs(formData),
     }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [cfg.kind, name, namespace, formData],
   );
 
   const createMutation = useMutation({
-    mutationFn: (obj: K8sObject) => k8sCreate<K8sObject>(cfg.createPath(namespace), obj),
+    mutationFn: async (fd: Record<string, unknown>) => {
+      // 1. Create a Secret per credential (so the password never lands in the CR spec).
+      for (const c of creds) {
+        const pw = passwords[c.path];
+        if (!pw) continue;
+        await k8sCreate<K8sObject>(corePaths.secrets(namespace), {
+          apiVersion: "v1",
+          kind: "Secret",
+          metadata: { name: secretNameFor(c.path), namespace },
+          stringData: { password: pw },
+        });
+      }
+      // 2. Create the resource, with its passwordSecretRef(s) pointing at those Secrets.
+      return k8sCreate<K8sObject>(cfg.createPath(namespace), {
+        apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
+        kind: cfg.kind,
+        metadata: { name, namespace },
+        spec: specWithRefs(fd),
+      });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: watchQueryKey(cfg.listPath) });
       cfg.onCreated(namespace, name);
@@ -107,20 +164,23 @@ export function CreatePage(cfg: CreatePageConfig) {
   });
 
   const nameError = nameTouched ? rfc1123Error(name) : null;
+  const credsValid = () => creds.every((c) => (passwords[c.path] ?? "").length > 0);
 
   const onSubmit = (e: IChangeEvent) => {
-    if (!isValidName(name)) {
+    if (!isValidName(name) || !credsValid()) {
       setNameTouched(true);
+      setCredTouched(true);
       return;
     }
-    createMutation.mutate({ ...manifest, spec: e.formData as Record<string, unknown> });
+    createMutation.mutate(e.formData as Record<string, unknown>);
   };
 
   const onCreateClick = () => {
     // Cloudscape: never disable Create; validate on click and show inline errors, then live-validate.
     setNameTouched(true);
+    setCredTouched(true);
     setLiveValidate(true);
-    if (!isValidName(name)) return;
+    if (!isValidName(name) || !credsValid()) return;
     formRef.current?.submit();
   };
 
@@ -193,6 +253,37 @@ export function CreatePage(cfg: CreatePageConfig) {
           >
             <></>
           </Form>
+        </div>
+      ) : null}
+
+      {/* Credentials — collected here, stored as Kubernetes Secrets, referenced (never inlined). */}
+      {creds.length > 0 ? (
+        <div className="space-y-4 rounded-lg border border-border p-4">
+          <div>
+            <h3 className="text-sm font-semibold">Credentials</h3>
+            <p className="text-xs text-muted-foreground">
+              Passwords are written to Kubernetes Secrets; the resource references them, never the plaintext.
+            </p>
+          </div>
+          {creds.map((c) => (
+            <div key={c.path} className="space-y-1.5">
+              <Label htmlFor={`oi-pw-${c.path}`}>{c.label}</Label>
+              <Input
+                id={`oi-pw-${c.path}`}
+                type="password"
+                value={passwords[c.path] ?? ""}
+                onChange={(e) => setPasswords((p) => ({ ...p, [c.path]: e.target.value }))}
+                placeholder="••••••••"
+              />
+              {credTouched && !(passwords[c.path] ?? "") ? (
+                <p className="text-xs text-destructive">Password is required.</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  → Secret <code>{secretNameFor(c.path)}</code>
+                </p>
+              )}
+            </div>
+          ))}
         </div>
       ) : null}
 
