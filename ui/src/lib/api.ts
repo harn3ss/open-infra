@@ -1020,3 +1020,23 @@ export interface LineageFlow {
 export function getLineage(): Promise<LineageFlow[]> {
   return request<LineageFlow[]>(`/lineage`);
 }
+
+/** Compliance attestation — live NIST control coverage + evidence (signed copies live in the WORM store). */
+export interface ControlCoverage {
+  control: string;
+  feature: string;
+  present: boolean;
+  evidence: string;
+}
+export interface Attestation {
+  generatedAt: string;
+  consoleNamespace: string;
+  controls: ControlCoverage[];
+  evidence: Record<string, number>;
+  auditHead?: string;
+  note: string;
+}
+
+export function getAttestation(): Promise<Attestation> {
+  return request<Attestation>(`/compliance/attestation`);
+}
