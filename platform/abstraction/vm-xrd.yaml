@@ -41,7 +41,7 @@ spec:
                 # Adding an OS means adding it here AND to the Composition's $catalog.
                 os:
                   type: string
-                  description: "Operating system (from the curated catalog)."
+                  description: "Operating system, from the curated catalog. Linux entries (ubuntu-*, fedora-40, debian-12, centos-stream-9) boot ready-made cloud images; windows-server-* clone a golden image you build first via kind: VmImage (console: Virtual Machines → VM Images)."
                   enum:
                     - ubuntu-24.04         # linux · cloud image
                     - ubuntu-22.04         # linux · cloud image
@@ -51,20 +51,11 @@ spec:
                     - windows-server-2019  # windows · clones <os>-golden (build via kind: VmImage)
                     - windows-server-2022  # windows
                     - windows-server-2025  # windows
-                cpu:      { type: integer, default: 2, minimum: 1, description: "vCPU cores" }
-                memory:   { type: string, default: "2Gi", description: "Guest RAM" }
-                diskSize: { type: string, default: "20Gi", description: "Root disk size (persistent)" }
-                # SSH public key injected via cloud-init (Linux). If omitted, a
-                # generated password (in the connection secret) is the only login.
-                sshKey:   { type: string, description: "SSH public key for login (Linux)" }
-                # Reach the VM on a LAN IP (MetalLB): SSH (22) for Linux, RDP (3389)
-                # for Windows. Off by default — port-forward / web console otherwise.
-                expose:   { type: boolean, default: false }
-                # Extra TCP/UDP ports to publish on the VM's LAN IP, beyond the access
-                # port (SSH/RDP) — e.g. [{port: 80}, {port: 53, protocol: UDP}]. They
-                # ride the same MetalLB IP as SSH/RDP (one LAN IP, the ports you pick).
-                # Setting any port also gives the VM a LAN IP (implies expose). The
-                # console's VM → Network tab manages this list.
+                cpu:      { type: integer, default: 2, minimum: 1, description: "Number of vCPU cores (KubeVirt domain.cpu.cores). Default 2." }
+                memory:   { type: string, default: "2Gi", description: "Guest RAM, e.g. 2Gi or 4Gi. Default 2Gi." }
+                diskSize: { type: string, default: "20Gi", description: "Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image's C: can't be reliably auto-grown)." }
+                sshKey:   { type: string, description: "SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is a generated password stored in the connection secret (<name>-vm)." }
+                expose:   { type: boolean, default: false, description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port — SSH 22 (Linux) or RDP 3389 (Windows). Default false: reach the VM via port-forward or the web VNC console instead. Setting any entry in ports also implies this." }
                 ports:
                   type: array
                   items:
@@ -72,43 +63,21 @@ spec:
                     required: [port]
                     properties:
                       port:     { type: integer, description: "Port number (1–65535)." }
-                      protocol: { type: string, enum: [TCP, UDP], default: TCP }
-                  description: "Extra ports on the VM's LAN IP, e.g. [{port: 80}, {port: 53, protocol: UDP}]."
-                # Network attachment:
-                #   masquerade (default) — VM behind the pod network (NAT); reach it
-                #     in-cluster via its Service, or from the LAN via expose/MetalLB.
-                #   bridge — VM joins the physical LAN directly via Multus+macvlan and
-                #     pulls a real DHCP lease (a first-class LAN host, no MetalLB/NAT).
-                #     Requires networking.vmLan enabled at install (Multus) and nodes
-                #     labelled openinfra.dev/vm-lan=true. See docs/virtual-machines.md.
+                      protocol: { type: string, enum: [TCP, UDP], default: TCP, description: "Transport protocol for this port. Default TCP." }
+                  description: "Extra TCP/UDP ports to publish on the VM's LAN IP, beyond the access port (SSH/RDP) — e.g. [{port: 80}, {port: 53, protocol: UDP}]. They ride the same MetalLB IP as SSH/RDP (one LAN IP, the ports you pick). Adding any port also gives the VM a LAN IP (implies expose)."
                 network:
                   type: string
                   enum: [masquerade, bridge]
                   default: masquerade
+                  description: "Network attachment. masquerade (default, supported) puts the VM behind the pod network (NAT) — reach it in-cluster via its Service, or from the LAN via expose/MetalLB. bridge is an advanced LAN-attach mode (Multus+macvlan, the VM pulls its own DHCP lease) that requires networking.vmLan enabled at install and nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md before using it."
                 securityGroups:
                   type: array
                   items: { type: string }
                   description: "Names of SecurityGroups (firewall rule sets) to attach to this VM."
-                # Power state. The console's Start/Stop flips this; the Composition
-                # maps it to KubeVirt runStrategy (Always/Halted). Disk is retained
-                # when stopped. Kept in spec (not a subresource) so it stays GitOps-
-                # clean and the provider doesn't fight power changes.
-                running:  { type: boolean, default: true }
-                # Node-independent storage + live migration. When true the root disk is
-                # provisioned on Longhorn (migratable RWX block, replicated across nodes)
-                # and the VM gets evictionStrategy: LiveMigrate, so it survives a node loss
-                # (reschedule + boot) and live-migrates off a drained node with zero downtime.
-                # Default false = local-path NVMe (faster, but pinned to one node).
-                highAvailability: { type: boolean, default: false }
-                # Boot from an EXISTING root PVC instead of cloning a fresh disk from the OS
-                # image. Used to migrate/restore a VM onto a pre-populated disk (e.g. a disk
-                # cloned onto Longhorn). When set, no root DataVolume is provisioned.
-                existingRootClaim: { type: string }
-                # Guest CPU model. Empty = host-model (best perf, but pins the VM to its node's
-                # CPU). For live migration / node-loss recovery across heterogeneous CPUs, set
-                # the newest model common to all nodes (e.g. Broadwell-noTSX). HA VMs default to
-                # Nehalem if unset.
-                cpuModel: { type: string }
+                running:  { type: boolean, default: true, description: "Power state. Default true = running; false stops the VM (mapped to KubeVirt runStrategy Halted) while retaining its disk. The console's Start/Stop button flips this." }
+                highAvailability: { type: boolean, default: false, description: "Node-independent storage and live migration. Default false = root disk on local-path NVMe (faster, but pinned to one node). true provisions the root disk on Longhorn (replicated, migratable RWX block) and sets evictionStrategy: LiveMigrate, so the VM survives a node loss (reschedule + reboot) and live-migrates off a drained node with zero downtime. See cpuModel for cross-CPU portability." }
+                existingRootClaim: { type: string, description: "Boot from an existing root PVC instead of cloning a fresh disk from the OS image — used to migrate or restore a VM onto a pre-populated disk (e.g. one cloned onto Longhorn). When set, no root DataVolume is provisioned." }
+                cpuModel: { type: string, description: "Guest CPU model to require (KubeVirt domain.cpu.model). Empty (default) uses host-model — best performance, but pins the VM to its node's exact CPU. For live migration or node-loss recovery across heterogeneous CPUs, set the newest model common to all nodes (e.g. Broadwell-noTSX). HA VMs fall back to Nehalem when this is unset." }
             status:
               type: object
               properties:
