@@ -6,6 +6,7 @@ import type {
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExpandableSection } from "@/components/create/expandable-section";
+import type { SectionSpec } from "@/components/create/create-registry";
 import { cn } from "@/lib/utils";
 
 // Custom RJSF templates that give schema-driven forms the AWS/Cloudscape semantics the console was
@@ -16,8 +17,8 @@ import { cn } from "@/lib/utils";
 interface FormCtx {
   /** idSchema.$id of the root object — used to detect "this is the top-level spec". */
   rootId?: string;
-  /** Spec property names shown up-front; everything else goes under "Advanced settings". */
-  essential?: string[];
+  /** Named field groups; advanced ones render as separate collapsed sections. */
+  sections?: SectionSpec[];
 }
 
 /** One field: label (with "- optional" for non-required), help from description, control, error. */
@@ -73,22 +74,33 @@ export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
   const ctx = (formContext ?? {}) as FormCtx;
   const isRoot = !!ctx.rootId && idSchema?.$id === ctx.rootId;
 
-  if (isRoot && ctx.essential && ctx.essential.length > 0) {
-    const essential = new Set(ctx.essential);
-    const primary = properties.filter((p) => essential.has(p.name));
-    const advanced = properties.filter((p) => !essential.has(p.name) && !p.hidden);
+  if (isRoot && ctx.sections && ctx.sections.length > 0) {
+    const byName = new Map(properties.map((p) => [p.name, p]));
+    const placed = new Set<string>();
+    const rendered = ctx.sections.map((sec) => {
+      const items = sec.fields.map((f) => byName.get(f)).filter((p): p is NonNullable<typeof p> => !!p && !p.hidden);
+      items.forEach((p) => placed.add(p.name));
+      if (items.length === 0) return null;
+      const body = items.map((p) => <div key={p.name}>{p.content}</div>);
+      return sec.advanced ? (
+        <ExpandableSection key={sec.title} title={sec.title} count={items.length}>
+          {body}
+        </ExpandableSection>
+      ) : (
+        <Section key={sec.title} title={sec.title}>
+          {body}
+        </Section>
+      );
+    });
+    // Anything the registry didn't place (e.g. a newly-added CRD field) still shows, so a spec
+    // change can't silently hide an input.
+    const leftovers = properties.filter((p) => !placed.has(p.name) && !p.hidden);
     return (
       <div className="space-y-4">
-        {primary.map((p) => (
-          <div key={p.name}>{p.content}</div>
-        ))}
-        {advanced.length > 0 ? (
-          <ExpandableSection
-            title="Advanced settings"
-            description="Everything else has a sensible default"
-            count={advanced.length}
-          >
-            {advanced.map((p) => (
+        {rendered}
+        {leftovers.length > 0 ? (
+          <ExpandableSection title="Other settings" count={leftovers.length}>
+            {leftovers.map((p) => (
               <div key={p.name}>{p.content}</div>
             ))}
           </ExpandableSection>
