@@ -10,9 +10,11 @@ over what's already there — not a separate thing to keep in sync:
 - **`kind: Replication`** — two sites kept in sync both ways.
 - **`kind: Stream`** — a source database's changes published to an event bus subject.
 
-The console **Data → Lineage** page (and `/api/lineage`, gated on the right to list DataFlows) reads
-all of these and shows every data movement — source → sink, with its type — so an auditor can trace
-provenance end to end.
+The console **Data → Lineage** page (and `/api/lineage`) reads all of these and shows every data
+movement — source → sink, with its type — so an auditor can trace provenance end to end. It is a
+**cluster-wide** view (all namespaces), so it is gated on a **cluster-scoped** SubjectAccessReview to
+list DataFlows — i.e. it is for operators/auditors who can already see the whole topology, not a
+per-namespace view.
 
 ```
 postgres db-a/orders  ──migration──▶  sqlserver db-b/orders

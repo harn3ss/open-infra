@@ -101,41 +101,64 @@ func countClassifiedWorkloads(ctx context.Context, cs kubernetes.Interface) int 
 }
 
 // Assemble gathers the live evidence and maps it to controls. The caller stamps GeneratedAt (Assemble
-// takes no clock, so it stays deterministic/testable).
-func Assemble(ctx context.Context, cs kubernetes.Interface, consoleNS string) Attestation {
+// takes no clock, so it stays deterministic/testable). anchorNS is where the audit off-siter writes
+// its head anchor (empty → "monitoring").
+func Assemble(ctx context.Context, cs kubernetes.Interface, consoleNS, anchorNS string) Attestation {
+	if anchorNS == "" {
+		anchorNS = "monitoring"
+	}
 	grants := countCR(ctx, cs, "iam.openinfra.dev", "grants")
 	classes, _ := countCMs(ctx, cs, consoleNS, "openinfra.dev/dataclass", "", "")
 	classified := countClassifiedWorkloads(ctx, cs)
 	encKeys := countCR(ctx, cs, "openinfra.dev", "encryptionkeys")
 	_, provisioned := countCMs(ctx, cs, consoleNS, "openinfra.dev/enckey", "exists", "true")
-	destructions, destroyed := countCMs(ctx, cs, consoleNS, "openinfra.dev/destruction", "phase", "Destroyed")
+	// Count Destructions by the CR (one each), not the label — which is on BOTH the spec-mirror and
+	// the state ConfigMap, so a label count would ~double it. `destroyed` is the state CMs at
+	// phase=Destroyed (the state CM alone carries phase).
+	destructions := countCR(ctx, cs, "openinfra.dev", "destructions")
+	_, destroyed := countCMs(ctx, cs, consoleNS, "openinfra.dev/destruction", "phase", "Destroyed")
 	dataflows := countCR(ctx, cs, "openinfra.dev", "dataflows")
 	migrations := countCR(ctx, cs, "openinfra.dev", "migrations")
 	replications := countCR(ctx, cs, "openinfra.dev", "replications")
 	streams := countCR(ctx, cs, "openinfra.dev", "streams")
 	lineageFlows := dataflows + migrations + replications + streams
 
-	// Audit-chain evidence from the off-siter's ConfigMap anchor (k8s, no bucket access needed).
+	// Audit-chain evidence from the off-siter's ConfigMap anchor (k8s, no bucket access needed). The
+	// anchor records the head the off-siter last VERIFIED, and — crucially — it is NOT advanced when
+	// the off-siter detects tampering (it holds the last good head so the alarm persists). So the
+	// anchor's mere presence does NOT prove current integrity: report the recorded head + WHEN it was
+	// last verified, and defer the live verdict to the console's integrity check. Never say "verified".
 	auditHead := ""
+	auditVerifiedAt := ""
 	auditPresent := false
-	if cm, err := cs.CoreV1().ConfigMaps("monitoring").Get(ctx, "audit-offsite-anchor", metav1.GetOptions{}); err == nil {
+	if cm, err := cs.CoreV1().ConfigMaps(anchorNS).Get(ctx, "audit-offsite-anchor", metav1.GetOptions{}); err == nil {
 		var a struct {
-			HeadSeq  int    `json:"headSeq"`
-			HeadHash string `json:"headHash"`
+			HeadSeq    int    `json:"headSeq"`
+			HeadHash   string `json:"headHash"`
+			VerifiedAt string `json:"verifiedAt"`
 		}
 		if json.Unmarshal([]byte(cm.Data["anchor.json"]), &a) == nil && a.HeadHash != "" {
 			auditPresent = true
 			auditHead = fmt.Sprintf("#%d %.12s", a.HeadSeq, a.HeadHash)
+			auditVerifiedAt = a.VerifiedAt
 		}
 	}
+	auditEvidence := "audit off-siting not enabled / no anchor recorded yet"
+	if auditPresent {
+		auditEvidence = fmt.Sprintf("off-site anchor at head %s, last verified %s — see console Audit → Integrity for live status",
+			auditHead, orNever(auditVerifiedAt))
+	}
 
+	// `Present` means "there is live evidence of this control in use" (a resource/instance exists),
+	// consistently across families — never a tautology. Zero evidence → not present, with the count
+	// shown so the reader sees exactly what backs the claim. Absence of instances is not a claim that
+	// the mechanism is uninstalled; it is the honest statement that nothing yet exercises it.
 	controls := []ControlCoverage{
-		{"AC-2(2) / AC-6(2)/(5)", "kind: Grant (temporal access)", grants >= 0,
+		{"AC-2(2) / AC-6(2)/(5)", "kind: Grant (temporal access)", grants > 0,
 			fmt.Sprintf("%d active grant(s); expiry reconciler + alert", grants)},
-		{"AU-9 / AU-9(2)/(3) / AU-11", "audit off-siting (WORM hash chain)", auditPresent,
-			ternary(auditPresent, "off-site chain verified, head "+auditHead, "not enabled / not yet verified")},
+		{"AU-9 / AU-9(2)/(3) / AU-11", "audit off-siting (WORM hash chain)", auditPresent, auditEvidence},
 		{"RA-2 / MP-3 / AC-4", "kind: DataClassification", classes > 0,
-			fmt.Sprintf("%d classification(s); %d classified workload(s)", classes, classified)},
+			fmt.Sprintf("%d classification(s); %d classified workload(s) — compliance on the Data Classification page", classes, classified)},
 		{"SC-12 / SC-13 / SC-28 / SC-28(1)", "customer-owned keys (Vault Transit)", encKeys > 0,
 			fmt.Sprintf("%d encryption key(s), %d provisioned", encKeys, provisioned)},
 		{"MP-6 / SP 800-88", "crypto-erase (kind: Destruction)", destructions > 0,
@@ -159,11 +182,11 @@ func Assemble(ctx context.Context, cs kubernetes.Interface, consoleNS string) At
 	}
 }
 
-func ternary(b bool, a, c string) string {
-	if b {
-		return a
+func orNever(s string) string {
+	if s == "" {
+		return "never"
 	}
-	return c
+	return s
 }
 
 // Markdown renders a human-readable attestation (what a signer signs alongside the JSON).

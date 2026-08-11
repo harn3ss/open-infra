@@ -97,7 +97,10 @@ func endpointLabel(engine, host, database string) string {
 
 func handleLineage(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !authorize(w, r, cs, auth, logger, "list", "openinfra.dev", "dataflows", auth.ns, "") {
+		// This is a CLUSTER-WIDE view (it lists dataflows/migrations/replications/streams across all
+		// namespaces), so gate it on a CLUSTER-SCOPED SAR (namespace ""), not a single-namespace one —
+		// otherwise a user with dataflows-list in one namespace could see every namespace's topology.
+		if !authorize(w, r, cs, auth, logger, "list", "openinfra.dev", "dataflows", "", "") {
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -169,27 +172,28 @@ func handleLineage(cs kubernetes.Interface, auth *authStore, logger *slog.Logger
 			})
 		}
 
-		// Replication — two sites kept in sync both ways.
+		// Replication — two sites kept in sync both ways (spec.siteA / spec.siteB).
 		for _, item := range crList(ctx, cs, "replications") {
 			var rp struct {
 				crMeta
 				Spec struct {
-					Sites []struct {
-						Name, Engine, Host, Database string
-					} `json:"sites"`
+					SiteA struct {
+						Engine, Host, Database string
+					} `json:"siteA"`
+					SiteB struct {
+						Engine, Host, Database string
+					} `json:"siteB"`
 				} `json:"spec"`
 			}
-			if json.Unmarshal(item, &rp) != nil || len(rp.Spec.Sites) < 2 {
+			if json.Unmarshal(item, &rp) != nil {
 				continue
 			}
-			a := rp.Spec.Sites[0]
-			b := rp.Spec.Sites[1]
 			flows = append(flows, lineageFlow{
 				Origin: "Replication " + rp.Metadata.Namespace + "/" + rp.Metadata.Name,
 				Kind:   "Replication", Namespace: rp.Metadata.Namespace, Name: rp.Metadata.Name,
 				Edges: []lineageEdge{{
-					From: endpointLabel(a.Engine, a.Host, a.Database),
-					To:   endpointLabel(b.Engine, b.Host, b.Database),
+					From: endpointLabel(rp.Spec.SiteA.Engine, rp.Spec.SiteA.Host, rp.Spec.SiteA.Database),
+					To:   endpointLabel(rp.Spec.SiteB.Engine, rp.Spec.SiteB.Host, rp.Spec.SiteB.Database),
 					Type: "replication (bidirectional)",
 				}},
 			})
