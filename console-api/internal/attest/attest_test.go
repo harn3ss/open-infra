@@ -12,7 +12,7 @@ import (
 // guards the shape of the attestation (a control silently dropping out would understate coverage).
 func TestAssemble_EmptyClusterEnumeratesAllControls(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	a := Assemble(context.Background(), cs, "open-infra-console")
+	a := Assemble(context.Background(), cs, "open-infra-console", "monitoring")
 
 	if a.ConsoleNS != "open-infra-console" {
 		t.Fatalf("console ns not carried: %q", a.ConsoleNS)
@@ -48,7 +48,7 @@ func TestAssemble_EmptyClusterEnumeratesAllControls(t *testing.T) {
 
 func TestMarkdown_RendersControls(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	a := Assemble(context.Background(), cs, "open-infra-console")
+	a := Assemble(context.Background(), cs, "open-infra-console", "monitoring")
 	a.GeneratedAt = "2026-08-11T00:00:00Z"
 	md := Markdown(a)
 	for _, want := range []string{"compliance attestation", "2026-08-11T00:00:00Z", "AC-2(2)", "MP-6 / SP 800-88"} {
