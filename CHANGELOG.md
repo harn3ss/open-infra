@@ -82,14 +82,14 @@ the product's public contract.
   Introspection is a toggle on the hostile-load seam — `spec.limits.introspection`: `enabled` (default),
   `disabled`, or `authenticated-only`.
 - **open-appsync — AWS auth directives.** The five AppSync auth directives are parsed and reported in
-  introspection. Four are enforced through open-infra's single policy world (Kubernetes SAR):
+  introspection, and all five are enforced through open-infra's single policy world (Kubernetes SAR):
   `@aws_api_key` (a key maps to a Kubernetes identity, configured in a Secret), `@aws_iam` (SigV4 verified
-  at the aws-shim), and `@aws_oidc` / `@aws_cognito_user_pools` (OIDC/Cognito JWT verified at the shim;
+  at the aws-shim), `@aws_oidc` / `@aws_cognito_user_pools` (OIDC/Cognito JWT verified at the shim;
   `@aws_cognito_user_pools(cognito_groups:)` requires the caller's groups to include one of the named
-  open-infra groups, fail-closed). `@aws_lambda` (Lambda authorizer) is parsed but not yet enforced.
-  Enforcing these relocates authorization to Kubernetes RBAC — group rules become RBAC bindings — which a
-  migrating schema must account for. `@aws_subscribe` declares a subscription's triggering mutations in
-  the SDL.
+  open-infra groups, fail-closed), and `@aws_lambda` (a Lambda-authorizer `kind: Function` invoked at the
+  shim — see below). Enforcing these relocates authorization to Kubernetes RBAC — group rules become RBAC
+  bindings — which a migrating schema must account for. `@aws_subscribe` declares a subscription's
+  triggering mutations in the SDL.
 - **open-appsync — data sources.** Added a **NONE** source (`type: none`): a resolver with no backend,
   resolved entirely in the mapping templates (the request template's `payload` becomes `$ctx.result`) —
   for pub/sub-only fields, local computation, and stitching. Added a **Lambda** source (`type: lambda`):
