@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Shield, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { NewSecurityGroupDialog } from "./new-security-group-dialog";
 import { Button } from "@/components/ui/button";
@@ -157,6 +158,7 @@ export function SecurityGroupsPage() {
         plural="Security Groups"
         emptyTitle="No security groups yet"
         emptyDescription="Create a rule set, then attach it to a resource."
+        docsHref={kindDocsUrl("SecurityGroup")}
         headerActions={
           <Button
             onClick={() => {

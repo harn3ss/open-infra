@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { BrainCircuit, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { Button } from "@/components/ui/button";
 import { modelHealth, modelDesiredReplicas } from "@/lib/resource-health";
 import { useNodeHealth } from "@/hooks/use-node-health";
@@ -122,6 +123,7 @@ export function ModelsPage() {
         plural="Models"
         emptyTitle="No Models yet"
         emptyDescription="Create one, or scaffold with `open-infra init model`."
+        docsHref={kindDocsUrl("Model")}
         onRowClick={(m) =>
           navigate({
             to: "/models/$namespace/$name",
