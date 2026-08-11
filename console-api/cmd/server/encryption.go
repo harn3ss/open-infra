@@ -107,3 +107,72 @@ func handleEncryptionKeys(cs kubernetes.Interface, auth *authStore, logger *slog
 		writeJSON(w, http.StatusOK, out)
 	}
 }
+
+// A crypto-erase request (kind: Destruction) and its outcome, merged from the spec-mirror + state
+// ConfigMaps the destroyer maintains.
+type destructionView struct {
+	Name          string `json:"name"`
+	EncryptionKey string `json:"encryptionKey"`
+	Reason        string `json:"reason"`
+	Phase         string `json:"phase"` // Pending | Refused | Destroyed | Error
+	Message       string `json:"message,omitempty"`
+	Certificate   string `json:"certificate,omitempty"` // WORM object path of the destruction certificate
+	DestroyedAt   string `json:"destroyedAt,omitempty"`
+}
+
+func handleDestructions(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "users", auth.ns, "") {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		cms, err := cs.CoreV1().ConfigMaps(auth.ns).List(ctx, metav1.ListOptions{LabelSelector: "openinfra.dev/destruction"})
+		if err != nil {
+			logger.Warn("encryption: list destruction configmaps", slog.String("error", err.Error()))
+			writeJSON(w, http.StatusOK, []destructionView{})
+			return
+		}
+		views := map[string]*destructionView{}
+		get := func(name string) *destructionView {
+			if views[name] == nil {
+				views[name] = &destructionView{Name: name, Phase: "Pending"}
+			}
+			return views[name]
+		}
+		for i := range cms.Items {
+			cm := &cms.Items[i]
+			name := cm.Labels["openinfra.dev/destruction"]
+			if name == "" {
+				continue
+			}
+			v := get(name)
+			d := cm.Data
+			if s, ok := d["encryptionKey"]; ok && s != "" {
+				v.EncryptionKey = s
+			}
+			if s, ok := d["reason"]; ok && s != "" {
+				v.Reason = s
+			}
+			if s, ok := d["phase"]; ok && s != "" {
+				v.Phase = s
+			}
+			if s, ok := d["message"]; ok && s != "" {
+				v.Message = s
+			}
+			if s, ok := d["certificate"]; ok && s != "" {
+				v.Certificate = s
+			}
+			if s, ok := d["destroyedAt"]; ok && s != "" {
+				v.DestroyedAt = s
+			}
+		}
+		out := make([]destructionView, 0, len(views))
+		for _, v := range views {
+			out = append(out, *v)
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		writeJSON(w, http.StatusOK, out)
+	}
+}

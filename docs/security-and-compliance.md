@@ -192,14 +192,15 @@ Delivered so far:
 - **Encryption with customer-owned keys** — `kind: EncryptionKey` on a Vault Transit KMS, an encrypted
   Longhorn StorageClass, and the MinIO/etcd wiring runbook (SC-12/13/28/28(1)). Opt-in, off by
   default. See [`encryption.md`](encryption.md).
+- **Crypto-erase** — `kind: Destruction` destroys a customer key (NIST SP 800-88), making all data it
+  wrapped unrecoverable, and writes an immutable destruction certificate to the WORM audit store
+  (MP-6). Opt-in. See [`destruction.md`](destruction.md).
 
 Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
 
-1. **Crypto-erase** — NIST SP 800-88 destruction with a tamper-evident certificate (MP-6),
-   recorded in the off-site audit chain above.
-2. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
+1. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
    report generated from the live cluster.
-3. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
+2. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
    Mesh, and every opt-in dangerous capability, and tightens defaults for an authorization
    boundary.
 

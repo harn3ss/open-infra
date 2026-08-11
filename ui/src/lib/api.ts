@@ -981,3 +981,18 @@ export interface EncryptionKey {
 export function getEncryptionKeys(): Promise<EncryptionKey[]> {
   return request<EncryptionKey[]>(`/encryption/keys`);
 }
+
+/** Crypto-erase requests (kind: Destruction) and their certificates (NIST SP 800-88 / MP-6). */
+export interface Destruction {
+  name: string;
+  encryptionKey: string;
+  reason: string;
+  phase: "Pending" | "Refused" | "Destroyed" | "Error" | string;
+  message?: string;
+  certificate?: string;
+  destroyedAt?: string;
+}
+
+export function getDestructions(): Promise<Destruction[]> {
+  return request<Destruction[]>(`/encryption/destructions`);
+}

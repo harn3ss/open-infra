@@ -7,6 +7,14 @@ the product's public contract.
 ## Unreleased
 
 ### Security & compliance
+- **Crypto-erase — `kind: Destruction` (NIST SP 800-88).** Destroying a customer-owned key makes every
+  byte it wrapped — primary, replica, backup, snapshot — permanently unrecoverable, the fast provable
+  alternative to overwriting terabytes. A `Destruction` names an `EncryptionKey` and must repeat its
+  name in `confirm` (a typo-guard); a dedicated destroyer (separate, more-privileged than the key
+  reconciler, which cannot destroy) crypto-erases the Vault Transit key and writes an immutable
+  **destruction certificate** to the WORM audit store, while the request's lifecycle is captured
+  tamper-evidently in the off-sited audit log. Admin-only, opt-in. Controls: MP-6, SP 800-88, AU. See
+  [`docs/destruction.md`]. Part of the government feature track (issue #71).
 - **Encryption with customer-owned keys.** A new opt-in `encryption` component: `kind: EncryptionKey`
   provisions a customer-owned key in a HashiCorp Vault **Transit** KMS (open-infra never sees the key
   material), a reconciler creates/rotates it and reflects its state on the console **Security &
