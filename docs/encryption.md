@@ -57,6 +57,17 @@ kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<roo
 The `vault-transit-setup` Job then enables Transit and writes the reconciler's AppRole to
 `encryptionkey-reconciler-vault` (crossplane-system). After that, create `EncryptionKey`s.
 
+```sh
+# 4. The bootstrap token was only needed for setup — remove it so a root/admin token doesn't linger.
+kubectl -n vault delete secret vault-bootstrap
+```
+
+The reconciler holds only a scoped AppRole (create/read/rotate Transit keys — never destroy, never
+`transit/keys/<name>/config`, never datakey/export). Anyone who can read the
+`encryptionkey-reconciler-vault` Secret gets that same scoped power and no more; keep its namespace
+locked down, and note that key **destruction** requires a separately-authorized token (the operator),
+which is what makes crypto-erase a deliberate act.
+
 ## Storage-layer wiring (operator runbook)
 
 These change how data at rest is encrypted; apply them deliberately (they are hard to reverse). Take
