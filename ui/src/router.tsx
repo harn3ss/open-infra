@@ -64,6 +64,7 @@ import { AuditPage } from "@/features/iam/audit-page";
 import { DataClassificationPage } from "@/features/iam/data-classification-page";
 import { EncryptionPage } from "@/features/iam/encryption-page";
 import { LineagePage } from "@/features/data/lineage-page";
+import { AttestationPage } from "@/features/iam/attestation-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -398,6 +399,11 @@ const lineageRoute = createRoute({
   path: "/lineage",
   component: LineagePage,
 });
+const attestationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/attestation",
+  component: AttestationPage,
+});
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -457,6 +463,7 @@ const routeTree = rootRoute.addChildren([
   dataClassificationRoute,
   encryptionRoute,
   lineageRoute,
+  attestationRoute,
 ]);
 
 export const router = createRouter({
