@@ -50,7 +50,7 @@ spec:
                       openinfra.dev/dataclass: {{ $name }}
                   data:
                     level: "{{ $spec.level }}"
-                    description: "{{ $spec.description | default "" }}"
+                    description: {{ $spec.description | default "" | quote }}
                     encryptionAtRest: "{{ $req.encryptionAtRest | default false }}"
                     networkRestricted: "{{ $req.networkRestricted | default false }}"
                     noPublicExposure: "{{ $req.noPublicExposure | default false }}"
