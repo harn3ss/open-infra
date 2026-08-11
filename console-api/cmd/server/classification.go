@@ -86,7 +86,9 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 
 		// 1. Load the taxonomy from the ConfigMap mirrors.
 		classes := map[string]classPolicy{}
-		var summaries []classSummary
+		// Non-nil so it marshals to [] (not null) when no classes are defined —
+		// the console reads .classes.length directly.
+		summaries := []classSummary{}
 		cms, err := cs.CoreV1().ConfigMaps(auth.ns).List(ctx, metav1.ListOptions{LabelSelector: "openinfra.dev/dataclass"})
 		if err != nil {
 			logger.Warn("classification: list mirrors", slog.String("error", err.Error()))
@@ -172,7 +174,9 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 // evaluateWorkload runs the mechanically-checkable requirements. Requirements not requested by the
 // class are skipped; requirements we cannot verify yet are reported "unknown", never silently passed.
 func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, wl workload, pol classPolicy) []ruleCheck {
-	var checks []ruleCheck
+	// Non-nil so it marshals to [] (not null) when a class requests no checkable
+	// requirements — the console maps over res.checks directly.
+	checks := []ruleCheck{}
 	podSet := labels.Set(wl.podLabels)
 
 	if pol.noPublicExposure {
