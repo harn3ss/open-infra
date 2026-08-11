@@ -114,9 +114,10 @@ type destructionView struct {
 	Name          string `json:"name"`
 	EncryptionKey string `json:"encryptionKey"`
 	Reason        string `json:"reason"`
-	Phase         string `json:"phase"` // Pending | Refused | Destroyed | Error
+	Phase         string `json:"phase"` // Pending | InProgress | Refused | Destroyed | Error
 	Message       string `json:"message,omitempty"`
-	Certificate   string `json:"certificate,omitempty"` // WORM object path of the destruction certificate
+	Certificate   string `json:"certificate,omitempty"`   // WORM object path of the destruction certificate
+	CertSha256    string `json:"certSha256,omitempty"`     // sha256 of the certificate (anchor to verify the locked original)
 	DestroyedAt   string `json:"destroyedAt,omitempty"`
 }
 
@@ -163,6 +164,9 @@ func handleDestructions(cs kubernetes.Interface, auth *authStore, logger *slog.L
 			}
 			if s, ok := d["certificate"]; ok && s != "" {
 				v.Certificate = s
+			}
+			if s, ok := d["certSha256"]; ok && s != "" {
+				v.CertSha256 = s
 			}
 			if s, ok := d["destroyedAt"]; ok && s != "" {
 				v.DestroyedAt = s

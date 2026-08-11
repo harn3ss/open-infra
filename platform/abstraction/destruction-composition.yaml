@@ -47,10 +47,10 @@ spec:
                     labels:
                       openinfra.dev/destruction: {{ $name }}
                   data:
-                    name: "{{ $name }}"
-                    encryptionKey: "{{ $spec.encryptionKey }}"
-                    confirm: "{{ $spec.confirm }}"
-                    reason: "{{ $spec.reason | default "" }}"
+                    name: {{ $name | quote }}
+                    encryptionKey: {{ $spec.encryptionKey | quote }}
+                    confirm: {{ $spec.confirm | quote }}
+                    reason: {{ $spec.reason | default "" | quote }}
             ---
             apiVersion: openinfra.dev/v1
             kind: XDestruction

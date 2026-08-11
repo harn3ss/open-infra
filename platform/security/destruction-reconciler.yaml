@@ -161,14 +161,16 @@ spec:
                     | while IFS="$(printf '\t')" read -r ns name key confirm reason; do
                         st="openinfra-destruction-state-$name"
                         prev=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.phase}' 2>/dev/null || echo "")
-                        # Terminal states are never retried — a destroyed key stays destroyed.
-                        [ "$prev" = "Destroyed" ] && continue
+                        # Terminal states are never retried. (Error is retryable — it self-heals if the
+                        # named key later exists; otherwise it just re-errors harmlessly.)
+                        case "$prev" in Destroyed | Refused) continue ;; esac
 
-                        writestate() { # phase message certificate destroyedAt
+                        writestate() { # phase message certificate destroyedAt observedVersions certSha256
                           kubectl create configmap "$st" -n "$CONSOLE_NS" \
                             --from-literal=destruction="$name" --from-literal=encryptionKey="$key" \
                             --from-literal=phase="$1" --from-literal=message="$2" \
                             --from-literal=certificate="$3" --from-literal=destroyedAt="$4" \
+                            --from-literal=observedVersions="$5" --from-literal=certSha256="$6" \
                             --dry-run=client -o yaml \
                             | kubectl label --local -f - "openinfra.dev/destruction=$name" -o yaml \
                             | kubectl apply -f - >/dev/null
@@ -177,43 +179,67 @@ spec:
                         # Typo-guard: confirm must equal the key name.
                         if [ "$confirm" != "$key" ]; then
                           echo "REFUSED $ns/$name: confirm ('$confirm') != encryptionKey ('$key')"
-                          writestate "Refused" "confirm must equal encryptionKey" "" ""
+                          writestate "Refused" "confirm must equal encryptionKey" "" "" "" ""
                           continue
                         fi
 
-                        # Crypto-erase: allow deletion, then destroy the key. If the key is already gone
-                        # that is success (idempotent) — the data is already unrecoverable.
+                        # Reuse a stable cert path + the observed version count across retries (recorded
+                        # on the InProgress state) so a crash can't produce a duplicate or under-counted cert.
+                        cert=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.certificate}' 2>/dev/null || echo "")
+                        [ -n "$cert" ] || cert="certificates/${key}-${now}.json"
+                        obs=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.observedVersions}' 2>/dev/null || echo "")
+
                         if vault read "transit/keys/$key" >/dev/null 2>&1; then
-                          versions=$(vault read -format=json "transit/keys/$key" | jq -r '.data.latest_version // 0')
+                          # Key present: record what we observe BEFORE destroying, so a crash mid-way can
+                          # recover the true version count and prove WE initiated this destruction
+                          # (distinguishing it from a key that never existed — no phantom certificate).
+                          obs=$(vault read -format=json "transit/keys/$key" | jq -r '.data.latest_version // 0')
+                          writestate "InProgress" "destroying key" "$cert" "" "$obs" ""
                           vault write "transit/keys/$key/config" deletion_allowed=true >/dev/null
                           vault delete "transit/keys/$key" >/dev/null
-                          echo "CRYPTO-ERASED $key ($versions versions) for $ns/$name"
+                          echo "CRYPTO-ERASED $key ($obs versions) for $ns/$name"
+                        elif [ "$prev" = "InProgress" ]; then
+                          # Key absent AND we had already started: a crash after delete. Finish certifying
+                          # with the count recorded before deleting.
+                          [ -n "$obs" ] || obs=0
+                          echo "$key absent but InProgress — resuming certification for $ns/$name"
                         else
-                          versions="0"
-                          echo "$key already absent — treating $ns/$name as already destroyed"
+                          # Key absent and we never started (e.g. a typo'd or nonexistent key): do NOT
+                          # certify a phantom erasure. A certificate attesting to an erase that never
+                          # happened is worse than none.
+                          echo "NOT FOUND $ns/$name: transit/keys/$key does not exist — nothing destroyed"
+                          writestate "Error" "key transit/keys/$key not found — nothing was destroyed; no certificate issued" "" "" "" ""
+                          continue
                         fi
 
-                        # Immutable destruction certificate → WORM bucket (COMPLIANCE), undeletable.
-                        # Built with jq (not printf) so a reason containing quotes/newlines can't
-                        # break or inject into the JSON.
-                        cert="certificates/${key}-${now}.json"
-                        jq -n --arg key "$key" --argjson versions "${versions:-0}" \
-                          --arg ns "$ns" --arg name "$name" --arg reason "$reason" --arg stamp "$stamp" '{
-                            kind: "DestructionCertificate",
-                            standard: "NIST SP 800-88 (cryptographic erase)",
-                            encryptionKey: $key,
-                            vaultKeyPath: ("transit/keys/" + $key),
-                            keyVersionsDestroyed: $versions,
-                            destruction: ($ns + "/" + $name),
-                            reason: $reason,
-                            destroyedAt: $stamp,
-                            note: "actor + request are recorded in the tamper-evident API-server audit log (Destruction create event)"
-                          }' > /tmp/cert.json
-                        mc cp /tmp/cert.json "audit/$AUDIT_BUCKET/$cert" >/dev/null
-                        mc retention set COMPLIANCE "${RETENTION_DAYS}d" "audit/$AUDIT_BUCKET/$cert" >/dev/null
+                        # Write the certificate ONCE (idempotent across retries: skip if it already
+                        # exists). Built with jq so a reason with quotes/newlines can't corrupt or inject.
+                        if mc stat "audit/$AUDIT_BUCKET/$cert" >/dev/null 2>&1; then
+                          sha=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.certSha256}' 2>/dev/null || echo "")
+                          echo "certificate $cert already present — not rewriting"
+                        else
+                          jq -n --arg key "$key" --argjson versions "${obs:-0}" \
+                            --arg ns "$ns" --arg name "$name" --arg reason "$reason" --arg stamp "$stamp" '{
+                              kind: "DestructionCertificate",
+                              standard: "NIST SP 800-88 (cryptographic erase)",
+                              encryptionKey: $key,
+                              vaultKeyPath: ("transit/keys/" + $key),
+                              keyVersionsDestroyed: $versions,
+                              destruction: ($ns + "/" + $name),
+                              reason: $reason,
+                              destroyedAt: $stamp,
+                              note: "actor + request are recorded in the tamper-evident API-server audit log (Destruction create event)"
+                            }' > /tmp/cert.json
+                          mc cp /tmp/cert.json "audit/$AUDIT_BUCKET/$cert" >/dev/null
+                          mc retention set COMPLIANCE "${RETENTION_DAYS}d" "audit/$AUDIT_BUCKET/$cert" >/dev/null
+                          sha=$(sha256sum /tmp/cert.json | cut -d' ' -f1)
+                        fi
 
-                        writestate "Destroyed" "crypto-erased; certificate written" "$cert" "$stamp"
-                        echo "destruction: $ns/$name complete — certificate $cert"
+                        # Anchor the certificate by sha256 in the state ConfigMap — a different trust
+                        # domain than the bucket — so the locked original can be verified even if a newer
+                        # object version shadows it at "latest".
+                        writestate "Destroyed" "crypto-erased; certificate written" "$cert" "$stamp" "$obs" "$sha"
+                        echo "destruction: $ns/$name complete — certificate $cert (sha256 ${sha:-unknown})"
                       done
               resources:
                 requests: { cpu: 20m, memory: 48Mi }

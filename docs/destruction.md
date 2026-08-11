@@ -24,12 +24,21 @@ A dedicated **destroyer** (separate from the key reconciler, which deliberately 
 see [`encryption.md`](encryption.md)) picks up the request and:
 
 1. **Verifies the typo-guard** — `confirm` must equal `encryptionKey`, else it is `Refused`, untouched.
-2. **Crypto-erases** — sets `deletion_allowed` and deletes the Vault Transit key. Every DEK/volume/
-   object wrapped by it is now undecryptable. Idempotent: if the key is already gone, that is success.
-3. **Writes a destruction certificate** — an immutable JSON record (key, versions destroyed, reason,
-   time, SP 800-88 method) to the **WORM audit store** under `certificates/`, with COMPLIANCE
-   retention, so the proof of destruction is itself undeletable.
-4. **Records the outcome** — `status.phase: Destroyed` and the certificate path, shown on the console
+2. **Crypto-erases** — records what it observes (the key's version count) as `InProgress` *before*
+   deleting, then sets `deletion_allowed` and deletes the Vault Transit key. Every DEK/volume/object
+   wrapped by it is now undecryptable. If the key is **absent and no destruction was in progress**
+   (e.g. a typo'd or never-existent key name), it does **not** proceed — it records `Error` and issues
+   **no certificate**, because a certificate attesting to an erasure that never happened is worse than
+   none. A crash between delete and certify resumes from the `InProgress` record (true count, no
+   duplicate).
+3. **Writes a destruction certificate** — a JSON record (key, versions destroyed, reason, time,
+   SP 800-88 method) to the **WORM audit store** under `certificates/`, with COMPLIANCE retention. The
+   certificate's original version cannot be deleted or overwritten until retention expires. Its
+   **sha256 is anchored in the Kubernetes state** (a different trust domain than the bucket): S3
+   versioning still lets a bucket-writer lay a *newer* version over it at "latest", but the locked
+   original survives and can be verified against the anchored hash — the same shadowing caveat as
+   [audit off-siting](audit-offsite.md#immutability-worm-vs-tamper-evidence-chain--stated-precisely).
+4. **Records the outcome** — `status.phase` and the certificate path + sha256, shown on the console
    **Security & Identity → Encryption Keys** page.
 
 The `Destruction` object's own create/complete lifecycle is captured in the API-server audit log,
