@@ -8,8 +8,11 @@ doc into a **signed, verifiable statement backed by live evidence from the runni
 An attestation is a snapshot of NIST 800-53 control coverage with the *evidence gathered from the
 cluster at that moment* — how many temporal grants exist, how many data classifications and
 classified workloads, how many customer-owned keys (and how many provisioned), how many crypto-erase
-destructions completed with certificates, how many data flows are tracked, and where the off-site
-audit chain last verified. It is assembled by one component (`internal/attest`) used both by:
+destructions completed with certificates, how many data flows are tracked, and the off-site audit
+chain's recorded head **and when it was last verified**. (The attestation reports that head + verify
+time as evidence; it does not itself re-verify the chain — the console's Audit → Integrity check does
+that live, and because the off-siter leaves its anchor un-advanced on tamper, a stale verify time in
+the attestation is itself a signal.) It is assembled by one component (`internal/attest`) used both by:
 
 - the console **Security & Identity → Attestation** page (and `/api/compliance/attestation`) — the
   live, on-screen report; and
