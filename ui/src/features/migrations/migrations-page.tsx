@@ -3,6 +3,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowRightLeft, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
@@ -102,6 +103,7 @@ export function MigrationsPage() {
       plural="Migrations"
       emptyTitle="No migrations yet"
       emptyDescription="Create one to full-load or continuously sync a source database into a managed Postgres."
+      docsHref={kindDocsUrl("Migration")}
       onRowClick={(m) =>
         navigate({
           to: "/migrations/$namespace/$name",

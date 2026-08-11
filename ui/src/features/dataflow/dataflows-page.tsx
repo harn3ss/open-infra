@@ -5,6 +5,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Workflow, Plus, Wand2 } from "lucide-react";
 import { SetupWizard } from "./setup-wizard";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 
@@ -95,6 +96,7 @@ export function DataFlowsPage() {
         plural="Data Flows"
         emptyTitle="No data flows yet"
         emptyDescription="Use the guided setup to keep your databases in sync."
+        docsHref={kindDocsUrl("DataFlow")}
         onRowClick={(d) =>
           navigate({
             to: "/dataflows/$namespace/$name",

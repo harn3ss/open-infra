@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Radio, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
@@ -108,6 +109,7 @@ export function StreamsPage() {
       plural="Streams"
       emptyTitle="No streams yet"
       emptyDescription="Create one to publish a database's changes onto JetStream in real time."
+      docsHref={kindDocsUrl("Stream")}
       headerActions={
         <Button onClick={() => navigate({ to: "/streams/new" })}>
           <Plus className="size-4" /> New Stream
