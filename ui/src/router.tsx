@@ -9,6 +9,7 @@ import { RouteErrorBoundary } from "@/components/layout/route-error";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
 import { ApplicationsPage } from "@/features/applications/applications-page";
 import { ApplicationDetailPage } from "@/features/applications/application-detail-page";
+import { CreateApplicationPage } from "@/features/applications/create-application-page";
 import { FunctionsPage } from "@/features/functions/functions-page";
 import { FunctionDetailPage } from "@/features/functions/function-detail-page";
 import { GraphQLApisPage } from "@/features/graphql/graphqlapis-page";
@@ -82,6 +83,12 @@ const applicationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/applications",
   component: ApplicationsPage,
+});
+
+const applicationCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/applications/new",
+  component: CreateApplicationPage,
 });
 
 const applicationDetailRoute = createRoute({
@@ -408,6 +415,7 @@ const attestationRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
+  applicationCreateRoute,
   applicationDetailRoute,
   functionsRoute,
   functionDetailRoute,
