@@ -56,5 +56,5 @@ spec:
             status:
               type: object
               properties:
-                phase: { type: string }
-                size:  { type: string }
+                phase: { type: string, description: "Observed lifecycle phase of the volume (its backing Longhorn PersistentVolumeClaim); the console surfaces it as the volume's Status." }
+                size:  { type: string, description: "Observed (provisioned) capacity of the volume." }
