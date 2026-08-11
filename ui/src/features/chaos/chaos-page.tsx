@@ -4,6 +4,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { useMutation } from "@tanstack/react-query";
 import { Bomb, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -168,6 +169,7 @@ function ChaosPageInner() {
         plural="Fault Injections"
         emptyTitle="No experiments yet"
         emptyDescription="Run a fault injection scoped to a namespace + label selector."
+        docsHref={kindDocsUrl("FaultInjection")}
         headerActions={
           <Button onClick={() => setNewOpen(true)}>
             <Plus className="size-4" /> New Fault Injection

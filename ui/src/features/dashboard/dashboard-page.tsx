@@ -11,6 +11,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/features/dashboard/stat-card";
+import { GettingStarted } from "@/features/dashboard/getting-started";
 import { HealthPanel } from "@/features/dashboard/health-panel";
 import { EventsFeed } from "@/features/dashboard/events-feed";
 import { listBuckets, listQueues } from "@/lib/api";
@@ -60,12 +61,32 @@ export function DashboardPage() {
   const bucketCount = bucketsQuery.data?.length ?? 0;
   const queueCount = queuesQuery.data?.length ?? 0;
 
+  // First-run onboarding: only once every primary list has loaded and the
+  // cluster genuinely has nothing yet (avoids a flash during load).
+  const primaryLoaded =
+    !apps.isLoading &&
+    !fns.isLoading &&
+    !models.isLoading &&
+    !databases.isLoading &&
+    !bucketsQuery.isLoading &&
+    !queuesQuery.isLoading;
+  const clusterEmpty =
+    primaryLoaded &&
+    apps.items.length === 0 &&
+    fns.items.length === 0 &&
+    models.items.length === 0 &&
+    databases.items.length === 0 &&
+    bucketCount === 0 &&
+    queueCount === 0;
+
   return (
     <div className="space-y-6">
       <PageHeader
         title={`Welcome to ${config.clusterName || "open-infra"}`}
         description="Your self-hosted mini-cloud at a glance."
       />
+
+      {clusterEmpty ? <GettingStarted /> : null}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard

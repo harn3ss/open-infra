@@ -33,8 +33,11 @@ export interface ResourceTablePageProps<T extends K8sObject> {
   /** If set, a row click runs this (e.g. navigate to a detail page) instead of
    *  opening the YAML drawer. */
   onRowClick?: (item: T) => void;
-  /** Extra header actions (e.g. a "New" button), rendered left of refresh. */
+  /** Extra header actions (e.g. a "New" button), rendered left of refresh. Also
+   *  reused as the primary call-to-action in the empty state. */
   headerActions?: ReactNode;
+  /** Optional docs URL — surfaces a "Learn more" link in the empty state. */
+  docsHref?: string;
 }
 
 /**
@@ -56,6 +59,7 @@ export function ResourceTablePage<T extends K8sObject>({
   emptyDescription,
   onRowClick,
   headerActions,
+  docsHref,
 }: ResourceTablePageProps<T>) {
   const { scoped } = useNamespace();
   const { items: allItems, isLoading, isError, error, live, refetch } =
@@ -95,7 +99,13 @@ export function ResourceTablePage<T extends K8sObject>({
       ) : isError ? (
         <ErrorState error={error} onRetry={refetch} />
       ) : items.length === 0 ? (
-        <EmptyState icon={icon} title={emptyTitle} description={emptyDescription} />
+        <EmptyState
+          icon={icon}
+          title={emptyTitle}
+          description={emptyDescription}
+          action={headerActions}
+          learnMore={docsHref}
+        />
       ) : (
         <>
           <p className="text-sm text-muted-foreground">

@@ -1,5 +1,6 @@
 import { AlertTriangle, Inbox, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { LearnMore } from "@/components/help/learn-more";
 import { ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -20,17 +21,20 @@ export function LoadingState({ label = "Loading…" }: { label?: string }) {
   );
 }
 
-/** Empty-result state with optional action. */
+/** Empty-result state with optional action and a "Learn more" doc link. */
 export function EmptyState({
   title,
   description,
   icon,
   action,
+  learnMore,
 }: {
   title: string;
   description?: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
+  /** Optional docs URL — renders a "Learn more" link under the action. */
+  learnMore?: string;
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
@@ -44,6 +48,7 @@ export function EmptyState({
         ) : null}
       </div>
       {action}
+      {learnMore ? <LearnMore href={learnMore} /> : null}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { Repeat, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
@@ -91,6 +92,7 @@ export function ReplicationsPage() {
       plural="Replications"
       emptyTitle="No replications yet"
       emptyDescription="Create a bidirectional replication between two databases."
+      docsHref={kindDocsUrl("Replication")}
       onRowClick={(r) =>
         navigate({
           to: "/replications/$namespace/$name",

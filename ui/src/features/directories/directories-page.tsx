@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Building2, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
@@ -134,6 +135,7 @@ export function DirectoriesPage() {
       plural="Directories"
       emptyTitle="No directories yet"
       emptyDescription="Create a domain, then join VMs to it."
+      docsHref={kindDocsUrl("Directory")}
       headerActions={
         <Button onClick={() => navigate({ to: "/directories/new" })}>
           <Plus className="size-4" /> New Directory

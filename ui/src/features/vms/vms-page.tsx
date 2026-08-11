@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Disc, Monitor, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
@@ -157,6 +158,7 @@ export function VmsPage() {
         plural="Virtual Machines"
         emptyTitle="No Virtual Machines yet"
         emptyDescription="Create one, or scaffold with `open-infra init vm`."
+        docsHref={kindDocsUrl("VirtualMachine")}
         onRowClick={(vm) =>
           navigate({
             to: "/vms/$namespace/$name",
