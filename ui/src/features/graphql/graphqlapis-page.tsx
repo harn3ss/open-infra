@@ -1,31 +1,17 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { Plus, Waypoints } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
-import { NewResourceDialog } from "@/components/common/new-resource-dialog";
 import { Button } from "@/components/ui/button";
 import { claimHealth } from "@/lib/resource-health";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
-import {
-  GRAPHQLAPIS_CRD_NAME,
-  type GraphQLApi,
-  type K8sObject,
-} from "@/types/k8s";
+import { type GraphQLApi } from "@/types/k8s";
 
 export function GraphQLApisPage() {
   const navigate = useNavigate();
-  const { scoped } = useNamespace();
-  const [newOpen, setNewOpen] = useState(false);
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = nsWatch.items
-    .map((n) => n.metadata.name)
-    .filter((n): n is string => Boolean(n))
-    .sort((a, b) => a.localeCompare(b));
   const columns = useMemo<ColumnDef<GraphQLApi, unknown>[]>(
     () => [
       {
@@ -131,23 +117,11 @@ export function GraphQLApisPage() {
           })
         }
         headerActions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/graphql/new" })}>
             <Plus className="size-4" />
             New GraphQL API
           </Button>
         }
-      />
-      <NewResourceDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        kind="GraphQLApi"
-        crdName={GRAPHQLAPIS_CRD_NAME}
-        createPath={openinfraPaths.graphqlapis}
-        listPath={openinfraPaths.graphqlapis(scoped)}
-        namespaces={namespaces}
-        defaultNamespace={scoped}
-        icon={<Waypoints className="size-5 text-primary" />}
-        description="A resolver-first GraphQL API (open-appsync). Set the SDL schema, data sources, and resolvers; the engine renders from this one object."
       />
     </>
   );
