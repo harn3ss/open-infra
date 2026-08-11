@@ -140,4 +140,18 @@ spec:
                 bound_service_account_names=encryptionkey-reconciler \
                 bound_service_account_namespaces=crossplane-system \
                 token_policies=encryptionkey-reconciler token_ttl=20m
-              echo "Transit ready; reconciler will authenticate via Kubernetes auth (no stored secret)."
+
+              echo "writing the DESTROYER policy (crypto-erase) + its Kubernetes-auth role…"
+              # The destroyer is the ONLY identity that can crypto-erase: set deletion_allowed on a
+              # key's config and delete it. Deliberately separate from the reconciler and bound to its
+              # own ServiceAccount, so ordinary key management can never destroy. Still no export/
+              # datakey/encrypt/decrypt — it can only destroy, not read or exfiltrate key material.
+              vault policy write encryptionkey-destroyer - <<'POLICY'
+              path "transit/keys/+"        { capabilities = ["read", "delete"] }
+              path "transit/keys/+/config" { capabilities = ["update"] }
+              POLICY
+              vault write auth/kubernetes/role/encryptionkey-destroyer \
+                bound_service_account_names=encryptionkey-destroyer \
+                bound_service_account_namespaces=crossplane-system \
+                token_policies=encryptionkey-destroyer token_ttl=10m
+              echo "Transit ready; reconciler + destroyer authenticate via Kubernetes auth (no stored secrets)."

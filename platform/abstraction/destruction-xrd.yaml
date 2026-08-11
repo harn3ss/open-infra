@@ -1,0 +1,79 @@
+# kind: Destruction — crypto-erase (NIST SP 800-88, MP-6). Requests the IRREVERSIBLE destruction of a
+# customer-owned encryption key, which renders every byte wrapped by it permanently unrecoverable —
+# the fast, verifiable way to sanitize data at rest without overwriting terabytes.
+#
+# A Destruction names an EncryptionKey and must repeat its name in `confirm` (a typo-guard, like
+# typing a resource name to `terraform destroy`). A separately-authorized destroyer (NOT the key
+# reconciler — see encryptionkey-reconciler, which deliberately cannot destroy) then destroys the
+# Vault Transit key and writes an immutable DESTRUCTION CERTIFICATE into the WORM audit store, so the
+# erasure is provable and permanent. The Destruction object's own create/complete lifecycle is
+# captured in the API-server audit log, which audit off-siting makes tamper-evident (AU) — so the
+# fact, actor, and time of destruction are independently anchored.
+#
+# OPT-IN (the `encryption` component) and DELIBERATELY hard to trigger: destroying a key is
+# unrecoverable. Requires the audit off-siting component (the certificate's tamper-evident sink).
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdestructions.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XDestruction
+    plural: xdestructions
+  claimNames:
+    kind: Destruction
+    plural: destructions
+  defaultCompositionRef:
+    name: destruction
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                encryptionKey:
+                  type: string
+                  description: "The kind: EncryptionKey to destroy (its Vault Transit key)."
+                confirm:
+                  type: string
+                  description: >-
+                    Must exactly equal `encryptionKey`. A typo-guard: destruction is irreversible, so
+                    the request must name the key twice or the destroyer refuses it.
+                reason:
+                  type: string
+                  description: Why the data is being destroyed, recorded on the certificate (AU / MP-6).
+              required: [encryptionKey, confirm]
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: Pending | Refused | Destroyed | Error.
+                message:
+                  type: string
+                certificate:
+                  type: string
+                  description: Object path of the immutable destruction certificate in the WORM audit store.
+                destroyedAt:
+                  type: string
+      additionalPrinterColumns:
+        - name: Key
+          type: string
+          jsonPath: .spec.encryptionKey
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
