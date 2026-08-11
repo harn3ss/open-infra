@@ -194,9 +194,21 @@ spec:
                         fi
 
                         # Immutable destruction certificate → WORM bucket (COMPLIANCE), undeletable.
+                        # Built with jq (not printf) so a reason containing quotes/newlines can't
+                        # break or inject into the JSON.
                         cert="certificates/${key}-${now}.json"
-                        printf '{"kind":"DestructionCertificate","standard":"NIST SP 800-88 (cryptographic erase)","encryptionKey":"%s","vaultKeyPath":"transit/keys/%s","keyVersionsDestroyed":%s,"destruction":"%s/%s","reason":"%s","destroyedAt":"%s","note":"actor + request are recorded in the tamper-evident API-server audit log (Destruction create event)"}\n' \
-                          "$key" "$key" "$versions" "$ns" "$name" "$reason" "$stamp" > /tmp/cert.json
+                        jq -n --arg key "$key" --argjson versions "${versions:-0}" \
+                          --arg ns "$ns" --arg name "$name" --arg reason "$reason" --arg stamp "$stamp" '{
+                            kind: "DestructionCertificate",
+                            standard: "NIST SP 800-88 (cryptographic erase)",
+                            encryptionKey: $key,
+                            vaultKeyPath: ("transit/keys/" + $key),
+                            keyVersionsDestroyed: $versions,
+                            destruction: ($ns + "/" + $name),
+                            reason: $reason,
+                            destroyedAt: $stamp,
+                            note: "actor + request are recorded in the tamper-evident API-server audit log (Destruction create event)"
+                          }' > /tmp/cert.json
                         mc cp /tmp/cert.json "audit/$AUDIT_BUCKET/$cert" >/dev/null
                         mc retention set COMPLIANCE "${RETENTION_DAYS}d" "audit/$AUDIT_BUCKET/$cert" >/dev/null
 
