@@ -56,7 +56,7 @@ export function DataClassificationPage() {
           <Card>
             <CardContent className="flex flex-wrap items-center gap-2 p-4">
               <span className="text-sm text-muted-foreground">Defined classes:</span>
-              {data && data.classes.length > 0 ? (
+              {data?.classes && data.classes.length > 0 ? (
                 data.classes.map((c) => (
                   <span key={c.name} className={`rounded px-2 py-0.5 text-xs font-medium ${levelTone(c.level)}`}>
                     {c.name} · {c.level}
@@ -71,7 +71,7 @@ export function DataClassificationPage() {
           </Card>
 
           {/* Compliance table */}
-          {!data || data.resources.length === 0 ? (
+          {!data?.resources || data.resources.length === 0 ? (
             <EmptyState
               icon={<Tags />}
               title="No classified workloads"
@@ -115,7 +115,7 @@ export function DataClassificationPage() {
                         </td>
                         <td className="p-3">
                           <ul className="space-y-1">
-                            {res.checks.map((c, j) => (
+                            {(res.checks ?? []).map((c, j) => (
                               <li key={j} className="flex items-center gap-2">
                                 <CheckIcon status={c.status} />
                                 <span className="font-medium">{c.rule}</span>
