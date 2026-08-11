@@ -39,14 +39,13 @@ spec:
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
                 memory:  { type: string, description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob. Set as both request and limit. Unset = cluster default." }
                 timeout: { type: integer, description: "Max wall-clock seconds per request (Knative revision timeout) — the AWS Lambda timeout knob. Unset = Knative default (300s)." }
-                # Reachable on the LAN via the Knative gateway (default). Set false
-                # to make the function cluster-local (in-cluster callers only).
-                expose: { type: boolean, default: true }
+                expose: { type: boolean, default: true, description: "Publish the function on the Knative gateway so it is reachable from the LAN (default true). Set false to make it cluster-local — labels the Knative Service networking.knative.dev/visibility: cluster-local, so only in-cluster callers can reach it." }
                 scaling:
                   type: object
+                  description: "Knative request-driven autoscaling (KPA): scales the function between min and max instances based on how many concurrent requests each instance handles."
                   properties:
                     min:    { type: integer, default: 0, description: "Min instances (0 = scale to zero)" }
-                    max:    { type: integer, default: 10 }
+                    max:    { type: integer, default: 10, description: "Maximum instances the autoscaler may scale up to (default 10)." }
                     target: { type: integer, default: 100, description: "Target concurrent requests per pod" }
                 # Functions are stateless compute: they CONNECT to resources, they
                 # don't own them. To use a database/bucket, provision it on an
@@ -57,11 +56,12 @@ spec:
                   description: "Queues this function works with (injects NATS_URL + OPENINFRA_QUEUES)"
                 env:
                   type: array
+                  description: "Environment variables to set on the function's container."
                   items:
                     type: object
                     properties:
-                      name:  { type: string }
-                      value: { type: string }
+                      name:  { type: string, description: "Variable name." }
+                      value: { type: string, description: "Variable value." }
                 secrets:
                   type: array
                   items: { type: string }
