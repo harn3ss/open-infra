@@ -17,6 +17,37 @@ export interface CreateKindSpec {
   uiSchema?: UiSchema;
 }
 
+export const VIRTUALMACHINE_CREATE: CreateKindSpec = {
+  kind: "VirtualMachine",
+  crdName: "virtualmachines.openinfra.dev",
+  description:
+    "A full virtual machine — pick an OS image and a size; open-infra clones the golden image, wires networking, and boots it.",
+  // The "what machine" basics up front; networking, exposure, SSH key, HA, cpuModel, etc. collapse.
+  essential: ["os", "cpu", "memory", "diskSize"],
+  uiSchema: {
+    "ui:order": [
+      "os",
+      "cpu",
+      "memory",
+      "diskSize",
+      "network",
+      "expose",
+      "ports",
+      "sshKey",
+      "securityGroups",
+      "running",
+      "highAvailability",
+      "cpuModel",
+      "existingRootClaim",
+      "*",
+    ],
+    memory: { "ui:placeholder": "2Gi" },
+    diskSize: { "ui:placeholder": "20Gi" },
+    sshKey: { "ui:placeholder": "ssh-ed25519 AAAA… (injected via cloud-init on Linux)" },
+    cpuModel: { "ui:placeholder": "host-passthrough (or e.g. Broadwell-noTSX for live migration)" },
+  },
+};
+
 export const APPLICATION_CREATE: CreateKindSpec = {
   kind: "Application",
   crdName: "applications.openinfra.dev",

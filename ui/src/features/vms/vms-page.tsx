@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { Disc, Monitor, Plus } from "lucide-react";
@@ -7,21 +7,18 @@ import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
-import { cdiPaths, corePaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
+import { cdiPaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import {
   type DataVolume,
-  type K8sObject,
   type VirtualMachine,
   type Vmi,
 } from "@/types/k8s";
-import { NewVmDialog } from "./new-vm-dialog";
 import { osLabel, rootDvName, vmIp, vmKey, vmStatus } from "./vm-shared";
 
 export function VmsPage() {
   const navigate = useNavigate();
   const { scoped } = useNamespace();
-  const [newOpen, setNewOpen] = useState(false);
 
   // Live guest status (IP, phase) keyed by namespace/name.
   const vmiWatch = useK8sWatch<Vmi>(kubevirtPaths.vmis(scoped));
@@ -43,12 +40,6 @@ export function VmsPage() {
   }, [dvWatch.items]);
   const rootDvFor = (vm: VirtualMachine) =>
     dvByKey.get(vmKey(vm.metadata.namespace, rootDvName(vm.metadata.name)));
-
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = nsWatch.items
-    .map((n) => n.metadata.name)
-    .filter((n): n is string => Boolean(n))
-    .sort((a, b) => a.localeCompare(b));
 
   const columns = useMemo<ColumnDef<VirtualMachine, unknown>[]>(
     () => [
@@ -184,19 +175,12 @@ export function VmsPage() {
               <Disc className="size-4" />
               VM Images
             </Button>
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/vms/new" })}>
               <Plus className="size-4" />
               New VM
             </Button>
           </div>
         }
-      />
-      <NewVmDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        namespaces={namespaces}
-        defaultNamespace={scoped}
-        listPath={openinfraPaths.virtualmachines(scoped)}
       />
     </>
   );
