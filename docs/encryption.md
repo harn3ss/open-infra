@@ -34,9 +34,14 @@ spec:
 ```
 
 The reconciler creates `transit/keys/tenant-a` in Vault and reflects its state (provisioned,
-version, last rotation) into the console's **Security & Identity → Encryption Keys** page. It holds
-a Vault AppRole scoped to **create / read / rotate** Transit keys — **never destroy**; destruction is
-withheld from the reconciler and gated behind `kind: Destruction`.
+version, last rotation) into the console's **Security & Identity → Encryption Keys** page. It
+authenticates to Vault with **its own Kubernetes ServiceAccount token** (Vault Kubernetes auth) — no
+Vault credential is ever stored in a k8s Secret, so nothing with cluster-wide secret read can steal
+Vault access. Its policy is scoped to **create / read / rotate** Transit keys only: it cannot
+`delete`, cannot touch `transit/keys/<name>/config` or `/trim` (where `min_decryption_version` /
+`deletion_allowed` — i.e. crypto-erase of old versions — live), and has no datakey/encrypt/export.
+Destruction is withheld from the reconciler and gated behind `kind: Destruction`, which uses a
+separately-authorized token — that is what makes crypto-erase a deliberate act.
 
 ## Bringing Vault up (operator, one-time)
 
@@ -50,23 +55,22 @@ The whole point of customer-owned keys is that open-infra can't unseal your KMS 
 kubectl -n vault exec -it vault-0 -- vault operator init      # → unseal keys + root token
 kubectl -n vault exec -it vault-0 -- vault operator unseal    # x3 with different keys
 
-# 3. Give the setup Job a bootstrap token so it can enable Transit + mint the reconciler AppRole
+# 3. Give the setup Job a SHORT-LIVED bootstrap token so it can enable Transit + Kubernetes auth
 kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<root-or-admin-token>
 ```
 
-The `vault-transit-setup` Job then enables Transit and writes the reconciler's AppRole to
-`encryptionkey-reconciler-vault` (crossplane-system). After that, create `EncryptionKey`s.
+The `vault-transit-setup` Job then enables the Transit engine and Kubernetes auth, and creates the
+reconciler's role (bound to its ServiceAccount). No standing Vault secret is written anywhere.
 
 ```sh
-# 4. The bootstrap token was only needed for setup — remove it so a root/admin token doesn't linger.
+# 4. The bootstrap token is a root/admin token and was ONLY needed for setup — REVOKE and DELETE it
+#    once the setup Job has completed, so it can't be stolen later.
+kubectl -n vault exec -it vault-0 -- vault token revoke <the-bootstrap-token>
 kubectl -n vault delete secret vault-bootstrap
 ```
 
-The reconciler holds only a scoped AppRole (create/read/rotate Transit keys — never destroy, never
-`transit/keys/<name>/config`, never datakey/export). Anyone who can read the
-`encryptionkey-reconciler-vault` Secret gets that same scoped power and no more; keep its namespace
-locked down, and note that key **destruction** requires a separately-authorized token (the operator),
-which is what makes crypto-erase a deliberate act.
+After that, create `EncryptionKey`s. Because the reconciler uses Kubernetes auth, there is no
+`encryptionkey-reconciler-vault` Secret to guard — a console compromise cannot reach Vault through it.
 
 ## Storage-layer wiring (operator runbook)
 
