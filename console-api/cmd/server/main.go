@@ -306,6 +306,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/keys", handleEncryptionKeys(cs, auth, logger))
 		// Crypto-erase requests (kind: Destruction) and their certificates.
 		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/destructions", handleDestructions(cs, auth, logger))
+		// Data lineage — provenance of data movement (DataFlow/Migration/Replication/Stream topology).
+		api.With(middleware.Timeout(20*time.Second)).Get("/lineage", handleLineage(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
