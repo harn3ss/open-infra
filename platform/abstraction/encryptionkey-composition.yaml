@@ -1,0 +1,61 @@
+# The compiler for kind: EncryptionKey. It renders a spec-mirror ConfigMap in the console namespace
+# (so the reconciler and console read the desired keys by label without CRD access) and echoes the
+# Vault Transit path in status. The actual Transit key is provisioned by encryptionkey-reconciler,
+# which owns a SEPARATE state ConfigMap — single-writer each, no fight over one object.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: encryptionkey
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XEncryptionKey
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $keyPath := printf "transit/keys/%s" $name }}
+            ---
+            # Desired-key mirror the reconciler reads (label-selected).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: enckey-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-enckey-{{ $name }}
+                    namespace: open-infra-console
+                    labels:
+                      openinfra.dev/enckey: {{ $name }}
+                  data:
+                    name: "{{ $name }}"
+                    description: "{{ $spec.description | default "" }}"
+                    keyType: "{{ $spec.keyType | default "aes256-gcm96" }}"
+                    rotationDays: "{{ $spec.rotationDays | default 0 }}"
+                    vaultKeyPath: "{{ $keyPath }}"
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XEncryptionKey
+            status:
+              ready: true
+              vaultKeyPath: "{{ $keyPath }}"

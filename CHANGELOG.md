@@ -7,6 +7,13 @@ the product's public contract.
 ## Unreleased
 
 ### Security & compliance
+- **Encryption with customer-owned keys.** A new opt-in `encryption` component: `kind: EncryptionKey`
+  provisions a customer-owned key in a HashiCorp Vault **Transit** KMS (open-infra never sees the key
+  material), a reconciler creates/rotates it and reflects its state on the console **Security &
+  Identity → Encryption Keys** page, and an additive encrypted Longhorn StorageClass (LUKS) plus a
+  documented MinIO SSE-KMS / etcd-KMS runbook wire storage layers to it. Destroying a key crypto-erases
+  what it protects (the basis for the next item). Off by default; Vault is operator-initialized.
+  Controls: SC-12/13/28/28(1). See [`docs/encryption.md`]. Part of the government feature track (issue #71).
 - **`kind: DataClassification` — categorize data, then check its handling.** A DataClassification names
   a sensitivity level (public→restricted) and the handling requirements data at that level must meet
   (encryption at rest, network restriction, no public exposure, backup, residency, retention). Tag a

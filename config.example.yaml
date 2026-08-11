@@ -115,3 +115,4 @@ components:
   virtualization: true         # KubeVirt + CDI — kind: VirtualMachine (EC2-style VMs); needs /dev/kvm
   awsShim: false               # AWS-SDK interception shim (S3/STS/Lambda/AppSync) — experimental, opt-in, OFF by default
   openAppsync: false           # open-appsync — resolver-first VTL-faithful AppSync engine + kind: GraphQLApi authoring plane (the shim's AppSync surface fronts it); experimental, opt-in, OFF
+  encryption: false            # customer-owned keys: Vault Transit KMS + kind: EncryptionKey + encrypted Longhorn SC; experimental, opt-in, OFF (Vault needs operator init/unseal — see docs/encryption.md)

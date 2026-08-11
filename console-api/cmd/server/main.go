@@ -302,6 +302,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/audit/integrity", handleAuditIntegrity(cs, auth, logger))
 		// Data-classification compliance — labelled workloads vs their class's handling requirements.
 		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/classification", handleClassificationCompliance(cs, auth, logger))
+		// Encryption keys — customer-owned Vault Transit keys (kind: EncryptionKey) and their state.
+		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/keys", handleEncryptionKeys(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
