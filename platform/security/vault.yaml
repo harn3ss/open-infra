@@ -59,35 +59,31 @@ spec:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true]
 ---
-# Transit setup — enable the Transit engine and mint a least-privilege AppRole for the
-# encryptionkey-reconciler (manage transit/keys/* only: create, read, rotate; NOT delete — key
-# DESTRUCTION is gated behind kind: Destruction in the crypto-erase feature). Runs as an Argo Sync
-# hook; waits for the operator-provided `vault-bootstrap` token Secret (post-init/unseal).
+# Transit setup — enable the Transit engine and configure Kubernetes auth for the reconciler. The
+# reconciler authenticates with its OWN ServiceAccount token (no Vault credential is ever stored in a
+# k8s Secret — so nothing with cluster-wide secret read, e.g. the console SA, can steal Vault access).
+# Its policy can create/read/rotate transit keys only — NOT destroy or crypto-erase. Runs as an Argo
+# Sync hook; waits for the operator-provided `vault-bootstrap` token Secret (post-init/unseal), which
+# the runbook then revokes + deletes (docs/encryption.md).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: vault-transit-setup
   namespace: vault
 ---
+# Vault validates the reconciler's SA token via the TokenReview API, so Vault's own ServiceAccount
+# needs the token-review delegation. (The Helm chart's server SA is `vault` in namespace `vault`.)
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRoleBinding
 metadata:
-  name: vault-transit-setup
-  namespace: vault
-rules:
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [get, create, update, patch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: vault-transit-setup
-  namespace: vault
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: vault-transit-setup }
+  name: openinfra-vault-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
 subjects:
   - kind: ServiceAccount
-    name: vault-transit-setup
+    name: vault
     namespace: vault
 ---
 apiVersion: batch/v1
@@ -104,25 +100,15 @@ spec:
     spec:
       serviceAccountName: vault-transit-setup
       restartPolicy: OnFailure
-      volumes:
-        - { name: bin, emptyDir: {} }
-      initContainers:
-        # Bring the `vault` CLI OFFLINE (copied from the image) so the setup container can have both
-        # kubectl (alpine/k8s) and vault. The vault binary is a static Go binary — copies cleanly.
-        - name: fetch-vault
-          image: hashicorp/vault:1.17.2
-          command: [sh, -c, "cp /bin/vault /bin-shared/vault && chmod +x /bin-shared/vault"]
-          volumeMounts: [{ name: bin, mountPath: /bin-shared }]
       containers:
         - name: setup
-          image: alpine/k8s:1.30.0   # kubectl (native); vault from the shared volume
+          image: hashicorp/vault:1.17.2   # only talks to Vault; no k8s writes, so no kubectl/RBAC
           command: [/bin/sh, -ceu]
-          volumeMounts: [{ name: bin, mountPath: /bin-shared }]
           env:
             - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
-            - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
-            # Operator creates this Secret after `vault operator init` + unseal:
-            #   kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<root-or-admin-token>
+            # Operator creates this Secret after `vault operator init` + unseal, then REVOKES+DELETES
+            # it once this Job succeeds (docs/encryption.md) — it is a root/admin token:
+            #   kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<token>
             - name: VAULT_TOKEN
               valueFrom: { secretKeyRef: { name: vault-bootstrap, key: token } }
           args:
@@ -133,28 +119,25 @@ spec:
               echo "enabling Transit engine (idempotent)…"
               vault secrets enable transit 2>/dev/null || echo "  transit already enabled"
 
-              echo "writing the reconciler policy (manage keys, NOT destroy or crypto-erase)…"
+              echo "writing the reconciler policy (create/read/rotate keys — NOT destroy or crypto-erase)…"
               # `+` matches exactly ONE path segment, so these grants reach transit/keys/<name> and
-              # transit/keys/<name>/rotate but NOT transit/keys/<name>/config — where
-              # min_decryption_version (a crypto-erase of old versions) and deletion_allowed live.
-              # A recursive `*` would hand the reconciler exactly the destruction powers it must not
-              # have. No datakey/encrypt/decrypt/export either: this identity only shepherds keys.
+              # transit/keys/<name>/rotate but NOT transit/keys/<name>/config or /trim — where
+              # min_decryption_version / deletion_allowed (crypto-erase of old versions) live. A
+              # recursive `*` would hand over exactly the destruction powers this identity must lack.
+              # No datakey/encrypt/decrypt/export/list either: it only shepherds key lifecycle.
               vault policy write encryptionkey-reconciler - <<'POLICY'
-              path "transit/keys/+"        { capabilities = ["create", "read", "update"] }
-              path "transit/keys"          { capabilities = ["list"] }
+              path "transit/keys/+"        { capabilities = ["create", "read"] }
               path "transit/keys/+/rotate" { capabilities = ["update"] }
               POLICY
 
-              echo "enabling AppRole auth + role (idempotent)…"
-              vault auth enable approle 2>/dev/null || echo "  approle already enabled"
-              vault write auth/approle/role/encryptionkey-reconciler \
-                token_policies="encryptionkey-reconciler" token_ttl=20m token_max_ttl=1h
-
-              RID=$(vault read -field=role_id auth/approle/role/encryptionkey-reconciler/role-id)
-              SID=$(vault write -f -field=secret_id auth/approle/role/encryptionkey-reconciler/secret-id)
-
-              # Hand the AppRole creds to the reconciler (in crossplane-system, where it runs).
-              kubectl create secret generic encryptionkey-reconciler-vault -n crossplane-system \
-                --from-literal=roleId="$RID" --from-literal=secretId="$SID" \
-                --dry-run=client -o yaml | kubectl apply -f -
-              echo "Transit ready; reconciler AppRole provisioned."
+              echo "configuring Kubernetes auth (reconciler logs in with its SA token)…"
+              vault auth enable kubernetes 2>/dev/null || echo "  kubernetes auth already enabled"
+              # In-cluster: Vault reviews tokens with its OWN SA (system:auth-delegator, above); no
+              # long-lived reviewer JWT to store.
+              vault write auth/kubernetes/config \
+                kubernetes_host="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+              vault write auth/kubernetes/role/encryptionkey-reconciler \
+                bound_service_account_names=encryptionkey-reconciler \
+                bound_service_account_namespaces=crossplane-system \
+                token_policies=encryptionkey-reconciler token_ttl=20m
+              echo "Transit ready; reconciler will authenticate via Kubernetes auth (no stored secret)."
