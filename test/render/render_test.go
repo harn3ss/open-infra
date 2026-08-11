@@ -222,6 +222,30 @@ func TestEncryptionKey_RendersMirrorAndKeyPath(t *testing.T) {
 	}
 }
 
+// kind: Destruction renders a spec-mirror ConfigMap the destroyer reads, and starts Pending.
+func TestDestruction_RendersMirrorAndPending(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/destruction-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"encryptionKey": "tenant-a",
+			"confirm":       "tenant-a",
+			"reason":        "contract ended",
+		},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "erase-tenant-a"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{
+		"kind: ConfigMap", "name: openinfra-destruction-erase-tenant-a", "namespace: open-infra-console",
+		"openinfra.dev/destruction: erase-tenant-a",
+		`encryptionKey: "tenant-a"`, `confirm: "tenant-a"`,
+		"phase: Pending",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Destruction render missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(true))
@@ -1042,7 +1066,7 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 	// DataClassification is a central security-team categorization scheme, not a project knob.
 	excluded := map[string]bool{
 		"users": true, "groups": true, "policies": true, "roles": true, "grants": true,
-		"dataclassifications": true, "encryptionkeys": true,
+		"dataclassifications": true, "encryptionkeys": true, "destructions": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")
