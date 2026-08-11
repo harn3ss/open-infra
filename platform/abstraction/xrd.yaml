@@ -33,74 +33,77 @@ spec:
           properties:
             spec:
               type: object
-              # No hard-required fields: an Application is usually image+port, but it
-              # may be "data-only" (just a database/storage/queues block) — e.g. a
-              # database hand-rolled from the console. The workload renders only when
-              # an image is set.
+              # No hard-required fields: an Application is usually image+port, but it may be
+              # "data-only" (just a database/storage/queues block). The workload renders only with an image.
               properties:
-                image:   { type: string, description: "Container image (omit for a data-only app)" }
-                port:    { type: integer, description: "Container port the app listens on" }
-                domain:  { type: string, description: "Hostname for Ingress + TLS + DNS" }
-                # Expose the app's port directly on a LAN IP (MetalLB LoadBalancer),
-                # in addition to any Ingress — for raw TCP / non-HTTP / no-DNS access.
-                expose:  { type: boolean, default: false }
+                image:   { type: string, description: "Container image to run, e.g. ghcr.io/me/my-api:latest. Omit for a data-only app (just a database, buckets, or queues)." }
+                port:    { type: integer, description: "The port your container listens on (e.g. 8080). Needed to serve the app over HTTPS or a LAN IP." }
+                domain:  { type: string, description: "Hostname to serve the app on — open-infra provisions Ingress, a TLS certificate, and DNS for it (e.g. my-api.example.com)." }
+                expose:
+                  type: boolean
+                  default: false
+                  description: "Also expose the app's port on a LAN IP (MetalLB LoadBalancer), in addition to any Ingress — for raw TCP, non-HTTP, or no-DNS access."
                 scaling:
                   type: object
+                  description: "Horizontal autoscaling (HPA) based on CPU."
                   properties:
-                    min: { type: integer, default: 1 }
-                    max: { type: integer, default: 5 }
-                    targetCPUPercent: { type: integer, default: 70 }
+                    min: { type: integer, default: 1, description: "Minimum number of replicas." }
+                    max: { type: integer, default: 5, description: "Maximum replicas the autoscaler may scale up to." }
+                    targetCPUPercent: { type: integer, default: 70, description: "Average CPU utilization (%) the autoscaler targets before adding replicas." }
                 database:
                   type: object
+                  description: "Attach a managed database; open-infra provisions it and injects its connection URL into the app."
                   properties:
-                    # postgres -> CloudNativePG (relational, injects DATABASE_URL).
-                    # mongo    -> FerretDB on DocumentDB-Postgres (document store,
-                    #             Mongo wire protocol, injects MONGODB_URI). Apache-2.0.
-                    # mysql    -> MariaDB (relational, MySQL wire protocol, injects
-                    #             DATABASE_URL). GPLv2.
-                    # babelfish -> Babelfish for PostgreSQL (SQL-Server-compatible:
-                    #             TDS 1433 + T-SQL, backed by Postgres). Point unmodified
-                    #             SQL Server apps at it. EXPERIMENTAL, single-instance.
-                    engine: { type: string, enum: [postgres, mongo, mysql, babelfish], default: postgres }
-                    name:   { type: string }
-                    # postgres: primary + standby on separate nodes with automatic
-                    # failover (CloudNativePG). mongo: scales the stateless FerretDB
-                    # proxy tier (storage-tier failover is a tracked follow-up).
-                    # Needs >=2 nodes. Default false = single instance (fine for dev).
-                    highAvailability: { type: boolean, default: false }
-                    # postgres only: enable the pgvector extension (vector
-                    # similarity search) — pairs with kind: Model for RAG.
-                    vector: { type: boolean, default: false }
-                    # Expose the database on a LAN IP (MetalLB LoadBalancer) so
-                    # workstations can reach it directly. Default false = in-cluster
-                    # only (apps connect via the injected URL; admins port-forward).
-                    expose: { type: boolean, default: false }
-                    # Stop the database to save resources while keeping its data (like
-                    # RDS stop/start). true => Postgres hibernates (CNPG), MySQL/Mongo
-                    # scale to 0; the PVC(s) are retained. Set back to false to start it.
-                    stopped: { type: boolean, default: false }
+                    engine:
+                      type: string
+                      enum: [postgres, mongo, mysql, babelfish]
+                      default: postgres
+                      description: "Database engine. postgres = CloudNativePG (relational, injects DATABASE_URL). mongo = FerretDB on DocumentDB-Postgres (Mongo wire protocol, injects MONGODB_URI). mysql = MariaDB (MySQL wire protocol, injects DATABASE_URL). babelfish = SQL Server-compatible (TDS 1433 + T-SQL on Postgres) — experimental, single instance."
+                    name:   { type: string, description: "Database name (defaults to the application name)." }
+                    highAvailability:
+                      type: boolean
+                      default: false
+                      description: "Run the database highly available (postgres: primary + standby on separate nodes with automatic failover). Needs 2 or more nodes. Default false = single instance (fine for dev)."
+                    vector:
+                      type: boolean
+                      default: false
+                      description: "postgres only: enable the pgvector extension (vector similarity search) — pairs with kind: Model for RAG."
+                    expose:
+                      type: boolean
+                      default: false
+                      description: "Expose the database on a LAN IP (MetalLB LoadBalancer) so workstations can connect directly. Default false = in-cluster only."
+                    stopped:
+                      type: boolean
+                      default: false
+                      description: "Stop the database to save resources while keeping its data, like RDS stop/start (Postgres hibernates; MySQL/Mongo scale to zero; PVCs are retained). Set back to false to start it."
                 storage:
                   type: object
+                  description: "Object storage for the app."
                   properties:
-                    buckets: { type: array, items: { type: string } }
+                    buckets:
+                      type: array
+                      items: { type: string }
+                      description: "S3-compatible bucket names to create and grant the app access to (MinIO)."
                 queues:
                   type: array
                   items: { type: string }
+                  description: "Message queue names (NATS/JetStream) to create for the app."
                 env:
                   type: array
+                  description: "Environment variables to set on the app's container."
                   items:
                     type: object
                     properties:
-                      name:  { type: string }
-                      value: { type: string }
+                      name:  { type: string, description: "Variable name." }
+                      value: { type: string, description: "Variable value." }
                 secrets:
                   type: array
                   items: { type: string }
-                  description: "Names mounted from Sealed Secrets"
+                  description: "Sealed Secret names to mount into the app."
                 securityGroups:
                   type: array
                   items: { type: string }
-                  description: "Names of SecurityGroups (firewall rule sets) to attach to this app's pods."
+                  description: "SecurityGroup (firewall rule set) names to attach to this app's pods."
             status:
               type: object
               properties:
