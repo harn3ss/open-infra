@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { HelpProvider } from "@/components/help/help-context";
+import { HelpPanel } from "@/components/help/help-panel";
 import { BootError, BootLoading } from "@/components/layout/boot-screen";
 import { LoginPage } from "@/features/auth/login-page";
 import { getConfig } from "@/lib/api";
@@ -47,7 +49,10 @@ function AuthenticatedApp() {
       <NamespaceProvider>
         <SearchProvider>
           <TooltipProvider delayDuration={200}>
-            <RouterProvider router={router} />
+            <HelpProvider>
+              <RouterProvider router={router} />
+              <HelpPanel />
+            </HelpProvider>
           </TooltipProvider>
         </SearchProvider>
       </NamespaceProvider>
