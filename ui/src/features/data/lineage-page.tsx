@@ -31,7 +31,7 @@ function FlowCard({ flow }: { flow: LineageFlow }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        {flow.edges.length === 0 ? (
+        {!flow.edges || flow.edges.length === 0 ? (
           <div className="text-xs text-muted-foreground">no movements declared</div>
         ) : (
           flow.edges.map((e, i) => (
