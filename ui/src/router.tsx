@@ -26,6 +26,9 @@ import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page"
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
 import { CreateFileSharePage } from "@/features/fileshares/create-fileshare-page";
 import { CreateDirectoryPage } from "@/features/directories/create-directory-page";
+import { CreateStreamPage } from "@/features/streams/create-stream-page";
+import { CreateMigrationPage } from "@/features/migrations/create-migration-page";
+import { CreateReplicationPage } from "@/features/migrations/create-replication-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
@@ -160,6 +163,9 @@ const graphqlCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: 
 const volumeCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/volumes/new", component: CreateVolumePage });
 const fileshareCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/fileshares/new", component: CreateFileSharePage });
 const directoryCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/directories/new", component: CreateDirectoryPage });
+const streamCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/streams/new", component: CreateStreamPage });
+const migrationCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/migrations/new", component: CreateMigrationPage });
+const replicationCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/replications/new", component: CreateReplicationPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -455,6 +461,9 @@ const routeTree = rootRoute.addChildren([
   volumeCreateRoute,
   fileshareCreateRoute,
   directoryCreateRoute,
+  streamCreateRoute,
+  migrationCreateRoute,
+  replicationCreateRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
