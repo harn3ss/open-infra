@@ -7,6 +7,11 @@ the product's public contract.
 ## Unreleased
 
 ### Security & compliance
+- **Data lineage — provenance of data movement.** A new **Data → Lineage** console page (and
+  `/api/lineage`) reads the DataFlow, Migration, Replication, and Stream topology and shows every data
+  movement — source → sink, with its type — so you can trace where data comes from and where it goes.
+  Derived from live resources (can't drift) and assembled server-side (so the compliance attestation
+  can vouch for it). Controls: SI-12 / AU. See [`docs/lineage.md`]. Part of the government feature track (issue #71).
 - **Crypto-erase — `kind: Destruction` (NIST SP 800-88).** Destroying a customer-owned key makes every
   byte it wrapped — primary, replica, backup, snapshot — permanently unrecoverable, the fast provable
   alternative to overwriting terabytes. A `Destruction` names an `EncryptionKey` and must repeat its
