@@ -95,9 +95,9 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
 |---------|----------------|--------|
 | SC-7 Boundary Protection | Cilium CNI with **default-deny** NetworkPolicy + `kind: SecurityGroup`; per-workload egress sandboxes (a Query pod may reach only DNS / MinIO / Trino). | Implemented |
 | SC-8 Transmission Confidentiality/Integrity | TLS on ingress via cert-manager; control-plane and Chaos Mesh use mTLS; managed SQL-Server (Babelfish) enforces `Encrypt=mandatory`. | Implemented |
-| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; **Sealed Secrets** keep secrets encrypted at rest in git. | Implemented |
+| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; **Sealed Secrets** keep secrets encrypted at rest in git; **`kind: EncryptionKey`** holds customer-owned keys in a Vault Transit KMS with rotation. | Implemented (KMS opt-in) |
 | SC-23 Session Authenticity | HMAC-signed session cookie, `HttpOnly` + `Secure` + `SameSite=Lax`, plus a required CSRF header on all mutations. | Implemented |
-| SC-28 Protection at Rest | Relies on the underlying storage today; **customer-managed-key** encryption is **roadmap**. | Partial |
+| SC-28 / SC-28(1) Protection at Rest (customer keys) | Opt-in `encryption` component: encrypted Longhorn StorageClass (LUKS), and MinIO SSE-KMS / etcd KMS wiring keyed by a customer-owned Vault Transit key — open-infra never holds the key material. See [`encryption.md`](encryption.md). | Implemented (opt-in; storage wiring operator-applied) |
 | SC-5 Denial-of-Service Protection | Cloudflare edge when publicly exposed; dependency DoS CVEs remediated via SI-2. | Partial / Operator |
 
 ### CM — Configuration Management
@@ -189,16 +189,17 @@ Delivered so far:
 - **`kind: DataClassification`** — a data-categorization scheme (RA-2) with a compliance auditor that
   checks tagged workloads against their class's handling requirements. See
   [`data-classification.md`](data-classification.md).
+- **Encryption with customer-owned keys** — `kind: EncryptionKey` on a Vault Transit KMS, an encrypted
+  Longhorn StorageClass, and the MinIO/etcd wiring runbook (SC-12/13/28/28(1)). Opt-in, off by
+  default. See [`encryption.md`](encryption.md).
 
 Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
 
-1. **Encryption with customer-managed keys** — at-rest encryption keyed by the operator
-   (SC-28), data-residency pinning.
-3. **Crypto-erase** — NIST SP 800-88 destruction with a tamper-evident certificate (MP-6),
+1. **Crypto-erase** — NIST SP 800-88 destruction with a tamper-evident certificate (MP-6),
    recorded in the off-site audit chain above.
-4. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
+2. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
    report generated from the live cluster.
-5. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
+3. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
    Mesh, and every opt-in dangerous capability, and tightens defaults for an authorization
    boundary.
 

@@ -1,0 +1,33 @@
+# Longhorn StorageClass for ENCRYPTED volumes (LUKS, encryption at rest — NIST SC-28).
+#
+# Additive and OPT-IN: this is a NEW StorageClass, not the default, so it changes nothing about
+# existing volumes — a PVC opts in by setting storageClassName: longhorn-encrypted. Longhorn encrypts
+# each volume with LUKS using a passphrase from a per-volume Secret named `<pvc-name>-crypto` in the
+# PVC's namespace (the CSI secret templating below). Give that Secret a `CRYPTO_KEY_VALUE`.
+#
+# Customer-owned keys: derive each volume's `CRYPTO_KEY_VALUE` from a kind: EncryptionKey (Vault
+# Transit) rather than a static value — e.g. Vault Agent / external-secrets writes the per-volume
+# Secret from a Transit data key. Destroying the EncryptionKey then crypto-erases the volume (the
+# LUKS master key is unrecoverable). See docs/encryption.md for the wiring and the runbook. Part of
+# the opt-in `encryption` component.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-encrypted
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "30"
+  encrypted: "true"
+  # Per-volume LUKS passphrase Secret, templated by name/namespace of the PVC.
+  csi.storage.k8s.io/provisioner-secret-name: ${pvc.name}-crypto
+  csi.storage.k8s.io/provisioner-secret-namespace: ${pvc.namespace}
+  csi.storage.k8s.io/node-publish-secret-name: ${pvc.name}-crypto
+  csi.storage.k8s.io/node-publish-secret-namespace: ${pvc.namespace}
+  csi.storage.k8s.io/node-stage-secret-name: ${pvc.name}-crypto
+  csi.storage.k8s.io/node-stage-secret-namespace: ${pvc.namespace}

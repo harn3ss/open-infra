@@ -62,6 +62,7 @@ import { RolesPage } from "@/features/iam/roles-page";
 import { RoleDetailPage } from "@/features/iam/role-detail-page";
 import { AuditPage } from "@/features/iam/audit-page";
 import { DataClassificationPage } from "@/features/iam/data-classification-page";
+import { EncryptionPage } from "@/features/iam/encryption-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -386,6 +387,11 @@ const dataClassificationRoute = createRoute({
   path: "/data-classification",
   component: DataClassificationPage,
 });
+const encryptionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/encryption",
+  component: EncryptionPage,
+});
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -443,6 +449,7 @@ const routeTree = rootRoute.addChildren([
   roleDetailRoute,
   auditRoute,
   dataClassificationRoute,
+  encryptionRoute,
 ]);
 
 export const router = createRouter({
