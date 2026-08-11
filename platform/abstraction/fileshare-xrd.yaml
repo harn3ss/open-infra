@@ -48,5 +48,5 @@ spec:
             status:
               type: object
               properties:
-                share: { type: string }
-                ready: { type: boolean }
+                share: { type: string, description: "Name of the exported SMB share (equals the FileShare name); clients mount it as //<host>/<share>." }
+                ready: { type: boolean, description: "True once the share is provisioned and ready to mount (Samba server, Service, and connection secret are up)." }
