@@ -1,11 +1,74 @@
 import { useQuery } from "@tanstack/react-query";
-import { KeyRound, RefreshCw, CheckCircle2, Clock } from "lucide-react";
+import { KeyRound, RefreshCw, CheckCircle2, Clock, Flame } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
-import { getEncryptionKeys } from "@/lib/api";
+import { getEncryptionKeys, getDestructions, type Destruction } from "@/lib/api";
+
+function destructionTone(phase: string): string {
+  if (phase === "Destroyed") return "border-destructive/40 text-destructive";
+  if (phase === "Refused" || phase === "Error") return "border-amber-500/40 text-amber-600 dark:text-amber-400";
+  return "";
+}
+
+function DestructionsSection() {
+  const { data } = useQuery({
+    queryKey: ["destructions"],
+    queryFn: getDestructions,
+    refetchInterval: 60000,
+  });
+  if (!data || data.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Flame className="size-4 text-destructive" /> Crypto-erase (kind: Destruction)
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-muted-foreground">
+              <th className="p-3 font-medium">Key</th>
+              <th className="p-3 font-medium">Status</th>
+              <th className="p-3 font-medium">Reason</th>
+              <th className="p-3 font-medium">Certificate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((d: Destruction) => (
+              <tr key={d.name} className="border-b last:border-0 align-top">
+                <td className="p-3">
+                  <div className="font-medium">{d.encryptionKey}</div>
+                  <div className="text-xs text-muted-foreground">{d.name}</div>
+                </td>
+                <td className="p-3">
+                  <Badge variant="outline" className={destructionTone(d.phase)}>
+                    {d.phase}
+                  </Badge>
+                  {d.message ? <div className="mt-1 text-xs text-muted-foreground">{d.message}</div> : null}
+                </td>
+                <td className="p-3 text-muted-foreground">{d.reason || "—"}</td>
+                <td className="p-3">
+                  {d.certificate ? (
+                    <code className="text-xs">{d.certificate}</code>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
+                  {d.destroyedAt ? (
+                    <div className="text-xs text-muted-foreground">{new Date(d.destroyedAt).toLocaleString()}</div>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function EncryptionPage() {
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery({
@@ -90,6 +153,8 @@ export function EncryptionPage() {
           </CardContent>
         </Card>
       )}
+
+      <DestructionsSection />
     </div>
   );
 }

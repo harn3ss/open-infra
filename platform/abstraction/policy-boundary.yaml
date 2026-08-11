@@ -47,3 +47,4 @@ excluded:
   - grants:   "a Grant confers a Role for a time — granting on it is temporal privilege escalation"
   - dataclassifications: "a data-categorization scheme is set centrally by the security team, not grantable to projects"
   - encryptionkeys: "a customer-owned encryption key is a KMS object — granting on it is a path to the data it protects"
+  - destructions: "a Destruction crypto-erases data irreversibly — never grantable; a deliberate admin act"

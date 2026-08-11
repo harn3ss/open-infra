@@ -1,0 +1,58 @@
+# The compiler for kind: Destruction. It renders a spec-mirror ConfigMap the destroyer reads (by
+# label) and sets the initial status Pending. The destroyer (platform/security/destruction-reconciler)
+# performs the crypto-erase and records the outcome + certificate path in a SEPARATE state ConfigMap
+# (single-writer each). It never destroys anything the composition does — a Destruction is a request;
+# the privileged destroyer, not Crossplane, carries it out.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: destruction
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XDestruction
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: destruction-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-destruction-{{ $name }}
+                    namespace: open-infra-console
+                    labels:
+                      openinfra.dev/destruction: {{ $name }}
+                  data:
+                    name: "{{ $name }}"
+                    encryptionKey: "{{ $spec.encryptionKey }}"
+                    confirm: "{{ $spec.confirm }}"
+                    reason: "{{ $spec.reason | default "" }}"
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XDestruction
+            status:
+              phase: Pending

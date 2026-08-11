@@ -99,7 +99,7 @@ incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSyn
 # Customer-owned encryption: Vault (Transit KMS), kind: EncryptionKey + its reconciler, and the
 # encrypted Longhorn StorageClass. OFF unless components.encryption: true (Vault needs an operator to
 # initialize/unseal it — see docs/encryption.md).
-incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,storage/longhorn-encrypted.yaml"
+incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,storage/longhorn-encrypted.yaml"
 
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
