@@ -46,6 +46,7 @@ spec:
               properties:
                 siteA: &site
                   type: object
+                  description: "One endpoint of the replication pair. Both sites are simultaneously source and target — changes captured here are applied to the peer and vice-versa. The two sites may run different engines (e.g. sqlserver <-> postgres)."
                   required: [name, engine, host, database, username, passwordSecretRef]
                   properties:
                     name:
@@ -54,21 +55,23 @@ spec:
                     engine:
                       type: string
                       enum: [postgres, mysql, mariadb, sqlserver]
-                    host: { type: string }
-                    port: { type: integer, default: 5432 }
-                    database: { type: string }
-                    username: { type: string }
+                      description: "Database engine at this site. Selects the Debezium source connector that captures changes and the apply-sink driver that writes the peer's changes here."
+                    host: { type: string, description: "Hostname or service address of this site's database." }
+                    port: { type: integer, default: 5432, description: "Database port. Default 5432 (Postgres); set the engine's port, e.g. 3306 for MySQL/MariaDB or 1433 for SQL Server." }
+                    database: { type: string, description: "Name of the database that holds the replicated tables." }
+                    username: { type: string, description: "Database user the engine connects as — used both to capture changes (Debezium) and to apply the peer's changes. Must be able to read the tables' change stream and write the replicated tables." }
                     passwordSecretRef:
                       type: object
+                      description: "Reference to a Kubernetes Secret (in the claim's namespace) holding this site's database password."
                       required: [name]
                       properties:
-                        name: { type: string }
-                        key:  { type: string, default: "password" }
+                        name: { type: string, description: "Name of the Secret." }
+                        key:  { type: string, default: "password", description: "Key within the Secret that holds the password. Default 'password'." }
                     schema:
                       type: string
                       default: "public"
                       description: "Schema/namespace of the tables (Postgres: public; SQL Server: dbo)."
-                    ssl: { type: boolean, default: false }
+                    ssl: { type: boolean, default: false, description: "Connect to this site's database over TLS (default false). Applied for Postgres (sslmode=require) and SQL Server (encrypt=true)." }
                 siteB: *site
                 tables:
                   type: array
@@ -88,11 +91,14 @@ spec:
                   properties:
                     nodeSelector:
                       type: object
+                      description: "Node labels a replication pod must match to be scheduled (maps to the pods' nodeSelector)."
                       additionalProperties: { type: string }
                     tolerations:
                       type: array
+                      description: "Tolerations added to the replication pods so they can schedule onto tainted nodes (e.g. dedicated chaos nodes). Standard Kubernetes toleration objects."
                       items:
                         type: object
+                        description: "A single Kubernetes toleration (key / operator / value / effect / tolerationSeconds)."
                         x-kubernetes-preserve-unknown-fields: true
             status:
               type: object
