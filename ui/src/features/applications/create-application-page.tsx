@@ -18,7 +18,7 @@ export function CreateApplicationPage() {
       icon={<Boxes className="size-6 text-primary" />}
       title="Create Application"
       description={APPLICATION_CREATE.description}
-      essential={APPLICATION_CREATE.essential}
+      sections={APPLICATION_CREATE.sections}
       uiSchema={APPLICATION_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.applications(ns)}
       listPath={openinfraPaths.applications()}

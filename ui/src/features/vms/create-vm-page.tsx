@@ -14,7 +14,7 @@ export function CreateVmPage() {
       icon={<Monitor className="size-6 text-primary" />}
       title="Create VirtualMachine"
       description={VIRTUALMACHINE_CREATE.description}
-      essential={VIRTUALMACHINE_CREATE.essential}
+      sections={VIRTUALMACHINE_CREATE.sections}
       uiSchema={VIRTUALMACHINE_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.virtualmachines(ns)}
       listPath={openinfraPaths.virtualmachines()}
