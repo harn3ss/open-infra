@@ -133,11 +133,16 @@ spec:
               echo "enabling Transit engine (idempotent)…"
               vault secrets enable transit 2>/dev/null || echo "  transit already enabled"
 
-              echo "writing the reconciler policy (manage keys, NOT destroy)…"
+              echo "writing the reconciler policy (manage keys, NOT destroy or crypto-erase)…"
+              # `+` matches exactly ONE path segment, so these grants reach transit/keys/<name> and
+              # transit/keys/<name>/rotate but NOT transit/keys/<name>/config — where
+              # min_decryption_version (a crypto-erase of old versions) and deletion_allowed live.
+              # A recursive `*` would hand the reconciler exactly the destruction powers it must not
+              # have. No datakey/encrypt/decrypt/export either: this identity only shepherds keys.
               vault policy write encryptionkey-reconciler - <<'POLICY'
-              path "transit/keys/*"        { capabilities = ["create", "read", "update"] }
+              path "transit/keys/+"        { capabilities = ["create", "read", "update"] }
               path "transit/keys"          { capabilities = ["list"] }
-              path "transit/keys/*/rotate" { capabilities = ["update"] }
+              path "transit/keys/+/rotate" { capabilities = ["update"] }
               POLICY
 
               echo "enabling AppRole auth + role (idempotent)…"
