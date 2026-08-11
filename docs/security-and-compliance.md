@@ -195,11 +195,13 @@ Delivered so far:
 - **Crypto-erase** — `kind: Destruction` destroys a customer key (NIST SP 800-88), making all data it
   wrapped unrecoverable, and writes an immutable destruction certificate to the WORM audit store
   (MP-6). Opt-in. See [`destruction.md`](destruction.md).
+- **Data lineage** — provenance of data movement (source→stream→sink), derived from the
+  DataFlow/Migration/Replication/Stream topology (SI-12 / AU). See [`lineage.md`](lineage.md).
 
 Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
 
-1. **Lineage + signed compliance attestation** — provenance and a signed control-coverage
-   report generated from the live cluster.
+1. **Signed compliance attestation** — a GPG-signed control-coverage report generated from the
+   live cluster.
 2. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
    Mesh, and every opt-in dangerous capability, and tightens defaults for an authorization
    boundary.

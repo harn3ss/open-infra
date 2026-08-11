@@ -996,3 +996,27 @@ export interface Destruction {
 export function getDestructions(): Promise<Destruction[]> {
   return request<Destruction[]>(`/encryption/destructions`);
 }
+
+/** Data lineage — provenance of data movement (source→stream→sink), derived from the topology. */
+export interface LineageNode {
+  name: string;
+  role?: string;
+  engine?: string;
+}
+export interface LineageEdge {
+  from: string;
+  to: string;
+  type: string;
+}
+export interface LineageFlow {
+  origin: string;
+  kind: string;
+  namespace: string;
+  name: string;
+  nodes?: LineageNode[];
+  edges: LineageEdge[];
+}
+
+export function getLineage(): Promise<LineageFlow[]> {
+  return request<LineageFlow[]>(`/lineage`);
+}
