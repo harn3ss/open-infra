@@ -17,6 +17,9 @@ import {
 } from "@/components/ui/select";
 import { ErrorState, LoadingState, Spinner } from "@/components/common/states";
 import { ExpandableSection } from "@/components/create/expandable-section";
+import { InfoLink } from "@/components/help/info-link";
+import { LearnMore } from "@/components/help/learn-more";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { createTemplates } from "@/components/create/rjsf-templates";
 import type { CredentialSpec, SectionSpec } from "@/components/create/create-registry";
 import { YamlViewer } from "@/components/common/yaml-viewer";
@@ -192,8 +195,14 @@ export function CreatePage(cfg: CreatePageConfig) {
         </Button>
         <h1 className="flex items-center gap-2 text-2xl font-semibold">
           {cfg.icon} Create {cfg.kind}
+          <span className="ml-1">
+            <InfoLink title={cfg.kind} body={<p>{cfg.description}</p>} docsHref={kindDocsUrl(cfg.kind)} />
+          </span>
         </h1>
-        <p className="mt-1 text-sm text-muted-foreground">{cfg.description}</p>
+        <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+          {cfg.description}
+          {kindDocsUrl(cfg.kind) ? <LearnMore href={kindDocsUrl(cfg.kind)!} /> : null}
+        </p>
       </div>
 
       {/* Identity */}
