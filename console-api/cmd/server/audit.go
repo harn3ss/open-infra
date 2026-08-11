@@ -246,7 +246,9 @@ func handleAudit(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) 
 			}
 		}
 
-		var events []auditEvent
+		// Non-nil so the response marshals to [] (not null) when there are no events —
+		// the console reads the array's .length directly.
+		events := []auditEvent{}
 		if vals, err := queryLoki(r.Context(), auditQ, since, fetch); err != nil {
 			// Loki down / not deployed → degrade to whatever the other source gives,
 			// and tell the SPA so it can show a banner rather than an empty table.

@@ -178,7 +178,7 @@ export function AuditPage() {
         <LoadingState label="Loading audit trail…" />
       ) : isError ? (
         <ErrorState error={error} onRetry={refetch} />
-      ) : data.length === 0 ? (
+      ) : !data || data.length === 0 ? (
         <EmptyState
           icon={<ScrollText />}
           title="No activity in this window"
