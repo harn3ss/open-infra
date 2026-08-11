@@ -48,8 +48,8 @@ spec:
                     labels:
                       openinfra.dev/enckey: {{ $name }}
                   data:
-                    name: "{{ $name }}"
-                    description: "{{ $spec.description | default "" }}"
+                    name: {{ $name | quote }}
+                    description: {{ $spec.description | default "" | quote }}
                     keyType: "{{ $spec.keyType | default "aes256-gcm96" }}"
                     rotationDays: "{{ $spec.rotationDays | default 0 }}"
                     vaultKeyPath: "{{ $keyPath }}"
