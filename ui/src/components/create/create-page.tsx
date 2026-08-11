@@ -18,6 +18,7 @@ import {
 import { ErrorState, LoadingState, Spinner } from "@/components/common/states";
 import { ExpandableSection } from "@/components/create/expandable-section";
 import { createTemplates } from "@/components/create/rjsf-templates";
+import type { SectionSpec } from "@/components/create/create-registry";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
@@ -35,8 +36,8 @@ export interface CreatePageConfig {
   icon: ReactNode;
   title: string;
   description: string;
-  /** Spec property names to show up-front; the rest collapse under "Advanced settings". */
-  essential: string[];
+  /** Named field groups; the first (non-advanced) shows up-front, advanced ones collapse. */
+  sections: SectionSpec[];
   /** RJSF layout hints (ui:order, ui:widget, ui:placeholder, …). */
   uiSchema?: UiSchema;
   /** k8s create path for a namespace, e.g. openinfraPaths.applications. */
@@ -182,7 +183,7 @@ export function CreatePage(cfg: CreatePageConfig) {
             uiSchema={cfg.uiSchema}
             validator={validator}
             templates={createTemplates}
-            formContext={{ rootId: ROOT_ID, essential: cfg.essential }}
+            formContext={{ rootId: ROOT_ID, sections: cfg.sections }}
             formData={formData}
             onChange={(e) => setFormData(e.formData as Record<string, unknown>)}
             onSubmit={onSubmit}
