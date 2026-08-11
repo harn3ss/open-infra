@@ -116,8 +116,8 @@ type destructionView struct {
 	Reason        string `json:"reason"`
 	Phase         string `json:"phase"` // Pending | InProgress | Refused | Destroyed | Error
 	Message       string `json:"message,omitempty"`
-	Certificate   string `json:"certificate,omitempty"`   // WORM object path of the destruction certificate
-	CertSha256    string `json:"certSha256,omitempty"`     // sha256 of the certificate (anchor to verify the locked original)
+	Certificate   string `json:"certificate,omitempty"` // WORM object path of the destruction certificate
+	CertSha256    string `json:"certSha256,omitempty"`  // sha256 of the certificate (anchor to verify the locked original)
 	DestroyedAt   string `json:"destroyedAt,omitempty"`
 }
 
