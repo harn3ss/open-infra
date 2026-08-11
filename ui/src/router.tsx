@@ -20,6 +20,12 @@ import { VmsPage } from "@/features/vms/vms-page";
 import { VmDetailPage } from "@/features/vms/vm-detail-page";
 import { VmImagesPage } from "@/features/vms/vm-images-page";
 import { CreateVmPage } from "@/features/vms/create-vm-page";
+import { CreateFunctionPage } from "@/features/functions/create-function-page";
+import { CreateModelPage } from "@/features/models/create-model-page";
+import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
+import { CreateVolumePage } from "@/features/volumes/create-volume-page";
+import { CreateFileSharePage } from "@/features/fileshares/create-fileshare-page";
+import { CreateDirectoryPage } from "@/features/directories/create-directory-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
@@ -145,6 +151,15 @@ const vmCreateRoute = createRoute({
   path: "/vms/new",
   component: CreateVmPage,
 });
+
+// Schema-driven full-page create routes (issue #96). Static "/new" — matched before the
+// two-segment "$namespace/$name" detail routes.
+const functionCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/functions/new", component: CreateFunctionPage });
+const modelCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/models/new", component: CreateModelPage });
+const graphqlCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/graphql/new", component: CreateGraphqlApiPage });
+const volumeCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/volumes/new", component: CreateVolumePage });
+const fileshareCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/fileshares/new", component: CreateFileSharePage });
+const directoryCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/directories/new", component: CreateDirectoryPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -434,6 +449,12 @@ const routeTree = rootRoute.addChildren([
   vmCreateRoute,
   vmImagesRoute,
   vmDetailRoute,
+  functionCreateRoute,
+  modelCreateRoute,
+  graphqlCreateRoute,
+  volumeCreateRoute,
+  fileshareCreateRoute,
+  directoryCreateRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
