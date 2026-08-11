@@ -19,6 +19,7 @@ import { ModelDetailPage } from "@/features/models/model-detail-page";
 import { VmsPage } from "@/features/vms/vms-page";
 import { VmDetailPage } from "@/features/vms/vm-detail-page";
 import { VmImagesPage } from "@/features/vms/vm-images-page";
+import { CreateVmPage } from "@/features/vms/create-vm-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
@@ -137,6 +138,12 @@ const vmsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/vms",
   component: VmsPage,
+});
+
+const vmCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/vms/new",
+  component: CreateVmPage,
 });
 
 const vmImagesRoute = createRoute({
@@ -424,6 +431,7 @@ const routeTree = rootRoute.addChildren([
   modelsRoute,
   modelDetailRoute,
   vmsRoute,
+  vmCreateRoute,
   vmImagesRoute,
   vmDetailRoute,
   volumesRoute,
