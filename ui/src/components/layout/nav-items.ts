@@ -18,6 +18,7 @@ import {
   Search,
   ScrollText,
   Send,
+  KeyRound,
   Server,
   Tags,
   Workflow,
@@ -80,6 +81,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Security Groups", to: "/security-groups", icon: Shield, matchPrefix: true, section: "Security & Identity" },
   { label: "Active Directory", to: "/directories", icon: Building2, matchPrefix: true, section: "Security & Identity" },
   { label: "Data Classification", to: "/data-classification", icon: Tags, matchPrefix: true, section: "Security & Identity" },
+  { label: "Encryption Keys", to: "/encryption", icon: KeyRound, matchPrefix: true, section: "Security & Identity" },
   { label: "Audit", to: "/audit", icon: ScrollText, matchPrefix: true, section: "Security & Identity" },
 
   { label: "Workloads", to: "/workloads", icon: Network, matchPrefix: true, section: "Cluster" },

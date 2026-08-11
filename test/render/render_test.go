@@ -197,6 +197,31 @@ func TestDataClassification_RendersConfigMapMirror(t *testing.T) {
 	}
 }
 
+// kind: EncryptionKey renders a spec-mirror ConfigMap the reconciler reads, and echoes the Vault
+// Transit path in status.
+func TestEncryptionKey_RendersMirrorAndKeyPath(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/encryptionkey-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"description":  "tenant A KEK",
+			"keyType":      "aes256-gcm96",
+			"rotationDays": 90,
+		},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "tenant-a"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{
+		"kind: ConfigMap", "name: openinfra-enckey-tenant-a", "namespace: open-infra-console",
+		"openinfra.dev/enckey: tenant-a",
+		`vaultKeyPath: "transit/keys/tenant-a"`, `rotationDays: "90"`, `keyType: "aes256-gcm96"`,
+		"ready: true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("EncryptionKey render missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
 func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(true))
@@ -1017,7 +1042,7 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 	// DataClassification is a central security-team categorization scheme, not a project knob.
 	excluded := map[string]bool{
 		"users": true, "groups": true, "policies": true, "roles": true, "grants": true,
-		"dataclassifications": true,
+		"dataclassifications": true, "encryptionkeys": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")

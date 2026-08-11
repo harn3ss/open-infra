@@ -1,0 +1,72 @@
+# kind: EncryptionKey — a CUSTOMER-OWNED key-encryption key (KEK), held in HashiCorp Vault's Transit
+# engine (NIST SC-12 / SC-13 / SC-28(1) customer-managed keys at rest).
+#
+# The customer owns the key: it lives in Vault Transit, which the operator controls. Rotating it,
+# disabling it, or DESTROYING it is a first-class operation — and destroying it crypto-erases
+# everything wrapped by it (the basis for kind: Destruction, NIST SP 800-88). open-infra never sees
+# the key material; storage layers (MinIO via KES, Longhorn LUKS, etcd via the KMS provider) wrap
+# their data keys with it.
+#
+# OPT-IN: this kind and its Vault backend are the `encryption` component (off by default). A
+# reconciler provisions the Transit key for each EncryptionKey and reflects its live state; see
+# platform/security/vault.yaml and encryptionkey-reconciler.yaml, and docs/encryption.md.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xencryptionkeys.openinfra.dev
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XEncryptionKey
+    plural: xencryptionkeys
+  claimNames:
+    kind: EncryptionKey
+    plural: encryptionkeys
+  defaultCompositionRef:
+    name: encryptionkey
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                description:
+                  type: string
+                  description: What this key protects, shown in the console.
+                rotationDays:
+                  type: integer
+                  description: >-
+                    If set, the reconciler rotates the Transit key (adds a new version) once this many
+                    days have passed since the last rotation. Old versions still decrypt existing data;
+                    new writes use the latest version.
+                keyType:
+                  type: string
+                  enum: [aes256-gcm96, chacha20-poly1305, rsa-4096]
+                  default: aes256-gcm96
+                  description: Vault Transit key type. AES-256-GCM by default.
+              required: []
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                vaultKeyPath:
+                  type: string
+                  description: The Vault Transit path for this key (transit/keys/<name>).
+      additionalPrinterColumns:
+        - name: Type
+          type: string
+          jsonPath: .spec.keyType
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
