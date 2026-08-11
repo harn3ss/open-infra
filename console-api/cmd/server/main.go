@@ -308,6 +308,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/destructions", handleDestructions(cs, auth, logger))
 		// Data lineage — provenance of data movement (DataFlow/Migration/Replication/Stream topology).
 		api.With(middleware.Timeout(20*time.Second)).Get("/lineage", handleLineage(cs, auth, logger))
+		// Compliance attestation — live control-coverage report (the signed copies live in the WORM store).
+		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/attestation", handleAttestation(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

@@ -1,0 +1,147 @@
+# Compliance attestation — periodically snapshot the platform's NIST control coverage + live evidence
+# and store it, dated and immutable, in the WORM audit store. This is the auditable trail of "what
+# controls were in place, with what evidence, at time T" — undeletable once written.
+#
+# SIGNING is deliberately NOT done here: the provider-release GPG private key must not live in the
+# cluster. The attestation is generated and stored unsigned; an operator (or CI) signs a snapshot with
+# the release key out-of-band and publishes the detached signature, verifiable with the published
+# public key — the same key/flow that signs the Terraform provider releases. See
+# docs/compliance-attestation.md. The console shows the live report at /api/compliance/attestation.
+#
+# OPT-IN (`components.attestation`). Requires the audit off-siting WORM bucket + its scoped MinIO
+# identity (reused, resourceName-fenced).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: compliance-attest
+  namespace: crossplane-system
+---
+# Read-only across the governance surface — the evidence the attestation counts. No secrets, no writes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-compliance-attest
+rules:
+  - apiGroups: [iam.openinfra.dev]
+    resources: [grants]
+    verbs: [get, list]
+  - apiGroups: [openinfra.dev]
+    resources: [encryptionkeys, destructions, dataflows, migrations, replications, streams]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-compliance-attest
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-compliance-attest
+subjects:
+  - kind: ServiceAccount
+    name: compliance-attest
+    namespace: crossplane-system
+---
+# GET only the audit off-siter's scoped put+retain MinIO identity, to write attestations to the WORM
+# store — resourceName-fenced to that one secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: compliance-attest-audit-creds
+  namespace: monitoring
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [audit-offsite-minio-creds]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: compliance-attest-audit-creds
+  namespace: monitoring
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: compliance-attest-audit-creds }
+subjects:
+  - kind: ServiceAccount
+    name: compliance-attest
+    namespace: crossplane-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: compliance-attest
+  namespace: crossplane-system
+spec:
+  schedule: "0 6 * * *" # daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: compliance-attest
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          volumes:
+            - { name: out, emptyDir: {} }
+            - { name: mc, emptyDir: {} }
+            - { name: home, emptyDir: {} }
+          initContainers:
+            # Generate the attestation (JSON + Markdown) with the SAME assembler the console uses.
+            - name: generate
+              image: ghcr.io/harn3ss/open-infra-attest:latest
+              env:
+                - { name: CONSOLE_NS, value: "open-infra-console" }
+                - { name: OUTPUT_DIR, value: "/out" }
+              volumeMounts: [{ name: out, mountPath: /out }]
+            - name: fetch-mc
+              image: minio/mc:latest
+              command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+              volumeMounts: [{ name: mc, mountPath: /mc }]
+          containers:
+            - name: store
+              image: alpine/k8s:1.30.0 # kubectl (creds) + mc from the shared volume
+              command: [/bin/sh, -ceu]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: out, mountPath: /out }
+                - { name: mc, mountPath: /mc }
+                - { name: home, mountPath: /tmp }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+                - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+                - { name: RETENTION_DAYS, value: "2555" }
+              args:
+                - |
+                  MC=/mc/mc
+                  AK=$(kubectl get secret audit-offsite-minio-creds -n monitoring -o jsonpath='{.data.accessKey}' | base64 -d)
+                  SK=$(kubectl get secret audit-offsite-minio-creds -n monitoring -o jsonpath='{.data.secretKey}' | base64 -d)
+                  [ -n "$AK" ] && [ -n "$SK" ] || { echo "audit MinIO creds unavailable (is audit off-siting enabled?)" >&2; exit 1; }
+                  "$MC" alias set audit "$MINIO_URL" "$AK" "$SK" >/dev/null
+
+                  # Date-stamped, immutable snapshot. The stamp is read from the generated document, so
+                  # the object key matches its content.
+                  day=$(jq -r '.generatedAt' /out/attestation.json | cut -dT -f1)
+                  base="attestations/${day}"
+                  for f in attestation.json attestation.md; do
+                    "$MC" cp "/out/$f" "audit/$AUDIT_BUCKET/$base/$f" >/dev/null
+                    "$MC" retention set COMPLIANCE "${RETENTION_DAYS}d" "audit/$AUDIT_BUCKET/$base/$f" >/dev/null
+                  done
+                  echo "compliance attestation stored: $base (unsigned; sign out-of-band with the release key — docs/compliance-attestation.md)"
+              resources:
+                requests: { cpu: 20m, memory: 48Mi }
+                limits: { cpu: 300m, memory: 192Mi }

@@ -7,6 +7,14 @@ the product's public contract.
 ## Unreleased
 
 ### Security & compliance
+- **Signed compliance attestation.** A **Security & Identity → Attestation** console page (and
+  `/api/compliance/attestation`) shows live NIST 800-53 control coverage with evidence gathered from
+  the cluster right now — grants, classifications, customer keys, destruction certificates, data
+  flows, off-site audit-chain head — not a static claim. An opt-in daily CronJob snapshots each
+  attestation immutably to the WORM audit store (`attestations/<date>/`), and the same document can be
+  GPG-signed out-of-band with the release key (kept out of the cluster) and verified with the
+  published public key. Controls: CA-2/CA-7, AU, SI-12. See [`docs/compliance-attestation.md`].
+  Completes the government feature track (issue #71).
 - **Data lineage — provenance of data movement.** A new **Data → Lineage** console page (and
   `/api/lineage`) reads the DataFlow, Migration, Replication, and Stream topology and shows every data
   movement — source → sink, with its type — so you can trace where data comes from and where it goes.

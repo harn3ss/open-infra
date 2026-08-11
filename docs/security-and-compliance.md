@@ -197,12 +197,13 @@ Delivered so far:
   (MP-6). Opt-in. See [`destruction.md`](destruction.md).
 - **Data lineage** — provenance of data movement (source→stream→sink), derived from the
   DataFlow/Migration/Replication/Stream topology (SI-12 / AU). See [`lineage.md`](lineage.md).
+- **Signed compliance attestation** — live NIST control coverage with cluster evidence, viewable in
+  the console, snapshotted immutably to the WORM audit store, and GPG-signable out-of-band with the
+  release key (CA-2 / CA-7). See [`compliance-attestation.md`](compliance-attestation.md).
 
 Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
 
-1. **Signed compliance attestation** — a GPG-signed control-coverage report generated from the
-   live cluster.
-2. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
+1. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
    Mesh, and every opt-in dangerous capability, and tightens defaults for an authorization
    boundary.
 

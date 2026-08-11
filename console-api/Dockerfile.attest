@@ -1,0 +1,17 @@
+# open-infra attest — assembles a compliance attestation (control coverage + live evidence) from the
+# cluster and writes it as JSON + Markdown for signing. Lives in the console-api module so it shares
+# internal/attest with the console's read-only view — one assembler, so the signed artifact and the
+# on-screen report are the same. Small static binary on distroless, like audit-offsite/aws-shim.
+# Build context is console-api/.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /attest ./cmd/attest
+
+FROM gcr.io/distroless/static-debian12
+USER 65532:65532
+COPY --from=build /attest /attest
+ENTRYPOINT ["/attest"]
