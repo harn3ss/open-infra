@@ -49,6 +49,76 @@ export const VIRTUALMACHINE_CREATE: CreateKindSpec = {
   },
 };
 
+export const FUNCTION_CREATE: CreateKindSpec = {
+  kind: "Function",
+  crdName: "functions.openinfra.dev",
+  description: "A scale-to-zero function from a container image — with optional GPU, HTTP exposure, and event triggers.",
+  sections: [
+    { title: "Function", fields: ["image", "port", "memory"] },
+    { title: "Compute", fields: ["gpu", "timeout", "scaling"], advanced: true },
+    { title: "Networking", fields: ["expose", "securityGroups"], advanced: true },
+    { title: "Environment", fields: ["env", "secrets", "queues"], advanced: true },
+    { title: "Trigger", fields: ["trigger"], advanced: true },
+  ],
+  uiSchema: { image: { "ui:placeholder": "ghcr.io/me/my-fn:latest" } },
+};
+
+export const MODEL_CREATE: CreateKindSpec = {
+  kind: "Model",
+  crdName: "models.openinfra.dev",
+  description: "A served model endpoint (Bedrock-style) — pick a model; open-infra runs it with an API key.",
+  sections: [
+    { title: "Model", fields: ["model", "storageSize"] },
+    { title: "Serving", fields: ["highAvailability", "expose", "domain"], advanced: true },
+  ],
+};
+
+export const GRAPHQLAPI_CREATE: CreateKindSpec = {
+  kind: "GraphQLApi",
+  crdName: "graphqlapis.openinfra.dev",
+  description: "A managed GraphQL API (AppSync-style) — an SDL schema wired to data sources by resolvers.",
+  sections: [
+    { title: "API", fields: ["schema", "image", "replicas"] },
+    { title: "Data sources", fields: ["dataSources", "mongoURI", "mongoDB", "apiKeysSecret"], advanced: true },
+    { title: "Resolvers", fields: ["resolvers"], advanced: true },
+    { title: "Subscriptions", fields: ["subscriptions"], advanced: true },
+    { title: "Limits", fields: ["limits"], advanced: true },
+  ],
+};
+
+export const VOLUME_CREATE: CreateKindSpec = {
+  kind: "Volume",
+  crdName: "volumes.openinfra.dev",
+  description: "A persistent block volume (EBS-style) you can attach to a VM or workload.",
+  sections: [
+    { title: "Volume", fields: ["size", "migratable"] },
+    { title: "Restore from snapshot", fields: ["source"], advanced: true },
+  ],
+  uiSchema: { size: { "ui:placeholder": "20Gi" } },
+};
+
+export const FILESHARE_CREATE: CreateKindSpec = {
+  kind: "FileShare",
+  crdName: "fileshares.openinfra.dev",
+  description: "A shared filesystem (EFS-style, SMB/NFS) mountable by many workloads or VMs.",
+  sections: [
+    { title: "File share", fields: ["size"] },
+    { title: "Access", fields: ["expose", "nodeIP"], advanced: true },
+  ],
+  uiSchema: { size: { "ui:placeholder": "50Gi" } },
+};
+
+export const DIRECTORY_CREATE: CreateKindSpec = {
+  kind: "Directory",
+  crdName: "directories.openinfra.dev",
+  description: "A managed Active Directory domain (Samba AD DC) machines and users can join.",
+  sections: [
+    { title: "Directory", fields: ["domain", "size"] },
+    { title: "Access", fields: ["expose"], advanced: true },
+  ],
+  uiSchema: { domain: { "ui:placeholder": "corp.example.com" }, size: { "ui:placeholder": "5Gi" } },
+};
+
 export const APPLICATION_CREATE: CreateKindSpec = {
   kind: "Application",
   crdName: "applications.openinfra.dev",

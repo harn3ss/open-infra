@@ -1,19 +1,17 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { BrainCircuit, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
-import { NewResourceDialog } from "@/components/common/new-resource-dialog";
 import { Button } from "@/components/ui/button";
 import { modelHealth, modelDesiredReplicas } from "@/lib/resource-health";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNodeHealth } from "@/hooks/use-node-health";
 import { usePodNodeIndex, type PodNodeIndex } from "@/hooks/use-pod-node-index";
 import { useNamespace } from "@/lib/namespace-context";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
-import { MODELS_CRD_NAME, type K8sObject, type Model } from "@/types/k8s";
+import { type Model } from "@/types/k8s";
 
 /** Node-aware + replica-aware status for a Model row. */
 function modelStatus(
@@ -32,14 +30,8 @@ function modelStatus(
 export function ModelsPage() {
   const navigate = useNavigate();
   const { scoped } = useNamespace();
-  const [newOpen, setNewOpen] = useState(false);
   const { offlineNodes } = useNodeHealth();
   const podIndex = usePodNodeIndex(scoped);
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = nsWatch.items
-    .map((n) => n.metadata.name)
-    .filter((n): n is string => Boolean(n))
-    .sort((a, b) => a.localeCompare(b));
   const columns = useMemo<ColumnDef<Model, unknown>[]>(
     () => [
       {
@@ -140,23 +132,11 @@ export function ModelsPage() {
           })
         }
         headerActions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/models/new" })}>
             <Plus className="size-4" />
             New Model
           </Button>
         }
-      />
-      <NewResourceDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        kind="Model"
-        crdName={MODELS_CRD_NAME}
-        createPath={openinfraPaths.models}
-        listPath={openinfraPaths.models(scoped)}
-        namespaces={namespaces}
-        defaultNamespace={scoped}
-        icon={<BrainCircuit className="size-5 text-primary" />}
-        description="A GPU-backed, OpenAI-compatible inference endpoint. Set the model tag and GPU count."
       />
     </>
   );
