@@ -20,6 +20,7 @@ import { useDeleteResource } from "@/hooks/use-delete-resource";
 import { useListFilter } from "@/hooks/use-list-filter";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { useNamespace } from "@/lib/namespace-context";
+import { kindDocsUrl } from "@/lib/kind-docs";
 import { age } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import type { Application } from "@/types/k8s";
@@ -169,6 +170,7 @@ export function ApplicationsPage() {
               New Application
             </Button>
           }
+          learnMore={kindDocsUrl("Application")}
         />
       ) : (
         <>
