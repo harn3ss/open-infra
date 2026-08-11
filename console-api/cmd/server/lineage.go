@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sort"
 	"time"
 
@@ -49,7 +50,11 @@ type lineageFlow struct {
 // whose CRD is absent (feature disabled) simply yields nothing.
 func crList(ctx context.Context, cs kubernetes.Interface, plural string) []json.RawMessage {
 	rc := cs.CoreV1().RESTClient()
+	// A fake clientset hands back a TYPED nil *rest.RESTClient (non-nil interface, panics on use).
 	if rc == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(rc); v.Kind() == reflect.Ptr && v.IsNil() {
 		return nil
 	}
 	raw, err := rc.Get().AbsPath("/apis/openinfra.dev/v1/" + plural).DoRaw(ctx)

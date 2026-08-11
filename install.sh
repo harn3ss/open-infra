@@ -100,6 +100,9 @@ incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSyn
 # encrypted Longhorn StorageClass. OFF unless components.encryption: true (Vault needs an operator to
 # initialize/unseal it — see docs/encryption.md).
 incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,storage/longhorn-encrypted.yaml"
+# Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
+# audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
+incl attestation "security/compliance-attest.yaml"
 
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
