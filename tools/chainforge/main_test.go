@@ -143,6 +143,40 @@ func TestCountedOnlyWhenPlaneWatched(t *testing.T) {
 	}
 }
 
+// pick must only ever draw WATCHED scenarios, and must rotate the surface (not just the mesh) —
+// this is what stops continuous from being multi-master-only.
+func TestPickOnlyWatchedAndRotates(t *testing.T) {
+	g := mustGrammar(t)
+	var watched []ScenarioSpec
+	watchedSet := map[string]bool{}
+	for _, s := range g.Scenarios {
+		if s.Watched {
+			watched = append(watched, s)
+			watchedSet[s.Scenario] = true
+		}
+	}
+	if len(watched) < 5 {
+		t.Fatalf("expected several watched scenarios, got %d", len(watched))
+	}
+	seen := map[string]int{}
+	for seed := int64(1); seed <= 300; seed++ {
+		p := watched[rand.New(rand.NewSource(seed)).Intn(len(watched))]
+		if !watchedSet[p.Scenario] {
+			t.Fatalf("seed %d picked non-watched %q", seed, p.Scenario)
+		}
+		seen[p.Scenario]++
+	}
+	if seen["async-invoke-noloss"] != 0 {
+		t.Fatal("picked async-invoke-noloss, which is watched:false (PENDING) and must never be drawn")
+	}
+	if len(seen) < 5 {
+		t.Fatalf("expected the picker to rotate ≥5 distinct planes across 300 seeds, got %d", len(seen))
+	}
+	if seen["lottery"] == 300 {
+		t.Fatal("picker only ever drew the mesh — it is not rotating")
+	}
+}
+
 // Same seed → identical output (safe to replay a chain from its seed).
 func TestDeterministic(t *testing.T) {
 	g := mustGrammar(t)
