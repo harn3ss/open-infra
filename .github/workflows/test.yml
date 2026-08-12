@@ -90,10 +90,13 @@ jobs:
       # The oracle mode engine (recover/tolerate/deny) lives under the `convergence` build tag with
       # the rest of the chaos harness, but the mode-engine tests use in-memory fakes (no DB), so run
       # just those under the tag. -run isolates them from the DB-backed convergence/migration tests.
-      - name: oracle mode-engine (convergence tag, no DB)
+      # The mode engine + every per-plane oracle adapter's prove-red/green test (no DB): each adapter
+      # must go BOTH green on good data and red on a real product failure — "an oracle that has never
+      # gone red has never been shown it can." Live Test<Plane> entrypoints run in the chaos suite.
+      - name: oracle engine + per-plane prove-red (convergence tag, no DB)
         if: matrix.module == 'apply-sink'
         working-directory: apply-sink
-        run: go test -tags convergence -run TestModeEngine -count=1 ./...
+        run: go test -tags convergence -run 'TestModeEngine|RedGreen' -count=1 ./...
 
       # docs/chaos-scenarios.md is generated from chaos/scenarios.json — fail if it drifted.
       - name: chaosdoc drift-guard
