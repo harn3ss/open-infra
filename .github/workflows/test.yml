@@ -159,5 +159,10 @@ jobs:
       - name: capacity reservation ledger tests
         run: python3 chaos/test_capacity_ledger.py
 
+      - name: chain→manifest compiler tests
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
+          python3 chaos/test_compile_chain.py
+
       - name: chaos shell scripts parse (bash -n)
         run: for f in chaos/*.sh; do bash -n "$f"; done
