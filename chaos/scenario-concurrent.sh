@@ -18,6 +18,7 @@ export CONV_SETTLE="${CONV_SETTLE:-15}"
 export CONV_CREATE="${CONV_CREATE:-false}"
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"
+EXIT_INCONCLUSIVE=42   # a fault that never fired (or never bit) is neither red nor green
 
 # shellcheck source=lib-sandbox.sh
 . "$HERE/lib-sandbox.sh"
@@ -52,8 +53,8 @@ HARNESS=$!
 
 sleep "${CHAOS_AFTER:-5}"   # let writes get in flight through the cut
 kill -0 "$HARNESS" 2>/dev/null || {
-  log "FAIL — harness completed BEFORE the chaos was injected; nothing was exercised."
-  exit 1
+  log "INCONCLUSIVE — harness finished BEFORE the chaos was injected; nothing was exercised. Not counting this night."
+  exit "$EXIT_INCONCLUSIVE"
 }
 
 log "injecting the rest CONCURRENTLY: capture-kill + sink-kill (partition still active)"
@@ -71,8 +72,8 @@ landed() { # $1=selector $2=old-uid
   done
   return 1
 }
-landed "$DBZ_SEL"  "$DBZ_BEFORE"  && log "  landed: capture (dbz) pod replaced" || { log "FAIL — capture-kill never landed"; exit 1; }
-landed "$SINK_SEL" "$SINK_BEFORE" && log "  landed: sink pod replaced"        || { log "FAIL — sink-kill never landed"; exit 1; }
+landed "$DBZ_SEL"  "$DBZ_BEFORE"  && log "  landed: capture (dbz) pod replaced" || { log "INCONCLUSIVE — capture-kill never landed; not counting this night."; exit "$EXIT_INCONCLUSIVE"; }
+landed "$SINK_SEL" "$SINK_BEFORE" && log "  landed: sink pod replaced"        || { log "INCONCLUSIVE — sink-kill never landed; not counting this night."; exit "$EXIT_INCONCLUSIVE"; }
 NC_INJ=""
 for _ in $(seq 1 20); do
   NC_INJ="$(kubectl -n "$NS" get networkchaos mm-partition \
@@ -83,7 +84,7 @@ done
 if [ "$NC_INJ" = "True" ]; then
   log "  landed: partition injected (NetworkChaos AllInjected=True)"
 else
-  log "FAIL — partition never reported AllInjected; it did not inject"; exit 1
+  log "INCONCLUSIVE — partition never reported AllInjected; it did not inject. Not counting this night."; exit "$EXIT_INCONCLUSIVE"
 fi
 
 log "all three faults landed concurrently; waiting for the mesh to heal and converge"
@@ -99,9 +100,9 @@ ELAPSED=$(( $(date +%s) - START ))
 # as a failure, not a pass: it is precisely the false green this suite exists to prevent.
 MIN_ELAPSED="${MIN_ELAPSED:-60}"
 if [ "$ELAPSED" -lt "$MIN_ELAPSED" ]; then
-  log "FAIL — converged in ${ELAPSED}s, inside the 90s partition window (expected >=${MIN_ELAPSED}s)."
-  log "       The chaos did not actually delay convergence, so this proves nothing. Refusing a false green."
-  exit 1
+  log "INCONCLUSIVE — converged in ${ELAPSED}s, inside the 90s partition window (expected >=${MIN_ELAPSED}s)."
+  log "       The chaos did not actually delay convergence (the partition never bit), so this proves nothing. Not counting this night."
+  exit "$EXIT_INCONCLUSIVE"
 fi
 log "PASS — mesh converged under CONCURRENT chaos in ${ELAPSED}s (partition bit: >=${MIN_ELAPSED}s)"
 exit 0

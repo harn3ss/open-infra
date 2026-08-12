@@ -144,3 +144,6 @@ jobs:
       - uses: actions/checkout@v7
       - name: lottery draw unit test
         run: python3 chaos/test_lottery_draw.py
+
+      - name: scenario convention guard (EXIT_INCONCLUSIVE=42)
+        run: python3 chaos/test_scenario_conventions.py
