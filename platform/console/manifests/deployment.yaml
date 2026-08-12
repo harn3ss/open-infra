@@ -1,6 +1,14 @@
-# Console Deployment — single replica Go BFF + React SPA.
+# Console Deployment — HA Go BFF + React SPA (control-plane high availability).
 # Image is built and pushed to GHCR by the open-infra CI pipeline.
 # For prod, pin to a digest or a semver tag instead of "latest".
+#
+# HA profile (GovStack: the control plane MUST be configurable for HA):
+#   - 2 replicas behind the Service. The BFF is STATELESS (every request reads the cluster fresh) and
+#     the session-signing key is persisted to a Secret and read by every pod (console-api/auth.go), so
+#     both replicas validate the same session cookies — safe to run N-up.
+#   - topologySpread keeps the replicas on different nodes; a PodDisruptionBudget (pdb.yaml, minAvailable
+#     1) stops a drain/upgrade from taking the last one; RollingUpdate maxUnavailable 0 = zero-downtime
+#     rollout. Availability under a replica loss is PROVEN by the app-availability chaos oracle.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +17,12 @@ metadata:
   labels:
     app: console
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: console
@@ -19,6 +32,16 @@ spec:
         app: console
     spec:
       serviceAccountName: console
+
+      # Keep the two replicas on different nodes so a node loss can't take both (soft, so a
+      # single-node cluster still schedules).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: console
 
       # Run as a non-privileged, non-root UID (distroless "nonroot" uid).
       securityContext:

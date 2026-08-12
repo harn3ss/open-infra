@@ -1,0 +1,15 @@
+# Control-plane high availability: keep at least one console replica serving through voluntary
+# disruptions (node drain, cluster upgrade, autoscaler). With replicas: 2 this guarantees the console
+# stays reachable while one pod is evicted/replaced. GovStack: infra MUST be configurable for HA.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: console
+  namespace: open-infra-console
+  labels:
+    app: console
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: console
