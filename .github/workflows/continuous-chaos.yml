@@ -36,26 +36,57 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Chaos lottery (continuous)
+        id: scenario
         # KUBECONFIG (scoped chaos-runner) + Go/kubectl on PATH come from the runner's own .env.
+        # scenario-lottery.sh writes seed= and faults= to $GITHUB_OUTPUT, which become this step's
+        # outputs (steps.scenario.outputs.*) — that's the record the summary step below surfaces.
         run: |
           chmod +x chaos/*.sh
           set +e
           ./chaos/scenario-lottery.sh
           rc=$?
           # 42 = INCONCLUSIVE (capacity short, or a drawn fault never fired / never bit). Neither a
-          # product red nor a green — surface it and pass, so continuous coverage is never a false red.
+          # product red nor a green — record it and pass, so continuous coverage is never a false red.
           if [ "$rc" -eq 42 ]; then
+            echo "result=inconclusive" >> "$GITHUB_OUTPUT"
             echo "::warning title=Chaos INCONCLUSIVE::lottery void (capacity short or a fault never fired) — neither red nor green."
             exit 0
           fi
+          if [ "$rc" -eq 0 ]; then echo "result=success" >> "$GITHUB_OUTPUT"; else echo "result=failure" >> "$GITHUB_OUTPUT"; fi
           exit "$rc"
 
-      - name: Retain artifacts on red
-        if: failure()
+      # Self-document EVERY run: the draw (seed · faults · oracle · chain · verdict) into the run
+      # Summary and a small JSON record — so each run is observable on its own Actions page, with no
+      # commit and no touch to nightly-status.json / the graduation clock.
+      - name: Record the draw
+        if: always()
+        env:
+          SEED: ${{ steps.scenario.outputs.seed }}
+          FAULTS: ${{ steps.scenario.outputs.faults }}
+          RESULT: ${{ steps.scenario.outputs.result }}
+        run: |
+          RESULT="${RESULT:-unknown}"
+          {
+            echo "### Continuous chaos — draw"
+            echo ""
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| seed | \`${SEED:-?}\` — replay with \`LOTTERY_SEED=${SEED:-?}\` |"
+            echo "| faults | ${FAULTS:-—} |"
+            echo "| oracle | convergence (recover) |"
+            echo "| chain | multi-master mesh (pg-a ↔ pg-b) |"
+            echo "| verdict | **${RESULT}** |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p chaos/artifacts
+          printf '{"run":"%s","seed":"%s","faults":"%s","oracle":"convergence","chain":"mm-mesh","result":"%s"}\n' \
+            "${{ github.run_id }}" "${SEED:-}" "${FAULTS:-}" "$RESULT" > "chaos/artifacts/continuous-${{ github.run_id }}.json"
+
+      - name: Upload run record (+ red evidence)
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: chaos-artifacts-${{ github.run_id }}
+          name: continuous-${{ github.run_id }}
           path: |
             chaos/artifacts/**
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 21
