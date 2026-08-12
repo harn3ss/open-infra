@@ -39,7 +39,7 @@ the Blueprint reconciliation is the open item.
 | High availability, proven | control-plane HA profile (console 2 replicas + PDB + node spread + zero-downtime rollout); app-tier + managed-Postgres HA proven by the chaos harness | ✅ profile shipped; availability-under-fault proven by the app-availability + cnpgfailover oracles |
 | CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI + `kind: EncryptionKey` | 🔨 in progress (gap A) |
 | Interfaces conform to the Architecture Blueprint OpenAPI | platform OpenAPI generated (above) | 🟡 needs the external Blueprint to reconcile |
-| Hardened deployment profile | restricted PSS + default-deny netpol + non-root/RO-rootfs/seccomp | 🔨 in progress (gap D) |
+| Hardened deployment profile | opt-in `components.hardened`: enforce restricted PSS on the control plane + warn/audit elsewhere; Cilium default-deny + `kind: SecurityGroup` already shipped; console now non-root/RO-rootfs/seccomp/drop-ALL | ✅ profile shipped (opt-in) |
 | Encryption stack live-verified | Vault Transit customer keys | 🟡 built; live-verify is Vault-operator-gated (gap E) |
 
 ## Reliability evidence (the differentiator)

@@ -43,10 +43,14 @@ spec:
             matchLabels:
               app: console
 
-      # Run as a non-privileged, non-root UID (distroless "nonroot" uid).
+      # Run as a non-privileged, non-root UID (distroless "nonroot" uid). seccompProfile
+      # RuntimeDefault completes restricted Pod Security Standards compliance (with the
+      # container securityContext below): non-root + RO-rootfs + no-priv-esc + drop-ALL + seccomp.
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
 
       containers:
         - name: console

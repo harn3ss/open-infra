@@ -103,6 +103,10 @@ incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-co
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
 incl attestation "security/compliance-attest.yaml"
+# Hardened deployment profile: enforce restricted Pod Security Standards on the control
+# plane + warn/audit elsewhere. OFF by default (opt-in for a production/authorized deploy —
+# see docs/security-and-compliance.md). Do not enable until workloads are PSS-compliant.
+incl hardened "security/hardened-profile.yaml"
 
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
