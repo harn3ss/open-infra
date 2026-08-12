@@ -87,6 +87,14 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
 
+      # The oracle mode engine (recover/tolerate/deny) lives under the `convergence` build tag with
+      # the rest of the chaos harness, but the mode-engine tests use in-memory fakes (no DB), so run
+      # just those under the tag. -run isolates them from the DB-backed convergence/migration tests.
+      - name: oracle mode-engine (convergence tag, no DB)
+        if: matrix.module == 'apply-sink'
+        working-directory: apply-sink
+        run: go test -tags convergence -run TestModeEngine -count=1 ./...
+
       # docs/chaos-scenarios.md is generated from chaos/scenarios.json — fail if it drifted.
       - name: chaosdoc drift-guard
         if: matrix.module == 'tools/chaosdoc'
