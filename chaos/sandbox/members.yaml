@@ -38,6 +38,14 @@ spec:
       nodeSelector: { openinfra.dev/chaos: "true" }
       tolerations:
         - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      # Spread the two mesh masters (app=pg) across the chaos nodes so a partition / node-loss
+      # BETWEEN them is a real CROSS-node fault, not an intra-node one. Soft (ScheduleAnyway) so it
+      # never false-reds when fewer chaos nodes are up — it degrades to co-location, never blocks.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: pg } }
       terminationGracePeriodSeconds: 5
       containers:
         - name: postgres
@@ -70,6 +78,14 @@ spec:
       nodeSelector: { openinfra.dev/chaos: "true" }
       tolerations:
         - { key: openinfra.dev/chaos, operator: Equal, value: "true", effect: NoSchedule }
+      # Spread the two mesh masters (app=pg) across the chaos nodes so a partition / node-loss
+      # BETWEEN them is a real CROSS-node fault, not an intra-node one. Soft (ScheduleAnyway) so it
+      # never false-reds when fewer chaos nodes are up — it degrades to co-location, never blocks.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: pg } }
       terminationGracePeriodSeconds: 5
       containers:
         - name: postgres
