@@ -53,6 +53,17 @@ type Grammar struct {
 	Connectors []Connector         `json:"connectors"`
 	Faults     FaultPalette        `json:"faults"`
 	Planes     map[string]Plane    `json:"planes"`
+	Scenarios  []ScenarioSpec      `json:"scenarios"`
+}
+
+// ScenarioSpec maps a watched plane to the proven scenario that exercises it — the draw surface for
+// `chainforge pick`, so continuous testing rotates the whole watched surface, not just the mesh.
+type ScenarioSpec struct {
+	Plane    string `json:"plane"`
+	Scenario string `json:"scenario"`
+	Oracle   string `json:"oracle"`
+	Mode     string `json:"mode"`
+	Watched  bool   `json:"watched"`
 }
 
 type KindSpec struct {
@@ -417,6 +428,26 @@ func cmdGenerate(g *Grammar, seed int64, count, maxNodes int) int {
 	return 0
 }
 
+// ---- pick (the generator selects a random watched plane for continuous) ----
+
+func cmdPick(g *Grammar, seed int64) int {
+	var watched []ScenarioSpec
+	for _, s := range g.Scenarios {
+		if s.Watched {
+			watched = append(watched, s)
+		}
+	}
+	if len(watched) == 0 {
+		fmt.Fprintln(os.Stderr, "chainforge pick: no watched scenarios in grammar.json")
+		return 1
+	}
+	p := watched[rand.New(rand.NewSource(seed)).Intn(len(watched))]
+	fmt.Println(p.Scenario) // stdout = just the scenario name, for the caller to dispatch
+	fmt.Fprintf(os.Stderr, "picked plane=%s scenario=%s oracle=%s/%s (from %d watched, seed=%d)\n",
+		p.Plane, p.Scenario, p.Oracle, p.Mode, len(watched), seed)
+	return 0
+}
+
 // ---- matrix ----
 
 func cmdMatrix(g *Grammar) int {
@@ -521,8 +552,10 @@ func main() {
 		os.Exit(cmdMatrix(g))
 	case "tags":
 		os.Exit(cmdTags(g, resolve(*xrds)))
+	case "pick":
+		os.Exit(cmdPick(g, *seed))
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: validate | generate | matrix | tags)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: validate | generate | matrix | tags | pick)\n", cmd)
 		os.Exit(2)
 	}
 }

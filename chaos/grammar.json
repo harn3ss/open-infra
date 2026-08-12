@@ -54,5 +54,21 @@
     "storage":   { "oracle": "storage-durability",   "mode": "recover",  "watched": true },
     "fileshare": { "oracle": "fileshare-durability", "mode": "recover",  "watched": true },
     "directory": { "oracle": "directory-auth",       "mode": "recover",  "watched": true }
-  }
+  },
+
+  "_scenarios_comment": "The runnable draw surface: each watched plane -> the proven scenario that exercises it. `chainforge pick --seed N` draws one WATCHED entry, so continuous testing rotates the whole watched surface instead of only the mesh. Add an entry (watched:true) once its oracle has graduated (prove-red before it counts).",
+  "scenarios": [
+    { "plane": "convergence",         "scenario": "lottery",              "oracle": "convergence",         "mode": "recover",  "watched": true },
+    { "plane": "stream-no-loss",      "scenario": "stream-noloss",        "oracle": "stream-no-loss",      "mode": "recover",  "watched": true },
+    { "plane": "app-availability",    "scenario": "app-availability",     "oracle": "app-availability",    "mode": "tolerate", "watched": true },
+    { "plane": "security-deny",       "scenario": "security-deny",        "oracle": "security-deny",       "mode": "deny",     "watched": true },
+    { "plane": "vm-liveness",         "scenario": "vm-resilience",        "oracle": "vm-liveness",         "mode": "recover",  "watched": true },
+    { "plane": "volume-durability",   "scenario": "volume-durable",       "oracle": "volume-durability",   "mode": "recover",  "watched": true },
+    { "plane": "storage-durability",  "scenario": "storage-replica-loss", "oracle": "storage-durability",  "mode": "recover",  "watched": true },
+    { "plane": "fileshare-durability","scenario": "fileshare-durable",    "oracle": "fileshare-durability","mode": "recover",  "watched": true },
+    { "plane": "directory-auth",      "scenario": "directory-recover",    "oracle": "directory-auth",      "mode": "recover",  "watched": true },
+    { "plane": "dataflow-convergence","scenario": "dataflow-converge",    "oracle": "dataflow-convergence","mode": "recover",  "watched": true },
+    { "plane": "migration-fidelity",  "scenario": "migration",            "oracle": "migration-fidelity",  "mode": "recover",  "watched": true },
+    { "plane": "serverless-delivery", "scenario": "async-invoke-noloss",  "oracle": "serverless-delivery", "mode": "recover",  "watched": false }
+  ]
 }
