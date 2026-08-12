@@ -93,7 +93,7 @@ func TestGeneratedChainsAlwaysLegal(t *testing.T) {
 	for seed := int64(1); seed <= 60; seed++ {
 		r := rand.New(rand.NewSource(seed))
 		for i := 0; i < 12; i++ {
-			s := g.genChain(r, i, 6)
+			s := g.genChain(r, i, 6, "")
 			if len(s.Chain.Nodes) == 0 {
 				t.Fatalf("seed %d chain %d has no nodes", seed, i)
 			}
@@ -118,7 +118,7 @@ func TestCountedOnlyWhenPlaneWatched(t *testing.T) {
 	sawWatched, sawUnwatched := false, false
 	for seed := int64(1); seed <= 200; seed++ {
 		r := rand.New(rand.NewSource(seed))
-		s := g.genChain(r, 0, 5)
+		s := g.genChain(r, 0, 5, "")
 		kindOf := map[string]string{}
 		for _, n := range s.Chain.Nodes {
 			kindOf[n.ID] = n.Kind
@@ -184,7 +184,7 @@ func TestDeterministic(t *testing.T) {
 		r := rand.New(rand.NewSource(99))
 		var out []Scenario
 		for i := 0; i < 10; i++ {
-			out = append(out, g.genChain(r, i, 5))
+			out = append(out, g.genChain(r, i, 5, ""))
 		}
 		b, _ := json.Marshal(out)
 		return string(b)
