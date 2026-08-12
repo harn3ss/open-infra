@@ -65,19 +65,28 @@ log "proof-of-fire OK — app serves and the in-namespace allow path works."
 
 # Start continuous sampling in the background (the prober loops N probes at INTERVAL, one OK/FAIL
 # per line). The fault is injected partway through so the window straddles the disruption.
-SAMPLE_LOG="$(mktemp)"
-log "sampling availability: ${SAMPLES} probes @ ${INTERVAL}s (fault at ~${INJECT_AFTER}s)"
-kubectl -n "$NS" exec avail-prober -- sh -c \
-  "for i in \$(seq 1 ${SAMPLES}); do if curl -sf -m 2 -o /dev/null ${APP_URL}; then echo OK; else echo FAIL; fi; sleep ${INTERVAL}; done" \
-  >"$SAMPLE_LOG" 2>/dev/null &
-SAMPLER_PID=$!
+REPO="$(cd "$HERE/.." && pwd)"
+# Delegate the VERDICT to the SINGULAR engine: the Go app-availability adapter (tolerate mode) samples
+# the app continuously from the in-ns prober and runTolerate grades the SLO — success rate ≥ CHAOS_SLO
+# AND no bad streak > CHAOS_MAX_STREAK. This scenario owns provisioning + firing the fault + the
+# INCONCLUSIVE gate; the engine owns the verdict (replacing the old bash sampler/tally/PASS-FAIL fork).
+export CHAOS_SANDBOX_NS="$NS" AVAIL_PROBER="avail-prober" APP_URL="$APP_URL"
+export CHAOS_SLO="$(awk "BEGIN{printf \"%.4f\", ${MIN_SUCCESS}/100}")"
+export CHAOS_MAX_STREAK="$MAX_CONSEC_FAIL"
+export CONV_TIMEOUT="${AVAIL_WINDOW:-70}"
+export PROBE_INTERVAL_MS="$(awk "BEGIN{printf \"%d\", ${INTERVAL}*1000}")"
+
+log "sampling availability via the singular tolerate engine (window ${CONV_TIMEOUT}s @ ${INTERVAL}s; fault at ~${INJECT_AFTER}s)"
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestAppAvailability$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
 
 sleep "$INJECT_AFTER"
 BEFORE="$(app_uids)"
 log "injecting the replica kill (mode: one — one of ≥2 pods)"
 kubectl apply -f "$HERE/sandbox/fault-app-replica-kill.yaml"
 
-# Proof-of-fire part 2: an app pod must actually be replaced (the uid set changes).
+# Proof-of-fire: an app pod must actually be replaced — else the fault didn't fire → INCONCLUSIVE
+# (not a false red from the adapter grading a disruption that never happened).
 replaced=0
 for _ in $(seq 1 30); do
   a="$(app_uids)"
@@ -87,30 +96,16 @@ done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — no app pod was replaced; the kill didn't land. The oracle won't bless a fault that didn't fire."
   kubectl -n "$NS" get faultinjection,podchaos,pods -l app.kubernetes.io/name=web -o wide 2>/dev/null || true
-  kill "$SAMPLER_PID" >/dev/null 2>&1 || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
 log "proof-of-fire OK — an app replica was killed and replaced mid-traffic."
 
-log "waiting for the sampling window to complete"
-wait "$SAMPLER_PID" || true
-
-# Tally the timeline: success rate + longest consecutive-failure run.
-total="$(grep -cE '^(OK|FAIL)$' "$SAMPLE_LOG" || true)"; total="${total:-0}"
-ok="$(grep -c '^OK$' "$SAMPLE_LOG" || true)"; ok="${ok:-0}"
-if [ "$total" -lt 1 ]; then
-  log "INCONCLUSIVE — the prober produced no samples (exec/streaming failed). Not counting."
-  rm -f "$SAMPLE_LOG"; exit "$EXIT_INCONCLUSIVE"
+# The adapter samples through the disruption + recovery; its exit code IS the verdict.
+if wait "$GOTEST"; then
+  log "PASS — the Service stayed within SLO through the replica kill (verdict: singular tolerate engine)."
+  exit 0
 fi
-max_consec="$(awk '/^FAIL$/{c++; if(c>m)m=c; next} {c=0} END{print m+0}' "$SAMPLE_LOG")"
-rate=$(( ok * 100 / total ))
-log "availability: ${ok}/${total} ok = ${rate}% ; longest failure streak = ${max_consec} (SLO: ≥${MIN_SUCCESS}%, streak ≤${MAX_CONSEC_FAIL})"
-
-if [ "$rate" -ge "$MIN_SUCCESS" ] && [ "$max_consec" -le "$MAX_CONSEC_FAIL" ]; then
-  log "PASS — the Service stayed available through a replica kill (${rate}%, streak ${max_consec}); HA absorbed the loss."
-  rm -f "$SAMPLE_LOG"; exit 0
-fi
-log "FAIL — availability breached SLO during the replica kill (${rate}%, streak ${max_consec}) — the app tier is not HA (release blocker)."
+log "FAIL — availability breached SLO during the replica kill — the app tier is not HA (release blocker)."
 kubectl -n "$NS" get deploy web pods -l app.kubernetes.io/name=web -o wide 2>/dev/null || true
-rm -f "$SAMPLE_LOG"
 exit 1
