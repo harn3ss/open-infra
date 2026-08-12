@@ -23,14 +23,19 @@ spec:
         chaosDaemon:
           runtime: containerd
           socketPath: /run/k3s/containerd/containerd.sock
-          # The dedicated chaos nodes carry a NoSchedule taint (openinfra.dev/chaos=true) to keep
-          # general workloads off. chaos-daemon is a DaemonSet and MUST run on every node it may
-          # inject on: NetworkChaos/StressChaos work by having the daemon enter the TARGET pod's
-          # namespaces, so with no daemon co-located the fault never fires — reaching AllInjected
-          # is impossible — and the lottery voids the draw INCONCLUSIVE. (PodChaos still fires; it
-          # is controller-driven via the API, node-agnostic — which is exactly why only pod-kill
-          # scenarios were passing.) The sandbox pods are pinned to these nodes, so tolerate the
-          # taint or daemon-based faults can never land there.
+          # CONFINE the daemon to the dedicated chaos nodes. chaos-daemon is a privileged,
+          # host-reaching component (enters co-located pods' namespaces to program tc/iptables and
+          # spawn stress-ng). All fault targets are the chaos-sandbox pods, which are pinned to the
+          # openinfra.dev/chaos nodes, so the daemon is only ever needed there — and the platform's
+          # rule is that chaos stays OFF production hardware. The stock chart runs this DaemonSet
+          # cluster-wide; nodeSelector pins it to the chaos nodes and the toleration lets it past
+          # their NoSchedule taint. Net: the injector exists only where chaos runs.
+          #   Why this matters: NetworkChaos/StressChaos need a daemon co-located with the target to
+          #   inject; with none on the chaos nodes those faults never reached AllInjected and the
+          #   lottery voided every such draw INCONCLUSIVE. (PodChaos is controller/API-driven and
+          #   node-agnostic — which is why only pod-kill scenarios were green.)
+          nodeSelector:
+            openinfra.dev/chaos: "true"
           tolerations:
             - key: openinfra.dev/chaos
               operator: Equal
