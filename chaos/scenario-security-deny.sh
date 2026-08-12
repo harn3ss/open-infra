@@ -59,24 +59,30 @@ if probe 3 "$FORBIDDEN_URL"; then
 fi
 log "baseline OK — allowed reachable, forbidden refused. Fence is live."
 
-# Continuous sampling from the locked prober: each iteration probes BOTH targets, one token per line
-# (AOK/AFAIL for the positive control; FBREACH/FDENY for the negative invariant). Forbidden probes
-# use a short timeout since a denied connect just hangs to the deadline.
-SAMPLE_LOG="$(mktemp)"
-log "sampling the fence: ${SAMPLES} iterations (churning svc-forbidden at ~${INJECT_AFTER}s)"
-kubectl -n "$NS" exec deny-prober -- sh -c \
-  "for i in \$(seq 1 ${SAMPLES}); do \
-     if curl -sf -m 2 -o /dev/null ${ALLOWED_URL}; then echo AOK; else echo AFAIL; fi; \
-     if curl -sf -m 1 -o /dev/null ${FORBIDDEN_URL}; then echo FBREACH; else echo FDENY; fi; \
-     sleep ${INTERVAL}; done" >"$SAMPLE_LOG" 2>/dev/null &
-SAMPLER_PID=$!
+# Delegate the VERDICT to the SINGULAR engine: the Go security-deny adapter (deny mode) samples the
+# forbidden action continuously from the egress-locked prober and runDeny grades it with ZERO
+# tolerance — the FIRST time the locked client reaches svc-forbidden is an immediate red. This
+# scenario owns provisioning + the live baseline + firing the churn + the INCONCLUSIVE gate; the
+# engine owns the verdict (replacing the old bash sampler/tally/breach-count PASS-FAIL fork). The
+# adapter probes the SAME forbidden action this driver does (FORBIDDEN_URL from the egress-locked
+# DENY_PROBER, short DENY_FORBIDDEN_TIMEOUT since a denied connect just hangs to the deadline).
+REPO="$(cd "$HERE/.." && pwd)"
+export CHAOS_SANDBOX_NS="$NS" DENY_PROBER="deny-prober" FORBIDDEN_URL="$FORBIDDEN_URL"
+export DENY_FORBIDDEN_TIMEOUT="${DENY_FORBIDDEN_TIMEOUT:-1}"
+export CONV_TIMEOUT="${DENY_WINDOW:-90}"
+export PROBE_INTERVAL_MS="$(awk "BEGIN{printf \"%d\", ${INTERVAL}*1000}")"
+
+log "sampling the fence via the singular deny engine (zero-tolerance; window ${CONV_TIMEOUT}s; churning svc-forbidden at ~${INJECT_AFTER}s)"
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestSecurityDeny$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
 
 sleep "$INJECT_AFTER"
 BEFORE="$(fb_uids)"
 log "injecting the svc-forbidden churn (pod-kill all)"
 kubectl apply -f "$HERE/sandbox/fault-svc-forbidden-kill.yaml"
 
-# Proof-of-fire: svc-forbidden must actually be replaced.
+# Proof-of-fire: svc-forbidden must actually be replaced — else the churn didn't land → INCONCLUSIVE
+# (the oracle won't grade a negative invariant against a fault that never fired).
 replaced=0
 for _ in $(seq 1 30); do
   a="$(fb_uids)"
@@ -85,27 +91,17 @@ for _ in $(seq 1 30); do
 done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — svc-forbidden was not replaced; the churn didn't land. The oracle won't bless a fault that didn't fire."
-  kill "$SAMPLER_PID" >/dev/null 2>&1 || true
+  kubectl -n "$NS" get faultinjection,podchaos,pods -l app.kubernetes.io/name=svc-forbidden -o wide 2>/dev/null || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "proof-of-fire OK — svc-forbidden churned (recreated with a fresh identity)."
+log "proof-of-fire OK — svc-forbidden churned (recreated with a fresh identity); the adapter judges whether the fence held."
 
-log "waiting for the sampling window to complete"
-wait "$SAMPLER_PID" || true
-
-breach="$(grep -c '^FBREACH$' "$SAMPLE_LOG" || true)"; breach="${breach:-0}"
-aok="$(grep -c '^AOK$' "$SAMPLE_LOG" || true)"; aok="${aok:-0}"
-fdeny="$(grep -c '^FDENY$' "$SAMPLE_LOG" || true)"; fdeny="${fdeny:-0}"
-log "fence samples: svc-allowed ok=${aok} ; svc-forbidden denied=${fdeny} breached=${breach}"
-
-if [ "$aok" -lt 1 ]; then
-  log "INCONCLUSIVE — positive control never succeeded (svc-allowed unreachable during the window). Not counting."
-  rm -f "$SAMPLE_LOG"; exit "$EXIT_INCONCLUSIVE"
+# The adapter samples the forbidden action through the churn; its exit code IS the verdict.
+if wait "$GOTEST"; then
+  log "PASS — the egress fence held with zero leaks while svc-forbidden churned (verdict: singular deny engine)."
+  exit 0
 fi
-if [ "$breach" -gt 0 ]; then
-  log "FAIL — the egress fence LEAKED: the locked client reached svc-forbidden ${breach} time(s) during the churn (fail-open — release blocker)."
-  rm -f "$SAMPLE_LOG"; exit 1
-fi
-log "PASS — the fence held with zero leaks across ${fdeny} denied probes while svc-forbidden churned (positive control ok=${aok})."
-rm -f "$SAMPLE_LOG"
-exit 0
+log "FAIL — the egress fence LEAKED: the locked client reached svc-forbidden during the churn (fail-open — release blocker)."
+kubectl -n "$NS" get netpol sg-client-egress -o yaml 2>/dev/null | sed -n '1,40p' || true
+exit 1
