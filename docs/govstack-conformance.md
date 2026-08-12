@@ -36,7 +36,7 @@ the Blueprint reconciliation is the open item.
 | Fully automated, CI/CD deployment to a known state | app-of-apps GitOps, CI-gated | ✅ |
 | Right-to-be-forgotten (GDPR cross-cutting) | `kind: Destruction` crypto-erase (arguably stronger than a typical block) | ✅ |
 | Honest data handling / privacy-first | `kind: DataClassification` (honest-unknown) | ✅ |
-| High availability, proven | app-tier + managed-Postgres HA proven by the chaos harness; **control-plane HA profile + oracle** | 🔨 in progress (gap B) |
+| High availability, proven | control-plane HA profile (console 2 replicas + PDB + node spread + zero-downtime rollout); app-tier + managed-Postgres HA proven by the chaos harness | ✅ profile shipped; availability-under-fault proven by the app-availability + cnpgfailover oracles |
 | CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI + `kind: EncryptionKey` | 🔨 in progress (gap A) |
 | Interfaces conform to the Architecture Blueprint OpenAPI | platform OpenAPI generated (above) | 🟡 needs the external Blueprint to reconcile |
 | Hardened deployment profile | restricted PSS + default-deny netpol + non-root/RO-rootfs/seccomp | 🔨 in progress (gap D) |
