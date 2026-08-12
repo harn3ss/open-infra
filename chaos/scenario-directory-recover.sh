@@ -40,25 +40,28 @@ if ! sandbox_dc_wait_ready 50; then
 fi
 log "domain is serving."
 
-# Create the probe account — the acknowledged work that must survive the fault.
-log "creating probe account '${PROBE_USER}' (the acked work)"
-if ! sandbox_dc_exec samba-tool user create "$PROBE_USER" "$PROBE_PASS" >/dev/null 2>&1; then
-  # already-exists from a prior run is fine; anything else is a setup problem
-  if ! sandbox_dc_exec samba-tool user list 2>/dev/null | grep -qx "$PROBE_USER"; then
-    log "INCONCLUSIVE — could not create the probe account (setup problem). Not counting."
-    exit "$EXIT_INCONCLUSIVE"
-  fi
-fi
-sandbox_dc_exec samba-tool user list 2>/dev/null | grep -qx "$PROBE_USER" || {
-  log "INCONCLUSIVE — probe account not present after create. Not counting."; exit "$EXIT_INCONCLUSIVE"; }
-log "probe account present before the fault."
+# Delegate the VERDICT to the SINGULAR engine: the Go directory-auth adapter (recover mode) records the
+# pre-fault DC pod identity + creates the probe account (Drive), waits for the fault to LAND and the DC
+# to serve again (SteadyState requires the DC pod replaced + samba-tool answering), and asserts the probe
+# account survived the restart (Reconcile). This scenario owns provisioning + firing the fault + the
+# INCONCLUSIVE gates; the engine owns the verdict (replacing the old bash create/readback/PASS-FAIL fork).
+REPO="$(cd "$HERE/.." && pwd)"
+export CHAOS_SANDBOX_NS="$NS" DIR_DC_POD="dir-dc-0"
+export DIR_PROBE_USER="$PROBE_USER" DIR_PROBE_PASS="$PROBE_PASS"
+export CONV_TIMEOUT="$(( RECOVER_TRIES * 6 ))"   # same DC-recovery budget the bash readback used (x6s)
+
+log "recording DC identity + creating probe account '${PROBE_USER}' via the singular recover engine (recovery budget ${CONV_TIMEOUT}s)"
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestDirectoryAuth$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
+sleep "${DRIVE_SETTLE:-8}"   # let Drive record the pre-fault DC identity + create the probe account BEFORE the kill
 
 # Inject the DC kill.
 BEFORE="$(dc_uid)"
 log "injecting the DC kill (pod-scoped)"
 kubectl apply -f "$HERE/sandbox/fault-directory-kill.yaml"
 
-# Proof-of-fire part 2: the DC pod must actually be replaced.
+# Proof-of-fire part 2: the DC pod must actually be replaced — else the kill didn't land → INCONCLUSIVE
+# (not a false red from the adapter grading a disruption that never happened).
 replaced=0
 for _ in $(seq 1 30); do
   a="$(dc_uid)"
@@ -68,22 +71,16 @@ done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — the DC pod was not replaced; the kill didn't land. The oracle won't bless a fault that didn't fire."
   kubectl -n "$NS" get faultinjection,podchaos,pods -l app=dir-dc -o wide 2>/dev/null || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "proof-of-fire OK — DC pod killed and replaced (${BEFORE:0:8}… → new)."
+log "proof-of-fire OK — DC pod killed and replaced (${BEFORE:0:8}… → new); the adapter judges the probe account survived."
 
-# Recover: the restarted DC must serve again AND still have the probe account.
-log "waiting for the restarted DC to serve again (up to $(( RECOVER_TRIES * 6 ))s)"
-if ! sandbox_dc_wait_ready "$RECOVER_TRIES"; then
-  log "FAIL — the DC did NOT serve again within the budget after the kill (directory did not recover — release blocker)."
-  kubectl -n "$NS" get pods -l app=dir-dc -o wide 2>/dev/null || true
-  exit 1
-fi
-
-if sandbox_dc_exec samba-tool user list 2>/dev/null | grep -qx "$PROBE_USER"; then
-  log "PASS — the DC recovered and still has account '${PROBE_USER}' after a pod kill (domain database intact, zero identity loss)."
+# The adapter waits for the restarted DC to serve again + asserts the probe account survived; its exit code IS the verdict.
+if wait "$GOTEST"; then
+  log "PASS — the DC recovered and still has account '${PROBE_USER}' after a pod kill (domain database intact, zero identity loss) (verdict: singular recover engine)."
   exit 0
 fi
-log "FAIL — the DC recovered but account '${PROBE_USER}' is GONE (domain database lost across the kill — release blocker)."
-sandbox_dc_exec samba-tool user list 2>/dev/null | head || true
+log "FAIL — the DC did NOT recover in budget, or account '${PROBE_USER}' is GONE (domain database lost across the kill — release blocker)."
+kubectl -n "$NS" get pods -l app=dir-dc -o wide 2>/dev/null || true
 exit 1

@@ -44,21 +44,27 @@ if [ "$up" != 1 ]; then
   exit "$EXIT_INCONCLUSIVE"
 fi
 
-log "writing the probe file over SMB (the acked work)"
-kubectl -n "$NS" exec fs-client -- sh -c 'echo chaos-probe-payload > /tmp/probe.txt'
-sandbox_smb "$PASS" "put /tmp/probe.txt probe.txt" >/dev/null 2>&1 || true
-if ! sandbox_smb "$PASS" "ls" | grep -q 'probe.txt'; then
-  log "INCONCLUSIVE — probe file not present after write (share not accepting writes). Not counting."
-  exit "$EXIT_INCONCLUSIVE"
-fi
-log "probe file present on the share before the fault."
+# Delegate the VERDICT to the SINGULAR engine: the Go fileshare-durability adapter (recover mode)
+# writes the probe file over SMB (Drive) + records the pre-fault Samba pod identity, waits for the
+# fault to LAND and the share to serve SMB again (SteadyState requires the Samba pod replaced AND the
+# restarted share answering), then asserts the probe file survived AND the recovered share accepts a
+# NEW write (Reconcile). This scenario owns provisioning + firing the fault + the INCONCLUSIVE gate;
+# the engine owns the verdict (replacing the old bash probe-write/readback + PASS-FAIL fork).
+REPO="$(cd "$HERE/.." && pwd)"
+export CHAOS_SANDBOX_NS="$NS" FS_SECRET="fs-fileshare" FS_SELECTOR="app=fs-smb"
+export CONV_TIMEOUT="$(( RECOVER_TRIES * 6 ))"   # preserve the original recover budget for the share to serve again
+
+log "driving the probe file + judging conservation via the singular recover engine"
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestFileshareDurability$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
+sleep "${FS_DRIVE_SETTLE:-8}"   # let Drive record the Samba pod identity + write the probe file BEFORE the kill
 
 # Inject the Samba kill.
 BEFORE="$(smb_uid)"
 log "injecting the Samba server kill (pod-scoped)"
 kubectl apply -f "$HERE/sandbox/fault-fileshare-kill.yaml"
 
-# Proof-of-fire: the Samba pod must actually be replaced.
+# Proof-of-fire: the Samba pod must actually be replaced — else the kill didn't land → INCONCLUSIVE.
 replaced=0
 for _ in $(seq 1 30); do
   a="$(smb_uid)"
@@ -68,33 +74,17 @@ done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — the Samba pod was not replaced; the kill didn't land. The oracle won't bless a fault that didn't fire."
   kubectl -n "$NS" get faultinjection,podchaos,pods -l app.kubernetes.io/name=fs -o wide 2>/dev/null || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "proof-of-fire OK — Samba pod killed and replaced (${BEFORE:0:8}… → new)."
+log "proof-of-fire OK — Samba pod killed and replaced (${BEFORE:0:8}… → new); the adapter judges the probe file survived."
 
-# Recover: the restarted share must serve again, still have the probe file, and accept a new write.
-log "waiting for the restarted share to serve again (up to $(( RECOVER_TRIES * 6 ))s)"
-served=0
-for _ in $(seq 1 "$RECOVER_TRIES"); do
-  if sandbox_smb "$PASS" "ls" | grep -q '\.'; then served=1; break; fi
-  sleep 6
-done
-if [ "$served" != 1 ]; then
-  log "FAIL — the share did NOT answer SMB again within the budget after the kill (did not recover — release blocker)."
-  kubectl -n "$NS" get pods -l app.kubernetes.io/name=fs -o wide 2>/dev/null || true
-  exit 1
+# The adapter waits for the restarted share to serve again, then asserts the probe file survived and the
+# recovered share accepts a new write; its exit code IS the verdict.
+if wait "$GOTEST"; then
+  log "PASS — the share recovered with 'probe.txt' intact and accepted a new write after a Samba kill (verdict: singular recover engine)."
+  exit 0
 fi
-
-if ! sandbox_smb "$PASS" "ls" | grep -q 'probe.txt'; then
-  log "FAIL — the share recovered but 'probe.txt' is GONE (file data lost across the kill — release blocker)."
-  sandbox_smb "$PASS" "ls" | head || true
-  exit 1
-fi
-# And it must accept a NEW write (fully functional, not read-only-stale).
-sandbox_smb "$PASS" "put /tmp/probe.txt probe2.txt" >/dev/null 2>&1 || true
-if ! sandbox_smb "$PASS" "ls" | grep -q 'probe2.txt'; then
-  log "FAIL — the share recovered with data but will not accept new writes (degraded — release blocker)."
-  exit 1
-fi
-log "PASS — the share recovered with 'probe.txt' intact and accepted a new write after a Samba kill (file data survived, share functional)."
-exit 0
+log "FAIL — file data lost or the share came back read-only-stale across the Samba kill (release blocker)."
+kubectl -n "$NS" get pods -l app.kubernetes.io/name=fs -o wide 2>/dev/null || true
+exit 1

@@ -38,6 +38,20 @@ if ! sandbox_vm_wait_running "$BOOT_TRIES"; then
 fi
 log "VM is Running."
 
+REPO="$(cd "$HERE/.." && pwd)"
+# Delegate the VERDICT to the SINGULAR engine: the Go vm-liveness adapter (recover mode) records the
+# pre-fault virt-launcher identity (Drive), then SteadyState requires the fault to have LANDED (the
+# launcher pod identity changed) AND the VMI to have returned to Running — runOracle reds on the
+# liveness timeout if the VM stays down. This scenario owns provisioning + booting the VM + firing the
+# fault + the INCONCLUSIVE gates; the engine owns the verdict (replacing the old bash Running-readback
+# PASS/FAIL fork). No data marker on this plane — the verdict is pure liveness.
+export CHAOS_SANDBOX_NS="$NS" VM_NAME="vm" VM_LAUNCHER_SELECTOR="kubevirt.io/domain=vm"
+export CONV_TIMEOUT="$(( RECOVER_TRIES * 6 ))"   # recover budget: the VM must return to Running within this
+
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestVmLiveness$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
+sleep "${DRIVE_SETTLE:-6}"   # let Drive record the pre-fault virt-launcher identity BEFORE the kill
+
 # Inject the virt-launcher kill.
 BEFORE="$(launcher_uid)"
 log "injecting the virt-launcher kill (pod-scoped)"
@@ -53,14 +67,15 @@ done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — the virt-launcher pod was not replaced; the kill didn't land. The oracle won't bless a fault that didn't fire."
   kubectl -n "$NS" get faultinjection,podchaos,pods -l kubevirt.io/domain=vm -o wide 2>/dev/null || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "proof-of-fire OK — virt-launcher killed and replaced (${BEFORE:0:8}… → new)."
+log "proof-of-fire OK — virt-launcher killed and replaced (${BEFORE:0:8}… → new); the adapter judges the VMI returns to Running."
 
-# Recover: KubeVirt must bring the VMI back to Running.
-log "waiting for the VM to return to Running (up to $(( RECOVER_TRIES * 6 ))s)"
-if sandbox_vm_wait_running "$RECOVER_TRIES"; then
-  log "PASS — the VM returned to Running after its virt-launcher was killed (KubeVirt rebooted it from its persistent disk)."
+# Recover: KubeVirt must bring the VMI back to Running — the adapter's SteadyState waits for it and
+# its exit code IS the verdict.
+if wait "$GOTEST"; then
+  log "PASS — the VM returned to Running after its virt-launcher was killed (verdict: singular recover engine)."
   exit 0
 fi
 log "FAIL — the VM did NOT return to Running within the budget after the virt-launcher kill (VM stayed down — release blocker)."
