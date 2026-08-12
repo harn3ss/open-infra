@@ -152,3 +152,6 @@ jobs:
         run: |
           python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
           python3 chaos/test_runspace.py
+
+      - name: capacity reservation ledger tests
+        run: python3 chaos/test_capacity_ledger.py
