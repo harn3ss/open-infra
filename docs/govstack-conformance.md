@@ -40,7 +40,7 @@ the Blueprint reconciliation is the open item.
 | CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI + `kind: EncryptionKey` | 🔨 in progress (gap A) |
 | Interfaces conform to the Architecture Blueprint OpenAPI | platform OpenAPI generated (above) | 🟡 needs the external Blueprint to reconcile |
 | Hardened deployment profile | opt-in `components.hardened`: enforce restricted PSS on the control plane + warn/audit elsewhere; Cilium default-deny + `kind: SecurityGroup` already shipped; console now non-root/RO-rootfs/seccomp/drop-ALL | ✅ profile shipped (opt-in) |
-| Encryption stack live-verified | Vault Transit customer keys | 🟡 built; live-verify is Vault-operator-gated (gap E) |
+| Encryption stack live-verified | Vault Transit customer keys; `probe/encryption-vault.sh` proves provision → round-trip → crypto-erase | 🟡 probe ready; running it needs an operator to init+unseal Vault, then the EXPERIMENTAL flag drops |
 
 ## Reliability evidence (the differentiator)
 
