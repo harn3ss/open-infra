@@ -115,5 +115,6 @@ components:
   virtualization: true         # KubeVirt + CDI — kind: VirtualMachine (EC2-style VMs); needs /dev/kvm
   awsShim: false               # AWS-SDK interception shim (S3/STS/Lambda/AppSync) — experimental, opt-in, OFF by default
   openAppsync: false           # open-appsync — resolver-first VTL-faithful AppSync engine + kind: GraphQLApi authoring plane (the shim's AppSync surface fronts it); experimental, opt-in, OFF
+  hardened: false             # hardened profile: enforce restricted PSS on the control plane + warn/audit elsewhere; opt-in, OFF (don't enable until workloads are PSS-compliant — see docs/security-and-compliance.md)
   encryption: false            # customer-owned keys: Vault Transit KMS + kind: EncryptionKey + encrypted Longhorn SC; experimental, opt-in, OFF (Vault needs operator init/unseal — see docs/encryption.md)
   attestation: false           # daily immutable compliance-attestation snapshots to the WORM audit store; opt-in, OFF (sign out-of-band with the release key — see docs/compliance-attestation.md)
