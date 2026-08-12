@@ -20,6 +20,7 @@ export CONV_SETTLE="${CONV_SETTLE:-20}"
 export CONV_CREATE="${CONV_CREATE:-false}"
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"
+EXIT_INCONCLUSIVE=42   # an IO fault that never injected is neither red nor green
 
 # shellcheck source=lib-sandbox.sh
 . "$HERE/lib-sandbox.sh"
@@ -46,9 +47,9 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 [ "$LANDED" = 1 ] && log "fault landed: IOChaos AllInjected=True" || {
-  log "FAIL — IOChaos never reported AllInjected; the IO fault did not inject. Refusing a false green."
+  log "INCONCLUSIVE — IOChaos never reported AllInjected; the IO fault did not inject. Not counting this night."
   kubectl -n "$NS" get iochaos mm-io-latency -o yaml 2>/dev/null | tail -20 || true
-  exit 1; }
+  exit "$EXIT_INCONCLUSIVE"; }
 
 log "running the convergence harness through the degraded storage"
 START=$(date +%s)

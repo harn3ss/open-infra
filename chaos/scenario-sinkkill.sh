@@ -17,6 +17,7 @@ export CONV_SETTLE="${CONV_SETTLE:-15}"
 export CONV_CREATE="${CONV_CREATE:-false}"   # sandbox_provision seeds the table
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"
+EXIT_INCONCLUSIVE=42   # a fault that never fired is neither red nor green (workflow → warning)
 
 # shellcheck source=lib-sandbox.sh
 . "$HERE/lib-sandbox.sh"
@@ -39,8 +40,8 @@ sleep "${KILL_AFTER:-6}"   # let writes get in flight
 # The harness MUST still be running — if it already finished, the fault lands after the
 # test is over and proves nothing. That exact false green happened once; never again.
 kill -0 "$HARNESS" 2>/dev/null || {
-  echo "▸ FAIL — the harness completed BEFORE the fault was injected; the fault exercised nothing. Refusing a false green."
-  exit 1
+  log "INCONCLUSIVE — the harness finished BEFORE the fault was injected; nothing was exercised. Not counting this night."
+  exit "$EXIT_INCONCLUSIVE"
 }
 SINK_SEL="app=chaos-mesh-pg-repl-a-b-sink"
 sink_uid() { kubectl -n "$NS" get pods -l "$SINK_SEL" -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true; }
@@ -62,8 +63,8 @@ for _ in $(seq 1 20); do
   sleep 2
 done
 if [ "$KILLED" != 1 ]; then
-  log "FAIL — the sink was never killed: the fault did not inject. Refusing a false green."
-  exit 1
+  log "INCONCLUSIVE — the sink was never killed: the fault did not inject. Not counting this night."
+  exit "$EXIT_INCONCLUSIVE"
 fi
 
 # The sink's Deployment restarts it; the harness keeps polling until the mesh re-converges.

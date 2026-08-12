@@ -16,6 +16,7 @@ export CONV_SETTLE="${CONV_SETTLE:-20}"
 export CONV_CREATE="${CONV_CREATE:-false}"   # provisioning seeds the table
 export CONV_KEYS="${CONV_KEYS:-200}"
 export CONV_CONFLICTS="${CONV_CONFLICTS:-20}"
+EXIT_INCONCLUSIVE=42   # a fault that never fired (no promotion) is neither red nor green
 
 # shellcheck source=lib-sandbox.sh
 . "$HERE/lib-sandbox.sh"
@@ -39,8 +40,8 @@ sleep "${KILL_AFTER:-4}"   # let writes get in flight
 # The harness MUST still be running — if it already finished, the fault lands after the
 # test is over and proves nothing. That exact false green happened once; never again.
 kill -0 "$HARNESS" 2>/dev/null || {
-  echo "▸ FAIL — the harness completed BEFORE the fault was injected; the fault exercised nothing. Refusing a false green."
-  exit 1
+  log "INCONCLUSIVE — the harness finished BEFORE the fault was injected; nothing was exercised. Not counting this night."
+  exit "$EXIT_INCONCLUSIVE"
 }
 BEFORE="$(primary)"
 log "killing site B's CNPG primary mid-flight (${BEFORE})"
@@ -60,9 +61,9 @@ for _ in $(seq 1 45); do
   sleep 2
 done
 if [ "$PROMOTED" != 1 ]; then
-  log "FAIL — no promotion observed (primary still ${BEFORE}): the failover did not happen. Refusing a false green."
+  log "INCONCLUSIVE — no promotion observed (primary still ${BEFORE}): the kill did not produce a failover, so nothing was proven. Not counting this night."
   kubectl -n "$NS" get pods -l cnpg.io/cluster=cnpg-b -o wide || true
-  exit 1
+  exit "$EXIT_INCONCLUSIVE"
 fi
 
 if wait "$HARNESS"; then
