@@ -1,0 +1,58 @@
+{
+  "_comment": "Machine-readable chaos chain grammar. Ports + a fail-closed compatibility list, so chains can be GENERATED type-legal by construction and existing scenarios VALIDATED against it. Derived from the connectors already used across chaos/scenarios.json — it names connectors that exist, it does not invent behavior. Consumed by tools/chainforge (validate | generate | matrix).",
+
+  "portTypes": {
+    "replication-peer": "bidirectional multi-master link between two databases",
+    "change-stream": "a database's change feed (CDC), consumed by a db/app/stream",
+    "sql-session": "an app issuing writes/txns against a database",
+    "http-invoke": "a synchronous/async HTTP call into a function",
+    "enqueue": "an app publishing onto a stream (incl. poison/dead-letter/durable-consume paths)",
+    "authz-probe": "an app exercising an authz/admission boundary against another app-plane object",
+    "stream-out": "a stream delivering to a function or app consumer",
+    "snapshot": "a database or VM emitting a point-in-time image to object storage",
+    "block-attach": "a block volume attached/hotplugged into a VM"
+  },
+
+  "kinds": {
+    "database":  { "role": "relay",  "offers": ["replication-peer", "change-stream", "snapshot"], "accepts": ["sql-session", "replication-peer", "change-stream"] },
+    "stream":    { "role": "relay",  "offers": ["stream-out"], "accepts": ["enqueue"] },
+    "app":       { "role": "relay",  "offers": ["sql-session", "http-invoke", "enqueue", "authz-probe"], "accepts": ["authz-probe", "stream-out"] },
+    "function":  { "role": "leaf",   "offers": [], "accepts": ["http-invoke", "stream-out"] },
+    "vm":        { "role": "source", "offers": ["snapshot"], "accepts": ["block-attach"] },
+    "volume":    { "role": "source", "offers": ["block-attach"], "accepts": [] },
+    "storage":   { "role": "leaf",   "offers": [], "accepts": ["snapshot"] },
+    "fileshare": { "role": "island", "offers": [], "accepts": [] },
+    "directory": { "role": "island", "offers": [], "accepts": [] }
+  },
+
+  "connectors": [
+    { "port": "replication-peer", "from": "database", "to": ["database"], "dir": "both", "labels": ["replication", "repl", "replication + autoSync", "DataFlow mesh"] },
+    { "port": "change-stream", "from": "database", "to": ["database", "app", "stream"], "dir": "one-way", "labels": ["CDC", "CDC + schema-sync", "CDC (run twice)"] },
+    { "port": "snapshot", "from": "database", "to": ["storage"], "dir": "one-way", "labels": ["final snapshot", "backup", "snapshot"] },
+    { "port": "sql-session", "from": "app", "to": ["database"], "dir": "one-way", "labels": ["apply", "orders", "blocked", "BEGIN/debit/credit/COMMIT"] },
+    { "port": "http-invoke", "from": "app", "to": ["function"], "dir": "one-way", "labels": ["HTTP 200", "deliver (2xx → ack)"] },
+    { "port": "enqueue", "from": "app", "to": ["stream"], "dir": "one-way", "labels": ["enqueue (202)", "durable consume", "poison", "publish on mutation", "dead-letter after retries"] },
+    { "port": "authz-probe", "from": "app", "to": ["app"], "dir": "one-way", "labels": ["compile (boundary)", "SubjectAccessReview", "cross-ns request", "preempts", "egress", "admission", "blocked", "subscribe"] },
+    { "port": "stream-out", "from": "stream", "to": ["function", "app"], "dir": "one-way", "labels": ["durable resume"] },
+    { "port": "snapshot", "from": "vm", "to": ["storage"], "dir": "one-way", "labels": ["CSI snapshot"] },
+    { "port": "block-attach", "from": "volume", "to": ["vm"], "dir": "one-way", "labels": ["hotplug"] }
+  ],
+
+  "faults": {
+    "node": ["PodChaos", "StressChaos", "config", "lifecycle", "schema", "data", "quota", "scale", "load", "drain", "TimeChaos"],
+    "edge": ["NetworkChaos", "NetworkPolicy"],
+    "either": ["NetworkChaos+PodChaos", "seeded multi-fault"]
+  },
+
+  "planes": {
+    "database":  { "oracle": "convergence",         "mode": "recover",  "watched": true,  "note": "multi-master mesh — the singular runOracle judge" },
+    "stream":    { "oracle": "stream-no-loss",       "mode": "recover",  "watched": true },
+    "app":       { "oracle": "app-availability",     "mode": "tolerate", "watched": true,  "note": "HTTP SLO during fault; some app faults are deny-mode (authz) — refined at draw time" },
+    "function":  { "oracle": "serverless-delivery",  "mode": "recover",  "watched": false, "note": "async-invoke oracle built but PENDING graduation" },
+    "vm":        { "oracle": "vm-liveness",          "mode": "recover",  "watched": true,  "note": "liveness only; live-migration correctness still unwatched" },
+    "volume":    { "oracle": "volume-durability",    "mode": "recover",  "watched": true },
+    "storage":   { "oracle": "storage-durability",   "mode": "recover",  "watched": true },
+    "fileshare": { "oracle": "fileshare-durability", "mode": "recover",  "watched": true },
+    "directory": { "oracle": "directory-auth",       "mode": "recover",  "watched": true }
+  }
+}
