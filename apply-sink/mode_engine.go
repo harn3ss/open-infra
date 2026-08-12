@@ -50,6 +50,7 @@ type probeResult struct {
 	good, total int
 	firstBad    string
 	leaked      bool // a bad sample occurred while fail-fast (deny) was set
+	maxStreak   int  // longest run of consecutive bad samples (endpoint-lag SLO)
 }
 
 // gradeContinuous is the PURE verdict for the continuous modes — no clock, no t, so the decision
@@ -57,7 +58,11 @@ type probeResult struct {
 //
 //	tolerate: threshold = SLO (e.g. 0.90), failFast = false — some failure tolerated, rate must hold.
 //	deny:     threshold = 1.0,             failFast = true  — zero-tolerance, first leak is red.
-func gradeContinuous(r probeResult, threshold float64, failFast bool) (pass bool, msg string) {
+//
+// streakLimit is the max tolerated run of consecutive bad samples (0 = unlimited); it catches an
+// availability dip that hides inside an acceptable overall rate (a long outage the endpoints never
+// recovered from within the window).
+func gradeContinuous(r probeResult, threshold float64, streakLimit int, failFast bool) (pass bool, msg string) {
 	if failFast && r.leaked {
 		return false, fmt.Sprintf("LEAK — a forbidden action succeeded: %s (zero-tolerance)", r.firstBad)
 	}
@@ -69,8 +74,12 @@ func gradeContinuous(r probeResult, threshold float64, failFast bool) (pass bool
 		return false, fmt.Sprintf("SLO BREACH — %.1f%% good over %d probes < %.1f%% required (first bad: %s)",
 			rate*100, r.total, threshold*100, r.firstBad)
 	}
-	return true, fmt.Sprintf("HELD — %.1f%% good over %d probes >= %.1f%% required",
-		rate*100, r.total, threshold*100)
+	if streakLimit > 0 && r.maxStreak > streakLimit {
+		return false, fmt.Sprintf("SLO BREACH — %d consecutive bad samples > %d allowed (a sustained outage inside an OK rate)",
+			r.maxStreak, streakLimit)
+	}
+	return true, fmt.Sprintf("HELD — %.1f%% good over %d probes >= %.1f%% (longest bad streak %d ≤ %d)",
+		rate*100, r.total, threshold*100, r.maxStreak, streakLimit)
 }
 
 // sampleContinuous drives the probe loop. It samples until the deadline, or (fail-fast) the first
@@ -78,6 +87,7 @@ func gradeContinuous(r probeResult, threshold float64, failFast bool) (pass bool
 // deterministic under test without a wall-clock dependency.
 func sampleContinuous(o ContinuousOracle, failFast bool, deadline time.Time, interval time.Duration, maxProbes int) probeResult {
 	var r probeResult
+	streak := 0
 	for time.Now().Before(deadline) {
 		if maxProbes > 0 && r.total >= maxProbes {
 			break
@@ -86,7 +96,12 @@ func sampleContinuous(o ContinuousOracle, failFast bool, deadline time.Time, int
 		r.total++
 		if ok {
 			r.good++
+			streak = 0
 			continue
+		}
+		streak++
+		if streak > r.maxStreak {
+			r.maxStreak = streak
 		}
 		if r.firstBad == "" {
 			r.firstBad = detail
@@ -103,27 +118,28 @@ func sampleContinuous(o ContinuousOracle, failFast bool, deadline time.Time, int
 // runContinuous is the shared t-facing engine for tolerate + deny: sample, grade, then emit the
 // same GREEN/RED vocabulary the recover engine uses. The engine owns the timing; the adapter owns
 // only Probe.
-func runContinuous(t *testing.T, o ContinuousOracle, threshold float64, failFast bool) {
+func runContinuous(t *testing.T, o ContinuousOracle, threshold float64, streakLimit int, failFast bool) {
 	t.Helper()
 	window := time.Duration(atoiEnv("CONV_TIMEOUT", 120)) * time.Second
 	interval := time.Duration(atoiEnv("PROBE_INTERVAL_MS", 500)) * time.Millisecond
 	maxProbes := atoiEnv("PROBE_MAX", 0)
 	r := sampleContinuous(o, failFast, time.Now().Add(window), interval, maxProbes)
-	pass, msg := gradeContinuous(r, threshold, failFast)
+	pass, msg := gradeContinuous(r, threshold, streakLimit, failFast)
 	if !pass {
 		t.Fatalf("%s: %s", o.Name(), msg)
 	}
 	t.Logf("%s: %s (zero-tolerance=%v)", o.Name(), msg, failFast)
 }
 
-// runTolerate grades a continuous SLO (default 90%; override CHAOS_SLO as a fraction).
+// runTolerate grades a continuous SLO: good-rate ≥ CHAOS_SLO (default 90%) AND no bad streak longer
+// than CHAOS_MAX_STREAK (default 0 = unlimited).
 func runTolerate(t *testing.T, o ContinuousOracle) {
-	runContinuous(t, o, floatEnv("CHAOS_SLO", 0.90), false)
+	runContinuous(t, o, floatEnv("CHAOS_SLO", 0.90), atoiEnv("CHAOS_MAX_STREAK", 0), false)
 }
 
 // runDeny grades continuous zero-tolerance: a forbidden action must never succeed.
 func runDeny(t *testing.T, o ContinuousOracle) {
-	runContinuous(t, o, 1.0, true)
+	runContinuous(t, o, 1.0, 0, true)
 }
 
 // floatEnv reads a float fraction from the environment (companion to atoiEnv).

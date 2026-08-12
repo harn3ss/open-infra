@@ -37,18 +37,21 @@ func TestModeEngineGradeVerdict(t *testing.T) {
 		name      string
 		r         probeResult
 		threshold float64
+		streak    int
 		failFast  bool
 		wantPass  bool
 	}{
-		{"tolerate all good", probeResult{good: 10, total: 10}, 0.90, false, true},
-		{"tolerate at SLO boundary", probeResult{good: 9, total: 10}, 0.90, false, true},
-		{"tolerate below SLO -> RED", probeResult{good: 8, total: 10, firstBad: "bad@3"}, 0.90, false, false},
-		{"deny clean", probeResult{good: 20, total: 20}, 1.0, true, true},
-		{"deny leak -> RED", probeResult{good: 5, total: 6, firstBad: "bad@6", leaked: true}, 1.0, true, false},
-		{"no probes -> RED", probeResult{}, 0.90, false, false},
+		{"tolerate all good", probeResult{good: 10, total: 10}, 0.90, 0, false, true},
+		{"tolerate at SLO boundary", probeResult{good: 9, total: 10}, 0.90, 0, false, true},
+		{"tolerate below SLO -> RED", probeResult{good: 8, total: 10, firstBad: "bad@3"}, 0.90, 0, false, false},
+		{"rate OK but streak over limit -> RED", probeResult{good: 16, total: 20, maxStreak: 6}, 0.75, 4, false, false},
+		{"rate OK and streak within limit", probeResult{good: 16, total: 20, maxStreak: 3}, 0.75, 4, false, true},
+		{"deny clean", probeResult{good: 20, total: 20}, 1.0, 0, true, true},
+		{"deny leak -> RED", probeResult{good: 5, total: 6, firstBad: "bad@6", leaked: true}, 1.0, 0, true, false},
+		{"no probes -> RED", probeResult{}, 0.90, 0, false, false},
 	}
 	for _, c := range cases {
-		pass, msg := gradeContinuous(c.r, c.threshold, c.failFast)
+		pass, msg := gradeContinuous(c.r, c.threshold, c.streak, c.failFast)
 		if pass != c.wantPass {
 			t.Errorf("%s: gradeContinuous pass=%v want %v (msg=%q)", c.name, pass, c.wantPass, msg)
 		}
