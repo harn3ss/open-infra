@@ -1,0 +1,29 @@
+# Hardened deployment profile (GovStack: a production/authorized deployment supplies its own hardened
+# posture; NIST CM-7 least functionality). OPT-IN — installed only when components.hardened: true.
+#
+# What "hardened" means for open-infra (docs/security-and-compliance.md):
+#   1. Stable tier only — the experimental tier (Chaos Mesh + kind: FaultInjection) is NOT installed
+#      (install.sh omits resilience/* when components.chaos is off), so there is no in-cluster fault
+#      injector on production hardware.
+#   2. Pod Security Standards RESTRICTED enforced on the control-plane namespace (below). The console
+#      already satisfies restricted (runAsNonRoot + readOnlyRootFilesystem + drop ALL caps +
+#      allowPrivilegeEscalation:false + seccompProfile RuntimeDefault).
+#   3. Cluster-wide, PSS restricted is applied in WARN + AUDIT mode (below) — it surfaces every
+#      violation in the stable tier without breaking a workload that has not yet been brought into
+#      compliance, so an operator can drive namespaces to enforce restricted incrementally.
+#   4. SC-7 boundary protection stays as shipped: Cilium default-deny + kind: SecurityGroup per-workload
+#      egress sandboxes.
+#
+# Enable: set components.hardened: true (config.yaml) and re-run install.sh / let GitOps sync. Do NOT
+# flip enforce=restricted on a namespace whose workloads are not yet compliant — use warn/audit first.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-console
+  labels:
+    # The control plane is restricted-compliant — ENFORCE it here.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
