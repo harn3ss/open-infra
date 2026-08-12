@@ -11,7 +11,10 @@ package main
 // the fault even landed. So SteadyState requires the fault to have LANDED — a NEW pod replaced the
 // original — before it will report steady. The adapter records the pre-fault identity in Drive.
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 const volSig = "CHAOSVOL-PERSIST-OK"
 
@@ -82,7 +85,7 @@ func (l liveVol) Readable() bool {
 }
 func (l liveVol) ReadSig() (string, error) {
 	return kubectl("-n", l.ns, "exec", "deploy/vol-writer", "--", "sh", "-c",
-		"dd if="+l.dev+" bs=1 count=20 2>/dev/null") // 20 = len(volSig)
+		"dd if="+l.dev+" bs=1 count="+strconv.Itoa(len(volSig))+" 2>/dev/null")
 }
 
 // TestVolumeDurability — LIVE. The shell provisions the Volume + writer and injects the pod kill;
