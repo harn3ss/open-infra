@@ -581,6 +581,10 @@ sandbox_teardown() {
     kubectl -n "$NS" delete -f "$HERE/sandbox/${MEMBERS_MANIFEST:-members.yaml}" --ignore-not-found >/dev/null 2>&1 || true
     # sweep the engine's composed mm-prep Jobs (not GC'd with the Replication claim)
     kubectl -n "$NS" delete jobs --all --ignore-not-found >/dev/null 2>&1 || true
+    # …and their orphaned Completed/Failed pods, which survive the Job deletion and otherwise
+    # accumulate toward the namespace pod quota (fatal once continuous runs fire every ~30 min).
+    kubectl -n "$NS" delete pod --field-selector status.phase=Succeeded --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete pod --field-selector status.phase=Failed --ignore-not-found >/dev/null 2>&1 || true
     # StatefulSet volumeClaimTemplate PVCs are NOT deleted with the StatefulSet — sweep them so
     # the Longhorn-backed variant doesn't leak volumes on the chaos nodes across runs.
     kubectl -n "$NS" delete pvc -l app=pg --ignore-not-found >/dev/null 2>&1 || true
