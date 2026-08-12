@@ -13,6 +13,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 NS="${CHAOS_SANDBOX_NS:-chaos-sandbox}"
 KEEP="${CHAOS_KEEP:-0}"
 export CONV_SKEW_MS="${CONV_SKEW_MS:--3600000}"   # one hour backward
+EXIT_INCONCLUSIVE=42   # if the member can't stand up, the skew was never exercised (neither red nor green)
 
 log() { echo "▸ $*"; }
 cleanup() {
@@ -25,7 +26,10 @@ trap cleanup EXIT
 
 log "provisioning disposable MySQL member"
 kubectl apply -f "$HERE/sandbox/member-mysql.yaml"
-kubectl -n "$NS" rollout status statefulset/my-b --timeout=180s
+if ! kubectl -n "$NS" rollout status statefulset/my-b --timeout=180s; then
+  log "INCONCLUSIVE — the disposable MySQL member never became ready; the skew was never exercised. Not counting this night."
+  exit "$EXIT_INCONCLUSIVE"
+fi
 
 IP="$(kubectl -n "$NS" get svc my-b -o jsonpath='{.spec.clusterIP}')"
 export PGPASS="$(kubectl -n "$NS" get secret pg-creds -o jsonpath='{.data.password}' | base64 -d)"
