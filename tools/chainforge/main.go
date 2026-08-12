@@ -304,7 +304,9 @@ func (g *Grammar) islandKinds() []string {
 	return out
 }
 
-func (g *Grammar) genChain(r *rand.Rand, idx, maxNodes int) Scenario {
+// genChain generates a type-legal chain. When only != "", every node is constrained to that kind
+// (a single-plane topology, e.g. --only database => an N-node DB mesh the compiler can stand up).
+func (g *Grammar) genChain(r *rand.Rand, idx, maxNodes int, only string) Scenario {
 	var nodes []Node
 	var edges []Edge
 	addNode := func(kind string) string {
@@ -315,11 +317,14 @@ func (g *Grammar) genChain(r *rand.Rand, idx, maxNodes int) Scenario {
 
 	// ~20% of the time, an island single-node chain (fileshare/directory hit directly).
 	islands := g.islandKinds()
-	if len(islands) > 0 && r.Intn(5) == 0 {
+	if only == "" && len(islands) > 0 && r.Intn(5) == 0 {
 		k := pick(r, islands)
 		addNode(k)
 	} else {
-		start := pick(r, g.fromKinds())
+		start := only
+		if start == "" {
+			start = pick(r, g.fromKinds())
+		}
 		curID := addNode(start)
 		curKind := start
 		steps := 1
@@ -328,11 +333,23 @@ func (g *Grammar) genChain(r *rand.Rand, idx, maxNodes int) Scenario {
 		}
 		for i := 0; i < steps; i++ {
 			cs := g.connectorsFrom(curKind)
+			if only != "" { // keep only connectors that can target `only` — stay in-plane
+				var f []Connector
+				for _, c := range cs {
+					if contains(c.To, only) {
+						f = append(f, c)
+					}
+				}
+				cs = f
+			}
 			if len(cs) == 0 {
 				break // reached a leaf
 			}
 			c := pick(r, cs)
 			toKind := pick(r, c.To)
+			if only != "" {
+				toKind = only
+			}
 			toID := addNode(toKind)
 			label := ""
 			if len(c.Labels) > 0 {
@@ -381,12 +398,12 @@ func (g *Grammar) genChain(r *rand.Rand, idx, maxNodes int) Scenario {
 	}
 }
 
-func cmdGenerate(g *Grammar, seed int64, count, maxNodes int) int {
+func cmdGenerate(g *Grammar, seed int64, count, maxNodes int, only string) int {
 	r := rand.New(rand.NewSource(seed))
 	out := make([]Scenario, 0, count)
 	countable := 0
 	for i := 0; i < count; i++ {
-		s := g.genChain(r, i, maxNodes)
+		s := g.genChain(r, i, maxNodes, only)
 		out = append(out, s)
 		if s.Counted != nil && *s.Counted {
 			countable++
@@ -522,6 +539,7 @@ func main() {
 	seed := flag.Int64("seed", 1, "generate: RNG seed (reproducible)")
 	count := flag.Int("count", 5, "generate: number of chains")
 	maxNodes := flag.Int("maxnodes", 5, "generate: max nodes per chain")
+	only := flag.String("only", "", "generate: constrain every node to this kind (e.g. database)")
 	xrds := flag.String("xrds", "platform/abstraction", "dir of XRDs carrying openinfra.dev/chaos-* tags")
 	// Parse flags on either side of the subcommand: `generate -seed 7` and
 	// `-seed 7 generate` both work. flag.Parse() stops at the first non-flag arg
@@ -547,7 +565,7 @@ func main() {
 		}
 		os.Exit(cmdValidate(g, d, resolve(*xrds)))
 	case "generate":
-		os.Exit(cmdGenerate(g, *seed, *count, *maxNodes))
+		os.Exit(cmdGenerate(g, *seed, *count, *maxNodes, *only))
 	case "matrix":
 		os.Exit(cmdMatrix(g))
 	case "tags":
