@@ -147,3 +147,8 @@ jobs:
 
       - name: scenario convention guard (EXIT_INCONCLUSIVE=42)
         run: python3 chaos/test_scenario_conventions.py
+
+      - name: per-run sandbox isolation renderer tests
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
+          python3 chaos/test_runspace.py
