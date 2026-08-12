@@ -9,6 +9,13 @@ kind: CompositeResourceDefinition
 metadata:
   name: xapplications.openinfra.dev
   annotations:
+    # Chaos topology tags (consumed by tools/chainforge): the node-kind this resource
+    # plays in a chaos chain and the typed ports it offers/accepts. role "none" = not a
+    # chaos data-node. The compatibility matrix is derived from these.
+    openinfra.dev/chaos-role: "app"
+    openinfra.dev/chaos-offers: "sql-session,http-invoke,enqueue,authz-probe"
+    openinfra.dev/chaos-accepts: "authz-probe,stream-out"
+    openinfra.dev/chaos-hosts: "database,storage"  # Application provisions these node-kinds
     argocd.argoproj.io/sync-wave: "2"
     # Crossplane's CRDs are installed by the crossplane child app (wave -1);
     # skip dry-run validation so this applies even before the CRD is registered.

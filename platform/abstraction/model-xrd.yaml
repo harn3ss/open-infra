@@ -9,6 +9,12 @@ kind: CompositeResourceDefinition
 metadata:
   name: xmodels.openinfra.dev
   annotations:
+    # Chaos topology tags (consumed by tools/chainforge): the node-kind this resource
+    # plays in a chaos chain and the typed ports it offers/accepts. role "none" = not a
+    # chaos data-node. The compatibility matrix is derived from these.
+    openinfra.dev/chaos-role: "function"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: "http-invoke,stream-out"
     argocd.argoproj.io/sync-wave: "2"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
