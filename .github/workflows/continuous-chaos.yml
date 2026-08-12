@@ -1,0 +1,61 @@
+# Continuous Chaos — run the lottery on a short cycle so the mesh is under randomized fault
+# combinations around the clock, not once a night. This is a constant BUG-FINDER.
+#
+# Relationship to nightly-chaos.yml (deliberate separation of concerns):
+#   - nightly-chaos = the daily status-of-record. It publishes chaos/nightly-status.json, regenerates
+#     the public gallery, and owns the 30-green-NIGHT graduation clock (a CALENDAR-day measure — see
+#     the guardrail: "30 green runs is not 30 green nights").
+#   - continuous-chaos (this file) = coverage. It runs the same lottery far more often but publishes
+#     NOTHING and touches NO clock — a red is a failed run + retained artifacts, which is the signal.
+#     Running it 40x/day must never be allowed to redefine what a green night means, so it stays out
+#     of the status file entirely.
+#
+# It SHARES the nightly-chaos concurrency group, so a continuous run and the nightly serialize onto
+# one queue and never collide on the shared chaos-sandbox (at most one running + one pending; a
+# pileup is impossible). Each run draws a fresh seed, so successive runs exercise different fault
+# combinations. Requires the same self-hosted `openinfra-chaos` runner (kubectl + Go + kubeconfig).
+name: continuous-chaos
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every ~30 min (GitHub schedules are best-effort)
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-chaos
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    runs-on: [self-hosted, openinfra-chaos]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Chaos lottery (continuous)
+        # KUBECONFIG (scoped chaos-runner) + Go/kubectl on PATH come from the runner's own .env.
+        run: |
+          chmod +x chaos/*.sh
+          set +e
+          ./chaos/scenario-lottery.sh
+          rc=$?
+          # 42 = INCONCLUSIVE (capacity short, or a drawn fault never fired / never bit). Neither a
+          # product red nor a green — surface it and pass, so continuous coverage is never a false red.
+          if [ "$rc" -eq 42 ]; then
+            echo "::warning title=Chaos INCONCLUSIVE::lottery void (capacity short or a fault never fired) — neither red nor green."
+            exit 0
+          fi
+          exit "$rc"
+
+      - name: Retain artifacts on red
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: chaos-artifacts-${{ github.run_id }}
+          path: |
+            chaos/artifacts/**
+          if-no-files-found: ignore
+          retention-days: 14
