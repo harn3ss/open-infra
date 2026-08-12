@@ -57,15 +57,39 @@ if [ "$live" != 1 ]; then
 fi
 log "proof-of-fire OK — the Stream is live (source → cdc-evt confirmed)."
 
-# Kill the capture, then write the N rows WHILE it is down — they must queue in the WAL behind the
-# replication slot and survive to the stream once capture resumes from its durable offset.
-BEFORE="$(capture_uid)"
-log "injecting the capture kill, then writing ${N} rows during the outage"
-kubectl apply -f "$HERE/sandbox/fault-stream-capture-kill.yaml"
-kubectl -n "$NS" exec evt-src-0 -- psql -U app -d app -c \
-  "INSERT INTO public.events(id,val) SELECT 'e'||g, 'v'||g FROM generate_series(1,$N) g ON CONFLICT (id) DO NOTHING;" >/dev/null
+# Delegate the VERDICT to the SINGULAR engine: the Go stream-no-loss adapter (recover mode) records the
+# pre-fault capture identity + commits canary + N distinct single-row changes on the source (Drive), waits
+# for the capture kill to LAND and the stream to DRAIN (SteadyState requires the capture pod replaced AND
+# the JetStream message count stopped changing), then asserts the drained stream covers every acknowledged
+# change (Reconcile — at-least-once, so duplicates are fine; only a MISSING change is a red). This scenario
+# owns provisioning + firing the fault + the INCONCLUSIVE gates; the engine owns the verdict (replacing the
+# old bash row-writer + sampler/tally/count-readback PASS/FAIL fork).
+#
+# Recover pattern (like volume-durable): the Go test runs in the BACKGROUND so Drive records the pre-fault
+# capture pod identity and commits the source changes BEFORE we inject the capture kill; then the scenario
+# fires the fault + proves-fire; then we wait the go test for the verdict.
+REPO="$(cd "$HERE/.." && pwd)"
+# CONV_TIMEOUT must cover STREAM_TIMEOUT: a healthy Debezium resume is deliberately slow (~40s JVM start +
+# a logical-slot connection that must time out), so a short budget would t.Fatalf a slow-but-lossless drain
+# as a false red.
+export CHAOS_SANDBOX_NS="$NS" CAPTURE_LABEL="$CAPTURE_LABEL" STREAM_SRC_POD="evt-src-0"
+export STREAM_NATS_URL="${STREAM_NATS_URL:-nats://nats.nats.svc:4222}" STREAM_NAME="${STREAM_NAME:-cdc-evt}"
+export STREAM_ROWS="$N"
+export CONV_TIMEOUT="$STREAM_TIMEOUT"
 
-# Proof-of-fire part 2: the capture pod must actually be replaced.
+log "driving source changes + judging no-loss delivery via the singular recover engine (budget ${CONV_TIMEOUT}s)"
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestStreamNoLoss$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
+sleep "${DRIVE_SETTLE:-6}"   # let Drive record the capture pod identity + commit the source changes BEFORE the kill
+
+# Kill the capture — the committed changes must survive to the stream once capture resumes from its durable
+# offset. (At-least-once: duplicates are fine, only a dropped change is a red.)
+BEFORE="$(capture_uid)"
+log "injecting the capture kill"
+kubectl apply -f "$HERE/sandbox/fault-stream-capture-kill.yaml"
+
+# Proof-of-fire part 2: the capture pod must actually be replaced — else the kill didn't land → INCONCLUSIVE
+# (not a false red from the adapter grading a disruption that never happened).
 replaced=0
 for _ in $(seq 1 30); do
   a="$(capture_uid)"
@@ -75,34 +99,16 @@ done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — capture pod was not replaced; the kill didn't land. The oracle won't bless a fault that didn't fire."
   kubectl -n "$NS" get faultinjection,podchaos,pods -l "$CAPTURE_LABEL" -o wide 2>/dev/null || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "proof-of-fire OK — capture killed and replaced; rows were written during the outage."
+log "proof-of-fire OK — capture killed and replaced; the adapter judges every committed change survives to cdc-evt."
 
-log "asserting the restarted capture delivers every driven change to cdc-evt (at-least-once, no loss)"
-# A Stream's contract is AT-LEAST-ONCE: every source change must reach cdc-evt at least once after
-# the capture resumes from its durable offset — a dropped event is the release-blocking red;
-# duplicates are permitted by the contract. The authoritative, reliable signal is the JetStream
-# message COUNT (stream metadata, O(1) and exact). The source performed exactly N+1 distinct
-# single-row changes (canary + N inserts, no updates, ON CONFLICT DO NOTHING), so cdc-evt must reach
-# >= N+1 messages. A durable-slot logical-replication capture cannot lose a committed change, so
-# count >= N+1 after the kill == nothing dropped. (We deliberately do NOT read each message body
-# back: the nats CLI opens a fresh connection per `stream get` and under-returns past a few dozen
-# messages — unreliable as a gate. The count is authoritative; the pipeline is the subject, not the
-# CLI reader.)
-deadline=$(( SECONDS + STREAM_TIMEOUT ))
-count=0
-while [ "$SECONDS" -lt "$deadline" ]; do
-  count="$(sandbox_stream_msg_count)"; count="${count:-0}"
-  [ "$count" -ge $(( N + 1 )) ] && break
-  log "  cdc-evt messages: ${count}/$(( N + 1 )) …"
-  sleep 10
-done
-
-if [ "$count" -ge $(( N + 1 )) ]; then
-  log "PASS — cdc-evt received all ${count} events (>= ${N} driven changes + canary) after a capture kill (durable offset held, no dropped events; dups OK per at-least-once)."
+# The adapter drains through the capture restart; its exit code IS the verdict.
+if wait "$GOTEST"; then
+  log "PASS — cdc-evt covered every acknowledged change after the capture kill (durable offset held, no dropped events; dups OK per at-least-once) (verdict: singular recover engine)."
   exit 0
 fi
-log "FAIL — cdc-evt received only ${count}/$(( N + 1 )) events within ${STREAM_TIMEOUT}s after the capture kill (DROPPED changes — release blocker)."
+log "FAIL — cdc-evt lost acknowledged changes after the capture kill (DROPPED changes — release blocker)."
 kubectl -n "$NS" get stream,faultinjection,pods -o wide 2>/dev/null | grep -iE 'evt|NAME' || true
 exit 1
