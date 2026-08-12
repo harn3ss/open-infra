@@ -58,6 +58,7 @@ jobs:
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
+          - tools/chainforge # chaos chain grammar: validate corpus + generate chains
           - open-appsync # the VTL engine + $util + the docs-anchored resolver probe
     name: ${{ matrix.module }}
     steps:
@@ -91,6 +92,14 @@ jobs:
         if: matrix.module == 'tools/chaosdoc'
         working-directory: tools/chaosdoc
         run: go run . -check
+
+      # Every chain in chaos/scenarios.json must be type-legal against chaos/grammar.json
+      # (fail-closed) — a scenario that drifts off the grammar, or a grammar that loses a
+      # connector, fails here.
+      - name: chainforge grammar gate
+        if: matrix.module == 'tools/chainforge'
+        working-directory: tools/chainforge
+        run: go run . validate
 
   # Console SPA: typecheck + build. Without this, dependency bumps to ui/ (e.g.
   # Dependabot's npm PRs) merged with no verification that the console still compiles.
