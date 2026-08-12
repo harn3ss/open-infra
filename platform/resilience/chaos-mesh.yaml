@@ -23,6 +23,19 @@ spec:
         chaosDaemon:
           runtime: containerd
           socketPath: /run/k3s/containerd/containerd.sock
+          # The dedicated chaos nodes carry a NoSchedule taint (openinfra.dev/chaos=true) to keep
+          # general workloads off. chaos-daemon is a DaemonSet and MUST run on every node it may
+          # inject on: NetworkChaos/StressChaos work by having the daemon enter the TARGET pod's
+          # namespaces, so with no daemon co-located the fault never fires — reaching AllInjected
+          # is impossible — and the lottery voids the draw INCONCLUSIVE. (PodChaos still fires; it
+          # is controller-driven via the API, node-agnostic — which is exactly why only pod-kill
+          # scenarios were passing.) The sandbox pods are pinned to these nodes, so tolerate the
+          # taint or daemon-based faults can never land there.
+          tolerations:
+            - key: openinfra.dev/chaos
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
