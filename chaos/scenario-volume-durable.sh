@@ -29,27 +29,29 @@ log "pre-flight guard"
 
 writer_uid() { kubectl -n "$NS" get pods -l app=vol-writer -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true; }
 
-# Confirm the block device is attached, then write the signature (the acked work).
+REPO="$(cd "$HERE/.." && pwd)"
+# Confirm the block device is attached (inconclusive if the volume never came up) — the adapter needs
+# a writable device to lay down its signature.
 if ! sandbox_vol_exec "[ -b $DEV ]" 2>/dev/null; then
   log "INCONCLUSIVE — block device $DEV not attached in the writer (volume not ready). Not counting."
   kubectl -n "$NS" get volume,pvc,pods -o wide 2>/dev/null | grep -iE 'vol|NAME' || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "writing raw-block signature to $DEV (the acked work)"
-sandbox_vol_exec "printf '%s' '$SIG' | dd of=$DEV bs=512 seek=0 conv=notrunc 2>/dev/null; sync"
-got="$(sandbox_vol_exec "dd if=$DEV bs=1 count=${#SIG} 2>/dev/null")"
-if [ "$got" != "$SIG" ]; then
-  log "INCONCLUSIVE — signature did not read back before the fault (got '${got}'; write path broken). Not counting."
-  exit "$EXIT_INCONCLUSIVE"
-fi
-log "signature present on the volume before the fault."
 
-# Inject the pod kill.
+# Delegate the VERDICT to the SINGULAR engine: the Go volume-durability adapter writes the raw-block
+# signature (Drive), waits for the fault to LAND and the volume to re-attach (SteadyState requires the
+# writer pod replaced + the device readable again), and asserts the signature survived (Reconcile).
+# This scenario owns firing the fault + the INCONCLUSIVE gate; the engine owns the verdict.
+export CHAOS_SANDBOX_NS="$NS" VOL_DEV="$DEV"
+( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestVolumeDurability$' -timeout 15m -count=1 ./... ) &
+GOTEST=$!
+sleep "${DRIVE_SETTLE:-6}"   # let Drive record the writer identity + write the signature BEFORE the kill
+
 BEFORE="$(writer_uid)"
 log "injecting the attached-pod kill (pod-scoped)"
 kubectl apply -f "$HERE/sandbox/fault-volume-kill.yaml"
 
-# Proof-of-fire: the attached pod must actually be replaced.
+# Proof-of-fire: the attached pod must actually be replaced — else the kill didn't land → INCONCLUSIVE.
 replaced=0
 for _ in $(seq 1 40); do
   a="$(writer_uid)"
@@ -59,22 +61,15 @@ done
 if [ "$replaced" != 1 ]; then
   log "INCONCLUSIVE — the attached pod was not replaced; the kill didn't land. The oracle won't bless a fault that didn't fire."
   kubectl -n "$NS" get faultinjection,podchaos,pods -l app=vol-writer -o wide 2>/dev/null || true
+  kill "$GOTEST" >/dev/null 2>&1 || true
   exit "$EXIT_INCONCLUSIVE"
 fi
-log "proof-of-fire OK — attached pod killed and replaced (${BEFORE:0:8}… → new)."
+log "proof-of-fire OK — attached pod killed and replaced (${BEFORE:0:8}… → new); the adapter judges the signature survived."
 
-# Recover: the rescheduled pod must re-attach the SAME volume and read the signature back.
-log "waiting for the rescheduled pod to re-attach the volume (Recreate: detach then reattach)"
-kubectl -n "$NS" rollout status deploy/vol-writer --timeout=180s || true
-if ! sandbox_vol_exec "[ -b $DEV ]" 2>/dev/null; then
-  log "FAIL — the rescheduled pod did not re-attach the block device within the budget (volume did not recover — release blocker)."
-  kubectl -n "$NS" get pods -l app=vol-writer -o wide 2>/dev/null || true
-  exit 1
-fi
-got="$(sandbox_vol_exec "dd if=$DEV bs=1 count=${#SIG} 2>/dev/null")"
-if [ "$got" = "$SIG" ]; then
-  log "PASS — the volume re-attached with its raw-block signature intact after a pod kill (block data survived the reschedule)."
+if wait "$GOTEST"; then
+  log "PASS — the volume re-attached with its raw-block signature intact (verdict: singular recover engine)."
   exit 0
 fi
-log "FAIL — the volume re-attached but the signature is GONE (read '${got}', want '${SIG}') — block data lost across the reschedule (release blocker)."
+log "FAIL — block data lost across the reschedule (release blocker)."
+kubectl -n "$NS" get pods -l app=vol-writer -o wide 2>/dev/null || true
 exit 1
