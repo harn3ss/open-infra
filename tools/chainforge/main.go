@@ -186,7 +186,7 @@ func loadDoc(path string) (*Doc, error) {
 
 // ---- validate ----
 
-func cmdValidate(g *Grammar, d *Doc) int {
+func cmdValidate(g *Grammar, d *Doc, xrdDir string) int {
 	var illegal, untyped, structural int
 	for _, s := range d.Scenarios {
 		kindOf := map[string]string{}
@@ -234,13 +234,16 @@ func cmdValidate(g *Grammar, d *Doc) int {
 			}
 		}
 	}
-	fmt.Printf("\nchainforge validate: %d scenarios — %d illegal, %d untyped-label, %d structural\n",
-		len(d.Scenarios), illegal, untyped, structural)
-	if illegal > 0 || structural > 0 {
-		fmt.Println("FAIL: the grammar is fail-closed — an illegal or malformed chain must be fixed (in the scenario or the grammar).")
+	// Resources are the source of truth: verify grammar.json is grounded on the XRD chaos tags.
+	tagProblems := verifyTags(g, xrdDir)
+
+	fmt.Printf("\nchainforge validate: %d scenarios — %d illegal, %d untyped-label, %d structural; grammar↔tags drift: %d\n",
+		len(d.Scenarios), illegal, untyped, structural, tagProblems)
+	if illegal > 0 || structural > 0 || tagProblems > 0 {
+		fmt.Println("FAIL: fail-closed — fix the illegal/malformed chain, or reconcile grammar.json with the resource tags.")
 		return 1
 	}
-	fmt.Println("OK: every chain is type-legal against chaos/grammar.json.")
+	fmt.Println("OK: every chain is type-legal, and grammar.json matches the resource tags.")
 	return 0
 }
 
@@ -488,6 +491,7 @@ func main() {
 	seed := flag.Int64("seed", 1, "generate: RNG seed (reproducible)")
 	count := flag.Int("count", 5, "generate: number of chains")
 	maxNodes := flag.Int("maxnodes", 5, "generate: max nodes per chain")
+	xrds := flag.String("xrds", "platform/abstraction", "dir of XRDs carrying openinfra.dev/chaos-* tags")
 	// Parse flags on either side of the subcommand: `generate -seed 7` and
 	// `-seed 7 generate` both work. flag.Parse() stops at the first non-flag arg
 	// (the subcommand); re-parse the remainder to pick up trailing flags.
@@ -510,13 +514,15 @@ func main() {
 			fmt.Fprintln(os.Stderr, "load scenarios:", err)
 			os.Exit(2)
 		}
-		os.Exit(cmdValidate(g, d))
+		os.Exit(cmdValidate(g, d, resolve(*xrds)))
 	case "generate":
 		os.Exit(cmdGenerate(g, *seed, *count, *maxNodes))
 	case "matrix":
 		os.Exit(cmdMatrix(g))
+	case "tags":
+		os.Exit(cmdTags(g, resolve(*xrds)))
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: validate | generate | matrix)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: validate | generate | matrix | tags)\n", cmd)
 		os.Exit(2)
 	}
 }
