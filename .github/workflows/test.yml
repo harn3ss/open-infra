@@ -164,5 +164,11 @@ jobs:
           python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
           python3 chaos/test_compile_chain.py
 
+      # The platform OpenAPI spec is generated from the CRD schemas — fail if it drifted.
+      - name: platform OpenAPI drift gate
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
+          python3 docs/openapi/generate.py --check
+
       - name: chaos shell scripts parse (bash -n)
         run: for f in chaos/*.sh; do bash -n "$f"; done
