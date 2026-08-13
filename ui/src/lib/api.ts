@@ -997,6 +997,83 @@ export function getDestructions(): Promise<Destruction[]> {
   return request<Destruction[]>(`/encryption/destructions`);
 }
 
+/* ------------------------------ PKI (kind: CertificateAuthority) ------------------------------ */
+// A managed private CA, Vault PKI-backed. The BFF's GET /api/ca merges each CA's spec-mirror +
+// state ConfigMaps (like the EncryptionKey view) so the console never touches Vault. Issue/revoke
+// are SAR-gated then reverse-proxied to the in-cluster ca-issuer Service — the console SA never
+// holds a Vault token, and the private key is returned to the browser once and never persisted.
+
+/** A managed private certificate authority (kind: CertificateAuthority). */
+export interface CertificateAuthority {
+  name: string;
+  namespace: string;
+  commonName: string;
+  /** "root" | "intermediate". */
+  hierarchy: string;
+  /** Parent CA name (intermediate only). */
+  parent?: string;
+  keyType: string;
+  maxTtl: string;
+  allowedDomains: string[];
+  /** Vault PKI mount: "pki-<name>". */
+  pkiMount: string;
+  /** True once the reconciler has provisioned the CA in Vault. */
+  ready: boolean;
+  caCertPem?: string;
+  serial?: string;
+  notAfter?: string;
+}
+
+export function getCertificateAuthorities(): Promise<CertificateAuthority[]> {
+  return request<CertificateAuthority[]>(`/ca`);
+}
+
+/** A leaf certificate minted by the ca-issuer. `privateKey` is returned once and never stored. */
+export interface IssuedCertificate {
+  certificate: string;
+  issuingCa: string;
+  caChain: string[];
+  privateKey: string;
+  serialNumber: string;
+}
+
+export interface IssueCertificateRequest {
+  commonName: string;
+  ttl?: string;
+  altNames?: string[];
+}
+
+/** Mint a leaf certificate from a CA (proxied to the ca-issuer). */
+export function issueCertificate(
+  namespace: string,
+  name: string,
+  req: IssueCertificateRequest,
+): Promise<IssuedCertificate> {
+  return request<IssuedCertificate>(
+    `/ca/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/issue`,
+    { method: "POST", body: JSON.stringify({ ca: name, ...req }) },
+  );
+}
+
+/** Outcome of a revoke — the Vault PKI revoke response, normalized to camelCase by the ca-issuer. */
+export interface RevokeResult {
+  revocationTime?: number;
+  revocationTimeRfc3339?: string;
+  state?: string;
+}
+
+/** Revoke a previously-issued certificate by serial number (proxied to the ca-issuer). */
+export function revokeCertificate(
+  namespace: string,
+  name: string,
+  serialNumber: string,
+): Promise<RevokeResult> {
+  return request<RevokeResult>(
+    `/ca/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/revoke`,
+    { method: "POST", body: JSON.stringify({ ca: name, serialNumber }) },
+  );
+}
+
 /** Data lineage — provenance of data movement (source→stream→sink), derived from the topology. */
 export interface LineageNode {
   name: string;

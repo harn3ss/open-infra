@@ -155,3 +155,60 @@ spec:
                 bound_service_account_namespaces=crossplane-system \
                 token_policies=encryptionkey-destroyer token_ttl=10m
               echo "Transit ready; reconciler + destroyer authenticate via Kubernetes auth (no stored secrets)."
+
+              # ── kind: CertificateAuthority — PKI engines + least-priv provisioner/issuer split ──
+              # Same discipline as Transit above: two identities, each bound to its OWN ServiceAccount
+              # and holding exactly one half of the CA lifecycle, so no single leaked token can both
+              # mint a CA and issue certs off it. Reuses the kubernetes auth backend enabled above.
+              # NOTE: there is deliberately NO base `pki`/`pki_int` mount. Every CertificateAuthority gets
+              # its OWN mount, enabled dynamically as pki-<claimName> by the ca-provisioner (see
+              # ca-reconciler.yaml, which also sets each mount's max-lease-ttl); an intermediate is signed
+              # by its parent's pki-<parent> mount. Because the ONLY PKI mounts that ever exist are
+              # pki-<name>, the single-segment `+` used on the data-plane paths below matches exactly those
+              # mounts and nothing else — a `+` grant is inert on any path that does not exist. Vault OSS
+              # cannot express a `pki-*/<subpath>` mid-path glob, so `+` (the transit/keys/+ idiom) is the
+              # tightest per-mount data-plane scope available; the pki- PREFIX is still hard-enforced where
+              # it matters — mount management — via the trailing-glob `sys/mounts/pki-*` below.
+
+              echo "writing the ca-provisioner policy (build CAs — but NEVER issue/revoke leaf certs)…"
+              # Least privilege, two wildcard idioms working together:
+              #  • `sys/mounts/pki-*` — the trailing `*` glob (legal ONLY as the final char of a path)
+              #    pins mount create/tune/read to the pki-<claimName> namespace. So this identity can NOT
+              #    enable or tune `transit` (the KMS) or any non-pki mount, and — with no `delete`
+              #    capability — cannot drop a mount either. This is the "MUST NOT touch transit / outside
+              #    pki" fence.
+              #  • `+` — a single-segment wildcard (exactly the transit/keys/+ idiom above) stands in for
+              #    the per-CA mount name on the data plane. ONLY the CA-building endpoints are granted;
+              #    issue/issuer and revoke are deliberately ABSENT, so a provisioner can forge a CA but can
+              #    never mint or revoke an end-entity certificate. transit exposes none of these subpaths.
+              vault policy write ca-provisioner - <<'POLICY'
+              path "sys/mounts/pki-*"                  { capabilities = ["create", "read", "update"] }
+              path "+/root/generate/internal"          { capabilities = ["create", "update"] }
+              path "+/intermediate/generate/internal"  { capabilities = ["create", "update"] }
+              path "+/intermediate/set-signed"         { capabilities = ["create", "update"] }
+              path "+/root/sign-intermediate"          { capabilities = ["create", "update"] }
+              path "+/roles/issuer"                    { capabilities = ["create", "read", "update"] }
+              path "+/config/urls"                     { capabilities = ["create", "read", "update"] }
+              POLICY
+              vault write auth/kubernetes/role/ca-provisioner \
+                bound_service_account_names=ca-provisioner \
+                bound_service_account_namespaces=crossplane-system \
+                token_policies=ca-provisioner token_ttl=20m
+
+              echo "writing the ca-issuer policy (issue/revoke leaf certs ONLY — cannot build a CA)…"
+              # The mirror image of the provisioner: the ONLY identity that can mint/revoke end-entity
+              # certs, and it can do nothing else. `+` again stands in for the per-CA mount name. No
+              # root/intermediate generate, no roles write, no sys/mounts write, no transit — so a leaked
+              # issuer token can neither forge a new CA nor crypto-erase anything. sys/mounts is read-only
+              # so the issuer can resolve which pki-<ca> mounts exist without being able to change them.
+              vault policy write ca-issuer - <<'POLICY'
+              path "+/issue/issuer"  { capabilities = ["create", "update"] }
+              path "+/revoke"        { capabilities = ["create", "update"] }
+              path "+/crl/rotate"    { capabilities = ["read", "update"] }
+              path "sys/mounts"      { capabilities = ["read"] }
+              POLICY
+              vault write auth/kubernetes/role/ca-issuer \
+                bound_service_account_names=ca-issuer \
+                bound_service_account_namespaces=crossplane-system \
+                token_policies=ca-issuer token_ttl=20m
+              echo "PKI ready; ca-provisioner builds CAs, ca-issuer mints leaf certs — split by policy."

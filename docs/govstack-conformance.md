@@ -37,7 +37,7 @@ the Blueprint reconciliation is the open item.
 | Right-to-be-forgotten (GDPR cross-cutting) | `kind: Destruction` crypto-erase (arguably stronger than a typical block) | ✅ |
 | Honest data handling / privacy-first | `kind: DataClassification` (honest-unknown) | ✅ |
 | High availability, proven | control-plane HA profile (console 2 replicas + PDB + node spread + zero-downtime rollout); app-tier + managed-Postgres HA proven by the chaos harness | ✅ profile shipped; availability-under-fault proven by the app-availability + cnpgfailover oracles |
-| CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI + `kind: EncryptionKey` | 🔨 in progress (gap A) |
+| CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI — per-CA mount, least-privilege provisioner/issuer split, SAR-gated **and** NetworkPolicy-fenced issue/revoke, HA issuer (2 replicas + PDB); OpenAPI-described; `kind: EncryptionKey` alongside | ✅ shipped; live issuance is Vault-operator-gated (needs an initialized + unsealed Vault) |
 | Interfaces conform to the Architecture Blueprint OpenAPI | platform OpenAPI generated (above) | 🟡 needs the external Blueprint to reconcile |
 | Hardened deployment profile | opt-in `components.hardened`: enforce restricted PSS on the control plane + warn/audit elsewhere; Cilium default-deny + `kind: SecurityGroup` already shipped; console now non-root/RO-rootfs/seccomp/drop-ALL | ✅ profile shipped (opt-in) |
 | Encryption stack live-verified | Vault Transit customer keys; `probe/encryption-vault.sh` proves provision → round-trip → crypto-erase | 🟡 probe ready; running it needs an operator to init+unseal Vault, then the EXPERIMENTAL flag drops |
@@ -56,7 +56,7 @@ This speaks directly to the HA / reliability non-functional requirements — ava
 
 ## Open items (the credibility gates for moving past the sandbox)
 
-1. **A** — `kind: CertificateAuthority` (code buildable; issuance proof needs Vault initialized).
+1. **A** — ✅ `kind: CertificateAuthority` shipped: Vault PKI, least-privilege provisioner/issuer split, SAR-gated + NetworkPolicy-fenced issue/revoke, HA issuer, OpenAPI + Terraform provider + console. Live *issuance* proof still needs an operator to initialize + unseal Vault.
 2. **B** — control-plane HA profile + a prove-red HA oracle.
 3. **C** — reconcile the generated OpenAPI to the GovStack Architecture Blueprint *(needs the Blueprint)*.
 4. **D** — the hardened deployment profile.
