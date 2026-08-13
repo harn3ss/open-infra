@@ -82,11 +82,15 @@ fn_consumer_present() {
 # Otherwise the Stream isn't ready and nothing this run observes is trustworthy. (The canary is the only
 # row inserted pre-fault, so cdc-evt >= 1 == delivered.)
 log "proof-of-fire: confirming a source row reaches cdc-evt BEFORE the fault (stream live)"
-kubectl -n "$NS" exec evt-src-0 -- psql -U app -d app -c \
-  "INSERT INTO public.events(id,val) VALUES ('canary','alive') ON CONFLICT (id) DO UPDATE SET val='alive';" >/dev/null 2>&1 || true
 live=0
 for _ in $(seq 1 $(( CANARY_TIMEOUT / 6 )) ); do
-  c="$(sandbox_stream_msg_count)"; c="${c:-0}"
+  # (Re)insert the canary each poll — idempotent (ON CONFLICT) — so a not-yet-ready source doesn't lose
+  # it. sandbox_stream_msg_count is guarded with `|| true`: until Debezium lazily creates cdc-evt its
+  # grep pipeline exits non-zero, and under `set -e` a bare assignment would abort the whole run instead
+  # of polling. Treat "not ready yet" as count 0 and keep waiting up to the budget.
+  kubectl -n "$NS" exec evt-src-0 -- psql -U app -d app -c \
+    "INSERT INTO public.events(id,val) VALUES ('canary','alive') ON CONFLICT (id) DO UPDATE SET val='alive';" >/dev/null 2>&1 || true
+  c="$(sandbox_stream_msg_count || true)"; c="${c:-0}"
   [ "$c" -ge 1 ] && { live=1; break; }
   sleep 6
 done
