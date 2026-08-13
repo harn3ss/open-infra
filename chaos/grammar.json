@@ -314,7 +314,7 @@
       "scenario": "generated-mesh",
       "oracle": "convergence",
       "mode": "recover",
-      "watched": true
+      "watched": false
     },
     {
       "plane": "stream-no-loss",
@@ -398,7 +398,7 @@
       "scenario": "async-invoke-noloss",
       "oracle": "serverless-delivery",
       "mode": "recover",
-      "watched": false
+      "watched": true
     }
   ]
 }

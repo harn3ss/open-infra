@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# PARKED (grammar watched:false) — FINDING from live runs: the generator emits CHAIN topologies
+# (n1<->n2<->n3), but the Replication engine does DIRECT links only — it does not re-forward a write it
+# received onward, so n1's writes never reach n3 through n2 and a chain never converges. The executor
+# plumbing here is proven (it generates, compiles, stands up the mesh, fires the fault with proof-of-fire
+# and runs the oracle end to end); what's missing is a FULLY-CONNECTED (all-pairs) topology and a proof
+# that N>2 direct-mesh convergence holds. Follow-up: emit all-pairs Replications (or a generator mesh
+# mode) + prove 3-master full-mesh convergence, then re-watch. Until then this stays out of the rotation
+# so it can't red a night.
+#
 # Generated-mesh chaos — the chain GENERATOR, finally run live.
 #
 # Instead of a fixed 3-master mesh, this stands up a RANDOMLY GENERATED multi-master Postgres topology
