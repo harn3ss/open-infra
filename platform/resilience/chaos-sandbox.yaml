@@ -140,6 +140,12 @@ rules:
     # OBSERVE them to prove a fault actually materialised (it must never author raw chaos).
     resources: [networkchaos, podchaos, stresschaos, timechaos, iochaos]
     verbs: [get, list, watch]
+  - apiGroups: [serving.knative.dev]
+    # READ-ONLY. The delivered-path serverless scenario provisions a kind: Function; Crossplane
+    # renders the Knative Service (ksvc). The runner only OBSERVES it to confirm the function is
+    # Ready before driving invocations — without this a Forbidden read masquerades as "Knative absent".
+    resources: [services]
+    verbs: [get, list, watch]
   - apiGroups: [apps]
     resources: [statefulsets, deployments, replicasets]
     verbs: [get, list, watch, create, update, patch, delete]
