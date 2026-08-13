@@ -15,14 +15,16 @@ package main
 // only: the DLQ must cover every accepted invocation. This adapter owns only the VERDICT, routed through
 // runOracle instead of the shell's own PASS/FAIL, so the async plane joins the singular engine.
 //
-// The two runOracle pillars are kept INDEPENDENT so the conservation red is live-reachable (the same
-// discipline that keeps stream-no-loss honest):
-//   - SteadyState (liveness): the DLQ has STOPPED GROWING between samples — the durable worker finished
-//     routing the backlog after the kill. It says nothing about sufficiency.
-//   - Reconcile  (safety):    the drained DLQ covers every accepted invocation (>= accepted: none lost)
-//     and is not implausibly high (<= accepted*ceilMult: no runaway dead-letter loop / mis-targeted DLQ
-//     stream, a real bug a live run caught via a DLQ-subject collision). A lossy worker drains and
-//     stabilizes BELOW accepted -> SteadyState passes, Reconcile reds. A real, reachable red.
+// The two runOracle pillars are kept INDEPENDENT so the conservation red is live-reachable:
+//   - SteadyState (liveness): the WORK STREAM has drained to EMPTY — every accepted invocation has been
+//     delivered-and-acked or dead-lettered (WorkQueue removes each on ack/term). This is monotonic and
+//     terminal; it deliberately says nothing about WHERE they went. (The DLQ itself fills in bursty retry
+//     backoffs, so "DLQ count stable" is a false done-signal — a pause between bursts looks stable — which
+//     is exactly why liveness watches the draining work stream, not the DLQ.)
+//   - Reconcile  (safety):    once drained, the DLQ covers every accepted invocation (>= accepted: none
+//     lost) and is not implausibly high (<= accepted*ceilMult: no runaway dead-letter loop / mis-targeted
+//     DLQ stream, a real bug a live run caught via a subject collision). A worker that drops an accepted
+//     invocation drains to empty (SteadyState passes) with DLQ BELOW accepted -> Reconcile reds. Reachable.
 
 import (
 	"fmt"
@@ -36,15 +38,15 @@ import (
 // fake drives the unit test so the verdict is provable RED/GREEN with no cluster.
 type serverlessAccess interface {
 	AcceptedCount() (int, error) // LAMBDA_ASYNC last_seq — total invocations ever accepted (the denominator)
+	WorkPending() (int, error)   // LAMBDA_ASYNC messages — invocations not yet delivered/dead-lettered (drains to 0)
 	DlqCount() (int, error)      // LAMBDA_ASYNC_DLQ messages — invocations dead-lettered (the durable outcome)
 }
 
 type serverlessOracle struct {
-	a        serverlessAccess
-	ceilMult int
-	accepted int
-	lastDlq  int
-	sampled  bool
+	a           serverlessAccess
+	ceilMult    int
+	accepted    int
+	drainedOnce bool
 }
 
 func (o *serverlessOracle) Name() string { return "serverless-delivery" }
@@ -65,30 +67,31 @@ func (o *serverlessOracle) Drive(t *testing.T) map[string]bool {
 	return ledger
 }
 
-// SteadyState = the DLQ has stopped growing across two samples (the worker finished routing the backlog
-// after the kill). Deliberately independent of sufficiency, so a drained-but-lossy DLQ still reaches
-// steady and is then caught by Reconcile.
+// SteadyState = the work stream has drained to EMPTY (every accepted invocation processed) across two
+// consecutive samples. Publishing is already done before the oracle runs, so pending only falls; the
+// double-empty guards against catching a transient empty before the burst fully landed. Deliberately
+// independent of sufficiency, so a lossy worker that drains still reaches steady and is caught by
+// Reconcile.
 func (o *serverlessOracle) SteadyState() (bool, string, error) {
-	dlq, err := o.a.DlqCount()
+	pending, err := o.a.WorkPending()
 	if err != nil {
 		return false, "", err
 	}
-	if !o.sampled {
-		o.sampled = true
-		o.lastDlq = dlq
-		return false, "first sample; waiting for the DLQ to stop filling", nil
+	if pending > 0 {
+		o.drainedOnce = false
+		return false, fmt.Sprintf("work stream still draining (%d pending)", pending), nil
 	}
-	if dlq != o.lastDlq {
-		prev := o.lastDlq
-		o.lastDlq = dlq
-		return false, fmt.Sprintf("DLQ still filling (%d, was %d)", dlq, prev), nil
+	if !o.drainedOnce {
+		o.drainedOnce = true
+		return false, "work stream empty once; confirming it stays drained", nil
 	}
-	return true, "", nil // DLQ stable across two samples = the worker has drained the backlog
+	return true, "", nil // drained across two samples = every invocation has been delivered or dead-lettered
 }
 
-// Reconcile = the drained DLQ covers every accepted invocation (>= accepted: nothing silently lost) and
-// is not implausibly high (<= accepted*ceilMult: no runaway dead-letter loop). Independent of the
-// stability check, so this red actually fires. A transient sampling glitch (err) is NOT treated as loss.
+// Reconcile = the drained work produced a DLQ that covers every accepted invocation (>= accepted: nothing
+// silently lost) and is not implausibly high (<= accepted*ceilMult: no runaway dead-letter loop).
+// Independent of the drain check, so this red actually fires. A transient sampling glitch (err) is NOT
+// treated as loss.
 func (o *serverlessOracle) Reconcile(ledger map[string]bool) []string {
 	dlq, err := o.a.DlqCount()
 	if err != nil {
@@ -142,6 +145,7 @@ func (l liveServerless) streamField(stream, field string) (int, error) {
 }
 
 func (l liveServerless) AcceptedCount() (int, error) { return l.streamField(l.workStream, "last_seq") }
+func (l liveServerless) WorkPending() (int, error)   { return l.streamField(l.workStream, "messages") }
 func (l liveServerless) DlqCount() (int, error)      { return l.streamField(l.dlqStream, "messages") }
 
 // TestServerlessDelivery — LIVE. The shell provisions the shim + work streams, kills a replica, and
@@ -162,56 +166,57 @@ func TestServerlessDelivery(t *testing.T) {
 
 type fakeServerless struct {
 	accepted int
+	pending  int
 	dlq      int
 }
 
 func (f *fakeServerless) AcceptedCount() (int, error) { return f.accepted, nil }
+func (f *fakeServerless) WorkPending() (int, error)   { return f.pending, nil }
 func (f *fakeServerless) DlqCount() (int, error)      { return f.dlq, nil }
 
 func TestServerlessDeliveryRedGreen(t *testing.T) {
 	const accepted = 100
 
-	// GREEN: the kill lands, the DLQ fills to full coverage and stabilizes within the ceiling.
-	f := &fakeServerless{accepted: accepted, dlq: 40}
+	// GREEN: the kill lands, the work stream drains to empty, the DLQ covers every accepted invocation.
+	f := &fakeServerless{accepted: accepted, pending: 60, dlq: 40}
 	o := &serverlessOracle{a: f, ceilMult: 4}
 	o.Drive(nil) // accepted = 100
 
 	if ok, _, _ := o.SteadyState(); ok {
-		t.Fatal("first sample must not be steady")
+		t.Fatal("must not be steady while work is pending")
 	}
-	f.dlq = 90 // still filling
+	f.pending, f.dlq = 0, accepted // drained; everything dead-lettered
 	if ok, _, _ := o.SteadyState(); ok {
-		t.Fatal("a growing DLQ must not be reported steady")
+		t.Fatal("first empty sample must not be steady (needs a confirming second)")
 	}
-	f.dlq = accepted // drains to full coverage
-	o.SteadyState()  // records lastDlq = accepted
 	if ok, _, _ := o.SteadyState(); !ok {
-		t.Fatal("SteadyState must be true once the DLQ stabilizes")
+		t.Fatal("SteadyState must be true once the work stream is drained across two samples")
 	}
 	if lost := o.Reconcile(nil); len(lost) != 0 {
 		t.Fatalf("green: full coverage but reported lost: %v", lost)
 	}
 
-	// RED (loss, live-reachable): a lossy worker drains and STABILIZES below accepted. SteadyState passes;
-	// the conservation pillar (independent of stability) reds.
-	fr := &fakeServerless{accepted: accepted, dlq: accepted - 3}
+	// RED (loss, live-reachable): the work stream drains to EMPTY (SteadyState passes) but the DLQ is
+	// BELOW accepted — invocations vanished (neither delivered nor dead-lettered). The conservation pillar
+	// (independent of the drain check) reds.
+	fr := &fakeServerless{accepted: accepted, pending: 0, dlq: accepted - 3}
 	or := &serverlessOracle{a: fr, ceilMult: 4}
 	or.Drive(nil)
-	or.SteadyState() // lastDlq = accepted-3
+	or.SteadyState() // first empty
 	if ok, _, _ := or.SteadyState(); !ok {
-		t.Fatal("a drained (stable) DLQ must reach steady even when it lost invocations — else Reconcile is dead code")
+		t.Fatal("a drained work stream must reach steady even when invocations were lost — else Reconcile is dead code")
 	}
 	if lost := or.Reconcile(nil); len(lost) != 3 {
 		t.Fatalf("lost accepted invocations (DLQ < accepted) MUST be reported: want 3, got %d (%v)", len(lost), lost)
 	}
 
-	// RED (runaway): the DLQ stabilizes implausibly high (a redelivery loop / mis-targeted stream).
-	fx := &fakeServerless{accepted: accepted, dlq: accepted*4 + 1}
+	// RED (runaway): drained, but the DLQ is implausibly high (a redelivery loop / mis-targeted stream).
+	fx := &fakeServerless{accepted: accepted, pending: 0, dlq: accepted*4 + 1}
 	ox := &serverlessOracle{a: fx, ceilMult: 4}
 	ox.Drive(nil)
 	ox.SteadyState()
 	if ok, _, _ := ox.SteadyState(); !ok {
-		t.Fatal("a stable (if huge) DLQ must reach steady")
+		t.Fatal("a drained work stream must reach steady")
 	}
 	if lost := ox.Reconcile(nil); len(lost) == 0 {
 		t.Fatal("a runaway DLQ (> ceil) MUST be reported as a fault")
