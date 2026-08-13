@@ -85,6 +85,14 @@ or more nodes, compose pairwise links:
   each hop forwards a change until it returns to its origin, where the origin
   filter drops it. (A native N-node topology kind is a possible future addition.)
 
+> **Resource cost of a mesh.** A mesh links *every* pair, so a node in an N-node
+> mesh runs N−1 capture connectors **and** N−1 apply sinks — the engine-pod count
+> grows ~N² (a 3-node mesh is ~12 capture/sink pods plus the 3 databases; a ring is
+> ~2 per node). Size the cluster — and any namespace `ResourceQuota` — for that
+> footprint: if capture/sink pods are rejected for lack of headroom, the affected
+> links silently stop replicating and the mesh diverges even though each node looks
+> healthy. A ring trades some redundancy for a much smaller footprint.
+
 A 3-way **PostgreSQL + SQL Server + MySQL** ring has been validated end-to-end: a
 write on any engine reaches the other two, and a concurrent 3-way conflict
 converges to the newest write on all three.
