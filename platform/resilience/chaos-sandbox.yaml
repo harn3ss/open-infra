@@ -103,10 +103,13 @@ rules:
   - apiGroups: ["openinfra.dev"]
     # The full WORKLOAD plane, so the sandbox can compose realistic multi-resource chains (not
     # just multi-master). Still namespace-scoped to chaos-sandbox — creating any of these
-    # elsewhere is rejected by the API server. Excludes Model/GPU-Function (no GPU on the chaos
-    # nodes) and VmImage (build infra); those aren't blast-zone-runnable regardless of RBAC.
+    # elsewhere is rejected by the API server. `functions` are CPU-only here (the echo function in
+    # the database->stream->function chain requests no GPU) and the namespace pins pods to the chaos
+    # nodes; only Model (and any GPU-requesting Function) and VmImage stay excluded — no GPU / build
+    # infra on the chaos nodes, so they aren't blast-zone-runnable regardless of RBAC.
     resources: [faultinjections, applications, databases, dataflows, replications, migrations,
-                streams, queries, fileshares, directories, volumes, securitygroups, virtualmachines]
+                streams, functions, queries, fileshares, directories, volumes, securitygroups,
+                virtualmachines]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
     resources: [pods, pods/log, persistentvolumeclaims, services, configmaps, secrets]

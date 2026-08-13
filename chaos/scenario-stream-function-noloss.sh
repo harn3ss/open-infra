@@ -56,8 +56,13 @@ trap teardown_stream_function EXIT
 sandbox_provision_stream
 
 # Provision the kind: Function (its trigger renders the pump + durable consumer fn-evt-fn on cdc-evt).
+# A failure to even create the claim (e.g. missing RBAC / Knative not installed) is a SETUP problem, not
+# a data-loss verdict — record it INCONCLUSIVE rather than a false red.
 log "starting the kind: Function (evt-fn, trigger.stream=evt → pump evt-fn-pump, consumer ${FN_CONSUMER_NAME})"
-kubectl apply -f "$HERE/sandbox/function.yaml"
+if ! kubectl apply -f "$HERE/sandbox/function.yaml"; then
+  log "INCONCLUSIVE — could not create kind: Function evt-fn (RBAC / Knative not ready?). Not counting."
+  exit "$EXIT_INCONCLUSIVE"
+fi
 
 # PRE-FLIGHT — refuse the fault if it could reach anything outside the sandbox.
 log "pre-flight guard"
