@@ -30,7 +30,7 @@ N="${STREAM_ROWS:-150}"                    # rows driven during the capture outa
 # event to the function. CONV_TIMEOUT is set from this and MUST stay ≥ 420 (the oracle's floor) or a
 # slow-but-lossless drain would t.Fatalf as a false red.
 STREAM_TIMEOUT="${STREAM_TIMEOUT:-480}"    # seconds for the function to ack every key after recovery (≥ 420)
-CANARY_TIMEOUT="${CANARY_TIMEOUT:-90}"     # seconds for a source canary to reach cdc-evt (stream live)
+CANARY_TIMEOUT="${CANARY_TIMEOUT:-180}"    # seconds for a source canary to reach cdc-evt (cold Debezium: ~40s JVM + a logical-slot connection that must time out first, so give real headroom)
 FN_CONSUMER_TIMEOUT="${FN_CONSUMER_TIMEOUT:-240}"  # seconds for the function pump's durable consumer to appear
 CAPTURE_LABEL="app=evt-stream"
 FN_CONSUMER_NAME="fn-evt-fn"               # durable consumer the pump holds on cdc-evt (fn-<function>)
@@ -51,6 +51,16 @@ teardown_stream_function() {
   sandbox_teardown_stream
 }
 trap teardown_stream_function EXIT
+
+# Clean slate. cdc-evt is a PERSISTENT JetStream stream (and fn-evt-fn a durable consumer) that outlives
+# the CRs — teardown normally removes it, but a prior ABORTED run can leave it behind with stale
+# messages. A polluted baseline would make the count-based verdict meaningless (stale messages can even
+# mask a real loss = a false green). Delete it up front so this run's Debezium recreates cdc-evt fresh
+# (sequence base 1) and the pump recreates fn-evt-fn fresh — the run no longer depends on the previous
+# run's teardown having succeeded.
+log "clean slate: removing any orphaned cdc-evt JetStream stream from a prior run"
+kubectl -n nats run "nats-cdc-rm-$$" --rm -i --restart=Never --image=natsio/nats-box:latest -- \
+  nats --server=nats://nats.nats.svc:4222 stream rm cdc-evt -f >/dev/null 2>&1 || true
 
 # Provision the source Database + kind: Stream (blocks until the capture Deployment is available).
 sandbox_provision_stream
