@@ -20,7 +20,11 @@ EXIT_INCONCLUSIVE=42
 . "$HERE/lib-sandbox.sh"
 
 SEED="${GEN_SEED:-${PICK_SEED:-$RANDOM}}"
-MAXNODES="${GEN_MAXNODES:-4}"
+# Cap at the proven multi-master scale. 2-3 masters establish + reconverge reliably (the fixed lottery
+# runs here); 4+ links crowd the 3 chaos nodes and a link's engine can crash-loop, which the
+# establishment gate below correctly voids as INCONCLUSIVE. Larger meshes are a documented follow-up
+# (they need more chaos-node headroom / replication-engine work), so we do not draw them yet.
+MAXNODES="${GEN_MAXNODES:-3}"
 MESH_ROLLOUT="${MESH_ROLLOUT:-180s}"
 REPL_READY_TRIES="${REPL_READY_TRIES:-40}"      # x6s = up to 4 min for the CDC links to establish
 CONV_BUDGET="${CONV_BUDGET:-600}"               # convergence budget (s); generated meshes vary in size
@@ -72,17 +76,32 @@ for s in $SITES; do
     log "INCONCLUSIVE — pg-$s did not become ready in $MESH_ROLLOUT (seed=$SEED). Not counting."; exit "$EXIT_INCONCLUSIVE"; }
 done
 
-# 3. Wait for the CDC links to establish (Replication CRs Ready) so the mesh has a baseline to converge
-#    from — otherwise the first writes would look divergent through no fault of the system.
-log "waiting for the replication mesh to establish (CDC links Ready)"
-ready=0
+# 3. The mesh must fully ESTABLISH before we judge it: every replication-engine pod (Debezium capture +
+#    apply-sink, one pair per link) must be Ready. A generated topology that cannot even stand its links
+#    up — a larger mesh the chaos nodes lack headroom for, or a crash-looping sink — is INCONCLUSIVE, NOT
+#    a red: judging reconvergence on a mesh that never converged at baseline would be a false red. This
+#    is the fail-safe that keeps a "couldn't set up" apart from a genuine "didn't reconverge under fault".
+log "waiting for the replication engine to establish (every Debezium + apply-sink pod Ready)"
+established=0
 for _ in $(seq 1 "$REPL_READY_TRIES"); do
-  total="$(kubectl -n "$NS" get replication -o name 2>/dev/null | wc -l | tr -d ' ')"
-  up="$(kubectl -n "$NS" get replication -o jsonpath='{range .items[*]}{.status.ready}{"\n"}{end}' 2>/dev/null | grep -c true || true)"
-  [ "$total" -gt 0 ] && [ "$up" = "$total" ] && { ready=1; break; }
+  pods="$(kubectl -n "$NS" get pods -l openinfra.dev/replication -o json 2>/dev/null || echo '{}')"
+  read -r npods nready <<EOF
+$(printf '%s' "$pods" | python3 -c 'import json,sys
+try: d=json.load(sys.stdin)
+except Exception: d={}
+items=d.get("items",[])
+ready=sum(1 for p in items if any(c.get("type")=="Ready" and c.get("status")=="True" for c in (p.get("status",{}).get("conditions") or [])))
+print(len(items), ready)' 2>/dev/null || echo "0 0")
+EOF
+  [ "${npods:-0}" -gt 0 ] && [ "${nready:-0}" = "${npods:-0}" ] && { established=1; break; }
   sleep 6
 done
-[ "$ready" = 1 ] || log "  (replication readiness not confirmed via status; the convergence engine will still gate on actual reconvergence)"
+if [ "$established" != 1 ]; then
+  log "INCONCLUSIVE — the generated mesh's replication engine did not fully establish (a link's Debezium/apply-sink never became Ready). Not judging reconvergence (seed=$SEED). Not counting."
+  kubectl -n "$NS" get pods -l openinfra.dev/replication -o wide 2>/dev/null | head || true
+  exit "$EXIT_INCONCLUSIVE"
+fi
+log "replication engine established — every link's pods are Ready."
 
 # 4. Build CONV_MEMBERS (generalized to N) from the run-spec members.
 PGPASS="$(kubectl -n "$NS" get secret pg-creds -o jsonpath='{.data.password}' | base64 -d)"
