@@ -1,0 +1,24 @@
+# Nightly Chaos Suite — the kind: Function at the far end of the FIRST cross-kind chain
+# (database → stream → function). It subscribes to the kind: Stream "evt" (spec.trigger.stream=evt),
+# so the composition renders a Benthos "pump" Deployment (evt-fn-pump) that holds a DURABLE JetStream
+# consumer "fn-evt-fn" on the stream cdc-evt and POSTs every CDC event to this function. Benthos acks a
+# message ONLY after the POST returns 2xx, so the consumer's acknowledged count == events delivered to
+# and accepted by the function end to end — the signal the stream-function-noloss oracle reads.
+#
+# The image is an always-200 echo (ealen/echo-server) that honors the Knative-injected PORT env var, so
+# every delivered event is acked. expose:false keeps it cluster-local — the pump reaches it over the
+# in-cluster Service, no LAN gateway needed. Scale-to-zero is deliberate: the oracle's long budget
+# (CONV_TIMEOUT ≥ 420) covers the cold-start when the backlog drains after the capture kill. Pinning is
+# not expressible on kind: Function (no nodeSelector knob in the XRD); the sandbox namespace confines it.
+# Blast radius: chaos-sandbox only.
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: evt-fn
+  namespace: chaos-sandbox
+spec:
+  image: "ealen/echo-server:latest"
+  port: 8080                # Knative injects PORT=8080; ealen/echo-server binds to it and returns 200 to any POST
+  expose: false             # cluster-local — the pump POSTs over the in-cluster Service
+  trigger:
+    stream: evt             # subscribe to kind: Stream "evt" → durable consumer fn-evt-fn on cdc-evt (subjects cdc.evt.>)

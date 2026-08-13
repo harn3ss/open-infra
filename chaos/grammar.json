@@ -60,6 +60,7 @@
   "scenarios": [
     { "plane": "convergence",         "scenario": "lottery",              "oracle": "convergence",         "mode": "recover",  "watched": true },
     { "plane": "stream-no-loss",      "scenario": "stream-noloss",        "oracle": "stream-no-loss",      "mode": "recover",  "watched": true },
+    { "plane": "stream-function-noloss","scenario": "stream-function-noloss","oracle": "stream-function-noloss","mode": "recover",  "watched": true },
     { "plane": "app-availability",    "scenario": "app-availability",     "oracle": "app-availability",    "mode": "tolerate", "watched": true },
     { "plane": "security-deny",       "scenario": "security-deny",        "oracle": "security-deny",       "mode": "deny",     "watched": true },
     { "plane": "vm-liveness",         "scenario": "vm-resilience",        "oracle": "vm-liveness",         "mode": "recover",  "watched": true },
