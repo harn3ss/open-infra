@@ -125,7 +125,9 @@ type liveServerless struct {
 }
 
 func (l liveServerless) streamField(stream, field string) (int, error) {
-	name := fmt.Sprintf("nats-sd-%s-%d", field, time.Now().UnixNano())
+	// NB: keep the field OUT of the pod name — a JetStream field like "last_seq" has an underscore, which
+	// is illegal in an RFC1123 pod name and makes `kubectl run` exit 1.
+	name := fmt.Sprintf("nats-sd-%d", time.Now().UnixNano())
 	out, err := kubectl("-n", "nats", "run", name, "--rm", "-i", "--restart=Never",
 		"--image=natsio/nats-box:latest", "--", "sh", "-c",
 		"nats --server="+l.natsSvc+" stream info "+stream+" --json 2>/dev/null | tr ',' '\\n' | grep -oE '\""+field+"\": *[0-9]+' | grep -oE '[0-9]+' | head -1")
