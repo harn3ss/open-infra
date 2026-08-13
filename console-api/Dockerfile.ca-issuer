@@ -1,0 +1,17 @@
+# open-infra ca-issuer — the synchronous leaf-certificate issuer for kind: CertificateAuthority. It
+# authenticates to Vault with its OWN ServiceAccount (Kubernetes auth) and issues/revokes leaf certs on
+# the per-CA pki-<name> mounts under a least-privilege, issue-only policy; it never logs or persists a
+# returned private key. Small static binary on distroless, like attest/audit-offsite/aws-shim.
+# Build context is console-api/.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ca-issuer ./cmd/ca-issuer
+
+FROM gcr.io/distroless/static-debian12
+USER 65532:65532
+COPY --from=build /ca-issuer /ca-issuer
+EXPOSE 8080
+ENTRYPOINT ["/ca-issuer"]
