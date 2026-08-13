@@ -62,19 +62,35 @@ SITES="$(python3 -c "import json; print(' '.join(m['site'] for m in json.load(op
 TARGET="$(python3 -c "import json; print(json.load(open('$META'))['fault'].get('target',''))")"
 log "generated topology: ${NMEM} masters [sites: ${SITES}], fault target=${TARGET}"
 
-# 2. Split the fault out of the manifests; stand up the mesh first.
-python3 - "$MANIFESTS" "$MESH" "$FAULT" <<'PY'
+# 2. Split the compiled manifests three ways and bring them up in the PROVEN ORDER the fixed mesh uses:
+#    members (DBs) first, then SEED conv_test, then the replication links. Debezium snapshots the table
+#    set at capture-start, so a conv_test created AFTER the links start may never be captured — leaving a
+#    member permanently divergent (exactly the nondeterministic red the first live draws hit). The fault
+#    is held out until the mesh is live.
+MEMBERS_F="$WORK/members.yaml"; REPL_F="$WORK/repl.yaml"
+python3 - "$MANIFESTS" "$MEMBERS_F" "$REPL_F" "$FAULT" <<'PY'
 import sys, yaml
 docs=[d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-yaml.safe_dump_all([d for d in docs if d.get("kind")!="FaultInjection"], open(sys.argv[2],"w"), sort_keys=False)
-yaml.safe_dump_all([d for d in docs if d.get("kind")=="FaultInjection"], open(sys.argv[3],"w"), sort_keys=False)
+yaml.safe_dump_all([d for d in docs if d.get("kind") in ("Secret","StatefulSet","Service")], open(sys.argv[2],"w"), sort_keys=False)
+yaml.safe_dump_all([d for d in docs if d.get("kind")=="Replication"], open(sys.argv[3],"w"), sort_keys=False)
+yaml.safe_dump_all([d for d in docs if d.get("kind")=="FaultInjection"], open(sys.argv[4],"w"), sort_keys=False)
 PY
-log "standing up the generated mesh (${NMEM} Postgres + replications)"
-kubectl apply -f "$MESH" >/dev/null
+log "standing up the generated members (${NMEM} Postgres)"
+kubectl apply -f "$MEMBERS_F" >/dev/null
 for s in $SITES; do
   kubectl -n "$NS" rollout status statefulset/pg-"$s" --timeout="$MESH_ROLLOUT" || {
     log "INCONCLUSIVE — pg-$s did not become ready in $MESH_ROLLOUT (seed=$SEED). Not counting."; exit "$EXIT_INCONCLUSIVE"; }
 done
+
+log "seeding conv_test on all ${NMEM} members BEFORE the links (so Debezium snapshots it from the start)"
+for s in $SITES; do
+  kubectl -n "$NS" exec pg-"$s"-0 -- psql -U app -d app \
+    -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);" >/dev/null 2>&1 || {
+    log "INCONCLUSIVE — could not seed conv_test on pg-$s (seed=$SEED). Not counting."; exit "$EXIT_INCONCLUSIVE"; }
+done
+
+log "starting the replication links (${NMEM}-master mesh)"
+kubectl apply -f "$REPL_F" >/dev/null
 
 # 3. The mesh must fully ESTABLISH before we judge it: every replication-engine pod (Debezium capture +
 #    apply-sink, one pair per link) must be Ready. A generated topology that cannot even stand its links
@@ -102,6 +118,7 @@ if [ "$established" != 1 ]; then
   exit "$EXIT_INCONCLUSIVE"
 fi
 log "replication engine established — every link's pods are Ready."
+sleep "${MESH_WARMUP:-45}"   # let mm-prep install its version/origin triggers on conv_test + connectors settle
 
 # 4. Build CONV_MEMBERS (generalized to N) from the run-spec members.
 PGPASS="$(kubectl -n "$NS" get secret pg-creds -o jsonpath='{.data.password}' | base64 -d)"
