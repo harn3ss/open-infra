@@ -82,29 +82,22 @@ accepted="$(sandbox_async_accepted)"; accepted="${accepted:-0}"
 [ "$accepted" -ge 1 ] || { log "INCONCLUSIVE — nothing was accepted onto the work stream (publish path unavailable)."; exit "$EXIT_INCONCLUSIVE"; }
 log "proof-of-fire OK — a shim pod was killed and replaced; ${accepted} invocations accepted."
 
-# Oracle: every ACCEPTED invocation must reach the DLQ (delivery to a non-existent function always
-# fails), across the kill — DLQ >= accepted (no loss). AND the DLQ must not wildly exceed accepted —
-# an implausibly high count means a runaway dead-letter loop or a mis-targeted/missing stream (a real
-# live run caught exactly this via a DLQ-subject collision), so bound it above too. Duplicates from the
-# kill are fine within the ceiling.
-ceil=$(( accepted * 4 ))
-log "asserting the DLQ received every accepted invocation (${accepted} <= DLQ <= ${ceil})"
-deadline=$(( SECONDS + DLQ_TIMEOUT )); dlq=0
-while [ "$SECONDS" -lt "$deadline" ]; do
-  dlq="$(sandbox_async_dlq_count)"; dlq="${dlq:-0}"
-  [ "$dlq" -ge "$accepted" ] && break
-  log "  DLQ messages: ${dlq}/${accepted} …"
-  sleep 10
-done
-
-if [ "$dlq" -lt "$accepted" ]; then
-  log "FAIL — DLQ received only ${dlq}/${accepted} after the kill (LOST accepted invocations — release blocker)."
+# The VERDICT is owned by the singular recover engine now (apply-sink/serverless_delivery_test.go),
+# de-forked from this shell like the other planes: it reads the accepted count (LAMBDA_ASYNC last_seq)
+# as the denominator, waits for the DLQ to STOP filling after the kill (SteadyState), then asserts
+# accepted <= DLQ <= accepted*ceil (Reconcile — no silent loss, no runaway dead-letter loop). Kept as
+# two INDEPENDENT pillars so the conservation red is live-reachable. This scenario owns provisioning +
+# firing the kill + the INCONCLUSIVE gates; the engine owns the pass/fail.
+REPO="$(cd "$HERE/.." && pwd)"
+export SERVERLESS_NATS_URL="${SERVERLESS_NATS_URL:-nats://nats.nats.svc:4222}"
+export ASYNC_WORK_STREAM="${ASYNC_WORK_STREAM:-LAMBDA_ASYNC}" ASYNC_DLQ_STREAM="${ASYNC_DLQ_STREAM:-LAMBDA_ASYNC_DLQ}"
+# CONV_TIMEOUT covers the post-kill DLQ drain (retry backoffs across the outage); give real headroom.
+export CONV_TIMEOUT="${DLQ_TIMEOUT:-240}"
+log "judging no-loss async delivery via the singular recover engine (${accepted} accepted; budget ${CONV_TIMEOUT}s)"
+if ! ( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestServerlessDelivery$' -timeout 15m -count=1 ./... ); then
+  log "FAIL — the async worker LOST accepted invocations (or ran away dead-lettering) across the shim kill (release blocker)."
   kubectl -n "$NS" get faultinjection,pods -l "$SHIM_LABEL" -o wide 2>/dev/null || true
   exit 1
 fi
-if [ "$dlq" -gt "$ceil" ]; then
-  log "FAIL — DLQ holds ${dlq} for ${accepted} accepted invocations (> ${ceil}): runaway dead-letter loop or wrong/missing DLQ stream."
-  exit 1
-fi
-log "PASS — every accepted async invocation reached the DLQ (${accepted} <= ${dlq} <= ${ceil}) across a shim kill (durable work stream held; no silent loss; dups OK)."
+log "PASS — every accepted async invocation reached the DLQ across a shim kill (durable work stream held; no silent loss; dups OK) (verdict: singular recover engine)."
 exit 0
