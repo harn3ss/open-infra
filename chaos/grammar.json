@@ -399,6 +399,13 @@
       "oracle": "serverless-delivery",
       "mode": "recover",
       "watched": true
+    },
+    {
+      "plane": "serverless-delivered",
+      "scenario": "async-invoke-delivered",
+      "oracle": "serverless-delivery",
+      "mode": "recover",
+      "watched": true
     }
   ]
 }
