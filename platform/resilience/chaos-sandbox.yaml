@@ -44,10 +44,16 @@ metadata:
   namespace: chaos-sandbox
 spec:
   hard:
+    # requests are the real RESERVATION and stay tightly bounded — a whole sandbox reserves <=4 cores /
+    # 8Gi regardless of scenario. limits are only a CEILING on the sum of per-pod caps, not reserved
+    # capacity; a full multi-master MESH (the generated-mesh scenario: a 3-master mesh is ~12 replication-
+    # engine pods + 3 Postgres + transient mm-prep Jobs) needs a bigger limit-budget or its capture/sink
+    # pods are quota-rejected mid-mesh and it silently diverges. Nodes sit at ~3% so this over-commits
+    # limits safely (actual use tracks requests).
     requests.cpu: "4"
     requests.memory: 8Gi
-    limits.cpu: "8"
-    limits.memory: 16Gi
+    limits.cpu: "24"
+    limits.memory: 24Gi
     pods: "40"
     persistentvolumeclaims: "12"
     requests.storage: 24Gi
