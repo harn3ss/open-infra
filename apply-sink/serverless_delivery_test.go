@@ -45,6 +45,7 @@ type serverlessAccess interface {
 type serverlessOracle struct {
 	a           serverlessAccess
 	ceilMult    int
+	delivered   bool // true = happy path (live function): expect an EMPTY DLQ; false = ghost: expect DLQ >= accepted
 	accepted    int
 	drainedOnce bool
 }
@@ -99,6 +100,15 @@ func (o *serverlessOracle) Reconcile(ledger map[string]bool) []string {
 	}
 	if dlq < 0 {
 		dlq = 0
+	}
+	if o.delivered {
+		// Delivered (happy) path: the target function is UP, so once the work stream drains, EVERY accepted
+		// invocation must have been acked — the DLQ must be empty. Any dead-letter is a delivery failure
+		// across the kill. (SteadyState already confirmed the work stream drained, so pending is 0 here.)
+		if dlq > 0 {
+			return []string{fmt.Sprintf("delivery-failed: %d invocation(s) dead-lettered despite a healthy function", dlq)}
+		}
+		return nil
 	}
 	if dlq < o.accepted {
 		lost := make([]string, 0, o.accepted-dlq)
@@ -162,6 +172,19 @@ func TestServerlessDelivery(t *testing.T) {
 	})
 }
 
+// TestServerlessDelivered — LIVE. The DELIVERED (happy-path) variant: the target function is UP, so every
+// accepted invocation must be delivered (work drains to 0) with an EMPTY DLQ across the shim kill.
+func TestServerlessDelivered(t *testing.T) {
+	runOracle(t, &serverlessOracle{
+		a: liveServerless{
+			natsSvc:    envOr("SERVERLESS_NATS_URL", "nats://nats.nats.svc:4222"),
+			workStream: envOr("ASYNC_WORK_STREAM", "LAMBDA_ASYNC"),
+			dlqStream:  envOr("ASYNC_DLQ_STREAM", "LAMBDA_ASYNC_DLQ"),
+		},
+		delivered: true,
+	})
+}
+
 // ---- prove-red (no cluster) ----
 
 type fakeServerless struct {
@@ -220,5 +243,38 @@ func TestServerlessDeliveryRedGreen(t *testing.T) {
 	}
 	if lost := ox.Reconcile(nil); len(lost) == 0 {
 		t.Fatal("a runaway DLQ (> ceil) MUST be reported as a fault")
+	}
+}
+
+func TestServerlessDeliveredRedGreen(t *testing.T) {
+	const accepted = 100
+
+	// GREEN: work drains to empty with an empty DLQ — every invocation delivered.
+	f := &fakeServerless{accepted: accepted, pending: 50, dlq: 0}
+	o := &serverlessOracle{a: f, delivered: true}
+	o.Drive(nil)
+	if ok, _, _ := o.SteadyState(); ok {
+		t.Fatal("must not be steady while work is pending")
+	}
+	f.pending = 0
+	o.SteadyState() // first empty
+	if ok, _, _ := o.SteadyState(); !ok {
+		t.Fatal("SteadyState must be true once the work stream drains")
+	}
+	if lost := o.Reconcile(nil); len(lost) != 0 {
+		t.Fatalf("green: all delivered (empty DLQ) but reported: %v", lost)
+	}
+
+	// RED (live-reachable): the work stream drains (SteadyState passes) but the DLQ is NON-empty — a
+	// delivery failure despite a healthy function. The safety pillar (independent of the drain) reds.
+	fr := &fakeServerless{accepted: accepted, pending: 0, dlq: 5}
+	or := &serverlessOracle{a: fr, delivered: true}
+	or.Drive(nil)
+	or.SteadyState() // first empty
+	if ok, _, _ := or.SteadyState(); !ok {
+		t.Fatal("a drained work stream must reach steady even when the DLQ is non-empty — else Reconcile is dead code")
+	}
+	if lost := or.Reconcile(nil); len(lost) == 0 {
+		t.Fatal("dead-letters on the delivered (happy) path MUST be reported as a delivery failure")
 	}
 }

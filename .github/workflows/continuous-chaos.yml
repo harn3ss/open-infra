@@ -59,6 +59,7 @@ jobs:
             stream-noloss)        ./chaos/scenario-stream-noloss.sh ;;
             stream-function-noloss) ./chaos/scenario-stream-function-noloss.sh ;;
             async-invoke-noloss)  ./chaos/scenario-async-invoke-noloss.sh ;;
+            async-invoke-delivered) ./chaos/scenario-async-invoke-delivered.sh ;;
             app-availability)     ./chaos/scenario-app-availability.sh ;;
             security-deny)        ./chaos/scenario-security-deny.sh ;;
             vm-resilience)        ./chaos/scenario-vm-resilience.sh ;;

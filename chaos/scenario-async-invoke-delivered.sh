@@ -83,26 +83,20 @@ accepted="$(sandbox_async_accepted)"; accepted="${accepted:-0}"
 [ "$accepted" -ge 1 ] || { log "INCONCLUSIVE — nothing was accepted onto the work stream."; exit "$EXIT_INCONCLUSIVE"; }
 log "proof-of-fire OK — a shim pod was killed and replaced; ${accepted} invocations accepted."
 
-# Oracle: the work stream must fully drain (every accepted invocation acked/termed) AND the DLQ must stay
-# empty (nothing dead-lettered) → every accepted invocation was successfully DELIVERED across the kill.
-log "asserting every accepted invocation was delivered (work → 0, DLQ == 0)"
-deadline=$(( SECONDS + DELIVER_TIMEOUT )); work=1; dlq=0
-while [ "$SECONDS" -lt "$deadline" ]; do
-  work="$(sandbox_async_work_count)"; work="${work:-1}"
-  dlq="$(sandbox_async_dlq_count)"; dlq="${dlq:-0}"
-  [ "$work" = 0 ] && break
-  log "  work pending: ${work} (dlq ${dlq}) …"
-  sleep 10
-done
-
-if [ "$work" != 0 ]; then
-  log "FAIL — work stream still has ${work} pending after ${DELIVER_TIMEOUT}s (deliveries stuck / lost across the kill)."
+# The VERDICT is owned by the singular recover engine now (apply-sink/serverless_delivery_test.go, the
+# `delivered` variant), de-forked from this shell like the other planes: SteadyState waits for the work
+# stream to drain to 0 (every accepted invocation acked/termed), then Reconcile asserts the DLQ is EMPTY —
+# so every one was DELIVERED, not dead-lettered. Two INDEPENDENT pillars. This scenario owns provisioning
+# + firing the kill + the INCONCLUSIVE gates; the engine owns the pass/fail.
+REPO="$(cd "$HERE/.." && pwd)"
+export SERVERLESS_NATS_URL="${SERVERLESS_NATS_URL:-nats://nats.nats.svc:4222}"
+export ASYNC_WORK_STREAM="${ASYNC_WORK_STREAM:-LAMBDA_ASYNC}" ASYNC_DLQ_STREAM="${ASYNC_DLQ_STREAM:-LAMBDA_ASYNC_DLQ}"
+export CONV_TIMEOUT="${DELIVER_TIMEOUT:-240}"
+log "judging happy-path async delivery via the singular recover engine (${accepted} accepted; budget ${CONV_TIMEOUT}s)"
+if ! ( cd "$REPO/apply-sink" && go test -tags convergence -run '^TestServerlessDelivered$' -timeout 15m -count=1 ./... ); then
+  log "FAIL — not every accepted invocation was delivered across the shim kill (stuck work stream or a non-empty DLQ; release blocker)."
   kubectl -n "$NS" get faultinjection,pods -l "$SHIM_LABEL" -o wide 2>/dev/null || true
   exit 1
 fi
-if [ "$dlq" != 0 ]; then
-  log "FAIL — ${dlq} invocation(s) dead-lettered despite a healthy function (delivery failed, not the happy path)."
-  exit 1
-fi
-log "PASS — all ${accepted} accepted invocations were delivered (work drained to 0, DLQ 0) across a shim kill (at-least-once; no loss)."
+log "PASS — every accepted async invocation was delivered (work drained to 0, DLQ empty) across a shim kill (verdict: singular recover engine)."
 exit 0
