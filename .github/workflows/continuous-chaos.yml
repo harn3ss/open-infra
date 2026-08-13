@@ -55,6 +55,7 @@ jobs:
           set +e
           case "$SCEN" in
             lottery)              ./chaos/scenario-lottery.sh ;;
+            generated-mesh)       ./chaos/scenario-generated-mesh.sh ;;
             stream-noloss)        ./chaos/scenario-stream-noloss.sh ;;
             stream-function-noloss) ./chaos/scenario-stream-function-noloss.sh ;;
             app-availability)     ./chaos/scenario-app-availability.sh ;;
