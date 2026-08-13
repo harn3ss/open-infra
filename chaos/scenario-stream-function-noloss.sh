@@ -58,9 +58,13 @@ trap teardown_stream_function EXIT
 # mask a real loss = a false green). Delete it up front so this run's Debezium recreates cdc-evt fresh
 # (sequence base 1) and the pump recreates fn-evt-fn fresh — the run no longer depends on the previous
 # run's teardown having succeeded.
-log "clean slate: removing any orphaned cdc-evt JetStream stream from a prior run"
+log "clean slate: removing any orphaned cdc-evt JetStream stream + Debezium offsets from a prior run"
 kubectl -n nats run "nats-cdc-rm-$$" --rm -i --restart=Never --image=natsio/nats-box:latest -- \
   nats --server=nats://nats.nats.svc:4222 stream rm cdc-evt -f >/dev/null 2>&1 || true
+# The source DB is emptyDir (fresh every run) but the Debezium offset PVC persists; a stale stored LSN
+# from a prior source instance makes Debezium resume past the fresh DB's log and never capture the
+# canary. Drop it so this run's Debezium snapshots the fresh source from scratch.
+kubectl -n "$NS" delete pvc evt-stream-offsets --ignore-not-found >/dev/null 2>&1 || true
 
 # Provision the source Database + kind: Stream (blocks until the capture Deployment is available).
 sandbox_provision_stream
