@@ -76,6 +76,8 @@ import { DataClassificationPage } from "@/features/iam/data-classification-page"
 import { EncryptionPage } from "@/features/iam/encryption-page";
 import { LineagePage } from "@/features/data/lineage-page";
 import { AttestationPage } from "@/features/iam/attestation-page";
+import { PkiPage, CertificateAuthorityDetailPage } from "@/features/pki/pki-page";
+import { CreateCaPage } from "@/features/pki/create-ca-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -439,6 +441,22 @@ const attestationRoute = createRoute({
   path: "/attestation",
   component: AttestationPage,
 });
+// kind: CertificateAuthority (managed PKI). Static "/new" before the detail route.
+const pkiRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pki",
+  component: PkiPage,
+});
+const caCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pki/new",
+  component: CreateCaPage,
+});
+const caDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pki/$namespace/$name",
+  component: CertificateAuthorityDetailPage,
+});
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -510,6 +528,9 @@ const routeTree = rootRoute.addChildren([
   encryptionRoute,
   lineageRoute,
   attestationRoute,
+  pkiRoute,
+  caCreateRoute,
+  caDetailRoute,
 ]);
 
 export const router = createRouter({

@@ -1,0 +1,129 @@
+# ca-issuer — the synchronous leaf-certificate issuer for kind: CertificateAuthority.
+#
+# Part of the OPT-IN `pki` component (OFF by default; requires the `encryption` component + Vault).
+#
+# This is the ONLY identity permitted to issue/revoke leaf certificates. It authenticates to Vault
+# with its OWN ServiceAccount token via Kubernetes auth (Vault role "ca-issuer"), so no Vault
+# credential is ever stored in a k8s Secret — nothing with cluster-wide secret read (e.g. the console
+# SA) can steal it. Its Vault policy is deliberately narrow (see security/ca-reconciler.yaml, which
+# writes the policies): it may ONLY pki-*/issue/issuer, pki-*/revoke, pki-*/crl/rotate and read
+# sys/mounts. It CANNOT generate a root/intermediate CA or write PKI roles — that is the separate
+# ca-provisioner identity's job.
+#
+# The console BFF SAR-gates /api/ca/.../issue|revoke and then reverse-proxies to this Service; the
+# console SA itself never touches Vault. The issuer NEVER logs or persists the returned private key.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ca-issuer
+  namespace: crossplane-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ca-issuer
+  namespace: crossplane-system
+  labels: { app: ca-issuer }
+spec:
+  # HA by default: this is a shared control-plane component (one issuer serves every CA), so it runs
+  # 2 replicas like the console. It is stateless — every request logs into Vault fresh — so replicas
+  # need no coordination and scale horizontally. (A per-CA replica knob would be meaningless here.)
+  replicas: 2
+  selector:
+    matchLabels: { app: ca-issuer }
+  template:
+    metadata:
+      labels: { app: ca-issuer }
+    spec:
+      serviceAccountName: ca-issuer
+      # Keep the two replicas on different nodes so one node loss can't take both (soft, so a
+      # single-node cluster still schedules).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: ca-issuer }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: ca-issuer
+          image: ghcr.io/harn3ss/open-infra-ca-issuer:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+            - { name: VAULT_ROLE, value: "ca-issuer" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ca-issuer
+  namespace: crossplane-system
+  labels: { app: ca-issuer }
+spec:
+  type: ClusterIP
+  selector: { app: ca-issuer }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# The issuer itself does NOT authenticate its callers — that authorization is the BFF's job, which
+# SAR-gates /api/ca/.../issue|revoke before proxying here. This NetworkPolicy is what makes that gate
+# unbypassable: it flips the ca-issuer pod to default-deny ingress and admits :8080 ONLY from the
+# console BFF pods. Without it, under Cilium's default allow-all any pod could POST /issue directly and
+# mint certs from any provisioned CA. (Kubelet health probes originate from the node/host, which Cilium
+# does not police by default — host firewall is off — so readiness/liveness are unaffected.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ca-issuer-ingress
+  namespace: crossplane-system
+  labels: { app: ca-issuer }
+spec:
+  podSelector:
+    matchLabels: { app: ca-issuer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: open-infra-console }
+          podSelector:
+            matchLabels: { app: console }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Keep at least one issuer serving through a node drain / upgrade (with replicas: 2 this guarantees
+# certificate issue/revoke stays available while one pod is evicted/replaced).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ca-issuer
+  namespace: crossplane-system
+  labels: { app: ca-issuer }
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: ca-issuer }

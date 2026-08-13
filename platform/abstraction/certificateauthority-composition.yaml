@@ -1,0 +1,65 @@
+# The compiler for kind: CertificateAuthority. It renders a spec-mirror ConfigMap in the console
+# namespace (so the reconciler and console read the desired CAs by label without CRD access) and echoes
+# the Vault PKI mount in status. The actual PKI mount, root/intermediate CA and issuer role are
+# provisioned by ca-reconciler, which owns a SEPARATE state ConfigMap — single-writer each, no fight
+# over one object.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: certificateauthority
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XCertificateAuthority
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $pkiMount := printf "pki-%s" $name }}
+            {{- $domains := $spec.allowedDomains | default list | join "," }}
+            ---
+            # Desired-CA mirror the reconciler reads (label-selected).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ca-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-ca-{{ $name }}
+                    namespace: open-infra-console
+                    labels:
+                      openinfra.dev/ca: {{ $name }}
+                  data:
+                    commonName: {{ $spec.commonName | default "" | quote }}
+                    hierarchy: "{{ $spec.hierarchy | default "root" }}"
+                    parent: {{ $spec.parent | default "" | quote }}
+                    keyType: "{{ $spec.keyType | default "rsa-4096" }}"
+                    maxTtl: "{{ $spec.maxTtl | default "8760h" }}"
+                    allowedDomains: {{ $domains | quote }}
+                    pkiMount: "{{ $pkiMount }}"
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XCertificateAuthority
+            status:
+              ready: true
+              pkiMount: "{{ $pkiMount }}"

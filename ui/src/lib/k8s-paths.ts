@@ -114,6 +114,12 @@ export const openinfraPaths = {
     `${oiGV}${nsSegment(ns)}/${SECURITYGROUPS_PLURAL}`,
   securitygroup: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${SECURITYGROUPS_PLURAL}/${name}`,
+  // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
+  // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
+  certificateauthorities: (ns?: string) =>
+    `${oiGV}${nsSegment(ns)}/certificateauthorities`,
+  certificateauthority: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/certificateauthorities/${name}`,
 };
 
 const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;

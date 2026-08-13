@@ -1,0 +1,225 @@
+# Reconciler for kind: CertificateAuthority — provisions a Vault PKI secrets engine per CA and reflects
+# its live state into a ConfigMap the console reads. Part of the OPT-IN `pki` component (needs the
+# `encryption` component's Vault).
+#
+# Least privilege on BOTH sides:
+#   * Kubernetes: read CertificateAuthorities, write only the state ConfigMaps in the console namespace.
+#   * Vault: this Job authenticates as the `ca-provisioner` SA and gets the `ca-provisioner` policy —
+#     it may enable/tune pki mounts, generate root/intermediate CAs, set-signed, and write pki roles +
+#     config/urls, but it CANNOT issue or revoke leaf certificates (that is the separate `ca-issuer`
+#     identity behind cmd/ca-issuer). CA provisioning and leaf issuance are deliberately split.
+#
+# If Vault is unreachable or sealed, or the SA login fails, the run fails and retries next interval —
+# no CA is silently skipped. Per-CA failures (e.g. an intermediate whose parent is not provisioned yet)
+# are logged and retried on the next run without aborting the others.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ca-provisioner
+  namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-ca-provisioner
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [certificateauthorities]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-ca-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-ca-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: ca-provisioner
+    namespace: crossplane-system
+---
+# Write the live-state ConfigMaps in the console namespace (single-writer; the composition owns the
+# separate spec-mirror ConfigMaps).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ca-provisioner-state
+  namespace: open-infra-console
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ca-provisioner-state
+  namespace: open-infra-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: ca-provisioner-state }
+subjects:
+  - kind: ServiceAccount
+    name: ca-provisioner
+    namespace: crossplane-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ca-provisioner
+  namespace: crossplane-system
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: ca-provisioner
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          volumes:
+            - { name: bin, emptyDir: {} }
+            - { name: home, emptyDir: {} }
+          initContainers:
+            - name: fetch-vault
+              image: hashicorp/vault:1.17.2
+              command: [sh, -c, "cp /bin/vault /bin-shared/vault && chmod +x /bin-shared/vault"]
+              volumeMounts: [{ name: bin, mountPath: /bin-shared }]
+          containers:
+            - name: reconcile
+              image: alpine/k8s:1.30.0
+              command: [/bin/sh, -ceu]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: bin, mountPath: /bin-shared }
+                - { name: home, mountPath: /tmp }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
+                - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+                - { name: CONSOLE_NS, value: "open-infra-console" }
+              args:
+                - |
+                  # Kubernetes auth: log in with THIS pod's ServiceAccount token — no Vault credential
+                  # is stored in any k8s Secret, so nothing with cluster-wide secret read (e.g. the
+                  # console SA) can steal Vault access. Fail loudly if login fails (an assignment's
+                  # exit status hides the substitution's, so check the token explicitly under set -e).
+                  VAULT_TOKEN="$(vault write -field=token auth/kubernetes/login \
+                    role=ca-provisioner \
+                    jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)")"
+                  export VAULT_TOKEN
+                  [ -n "$VAULT_TOKEN" ] || { echo "vault kubernetes login failed" >&2; exit 1; }
+
+                  kubectl get certificateauthorities.openinfra.dev -A -o json \
+                    | jq -r '.items[] | [
+                        .metadata.name,
+                        .spec.commonName,
+                        (.spec.hierarchy // "root"),
+                        (.spec.parent // ""),
+                        (.spec.keyType // "rsa-4096"),
+                        (.spec.maxTtl // "8760h"),
+                        (.spec.allowedDomains // [] | join(","))
+                      ] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r name cn hierarchy parent keyType maxTtl allowedDomains; do
+                        echo "reconciling CA $name (hierarchy=$hierarchy keyType=$keyType)"
+                        mount="pki-$name"
+
+                        # Map the abstract keyType onto Vault's key_type/key_bits pair.
+                        case "$keyType" in
+                          rsa-2048) kt=rsa; kb=2048;;
+                          rsa-4096) kt=rsa; kb=4096;;
+                          ec-256)   kt=ec;  kb=256;;
+                          ec-384)   kt=ec;  kb=384;;
+                          *)        kt=rsa; kb=4096;;
+                        esac
+
+                        # Ensure the per-CA PKI mount exists and its max-lease-ttl covers the CA TTL.
+                        # `enable` errors if it already exists; swallow so we never need sys/mounts read.
+                        vault secrets enable -path="$mount" -max-lease-ttl="$maxTtl" pki 2>/dev/null \
+                          || echo "  mount $mount already enabled"
+                        vault secrets tune -max-lease-ttl="$maxTtl" "$mount" >/dev/null 2>&1 || true
+
+                        # Generate the CA once (idempotent: skip if a CA cert already exists).
+                        have_ca="$(vault read -field=certificate "$mount/cert/ca" 2>/dev/null || echo "")"
+                        if [ -z "$have_ca" ]; then
+                          if [ "$hierarchy" = "intermediate" ]; then
+                            if [ -z "$parent" ]; then
+                              echo "  skip $name: hierarchy=intermediate but no spec.parent" >&2
+                              continue
+                            fi
+                            echo "  generating intermediate CSR for $name, signing with pki-$parent"
+                            csr="$(vault write -field=csr "$mount/intermediate/generate/internal" \
+                                    common_name="$cn" key_type="$kt" key_bits="$kb" 2>/dev/null || echo "")"
+                            [ -n "$csr" ] || { echo "  skip $name: CSR generation failed" >&2; continue; }
+                            printf '%s\n' "$csr" > /tmp/ca-csr.pem
+                            signed="$(vault write -field=certificate "pki-$parent/root/sign-intermediate" \
+                                       csr=@/tmp/ca-csr.pem format=pem_bundle ttl="$maxTtl" 2>/dev/null || echo "")"
+                            rm -f /tmp/ca-csr.pem
+                            if [ -z "$signed" ]; then
+                              echo "  skip $name: parent pki-$parent could not sign (not ready?)" >&2
+                              continue
+                            fi
+                            printf '%s\n' "$signed" > /tmp/ca-signed.pem
+                            vault write "$mount/intermediate/set-signed" certificate=@/tmp/ca-signed.pem >/dev/null \
+                              || { rm -f /tmp/ca-signed.pem; echo "  skip $name: set-signed failed" >&2; continue; }
+                            rm -f /tmp/ca-signed.pem
+                          else
+                            echo "  generating root CA for $name"
+                            vault write "$mount/root/generate/internal" \
+                              common_name="$cn" key_type="$kt" key_bits="$kb" ttl="$maxTtl" >/dev/null \
+                              || { echo "  skip $name: root generation failed" >&2; continue; }
+                          fi
+                        fi
+
+                        # Configure issuing / CRL distribution URLs (idempotent).
+                        vault write "$mount/config/urls" \
+                          issuing_certificates="$VAULT_ADDR/v1/$mount/ca" \
+                          crl_distribution_points="$VAULT_ADDR/v1/$mount/crl" >/dev/null 2>&1 || true
+
+                        # Write the leaf-issuance role "issuer" scoped to the CA's allowedDomains.
+                        if [ -n "$allowedDomains" ]; then
+                          vault write "$mount/roles/issuer" \
+                            allowed_domains="$allowedDomains" allow_subdomains=true \
+                            max_ttl="$maxTtl" >/dev/null
+                        else
+                          # No domain restriction requested — allow any name (still bounded by max_ttl).
+                          vault write "$mount/roles/issuer" \
+                            allow_any_name=true allow_subdomains=true \
+                            max_ttl="$maxTtl" >/dev/null
+                        fi
+
+                        # Read the live CA cert and derive serial / notAfter for the state ConfigMap.
+                        capem="$(vault read -field=certificate "$mount/cert/ca" 2>/dev/null || echo "")"
+                        if [ -n "$capem" ]; then
+                          ready=true
+                          printf '%s\n' "$capem" > /tmp/ca-cert.pem
+                          serial="$(openssl x509 -in /tmp/ca-cert.pem -noout -serial 2>/dev/null | cut -d= -f2)"
+                          notAfter="$(openssl x509 -in /tmp/ca-cert.pem -noout -enddate 2>/dev/null | cut -d= -f2)"
+                          rm -f /tmp/ca-cert.pem
+                        else
+                          ready=false; serial=""; notAfter=""
+                        fi
+
+                        kubectl create configmap "openinfra-ca-state-$name" -n "$CONSOLE_NS" \
+                          --from-literal=ready="$ready" \
+                          --from-literal=pkiMount="$mount" \
+                          --from-literal=caCertPem="$capem" \
+                          --from-literal=serial="$serial" \
+                          --from-literal=notAfter="$notAfter" \
+                          --dry-run=client -o yaml \
+                          | kubectl label --local -f - "openinfra.dev/ca=$name" -o yaml \
+                          | kubectl apply -f - >/dev/null
+                        echo "synced $name (ready=$ready serial=$serial)"
+                      done
+              resources:
+                requests: { cpu: 20m, memory: 48Mi }
+                limits: { cpu: 300m, memory: 192Mi }

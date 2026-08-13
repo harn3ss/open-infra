@@ -306,6 +306,11 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/keys", handleEncryptionKeys(cs, auth, logger))
 		// Crypto-erase requests (kind: Destruction) and their certificates.
 		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/destructions", handleDestructions(cs, auth, logger))
+		// Certificate Authorities (kind: CertificateAuthority) — list from the spec+state ConfigMaps.
+		api.With(middleware.Timeout(15*time.Second)).Get("/ca", handleCertificateAuthorities(cs, auth, logger))
+		// Issue / revoke a leaf cert: SAR-gated, then reverse-proxied to the ca-issuer (the console SA never touches Vault).
+		api.With(middleware.Timeout(15*time.Second)).Post("/ca/{namespace}/{name}/issue", handleCAIssue(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/ca/{namespace}/{name}/revoke", handleCARevoke(cs, auth, logger))
 		// Data lineage — provenance of data movement (DataFlow/Migration/Replication/Stream topology).
 		api.With(middleware.Timeout(20*time.Second)).Get("/lineage", handleLineage(cs, auth, logger))
 		// Compliance attestation — live control-coverage report (the signed copies live in the WORM store).
