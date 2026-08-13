@@ -25,8 +25,9 @@ Usage:
 Reads stdin when no FILE is given. Emits multi-doc YAML to stdout.
 
 Note (scope): the mesh/convergence sandbox is fully self-contained in its namespace, so this isolates
-it completely. Oracles that reuse shared JetStream streams in the `nats` namespace still need per-run
-stream prefixes — a separate, additive concern, not handled here.
+it completely. Oracles that reuse the shared JetStream in the `nats` namespace also need per-run stream
+prefixes so their (namespace-blind) derived stream/consumer names don't collide — that additive rewrite
+is `stream_prefix` below (runs after, and independent of, the namespace rewrite).
 """
 import argparse
 import sys
@@ -70,7 +71,40 @@ def transform(doc, run_id):
     for s in doc.get("subjects") or []:
         if isinstance(s, dict) and s.get("namespace") == BASE_NS:
             s["namespace"] = ns
+
+    # Per-run NATS stream-prefix rewrite (the additive concern flagged in the module docstring).
+    stream_prefix(doc, kind, run_id, md)
     return doc
+
+
+def stream_prefix(doc, kind, run_id, md):
+    """Prefix the JetStream-derived names with the run-id so two db->stream->function runs sharing the
+    ONE JetStream in the `nats` namespace cannot collide.
+
+    Per-run namespaces isolate every namespaced object, but a kind: Stream / kind: Function still derives
+    names that live inside the shared `nats` JetStream (the composition builds stream `cdc-<streamName>`
+    and durable consumer `fn-<functionName>`) — those are namespace-blind, so two runs would clobber the
+    same `cdc-evt` / `fn-evt-fn`. Giving each run's Stream and Function a `<run-id>-` name prefix pushes
+    the run-id into every derived name, keeping them disjoint and consistent:
+      - Stream `evt`      -> `<id>-evt`      => derived stream   cdc-evt   -> cdc-<id>-evt
+      - Function `evt-fn` -> `<id>-evt-fn`   => derived consumer fn-evt-fn -> fn-<id>-evt-fn
+      - Function spec.trigger.stream `evt` -> `<id>-evt` so the trigger still points at its (renamed)
+        Stream, and its subject cdc.<stream>.> lands on the same renamed stream.
+    This only renames the objects the JetStream names derive from; it never rewrites the `nats` namespace
+    reference itself (URLs, the `nats` namespace on nats-box pods) — those stay shared on purpose.
+    """
+    prefix = f"{run_id}-"
+    if kind == "Stream":
+        if md.get("name"):
+            md["name"] = prefix + md["name"]
+    elif kind == "Function":
+        if md.get("name"):
+            md["name"] = prefix + md["name"]
+        spec = doc.get("spec")
+        if isinstance(spec, dict):
+            trigger = spec.get("trigger")
+            if isinstance(trigger, dict) and trigger.get("stream"):
+                trigger["stream"] = prefix + trigger["stream"]
 
 
 def render(text: str, run_id: str) -> str:
