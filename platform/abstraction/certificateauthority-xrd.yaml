@@ -1,0 +1,112 @@
+# kind: CertificateAuthority — a CUSTOMER-OWNED private certificate authority, backed by HashiCorp
+# Vault's PKI secrets engine (NIST SC-12 / SC-17 — a PKI issuance authority for internal workloads).
+#
+# Each CertificateAuthority gets its OWN Vault PKI mount ("pki-<name>"). A root CA generates its own
+# self-signed root; an intermediate CA is signed by a parent CertificateAuthority (set-signed). Leaf
+# certs are issued by the ca-issuer service through the "issuer" PKI role (allow_subdomains over
+# allowedDomains). open-infra provisions the mount with a least-privilege provisioner identity and
+# issues with a separate, issue-only identity — the two never share a Vault policy.
+#
+# OPT-IN: this kind and its Vault PKI backend are the `pki` component (off by default; requires the
+# `encryption` component and Vault). A reconciler provisions the PKI mount for each CertificateAuthority
+# and reflects its live state; see platform/security/vault.yaml, ca-reconciler.yaml and ca-issuer.yaml,
+# and docs/certificate-authority.md.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xcertificateauthorities.openinfra.dev
+  annotations:
+    # Chaos topology tags (consumed by tools/chainforge): the node-kind this resource
+    # plays in a chaos chain and the typed ports it offers/accepts. role "none" = not a
+    # chaos data-node. The compatibility matrix is derived from these.
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XCertificateAuthority
+    plural: xcertificateauthorities
+  claimNames:
+    kind: CertificateAuthority
+    plural: certificateauthorities
+  defaultCompositionRef:
+    name: certificateauthority
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                commonName:
+                  type: string
+                  description: The CA's subject common name (e.g. "OpenInfra Internal Root CA").
+                hierarchy:
+                  type: string
+                  enum: [root, intermediate]
+                  default: root
+                  description: >-
+                    root = a self-signed root CA. intermediate = a CA signed by a parent
+                    CertificateAuthority (set-signed); requires spec.parent.
+                parent:
+                  type: string
+                  description: >-
+                    The name of the parent CertificateAuthority that signs this CA when
+                    hierarchy=intermediate. Ignored for a root CA.
+                keyType:
+                  type: string
+                  enum: [rsa-2048, rsa-4096, ec-256, ec-384]
+                  default: rsa-4096
+                  description: Key type/size for the CA's private key.
+                maxTtl:
+                  type: string
+                  default: "8760h"
+                  description: Maximum TTL for certificates issued under this CA (Vault duration).
+                allowedDomains:
+                  type: array
+                  items:
+                    type: string
+                  description: >-
+                    Domains the "issuer" PKI role may issue for (allow_subdomains=true). Empty
+                    permits none until set.
+              required:
+                - commonName
+            status:
+              type: object
+              properties:
+                ready:
+                  type: boolean
+                pkiMount:
+                  type: string
+                  description: The Vault PKI mount for this CA (pki-<name>).
+                caCertPem:
+                  type: string
+                  description: The CA certificate, PEM-encoded.
+                serial:
+                  type: string
+                  description: The CA certificate's serial number.
+                notAfter:
+                  type: string
+                  description: The CA certificate's expiry timestamp.
+      additionalPrinterColumns:
+        - name: Hierarchy
+          type: string
+          jsonPath: .spec.hierarchy
+        - name: CommonName
+          type: string
+          jsonPath: .spec.commonName
+        - name: Ready
+          type: boolean
+          jsonPath: .status.ready
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

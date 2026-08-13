@@ -100,6 +100,10 @@ incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSyn
 # encrypted Longhorn StorageClass. OFF unless components.encryption: true (Vault needs an operator to
 # initialize/unseal it — see docs/encryption.md).
 incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,storage/longhorn-encrypted.yaml"
+# Private certificate authority: kind: CertificateAuthority (its XRD/composition), the Vault-PKI
+# reconciler, and the synchronous ca-issuer. OFF unless components.pki: true; RIDES ON the encryption
+# component (reuses its Vault + Kubernetes-auth wiring — see docs/certificate-authority.md).
+incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateauthority-composition.yaml,security/ca-reconciler.yaml,security/ca-issuer.yaml"
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
 incl attestation "security/compliance-attest.yaml"

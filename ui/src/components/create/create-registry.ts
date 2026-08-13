@@ -170,6 +170,23 @@ export const DIRECTORY_CREATE: CreateKindSpec = {
   uiSchema: { domain: { "ui:placeholder": "corp.example.com" }, size: { "ui:placeholder": "5Gi" } },
 };
 
+export const CERTIFICATEAUTHORITY_CREATE: CreateKindSpec = {
+  kind: "CertificateAuthority",
+  crdName: "certificateauthorities.openinfra.dev",
+  description:
+    "A managed private certificate authority (AWS Private CA-style) — Vault-backed. Issue and revoke leaf certificates from it; the CA key never leaves Vault.",
+  sections: [
+    { title: "Authority", fields: ["commonName", "hierarchy", "parent"] },
+    { title: "Key & validity", fields: ["keyType", "maxTtl", "allowedDomains"], advanced: true },
+    { title: "Availability", fields: ["highAvailability"], advanced: true },
+  ],
+  uiSchema: {
+    commonName: { "ui:placeholder": "My Root CA" },
+    parent: { "ui:placeholder": "parent-ca-name (intermediate only)" },
+    maxTtl: { "ui:placeholder": "8760h" },
+  },
+};
+
 export const APPLICATION_CREATE: CreateKindSpec = {
   kind: "Application",
   crdName: "applications.openinfra.dev",
