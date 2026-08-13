@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# PARKED (grammar watched:false) — DEFINITIVE FINDING from live runs on a clean cluster:
-#   The multi-master Replication engine supports a node in EXACTLY ONE replication link (2-master pairs).
-#   - A generated CHAIN (n1<->n2<->n3) diverges: the engine does direct links only, no re-forwarding.
-#   - A generated FULL MESH (all pairs) ALSO diverges at 3 masters (seed 18): a node in two links
-#     (pg-n2 in repl-n1-n2 AND repl-n2-n3) stops converging — even direct-link writes are lost. The fixed
-#     lottery only ever proves each node in ONE link, i.e. 2 masters.
-#   - A generated 2-master full mesh reconverges byte-identical (seed 2, RESULT success) — but that is the
-#     lottery's proven scale, so it adds no coverage.
-# CONCLUSION: this executor is proven end-to-end (generate -> compile -> full-mesh link -> fault ->
-# reconverge for 2 masters), but the engine's 2-master limit means the generator can't add convergence
-# coverage beyond the fixed lottery. Parked until the engine supports a node in N>1 links (real N-master).
-# Re-watch by flipping generated-mesh watched:true in chaos/grammar.json once that lands.
+# Generated-mesh chaos — the chain GENERATOR, run live: chainforge generate -> compile_chain -> a FULL
+# mesh (all pairs) of N random Postgres masters -> node-kill -> the singular convergence engine judges
+# byte-identical reconvergence.
 #
-# Generated-mesh chaos — the chain GENERATOR, run live.
+# HISTORY (so the earlier "parked, engine is 2-master" claim isn't resurrected): a 3-master mesh first
+# DIVERGED, which looked like an engine limit. RCA proved otherwise — it was the chaos-sandbox
+# ResourceQuota: a full 3-mesh is ~12 replication-engine pods + 3 Postgres, and limits.cpu was capped at
+# 8, so ~5 capture/sink pods were quota-rejected and exactly those directions never replicated (nodes sat
+# at 3%). Raising limits.cpu 8->24 (commit on platform/resilience/chaos-sandbox.yaml) let all 12 pods
+# schedule; a full 3-master mesh then propagates every write to every node. So N-master mesh works — the
+# engine was fine; the sandbox was under-provisioned.
 #
 # Instead of a fixed 3-master mesh, this stands up a RANDOMLY GENERATED multi-master Postgres topology
 # each draw (chainforge generate --only database -> compile_chain.py: a 2-4 node chain/mesh/fan) and
