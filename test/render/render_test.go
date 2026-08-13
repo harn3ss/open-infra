@@ -1067,6 +1067,9 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 	excluded := map[string]bool{
 		"users": true, "groups": true, "policies": true, "roles": true, "grants": true,
 		"dataclassifications": true, "encryptionkeys": true, "destructions": true,
+		// A private CA is a trust-minting authority — issue/revoke is gated on `update` over
+		// certificateauthorities, so it stays admin-only, not a poweruser knob (like encryptionkeys).
+		"certificateauthorities": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")
