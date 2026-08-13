@@ -314,7 +314,7 @@
       "scenario": "generated-mesh",
       "oracle": "convergence",
       "mode": "recover",
-      "watched": true
+      "watched": false
     },
     {
       "plane": "stream-no-loss",
