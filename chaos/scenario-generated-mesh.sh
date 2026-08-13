@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
-# PARKED (grammar watched:false) — FINDING from live runs: the generator emits CHAIN topologies
-# (n1<->n2<->n3), but the Replication engine does DIRECT links only — it does not re-forward a write it
-# received onward, so n1's writes never reach n3 through n2 and a chain never converges. The executor
-# plumbing here is proven (it generates, compiles, stands up the mesh, fires the fault with proof-of-fire
-# and runs the oracle end to end); what's missing is a FULLY-CONNECTED (all-pairs) topology and a proof
-# that N>2 direct-mesh convergence holds. Follow-up: emit all-pairs Replications (or a generator mesh
-# mode) + prove 3-master full-mesh convergence, then re-watch. Until then this stays out of the rotation
-# so it can't red a night.
-#
-# Generated-mesh chaos — the chain GENERATOR, finally run live.
+# Generated-mesh chaos — the chain GENERATOR, run live.
 #
 # Instead of a fixed 3-master mesh, this stands up a RANDOMLY GENERATED multi-master Postgres topology
 # each draw (chainforge generate --only database -> compile_chain.py: a 2-4 node chain/mesh/fan) and
@@ -44,6 +35,8 @@ MESH="$WORK/mesh.yaml"; FAULT="$WORK/fault.yaml"
 
 cleanup() {
   kubectl -n "$NS" delete faultinjection --all --ignore-not-found >/dev/null 2>&1 || true
+  # The full-mesh links (repl-<a>-<b>) are generated, not in $MANIFESTS, so drop all Replications here.
+  kubectl -n "$NS" delete replication --all --ignore-not-found >/dev/null 2>&1 || true
   [ -f "$MANIFESTS" ] && kubectl -n "$NS" delete -f "$MANIFESTS" --ignore-not-found >/dev/null 2>&1 || true
   rm -rf "$WORK"
   sandbox_teardown 2>/dev/null || true
@@ -98,8 +91,27 @@ for s in $SITES; do
     log "INCONCLUSIVE — could not seed conv_test on pg-$s (seed=$SEED). Not counting."; exit "$EXIT_INCONCLUSIVE"; }
 done
 
-log "starting the replication links (${NMEM}-master mesh)"
-kubectl apply -f "$REPL_F" >/dev/null
+# Convergence needs ALL-TO-ALL reachability, but the Replication engine does DIRECT links only (it does
+# not re-forward a received write), so a generated CHAIN can't converge. Ignore the compiled chain edges
+# and link a FULL MESH — every pair of members — using the proven mesh.yaml Replication template
+# (tables:[conv_test], chaos-node pinning). This also tests whether N>2 direct-mesh convergence holds.
+log "linking a FULL mesh (all pairs) of the ${NMEM} members"
+REPL_FULL="$WORK/repl-full.yaml"
+NS="$NS" SITES="$SITES" python3 - "$REPO/chaos/sandbox/mesh.yaml" "$REPL_FULL" <<'PY'
+import sys, os, yaml, copy, itertools
+tmpl = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get("kind") == "Replication"][0]
+ns = os.environ["NS"]; sites = os.environ["SITES"].split()
+out = []
+for a, b in itertools.combinations(sites, 2):
+    r = copy.deepcopy(tmpl)
+    r["metadata"]["name"] = f"repl-{a}-{b}"; r["metadata"]["namespace"] = ns
+    r["spec"]["siteA"]["name"] = a; r["spec"]["siteA"]["host"] = f"pg-{a}.{ns}.svc.cluster.local"
+    r["spec"]["siteB"]["name"] = b; r["spec"]["siteB"]["host"] = f"pg-{b}.{ns}.svc.cluster.local"
+    out.append(r)
+yaml.safe_dump_all(out, open(sys.argv[2], "w"), sort_keys=False)
+print(f"{len(out)} pairwise links")
+PY
+kubectl apply -f "$REPL_FULL" >/dev/null
 
 # 3. The mesh must fully ESTABLISH before we judge it: every replication-engine pod (Debezium capture +
 #    apply-sink, one pair per link) must be Ready. A generated topology that cannot even stand its links
