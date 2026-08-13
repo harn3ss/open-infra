@@ -188,3 +188,37 @@ subjects:
   - kind: ServiceAccount
     name: chaos-runner
     namespace: chaos-sandbox
+---
+# Stream-plane scenarios (kind: Stream / the database->stream->function chain) read the durable
+# JetStream stream + the function's consumer by running an EPHEMERAL natsio/nats-box client in the nats
+# namespace (`kubectl -n nats run --rm -i ...`) — the no-loss count is JetStream metadata, only readable
+# from inside the mesh. Without this the run's SA cannot create that pod, the read returns empty, and the
+# stream-live proof-of-fire never passes: the scenario voids INCONCLUSIVE forever instead of verifying.
+# Scoped to just the throwaway client (pods + attach/log) in the nats namespace — no secrets, no
+# configmaps, nothing else — so it stays a read-only NATS client, not a foothold in the messaging tier.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chaos-runner-nats-client
+  namespace: nats
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/attach, pods/log]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chaos-runner-nats-client
+  namespace: nats
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chaos-runner-nats-client
+subjects:
+  - kind: ServiceAccount
+    name: chaos-runner
+    namespace: chaos-sandbox
