@@ -117,4 +117,5 @@ components:
   openAppsync: false           # open-appsync — resolver-first VTL-faithful AppSync engine + kind: GraphQLApi authoring plane (the shim's AppSync surface fronts it); experimental, opt-in, OFF
   hardened: false             # hardened profile: enforce restricted PSS on the control plane + warn/audit elsewhere; opt-in, OFF (don't enable until workloads are PSS-compliant — see docs/security-and-compliance.md)
   encryption: false            # customer-owned keys: Vault Transit KMS + kind: EncryptionKey + encrypted Longhorn SC; experimental, opt-in, OFF (Vault needs operator init/unseal — see docs/encryption.md)
+  pki: false                   # private CA: kind: CertificateAuthority (Vault PKI) + ca-issuer; experimental, opt-in, OFF (requires the encryption component + an initialized Vault — see docs/certificate-authority.md)
   attestation: false           # daily immutable compliance-attestation snapshots to the WORM audit store; opt-in, OFF (sign out-of-band with the release key — see docs/compliance-attestation.md)
