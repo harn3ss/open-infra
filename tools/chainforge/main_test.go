@@ -166,8 +166,12 @@ func TestPickOnlyWatchedAndRotates(t *testing.T) {
 		}
 		seen[p.Scenario]++
 	}
-	if seen["async-invoke-noloss"] != 0 {
-		t.Fatal("picked async-invoke-noloss, which is watched:false (PENDING) and must never be drawn")
+	// pick must never draw an unwatched (PENDING) scenario. Derive the check from the grammar
+	// rather than a hardcoded name, so promoting a plane to watched:true doesn't make this stale.
+	for _, s := range g.Scenarios {
+		if !s.Watched && seen[s.Scenario] != 0 {
+			t.Fatalf("picked %q, which is watched:false (PENDING) and must never be drawn", s.Scenario)
+		}
 	}
 	if len(seen) < 5 {
 		t.Fatalf("expected the picker to rotate ≥5 distinct planes across 300 seeds, got %d", len(seen))
