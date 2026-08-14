@@ -339,7 +339,7 @@ spec:
                   metadata: { name: {{ $name }}-docdb-data, namespace: {{ $ns }} }
                   spec:
                     accessModes: [ReadWriteOnce]
-                    storageClassName: local-path
+                    storageClassName: {{ $spec.database.storageClass | default "local-path" }}
                     resources: { requests: { storage: 5Gi } }
             ---
             # DocumentDB-Postgres: the storage engine FerretDB translates into.
@@ -509,7 +509,7 @@ spec:
                     {{- end }}
                     storage:
                       size: 5Gi
-                      storageClassName: local-path
+                      storageClassName: {{ $spec.database.storageClass | default "local-path" }}
                     resources:
                       requests: { cpu: 100m, memory: 256Mi }
                       limits: { cpu: "2", memory: 1Gi }
@@ -639,7 +639,7 @@ spec:
                       - metadata: { name: data }
                         spec:
                           accessModes: [ReadWriteOnce]
-                          storageClassName: longhorn   # node-independent; back up with Velero
+                          storageClassName: {{ $spec.database.storageClass | default "longhorn" }}   # node-independent; back up with Velero
                           resources: { requests: { storage: 10Gi } }
             ---
             # Service — SQL Server (1433) + Postgres (5432). expose => LAN LoadBalancer.
@@ -707,7 +707,7 @@ spec:
                         - pg_stat_statements
                     storage:
                       size: 5Gi
-                      storageClass: local-path   # NEVER CIFS/NFS
+                      storageClass: {{ $spec.database.storageClass | default "local-path" }}   # NEVER CIFS/NFS
                     bootstrap:
                       initdb:
                         database: {{ $spec.database.name | default $name }}
