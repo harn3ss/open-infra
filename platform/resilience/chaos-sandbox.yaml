@@ -85,6 +85,11 @@ metadata:
 # the token controller own `data`, so Argo manages only metadata/type and never churns the token;
 # Prune=false keeps it even through a partial sync. If it is ever recreated the token value
 # changes — refresh the runner kubeconfig from it then (kubectl get secret … -o jsonpath .data.token).
+# ⚠️ NEVER `kubectl apply` this file CLIENT-SIDE: a 3-way merge sets data:{} and CLEARS the controller-
+# populated token → the runner's kubeconfig token is rejected 401 → every scenario fails "server has
+# asked for the client to provide credentials" (hit 2026-08-13). Let Argo sync it, or use
+# `kubectl apply --server-side`. Recovery: delete+recreate the Secret (controller repopulates a fresh
+# non-expiring token), then refresh the runner kubeconfig as above.
 apiVersion: v1
 kind: Secret
 metadata:

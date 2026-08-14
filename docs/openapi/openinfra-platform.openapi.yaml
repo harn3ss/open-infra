@@ -2838,7 +2838,6 @@ components:
               - stress-cpu
               - stress-memory
               - clock-skew
-              - io-latency
             target:
               type: object
               required:
@@ -2868,7 +2867,7 @@ components:
             latency:
               type: string
               default: 200ms
-              description: network-latency / io-latency delay.
+              description: network-latency delay.
             loss:
               type: string
               default: '50'
@@ -2905,10 +2904,6 @@ components:
               type: string
               default: +5m
               description: clock-skew offset, e.g. +5m or -1h.
-            volumePath:
-              type: string
-              default: /data
-              description: 'io-latency: mount path to slow.'
         status:
           type: object
           properties:
