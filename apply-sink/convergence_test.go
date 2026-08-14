@@ -272,3 +272,44 @@ func convDiff(snaps map[string]map[string][2]string, members []*reconcileMember)
 	}
 	return b.String()
 }
+
+// TestConvergenceRedGreen — prove-red for the ORIGINAL adapter (the lottery's own judge). §6 of the
+// plane-wide-lottery design: a judge that has never been shown able to go red has not earned a counted
+// green. Exercises both verdict pillars WITHOUT a live DB — allIdentical (SteadyState's convergence
+// signal) and Reconcile (no acknowledged write lost) — asserting each distinguishes red from green.
+func TestConvergenceRedGreen(t *testing.T) {
+	members := []*reconcileMember{{Name: "pg-a"}, {Name: "pg-b"}, {Name: "pg-c"}}
+	o := &replicationOracle{members: members}
+
+	// ---- SteadyState pillar: allIdentical ----
+	converged := map[string]map[string][2]string{
+		"pg-a": {"k1": {"1", "v"}, "k2": {"2", "w"}},
+		"pg-b": {"k1": {"1", "v"}, "k2": {"2", "w"}},
+		"pg-c": {"k1": {"1", "v"}, "k2": {"2", "w"}},
+	}
+	if !allIdentical(converged, members) {
+		t.Fatal("GREEN: byte-identical members must be reported converged (steady)")
+	}
+	// RED: a diverged mesh (one member missing a row, another holding a different value) must NOT read
+	// steady — else SteadyState can never fail and convergence never reds.
+	diverged := map[string]map[string][2]string{
+		"pg-a": {"k1": {"1", "v"}, "k2": {"2", "w"}},
+		"pg-b": {"k1": {"1", "v"}},                            // dropped k2
+		"pg-c": {"k1": {"1", "v"}, "k2": {"9", "DIFFERENT"}},  // conflicting value at equal key
+	}
+	if allIdentical(diverged, members) {
+		t.Fatal("a diverged mesh MUST NOT be reported converged — else convergence is dead code")
+	}
+
+	// ---- Reconcile pillar: no acknowledged write lost ----
+	o.lastSnap = converged
+	if lost := o.Reconcile(map[string]bool{"k1": true, "k2": true}); len(lost) != 0 {
+		t.Fatalf("GREEN: the converged mesh holds every acknowledged write but reported lost: %v", lost)
+	}
+	// RED: an acknowledged write (k3) is absent from the converged base — genuinely lost work.
+	o.lastSnap = map[string]map[string][2]string{"pg-a": {"k1": {"1", "v"}, "k2": {"2", "w"}}}
+	lost := o.Reconcile(map[string]bool{"k1": true, "k2": true, "k3": true})
+	if len(lost) != 1 || lost[0] != "k3" {
+		t.Fatalf("an acknowledged write missing from the converged mesh MUST be reported lost: got %v", lost)
+	}
+}
