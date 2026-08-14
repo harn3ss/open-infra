@@ -294,8 +294,8 @@ func TestConvergenceRedGreen(t *testing.T) {
 	// steady — else SteadyState can never fail and convergence never reds.
 	diverged := map[string]map[string][2]string{
 		"pg-a": {"k1": {"1", "v"}, "k2": {"2", "w"}},
-		"pg-b": {"k1": {"1", "v"}},                            // dropped k2
-		"pg-c": {"k1": {"1", "v"}, "k2": {"9", "DIFFERENT"}},  // conflicting value at equal key
+		"pg-b": {"k1": {"1", "v"}},                           // dropped k2
+		"pg-c": {"k1": {"1", "v"}, "k2": {"9", "DIFFERENT"}}, // conflicting value at equal key
 	}
 	if allIdentical(diverged, members) {
 		t.Fatal("a diverged mesh MUST NOT be reported converged — else convergence is dead code")
