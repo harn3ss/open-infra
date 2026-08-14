@@ -23,6 +23,7 @@ set -uo pipefail
 MIN_READY_NODES="${CHAOS_MIN_READY_NODES:-1}"   # usable Ready/schedulable nodes required
 REQ_FREE_CPU_M="${CHAOS_REQ_FREE_CPU_M:-1500}"  # millicores of unreserved CPU the sandbox needs
 REQ_FREE_MEM_MI="${CHAOS_REQ_FREE_MEM_MI:-3072}" # Mi of unreserved memory the sandbox needs
+REQ_FREE_DISK_MI="${CHAOS_REQ_FREE_DISK_MI:-10240}" # Mi of unreserved ephemeral-storage (disk) the sandbox needs
 # The sandbox is PINNED to the dedicated chaos nodes (nodeSelector) and TOLERATES their taint,
 # so capacity must be measured on THOSE nodes — not the untainted general pool. (An empty label
 # key falls back to counting the general untainted pool, for non-segmented clusters.)
@@ -41,10 +42,10 @@ if [ ! -s "$TMP/nodes.json" ] || [ ! -s "$TMP/pods.json" ]; then
   exit 0
 fi
 
-python3 - "$MIN_READY_NODES" "$REQ_FREE_CPU_M" "$REQ_FREE_MEM_MI" "$TMP/nodes.json" "$TMP/pods.json" "$CHAOS_NODE_LABEL" "$CHAOS_NODE_LABEL_VALUE" "$CHAOS_TOLERATED_TAINT" <<'PY'
+python3 - "$MIN_READY_NODES" "$REQ_FREE_CPU_M" "$REQ_FREE_MEM_MI" "$TMP/nodes.json" "$TMP/pods.json" "$CHAOS_NODE_LABEL" "$CHAOS_NODE_LABEL_VALUE" "$CHAOS_TOLERATED_TAINT" "$REQ_FREE_DISK_MI" <<'PY'
 import sys, json
 
-min_ready = int(sys.argv[1]); req_cpu = int(sys.argv[2]); req_mem = int(sys.argv[3])
+min_ready = int(sys.argv[1]); req_cpu = int(sys.argv[2]); req_mem = int(sys.argv[3]); req_disk = int(sys.argv[9])
 nodes = json.load(open(sys.argv[4])).get("items", [])
 pods  = json.load(open(sys.argv[5])).get("items", [])
 label_key = sys.argv[6]; label_val = sys.argv[7]; tolerated_taint = sys.argv[8]
@@ -73,7 +74,7 @@ def mem_mi(q):
 # cluster is segmented), Ready, schedulable, no resource pressure, and no NoSchedule/NoExecute
 # taint OTHER than the one the sandbox tolerates. Measuring the untainted general pool here
 # would be a false-OK — the sandbox pins to the (tainted) chaos nodes.
-usable = set(); alloc_cpu = {}; alloc_mem = {}
+usable = set(); alloc_cpu = {}; alloc_mem = {}; alloc_disk = {}
 for n in nodes:
     name = n["metadata"]["name"]
     labels = n.get("metadata", {}).get("labels", {}) or {}
@@ -92,40 +93,45 @@ for n in nodes:
         continue
     al = n.get("status", {}).get("allocatable", {}) or {}
     alloc_cpu[name] = cpu_m(al.get("cpu")); alloc_mem[name] = mem_mi(al.get("memory"))
+    alloc_disk[name] = mem_mi(al.get("ephemeral-storage"))  # ephemeral-storage uses the same quantity units as memory
     usable.add(name)
 
 # Sum pod requests on usable nodes. Effective request = max(sum(containers), max(initContainer)),
 # which is how the scheduler reserves for a pod with init containers.
-req_cpu_by = {}; req_mem_by = {}
+req_cpu_by = {}; req_mem_by = {}; req_disk_by = {}
 for p in pods:
     if p.get("status", {}).get("phase") in ("Succeeded", "Failed"):
         continue
     node = p.get("spec", {}).get("nodeName")
     if node not in usable:
         continue
-    sc = sm = 0
+    sc = sm = sd = 0
     for ct in p["spec"].get("containers") or []:
         r = (ct.get("resources", {}) or {}).get("requests", {}) or {}
-        sc += cpu_m(r.get("cpu")); sm += mem_mi(r.get("memory"))
-    ic = im = 0
+        sc += cpu_m(r.get("cpu")); sm += mem_mi(r.get("memory")); sd += mem_mi(r.get("ephemeral-storage"))
+    ic = im = idsk = 0
     for ct in p["spec"].get("initContainers") or []:
         r = (ct.get("resources", {}) or {}).get("requests", {}) or {}
-        ic = max(ic, cpu_m(r.get("cpu"))); im = max(im, mem_mi(r.get("memory")))
+        ic = max(ic, cpu_m(r.get("cpu"))); im = max(im, mem_mi(r.get("memory"))); idsk = max(idsk, mem_mi(r.get("ephemeral-storage")))
     req_cpu_by[node] = req_cpu_by.get(node, 0) + max(sc, ic)
     req_mem_by[node] = req_mem_by.get(node, 0) + max(sm, im)
+    req_disk_by[node] = req_disk_by.get(node, 0) + max(sd, idsk)
 
 free_cpu = sum(alloc_cpu[n] - req_cpu_by.get(n, 0) for n in usable)
 free_mem = sum(alloc_mem[n] - req_mem_by.get(n, 0) for n in usable)
+free_disk = sum(alloc_disk[n] - req_disk_by.get(n, 0) for n in usable)
 ready = len(usable)
 
 print(f"▸ capacity preflight: usable nodes={ready} (need >= {min_ready}); "
       f"free CPU={free_cpu}m (need >= {req_cpu}m); "
-      f"free mem={int(free_mem)}Mi (need >= {req_mem}Mi)")
+      f"free mem={int(free_mem)}Mi (need >= {req_mem}Mi); "
+      f"free disk={int(free_disk)}Mi (need >= {req_disk}Mi)")
 
 short = []
-if ready < min_ready:   short.append(f"only {ready} usable node(s), need {min_ready}")
-if free_cpu < req_cpu:  short.append(f"free CPU {free_cpu}m < {req_cpu}m")
-if free_mem < req_mem:  short.append(f"free mem {int(free_mem)}Mi < {req_mem}Mi")
+if ready < min_ready:    short.append(f"only {ready} usable node(s), need {min_ready}")
+if free_cpu < req_cpu:   short.append(f"free CPU {free_cpu}m < {req_cpu}m")
+if free_mem < req_mem:   short.append(f"free mem {int(free_mem)}Mi < {req_mem}Mi")
+if free_disk < req_disk: short.append(f"free disk {int(free_disk)}Mi < {req_disk}Mi")
 if short:
     print("▸ capacity preflight: INCONCLUSIVE — " + "; ".join(short) +
           ". Skipping (this counts as neither a red nor a green night).", file=sys.stderr)

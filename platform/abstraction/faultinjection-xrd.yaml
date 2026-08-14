@@ -52,13 +52,9 @@ spec:
                     - stress-cpu        # StressChaos
                     - stress-memory     # StressChaos
                     - clock-skew        # TimeChaos — shift the clock (exercises HLC/LWW)
-                    # ⚠️ io-latency is CURRENTLY INERT on this cluster: Chaos Mesh's FUSE
-                    # injector (toda) panics, so the IOChaos is created and then sits at
-                    # `phase: Not Injected/Wait, injectedCount: 0` — SILENTLY. The fault
-                    # looks applied and does nothing. Don't rely on it; if you use it,
-                    # assert status.conditions[AllInjected]==True rather than trusting that
-                    # the object exists. See docs/chaos.md and the CHANGELOG Known issues.
-                    - io-latency        # IOChaos — slow disk I/O (see warning above)
+                    # NB: io-latency (IOChaos) was REMOVED — Chaos Mesh's FUSE injector panics on this
+                    # cluster, so it was inert (created but silently never injected). The honest disk-
+                    # durability coverage is scenario-storage-replica-loss.sh (kills a storage replica).
                 # Blast radius — REQUIRED. Chaos only ever touches pods matching this
                 # selector in this namespace (defaults to the FaultInjection's namespace).
                 target:
@@ -79,7 +75,7 @@ spec:
                 # How long the fault lasts (ignored by the instantaneous pod-kill).
                 duration: { type: string, default: "60s" }
                 # ---- type-specific knobs (sensible defaults) ----
-                latency: { type: string, default: "200ms", description: "network-latency / io-latency delay." }
+                latency: { type: string, default: "200ms", description: "network-latency delay." }
                 loss: { type: string, default: "50", description: "network-loss packet-loss percent." }
                 direction: { type: string, enum: [to, from, both], default: to, description: "network chaos direction." }
                 partitionPeer:
@@ -96,7 +92,6 @@ spec:
                 cpuLoad: { type: integer, default: 80, description: "stress-cpu load percent per worker." }
                 memory: { type: string, default: "256MB", description: "stress-memory size to consume." }
                 timeOffset: { type: string, default: "+5m", description: "clock-skew offset, e.g. +5m or -1h." }
-                volumePath: { type: string, default: "/data", description: "io-latency: mount path to slow." }
             status:
               type: object
               properties:

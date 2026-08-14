@@ -588,5 +588,14 @@ sandbox_teardown() {
     # StatefulSet volumeClaimTemplate PVCs are NOT deleted with the StatefulSet — sweep them so
     # the Longhorn-backed variant doesn't leak volumes on the chaos nodes across runs.
     kubectl -n "$NS" delete pvc -l app=pg --ignore-not-found >/dev/null 2>&1 || true
+    # General orphan-PVC reclaim: any PVC no LIVE pod mounts is a leftover from an interrupted run
+    # (the sandbox holds only ephemeral scenario PVCs — real data never lives here). Catches what the
+    # app=pg selector misses (evt-stream-offsets, Longhorn volumes, cancelled-run debris) so they don't
+    # accumulate and slowly fill the chaos-node disk.
+    local _inuse _pvc
+    _inuse="$(kubectl -n "$NS" get pods -o jsonpath='{range .items[*]}{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{"\n"}{end}{end}' 2>/dev/null | sort -u)"
+    for _pvc in $(kubectl -n "$NS" get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+      printf '%s\n' "$_inuse" | grep -qxF "$_pvc" || kubectl -n "$NS" delete pvc "$_pvc" --ignore-not-found >/dev/null 2>&1 || true
+    done
   fi
 }
