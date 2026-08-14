@@ -52,7 +52,7 @@ spec:
         spec:
           serviceAccountName: grant-reconciler
           restartPolicy: Never
-          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
           containers:
             - name: reconcile
               image: alpine/k8s:1.30.2
