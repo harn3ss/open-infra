@@ -48,6 +48,7 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: ca-issuer
           image: ghcr.io/harn3ss/open-infra-ca-issuer:latest

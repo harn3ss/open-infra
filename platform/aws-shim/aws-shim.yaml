@@ -249,6 +249,7 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: aws-shim
           image: ghcr.io/harn3ss/open-infra-aws-shim:latest

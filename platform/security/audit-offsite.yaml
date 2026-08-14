@@ -256,7 +256,7 @@ spec:
           serviceAccountName: audit-offsite
           restartPolicy: Never
           # Verify only reads MinIO — no host file, no root, no node pin.
-          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
           containers:
             - name: verify
               image: ghcr.io/harn3ss/open-infra-audit-offsite:latest

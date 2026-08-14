@@ -91,7 +91,7 @@ spec:
         spec:
           serviceAccountName: compliance-attest
           restartPolicy: Never
-          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
           volumes:
             - { name: out, emptyDir: {} }
             - { name: mc, emptyDir: {} }

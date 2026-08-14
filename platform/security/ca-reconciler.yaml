@@ -82,7 +82,7 @@ spec:
         spec:
           serviceAccountName: ca-provisioner
           restartPolicy: Never
-          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
           volumes:
             - { name: bin, emptyDir: {} }
             - { name: home, emptyDir: {} }
