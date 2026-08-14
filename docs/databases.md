@@ -19,6 +19,7 @@ spec:
     vector: false             # postgres only: enable pgvector (for kind: Model RAG)
     expose: false             # publish on a LAN IP (MetalLB) for direct access
     stopped: false            # RDS-style stop/start (see below)
+    # storageClass: longhorn  # optional — override the engine's default PV StorageClass (see "Storage")
 ```
 
 The connection string is injected into the app's pods as `DATABASE_URL` (postgres/mysql) or
@@ -80,10 +81,13 @@ MariaDB to a 3-node Galera cluster. (Start the database first if it's stopped.)
 
 ## Storage & durability
 
-Database volumes use **local-path** PVs (local NVMe — never CIFS/NFS) for performance, and
-replicated engines rely on the DB's own replication for HA rather than the storage layer.
-Data persists across pod restarts. Hardening the single-instance/durability story
-(node-resilient storage for non-HA DBs, off-cluster backups) is tracked in issue #61.
+Database volumes use **local-path** PVs (local NVMe — never CIFS/NFS) for performance by
+default (babelfish uses **longhorn**), and replicated engines rely on the DB's own replication
+for HA rather than the storage layer. Set `spec.database.storageClass` to override this per
+database — e.g. `longhorn` to put a non-HA database on replicated storage, or your cluster's
+StorageClass on a substrate that doesn't ship `local-path`. Data persists across pod restarts.
+Hardening the single-instance/durability story (node-resilient storage for non-HA DBs,
+off-cluster backups) is tracked in issue #61.
 
 ## Start / Stop
 
