@@ -83,6 +83,9 @@ spec:
                       type: boolean
                       default: false
                       description: "Stop the database to save resources while keeping its data, like RDS stop/start (Postgres hibernates; MySQL/Mongo scale to zero; PVCs are retained). Set back to false to start it."
+                    storageClass:
+                      type: string
+                      description: "StorageClass for the database's persistent volumes. When unset, each engine keeps its default (local-path; babelfish: longhorn). Set this to your cluster's StorageClass on substrates that don't ship local-path (e.g. OpenShift/OKD), or to pin the DB onto replicated storage (e.g. longhorn)."
                 storage:
                   type: object
                   description: "Object storage for the app."
