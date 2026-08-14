@@ -255,3 +255,28 @@ func (o *migrationOracle) Reconcile(ledger map[string]bool) []string {
 	}
 	return lost
 }
+
+// TestMigrationRedGreen — prove-red for the one-way fidelity adapter (§6 guardrail). Without a live
+// target DB, drive the Reconcile pillar directly (want = source's acked state, lastTarget = settled
+// target sample): the target must reflect every acknowledged source row identically, so a dropped row
+// or a stale value is lost work. Confirms the judge distinguishes red from green.
+func TestMigrationRedGreen(t *testing.T) {
+	o := &migrationOracle{want: map[string]string{"a": "1", "b": "2", "c": "3"}}
+	ledger := map[string]bool{"a": true, "b": true, "c": true}
+
+	// GREEN: target reflects every acknowledged source row identically.
+	o.lastTarget = map[string]string{"a": "1", "b": "2", "c": "3"}
+	if lost := o.Reconcile(ledger); len(lost) != 0 {
+		t.Fatalf("GREEN: target matches source but reported lost: %v", lost)
+	}
+	// RED (dropped row): target is MISSING an acknowledged source row — the one-way load lost it.
+	o.lastTarget = map[string]string{"a": "1", "c": "3"}
+	if lost := o.Reconcile(ledger); len(lost) != 1 || lost[0] != "b" {
+		t.Fatalf("a dropped acknowledged row MUST be reported lost: got %v", lost)
+	}
+	// RED (value drift): target holds a STALE value for an acknowledged row — a fidelity break.
+	o.lastTarget = map[string]string{"a": "1", "b": "STALE", "c": "3"}
+	if lost := o.Reconcile(ledger); len(lost) != 1 || lost[0] != "b" {
+		t.Fatalf("a value-drifted acknowledged row MUST be reported lost: got %v", lost)
+	}
+}
