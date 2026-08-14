@@ -42,7 +42,6 @@ spec:
             {{- if or (eq $type "network-latency") (eq $type "network-loss") (eq $type "network-partition") }}{{ $ckind = "NetworkChaos" }}{{ end }}
             {{- if or (eq $type "stress-cpu") (eq $type "stress-memory") }}{{ $ckind = "StressChaos" }}{{ end }}
             {{- if eq $type "clock-skew" }}{{ $ckind = "TimeChaos" }}{{ end }}
-            {{- if eq $type "io-latency" }}{{ $ckind = "IOChaos" }}{{ end }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -89,11 +88,6 @@ spec:
                         size: {{ $spec.memory | default "256MB" | quote }}
                     {{- else if eq $type "clock-skew" }}
                     timeOffset: {{ $spec.timeOffset | default "+5m" | quote }}
-                    {{- else if eq $type "io-latency" }}
-                    action: latency
-                    volumePath: {{ $spec.volumePath | default "/data" | quote }}
-                    delay: {{ $spec.latency | default "200ms" | quote }}
-                    percent: 100
                     {{- end }}
                     {{- /* ---- common tail (same field names across all chaos kinds) ---- */}}
                     mode: {{ $mode }}
