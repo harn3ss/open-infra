@@ -406,6 +406,13 @@
       "oracle": "serverless-delivery",
       "mode": "recover",
       "watched": true
+    },
+    {
+      "plane": "subscription-noloss",
+      "scenario": "subscription-reconnect",
+      "oracle": "subscription-noloss",
+      "mode": "recover",
+      "watched": true
     }
   ]
 }
