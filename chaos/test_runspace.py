@@ -63,10 +63,17 @@ def test_template_cluster_scoped_handling():
     # Namespace object renamed to the per-run namespace.
     assert any(d["metadata"]["name"] == "chaos-run-run7" for d in by_kind.get("Namespace", []))
 
-    # Namespaced template objects moved into the per-run namespace.
+    # Sandbox-local namespaced objects move into the per-run namespace. Objects deliberately scoped
+    # to ANOTHER namespace (e.g. the `nats` cross-namespace grant that lets the runner read JetStream)
+    # are left alone, per the renderer contract. The isolation invariant that actually matters: nothing
+    # is left in the shared `chaos-sandbox` namespace, where it would collide across parallel runs.
     for kind in ("ResourceQuota", "LimitRange", "ServiceAccount", "Role", "RoleBinding"):
         for d in by_kind.get(kind, []):
-            assert d["metadata"]["namespace"] == "chaos-run-run7", f"{kind} not in per-run ns"
+            assert d["metadata"]["namespace"] != "chaos-sandbox", \
+                f"{kind} {d['metadata'].get('name')} left in the shared chaos-sandbox ns (would collide across runs)"
+    # ...and the sandbox's own runner SA did land in the per-run namespace (the rename happened).
+    assert any(d["metadata"].get("namespace") == "chaos-run-run7" for d in by_kind.get("ServiceAccount", [])), \
+        "runner ServiceAccount not moved into the per-run namespace"
 
     # Shared cluster-scoped objects emitted UNCHANGED.
     for d in by_kind.get("PriorityClass", []):
