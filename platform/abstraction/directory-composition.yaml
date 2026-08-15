@@ -243,7 +243,7 @@ spec:
                       - metadata: { name: data }
                         spec:
                           accessModes: [ReadWriteOnce]
-                          storageClassName: longhorn
+                          storageClassName: {{ $spec.storageClass | default "longhorn" }}
                           resources:
                             requests:
                               storage: {{ $size }}

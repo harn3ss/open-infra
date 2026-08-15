@@ -2542,6 +2542,10 @@ components:
           - nodes
           - edges
           properties:
+            storageClass:
+              type: string
+              description: StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's
+                StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
             nodes:
               type: array
               description: 'Nodes on the canvas: database endpoints (role: database) or message topics (role: topic). `name`
@@ -2746,6 +2750,10 @@ components:
           required:
           - domain
           properties:
+            storageClass:
+              type: string
+              description: StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's
+                StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
             domain:
               type: string
               description: AD domain FQDN, lowercase, e.g. corp.openinfra.lan. The Kerberos realm (uppercase) and the NetBIOS
@@ -2935,6 +2943,10 @@ components:
           required:
           - size
           properties:
+            storageClass:
+              type: string
+              description: StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's
+                StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
             size:
               type: string
               description: Share capacity, e.g. 100Gi (Longhorn-backed).
@@ -3534,6 +3546,10 @@ components:
           - source
           - target
           properties:
+            storageClass:
+              type: string
+              description: StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's
+                StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
             mode:
               type: string
               enum:
@@ -4103,6 +4119,10 @@ components:
           required:
           - source
           properties:
+            storageClass:
+              type: string
+              description: StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's
+                StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
             source:
               type: object
               required:
@@ -4395,6 +4415,10 @@ components:
           required:
           - os
           properties:
+            storageClass:
+              type: string
+              description: StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's
+                StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
             os:
               type: string
               description: Windows version to build (curated catalog).

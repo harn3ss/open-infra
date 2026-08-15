@@ -67,7 +67,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: 9Gi } }
-                      storageClassName: longhorn
+                      storageClassName: {{ $spec.storageClass | default "longhorn" }}
             ---
             # --- virtio-win drivers ISO ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -86,7 +86,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: 1Gi } }
-                      storageClassName: longhorn
+                      storageClassName: {{ $spec.storageClass | default "longhorn" }}
             {{- end }}
             ---
             # --- The golden disk: blank (installer writes it) or a clone of an existing
@@ -115,7 +115,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: {{ $disk }} } }
-                      storageClassName: longhorn
+                      storageClassName: {{ $spec.storageClass | default "longhorn" }}
             {{- if not $adoptGolden }}
             ---
             # --- Sysprep ConfigMap: the unattended answer file (KubeVirt mounts it

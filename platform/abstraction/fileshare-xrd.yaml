@@ -41,6 +41,9 @@ spec:
               type: object
               required: [size]
               properties:
+                storageClass:
+                  type: string
+                  description: "StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path)."
                 size:
                   type: string
                   description: "Share capacity, e.g. 100Gi (Longhorn-backed)."
