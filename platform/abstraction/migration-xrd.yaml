@@ -48,6 +48,9 @@ spec:
               type: object
               required: [source, target]
               properties:
+                storageClass:
+                  type: string
+                  description: "StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path)."
                 mode:
                   type: string
                   enum: [full-load, cdc, full-load-and-cdc]
