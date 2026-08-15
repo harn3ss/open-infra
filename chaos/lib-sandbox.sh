@@ -21,8 +21,20 @@ sandbox_provision() {
 
   log "seeding conv_test on both members"
   for m in pg-a pg-b; do
-    kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app \
-      -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);"
+    # `pg_isready` (the readiness probe) flaps TRUE during the postgres image's init/temp-server
+    # phase, so `rollout status` can report ready while the entrypoint is still tearing that temp
+    # server down to start the real one. Seeding in that window fails with "the database system is
+    # shutting down". Retry until the REAL server accepts a write. (Surfaced on a slower-disk
+    # substrate; the CREATE is idempotent so retrying is safe everywhere.)
+    seeded=0
+    for _ in $(seq 1 40); do
+      if kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app \
+           -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);" >/dev/null 2>&1; then
+        seeded=1; break
+      fi
+      sleep 3
+    done
+    [ "$seeded" = 1 ] || { log "FATAL: ${m} never accepted the seed write after retries"; return 1; }
   done
 
   log "starting the multi-master mesh (Replication engine)"
@@ -426,8 +438,20 @@ sandbox_provision_dataflow() {
   kubectl -n "$NS" rollout status statefulset/pg-b --timeout="${MEMBERS_ROLLOUT_TIMEOUT:-120s}"
   log "seeding conv_test on both members"
   for m in pg-a pg-b; do
-    kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app \
-      -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);"
+    # `pg_isready` (the readiness probe) flaps TRUE during the postgres image's init/temp-server
+    # phase, so `rollout status` can report ready while the entrypoint is still tearing that temp
+    # server down to start the real one. Seeding in that window fails with "the database system is
+    # shutting down". Retry until the REAL server accepts a write. (Surfaced on a slower-disk
+    # substrate; the CREATE is idempotent so retrying is safe everywhere.)
+    seeded=0
+    for _ in $(seq 1 40); do
+      if kubectl -n "$NS" exec "${m}-0" -- psql -U app -d app \
+           -c "CREATE TABLE IF NOT EXISTS public.conv_test (id text PRIMARY KEY, val text);" >/dev/null 2>&1; then
+        seeded=1; break
+      fi
+      sleep 3
+    done
+    [ "$seeded" = 1 ] || { log "FATAL: ${m} never accepted the seed write after retries"; return 1; }
   done
 
   log "starting the kind: DataFlow (replication edge pg-a <-> pg-b)"
