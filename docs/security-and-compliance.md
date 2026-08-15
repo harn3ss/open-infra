@@ -222,3 +222,20 @@ disclosed honestly, because "it actually runs" is worth more than a diagram. The
 *reference environment*; it is **not** the security boundary. The guarantees and controls above
 describe the **platform**; a production or authorized deployment supplies its own hardened
 environment, organizational controls, and authorization boundary.
+
+### Running on an operator-provided certified substrate
+
+open-infra targets **operator-provided** Kubernetes substrates and is not bound to the reference lab or
+to a specific CNI/CSI. Storage classes are configurable per resource (`spec.storageClass` on the
+database, stream, migration, dataflow, directory, fileshare, and VM-image kinds), so the platform
+deploys on whatever CSI the operator brings rather than requiring a particular one.
+
+The platform has been **exercised end-to-end on a certified-track substrate** — SUSE Linux Enterprise
+Server 15 SP7 + RKE2, **under FIPS mode** (kernel FIPS + FIPS crypto policy on every node) — including
+the Crossplane control plane, the Stream/Function chain (CDC → JetStream → Knative), and multi-master
+replication, with chaos-oracle fault injection (network partition, capture/sink kill) and enforced
+PodSecurity `restricted` admission. This is a validation **event**, not a certification of open-infra:
+Common Criteria / FIPS 140-3 evaluations cover the **operating system and the Kubernetes cryptographic
+module**, not the orchestration layer, and remain the deployer's to maintain via a subscribed,
+in-evaluation-configuration substrate. Consistent with the maturity note above, multi-master
+reconvergence stays **Experimental** — a substrate exercise like this exists partly to find its edges.
