@@ -45,6 +45,9 @@ spec:
               type: object
               required: [domain]
               properties:
+                storageClass:
+                  type: string
+                  description: "StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path)."
                 domain:
                   type: string
                   description: "AD domain FQDN, lowercase, e.g. corp.openinfra.lan. The Kerberos realm (uppercase) and the NetBIOS short name are derived from it."

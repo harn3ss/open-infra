@@ -206,7 +206,7 @@ spec:
                     namespace: {{ $ns }}
                   spec:
                     accessModes: ["ReadWriteOnce"]
-                    storageClassName: longhorn
+                    storageClassName: {{ $spec.storageClass | default "longhorn" }}
                     resources: { requests: { storage: 1Gi } }
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2

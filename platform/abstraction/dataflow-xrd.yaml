@@ -47,6 +47,9 @@ spec:
               type: object
               required: [nodes, edges]
               properties:
+                storageClass:
+                  type: string
+                  description: "StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path)."
                 nodes:
                   type: array
                   description: "Nodes on the canvas: database endpoints (role: database) or message topics (role: topic). `name` is the node id used by edges and as the replication origin marker."

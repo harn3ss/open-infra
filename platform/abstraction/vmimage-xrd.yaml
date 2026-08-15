@@ -42,6 +42,9 @@ spec:
               type: object
               required: [os]
               properties:
+                storageClass:
+                  type: string
+                  description: "StorageClass for this resource's persistent volumes. Defaults to 'longhorn'. Set to your cluster's StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path)."
                 # Curated catalog (allowlist). Each maps to a verified Microsoft
                 # eval-ISO fwlink + unattended-install params in the Composition's
                 # $catalog. KEEP IN SYNC with that catalog and the VM os enum.
