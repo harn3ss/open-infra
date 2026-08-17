@@ -237,7 +237,13 @@ The platform has been **exercised end-to-end on a certified-track substrate** �
 Server 15 SP7 + RKE2, **under FIPS mode** (kernel FIPS + FIPS crypto policy on every node) — including
 the Crossplane control plane, the Stream/Function chain (CDC → JetStream → Knative), and multi-master
 replication, with chaos-oracle fault injection (network partition, capture/sink kill) and enforced
-PodSecurity `restricted` admission. The substrate was additionally scanned against recognized baselines
+PodSecurity `restricted` admission. The chaos run was **17 green / 2 red / 1 inconclusive**: the two
+reds were both multi-master reconvergence edges — a flapping partition and a reproducible 2-master
+member-kill seed that did not reconverge within the window — and the inconclusive was an app-availability
+run whose replicas never came up (a setup artifact, not a product fault). That is the expected result of
+exercising something that is still **Experimental** (multi-master reconvergence, below); the same run
+also surfaced real issues that were fixed in-window — a sandbox seed-vs-Postgres startup race and the
+data-plane `storageClass` portability gap. The substrate was additionally scanned against recognized baselines
 — the OS with the DISA STIG OpenSCAP profile and the Kubernetes distribution with the CIS Kubernetes
 benchmark — establishing an assessor-legible hardening posture (a baseline, with a documented
 remediation path; full hardening is the deployer's). The scan results (DISA STIG 63 pass / 154 fail,
