@@ -607,6 +607,18 @@ export function getCost(): Promise<CostResponse> {
   return request<CostResponse>("/cost");
 }
 
+/** Live root-filesystem usage per node, from Prometheus (node-exporter). Keyed by node IP. */
+export interface NodeDisk {
+  sizeBytes: number;
+  usedBytes: number;
+  availBytes: number;
+  usedPercent: number;
+}
+
+export function getNodeDisk(): Promise<Record<string, NodeDisk>> {
+  return request<Record<string, NodeDisk>>("/nodes/disk");
+}
+
 // --- Database snapshots (final-snapshot-before-delete + restore) -------------
 
 export interface DbSnapshot {

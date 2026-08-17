@@ -253,6 +253,12 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).
 			Get("/cost", handleCost(*client.Clientset, logger))
 
+		// Node disk usage — live root-filesystem utilization per node, from Prometheus
+		// (node-exporter). The Node object has capacity but not usage; this fills the
+		// Nodes page's disk row. Keyed by node IP; fails soft to {} if Prometheus is down.
+		api.With(middleware.Timeout(12*time.Second)).
+			Get("/nodes/disk", handleNodeDisk(*client.Clientset, auth, logger))
+
 		// Database snapshots — "final snapshot before you deprovision" (RDS-style): a
 		// pg_dump to MinIO that survives the DB's deletion, restorable into a new DB.
 		api.With(middleware.Timeout(20*time.Second)).
