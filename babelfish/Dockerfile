@@ -7,7 +7,7 @@
 # patches — `apt upgrade` clears the fixable base-image CVEs the prebuilt image carried.
 #
 # Bump BABELFISH_VERSION deliberately (tags: github.com/babelfish-for-postgresql).
-FROM ubuntu:22.04 AS base
+FROM ubuntu:24.04 AS base
 
 # ---------------------------------------------------------------------------- build
 FROM base AS builder
@@ -20,7 +20,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 	libxslt-dev libssl-dev libreadline-dev zlib1g-dev \
 	libldap2-dev libpam0g-dev gettext uuid uuid-dev \
 	cmake lld apt-utils libossp-uuid-dev gnulib bison \
-	xsltproc icu-devtools libicu70 \
+	xsltproc icu-devtools libicu74 \
 	libicu-dev gawk \
 	curl openjdk-21-jre openssl \
 	g++ python-dev-is-python3 libpq-dev \
@@ -84,8 +84,8 @@ EXPOSE 1433 5432
 
 # apt upgrade patches the fixable base-image CVEs; only runtime libs are installed.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-	libssl3 openssl libldap-2.5-0 libxml2 libpam0g uuid libossp-uuid16 \
-	libxslt1.1 libicu70 libpq5 unixodbc \
+	libssl3 openssl libldap2 libxml2 libpam0g uuid libossp-uuid16 \
+	libxslt1.1 libicu74 libpq5 unixodbc \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN adduser postgres --home ${POSTGRES_USER_HOME}
