@@ -83,8 +83,10 @@ ENV BABELFISH_DATA=${POSTGRES_USER_HOME}/data
 EXPOSE 1433 5432
 
 # apt upgrade patches the fixable base-image CVEs; only runtime libs are installed.
+# adduser: no longer in the minimal ubuntu:24.04 base (it was in 22.04); the runtime
+# stage needs it for the `adduser postgres` step below.
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-	libssl3 openssl libldap2 libxml2 libpam0g uuid libossp-uuid16 \
+	adduser libssl3 openssl libldap2 libxml2 libpam0g uuid libossp-uuid16 \
 	libxslt1.1 libicu74 libpq5 unixodbc \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
