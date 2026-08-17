@@ -6,6 +6,8 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.6.0 — 2026-08-16
+
 ### Security & compliance
 - **Signed compliance attestation.** A **Security & Identity → Attestation** console page (and
   `/api/compliance/attestation`) shows live NIST 800-53 control coverage with evidence gathered from
@@ -53,6 +55,11 @@ the product's public contract.
   AU-9(3), AU-11. See [`docs/audit-offsite.md`]. Part of the government feature track (issue #71).
 
 ### Console
+- **Live disk usage on the Nodes page.** Each node card now shows root-filesystem utilization —
+  used / total with a fill bar (amber past 75%, red past 90%) — beside CPU, memory, and pods. The
+  figure is read live from the cluster's Prometheus (node-exporter) through a BFF endpoint gated by
+  the same `list nodes` permission as the page, refreshes on its own, and is simply omitted when no
+  metrics backend is reachable.
 - **Resource creation, rewritten (issue #96).** Creating a resource is moving from cramped modal
   pop-ups to a full-page, schema-driven experience: essential fields up front with everything else
   under a collapsed **Advanced settings**, optional fields marked (rather than required), inline help
@@ -67,6 +74,12 @@ the product's public contract.
   verifies the target engine Service. List, create, and delete use the standard RBAC-gated Kubernetes proxy.
 
 ### Abstractions
+- **Configurable storage class — portability off Longhorn.** Every managed plane that persists data
+  now takes an optional storage class: `spec.database.storageClass` on managed databases, and
+  `spec.storageClass` on `Stream`, `DataFlow`, `Migration`, `Directory`, `FileShare`, and `VMImage`.
+  All default to `longhorn`, so existing resources are unchanged; set it to any cluster StorageClass
+  (`local-path`, a CSI driver, an operator-provided class) to run open-infra where Longhorn is not the
+  storage layer. Mirrored in the Terraform provider.
 - **`kind: Grant` — temporal (just-in-time) access.** A Grant binds a User or Group to a ClusterRole for
   a bounded duration with a recorded reason, then revokes itself — the analog of AWS STS AssumeRole with a
   session duration, and an answer to standing privilege. What it can confer is deliberately narrow: a
@@ -438,7 +451,10 @@ the product's public contract.
 - **A NIST 800-53 security & compliance posture is now documented** ([docs/security-and-compliance.md](docs/security-and-compliance.md)):
   an honest, control-level implementation mapping (AC/AU/IA/SC/CM/SI/CP) plus the continuous
   flaw-remediation loop (Trivy → code-scanning → Dependabot → CI), framed as
-  control-implementation evidence, not a certification claim.
+  control-implementation evidence, not a certification claim. It also records the platform's
+  substrate portability and a point-in-time validation: open-infra was deployed and chaos-tested on a
+  certified FIPS-mode substrate (SLES 15 + RKE2) — evidence of running on a certified base, not a
+  certification of open-infra itself.
 
 ### Reliability
 - **A public, auto-generated chaos-scenario gallery** ([docs/chaos-scenarios.md](docs/chaos-scenarios.md),
