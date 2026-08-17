@@ -234,7 +234,10 @@ The platform has been **exercised end-to-end on a certified-track substrate** �
 Server 15 SP7 + RKE2, **under FIPS mode** (kernel FIPS + FIPS crypto policy on every node) — including
 the Crossplane control plane, the Stream/Function chain (CDC → JetStream → Knative), and multi-master
 replication, with chaos-oracle fault injection (network partition, capture/sink kill) and enforced
-PodSecurity `restricted` admission. This is a validation **event**, not a certification of open-infra:
+PodSecurity `restricted` admission. The substrate was additionally scanned against recognized baselines
+— the OS with the DISA STIG OpenSCAP profile and the Kubernetes distribution with the CIS Kubernetes
+benchmark — establishing an assessor-legible hardening posture (a baseline, with a documented
+remediation path; full hardening is the deployer's). This is a validation **event**, not a certification of open-infra:
 Common Criteria / FIPS 140-3 evaluations cover the **operating system and the Kubernetes cryptographic
 module**, not the orchestration layer, and remain the deployer's to maintain via a subscribed,
 in-evaluation-configuration substrate. Consistent with the maturity note above, multi-master
