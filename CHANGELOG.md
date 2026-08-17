@@ -74,12 +74,14 @@ the product's public contract.
   verifies the target engine Service. List, create, and delete use the standard RBAC-gated Kubernetes proxy.
 
 ### Abstractions
-- **Configurable storage class — portability off Longhorn.** Every managed plane that persists data
-  now takes an optional storage class: `spec.database.storageClass` on managed databases, and
-  `spec.storageClass` on `Stream`, `DataFlow`, `Migration`, `Directory`, `FileShare`, and `VMImage`.
-  All default to `longhorn`, so existing resources are unchanged; set it to any cluster StorageClass
-  (`local-path`, a CSI driver, an operator-provided class) to run open-infra where Longhorn is not the
-  storage layer. Mirrored in the Terraform provider.
+- **Configurable storage class — portability off Longhorn.** The data-plane kinds now take an optional
+  storage class: `spec.database.storageClass` on managed databases, and `spec.storageClass` on `Stream`,
+  `DataFlow`, `Migration`, `Directory`, `FileShare`, and `VMImage`. Each keeps its previous default, so
+  existing resources are unchanged — the six `spec.storageClass` kinds default to `longhorn`, and managed
+  databases to `local-path` (Longhorn only where an engine needs node-independent storage). Point it at
+  any cluster StorageClass (`local-path`, a CSI driver, an operator-provided class) to run those planes
+  where Longhorn is not present. Not yet configurable: VM root disks and standalone `Volume`s still pin
+  `longhorn`/`longhorn-migratable` (live-migration needs the RWX class). Mirrored in the Terraform provider.
 - **`kind: Grant` — temporal (just-in-time) access.** A Grant binds a User or Group to a ClusterRole for
   a bounded duration with a recorded reason, then revokes itself — the analog of AWS STS AssumeRole with a
   session duration, and an answer to standing privilege. What it can confer is deliberately narrow: a
