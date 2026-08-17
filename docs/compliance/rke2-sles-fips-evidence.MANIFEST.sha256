@@ -1,0 +1,31 @@
+# open-infra on RKE2-on-SLES 15 SP7 — validation + compliance evidence bundle (FINAL)
+# validation 2026-08-15 | compliance 2026-08-16 | eval expires 2026-10-14 | captured pre-Ubuntu-revert
+# substrate: 3-node SLES 15 SP7 + RKE2 v1.35.7 + FIPS (fips=1, 11 crypto pkgs version-locked, all nodes)
+# chaos 17 GREEN/2 RED/1 INCONC | OpenSCAP STIG 63/154 PCI 109/132 HIPAA 29/99 ANSSI-high 146/193 | CIS-k8s 53/9/46 | SI-2 channel+locks OK
+# pushed fixes: open-infra b619721/9ec194b/ae6ed0d; provider 17463a3 (unreleased)
+#
+d8894576abcbd174582216f1093062d94e958ee603c1d7adb9c0485db85d37ed  VALIDATION-FINDINGS.md
+3beaae443d96efdbb1ec72d5d15ee19680b3d7ff57872fc0caf8595f3e35d22c  evidence/chaos-batch-14-scenarios.log
+c35d7a034f4e4f436767304a8975bdddf0aa1a8b0402cad8e76da69985d4d824  evidence/compliance/anssi_bp28_high-arf.xml.gz
+a885bf420c978adcdcb0b71ffb15e4ad8f8023d6054d1dab498d227e831d96a6  evidence/compliance/anssi_bp28_high-report.html
+376559fbdf2ed44e943b1a73ed4c6257fe8a887bd7be226320a8361d14e9b10f  evidence/compliance/COMPLIANCE-SCAN-SUMMARY.md
+fba0843d3fa11f9df2aba80d42a3fcdb8bbd3c8ff43d45de7dc2636724396dc4  evidence/compliance/hipaa-arf.xml.gz
+a5e7d3bd9338b44db33487952dd59806818edd1ff11776508861f4e29bf543cf  evidence/compliance/hipaa-report.html
+a2e491fec10f906ee8a959774c0714462aa02b7f3604f43418810b32c04a899a  evidence/compliance/kube-bench-report.txt
+97dbbc670ab18bea7dcd569ee47ed93a4d5c123eeacd6f413285c2d53ab8eac3  evidence/compliance/pci-dss-4-arf.xml.gz
+1320505da931566b791bc67ffac3abfcfbbb29d266412e83924f539076969641  evidence/compliance/pci-dss-4-report.html
+914111e8d2eb8f95a03d3e861060bc9c2aa1af4d53de009c69819f6ef0155dde  evidence/compliance/stig-arf.xml.gz
+15fd91ca09e5d1151177c62164e92d7e2e79c94d53176a3817ca58624ea4f3a7  evidence/compliance/stig-remediation.sh
+4a6e9c766e99efff38e1bccd20cf6968c4dcafc097cf81304003531285a38b27  evidence/compliance/stig-report.html
+26d7c2b6ee0dbadf82d3304f1ffaca6ed7fceb739fa05ef63ff4d717db12a928  evidence/final-state-snapshot.txt
+533e46bed6e01dad07ef6acd1da5615488973935f0f46794a6991d9f6dbbba28  evidence/fips-cert-lineage-and-locks.txt
+28925cdb3e121326f3b9b7b3b6e6477af3173affeb4dfbe74df0d098ff4ce7c6  evidence/restricted-psa-validation.log
+d6899f2c90030808861051dc3db8bb629ce30f23f36a7c8ee3f70f8da14c4b8f  evidence/scenario-generated-mesh-first.log
+122a97c9612c6fc5967e4735f8b1f5e71858d159cdf189e354ecceb8d5060672  evidence/scenario-generated-mesh.log
+cf0075d0174b36ad9a571662ee0124cdd7a109e3c30ae31835dd550e8935b3f7  evidence/scenario-generated-mesh-rerun.log
+00aeccee9b3720a25f630bbfeec1b2a5d00e4b0f5c2ab58df2e0ed9a8450ec58  evidence/scenario-generated-mesh-seed42-PASS.log
+7ba52cd0732e1c377dd5709dabe4ff39cf82fb32951c807a16d3ede72040fe74  evidence/scenario-partition-flapping-RED.log
+0dfc6887b0ec3ef1cdc9c466f160dd560d8b02dbe6917283a3f733f206336c40  evidence/scenario-partition.log
+5cab871688e83041a1a1234c80de426443a90bad32728738cb9d28489a9103ac  evidence/scenario-sinkkill.log
+4bef16a0353c48728b1d61175b5d45a0e7fbbd0635004fc98f8a6863253487bc  evidence/scenario-stream-function.log
+1e7ac20d3997f3b2560ed8259fdebc6a10521b5e3cc576c188a6943e18af7eec  evidence/substrate-evidence.txt
