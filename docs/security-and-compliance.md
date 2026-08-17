@@ -227,8 +227,11 @@ environment, organizational controls, and authorization boundary.
 
 open-infra targets **operator-provided** Kubernetes substrates and is not bound to the reference lab or
 to a specific CNI/CSI. Storage classes are configurable per resource (`spec.storageClass` on the
-database, stream, migration, dataflow, directory, fileshare, and VM-image kinds), so the platform
-deploys on whatever CSI the operator brings rather than requiring a particular one.
+stream, migration, dataflow, directory, fileshare, and VM-image kinds, and `spec.database.storageClass`
+on managed databases), so those planes deploy on whatever CSI the operator brings rather than requiring
+a particular one. (VM root disks and standalone `Volume`s remain on Longhorn — live-migration needs its
+RWX `longhorn-migratable` class — so a Longhorn-free substrate runs the data-plane and database kinds,
+not VM live-migration or standalone block volumes.)
 
 The platform has been **exercised end-to-end on a certified-track substrate** — SUSE Linux Enterprise
 Server 15 SP7 + RKE2, **under FIPS mode** (kernel FIPS + FIPS crypto policy on every node) — including
@@ -237,7 +240,13 @@ replication, with chaos-oracle fault injection (network partition, capture/sink 
 PodSecurity `restricted` admission. The substrate was additionally scanned against recognized baselines
 — the OS with the DISA STIG OpenSCAP profile and the Kubernetes distribution with the CIS Kubernetes
 benchmark — establishing an assessor-legible hardening posture (a baseline, with a documented
-remediation path; full hardening is the deployer's). This is a validation **event**, not a certification of open-infra:
+remediation path; full hardening is the deployer's). The scan results (DISA STIG 63 pass / 154 fail,
+PCI-DSS v4 109/132, HIPAA 29/99, ANSSI-BP-028-high 146/193; CIS Kubernetes 53 pass / 9 fail / 46 warn,
+all as-provisioned) and their remediation analysis are recorded in
+[`docs/compliance/rke2-sles-fips-scan-2026-08.md`](compliance/rke2-sles-fips-scan-2026-08.md); the full
+OpenSCAP and kube-bench reports are retained in a dated evidence bundle (captured 2026-08-16, integrity
+manifest [`rke2-sles-fips-evidence.MANIFEST.sha256`](compliance/rke2-sles-fips-evidence.MANIFEST.sha256),
+SHA-256 `7baa8c10…`), available for assessor review. This is a validation **event**, not a certification of open-infra:
 Common Criteria / FIPS 140-3 evaluations cover the **operating system and the Kubernetes cryptographic
 module**, not the orchestration layer, and remain the deployer's to maintain via a subscribed,
 in-evaluation-configuration substrate. Consistent with the maturity note above, multi-master
