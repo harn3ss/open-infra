@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Cpu, FileCode2, MemoryStick, Server, Zap } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Cpu, FileCode2, HardDrive, MemoryStick, Server, Zap } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +16,9 @@ import {
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useListFilter } from "@/hooks/use-list-filter";
 import { corePaths } from "@/lib/k8s-paths";
-import { age } from "@/lib/format";
+import { age, formatBytes } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { getNodeDisk, type NodeDisk } from "@/lib/api";
 import {
   nodeCapacity,
   nodeInternalIP,
@@ -28,9 +31,11 @@ import type { Node } from "@/types/k8s";
 
 function NodeCard({
   node,
+  disk,
   onViewYaml,
 }: {
   node: Node;
+  disk?: NodeDisk;
   onViewYaml: (n: Node) => void;
 }) {
   const ready = nodeReady(node);
@@ -83,6 +88,34 @@ function NodeCard({
             </span>
           </div>
         </div>
+
+        {disk ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-sm">
+              <HardDrive className="size-4 text-muted-foreground" />
+              <span className="text-muted-foreground">Disk</span>
+              <span className="ml-auto font-medium tabular-nums">
+                {formatBytes(disk.usedBytes)} / {formatBytes(disk.sizeBytes)}
+              </span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-secondary">
+              <div
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  disk.usedPercent >= 90
+                    ? "bg-destructive"
+                    : disk.usedPercent >= 75
+                      ? "bg-warning"
+                      : "bg-primary",
+                )}
+                style={{ width: `${Math.min(100, Math.max(2, disk.usedPercent))}%` }}
+              />
+            </div>
+            <div className="text-right text-xs text-muted-foreground tabular-nums">
+              {disk.usedPercent.toFixed(0)}% used · {formatBytes(disk.availBytes)} free
+            </div>
+          </div>
+        ) : null}
 
         {cap.gpus > 0 ? (
           <div className="flex items-center gap-2 rounded-md bg-primary/5 px-2.5 py-2 text-sm ring-1 ring-primary/20">
@@ -137,6 +170,13 @@ function NodeCard({
 export function NodesPage() {
   const { items, isLoading, isError, error, live, refetch } =
     useK8sWatch<Node>(corePaths.nodes());
+  // Live disk usage from Prometheus (node-exporter), keyed by node IP. Fails soft to {} —
+  // the disk row simply doesn't render when metrics are unavailable.
+  const { data: diskByIP } = useQuery<Record<string, NodeDisk>>({
+    queryKey: ["node-disk"],
+    queryFn: getNodeDisk,
+    refetchInterval: 30000,
+  });
   const { filtered } = useListFilter(items, (n) => [
     n.metadata.name,
     nodeInternalIP(n),
@@ -180,6 +220,7 @@ export function NodesPage() {
             <NodeCard
               key={node.metadata.uid ?? node.metadata.name}
               node={node}
+              disk={diskByIP?.[nodeInternalIP(node) ?? ""]}
               onViewYaml={(n) => {
                 setYamlNode(n);
                 setYamlOpen(true);
