@@ -109,7 +109,7 @@ incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateautho
 incl attestation "security/compliance-attest.yaml"
 # Air-gap support (issue #72): the in-cluster registry mirror + image prefetch — the "front-load"
 # half. OFF by default (internet stays allowed). Safe to enable on-net; it severs nothing.
-incl airgap "airgap/registry-mirror.yaml,airgap/image-prefetch.yaml"
+incl airgap "airgap/registry-mirror.yaml,airgap/image-prefetch.yaml,airgap/node-registries.yaml"
 # The public-egress cutoff is a SEPARATE, deliberate election: applied ONLY when the airgap component
 # is on AND airgap.denyPublicEgress is true. Front-load the mirror and point nodes at it first, or
 # image pulls will fail once the internet is cut (docs/airgapping.md). Reversible: flip back + re-sync.
