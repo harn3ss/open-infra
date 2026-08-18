@@ -128,61 +128,91 @@ type VerifyResult struct {
 // wants to detect front-truncation as an attack should compare BaseSeq/HeadSeq against an
 // externally anchored expectation (e.g. the last HeadHash it recorded).
 func Verify(segs []Segment) VerifyResult {
-	if len(segs) == 0 {
-		return VerifyResult{OK: true, Count: 0}
-	}
 	sorted := make([]Segment, len(segs))
 	copy(sorted, segs)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-
-	res := VerifyResult{
-		Count:   len(sorted),
-		BaseSeq: sorted[0].Seq,
-		HeadSeq: sorted[len(sorted)-1].Seq,
+	var v StreamVerifier
+	for _, s := range sorted {
+		v.Push(s)
 	}
-	broke := func(seq int, reason string) VerifyResult {
-		s := seq
-		res.OK = false
-		res.BrokenAt = &s
-		res.Reason = reason
-		return res
+	return v.Result()
+}
+
+// StreamVerifier performs the same walk as Verify, but one segment at a time in ascending
+// Seq order, WITHOUT holding every segment's records in memory at once — so verification
+// stays O(1) in memory no matter how long the chain has grown. A caller streaming a long
+// chain out of object storage (see cmd/audit-offsite) pushes each segment and frees it
+// immediately; Verify above is the in-memory convenience wrapper over exactly this walk.
+//
+// Segments MUST be pushed in ascending Seq order. Once a segment fails, later Pushes are
+// ignored — the first break wins, matching Verify's early return.
+type StreamVerifier struct {
+	res    VerifyResult
+	prev   *Segment // only Seq and Hash are read after a Push returns
+	broken bool
+}
+
+func (v *StreamVerifier) broke(seq int, reason string) {
+	s := seq
+	v.res.OK = false
+	v.res.BrokenAt = &s
+	v.res.Reason = reason
+	v.broken = true
+}
+
+// Push verifies one segment against its own hashes and its link to the previous segment.
+// After Push returns, the caller may free seg.Records — they are not retained.
+func (v *StreamVerifier) Push(seg Segment) {
+	if v.broken {
+		return
+	}
+	v.res.Count++
+	v.res.Records += seg.Count
+
+	// (1) contents match their own hashes — catches an edited record or field.
+	if HashRecords(seg.Records) != seg.RecordsHash {
+		v.broke(seg.Seq, "records do not match recordsHash (a record was altered)")
+		return
+	}
+	if seg.Count != len(seg.Records) {
+		v.broke(seg.Seq, "count does not match the number of records")
+		return
+	}
+	if segmentHash(seg.Seq, seg.PrevHash, seg.Count, seg.FirstTS, seg.LastTS, seg.RecordsHash) != seg.Hash {
+		v.broke(seg.Seq, "segment hash does not match its contents (a field was altered)")
+		return
 	}
 
-	var prev *Segment
-	for i := range sorted {
-		s := sorted[i]
-		res.Records += s.Count
-
-		// (1) contents match their own hashes — catches an edited record or field.
-		if HashRecords(s.Records) != s.RecordsHash {
-			return broke(s.Seq, "records do not match recordsHash (a record was altered)")
+	if v.prev == nil {
+		v.res.BaseSeq = seg.Seq
+		// The earliest present segment. If it claims to be the start of the chain it must
+		// link to genesis; otherwise it is a front-truncated chain, which is allowed.
+		if seg.Seq == 0 && seg.PrevHash != GenesisPrev {
+			v.broke(seg.Seq, "first segment does not link to genesis")
+			return
 		}
-		if s.Count != len(s.Records) {
-			return broke(s.Seq, "count does not match the number of records")
+	} else {
+		// (2) no gap, and (3) the link holds.
+		if seg.Seq != v.prev.Seq+1 {
+			v.broke(seg.Seq, fmt.Sprintf("gap in sequence: expected %d, got %d (a segment is missing)", v.prev.Seq+1, seg.Seq))
+			return
 		}
-		if segmentHash(s.Seq, s.PrevHash, s.Count, s.FirstTS, s.LastTS, s.RecordsHash) != s.Hash {
-			return broke(s.Seq, "segment hash does not match its contents (a field was altered)")
+		if seg.PrevHash != v.prev.Hash {
+			v.broke(seg.Seq, "prevHash does not match the prior segment (chain reordered or substituted)")
+			return
 		}
-
-		if prev == nil {
-			// The earliest present segment. If it claims to be the start of the chain it must
-			// link to genesis; otherwise it is a front-truncated chain, which is allowed.
-			if s.Seq == 0 && s.PrevHash != GenesisPrev {
-				return broke(s.Seq, "first segment does not link to genesis")
-			}
-		} else {
-			// (2) no gap, and (3) the link holds.
-			if s.Seq != prev.Seq+1 {
-				return broke(s.Seq, fmt.Sprintf("gap in sequence: expected %d, got %d (a segment is missing)", prev.Seq+1, s.Seq))
-			}
-			if s.PrevHash != prev.Hash {
-				return broke(s.Seq, "prevHash does not match the prior segment (chain reordered or substituted)")
-			}
-		}
-		prev = &sorted[i]
 	}
 
-	res.OK = true
-	res.HeadHash = prev.Hash
-	return res
+	// Retain only the light head fields for the next link check — never the records.
+	v.prev = &Segment{Seq: seg.Seq, Hash: seg.Hash}
+	v.res.HeadSeq = seg.Seq
+	v.res.HeadHash = seg.Hash
+}
+
+// Result returns the verification outcome after all segments have been pushed.
+func (v *StreamVerifier) Result() VerifyResult {
+	if !v.broken {
+		v.res.OK = true
+	}
+	return v.res
 }
