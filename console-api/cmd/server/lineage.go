@@ -24,6 +24,11 @@ import (
 //
 // Gated on the SAR to list DataFlows: whoever can see the data topology can see its lineage. Reads
 // use the console ServiceAccount (which can list these kinds); the SAR enforces the caller's right.
+//
+// The per-kind parsing lives in the small pure functions below (dataFlowFlow/migrationFlow/…) so it is
+// unit-testable off a raw CR payload — the handler itself only does I/O (list + auth). The alternative
+// (testing through the handler) can't reach the parsing: crList needs a real REST client, and a fake
+// clientset yields zero items. This split is what lets the siteA/siteB shape be pinned by a test.
 
 type lineageNode struct {
 	Name   string `json:"name"`
@@ -77,6 +82,12 @@ type crMeta struct {
 	} `json:"metadata"`
 }
 
+// dbEndpoint is a database reference as it appears in Migration/Replication/Stream specs. The fields
+// are matched case-insensitively by encoding/json, so lower-case JSON keys (engine/host/database) bind.
+type dbEndpoint struct {
+	Engine, Host, Database string
+}
+
 // endpointLabel renders a database endpoint as "engine host/db" for display, tolerating missing bits.
 func endpointLabel(engine, host, database string) string {
 	label := host
@@ -95,6 +106,115 @@ func endpointLabel(engine, host, database string) string {
 	return label
 }
 
+// dataFlowFlow parses a DataFlow item — the richest source: it already carries nodes[] + edges[].
+func dataFlowFlow(item json.RawMessage) (lineageFlow, bool) {
+	var df struct {
+		crMeta
+		Spec struct {
+			Nodes []struct {
+				Name   string `json:"name"`
+				Role   string `json:"role"`
+				Engine string `json:"engine"`
+			} `json:"nodes"`
+			Edges []struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+				Type string `json:"type"`
+			} `json:"edges"`
+		} `json:"spec"`
+	}
+	if json.Unmarshal(item, &df) != nil {
+		return lineageFlow{}, false
+	}
+	f := lineageFlow{
+		Origin: "DataFlow " + df.Metadata.Namespace + "/" + df.Metadata.Name,
+		Kind:   "DataFlow", Namespace: df.Metadata.Namespace, Name: df.Metadata.Name,
+	}
+	for _, n := range df.Spec.Nodes {
+		f.Nodes = append(f.Nodes, lineageNode{Name: n.Name, Role: n.Role, Engine: n.Engine})
+	}
+	for _, e := range df.Spec.Edges {
+		t := e.Type
+		if t == "" {
+			t = "edge"
+		}
+		f.Edges = append(f.Edges, lineageEdge{From: e.From, To: e.To, Type: t})
+	}
+	return f, true
+}
+
+// migrationFlow parses a Migration item — one directed edge, source DB → target DB.
+func migrationFlow(item json.RawMessage) (lineageFlow, bool) {
+	var m struct {
+		crMeta
+		Spec struct {
+			Source dbEndpoint `json:"source"`
+			Target dbEndpoint `json:"target"`
+		} `json:"spec"`
+	}
+	if json.Unmarshal(item, &m) != nil {
+		return lineageFlow{}, false
+	}
+	return lineageFlow{
+		Origin: "Migration " + m.Metadata.Namespace + "/" + m.Metadata.Name,
+		Kind:   "Migration", Namespace: m.Metadata.Namespace, Name: m.Metadata.Name,
+		Edges: []lineageEdge{{
+			From: endpointLabel(m.Spec.Source.Engine, m.Spec.Source.Host, m.Spec.Source.Database),
+			To:   endpointLabel(m.Spec.Target.Engine, m.Spec.Target.Host, m.Spec.Target.Database),
+			Type: "migration",
+		}},
+	}, true
+}
+
+// replicationFlow parses a Replication item — two sites kept in sync both ways.
+//
+// The spec fields are siteA / siteB (NOT a sites[] array). Reading the wrong shape here once silently
+// dropped every replication edge from the lineage; the test for this function pins siteA/siteB so that
+// regression cannot come back.
+func replicationFlow(item json.RawMessage) (lineageFlow, bool) {
+	var rp struct {
+		crMeta
+		Spec struct {
+			SiteA dbEndpoint `json:"siteA"`
+			SiteB dbEndpoint `json:"siteB"`
+		} `json:"spec"`
+	}
+	if json.Unmarshal(item, &rp) != nil {
+		return lineageFlow{}, false
+	}
+	return lineageFlow{
+		Origin: "Replication " + rp.Metadata.Namespace + "/" + rp.Metadata.Name,
+		Kind:   "Replication", Namespace: rp.Metadata.Namespace, Name: rp.Metadata.Name,
+		Edges: []lineageEdge{{
+			From: endpointLabel(rp.Spec.SiteA.Engine, rp.Spec.SiteA.Host, rp.Spec.SiteA.Database),
+			To:   endpointLabel(rp.Spec.SiteB.Engine, rp.Spec.SiteB.Host, rp.Spec.SiteB.Database),
+			Type: "replication (bidirectional)",
+		}},
+	}, true
+}
+
+// streamFlow parses a Stream item — source DB CDC → an event-bus subject named after the Stream.
+func streamFlow(item json.RawMessage) (lineageFlow, bool) {
+	var st struct {
+		crMeta
+		Spec struct {
+			Source dbEndpoint `json:"source"`
+		} `json:"spec"`
+	}
+	if json.Unmarshal(item, &st) != nil {
+		return lineageFlow{}, false
+	}
+	return lineageFlow{
+		Origin: "Stream " + st.Metadata.Namespace + "/" + st.Metadata.Name,
+		Kind:   "Stream", Namespace: st.Metadata.Namespace, Name: st.Metadata.Name,
+		Edges: []lineageEdge{{
+			From: endpointLabel(st.Spec.Source.Engine, st.Spec.Source.Host, st.Spec.Source.Database),
+			To:   fmt.Sprintf("jetstream:%s", st.Metadata.Name),
+			Type: "stream",
+		}},
+	}, true
+}
+
 func handleLineage(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// This is a CLUSTER-WIDE view (it lists dataflows/migrations/replications/streams across all
@@ -107,120 +227,25 @@ func handleLineage(cs kubernetes.Interface, auth *authStore, logger *slog.Logger
 		defer cancel()
 
 		var flows []lineageFlow
-
-		// DataFlow — the richest source: it already carries nodes[] + edges[].
 		for _, item := range crList(ctx, cs, "dataflows") {
-			var df struct {
-				crMeta
-				Spec struct {
-					Nodes []struct {
-						Name   string `json:"name"`
-						Role   string `json:"role"`
-						Engine string `json:"engine"`
-					} `json:"nodes"`
-					Edges []struct {
-						From string `json:"from"`
-						To   string `json:"to"`
-						Type string `json:"type"`
-					} `json:"edges"`
-				} `json:"spec"`
+			if f, ok := dataFlowFlow(item); ok {
+				flows = append(flows, f)
 			}
-			if json.Unmarshal(item, &df) != nil {
-				continue
-			}
-			f := lineageFlow{
-				Origin: "DataFlow " + df.Metadata.Namespace + "/" + df.Metadata.Name,
-				Kind:   "DataFlow", Namespace: df.Metadata.Namespace, Name: df.Metadata.Name,
-			}
-			for _, n := range df.Spec.Nodes {
-				f.Nodes = append(f.Nodes, lineageNode{Name: n.Name, Role: n.Role, Engine: n.Engine})
-			}
-			for _, e := range df.Spec.Edges {
-				t := e.Type
-				if t == "" {
-					t = "edge"
-				}
-				f.Edges = append(f.Edges, lineageEdge{From: e.From, To: e.To, Type: t})
-			}
-			flows = append(flows, f)
 		}
-
-		// Migration — one directed edge, source DB → target DB.
 		for _, item := range crList(ctx, cs, "migrations") {
-			var m struct {
-				crMeta
-				Spec struct {
-					Source struct {
-						Engine, Host, Database string
-					} `json:"source"`
-					Target struct {
-						Engine, Host, Database string
-					} `json:"target"`
-				} `json:"spec"`
+			if f, ok := migrationFlow(item); ok {
+				flows = append(flows, f)
 			}
-			if json.Unmarshal(item, &m) != nil {
-				continue
-			}
-			flows = append(flows, lineageFlow{
-				Origin: "Migration " + m.Metadata.Namespace + "/" + m.Metadata.Name,
-				Kind:   "Migration", Namespace: m.Metadata.Namespace, Name: m.Metadata.Name,
-				Edges: []lineageEdge{{
-					From: endpointLabel(m.Spec.Source.Engine, m.Spec.Source.Host, m.Spec.Source.Database),
-					To:   endpointLabel(m.Spec.Target.Engine, m.Spec.Target.Host, m.Spec.Target.Database),
-					Type: "migration",
-				}},
-			})
 		}
-
-		// Replication — two sites kept in sync both ways (spec.siteA / spec.siteB).
 		for _, item := range crList(ctx, cs, "replications") {
-			var rp struct {
-				crMeta
-				Spec struct {
-					SiteA struct {
-						Engine, Host, Database string
-					} `json:"siteA"`
-					SiteB struct {
-						Engine, Host, Database string
-					} `json:"siteB"`
-				} `json:"spec"`
+			if f, ok := replicationFlow(item); ok {
+				flows = append(flows, f)
 			}
-			if json.Unmarshal(item, &rp) != nil {
-				continue
-			}
-			flows = append(flows, lineageFlow{
-				Origin: "Replication " + rp.Metadata.Namespace + "/" + rp.Metadata.Name,
-				Kind:   "Replication", Namespace: rp.Metadata.Namespace, Name: rp.Metadata.Name,
-				Edges: []lineageEdge{{
-					From: endpointLabel(rp.Spec.SiteA.Engine, rp.Spec.SiteA.Host, rp.Spec.SiteA.Database),
-					To:   endpointLabel(rp.Spec.SiteB.Engine, rp.Spec.SiteB.Host, rp.Spec.SiteB.Database),
-					Type: "replication (bidirectional)",
-				}},
-			})
 		}
-
-		// Stream — source DB CDC → an event bus subject (named after the Stream).
 		for _, item := range crList(ctx, cs, "streams") {
-			var st struct {
-				crMeta
-				Spec struct {
-					Source struct {
-						Engine, Host, Database string
-					} `json:"source"`
-				} `json:"spec"`
+			if f, ok := streamFlow(item); ok {
+				flows = append(flows, f)
 			}
-			if json.Unmarshal(item, &st) != nil {
-				continue
-			}
-			flows = append(flows, lineageFlow{
-				Origin: "Stream " + st.Metadata.Namespace + "/" + st.Metadata.Name,
-				Kind:   "Stream", Namespace: st.Metadata.Namespace, Name: st.Metadata.Name,
-				Edges: []lineageEdge{{
-					From: endpointLabel(st.Spec.Source.Engine, st.Spec.Source.Host, st.Spec.Source.Database),
-					To:   fmt.Sprintf("jetstream:%s", st.Metadata.Name),
-					Type: "stream",
-				}},
-			})
 		}
 
 		sort.Slice(flows, func(i, j int) bool { return flows[i].Origin < flows[j].Origin })
