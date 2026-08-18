@@ -102,6 +102,10 @@ metadata:
     openinfra.dev/component: airgap
     app: airgap-registry
 spec:
+  # NodePort so each node's HOST container runtime (containerd, outside the pod network — it cannot
+  # resolve cluster DNS) can reach the mirror at 127.0.0.1:<nodePort> regardless of which node the
+  # registry pod runs on. In-cluster clients (the prefetch Job) still use the ClusterIP / svc DNS.
+  type: NodePort
   selector: { app: airgap-registry }
   ports:
-    - { name: registry, port: 5000, targetPort: 5000 }
+    - { name: registry, port: 5000, targetPort: 5000, nodePort: 30500 }
