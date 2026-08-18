@@ -183,12 +183,16 @@ metadata:
   namespace: monitoring
 spec:
   schedule: "*/5 * * * *" # ship new audit records every 5 minutes
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: ship resumes from the bucket head and verify is read-only, so both are
+  # idempotent — but Forbid + a stuck run (verify is long-running / was OOM-prone) blocks every later
+  # run indefinitely. See the grant-reconciler incident.
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 300 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 1
       template:
         spec:
@@ -244,12 +248,16 @@ metadata:
   namespace: monitoring
 spec:
   schedule: "0 * * * *" # re-verify the whole chain hourly
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: ship resumes from the bucket head and verify is read-only, so both are
+  # idempotent — but Forbid + a stuck run (verify is long-running / was OOM-prone) blocks every later
+  # run indefinitely. See the grant-reconciler incident.
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 600 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 0
       template:
         spec:
