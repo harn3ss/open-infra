@@ -41,12 +41,17 @@ metadata:
   namespace: crossplane-system
 spec:
   schedule: "* * * * *" # every minute — ~1-minute expiry granularity
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: the sweep is idempotent (deleting an already-gone Grant is a no-op), so
+  # overlap is harmless — but Forbid + a run that stuck (DeadlineExceeded with a pod wedged in
+  # Terminating) counted as "active" forever and blocked every later reconcile, so no Grant
+  # self-revoked for 12h. Replace supersedes a stuck run on the next tick, so the schedule self-heals.
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 110
+      ttlSecondsAfterFinished: 300 # GC finished jobs promptly so a wedged one can't accumulate
       backoffLimit: 0
       template:
         spec:
