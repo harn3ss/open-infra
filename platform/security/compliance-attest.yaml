@@ -80,12 +80,15 @@ metadata:
   namespace: crossplane-system
 spec:
   schedule: "0 6 * * *" # daily
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: regenerating + re-storing the attestation is idempotent, and Forbid + a stuck
+  # run would block every later snapshot indefinitely (see the grant-reconciler incident).
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 600 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 1
       template:
         spec:

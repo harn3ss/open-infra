@@ -95,12 +95,15 @@ metadata:
   namespace: crossplane-system
 spec:
   schedule: "*/5 * * * *"
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: the destroyer records InProgress before any delete and resumes safely, so a
+  # superseded run is fine — but Forbid + a stuck run would block every later reconcile (grant-reconciler incident).
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 300 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 1
       template:
         spec:
