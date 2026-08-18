@@ -114,6 +114,10 @@ spec:
               # under the pod-default uid 65532 the copy failed with "Permission denied" — which broke
               # the store step and therefore every attestation snapshot (silently, for days). This init
               # does nothing but copy a binary into an emptyDir.
+              # PSA CAVEAT: crossplane-system enforces no Pod Security level (verified), so root is fine
+              # here. A cluster that enforces `restricted` PSA cluster-wide (e.g. a hardened/FIPS build)
+              # will REJECT this root init — there, label this namespace baseline/privileged, or supply
+              # an mc image whose binary is world-readable so the copy can run non-root.
               securityContext: { runAsNonRoot: false, runAsUser: 0 }
               command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod 0755 /mc/mc"]
               volumeMounts: [{ name: mc, mountPath: /mc }]

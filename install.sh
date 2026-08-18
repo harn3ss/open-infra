@@ -114,9 +114,21 @@ incl airgap "airgap/registry-mirror.yaml,airgap/image-prefetch.yaml,airgap/node-
 # is on AND airgap.denyPublicEgress is true. Front-load the mirror and point nodes at it first, or
 # image pulls will fail once the internet is cut (docs/airgapping.md). Reversible: flip back + re-sync.
 if [ "$(yget components.airgap)" = "true" ] && [ "$(yget airgap.denyPublicEgress)" = "true" ]; then
-  LOG "air-gap: public-egress cutoff ELECTED (airgap.denyPublicEgress=true) — applying egress-deny"
+  # The egress cutoff is CNI-specific: Cilium uses a CiliumClusterwideNetworkPolicy, Calico/Canal a
+  # GlobalNetworkPolicy. Apply the one matching this cluster's CNI and exclude the other. If neither
+  # policy CRD exists, skip the cutoff (front-load only) rather than hard-failing on "no matches for kind".
+  if $KUBECTL get crd ciliumclusterwidenetworkpolicies.cilium.io >/dev/null 2>&1; then
+    LOG "air-gap cutoff ELECTED — Cilium detected; using egress-deny.yaml (CiliumClusterwideNetworkPolicy)"
+    EXCLUDES="${EXCLUDES},airgap/egress-deny-calico.yaml"
+  elif $KUBECTL get crd globalnetworkpolicies.crd.projectcalico.org >/dev/null 2>&1; then
+    LOG "air-gap cutoff ELECTED — Calico/Canal detected; using egress-deny-calico.yaml (GlobalNetworkPolicy)"
+    EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml"
+  else
+    LOG "air-gap cutoff ELECTED but no Cilium/Calico policy CRD present — SKIPPING the egress cutoff (front-load only; add egress denial in your CNI)"
+    EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml,airgap/egress-deny-calico.yaml"
+  fi
 else
-  EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml"
+  EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml,airgap/egress-deny-calico.yaml"
 fi
 # Hardened deployment profile: enforce restricted Pod Security Standards on the control
 # plane + warn/audit elsewhere. OFF by default (opt-in for a production/authorized deploy —

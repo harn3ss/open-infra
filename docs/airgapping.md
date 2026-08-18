@@ -13,7 +13,7 @@ reversible election, in two deliberate phases.
 | Phase | Toggle | What it does | Reversible |
 |---|---|---|---|
 | 1. Front-load | `components.airgap: true` | Deploys an in-cluster registry mirror + an image-prefetch Job. Changes no egress — safe on-net. | yes |
-| 2. Cut | `airgap.denyPublicEgress: true` | Applies a cluster-wide Cilium policy denying public-internet egress (LAN + cluster preserved). | yes |
+| 2. Cut | `airgap.denyPublicEgress: true` | Applies a cluster-wide CNI policy (Cilium *or* Calico/Canal) denying public-internet egress (LAN + cluster preserved). | yes |
 
 Both live in `config.yaml`; `install.sh` wires them into the GitOps app-of-apps.
 
@@ -41,8 +41,10 @@ Both live in `config.yaml`; `install.sh` wires them into the GitOps app-of-apps.
    network and can't use cluster DNS) — and restarts the runtime **only when the file actually changes**
    (idempotent, one node at a time, never in a loop). Manifests keep their original image references;
    containerd redirects the pull, falling back to upstream on a miss while still on-net. Edit the
-   registry set in the `airgap-node-registries` ConfigMap. (RKE2's path/units are handled too; a node
-   running neither k3s nor RKE2 logs a warning and you configure its runtime yourself.)
+   registry set in the `airgap-node-registries` ConfigMap. (The DaemonSet detects the runtime and writes
+   the correct path — `/etc/rancher/k3s/registries.yaml` for k3s, `/etc/rancher/rke2/registries.yaml`
+   for RKE2 — and restarts the matching unit; a node running neither logs a warning and you configure
+   its runtime yourself.)
 
 ## Phase 2 — cut public egress (the election)
 
@@ -51,19 +53,26 @@ Once the mirror is populated and the nodes point at it:
 airgap:
   denyPublicEgress: true     # apply the cluster-wide public-egress cutoff
 ```
-Re-run `install.sh` (or let GitOps sync). This applies a `CiliumClusterwideNetworkPolicy` that **denies
-egress to the public internet** and **preserves** everything the cluster legitimately needs:
+Re-run `install.sh` (or let GitOps sync). This applies a **CNI-specific** cluster-wide policy that
+**denies egress to the public internet** and **preserves** everything the cluster legitimately needs:
 
-- pod-to-pod, node, and `kube-apiserver` traffic (Cilium `cluster`/`host`/`remote-node` entities);
+- pod-to-pod, node, and `kube-apiserver` traffic;
 - DNS;
 - the **private LAN and cluster ranges** — RFC1918 (`10/8`, `172.16/12`, `192.168/16`), CGNAT
   (`100.64/10`), and link-local (`169.254/16`). On-prem services on your LAN stay reachable; only
   public (non-private) destinations are severed.
 
-It is implemented as a Cilium `egressDeny` on `0.0.0.0/0 except <private ranges>`, so it is *additive*:
-it does not turn every pod into default-deny-egress, it only forbids the public ranges. Reverse it by
-setting `denyPublicEgress: false` and re-syncing (or `kubectl delete ciliumclusterwidenetworkpolicy
-airgap-deny-public-egress`).
+**Requires a policy-capable CNI**, and `install.sh` picks the variant that matches yours:
+
+- **Cilium** — a `CiliumClusterwideNetworkPolicy` `egressDeny` on `0.0.0.0/0 except <private ranges>`.
+  Additive: it forbids the public ranges without turning pods into default-deny-egress.
+- **Calico / Canal** (e.g. the FIPS-rebuilt RKE2 substrate) — a `GlobalNetworkPolicy` that allows the
+  private/cluster ranges and denies everything else (the same public cutoff; Calico is authoritative
+  for the direction it selects, so it is expressed as allow-private-then-deny-all).
+
+If the cluster runs neither (no `cilium.io` / `projectcalico.org` policy CRD), install **skips** the
+cutoff (front-load only) and logs it rather than hard-failing — add the egress denial in your CNI.
+Reverse it any time by setting `denyPublicEgress: false` and re-syncing (or deleting the policy).
 
 ## ⚠️ Do not cut yourself off
 
