@@ -36,6 +36,35 @@ func TestVerify_IntactChain(t *testing.T) {
 	}
 }
 
+func TestStreamVerifier_MatchesVerify(t *testing.T) {
+	segs := buildChain(t, 6)
+	want := Verify(segs)
+
+	var sv StreamVerifier
+	for i := range segs {
+		sv.Push(segs[i])
+		segs[i].Records = nil // the verifier must retain nothing from the caller's slice after Push
+	}
+	got := sv.Result()
+
+	if !got.OK || got.HeadSeq != want.HeadSeq || got.HeadHash != want.HeadHash ||
+		got.Count != want.Count || got.Records != want.Records || got.BaseSeq != want.BaseSeq {
+		t.Fatalf("stream result %+v does not match Verify %+v", got, want)
+	}
+}
+
+func TestStreamVerifier_DetectsTamperMidChain(t *testing.T) {
+	segs := buildChain(t, 5)
+	segs[2].Records[0] = `{"verb":"create","objectRef":{"resource":"roles","name":"mallory-admin"}}`
+	var sv StreamVerifier
+	for _, s := range segs {
+		sv.Push(s)
+	}
+	if r := sv.Result(); r.OK || r.BrokenAt == nil || *r.BrokenAt != 2 {
+		t.Fatalf("stream verifier missed mid-chain tamper: %+v", r)
+	}
+}
+
 func TestVerify_EmptyChain(t *testing.T) {
 	if r := Verify(nil); !r.OK || r.Count != 0 {
 		t.Fatalf("empty chain should verify: %+v", r)
