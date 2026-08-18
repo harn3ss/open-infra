@@ -56,6 +56,12 @@ artifact; this shows what the platform provides toward it.
 Status legend: **Implemented** (shipped and exercised) · **Partial** (core in place, hardening
 tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** (planned).
 
+The government control machinery (issue #71) was exercised end-to-end on the reference cluster on
+2026-08-18 — see [`govt-track-verification-2026-08.md`](compliance/govt-track-verification-2026-08.md)
+for exactly what was verified (audit off-siting integrity, Grant self-revoke, DataClassification,
+attestation store), the three latent bugs that pass found and fixed, and what stays gated (customer-key
+encryption and crypto-erase are Vault-gated and remain **not-live-verified**).
+
 ### AC — Access Control
 
 | Control | Implementation | Status |
@@ -95,9 +101,9 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
 |---------|----------------|--------|
 | SC-7 Boundary Protection | Cilium CNI with **default-deny** NetworkPolicy + `kind: SecurityGroup`; per-workload egress sandboxes (a Query pod may reach only DNS / MinIO / Trino). | Implemented |
 | SC-8 Transmission Confidentiality/Integrity | TLS on ingress via cert-manager; control-plane and Chaos Mesh use mTLS; managed SQL-Server (Babelfish) enforces `Encrypt=mandatory`. | Implemented |
-| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; **Sealed Secrets** keep secrets encrypted at rest in git; **`kind: EncryptionKey`** holds customer-owned keys in a Vault Transit KMS with rotation. | Implemented (KMS opt-in) |
+| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; **Sealed Secrets** keep secrets encrypted at rest in git; **`kind: EncryptionKey`** holds customer-owned keys in a Vault Transit KMS with rotation. | Partial (cert-manager + Sealed Secrets exercised; the customer-key Vault KMS is opt-in and **not yet live-verified** — gated on an operator initializing/unsealing Vault) |
 | SC-23 Session Authenticity | HMAC-signed session cookie, `HttpOnly` + `Secure` + `SameSite=Lax`, plus a required CSRF header on all mutations. | Implemented |
-| SC-28 / SC-28(1) Protection at Rest (customer keys) | Opt-in `encryption` component: encrypted Longhorn StorageClass (LUKS), and MinIO SSE-KMS / etcd KMS wiring keyed by a customer-owned Vault Transit key — open-infra never holds the key material. See [`encryption.md`](encryption.md). | Implemented (opt-in; storage wiring operator-applied) |
+| SC-28 / SC-28(1) Protection at Rest (customer keys) | Opt-in `encryption` component: encrypted Longhorn StorageClass (LUKS), and MinIO SSE-KMS / etcd KMS wiring keyed by a customer-owned Vault Transit key — open-infra never holds the key material. See [`encryption.md`](encryption.md). | Partial (opt-in; built and reviewed, **not yet live-verified** — Vault-gated) |
 | SC-5 Denial-of-Service Protection | Cloudflare edge when publicly exposed; dependency DoS CVEs remediated via SI-2. | Partial / Operator |
 
 ### CM — Configuration Management
@@ -138,8 +144,9 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
   auto-regenerated on each nightly). Continuous coverage is **strong for multi-master** and
   **point-in-time for the wider plane** (on-demand); folding the whole plane into the counted nightly,
   plus a formal control-evidence export, is **roadmap**. *(Partial)*
-- **MP-6 Media Sanitization** — crypto-erase per NIST **SP 800-88** (per-volume/DB keys;
-  deletion destroys the key and writes a destruction certificate) is **roadmap** (#71).
+- **MP-6 Media Sanitization** — crypto-erase per NIST **SP 800-88**: `kind: Destruction` destroys a
+  customer key (per-volume/DB) and writes a destruction certificate to the WORM store. **Shipped but
+  experimental — not yet live-verified** (shares the Vault init/unseal gate with encryption, #71). *(Partial)*
 - **RA / PL / PS / IR / AT / CA process controls** — risk assessment, planning, personnel
   security, incident response, and awareness training are **organizational** controls the
   operator supplies; the platform provides evidence sources (audit, monitoring), not the
