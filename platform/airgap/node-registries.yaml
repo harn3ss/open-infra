@@ -1,7 +1,9 @@
 # Air-gap front-load — node container-runtime mirror config (self-service automation).
 #
-# Points every node's container runtime at the in-cluster registry mirror by writing
-# /etc/rancher/k3s/registries.yaml, so image pulls of the public registries resolve to the mirror.
+# Points every node's container runtime at the in-cluster registry mirror by writing its
+# registries.yaml (k3s: /etc/rancher/k3s/, RKE2: /etc/rancher/rke2/ — the DaemonSet detects which
+# runtime the node runs and targets the right path + unit), so pulls of the public registries resolve
+# to the mirror.
 # This removes the one manual per-node step from air-gapping. It lives in kube-system because it is a
 # privileged, host-touching node agent (the restricted-PSA openinfra-airgap namespace can't host it).
 #
@@ -64,19 +66,32 @@ spec:
           args:
             - |
               DESIRED=/desired/registries.yaml
-              TARGET=/host/etc/rancher/k3s/registries.yaml
+              # Detect THIS node's runtime and target its own registries.yaml path + unit. RKE2 reads
+              # /etc/rancher/rke2/registries.yaml; k3s reads /etc/rancher/k3s/registries.yaml. Writing
+              # the wrong one restarts the node but the mirror redirect silently no-ops.
+              UNIT=""
+              for u in rke2-server rke2-agent k3s k3s-agent; do
+                if nsenter -t 1 -m -u -i -n -p -- systemctl is-active --quiet "$u" 2>/dev/null; then UNIT="$u"; break; fi
+              done
+              case "$UNIT" in
+                rke2-*) DIR=/host/etc/rancher/rke2 ;;
+                k3s*)   DIR=/host/etc/rancher/k3s ;;
+                *)      DIR=/host/etc/rancher/k3s; echo "[$NODE_NAME] WARN: no k3s/rke2 unit active — defaulting to the k3s path" ;;
+              esac
+              TARGET="$DIR/registries.yaml"
+              echo "[$NODE_NAME] runtime unit='${UNIT:-none}', registries path=$TARGET"
               while :; do
-                mkdir -p /host/etc/rancher/k3s
+                mkdir -p "$DIR"
                 if ! cmp -s "$DESIRED" "$TARGET" 2>/dev/null; then
                   cp "$DESIRED" "$TARGET"
-                  echo "[$NODE_NAME] registries.yaml changed -> restarting the container runtime"
-                  # k3s (server/agent) or rke2 (server/agent) — restart whichever this node runs.
-                  nsenter -t 1 -m -u -i -n -p -- sh -c '
-                    for u in k3s k3s-agent rke2-server rke2-agent; do
-                      if systemctl is-active --quiet "$u"; then systemctl restart "$u" && break; fi
-                    done' || echo "[$NODE_NAME] WARN: could not restart the runtime (restart it manually)"
+                  if [ -n "$UNIT" ]; then
+                    echo "[$NODE_NAME] registries.yaml changed -> restarting $UNIT"
+                    nsenter -t 1 -m -u -i -n -p -- systemctl restart "$UNIT" || echo "[$NODE_NAME] WARN: restart $UNIT failed (restart it manually)"
+                  else
+                    echo "[$NODE_NAME] registries.yaml written to $TARGET; restart the runtime manually"
+                  fi
                 else
-                  echo "[$NODE_NAME] registries.yaml already current"
+                  echo "[$NODE_NAME] registries.yaml already current ($TARGET)"
                 fi
                 sleep 300
               done

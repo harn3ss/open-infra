@@ -1,0 +1,41 @@
+# Air-gap egress cutoff — Calico / Canal variant.
+#
+# The Cilium variant (egress-deny.yaml) is a CiliumClusterwideNetworkPolicy and needs the Cilium CNI.
+# A Calico or Canal cluster (Canal = Calico policy + Flannel networking — the CNI the FIPS-rebuilt RKE2
+# substrate runs) has no cilium.io CRDs, so this GlobalNetworkPolicy expresses the same cutoff there.
+# install.sh detects the CNI and applies whichever matches; only one is ever installed.
+#
+# Same intent as the Cilium version: deny egress to the public internet, keep the private LAN + cluster
+# reachable. Calico makes a policy authoritative for the direction it selects, so this is written as an
+# explicit allow of the private/cluster ranges followed by a deny of everything else — functionally a
+# public-egress cutoff (all non-private egress denied), which is exactly the air-gap posture.
+#
+# THE ELECTION. Applied only when airgap.denyPublicEgress is true, after the mirror is front-loaded and
+# nodes point at it. Reversible: remove this policy (or flip the flag and re-sync).
+apiVersion: projectcalico.org/v3
+kind: GlobalNetworkPolicy
+metadata:
+  name: airgap-deny-public-egress
+  labels:
+    openinfra.dev/component: airgap
+spec:
+  # Lower order = evaluated first. All endpoints, egress only.
+  order: 100
+  selector: all()
+  types:
+    - Egress
+  egress:
+    # Allow the private/cluster ranges: pod + service CIDRs live in 10/8, the LAN in 192.168/16, etc.
+    - action: Allow
+      destination:
+        nets:
+          - 10.0.0.0/8        # RFC1918 (pod 10.42/16 + service 10.43/16 + 10.x LANs)
+          - 172.16.0.0/12     # RFC1918
+          - 192.168.0.0/16    # RFC1918 (the reference LAN)
+          - 100.64.0.0/10     # CGNAT
+          - 169.254.0.0/16    # link-local
+    # Deny everything else — i.e. the public internet.
+    - action: Deny
+      destination:
+        nets:
+          - 0.0.0.0/0
