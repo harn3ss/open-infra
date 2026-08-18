@@ -34,20 +34,15 @@ Both live in `config.yaml`; `install.sh` wires them into the GitOps app-of-apps.
    kubectl -n openinfra-airgap logs -f job/airgap-prefetch-now
    ```
    The mirror is a durable, PVC-backed OCI registry (`airgap-registry.openinfra-airgap.svc:5000`).
-3. **Point the nodes' container runtime at the mirror** (operator step, like other node prerequisites).
-   On k3s/RKE2, add a registry mirror to `/etc/rancher/k3s/registries.yaml` on **every** node so pulls
-   of the public registries resolve to the in-cluster mirror:
-   ```yaml
-   mirrors:
-     docker.io:      { endpoint: ["http://airgap-registry.openinfra-airgap.svc.cluster.local:5000"] }
-     ghcr.io:        { endpoint: ["http://airgap-registry.openinfra-airgap.svc.cluster.local:5000"] }
-     registry.k8s.io:{ endpoint: ["http://airgap-registry.openinfra-airgap.svc.cluster.local:5000"] }
-     gcr.io:         { endpoint: ["http://airgap-registry.openinfra-airgap.svc.cluster.local:5000"] }
-     quay.io:        { endpoint: ["http://airgap-registry.openinfra-airgap.svc.cluster.local:5000"] }
-   ```
-   then restart the agent (`systemctl restart k3s` / `k3s-agent`). The manifests keep their original
-   image references; containerd redirects the pull. (This is deliberately a node-config step; a
-   DaemonSet that writes `registries.yaml` and restarts the runtime is a candidate future automation.)
+3. **Point the nodes' container runtime at the mirror.** This is **automated**: enabling the component
+   deploys the `airgap-node-registries` DaemonSet (kube-system), which writes
+   `/etc/rancher/k3s/registries.yaml` on every node — mirroring the public registries to the in-cluster
+   registry at `127.0.0.1:30500` (the mirror's NodePort; the host's containerd is outside the pod
+   network and can't use cluster DNS) — and restarts the runtime **only when the file actually changes**
+   (idempotent, one node at a time, never in a loop). Manifests keep their original image references;
+   containerd redirects the pull, falling back to upstream on a miss while still on-net. Edit the
+   registry set in the `airgap-node-registries` ConfigMap. (RKE2's path/units are handled too; a node
+   running neither k3s nor RKE2 logs a warning and you configure its runtime yourself.)
 
 ## Phase 2 — cut public egress (the election)
 
@@ -87,10 +82,12 @@ egress and will be cut — expected for an air-gapped cluster.
 
 ## What this is (and isn't) yet
 
-- **Is:** an opt-in, reversible, two-phase air-gap — an in-cluster registry mirror + running-set image
-  prefetch, and a surgical public-egress cutoff that keeps LAN/cluster/DNS intact.
-- **Operator steps:** pointing containerd at the mirror (`registries.yaml`) is a per-node step, like
-  other node prerequisites (open-iscsi, the GPU toolkit).
-- **v1 scope:** the mirror is a single-replica, PVC-backed registry over plain HTTP inside the cluster
-  (fronted only on the cluster network). Charts/Helm repos and OS package mirrors are out of scope here
-  — front-load those with your own mirror if your workloads pull them at runtime. Tracking: issue #72.
+- **Is:** an opt-in, reversible, two-phase air-gap — an in-cluster registry mirror, running-set image
+  prefetch, automated per-node runtime mirror config, and a surgical public-egress cutoff that keeps
+  LAN/cluster/DNS intact.
+- **Self-service:** enabling `components.airgap` deploys everything, including the node `registries.yaml`
+  DaemonSet — no hand-run per-node step. Electing the cutoff is a single config flag.
+- **v1 scope:** the mirror is a single-replica, PVC-backed registry over plain HTTP on the cluster
+  network. Charts/Helm repos and OS package mirrors are out of scope here — front-load those with your
+  own mirror if your workloads pull them at runtime. TLS on the mirror and a full offline drill are
+  tracked in issue #72.
