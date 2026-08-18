@@ -342,9 +342,22 @@ func verify() bool {
 		perKey[obj.Key] = append(perKey[obj.Key], obj)
 	}
 
-	var segs []auditchain.Segment
+	// Stream segments in Seq order — keys are segments/%012d.json, so a lexical key sort IS a
+	// Seq sort — and push each into a StreamVerifier, freeing its records right after. This keeps
+	// verification memory O(1) in the chain length; the previous whole-chain load OOM-killed the
+	// verify job once the chain had grown to thousands of segments (the anchor stalled for days).
+	keys := make([]string, 0, len(perKey))
+	for k := range perKey {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var sv auditchain.StreamVerifier
+	// heads holds only Seq+Hash per segment (never records) — the anchor cross-check needs no more.
+	heads := make([]auditchain.Segment, 0, len(keys))
 	shadow := 0
-	for key, versions := range perKey {
+	for _, key := range keys {
+		versions := perKey[key]
 		orig := oldestReal(versions)
 		if orig == nil {
 			shadow++ // only delete markers — the original is fully shadowed
@@ -358,7 +371,8 @@ func verify() bool {
 		if err := json.Unmarshal(origData, &s); err != nil {
 			fatalf("parse %s: %v", key, err)
 		}
-		segs = append(segs, s)
+		sv.Push(s)
+		heads = append(heads, auditchain.Segment{Seq: s.Seq, Hash: s.Hash})
 		for i := range versions {
 			v := versions[i]
 			if v.VersionID == orig.VersionID {
@@ -377,14 +391,13 @@ func verify() bool {
 			}
 		}
 	}
-	sort.Slice(segs, func(i, j int) bool { return segs[i].Seq < segs[j].Seq })
 
-	res := auditchain.Verify(segs)
+	res := sv.Result()
 	if shadow > 0 && res.OK {
 		res.Reason = fmt.Sprintf("%d object-lock shadowing attempt(s) detected (overwrite/delete-marker on locked segments)", shadow)
 	}
 
-	anchor := checkAndUpdateAnchor(ctx, segs, res)
+	anchor := checkAndUpdateAnchor(ctx, heads, res)
 
 	report := statusReport{
 		Result:         res,
