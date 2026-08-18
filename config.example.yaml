@@ -119,3 +119,12 @@ components:
   encryption: false            # customer-owned keys: Vault Transit KMS + kind: EncryptionKey + encrypted Longhorn SC; experimental, opt-in, OFF (Vault needs operator init/unseal — see docs/encryption.md)
   pki: false                   # private CA: kind: CertificateAuthority (Vault PKI) + ca-issuer; experimental, opt-in, OFF (requires the encryption component + an initialized Vault — see docs/certificate-authority.md)
   attestation: false           # daily immutable compliance-attestation snapshots to the WORM audit store; opt-in, OFF (sign out-of-band with the release key — see docs/compliance-attestation.md)
+  airgap: false                # air-gap support: in-cluster registry mirror + image prefetch (front-load), and the optional public-egress cutoff; opt-in, OFF (internet allowed by default — see docs/airgapping.md)
+
+# Air-gap posture (issue #72). Only meaningful when components.airgap: true. Two phases, deliberately
+# separate so you front-load first and cut the internet last — and both are reversible.
+airgap:
+  # THE ELECTION. false = internet allowed (default). true = apply the cluster-wide public-egress
+  # cutoff (Cilium deny of 0.0.0.0/0 except RFC1918/CGNAT/link-local). Do NOT set true until the
+  # registry mirror is populated (run the prefetch) and nodes point at it, or image pulls will fail.
+  denyPublicEgress: false

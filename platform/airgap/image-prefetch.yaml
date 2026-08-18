@@ -1,0 +1,128 @@
+# Air-gap front-load — image prefetch.
+#
+# Populates the in-cluster registry mirror (registry-mirror.yaml) with the images the cluster needs,
+# WHILE THE INTERNET IS STILL UP. Run this before electing the egress cutoff. It derives the image set
+# from what is actually running (every container/init/ephemeral image across all pods) — so the mirror
+# holds exactly what this cluster uses, not a hand-maintained guess — and unions in any extra images an
+# operator lists (things not currently scheduled: on-demand engines, CRD-driven workloads, upgrades).
+#
+# Each image is copied preserving its repository path minus the registry host, so a containerd registry
+# mirror (docs/airgapping.md) that redirects the public registries to this mirror resolves every pull
+# locally once air-gapped. Re-runnable (idempotent): crane skips layers already present.
+#
+# This Job PULLS FROM the public internet (that is the whole point of front-loading) — it does not deny
+# or change any egress. Deployed when `components.airgap: true`; run it on demand or on a schedule.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: airgap-prefetch
+  namespace: openinfra-airgap
+  labels: { openinfra.dev/component: airgap }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-airgap-prefetch
+  labels: { openinfra.dev/component: airgap }
+rules:
+  # Read-only: enumerate the images every pod references. No write anywhere.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-airgap-prefetch
+  labels: { openinfra.dev/component: airgap }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-airgap-prefetch }
+subjects:
+  - { kind: ServiceAccount, name: airgap-prefetch, namespace: openinfra-airgap }
+---
+# Extra images to front-load beyond what is currently running (one fully-qualified ref per line, with
+# the registry host — e.g. ghcr.io/org/img:tag). Empty by default; operators add on-demand/upgrade images.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airgap-extra-images
+  namespace: openinfra-airgap
+  labels: { openinfra.dev/component: airgap }
+data:
+  images: |
+    # ghcr.io/harn3ss/open-infra-console:latest
+    # (add images that are not currently scheduled but will be needed offline)
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airgap-prefetch
+  namespace: openinfra-airgap
+  labels: { openinfra.dev/component: airgap }
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: { openinfra.dev/component: airgap }
+    spec:
+      serviceAccountName: airgap-prefetch
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        # Collect the running-image set (+ the extra list) into a shared file.
+        - name: collect
+          image: alpine/k8s:1.30.0
+          command: [/bin/sh, -ceu]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          args:
+            - |
+              {
+                kubectl get pods -A -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.ephemeralContainers[*]}{.image}{"\n"}{end}{end}'
+                grep -vE '^\s*(#|$)' /extra/images 2>/dev/null || true
+              } | sed 's/^ *//; s/ *$//' | grep -vE '^\s*$' \
+                | grep -v 'airgap-registry.openinfra-airgap' \
+                | sort -u > /work/images.txt
+              echo "prefetch: $(wc -l < /work/images.txt) unique images to mirror"
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: extra, mountPath: /extra }
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        # Copy each image into the in-cluster mirror, preserving the repo path minus the registry host.
+        - name: mirror
+          image: gcr.io/go-containerregistry/crane:debug
+          command: [/busybox/sh, -ceu]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          env:
+            - { name: MIRROR, value: "airgap-registry.openinfra-airgap.svc.cluster.local:5000" }
+          args:
+            - |
+              fail=0
+              while IFS= read -r img; do
+                [ -z "$img" ] && continue
+                ref="${img#*/}"                 # drop the registry host: ghcr.io/org/x:tag -> org/x:tag
+                case "$img" in */*) : ;; *) ref="library/$img" ;; esac  # bare docker.io name -> library/<name>
+                echo ">> $img  ->  $MIRROR/$ref"
+                crane copy --insecure "$img" "$MIRROR/$ref" || { echo "!! failed: $img"; fail=1; }
+              done < /work/images.txt
+              echo "prefetch done (failures: $fail)"
+              exit $fail
+          volumeMounts:
+            - { name: work, mountPath: /work }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: work
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: extra
+          configMap: { name: airgap-extra-images }

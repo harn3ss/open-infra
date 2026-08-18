@@ -107,6 +107,17 @@ incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateautho
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
 incl attestation "security/compliance-attest.yaml"
+# Air-gap support (issue #72): the in-cluster registry mirror + image prefetch — the "front-load"
+# half. OFF by default (internet stays allowed). Safe to enable on-net; it severs nothing.
+incl airgap "airgap/registry-mirror.yaml,airgap/image-prefetch.yaml"
+# The public-egress cutoff is a SEPARATE, deliberate election: applied ONLY when the airgap component
+# is on AND airgap.denyPublicEgress is true. Front-load the mirror and point nodes at it first, or
+# image pulls will fail once the internet is cut (docs/airgapping.md). Reversible: flip back + re-sync.
+if [ "$(yget components.airgap)" = "true" ] && [ "$(yget airgap.denyPublicEgress)" = "true" ]; then
+  LOG "air-gap: public-egress cutoff ELECTED (airgap.denyPublicEgress=true) — applying egress-deny"
+else
+  EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml"
+fi
 # Hardened deployment profile: enforce restricted Pod Security Standards on the control
 # plane + warn/audit elsewhere. OFF by default (opt-in for a production/authorized deploy —
 # see docs/security-and-compliance.md). Do not enable until workloads are PSS-compliant.
