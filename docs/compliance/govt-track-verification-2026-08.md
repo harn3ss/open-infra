@@ -17,7 +17,7 @@ what remains gated. It is verification evidence, **not** a certification (see
 | Signed compliance attestation (CA-2/CA-7) — generate + store | **Verified (after fix)** | A run generated the live NIST 800-53 attestation and stored `attestations/2026-08-18` to the WORM bucket |
 | Encryption with customer keys (SC-12/13/28) | **Not verified — gated** | Vault is not deployed on this cluster; `probe/encryption-vault.sh` needs an operator to init/unseal Vault |
 | Crypto-erase — `kind: Destruction` (MP-6) | **Not verified — gated** | Same Vault gate; shares the encryption probe |
-| Data lineage (SI-12) | **Not verified here** | Endpoint is BFF/session-gated; `handleLineage` still lacks unit tests (open) |
+| Data lineage (SI-12) | **Partial** | Parsing now unit-tested (`lineage_test.go`, incl. the `siteA/siteB` pin); a live end-to-end `/api/lineage` exercise (BFF/session-gated) is still open |
 
 ## Bugs the verification found (all were silently broken on the running cluster)
 
@@ -44,7 +44,9 @@ what remains gated. It is verification evidence, **not** a certification (see
 - **Encryption + crypto-erase** stay **Experimental / not-live-verified**: they require an operator to
   deploy and init/unseal Vault, then run `probe/encryption-vault.sh`. That single gated session drops
   both experimental flags. This is a deliberate human gate (unseal-key custody), not a defect.
-- **Data lineage** needs unit tests on `handleLineage` (untyped `RawMessage` parsing, brittle to CRD
-  drift — the earlier `siteA/siteB` regression is the standing proof it had never been exercised).
+- **Data lineage** parsing is now unit-tested — the four per-kind parsers were extracted from the
+  handler and covered in `lineage_test.go` (commit a0d2cdd), with the `siteA/siteB` shape pinned so the
+  dropped-edge regression can't return. A live end-to-end `/api/lineage` exercise against real CRs
+  (BFF/session-gated) remains the open item.
 - The three fixes above are deployed live and in git; the audit-offsite fix also ships in its rebuilt
   image so the scheduled hourly verify stops OOMing.

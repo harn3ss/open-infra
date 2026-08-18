@@ -6,6 +6,17 @@ the product's public contract.
 
 ## Unreleased
 
+### Security & compliance
+- **Air-gap support (opt-in, off by default).** A two-phase, reversible air-gapped posture (issue #72):
+  front-load an in-cluster, PVC-backed registry mirror plus a prefetch that derives the image set from
+  what is actually running, then — as a separate, deliberate election — a cluster-wide public-egress
+  cutoff that keeps the LAN, cluster, and DNS reachable while severing the public internet. The cutoff
+  is CNI-specific and auto-selected (a Cilium `CiliumClusterwideNetworkPolicy` or, on Calico/Canal, a
+  `GlobalNetworkPolicy`), and the per-node runtime mirror config (`registries.yaml` for k3s or RKE2) is
+  automated. A fresh install keeps full internet access and no air-gap machinery. Enable with
+  `components.airgap`; the egress cutoff is a second flag (`airgap.denyPublicEgress`). Still maturing —
+  see [`docs/airgapping.md`](docs/airgapping.md).
+
 ## v2.6.0 — 2026-08-16
 
 ### Security & compliance
