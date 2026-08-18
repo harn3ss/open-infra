@@ -1,0 +1,43 @@
+# Air-gap egress cutoff — the enforceable "air gap".
+#
+# THE ELECTION. This manifest is applied ONLY when `airgap.denyPublicEgress: true` (install.sh gates
+# it); it is never installed by default. It denies egress to the PUBLIC internet cluster-wide while
+# leaving everything the cluster legitimately needs — pod-to-pod, node, kube-apiserver, DNS, and the
+# private LAN (RFC1918 / CGNAT / link-local) — untouched. That LAN carve-out is what keeps on-prem
+# services (and the in-cluster registry mirror, which is cluster-internal anyway) reachable while the
+# public internet is severed.
+#
+# Design: a Cilium `egressDeny` on 0.0.0.0/0 with an RFC1918 `except` set, rather than a default-deny
+# egress allow-list. A deny rule is surgical — it adds "no public egress" without otherwise restricting
+# any pod's egress, so enabling air-gap mode does not require every workload to first declare an egress
+# allow-list. Reversible: delete this policy (or set denyPublicEgress: false and re-sync) and public
+# egress returns immediately.
+#
+# Prerequisite for the cluster to keep FUNCTIONING once this is on: the required images/charts must
+# already be front-loaded into the in-cluster registry mirror (registry-mirror.yaml + image-prefetch.yaml)
+# and nodes pointed at it (docs/airgapping.md), because image pulls from public registries will be denied.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: airgap-deny-public-egress
+  labels:
+    openinfra.dev/component: airgap
+  annotations:
+    openinfra.dev/description: >-
+      Air-gapped posture: deny egress to the public internet cluster-wide. Cluster, node, apiserver,
+      DNS, and RFC1918/CGNAT/link-local LAN egress are preserved. Applied only when
+      airgap.denyPublicEgress is elected; reversible by removing this policy.
+spec:
+  description: "Air-gap: deny public-internet egress cluster-wide (RFC1918 LAN + cluster preserved)."
+  # All endpoints in the cluster. The deny is additive, so this does not turn any pod into
+  # default-deny-egress — it only forbids the public ranges below.
+  endpointSelector: {}
+  egressDeny:
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8        # RFC1918 (covers pod 10.42/16 + service 10.43/16 + 10.x LANs)
+            - 172.16.0.0/12     # RFC1918
+            - 192.168.0.0/16    # RFC1918 (the reference LAN, 192.168.254.0/24)
+            - 100.64.0.0/10     # CGNAT / carrier-grade NAT (some on-prem + k8s setups)
+            - 169.254.0.0/16    # link-local (node metadata, etc.)

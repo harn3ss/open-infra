@@ -1,0 +1,107 @@
+# Air-gap front-load — in-cluster OCI registry mirror.
+#
+# The "front-load required materials" half of the air-gap story (issue #72): a registry that lives
+# INSIDE the cluster (backed by a durable PVC) and holds the images the platform needs to run. You
+# populate it while still on-net (image-prefetch.yaml), point the nodes' container runtime at it
+# (docs/airgapping.md), and THEN — only then — elect the public-egress cutoff (egress-deny.yaml).
+# Once air-gapped, every image pull is served from here over the cluster network; no public registry
+# is contacted.
+#
+# Deployed when `components.airgap: true`. Safe to run with the internet still up — it changes no
+# egress and severs nothing; it only stands up a registry other nodes can pull from.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openinfra-airgap
+  labels:
+    openinfra.dev/component: airgap
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airgap-registry-data
+  namespace: openinfra-airgap
+  labels:
+    openinfra.dev/component: airgap
+spec:
+  accessModes: [ReadWriteOnce]
+  # Durable so the front-loaded images survive a node loss (re-front-loading needs the internet back).
+  # Operators on a Longhorn-free substrate can edit this to any cluster StorageClass.
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airgap-registry
+  namespace: openinfra-airgap
+  labels:
+    openinfra.dev/component: airgap
+    app: airgap-registry
+spec:
+  replicas: 1
+  strategy: { type: Recreate } # single RWO PVC
+  selector:
+    matchLabels: { app: airgap-registry }
+  template:
+    metadata:
+      labels: { app: airgap-registry, openinfra.dev/component: airgap }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532 # so the PVC mount is writable by the registry user
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: registry
+          image: registry:2.8.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: registry, containerPort: 5000 }
+          env:
+            - { name: REGISTRY_HTTP_ADDR, value: ":5000" }
+            - { name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY, value: "/var/lib/registry" }
+            # A pull-through cache is intentionally NOT configured: once air-gapped there is no upstream
+            # to fall through to. This registry only serves what image-prefetch pushed into it.
+            - { name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true" }
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/registry }
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /v2/, port: 5000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /v2/, port: 5000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: airgap-registry-data }
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airgap-registry
+  namespace: openinfra-airgap
+  labels:
+    openinfra.dev/component: airgap
+    app: airgap-registry
+spec:
+  selector: { app: airgap-registry }
+  ports:
+    - { name: registry, port: 5000, targetPort: 5000 }
