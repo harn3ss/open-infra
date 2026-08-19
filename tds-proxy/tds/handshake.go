@@ -70,6 +70,35 @@ func BuildPreloginResponse() []byte {
 	return pkt
 }
 
+// preloginOptMARS is the MARS option token in a PRELOGIN option table (MS-TDS §2.2.6.5).
+const preloginOptMARS = 0x04
+
+// PreloginRequestsMARS reports whether a client PRELOGIN asked for MARS (Multiple Active Result Sets) —
+// option token 0x04 with value 1. The pool does NOT grant MARS: its synthesized PRELOGIN response omits
+// the option, so the client falls back to one active request per connection, which is what keeps the
+// pool's synchronous request/response model correct. Counting how many clients *ask* is the visibility no
+// pooler — AWS RDS Proxy included — surfaces: a MARS-heavy fleet is one a future per-transaction
+// multiplexer would have to pin or specially handle, and knowing the number turns that from a guess into
+// a measurement. This reads only the well-defined option table (no session-id/SMID offset guessing).
+func PreloginRequestsMARS(body []byte) bool {
+	for i := 0; i < len(body); {
+		tok := body[i]
+		if tok == 0xFF { // TERMINATOR
+			return false
+		}
+		if i+5 > len(body) {
+			return false
+		}
+		off := int(body[i+1])<<8 | int(body[i+2]) // big-endian offset from payload start
+		ln := int(body[i+3])<<8 | int(body[i+4])
+		if tok == preloginOptMARS {
+			return ln >= 1 && off >= 0 && off < len(body) && body[off] == 0x01
+		}
+		i += 5
+	}
+	return false
+}
+
 // Login7Info is what the pool needs from a client LOGIN7: the identity to key a backend pool on, plus
 // the raw obfuscated password field (used only to prove a reusing client presents the same credentials —
 // TDS password obfuscation is deterministic and unsalted, so equal plaintext ⇒ equal bytes).
