@@ -107,18 +107,21 @@ spec:
                 - { name: CONSOLE_NS, value: "open-infra-console" }
                 - { name: OUTPUT_DIR, value: "/out" }
               volumeMounts: [{ name: out, mountPath: /out }]
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
             - name: fetch-mc
-              image: minio/mc:latest
-              # Stage mc into a shared volume for the hardened, non-root store container. Runs as root
-              # ONLY to read /usr/bin/mc: the minio/mc image ships that binary without world-read, so
-              # under the pod-default uid 65532 the copy failed with "Permission denied" — which broke
-              # the store step and therefore every attestation snapshot (silently, for days). This init
-              # does nothing but copy a binary into an emptyDir.
-              # PSA CAVEAT: crossplane-system enforces no Pod Security level (verified), so root is fine
-              # here. A cluster that enforces `restricted` PSA cluster-wide (e.g. a hardened/FIPS build)
-              # will REJECT this root init — there, label this namespace baseline/privileged, or supply
-              # an mc image whose binary is world-readable so the copy can run non-root.
-              securityContext: { runAsNonRoot: false, runAsUser: 0 }
+              # open-infra-mc = minio/mc with a WORLD-READABLE /usr/bin/mc, so this copy runs as an
+              # unprivileged user — restricted-PSA clean. Previously this ran as ROOT to read the stock
+              # minio/mc binary (which ships without world-read); that is rejected under cluster-wide
+              # `restricted` PSA (a hardened/FIPS build), which silently broke every attestation snapshot.
+              # This init does nothing but stage a binary into an emptyDir for the hardened store container.
+              image: ghcr.io/harn3ss/open-infra-mc:latest
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
               command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod 0755 /mc/mc"]
               volumeMounts: [{ name: mc, mountPath: /mc }]
           containers:
