@@ -59,7 +59,7 @@ This speaks directly to the HA / reliability non-functional requirements — ava
 1. **A** — ✅ `kind: CertificateAuthority` shipped: Vault PKI, least-privilege provisioner/issuer split, SAR-gated + NetworkPolicy-fenced issue/revoke, HA issuer, OpenAPI + Terraform provider + console. Live *issuance* proof still needs an operator to initialize + unseal Vault.
 2. **B** — control-plane HA profile + a prove-red HA oracle.
 3. **C** — reconcile the generated OpenAPI to the GovStack Architecture Blueprint *(needs the Blueprint)*.
-4. **D** — the hardened deployment profile.
+4. **D** — ✅ hardened deployment profile shipped (opt-in `components.hardened`): restricted PSS enforced on the console namespace, Cilium default-deny + `kind: SecurityGroup`, console non-root/RO-rootfs/seccomp/drop-ALL. Remaining rung: a control-plane-HA prove-red oracle (item B).
 5. **E** — live-verify the encryption stack, then drop the EXPERIMENTAL flag *(needs a Vault operator to init + unseal)*.
 
 The GovStack Sandbox is explicitly **not** production-ready — step one is conformance + credibility

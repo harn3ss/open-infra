@@ -43,8 +43,9 @@ or dangerous capabilities are opt-in:
   credentials. Workload pods run non-root, read-only-rootfs, with capabilities dropped and no
   service-account token where they don't call the API.
 
-A **hardened deployment profile** (see *Roadmap*) extends this: no Chaos Mesh install, RBAC
-that withholds `FaultInjection`, no `AUTH_MODE=none`, and the experimental tier disabled.
+The **hardened deployment profile** (opt-in `components.hardened`, shipped) extends this: no Chaos Mesh
+install, RBAC that withholds `FaultInjection`, no `AUTH_MODE=none`, restricted Pod Security enforced on
+the console namespace, and the experimental tier disabled.
 
 ## NIST 800-53 control mapping
 
@@ -207,12 +208,10 @@ Delivered so far:
 - **Signed compliance attestation** — live NIST control coverage with cluster evidence, viewable in
   the console, snapshotted immutably to the WORM audit store, and GPG-signable out-of-band with the
   release key (CA-2 / CA-7). See [`compliance-attestation.md`](compliance-attestation.md).
-
-Sequenced, longer-horizon work that deepens the posture (tracked in the issue backlog):
-
-1. **Hardened deployment profile** — one switch that disables the experimental tier, Chaos
-   Mesh, and every opt-in dangerous capability, and tightens defaults for an authorization
-   boundary.
+- **Hardened deployment profile** — opt-in `components.hardened`: enforces restricted Pod Security on
+  the console namespace, disables the experimental tier and Chaos Mesh, withholds `FaultInjection`, and
+  forbids `AUTH_MODE=none`, on top of the Cilium default-deny + `kind: SecurityGroup` network fence
+  (CM-7 / AC-6).
 
 ## Maturity — don't over-trust the experimental tier
 
