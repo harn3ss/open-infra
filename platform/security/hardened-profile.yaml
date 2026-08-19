@@ -8,11 +8,20 @@
 #   2. Pod Security Standards RESTRICTED enforced on the control-plane namespace (below). The console
 #      already satisfies restricted (runAsNonRoot + readOnlyRootFilesystem + drop ALL caps +
 #      allowPrivilegeEscalation:false + seccompProfile RuntimeDefault).
-#   3. Cluster-wide, PSS restricted is applied in WARN + AUDIT mode (below) — it surfaces every
-#      violation in the stable tier without breaking a workload that has not yet been brought into
-#      compliance, so an operator can drive namespaces to enforce restricted incrementally.
-#   4. SC-7 boundary protection stays as shipped: Cilium default-deny + kind: SecurityGroup per-workload
+#   3. SC-7 boundary protection stays as shipped: Cilium default-deny + kind: SecurityGroup per-workload
 #      egress sandboxes.
+#
+# This ships ONLY the control-plane namespace label below — there is no cluster-wide PSS enforcement here
+# (a cluster-wide default needs an API-server AdmissionConfiguration, which is out of band, not a manifest
+# GitOps can apply). Drive OTHER namespaces to restricted incrementally: label with warn/audit first,
+# then enforce once their workloads pass.
+#
+# CLUSTER-WIDE-RESTRICTED CAVEAT (AU-9): a few opt-in components must read the 0600 audit log or stage the
+# mc client and therefore need root + hostPath — inherently NOT restricted-compliant. On a substrate that
+# enforces `restricted` PSA cluster-wide (RKE2 `profile: cis`, OKD), grant those namespaces a PSA
+# exemption (pod-security.kubernetes.io/enforce=privileged): `monitoring` (audit-offsite-ship). The
+# mc-copy inits elsewhere are now non-root via the open-infra-mc image, but the audit READER is not — a
+# world-readable mc image does not fix a hostPath+root log reader. See docs/audit-offsite.md.
 #
 # Enable: set components.hardened: true (config.yaml) and re-run install.sh / let GitOps sync. Do NOT
 # flip enforce=restricted on a namespace whose workloads are not yet compliant — use warn/audit first.
