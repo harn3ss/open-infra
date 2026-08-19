@@ -44,6 +44,7 @@ var (
 	returns         atomic.Int64
 	discards        atomic.Int64
 	acquireTimeouts atomic.Int64
+	marsRequested   atomic.Int64 // clients that asked for MARS in PRELOGIN (the pool does not grant it)
 	pinReasonsMu    sync.Mutex
 	pinReasonCounts = map[string]int64{}
 
@@ -91,9 +92,12 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 
 	// 1. Terminate the client PRELOGIN ourselves (no encryption), so we can pick a backend by the
 	//    identity in the LOGIN7 that follows.
-	pType, _, preRaw, err := tds.ReadMessage(client)
+	pType, preBody, preRaw, err := tds.ReadMessage(client)
 	if err != nil || pType != tds.TypePreLogin {
 		return
+	}
+	if tds.PreloginRequestsMARS(preBody) {
+		marsRequested.Add(1) // visibility only — the synthesized response omits MARS, so it is not granted
 	}
 	if _, err := client.Write(preloginResp); err != nil {
 		return
@@ -288,6 +292,9 @@ func serveMetrics(addr string) {
 		fmt.Fprintf(w, "pool_cold_opens %d\npool_warm_reuses %d\npool_returns %d\npool_discards %d\npool_acquire_timeouts %d\n",
 			coldOpens.Load(), warmReuses.Load(), returns.Load(), discards.Load(), acquireTimeouts.Load())
 		fmt.Fprintf(w, "pool_reuse_ratio %.3f\n", reuse)
+		// MARS visibility: how many clients asked for MARS (not granted). A high count flags a fleet a
+		// future per-transaction multiplexer would have to pin or specially handle — measured, not guessed.
+		fmt.Fprintf(w, "mars_requested %d\n", marsRequested.Load())
 		pinReasonsMu.Lock()
 		for reason, n := range pinReasonCounts {
 			fmt.Fprintf(w, "pin_reason{reason=%q} %d\n", reason, n)
