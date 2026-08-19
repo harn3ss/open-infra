@@ -8,6 +8,7 @@ package classify
 
 import (
 	"regexp"
+	"strings"
 
 	"openinfra-tds-proxy/tds"
 )
@@ -37,16 +38,6 @@ var (
 	reSetContext = regexp.MustCompile(`(?is)sp_set_session_context`)
 )
 
-// A SET option is a benign, poolable session default when it's part of the driver's login prelude, but
-// a pin otherwise. These are the ones drivers set at connect; they still pin if issued mid-session
-// (that's handled by Prelude), but naming them lets the session recognize a pure prelude.
-var preludeSetOptions = map[string]bool{
-	"quoted_identifier": true, "arithabort": true, "ansi_null_dflt_on": true,
-	"ansi_padding": true, "ansi_warnings": true, "ansi_nulls": true,
-	"concat_null_yields_null": true, "numeric_roundabort": true, "implicit_transactions": true,
-	"textsize": true, "language": true, "dateformat": true, "datefirst": true, "lock_timeout": true,
-}
-
 const maxStatementBytes = 16 * 1024 // AWS RDS Proxy's ~16KB pin ceiling
 
 // Classify returns the verdict for one reassembled client message.
@@ -74,7 +65,11 @@ func classifyBatch(text string) Verdict {
 	}
 	switch {
 	case reIsolation.MatchString(text):
-		return Verdict{Pin: true, Reason: "SET TRANSACTION ISOLATION LEVEL"}
+		// Poolable as a login prelude when it is a SET-only opening batch: drivers (tedious, .NET's
+		// SqlClient) issue SET TRANSACTION ISOLATION LEVEL at connect time and re-issue it on every fresh
+		// connection, so the proxy can re-apply it rather than pinning. Mid-session (after real work) it
+		// still pins — the session layer only honours Prelude on the connection's first batch.
+		return Verdict{Pin: true, Reason: "SET TRANSACTION ISOLATION LEVEL", Prelude: isSetOnly(text)}
 	case reContextI.MatchString(text) || reSetContext.MatchString(text):
 		return Verdict{Pin: true, Reason: "session context (CONTEXT_INFO)"}
 	case reTempTable.MatchString(text):
@@ -115,29 +110,31 @@ func classifyRPC(proc string) Verdict {
 	}
 }
 
-// isSetOnly reports whether every non-empty statement in the batch is a SET of a known prelude option.
+// isSetOnly reports whether every statement in the batch is a poolable session-option SET — either a
+// SET TRANSACTION ISOLATION LEVEL, or a SET of a known driver-prelude option. A single non-SET statement
+// (or a SET of an unlisted option) disqualifies it, so the login-prelude exception only ever applies to a
+// pure prelude batch and never to one that also carries real work.
 func isSetOnly(text string) bool {
 	found := false
-	for _, m := range reSetOption.FindAllStringSubmatch(text, -1) {
-		if !preludeSetOptions[toLower(m[1])] {
+	for _, raw := range strings.FieldsFunc(text, func(r rune) bool { return r == ';' || r == '\n' }) {
+		stmt := strings.TrimSpace(raw)
+		if stmt == "" {
+			continue
+		}
+		// Session context (CONTEXT_INFO / sp_set_session_context) is per-session application state, not a
+		// re-applied driver default — it must pin even in an opening batch.
+		if reContextI.MatchString(stmt) || reSetContext.MatchString(stmt) {
 			return false
 		}
-		found = true
-	}
-	// Reject if there's any non-SET content (rough: presence of a keyword that isn't part of a SET line).
-	if reIsolation.MatchString(text) || reTempTable.MatchString(text) || reCursor.MatchString(text) ||
-		reUseDB.MatchString(text) || reBeginTran.MatchString(text) {
+		// A driver re-issues its full login prelude on every fresh connection, so a SET-only opening batch
+		// — SET TRANSACTION ISOLATION LEVEL, or any SET <option> — is re-applied on a reused backend, not
+		// leaked between clients. Any non-SET statement is real work and disqualifies the prelude exception.
+		if reIsolation.MatchString(stmt) || reSetOption.MatchString(stmt) {
+			found = true
+			continue
+		}
 		return false
 	}
 	return found
 }
 
-func toLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 32
-		}
-	}
-	return string(b)
-}
