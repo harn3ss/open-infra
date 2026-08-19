@@ -29,6 +29,13 @@ rules:
       - persistentvolumeclaims
     verbs: [get, list, watch]
 
+  # ── DataClassification encryptionAtRest check: read StorageClasses to see whether a
+  #    workload's data volumes sit on an encrypted (LUKS) class (parameter encrypted=true). ──
+  - apiGroups: [storage.k8s.io]
+    resources:
+      - storageclasses
+    verbs: [get, list, watch]
+
   # ── SG-sync reconciler: patch a running VM launcher pod's openinfra.dev/sg-*
   #    labels to match its spec.securityGroups, so security-group edits apply
   #    live without a VM restart. Scoped to pods/patch. ────────────────────────

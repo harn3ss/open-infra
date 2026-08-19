@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -74,6 +75,11 @@ type workload struct {
 	class        string
 	podLabels    map[string]string
 	nodeSelector map[string]string
+	// Data volumes, for the encryptionAtRest check: a Deployment references existing PVCs by claim name
+	// (resolved to their StorageClass at evaluation), a StatefulSet declares StorageClasses inline via
+	// volumeClaimTemplates ("" = the cluster default StorageClass).
+	pvcClaims []string
+	stsSCs    []string
 }
 
 func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -117,23 +123,37 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 		if dl, e := cs.AppsV1().Deployments("").List(ctx, metav1.ListOptions{LabelSelector: classificationLabel}); e == nil {
 			for i := range dl.Items {
 				d := &dl.Items[i]
-				workloads = append(workloads, workload{
+				wl := workload{
 					namespace: d.Namespace, name: d.Name, kind: "Deployment",
 					class:        d.Labels[classificationLabel],
 					podLabels:    d.Spec.Template.Labels,
 					nodeSelector: d.Spec.Template.Spec.NodeSelector,
-				})
+				}
+				for _, v := range d.Spec.Template.Spec.Volumes {
+					if v.PersistentVolumeClaim != nil {
+						wl.pvcClaims = append(wl.pvcClaims, v.PersistentVolumeClaim.ClaimName)
+					}
+				}
+				workloads = append(workloads, wl)
 			}
 		}
 		if sl, e := cs.AppsV1().StatefulSets("").List(ctx, metav1.ListOptions{LabelSelector: classificationLabel}); e == nil {
 			for i := range sl.Items {
 				s := &sl.Items[i]
-				workloads = append(workloads, workload{
+				wl := workload{
 					namespace: s.Namespace, name: s.Name, kind: "StatefulSet",
 					class:        s.Labels[classificationLabel],
 					podLabels:    s.Spec.Template.Labels,
 					nodeSelector: s.Spec.Template.Spec.NodeSelector,
-				})
+				}
+				for j := range s.Spec.VolumeClaimTemplates {
+					sc := ""
+					if ref := s.Spec.VolumeClaimTemplates[j].Spec.StorageClassName; ref != nil {
+						sc = *ref
+					}
+					wl.stsSCs = append(wl.stsSCs, sc)
+				}
+				workloads = append(workloads, wl)
 			}
 		}
 
@@ -227,10 +247,81 @@ func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, wl workload,
 	}
 
 	if pol.encryptionAtRest {
-		checks = append(checks, ruleCheck{"encryptionAtRest", "unknown", "verifiable once customer-key encryption ships"})
+		checks = append(checks, evalEncryptionAtRest(ctx, cs, wl))
 	}
 	if pol.backup {
-		checks = append(checks, ruleCheck{"backup", "unknown", "backup-policy interrogation not yet wired"})
+		// No standing per-workload backup POLICY resource exists to interrogate yet: the backup subsystem
+		// is on-demand snapshot / final-snapshot-before-delete, not scheduled per-workload protection.
+		checks = append(checks, ruleCheck{"backup", "unknown", "no standing backup policy per workload to interrogate"})
 	}
 	return checks
+}
+
+// evalEncryptionAtRest reports whether every persistent data volume a workload uses sits on an encrypted
+// StorageClass (parameter encrypted=true, e.g. the Longhorn LUKS class). It matches on the parameter, not
+// a class name, so it stays correct for any encrypted StorageClass. Unknown (never a false pass) when the
+// workload has no persistent volumes or a StorageClass/PVC cannot be read.
+func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, wl workload) ruleCheck {
+	scNames := map[string]bool{}
+	for _, sc := range wl.stsSCs {
+		scNames[sc] = true
+	}
+	for _, claim := range wl.pvcClaims {
+		pvc, err := cs.CoreV1().PersistentVolumeClaims(wl.namespace).Get(ctx, claim, metav1.GetOptions{})
+		if err != nil {
+			return ruleCheck{"encryptionAtRest", "unknown", "PVC " + claim + " could not be read"}
+		}
+		sc := ""
+		if pvc.Spec.StorageClassName != nil {
+			sc = *pvc.Spec.StorageClassName
+		}
+		scNames[sc] = true
+	}
+	if len(scNames) == 0 {
+		return ruleCheck{"encryptionAtRest", "unknown", "no persistent volumes to check (stateless workload)"}
+	}
+	var unencrypted []string
+	for name := range scNames {
+		enc, ok := storageClassEncrypted(ctx, cs, name)
+		if !ok {
+			return ruleCheck{"encryptionAtRest", "unknown", "StorageClass " + scLabel(name) + " could not be read"}
+		}
+		if !enc {
+			unencrypted = append(unencrypted, scLabel(name))
+		}
+	}
+	if len(unencrypted) > 0 {
+		sort.Strings(unencrypted)
+		return ruleCheck{"encryptionAtRest", "fail", "data on unencrypted StorageClass(es): " + strings.Join(unencrypted, ", ")}
+	}
+	return ruleCheck{"encryptionAtRest", "pass", "all data volumes on encrypted StorageClass(es)"}
+}
+
+// storageClassEncrypted resolves a StorageClass by name ("" = the cluster default) and reports whether it
+// declares parameter encrypted=true. ok=false means the class (or the default) could not be resolved.
+func storageClassEncrypted(ctx context.Context, cs kubernetes.Interface, name string) (encrypted, ok bool) {
+	if name == "" {
+		scs, err := cs.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, false
+		}
+		for i := range scs.Items {
+			if scs.Items[i].Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+				return scs.Items[i].Parameters["encrypted"] == "true", true
+			}
+		}
+		return false, false
+	}
+	sc, err := cs.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return false, false
+	}
+	return sc.Parameters["encrypted"] == "true", true
+}
+
+func scLabel(name string) string {
+	if name == "" {
+		return "(default)"
+	}
+	return name
 }

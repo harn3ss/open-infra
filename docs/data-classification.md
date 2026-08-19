@@ -53,8 +53,8 @@ Kubernetes API:
 | `noPublicExposure` | no `LoadBalancer` Service selects the workload's pods |
 | `networkRestricted` | a `NetworkPolicy` selects the workload's pods |
 | `residencyNodeLabel` | the pod template's `nodeSelector` pins to the required node label |
-| `encryptionAtRest` | **unknown** — reported honestly as not-yet-verifiable until customer-key encryption ships |
-| `backup` | **unknown** — backup-policy interrogation is not yet wired |
+| `encryptionAtRest` | every persistent data volume sits on an **encrypted** StorageClass (parameter `encrypted=true`, e.g. the Longhorn LUKS class) — **fail** if any is not, **unknown** (never a false pass) for a stateless workload or an unreadable class/PVC |
+| `backup` | **unknown** — there is no standing per-workload backup *policy* resource to interrogate (the backup subsystem is on-demand snapshot / final-snapshot-before-delete, not scheduled per-workload protection) |
 
 Requirements a class does not ask for are skipped; requirements that cannot yet be verified are
 reported `unknown` rather than passed silently. As the encryption and backup features land, their
