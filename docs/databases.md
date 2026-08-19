@@ -56,6 +56,36 @@ keeps the PVC). The image is open-infra's own (`ghcr.io/…/open-infra-babelfish
 Postgres + Babelfish extensions **built from source** (`babelfish/Dockerfile`), Trivy-scanned +
 cosign-signed by CI, with OS packages patched (`apt upgrade`) so it carries **0 fixable CVEs**.
 
+## Connection pooling — `kind: DatabaseProxy` (RDS Proxy)
+
+> AWS equivalent: **RDS Proxy** (`aws_db_proxy`).
+
+A `DatabaseProxy` puts a pooled, connection-**bounded** endpoint in front of a SQL-Server/Babelfish
+database. Clients connect to it instead of the database; it terminates each client's TDS handshake,
+borrows a backend connection from a bounded per-credential pool, and hands that backend back for the
+next client to reuse whenever the session left no unsharable state — **pinning** (temp tables, explicit
+transactions, prepared handles, cursors, …) to a dedicated backend otherwise. The per-key cap means a
+client stampede **queues** instead of exhausting the database's connection slots.
+
+```yaml
+apiVersion: openinfra.dev/v1
+kind: DatabaseProxy
+metadata: { name: orders-proxy }
+spec:
+  targetDatabase: orders   # the database.name to pool in front of (fronts orders-babelfish:1433)
+  poolMax: 20              # max backend connections per credential — the connection ceiling
+  # engineFamily: babelfish
+  # acquireTimeoutMs: 10000
+  # replicas: 1
+```
+
+Clients then point at `orders-proxy` (its `<name>-proxy` connection Secret carries `HOST` / `TDS_PORT`)
+with `encrypt=disable` (Babelfish is TDS-no-TLS). `/status` on port 9114 reports pool reuse, discards,
+and the multiplex-opportunity metric. Backed by open-infra's own `tds-proxy`
+(`ghcr.io/…/open-infra-tds-proxy`); see `docs/design/rds-proxy-tds-multiplexing.md`. **Experimental**,
+same as the `babelfish` engine it fronts. Today a session holds its backend for its lifetime (reuse is
+across sessions); per-transaction multiplexing is a planned follow-up.
+
 ## High availability
 
 `highAvailability: true` gives a replicated, self-healing topology (needs ≥2 nodes):
