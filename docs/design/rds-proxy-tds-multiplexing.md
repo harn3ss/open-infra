@@ -1,12 +1,21 @@
 # Design: RDS-Proxy-equivalent for the SQL-Server / TDS (Babelfish) engine
 
-> **Status: v1 built** ([`tds-proxy/`](../../tds-proxy)). The TDS framing, the pin classifier (the v1
-> pin-trigger list below), and a relaying proxy that classifies live traffic and reports a
-> multiplex-opportunity metric are implemented, unit-tested, and **verified against real SQL Server
-> 2022** (a `SELECT` multiplexes; `SET`/temp-table/transaction pin with the right reason). Still
-> proposed: the pooling that *acts* on the verdict — login termination so a clean backend can be handed
-> to the next client, plus transaction-boundary return — and encrypted-session handling (see the TLS
-> question in §6).
+> **Status: pooling built + exposed as a resource** ([`tds-proxy/`](../../tds-proxy)). The TDS framing,
+> the pin classifier (the pin-trigger list below), **and the connection pool that acts on the verdict**
+> are implemented and unit-tested. The proxy now terminates each client's TDS handshake itself (answering
+> PRELOGIN, reading LOGIN7), borrows a backend from a **bounded per-credential pool**, and returns it
+> reset-clean for the next client to reuse — replaying the captured LOGIN7 response and issuing the TDS
+> RESETCONNECTION bit — while pinning sessions that leave unsharable state and discarding their backend
+> on close. Verified live against real **SQL Server 2022** and a **Babelfish** instance (identical
+> classify verdicts; grid rows in [`tds-proxy/grid.jsonl`](../../tds-proxy/grid.jsonl)), and the pool
+> tested end-to-end against Babelfish: cold-open → warm-reuse (login-replay + reset), clean-return vs
+> pinned-discard, and the connection ceiling (6 concurrent clients, cap 3 → only 3 backends opened).
+>
+> It ships as a **resource** — `kind: DatabaseProxy` (XRD + composition in `platform/abstraction/`, the
+> `ghcr.io/harn3ss/open-infra-tds-proxy` image, and `openinfra_database_proxy` in the Terraform provider)
+> — the open-infra analog of AWS RDS Proxy's `aws_db_proxy`. Still proposed: **per-transaction**
+> multiplexing *within* one session (v1 holds a backend for the session's lifetime, reusing across
+> sessions, not per-statement), MARS, mid-response attention/cancel, and TLS termination (see §6).
 
 open-infra's managed SQL-Server engine (`database: { engine: babelfish }`, TDS on 1433) has no
 connection multiplexer. AWS RDS Proxy is the reference: it pools a few backend connections and lets

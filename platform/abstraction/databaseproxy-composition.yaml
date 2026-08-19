@@ -1,0 +1,138 @@
+# The compiler for kind: DatabaseProxy -> the tds-proxy connection pooler in front of
+# a managed SQL-Server/Babelfish database. open-infra's "RDS Proxy" path.
+#
+# Per DatabaseProxy the composition renders:
+#   - a Deployment (ghcr.io/harn3ss/open-infra-tds-proxy) pointed at the target engine's
+#     TDS Service, with the connection cap + acquire timeout from the claim,
+#   - a Service (<name>-proxy: 1433 TDS + 9114 metrics),
+#   - a connection Secret (<name>-proxy: HOST / TDS_PORT) for clients.
+#
+# The proxy terminates each client's TDS handshake, pools backend connections per
+# credential, and pins sessions that leave unsharable state. The user only ever sees
+# kind: DatabaseProxy.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: databaseproxy
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XDatabaseProxy
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $target := $spec.targetDatabase }}
+            {{- $engine := $spec.engineFamily | default "babelfish" }}
+            {{- $poolMax := $spec.poolMax | default 20 }}
+            {{- $acquireMs := $spec.acquireTimeoutMs | default 10000 }}
+            {{- $replicas := $spec.replicas | default 1 }}
+            {{- $backend := printf "%s-%s.%s.svc.cluster.local:1433" $target $engine $ns }}
+            ---
+            # The pooler Deployment.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: proxy-deploy
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-proxy
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-proxy, openinfra.dev/databaseproxy: "true" }
+                  spec:
+                    replicas: {{ $replicas }}
+                    selector: { matchLabels: { app: {{ $name }}-proxy } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-proxy } }
+                      spec:
+                        securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+                        containers:
+                          - name: tds-proxy
+                            image: ghcr.io/harn3ss/open-infra-tds-proxy:latest
+                            args:
+                              - -listen=:1433
+                              - -backend={{ $backend }}
+                              - -metrics=:9114
+                              - -pool-max={{ $poolMax }}
+                              - -acquire-timeout-ms={{ $acquireMs }}
+                            ports:
+                              - { name: tds, containerPort: 1433 }
+                              - { name: metrics, containerPort: 9114 }
+                            readinessProbe:
+                              httpGet: { path: /healthz, port: 9114 }
+                              initialDelaySeconds: 2
+                            livenessProbe:
+                              httpGet: { path: /healthz, port: 9114 }
+                              initialDelaySeconds: 5
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              readOnlyRootFilesystem: true
+                              capabilities: { drop: [ALL] }
+                            resources:
+                              requests: { cpu: 25m, memory: 32Mi }
+                              limits: { cpu: 500m, memory: 128Mi }
+            ---
+            # The client-facing Service (TDS + metrics).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: proxy-svc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}-proxy
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-proxy }
+                  spec:
+                    selector: { app: {{ $name }}-proxy }
+                    ports:
+                      - { name: tds, port: 1433, targetPort: 1433 }
+                      - { name: metrics, port: 9114, targetPort: 9114 }
+            ---
+            # Connection secret: where clients point (the pooled endpoint, not the DB).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: conn-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-proxy
+                    namespace: {{ $ns }}
+                  stringData:
+                    HOST: {{ $name }}-proxy.{{ $ns }}.svc.cluster.local
+                    TDS_PORT: "1433"
+                    TARGET: {{ $target }}
+                    POOL_MAX: "{{ $poolMax }}"
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
