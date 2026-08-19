@@ -119,7 +119,14 @@ spec:
               command: [sh, -c, "cp /bin/vault /bin-shared/vault && chmod +x /bin-shared/vault"]
               volumeMounts: [{ name: bin, mountPath: /bin-shared }]
             - name: fetch-mc
-              image: minio/mc:latest
+              # open-infra-mc = minio/mc with a world-readable binary, so this copy runs non-root under
+              # the pod's uid 65532. The stock minio/mc binary is NOT world-readable and broke this init
+              # (Init:Error "cp: cannot open '/usr/bin/mc': Permission denied"), which stalled every
+              # crypto-erase destruction certificate.
+              image: ghcr.io/harn3ss/open-infra-mc:latest
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
               command: [sh, -c, "cp /usr/bin/mc /bin-shared/mc && chmod +x /bin-shared/mc"]
               volumeMounts: [{ name: bin, mountPath: /bin-shared }]
           containers:
