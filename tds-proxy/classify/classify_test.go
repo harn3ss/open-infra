@@ -19,8 +19,11 @@ func TestClassifyBatch(t *testing.T) {
 		{"plain select", "SELECT * FROM orders WHERE id=1", false, "", false},
 		{"parameterized-looking dml", "UPDATE orders SET status='x' WHERE id=1", false, "", false}, // SET clause, not SET option
 		{"insert", "INSERT INTO t(a) VALUES(1)", false, "", false},
-		{"set option", "SET NOCOUNT ON", true, "SET session option", false},
-		{"set isolation", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", true, "ISOLATION", false},
+		{"set option prelude", "SET NOCOUNT ON", true, "SET session option", true},
+		{"set option w/ work", "SET NOCOUNT ON\nSELECT * FROM t", true, "SET session option", false},
+		{"driver prelude (tedious-like)", "SET QUOTED_IDENTIFIER ON\nSET CURSOR_CLOSE_ON_COMMIT OFF\nSET IMPLICIT_TRANSACTIONS OFF", true, "SET session option", true},
+		{"set isolation prelude", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", true, "ISOLATION", true},
+		{"set isolation w/ work", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE\nSELECT * FROM t", true, "ISOLATION", false},
 		{"temp table", "CREATE TABLE #scratch (id int)", true, "temp table", false},
 		{"cursor", "DECLARE c CURSOR FOR SELECT 1", true, "cursor", false},
 		{"use db", "USE tempdb", true, "USE database", false},
