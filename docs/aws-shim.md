@@ -106,7 +106,7 @@ error dialect.
 | **S3** | MinIO | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets` | **Faithful, proven live** — byte-identical round-trip + auth/boundary negatives (`probe/aws-shim-s3.sh`) |
 | **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
 | **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse) | **Built + unit-tested** — live proof pending a deployed Function |
-| **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); **experimental**, fidelity docs-anchored. Needs `components.openAppsync` |
+| **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); runtime **behavior-faithful** (goldens captured from a live AWS AppSync account, CI-green), broader parity experimental. Needs `components.openAppsync` |
 | DynamoDB, Secrets Manager, Kinesis, IAM, Bedrock, … | Postgres/FerretDB, Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
 
 Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters
@@ -153,10 +153,13 @@ the underlying engine can't model. open-appsync is on its own **graduation ladde
 over one DynamoDB-style data source; subscriptions-over-JetStream is rung 2). **Slice 1 runs live
 end-to-end** — a SigV4-signed `createTodo` mutation then `getTodo` query round-trips through the shim
 → open-appsync → a real VTL resolver (autoId + DynamoDB typed marshalling) → the data source → `{data}`
-(verified on-cluster). It stays **experimental**: fidelity is anchored on AWS's *documented* VTL/`$util`
-behavior (the corpus probe, green in CI), **not** diffed against a live AWS AppSync (that needs an AWS
-account), and the slice-1 "not yet" list (subscriptions, multiple data-source types, JS/pipeline
-resolvers, a management API) still applies. See [open-appsync/README.md](../open-appsync/README.md).
+(verified on-cluster). The runtime is **behavior-faithful**: `$util`/VTL and the JS runtime are diffed in
+CI against goldens **captured from a live AWS AppSync account** (via the `evaluate-mapping-template` /
+`evaluate-code` APIs), not just AWS's *documented* behavior — and much of the original slice-1 "not yet"
+list has since shipped (subscriptions over WS + JetStream, JS/pipeline resolvers, additional data-source
+types, a Stage-2 management wire protocol). What stays open — hence "broader parity experimental" — is a
+subscription node-kill chaos streak, per-source fidelity captures, and the authoring-plane rung. See the
+current parity map in [open-appsync/README.md](../open-appsync/README.md).
 
 Authorization stays "one policy world": the shim authenticates (SigV4 → principal) and runs the
 coarse impersonated `SubjectAccessReview` gate; because open-appsync is our own engine, the shim
