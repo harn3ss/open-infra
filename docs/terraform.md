@@ -48,6 +48,7 @@ Every kind, with full CRUD and `terraform import` via `namespace/name`:
 |---|---|
 | `openinfra_application` | `Application` — container workload |
 | `openinfra_database` | `Application` with `spec.database` (postgres/mysql/mongo/babelfish) |
+| `openinfra_database_proxy` | `DatabaseProxy` — RDS-Proxy-style TDS connection pool in front of a SQL-Server/Babelfish database |
 | `openinfra_virtual_machine` | `VirtualMachine` |
 | `openinfra_function` | `Function` |
 | `openinfra_http_api` | `HttpApi` — API-Gateway-style HTTP routes → Functions/Applications |
