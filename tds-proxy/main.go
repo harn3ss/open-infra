@@ -25,6 +25,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,8 +49,9 @@ var (
 	pinReasonsMu    sync.Mutex
 	pinReasonCounts = map[string]int64{}
 
-	backendPool  *pool.Pool
-	preloginResp = tds.BuildPreloginResponse()
+	backendPool   *pool.Pool
+	preloginResp  = tds.BuildPreloginResponse()
+	debugClassify = os.Getenv("TDSPROXY_DEBUG") != ""
 )
 
 func main() {
@@ -225,6 +227,20 @@ func relaySession(client net.Conn, backend net.Conn, needReset bool) (pinned boo
 		// prelude, re-applied by the client on every backend, so it does not pin).
 		if isClientWork(mType) {
 			v := classify.Classify(mType, body)
+			if debugClassify {
+				txt := ""
+				switch mType {
+				case tds.TypeSQLBatch:
+					txt = tds.BatchText(body)
+				case tds.TypeRPC:
+					txt = "RPC:" + tds.RPCProc(body)
+				}
+				if len(txt) > 90 {
+					txt = txt[:90]
+				}
+				log.Printf("tds-proxy: DEBUG type=%s pin=%v prelude=%v sawReal=%v reason=%q text=%q",
+					tds.TypeName(mType), v.Pin, v.Prelude, sawRealBatch, v.Reason, txt)
+			}
 			if v.Pin {
 				if v.Prelude && !sawRealBatch {
 					// driver prelude — not a pin

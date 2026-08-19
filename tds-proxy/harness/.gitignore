@@ -1,0 +1,4 @@
+tedious/node_modules/
+tedious/package-lock.json
+jdbc/*.jar
+jdbc/*.class
