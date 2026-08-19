@@ -211,7 +211,8 @@ the product's public contract.
   normalizes either form back to plain values. The corpus was also broadened to the fidelity-critical
   set (nested map / list / null / bool / int / negative / float / string, composite keys, multi-attribute
   PutItem). This clears the runtime maturity gate — the runtime is no longer labeled experimental
-  (the authoring plane, JS runtime, and subscriptions keep their own separate gates).
+  (the authoring plane and subscriptions keep their own separate gates; the JS runtime's
+  fidelity gate is cleared by the entry above).
 
 ### Abstractions
 - **open-appsync — open-infra's own AppSync engine (opt-in, experimental, OFF by default).**
