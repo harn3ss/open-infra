@@ -1,8 +1,12 @@
 # Design: RDS-Proxy-equivalent for the SQL-Server / TDS (Babelfish) engine
 
-> **Status: design proposal — not implemented.** This is a `docs/design/` RFC, not documentation of a
-> shipped feature. It defines the model, the v1 pin-trigger list, the compatibility grid, and the
-> capture harness that would populate it.
+> **Status: v1 built** ([`tds-proxy/`](../../tds-proxy)). The TDS framing, the pin classifier (the v1
+> pin-trigger list below), and a relaying proxy that classifies live traffic and reports a
+> multiplex-opportunity metric are implemented, unit-tested, and **verified against real SQL Server
+> 2022** (a `SELECT` multiplexes; `SET`/temp-table/transaction pin with the right reason). Still
+> proposed: the pooling that *acts* on the verdict — login termination so a clean backend can be handed
+> to the next client, plus transaction-boundary return — and encrypted-session handling (see the TLS
+> question in §6).
 
 open-infra's managed SQL-Server engine (`database: { engine: babelfish }`, TDS on 1433) has no
 connection multiplexer. AWS RDS Proxy is the reference: it pools a few backend connections and lets
