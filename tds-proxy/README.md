@@ -24,7 +24,15 @@ Terraform provider.
   ceiling); the first login is captured cold and **replayed** to warm clients, which get a reset-clean
   backend. Clean sessions **return** their backend for reuse; pinned sessions **discard** theirs on close.
   `/status` reports `pool_cold_opens`, `pool_warm_reuses`, `pool_returns`, `pool_discards`,
-  `pool_acquire_timeouts`, `pool_reuse_ratio`, and the multiplex-opportunity + per-reason pin breakdown.
+  `pool_acquire_timeouts`, `pool_reuse_ratio`, `mars_requested`, and the multiplex-opportunity +
+  per-reason pin breakdown.
+- **MARS visibility** — `mars_requested` counts clients that ask for MARS (Multiple Active Result Sets)
+  in PRELOGIN. The pool does **not** grant MARS (the synthesized PRELOGIN response omits the option), so
+  those sessions run single-request-per-connection. Counting the *requests* is a measurement no pooler
+  (AWS RDS Proxy included) surfaces — a MARS-heavy fleet is one a future per-transaction multiplexer must
+  pin or specially handle. Detecting whether a session *actually interleaves* (vs merely negotiates) MARS
+  is the next step, deliberately deferred until the per-request SMID header offset is confirmed against a
+  real capture.
 
 **Verified live** against real SQL Server 2022 and Babelfish (identical classify verdicts;
 [`grid.jsonl`](grid.jsonl)); the pool tested end-to-end against Babelfish — cold→warm reuse, clean-return

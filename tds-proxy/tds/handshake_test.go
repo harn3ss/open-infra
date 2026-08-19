@@ -76,6 +76,39 @@ func TestWithResetConnection(t *testing.T) {
 	}
 }
 
+// buildPrelogin encodes a PRELOGIN option table with VERSION + MARS(marsOn) + terminator.
+func buildPrelogin(marsOn bool) []byte {
+	const verOff = 11 // 5 (version) + 5 (mars) + 1 (terminator)
+	const marsOff = verOff + 6
+	marsVal := byte(0x00)
+	if marsOn {
+		marsVal = 0x01
+	}
+	return []byte{
+		0x00, 0x00, verOff, 0x00, 0x06, // VERSION @11 len 6
+		0x04, 0x00, marsOff, 0x00, 0x01, // MARS @17 len 1
+		0xFF,                               // TERMINATOR
+		0x10, 0x00, 0x03, 0xE8, 0x00, 0x00, // version data
+		marsVal,                            // MARS data
+	}
+}
+
+func TestPreloginRequestsMARS(t *testing.T) {
+	if !PreloginRequestsMARS(buildPrelogin(true)) {
+		t.Error("MARS=1 prelogin should be detected as requesting MARS")
+	}
+	if PreloginRequestsMARS(buildPrelogin(false)) {
+		t.Error("MARS=0 prelogin must not be reported as requesting MARS")
+	}
+	// A prelogin with no MARS option at all (just the response builder's shape) must be false, not panic.
+	if PreloginRequestsMARS(BuildPreloginResponse()[headerLen:]) {
+		t.Error("a prelogin without a MARS option must report false")
+	}
+	if PreloginRequestsMARS(nil) || PreloginRequestsMARS([]byte{0xFF}) {
+		t.Error("empty / terminator-only prelogin must report false")
+	}
+}
+
 func TestBuildPreloginResponse(t *testing.T) {
 	pkt := BuildPreloginResponse()
 	p, err := ReadPacket(bytes.NewReader(pkt))
