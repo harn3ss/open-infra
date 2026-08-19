@@ -70,7 +70,13 @@ spec:
       initContainers:
         # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
         - name: fetch-mc
-          image: minio/mc:latest
+          # open-infra-mc = minio/mc with a world-readable binary → non-root copy (restricted-PSA clean).
+          image: ghcr.io/harn3ss/open-infra-mc:latest
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
           command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
           volumeMounts: [{ name: mc, mountPath: /mc }]
       containers:
