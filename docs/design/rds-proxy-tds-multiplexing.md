@@ -22,8 +22,11 @@ connection multiplexer. AWS RDS Proxy is the reference: it pools a few backend c
 many clients share them — **multiplexing** — dropping to a dedicated 1:1 **pin** whenever a client
 leaves session state on the connection that can't be safely shared. This spec defines the pin model,
 the v1 pin-trigger list, the compatibility grid it must satisfy, and the capture harness that populates
-that grid empirically. It is a **design + method**, not an implementation; the grid ships as a scaffold
-to be filled by real captures.
+that grid empirically. The pin model, the classifier, and the connection **pool are now implemented and
+verified** (see the status note above and [`tds-proxy/`](../../tds-proxy)); the **compatibility grid**
+remains the design's open scaffold — a first slice is captured ([`tds-proxy/grid.jsonl`](../../tds-proxy/grid.jsonl):
+go-mssqldb × 5 shapes × SQL Server + Babelfish), and the driver/auth/encryption/fault axes below are
+still to be filled by real captures.
 
 ## 1. The model — why multiplexing needs pinning
 
