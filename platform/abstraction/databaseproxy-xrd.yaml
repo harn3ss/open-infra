@@ -1,0 +1,94 @@
+# open-infra's connection pooler: kind: DatabaseProxy — the "RDS Proxy" path.
+#
+# A DatabaseProxy sits in front of a managed SQL-Server/Babelfish database (TDS on
+# 1433) and gives clients a pooled, connection-bounded endpoint. It terminates each
+# client's TDS handshake, borrows a backend connection from a bounded per-credential
+# pool, and hands that backend back for the next client to reuse whenever the session
+# left no unsharable state — pinning (temp tables, explicit txns, prepared handles,
+# cursors, …) to a dedicated backend otherwise. The per-key cap means a client
+# stampede queues instead of exhausting the database's connection slots.
+#
+# The compiler (platform/abstraction/databaseproxy-composition.yaml) renders the
+# tds-proxy Deployment + a Service + a connection Secret; users only ever see
+# kind: DatabaseProxy / the console. This is the open-infra analog of AWS RDS Proxy
+# (aws_db_proxy) — their pooler is a resource, so ours is too.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xdatabaseproxies.openinfra.dev
+  annotations:
+    # Chaos topology tags (consumed by tools/chainforge): a proxy is a passthrough in
+    # front of a database, not itself a chaos data-node.
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XDatabaseProxy
+    plural: xdatabaseproxies
+  claimNames:
+    kind: DatabaseProxy    # what users write
+    plural: databaseproxies
+  defaultCompositionRef:
+    name: databaseproxy
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [targetDatabase]
+              properties:
+                targetDatabase:
+                  type: string
+                  description: >-
+                    Name of the managed database to pool in front of (the database.name
+                    of its kind: Application). The proxy fronts that engine's TDS Service
+                    (<targetDatabase>-babelfish:1433) in the same namespace.
+                engineFamily:
+                  type: string
+                  enum: [babelfish, sqlserver]
+                  default: babelfish
+                  description: >-
+                    Wire family of the target. Only babelfish (TDS-no-TLS) is served in
+                    v1; sqlserver is reserved for when the proxy terminates TLS.
+                poolMax:
+                  type: integer
+                  default: 20
+                  minimum: 1
+                  description: >-
+                    Max backend connections the proxy will ever open per credential key
+                    (user+database+password). Beyond this, clients queue — this is the
+                    connection ceiling that protects the database from stampedes.
+                acquireTimeoutMs:
+                  type: integer
+                  default: 10000
+                  minimum: 100
+                  description: How long a client waits for a backend when the pool is at its cap before failing.
+                replicas:
+                  type: integer
+                  default: 1
+                  minimum: 1
+                  description: Proxy Deployment replicas (each keeps its own pool; size the cap accordingly).
+            status:
+              type: object
+              properties:
+                endpoint:
+                  type: string
+                  description: The in-cluster TDS endpoint clients connect to.
+      additionalPrinterColumns:
+        - name: Target
+          type: string
+          jsonPath: .spec.targetDatabase
+        - name: PoolMax
+          type: integer
+          jsonPath: .spec.poolMax
