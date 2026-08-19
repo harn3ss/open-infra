@@ -32,6 +32,9 @@ configured. Because it is assembled server-side, the same lineage is what the
   moved by an application outside these kinds is not captured — model it as one of these kinds to have
   it appear.
 - Endpoints are labelled by `engine host/database` as declared; it does not probe the databases.
+- The authenticated success path is observable end-to-end with [`probe/lineage.sh`](../probe/lineage.sh):
+  it logs in, creates a throwaway `kind: Stream`, and asserts it appears as a lineage flow through
+  `/api/lineage` (the SI-12 observation), then deletes it. Needs the root break-glass password.
 
 ## Control mapping
 
