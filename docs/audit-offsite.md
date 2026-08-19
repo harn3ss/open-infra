@@ -99,6 +99,15 @@ on the `audit-offsite-ship` CronJob:
 
 - The ship job needs to read a `0600` root-owned file on the server node, so it runs as root,
   read-only, with every capability dropped — the same access `promtail` already has.
+- **Restricted-PSA caveat.** Because it needs root + a `hostPath`, the ship job is inherently not
+  `restricted`-Pod-Security-compliant, and no image change fixes that (reading the `0600` audit file
+  requires it). On a substrate that enforces `restricted` PSA **cluster-wide** (RKE2 `profile: cis`,
+  OpenShift/OKD), grant the `monitoring` namespace a PSA exemption —
+  `pod-security.kubernetes.io/enforce=privileged` — or the ship job is rejected at admission and the WORM
+  copy silently stops. On non-cluster-wide substrates (the default, and open-infra's own hardened profile,
+  which enforces restricted only on the console namespace) it runs unchanged. A future substrate that
+  forbids `hostPath` entirely (e.g. OKD) needs a different collection mechanism (a log-forwarder), not
+  this job.
 - Between a segment being shipped and the next run, records live only on the node and in Loki; keep
   the interval short. A log rotation restarts at offset 0 of the new file and is a bounded coverage
   gap (logged), not an integrity gap — the chain stays contiguous.
