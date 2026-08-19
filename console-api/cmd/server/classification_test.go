@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -40,5 +43,53 @@ func TestClassComplianceEmptyMarshalsArrays(t *testing.T) {
 	}
 	if !strings.Contains(s, `"classes":[]`) || !strings.Contains(s, `"resources":[]`) {
 		t.Fatalf("want classes/resources as []: %s", s)
+	}
+}
+
+// The encryptionAtRest check must PASS iff every data volume is on an encrypted StorageClass (matched by
+// the `encrypted=true` parameter, not a class name), FAIL if any is not, and stay UNKNOWN (never a false
+// pass) for a stateless workload or an unreadable class/PVC.
+func TestEvalEncryptionAtRest(t *testing.T) {
+	sp := func(s string) *string { return &s }
+	cs := fake.NewSimpleClientset(
+		&storagev1.StorageClass{
+			ObjectMeta: metav1.ObjectMeta{Name: "enc"},
+			Parameters: map[string]string{"encrypted": "true"},
+		},
+		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "plain"}},
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "data-enc", Namespace: "default"},
+			Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: sp("enc")},
+		},
+		&corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "data-plain", Namespace: "default"},
+			Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: sp("plain")},
+		},
+	)
+	ctx := context.Background()
+	cases := []struct {
+		name   string
+		wl     workload
+		status string
+	}{
+		{"deployment on encrypted PVC", workload{namespace: "default", pvcClaims: []string{"data-enc"}}, "pass"},
+		{"deployment on plaintext PVC", workload{namespace: "default", pvcClaims: []string{"data-plain"}}, "fail"},
+		{"one encrypted, one not", workload{namespace: "default", pvcClaims: []string{"data-enc", "data-plain"}}, "fail"},
+		{"statefulset template on encrypted SC", workload{namespace: "default", stsSCs: []string{"enc"}}, "pass"},
+		{"statefulset template on plaintext SC", workload{namespace: "default", stsSCs: []string{"plain"}}, "fail"},
+		{"stateless (no volumes)", workload{namespace: "default"}, "unknown"},
+		{"missing PVC", workload{namespace: "default", pvcClaims: []string{"gone"}}, "unknown"},
+		{"unknown StorageClass", workload{namespace: "default", stsSCs: []string{"nonesuch"}}, "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := evalEncryptionAtRest(ctx, cs, c.wl)
+			if got.Rule != "encryptionAtRest" {
+				t.Fatalf("rule = %q, want encryptionAtRest", got.Rule)
+			}
+			if got.Status != c.status {
+				t.Fatalf("status = %q, want %q (detail: %q)", got.Status, c.status, got.Detail)
+			}
+		})
 	}
 }
