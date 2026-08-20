@@ -12,6 +12,18 @@
 # your KMS for you. See docs/encryption.md for the init/unseal/bootstrap runbook.
 #
 # EXPERIMENTAL: shipped built + reviewed, but not live-verified in this repo's reference environment.
+#
+# The `vault` namespace is created HERE (early sync-wave) rather than left to the Helm chart's
+# CreateNamespace=true: the app-of-apps applies the raw ServiceAccount/Job below into namespace `vault`,
+# and the child Application (which would otherwise create the namespace) syncs asynchronously — so
+# without this the app-of-apps races and the whole sync fails with `namespaces "vault" not found`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
