@@ -101,11 +101,15 @@ func PreloginRequestsMARS(body []byte) bool {
 
 // Login7Info is what the pool needs from a client LOGIN7: the identity to key a backend pool on, plus
 // the raw obfuscated password field (used only to prove a reusing client presents the same credentials —
-// TDS password obfuscation is deterministic and unsalted, so equal plaintext ⇒ equal bytes).
+// TDS password obfuscation is deterministic and unsalted, so equal plaintext ⇒ equal bytes). Integrated
+// reports SSPI/Windows integrated security (fIntegratedSecurity): such logins carry NO password (the
+// identity is in a per-connection SSPI blob), so they cannot be keyed or pooled by credential — the pool
+// refuses them rather than risk collapsing distinct Windows identities onto one shared backend.
 type Login7Info struct {
-	User      string
-	Database  string
-	PassField []byte
+	User       string
+	Database   string
+	PassField  []byte
+	Integrated bool
 }
 
 // ParseLogin7 extracts the identity fields from a LOGIN7 payload (MS-TDS §2.2.6.4). The offset/length
@@ -127,11 +131,14 @@ func ParseLogin7(body []byte) (Login7Info, bool) {
 		}
 		return decodeUTF16LE(body[ib : ib+n]), body[ib : ib+n], true
 	}
-	user, _, ok1 := str(40, 42)      // ibUserName / cchUserName
-	_, pass, ok2 := str(44, 46)      // ibPassword / cchPassword (raw obfuscated bytes)
-	db, _, ok3 := str(68, 70)        // ibDatabase / cchDatabase
+	user, _, ok1 := str(40, 42) // ibUserName / cchUserName
+	_, pass, ok2 := str(44, 46) // ibPassword / cchPassword (raw obfuscated bytes)
+	db, _, ok3 := str(68, 70)   // ibDatabase / cchDatabase
 	if !ok1 || !ok2 || !ok3 {
 		return Login7Info{}, false
 	}
-	return Login7Info{User: user, Database: db, PassField: pass}, true
+	// OptionFlags2 is byte 25; fIntegratedSecurity is its high bit (0x80). When set, the credentials are a
+	// per-connection SSPI blob, not the (empty) password field — such a login must not be pooled by credential.
+	integrated := body[25]&0x80 != 0
+	return Login7Info{User: user, Database: db, PassField: pass, Integrated: integrated}, true
 }
