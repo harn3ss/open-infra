@@ -19,6 +19,7 @@ import {
   ScrollText,
   Send,
   BadgeCheck,
+  ClipboardCheck,
   KeyRound,
   Server,
   Tags,
@@ -86,6 +87,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Encryption Keys", to: "/encryption", icon: KeyRound, matchPrefix: true, section: "Security & Identity" },
   { label: "Audit", to: "/audit", icon: ScrollText, matchPrefix: true, section: "Security & Identity" },
   { label: "Attestation", to: "/attestation", icon: BadgeCheck, matchPrefix: true, section: "Security & Identity" },
+  { label: "Access Review", to: "/access-review", icon: ClipboardCheck, matchPrefix: true, section: "Security & Identity" },
 
   { label: "Workloads", to: "/workloads", icon: Network, matchPrefix: true, section: "Cluster" },
   { label: "Nodes", to: "/nodes", icon: Server, matchPrefix: true, section: "Cluster" },

@@ -76,6 +76,7 @@ import { DataClassificationPage } from "@/features/iam/data-classification-page"
 import { EncryptionPage } from "@/features/iam/encryption-page";
 import { LineagePage } from "@/features/data/lineage-page";
 import { AttestationPage } from "@/features/iam/attestation-page";
+import { AccessReviewPage } from "@/features/iam/access-review-page";
 import { PkiPage, CertificateAuthorityDetailPage } from "@/features/pki/pki-page";
 import { CreateCaPage } from "@/features/pki/create-ca-page";
 
@@ -441,6 +442,11 @@ const attestationRoute = createRoute({
   path: "/attestation",
   component: AttestationPage,
 });
+const accessReviewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/access-review",
+  component: AccessReviewPage,
+});
 // kind: CertificateAuthority (managed PKI). Static "/new" before the detail route.
 const pkiRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -528,6 +534,7 @@ const routeTree = rootRoute.addChildren([
   encryptionRoute,
   lineageRoute,
   attestationRoute,
+  accessReviewRoute,
   pkiRoute,
   caCreateRoute,
   caDetailRoute,
