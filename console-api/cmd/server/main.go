@@ -321,6 +321,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(20*time.Second)).Get("/lineage", handleLineage(cs, auth, logger))
 		// Compliance attestation — live control-coverage report (the signed copies live in the WORM store).
 		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/attestation", handleAttestation(cs, auth, logger))
+		// Access-recertification report — standing access per principal, mapped to activity + review flags (AC-2/AC-6).
+		api.With(middleware.Timeout(25*time.Second)).Get("/iam/access-review", handleAccessReview(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
