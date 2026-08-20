@@ -46,6 +46,7 @@ var (
 	discards        atomic.Int64
 	acquireTimeouts atomic.Int64
 	marsRequested   atomic.Int64 // clients that asked for MARS in PRELOGIN (the pool does not grant it)
+	integratedAuth  atomic.Int64 // integrated/Windows (SSPI) logins refused — not poolable by credential
 	pinReasonsMu    sync.Mutex
 	pinReasonCounts = map[string]int64{}
 
@@ -112,6 +113,15 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 	}
 	info, ok := tds.ParseLogin7(lBody)
 	if !ok {
+		return
+	}
+	// Integrated/Windows (SSPI) auth carries no credential to key on — pooling it would risk collapsing
+	// distinct Windows identities onto one shared backend, and the multi-round SSPI token exchange isn't
+	// relayed by the pool's terminated handshake. Refuse cleanly; SQL auth is the supported mode. (A
+	// transparent pass-through mode for integrated auth is a documented follow-up.)
+	if info.Integrated {
+		integratedAuth.Add(1)
+		log.Printf("tds-proxy: session %d: integrated/Windows (SSPI) auth is not poolable — use SQL auth", id)
 		return
 	}
 	key := poolKey(backendAddr, info)
@@ -311,6 +321,7 @@ func serveMetrics(addr string) {
 		// MARS visibility: how many clients asked for MARS (not granted). A high count flags a fleet a
 		// future per-transaction multiplexer would have to pin or specially handle — measured, not guessed.
 		fmt.Fprintf(w, "mars_requested %d\n", marsRequested.Load())
+		fmt.Fprintf(w, "integrated_auth_refused %d\n", integratedAuth.Load())
 		pinReasonsMu.Lock()
 		for reason, n := range pinReasonCounts {
 			fmt.Fprintf(w, "pin_reason{reason=%q} %d\n", reason, n)
