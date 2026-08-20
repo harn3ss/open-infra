@@ -11,7 +11,10 @@
 # human-in-the-loop step: the whole point of customer-owned keys is that open-infra cannot unseal
 # your KMS for you. See docs/encryption.md for the init/unseal/bootstrap runbook.
 #
-# EXPERIMENTAL: shipped built + reviewed, but not live-verified in this repo's reference environment.
+# LIVE-VERIFIED (2026-08-20): provision -> round-trip -> crypto-erase proven on the running cluster by
+# probe/encryption-vault.sh (customer KEK wraps/unwraps byte-identical; kind: Destruction makes the key
+# unrecoverable). Bringing Vault up is still operator-gated — custody of the unseal keys is the customer's
+# by design (open-infra cannot unseal your KMS); see docs/encryption.md for the init/unseal runbook.
 #
 # The `vault` namespace is created HERE (early sync-wave) rather than left to the Helm chart's
 # CreateNamespace=true: the app-of-apps applies the raw ServiceAccount/Job below into namespace `vault`,
@@ -125,9 +128,13 @@ spec:
             # it once this Job succeeds (docs/encryption.md) — it is a root/admin token:
             #   kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<token>
             - name: VAULT_TOKEN
-              valueFrom: { secretKeyRef: { name: vault-bootstrap, key: token } }
+              valueFrom: { secretKeyRef: { name: vault-bootstrap, key: token, optional: true } }
           args:
             - |
+              # Post-bootstrap the operator deletes vault-bootstrap (it is a root token). With no token
+              # there is nothing to do — Vault is already configured — so no-op rather than fail the hook
+              # on every subsequent sync. (optional: true above keeps the missing Secret from wedging the pod.)
+              [ -n "${VAULT_TOKEN:-}" ] || { echo "no bootstrap token — Vault already configured; nothing to do"; exit 0; }
               # Wait until Vault is reachable AND unsealed.
               until vault status >/dev/null 2>&1; do echo "waiting for Vault to be unsealed…"; sleep 5; done
 
