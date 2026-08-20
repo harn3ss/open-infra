@@ -1129,3 +1129,63 @@ export interface Attestation {
 export function getAttestation(): Promise<Attestation> {
   return request<Attestation>(`/compliance/attestation`);
 }
+
+/** Access-recertification report — standing access per principal, mapped to activity + review flags (AC-2/AC-6). */
+export interface AccessGrantRef {
+  name: string;
+  clusterRole: string;
+  reason?: string;
+  duration?: string;
+  expiresAt?: string;
+  viaGroup?: string;
+  bound: boolean;
+}
+export interface AccessPrincipal {
+  name: string;
+  displayName?: string;
+  source: string;
+  disabled: boolean;
+  hasPassword: boolean;
+  admin: boolean;
+  groups: string[];
+  inertGroups?: string[];
+  standingRoles?: string[];
+  grants?: AccessGrantRef[];
+  lastSeen?: string;
+  flags?: string[];
+}
+export interface AccessRoleRef {
+  name: string;
+  description?: string;
+  clusterRole?: string;
+  policies?: string[];
+  ready: boolean;
+}
+export interface AccessReviewSummary {
+  principals: number;
+  enabled: number;
+  disabled: number;
+  privileged: number;
+  withStandingAccess: number;
+  disabledRetaining: number;
+  withActiveGrants: number;
+  noRecentActivity: number;
+  dormant: number;
+  needsReview: number;
+  policies: number;
+  roles: number;
+}
+export interface AccessReview {
+  generatedAt: string;
+  consoleNamespace: string;
+  lookbackDays: number;
+  dormancyDays: number;
+  principals: AccessPrincipal[];
+  roles: AccessRoleRef[];
+  summary: AccessReviewSummary;
+  note: string;
+}
+
+export function getAccessReview(): Promise<AccessReview> {
+  return request<AccessReview>(`/iam/access-review`);
+}
