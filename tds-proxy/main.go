@@ -12,9 +12,10 @@
 // RESETCONNECTION bit on the new client's first batch. v1's classifier and multiplex-opportunity metric
 // are retained; this adds the pooling that acts on the verdict.
 //
-// Not yet handled (pinned/passthrough, honestly scoped): per-transaction multiplexing within one session
-// (a session holds its backend for its lifetime, not per-statement), MARS, and attention/cancel that
-// arrives mid-response. TLS-terminated (encrypt=strict) sessions are out — the engine is TDS-no-TLS.
+// Client attention/cancel IS forwarded promptly mid-response (a two-direction relay), so cancelling a
+// slow query takes effect immediately. Not yet handled (honestly scoped): per-transaction multiplexing
+// within one session (a session holds its backend for its lifetime, not per-statement), MARS, and
+// TLS-terminated (encrypt=strict) sessions — the engine is TDS-no-TLS.
 package main
 
 import (
@@ -245,78 +246,120 @@ func probeIdle(c net.Conn) bool {
 	return isNet && ne.Timeout() // timeout = alive + idle; EOF/reset/other = dead
 }
 
-// relaySession runs the synchronous request/response loop: each client message is forwarded to the
-// backend (with RESETCONNECTION set on the first message when reusing a pooled backend) and classified,
-// then the backend's full response is streamed back. It returns whether the session pinned, the distinct
-// pin reasons, and whether the backend is returnable (clean session AND quiescent at loop exit).
+// relaySession relays a session with two concurrent directions, so a client ATTENTION (cancel) is
+// forwarded to the backend PROMPTLY — mid-response — instead of waiting for the in-flight response to
+// finish, which is what makes cancel actually take effect. client→backend forwards every packet
+// (requests AND attentions) and reassembles messages to classify; backend→client streams responses and
+// counts completions. On a clean client close between requests with every request answered, the backend
+// is quiescent and returnable; otherwise it is discarded. The classify/pin state is written only by the
+// client goroutine and read after it has exited (channel-close happens-before), so it needs no lock.
 func relaySession(client net.Conn, backend net.Conn, needReset bool) (pinned bool, reasons []string, returnable bool) {
 	seen := map[string]bool{}
 	sawRealBatch := false
-	quiescent := true // no outstanding backend response between requests
-	first := true
+	cleanClose := false
+	var reqCount, respCount int64
 
-	for {
-		mType, body, mRaw, err := tds.ReadMessage(client)
-		if err != nil {
-			break // client closed — if between requests, quiescent stays true
-		}
-		if first {
-			if needReset {
-				mRaw = tds.WithResetConnection(mRaw)
+	beDone := make(chan struct{})
+	go func() { // backend → client: stream responses, count completed ones
+		defer close(beDone)
+		for {
+			p, err := tds.ReadPacket(backend)
+			if err != nil {
+				return
 			}
-			first = false
+			if _, err := client.Write(p.Raw); err != nil {
+				return
+			}
+			if p.EOM() && p.Type == tds.TypeTabular {
+				atomic.AddInt64(&respCount, 1)
+			}
 		}
-		quiescent = false
-		if _, err := backend.Write(mRaw); err != nil {
-			break
-		}
+	}()
 
-		// Classify client work; apply the login-prelude exception (a SET-only first batch is the driver
-		// prelude, re-applied by the client on every backend, so it does not pin).
-		if isClientWork(mType) {
-			v := classify.Classify(mType, body)
-			if debugClassify {
-				txt := ""
-				switch mType {
-				case tds.TypeSQLBatch:
-					txt = tds.BatchText(body)
-				case tds.TypeRPC:
-					txt = "RPC:" + tds.RPCProc(body)
+	clDone := make(chan struct{})
+	go func() { // client → backend: forward requests AND attentions promptly; classify each message
+		defer close(clDone)
+		first, atBoundary := true, true
+		var mType byte
+		var buf []byte
+		for {
+			p, err := tds.ReadPacket(client)
+			if err != nil {
+				if atBoundary {
+					cleanClose = true // client left between messages, not mid-request
 				}
-				if len(txt) > 90 {
-					txt = txt[:90]
-				}
-				log.Printf("tds-proxy: DEBUG type=%s pin=%v prelude=%v sawReal=%v reason=%q text=%q",
-					tds.TypeName(mType), v.Pin, v.Prelude, sawRealBatch, v.Reason, txt)
+				return
 			}
-			if v.Pin {
-				if v.Prelude && !sawRealBatch {
-					// driver prelude — not a pin
-				} else if !seen[v.Reason] {
-					pinned = true
-					seen[v.Reason] = true
-					reasons = append(reasons, v.Reason)
-				} else {
-					pinned = true
+			atBoundary = false
+			raw := p.Raw
+			if first {
+				if needReset {
+					raw = tds.WithResetConnection(raw)
 				}
+				first = false
 			}
-			if mType == tds.TypeSQLBatch && !v.Pin {
-				sawRealBatch = true
+			if _, err := backend.Write(raw); err != nil { // forwards ATTENTION promptly too
+				return
+			}
+			if len(buf) == 0 {
+				mType = p.Type
+			}
+			buf = append(buf, p.Body...)
+			if p.EOM() {
+				if isClientWork(mType) {
+					atomic.AddInt64(&reqCount, 1)
+					v := classify.Classify(mType, buf)
+					if debugClassify {
+						txt := ""
+						switch mType {
+						case tds.TypeSQLBatch:
+							txt = tds.BatchText(buf)
+						case tds.TypeRPC:
+							txt = "RPC:" + tds.RPCProc(buf)
+						}
+						if len(txt) > 90 {
+							txt = txt[:90]
+						}
+						log.Printf("tds-proxy: DEBUG type=%s pin=%v prelude=%v sawReal=%v reason=%q text=%q",
+							tds.TypeName(mType), v.Pin, v.Prelude, sawRealBatch, v.Reason, txt)
+					}
+					if v.Pin && !(v.Prelude && !sawRealBatch) {
+						pinned = true
+						if !seen[v.Reason] {
+							seen[v.Reason] = true
+							reasons = append(reasons, v.Reason)
+						}
+					}
+					if mType == tds.TypeSQLBatch && !v.Pin {
+						sawRealBatch = true
+					}
+				}
+				buf = buf[:0]
+				atBoundary = true
 			}
 		}
+	}()
 
-		// Stream the full backend response back to the client.
-		_, _, rRaw, err := tds.ReadMessage(backend)
-		if err != nil {
-			break // backend closed mid-session — not returnable
+	select {
+	case <-clDone:
+		// Client closed. If it left cleanly between requests and every request has its response, the
+		// backend is quiescent — stop the backend reader via a read deadline (not a close) so we can
+		// return the connection to the pool.
+		if cleanClose && atomic.LoadInt64(&reqCount) == atomic.LoadInt64(&respCount) {
+			_ = backend.SetReadDeadline(time.Now())
+			<-beDone
+			_ = backend.SetReadDeadline(time.Time{})
+			return pinned, reasons, !pinned
 		}
-		if _, err := client.Write(rRaw); err != nil {
-			break
-		}
-		quiescent = true // response complete; backend idle again
+		<-beDone // unclean close or an in-flight response — the reader errors on the closed client
+		return pinned, reasons, false
+	case <-beDone:
+		// Backend died mid-session — discard. Unblock the client reader so it exits.
+		_ = client.SetReadDeadline(time.Now())
+		<-clDone
+		_ = client.SetReadDeadline(time.Time{})
+		return pinned, reasons, false
 	}
-	returnable = quiescent && !pinned
-	return pinned, reasons, returnable
 }
 
 func isClientWork(t byte) bool {
