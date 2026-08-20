@@ -51,4 +51,7 @@ curl localhost:9114/status
 ```
 
 Clients connect with `encrypt=disable` (Babelfish is TDS-no-TLS). The proxy answers PRELOGIN with
-no-encryption and pools per `(backend, user, database, password)`.
+no-encryption and pools per `(backend, user, database, password)` — **SQL auth only**. Integrated/Windows
+(SSPI) logins carry no credential to key on (the identity is a per-connection SSPI blob), so the pool
+**refuses** them cleanly (`integrated_auth_refused`) rather than risk collapsing distinct Windows
+identities onto one backend; a transparent pass-through mode for them is a follow-up.
