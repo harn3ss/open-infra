@@ -24,8 +24,15 @@ Terraform provider.
   ceiling); the first login is captured cold and **replayed** to warm clients, which get a reset-clean
   backend. Clean sessions **return** their backend for reuse; pinned sessions **discard** theirs on close.
   `/status` reports `pool_cold_opens`, `pool_warm_reuses`, `pool_returns`, `pool_discards`,
-  `pool_acquire_timeouts`, `pool_reuse_ratio`, `mars_requested`, and the multiplex-opportunity +
-  per-reason pin breakdown.
+  `pool_acquire_timeouts`, `pool_reuse_ratio`, `pool_dead_evicted`, `mars_requested`,
+  `integrated_auth_refused`, and the multiplex-opportunity + per-reason pin breakdown.
+- **Fault tolerance** — a pooled backend can die or leave residual bytes while idle (backend restart,
+  network blip). Before handing a warm backend to a client the pool **probes** it (a short non-blocking
+  read: timeout ⇒ clean+alive, EOF/reset or pending bytes ⇒ evict) and opens a fresh one instead, so a
+  backend fault is transparent rather than a first-query failure after a "successful" login
+  (`pool_dead_evicted`; verified by restarting the backend under a warm pool). A backend that dies
+  *mid-session* still surfaces a clean connection error to that one client, which retries; pool exhaustion
+  queues up to the acquire timeout.
 - **MARS visibility** — `mars_requested` counts clients that ask for MARS (Multiple Active Result Sets)
   in PRELOGIN. The pool does **not** grant MARS (the synthesized PRELOGIN response omits the option), so
   those sessions run single-request-per-connection. Counting the *requests* is a measurement no pooler
