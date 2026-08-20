@@ -47,6 +47,7 @@ var (
 	acquireTimeouts atomic.Int64
 	marsRequested   atomic.Int64 // clients that asked for MARS in PRELOGIN (the pool does not grant it)
 	integratedAuth  atomic.Int64 // integrated/Windows (SSPI) logins refused — not poolable by credential
+	deadEvicted     atomic.Int64 // pooled backends found dead/dirty at borrow time and evicted (fault axis)
 	pinReasonsMu    sync.Mutex
 	pinReasonCounts = map[string]int64{}
 
@@ -126,8 +127,10 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 	}
 	key := poolKey(backendAddr, info)
 
-	// 3. Acquire a backend: a warm idle one to reuse, or a reserved slot to open a cold one.
-	be, warm, ok := backendPool.Acquire(key, acquireTimeout)
+	// 3. Acquire a USABLE backend: a warm idle one still clean-and-alive to reuse, or a reserved slot to
+	//    open a cold one. A pooled backend can die or accumulate residual bytes while idle (backend
+	//    restart, network blip) — those are probed and evicted so the client always gets a live backend.
+	be, warm, ok := acquireUsable(key, acquireTimeout)
 	if !ok {
 		acquireTimeouts.Add(1)
 		log.Printf("tds-proxy: session %d: pool at cap for %s@%s — timed out", id, info.User, info.Database)
@@ -205,6 +208,41 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 		discards.Add(1)
 		backendPool.Discard(key, be)
 	}
+}
+
+// acquireUsable borrows a backend that is actually usable: a cold slot (caller opens fresh), or a warm
+// idle backend still clean-and-alive. A pooled backend that died or left residual bytes while idle
+// (backend restart, network blip, an unexpected server push) is evicted and the acquire retried, so
+// backend faults stay transparent to the client instead of surfacing as a first-query failure after a
+// "successful" login. Bounded retries keep a run of dead backends from spinning.
+func acquireUsable(key string, timeout time.Duration) (be *pool.Backend, warm, ok bool) {
+	for tries := 0; tries < 4; tries++ {
+		be, warm, ok = backendPool.Acquire(key, timeout)
+		if !ok {
+			return nil, false, false
+		}
+		if !warm || probeIdle(be.Conn) {
+			return be, warm, true
+		}
+		deadEvicted.Add(1)
+		backendPool.Discard(key, be)
+	}
+	return nil, false, false
+}
+
+// probeIdle reports whether an idle pooled backend is still clean and alive: a very short non-blocking
+// read must time out with no data. EOF/error means the connection died; any bytes waiting mean residual
+// state that would desync the next session — either way the backend is not reusable.
+func probeIdle(c net.Conn) bool {
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Millisecond))
+	defer c.SetReadDeadline(time.Time{})
+	var b [1]byte
+	_, err := c.Read(b[:])
+	if err == nil {
+		return false // unexpected pending bytes — not clean
+	}
+	ne, isNet := err.(net.Error)
+	return isNet && ne.Timeout() // timeout = alive + idle; EOF/reset/other = dead
 }
 
 // relaySession runs the synchronous request/response loop: each client message is forwarded to the
@@ -322,6 +360,7 @@ func serveMetrics(addr string) {
 		// future per-transaction multiplexer would have to pin or specially handle — measured, not guessed.
 		fmt.Fprintf(w, "mars_requested %d\n", marsRequested.Load())
 		fmt.Fprintf(w, "integrated_auth_refused %d\n", integratedAuth.Load())
+		fmt.Fprintf(w, "pool_dead_evicted %d\n", deadEvicted.Load())
 		pinReasonsMu.Lock()
 		for reason, n := range pinReasonCounts {
 			fmt.Fprintf(w, "pin_reason{reason=%q} %d\n", reason, n)
