@@ -16,6 +16,25 @@ the product's public contract.
   automated. A fresh install keeps full internet access and no air-gap machinery. Enable with
   `components.airgap`; the egress cutoff is a second flag (`airgap.denyPublicEgress`). Still maturing —
   see [`docs/airgapping.md`](docs/airgapping.md).
+- **Access recertification (AC-2 / AC-6).** A read-only, per-account report of the standing access each
+  principal holds — group memberships and the ClusterRoles they confer, any active temporal `kind: Grant`,
+  and when the account was last seen acting — with a review-flag worklist (privileged, dormant,
+  disabled-but-retaining-access, no-recent-activity, no-sign-in-credential, inert-group-membership,
+  active-grant). At **Security & Identity → Access Review**, served from `/api/iam/access-review`
+  (admin-gated). "Last seen" is drawn from the audit store over a bounded window; when that source is
+  unreachable the report discloses it and withholds the activity flags rather than mark every account
+  inactive.
+
+### Data
+
+- **`kind: DatabaseProxy` pooling is verified against real drivers.** The TDS connection pool's
+  pin-vs-multiplex decisions are exercised by real client drivers (Tedious and JDBC harnesses under
+  `tds-proxy/harness/`, plus a documented ODBC/.NET path). A driver's connect-time
+  `SET TRANSACTION ISOLATION LEVEL` — and any SET-only opening batch — is now treated as a re-applied login
+  prelude rather than session state, so drivers that issue one (Tedious, .NET SqlClient) pool instead of
+  pinning; a non-SET statement or session-context state still pins. A client that negotiates login-time TLS
+  even with encryption disabled (e.g. the Microsoft JDBC driver) is reported as unhandled pending proxy TLS
+  termination.
 
 ## v2.6.0 — 2026-08-16
 
