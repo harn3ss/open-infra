@@ -60,6 +60,19 @@ func TestParseLogin7_TooShort(t *testing.T) {
 	}
 }
 
+func TestParseLogin7_Integrated(t *testing.T) {
+	// SQL auth (a password present, fIntegratedSecurity clear) is not integrated.
+	if info, ok := ParseLogin7(buildLogin7("sa", []byte{0x01, 0x02}, "master")); !ok || info.Integrated {
+		t.Fatalf("SQL-auth login must not be flagged integrated (ok=%v integrated=%v)", ok, info.Integrated)
+	}
+	// Setting fIntegratedSecurity (OptionFlags2 bit 0x80, byte 25) flags it.
+	body := buildLogin7("corp\\alice", nil, "master")
+	body[25] |= 0x80
+	if info, ok := ParseLogin7(body); !ok || !info.Integrated {
+		t.Fatalf("expected Integrated=true (ok=%v integrated=%v)", ok, info.Integrated)
+	}
+}
+
 func TestWithResetConnection(t *testing.T) {
 	raw := make([]byte, headerLen+4)
 	raw[0] = TypeSQLBatch
