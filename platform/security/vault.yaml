@@ -134,14 +134,18 @@ spec:
               echo "enabling Transit engine (idempotent)…"
               vault secrets enable transit 2>/dev/null || echo "  transit already enabled"
 
-              echo "writing the reconciler policy (create/read/rotate keys — NOT destroy or crypto-erase)…"
+              echo "writing the reconciler policy (create/read/update/rotate keys — NOT destroy or crypto-erase)…"
+              # `update` is required because Vault's transit backend registers a key WRITE
+              # (`vault write transit/keys/<name>`) as an UpdateOperation, not a create — without it the
+              # reconciler gets 403 provisioning a key. It still cannot destroy: `delete`, and the crypto-
+              # erase paths transit/keys/+/config and /trim, are withheld.
               # `+` matches exactly ONE path segment, so these grants reach transit/keys/<name> and
               # transit/keys/<name>/rotate but NOT transit/keys/<name>/config or /trim — where
               # min_decryption_version / deletion_allowed (crypto-erase of old versions) live. A
               # recursive `*` would hand over exactly the destruction powers this identity must lack.
               # No datakey/encrypt/decrypt/export/list either: it only shepherds key lifecycle.
               vault policy write encryptionkey-reconciler - <<'POLICY'
-              path "transit/keys/+"        { capabilities = ["create", "read"] }
+              path "transit/keys/+"        { capabilities = ["create", "read", "update"] }
               path "transit/keys/+/rotate" { capabilities = ["update"] }
               POLICY
 
