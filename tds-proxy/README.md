@@ -46,8 +46,9 @@ Terraform provider.
 vs pinned-discard, and the connection cap (6 concurrent clients, cap 3 → only 3 backends opened).
 
 **Not yet built:** **per-transaction** multiplexing *within* a session (a session holds its backend for
-its lifetime; reuse is across sessions, not per-statement), MARS, mid-response attention/cancel, and TLS
-termination (`Encrypt=mandatory`/`strict` — the engine is TDS-no-TLS, so those are out of scope for now).
+its lifetime; reuse is across sessions, not per-statement), MARS, and TLS termination
+(`Encrypt=mandatory`/`strict` — the engine is TDS-no-TLS, so those are out of scope for now). Client
+attention/cancel **is** forwarded promptly (a slow query cancels immediately, not after it finishes).
 
 ## Run
 
