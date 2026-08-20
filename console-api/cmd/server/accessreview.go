@@ -71,7 +71,10 @@ func (a *authStore) listGrantsForReview(ctx context.Context) []grantForReview {
 // console iam:), over `since`, and returns each actor's most-recent activity time. Best-effort: if Loki
 // is down the map is empty and every account simply shows "no activity observed" (the report says so).
 // Because queryLoki returns newest-first, the FIRST time we see an actor is its last-seen.
-func lastSeenByActor(ctx context.Context, since time.Duration, logger *slog.Logger) map[string]time.Time {
+// It also reports whether the activity source was REACHABLE: reachable is true iff the authoritative
+// k8s-audit query succeeded (empty-but-reachable still counts). When false the caller must NOT treat an
+// absent last-seen as inactivity — a Loki outage would otherwise flag every account for review.
+func lastSeenByActor(ctx context.Context, since time.Duration, logger *slog.Logger) (map[string]time.Time, bool) {
 	seen := map[string]time.Time{}
 	record := func(actor string, ts time.Time) {
 		if actor == "" {
@@ -85,9 +88,11 @@ func lastSeenByActor(ctx context.Context, since time.Duration, logger *slog.Logg
 	// report stays cheap. Users active only beyond this many events show as unseen — the note is explicit
 	// that "last seen" is window/retention-limited.
 	const fetch = 5000
+	reachable := false
 	if vals, err := queryLoki(ctx, `{job="k3s-audit"}`, since, fetch); err != nil {
 		logger.Warn("access-review: k8s-audit query failed", "error", err.Error())
 	} else {
+		reachable = true // the authoritative activity source answered (even if empty)
 		for _, v := range vals {
 			if e, ok := auditFromK8s(v); ok {
 				record(e.Actor, e.Time)
@@ -101,7 +106,7 @@ func lastSeenByActor(ctx context.Context, since time.Duration, logger *slog.Logg
 			}
 		}
 	}
-	return seen
+	return seen, reachable
 }
 
 func handleAccessReview(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -124,7 +129,7 @@ func handleAccessReview(cs kubernetes.Interface, auth *authStore, logger *slog.L
 				dormancyDays = n
 			}
 		}
-		lastSeen := lastSeenByActor(ctx, time.Duration(lookbackDays)*24*time.Hour, logger)
+		lastSeen, activityReachable := lastSeenByActor(ctx, time.Duration(lookbackDays)*24*time.Hour, logger)
 
 		// Users, with sign-in capability resolved from the password Secret.
 		var users []accessreview.UserInput
@@ -181,7 +186,8 @@ func handleAccessReview(cs kubernetes.Interface, auth *authStore, logger *slog.L
 
 		report := accessreview.Build(accessreview.Inputs{
 			ConsoleNS: auth.ns, LookbackDays: lookbackDays, DormancyDays: dormancyDays,
-			Users: users, Groups: groups, Roles: roles, Policies: policies, Grants: grants,
+			ActivitySourceReachable: activityReachable,
+			Users:                   users, Groups: groups, Roles: roles, Policies: policies, Grants: grants,
 		}, time.Now())
 		report.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 		writeJSON(w, http.StatusOK, report)

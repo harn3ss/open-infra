@@ -1,6 +1,7 @@
 package accessreview
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,8 +20,9 @@ func principalByName(r Report, name string) (Principal, bool) {
 
 func TestBuild_Flags(t *testing.T) {
 	in := Inputs{
-		ConsoleNS:    "open-infra-console",
-		LookbackDays: 90,
+		ConsoleNS:               "open-infra-console",
+		LookbackDays:            90,
+		ActivitySourceReachable: true,
 		Users: []UserInput{
 			// admin, active recently → only "privileged".
 			{Name: "alice", Source: "local", HasPassword: true, Groups: []string{"admins"}, LastSeen: now.Add(-1 * time.Hour)},
@@ -89,6 +91,7 @@ func TestBuild_Flags(t *testing.T) {
 
 func TestBuild_Summary(t *testing.T) {
 	in := Inputs{
+		ActivitySourceReachable: true,
 		Users: []UserInput{
 			{Name: "a", Source: "local", HasPassword: true, Groups: []string{"admins"}, LastSeen: now},
 			{Name: "b", Source: "local", HasPassword: true, Disabled: true, Groups: []string{"readers"}},
@@ -126,6 +129,7 @@ func TestBuild_Summary(t *testing.T) {
 func TestBuild_Grants(t *testing.T) {
 	created := now.Add(-1 * time.Hour)
 	in := Inputs{
+		ActivitySourceReachable: true,
 		Users: []UserInput{
 			{Name: "alice", Source: "local", HasPassword: true, Groups: []string{"oncall"}, LastSeen: now},
 		},
@@ -172,5 +176,40 @@ func TestBuild_Grants(t *testing.T) {
 	}
 	if r.Summary.WithActiveGrants != 1 {
 		t.Errorf("withActiveGrants = %d, want 1", r.Summary.WithActiveGrants)
+	}
+}
+
+func TestBuild_ActivitySourceDown(t *testing.T) {
+	// Finding A: when the activity source (Loki) is unreachable, LastSeen is empty for everyone —
+	// but that must NOT flag the whole directory as inactive.
+	in := Inputs{
+		ActivitySourceReachable: false,
+		Users: []UserInput{
+			{Name: "alice", Source: "local", HasPassword: true, Groups: []string{"readers"}},                                         // would be no-recent-activity
+			{Name: "bob", Source: "local", HasPassword: true, Groups: []string{"readers"}, LastSeen: now.Add(-200 * 24 * time.Hour)}, // would be dormant
+			{Name: "carol", Source: "local", HasPassword: false, Groups: []string{"readers"}},                                        // no-credential (source-independent)
+		},
+	}
+	r := Build(in, now)
+
+	if r.ActivitySourceReachable {
+		t.Error("Report.ActivitySourceReachable should be false")
+	}
+	if !strings.Contains(r.Note, "UNREACHABLE") {
+		t.Error("Note should disclose the activity source was unreachable")
+	}
+	if r.Summary.NoRecentActivity != 0 || r.Summary.Dormant != 0 {
+		t.Errorf("activity flags must be suppressed when source down: noRecent=%d dormant=%d",
+			r.Summary.NoRecentActivity, r.Summary.Dormant)
+	}
+	for _, p := range r.Principals {
+		if hasFlag(p.Flags, FlagNoRecentActivity) || hasFlag(p.Flags, FlagDormant) {
+			t.Errorf("%s got a suppressed activity flag: %v", p.Name, p.Flags)
+		}
+	}
+	// the credential flag does NOT depend on the activity source — it still fires.
+	carol, _ := principalByName(r, "carol")
+	if !hasFlag(carol.Flags, FlagNoCredential) {
+		t.Errorf("carol should still carry %q even with the source down, flags=%v", FlagNoCredential, carol.Flags)
 	}
 }
