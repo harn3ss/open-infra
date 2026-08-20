@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ClipboardCheck, RefreshCw, ShieldAlert, UserX, Clock, KeyRound } from "lucide-react";
+import { ClipboardCheck, RefreshCw, ShieldAlert, UserX, Clock, KeyRound, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +79,19 @@ export function AccessReviewPage() {
             <StatCard icon={<UserX className="size-5" />} value={data.summary.disabledRetaining} label="Disabled, retaining access" />
             <StatCard icon={<Clock className="size-5" />} value={data.summary.dormant + data.summary.noRecentActivity} label="Dormant / inactive" />
           </div>
+
+          {!data.activitySourceReachable ? (
+            <Card className="border-warning/40 bg-warning/10">
+              <CardContent className="flex items-start gap-2 p-4 text-sm">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+                <span>
+                  <span className="font-medium text-foreground">Activity data unavailable.</span> The audit source
+                  (Loki) was unreachable this run, so “last seen” is missing for every account and the dormant /
+                  no-recent-activity flags are suppressed — a blank last-seen means <em>unknown</em>, not inactive.
+                </span>
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card>
             <CardContent className="p-4 text-sm text-muted-foreground">
