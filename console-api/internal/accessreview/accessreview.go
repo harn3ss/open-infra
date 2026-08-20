@@ -89,11 +89,16 @@ type Inputs struct {
 	ConsoleNS    string
 	LookbackDays int // the audit window LastSeen was computed over (0 → unknown/unbounded)
 	DormancyDays int // override defaultDormancyDays when > 0
-	Users        []UserInput
-	Groups       []GroupInput
-	Roles        []RoleInput
-	Policies     []PolicyInput
-	Grants       []GrantInput
+	// ActivitySourceReachable is false when the audit store (Loki) could not be queried, so LastSeen is
+	// unavailable for EVERY account. When false, Build suppresses the activity-based flags
+	// (no-recent-activity, dormant): a blank LastSeen then means "unknown", not "inactive" — so a
+	// monitoring outage cannot flag the whole directory for review.
+	ActivitySourceReachable bool
+	Users                   []UserInput
+	Groups                  []GroupInput
+	Roles                   []RoleInput
+	Policies                []PolicyInput
+	Grants                  []GrantInput
 }
 
 // ── Outputs (the report) ─────────────────────────────────────────────────────────
@@ -152,14 +157,18 @@ type Summary struct {
 
 // Report is the whole document.
 type Report struct {
-	GeneratedAt  string      `json:"generatedAt"` // stamped by the caller (Build leaves it empty)
-	ConsoleNS    string      `json:"consoleNamespace"`
-	LookbackDays int         `json:"lookbackDays"`
-	DormancyDays int         `json:"dormancyDays"`
-	Principals   []Principal `json:"principals"`
-	Roles        []RoleRef   `json:"roles"`
-	Summary      Summary     `json:"summary"`
-	Note         string      `json:"note"`
+	GeneratedAt  string `json:"generatedAt"` // stamped by the caller (Build leaves it empty)
+	ConsoleNS    string `json:"consoleNamespace"`
+	LookbackDays int    `json:"lookbackDays"`
+	DormancyDays int    `json:"dormancyDays"`
+	// ActivitySourceReachable is false when the audit store was unreachable this run: "last seen" is
+	// then unavailable for everyone and the dormant / no-recent-activity flags are suppressed. The UI
+	// and any downstream check MUST read this before trusting an absent LastSeen as inactivity.
+	ActivitySourceReachable bool        `json:"activitySourceReachable"`
+	Principals              []Principal `json:"principals"`
+	Roles                   []RoleRef   `json:"roles"`
+	Summary                 Summary     `json:"summary"`
+	Note                    string      `json:"note"`
 }
 
 // Review flag constants — a stable vocabulary the UI and any downstream check can key on.
@@ -223,7 +232,7 @@ func Build(in Inputs, now time.Time) Report {
 		// Temporal grants reaching this user: directly (subject User) or through a group they are in.
 		p.Grants = grantsFor(u, in.Grants)
 
-		p.Flags = flagsFor(p, u, now, dormancyDur)
+		p.Flags = flagsFor(p, u, now, dormancyDur, in.ActivitySourceReachable)
 
 		// Tally.
 		sum.Principals++
@@ -282,10 +291,16 @@ func Build(in Inputs, now time.Time) Report {
 		"audit store over " + window + " and is retention-limited, so an empty value means \"no activity " +
 		"observed in that window\", not a proof the account has never been used. This report supports a " +
 		"human recertification decision; it does not make one."
+	if !in.ActivitySourceReachable {
+		note += " NOTE: the activity source (audit store) was UNREACHABLE this run, so \"last seen\" is " +
+			"unavailable for every account and the dormant / no-recent-activity flags are suppressed — a " +
+			"blank last-seen here means unknown, not inactive."
+	}
 
 	return Report{
 		ConsoleNS: in.ConsoleNS, LookbackDays: in.LookbackDays, DormancyDays: dormancy,
-		Principals: principals, Roles: roles, Summary: sum, Note: note,
+		ActivitySourceReachable: in.ActivitySourceReachable,
+		Principals:              principals, Roles: roles, Summary: sum, Note: note,
 	}
 }
 
@@ -348,8 +363,10 @@ func grantsFor(u UserInput, all []GrantInput) []GrantRef {
 	return out
 }
 
-// flagsFor derives the recertification worklist flags for one principal.
-func flagsFor(p Principal, u UserInput, now time.Time, dormancy time.Duration) []string {
+// flagsFor derives the recertification worklist flags for one principal. activityReachable is false when
+// the audit source was down, in which case the activity-based flags are withheld (we cannot tell dormant
+// from simply-unobserved) while the credential flag — which does not depend on activity — still fires.
+func flagsFor(p Principal, u UserInput, now time.Time, dormancy time.Duration, activityReachable bool) []string {
 	var flags []string
 	holdsAccess := len(p.StandingRoles) > 0 || len(p.Grants) > 0
 
@@ -372,14 +389,19 @@ func flagsFor(p Principal, u UserInput, now time.Time, dormancy time.Duration) [
 		flags = append(flags, FlagActiveGrant)
 	}
 
-	switch {
-	case u.Source == "local" && !u.HasPassword:
+	if u.Source == "local" && !u.HasPassword {
 		// A local account with no password cannot sign in — likely an orphan or a never-completed setup.
+		// This is independent of the activity source, so it stands even when that source is down.
 		flags = append(flags, FlagNoCredential)
-	case u.LastSeen.IsZero():
-		flags = append(flags, FlagNoRecentActivity)
-	case now.Sub(u.LastSeen) > dormancy:
-		flags = append(flags, FlagDormant)
+	} else if activityReachable {
+		// Activity-based flags only when we actually have activity data — otherwise a Loki outage would
+		// flag every account as inactive.
+		switch {
+		case u.LastSeen.IsZero():
+			flags = append(flags, FlagNoRecentActivity)
+		case now.Sub(u.LastSeen) > dormancy:
+			flags = append(flags, FlagDormant)
+		}
 	}
 	return flags
 }

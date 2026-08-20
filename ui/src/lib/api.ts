@@ -1180,6 +1180,7 @@ export interface AccessReview {
   consoleNamespace: string;
   lookbackDays: number;
   dormancyDays: number;
+  activitySourceReachable: boolean;
   principals: AccessPrincipal[];
   roles: AccessRoleRef[];
   summary: AccessReviewSummary;
