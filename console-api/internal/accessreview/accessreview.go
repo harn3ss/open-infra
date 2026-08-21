@@ -325,8 +325,10 @@ func resolveGroup(name string, byName map[string]GroupInput) (clusterRole string
 }
 
 // grantsFor returns the active temporal grants reaching a user: directly (subject User) or via a group
-// the user belongs to (subject Group). Grants that still exist are active — the expiry reconciler
-// deletes them when creation + duration passes.
+// the user belongs to (subject Group). Only BOUND grants count as access — since the approval gate, a
+// grant can exist while AwaitingApproval (or NotGrantable), conferring nothing; those are pending
+// requests, not standing access, so the recertification report must not count them. Bound grants that
+// still exist are active — the expiry reconciler deletes them when the window passes.
 func grantsFor(u UserInput, all []GrantInput) []GrantRef {
 	inGroup := map[string]bool{}
 	for _, g := range u.Groups {
@@ -334,6 +336,9 @@ func grantsFor(u UserInput, all []GrantInput) []GrantRef {
 	}
 	var out []GrantRef
 	for _, g := range all {
+		if !g.Bound {
+			continue // unapproved / not-grantable → confers no access
+		}
 		via := ""
 		switch g.SubjectKind {
 		case "User":

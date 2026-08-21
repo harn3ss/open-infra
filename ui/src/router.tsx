@@ -69,6 +69,8 @@ import { GroupsPage } from "@/features/iam/groups-page";
 import { GroupDetailPage } from "@/features/iam/group-detail-page";
 import { PoliciesPage } from "@/features/iam/policies-page";
 import { PolicyDetailPage } from "@/features/iam/policy-detail-page";
+import { GrantsPage } from "@/features/iam/grants-page";
+import { GrantDetailPage } from "@/features/iam/grant-detail-page";
 import { RolesPage } from "@/features/iam/roles-page";
 import { RoleDetailPage } from "@/features/iam/role-detail-page";
 import { AuditPage } from "@/features/iam/audit-page";
@@ -417,6 +419,16 @@ const roleDetailRoute = createRoute({
   path: "/roles/$name",
   component: RoleDetailPage,
 });
+const grantsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/grants",
+  component: GrantsPage,
+});
+const grantDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/grants/$name",
+  component: GrantDetailPage,
+});
 const auditRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/audit",
@@ -529,6 +541,8 @@ const routeTree = rootRoute.addChildren([
   policyDetailRoute,
   rolesRoute,
   roleDetailRoute,
+  grantsRoute,
+  grantDetailRoute,
   auditRoute,
   dataClassificationRoute,
   encryptionRoute,

@@ -886,6 +886,57 @@ export function deleteIamRole(name: string, force = false): Promise<{ name: stri
   });
 }
 
+/* ------------------------------ Temporal grants ------------------------------ */
+// kind: Grant — just-in-time access with a second-party approval workflow. A grant is a REQUEST: it
+// confers nothing until a different admin approves it (AC-2(2)/AC-5). Admin-gated on the BFF.
+
+export interface IamGrant {
+  name: string;
+  subjectKind: string;
+  subjectName: string;
+  clusterRole: string;
+  duration: string;
+  reason: string;
+  requestedBy: string;
+  approvedBy: string;
+  approvedAt: string;
+  approvalNote?: string;
+  phase: string; // AwaitingApproval | Active | NotGrantable | Unknown
+  ready: boolean;
+  boundTo: string;
+  message: string;
+  createdAt: string;
+}
+
+export function listIamGrants(): Promise<IamGrant[]> {
+  return request<IamGrant[]>("/iam/grants");
+}
+export function getIamGrant(name: string): Promise<IamGrant> {
+  return request<IamGrant>(`/iam/grants/${encodeURIComponent(name)}`);
+}
+export function createIamGrant(body: {
+  name: string;
+  subjectKind: string;
+  subjectName: string;
+  clusterRole: string;
+  duration: string;
+  reason: string;
+}): Promise<{ name: string; phase: string }> {
+  return request("/iam/grants", { method: "POST", body: JSON.stringify(body) });
+}
+export function approveIamGrant(
+  name: string,
+  note: string,
+): Promise<{ name: string; approvedBy: string; phase: string }> {
+  return request(`/iam/grants/${encodeURIComponent(name)}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+export function revokeIamGrant(name: string): Promise<{ name: string }> {
+  return request(`/iam/grants/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 /* ------------------------------ Audit trail ------------------------------ */
 // The CloudTrail view — merged from the k3s API-server audit log (impersonatedUser) and
 // the console's own iam: logs (by=person). Admin-gated on the BFF.
