@@ -1,7 +1,8 @@
-# The compiler for kind: Grant — one Grant claim becomes one ClusterRoleBinding binding
-# openinfra:<subject> to the requested ClusterRole, carrying the reason + duration as annotations for
-# the audit trail and the expiry reconciler. Same binding mechanism as kind: Group (so the same bind
-# fence applies); the only difference is that a reconciler deletes the Grant when it expires, which
+# The compiler for kind: Grant — an APPROVED Grant claim becomes one ClusterRoleBinding binding
+# openinfra:<subject> to the requested ClusterRole, carrying the reason + duration + requester/approver
+# as annotations for the audit trail and the expiry reconciler. Same binding mechanism as kind: Group
+# (so the same bind fence applies), with two additions: an approval gate (no binding until a distinct
+# second party approves — AC-2(2)/AC-5) and a reconciler that deletes the Grant when it expires, which
 # tears the binding down with it.
 #
 # Synced after the XRD (sync-wave 3).
@@ -44,11 +45,50 @@ spec:
               render NO binding (fail-safe: the Grant confers nothing) and say so in status.
             */}}
             {{- $allowed := or (hasPrefix "openinfra-role-" $cr) (eq $cr "open-infra-readonly") (eq $cr "open-infra-poweruser") }}
-            {{- if $allowed }}
+            {{/*
+              Approval gate (AC-2(2)/AC-5/AC-6(2)). A grant confers access ONLY when a second party has
+              approved it: approvedBy is set AND differs from requestedBy. Self-approval (approvedBy ==
+              requestedBy) is NOT separation of duties, so it renders no binding — the same fail-safe
+              posture as the role ceiling. The ceiling is checked first so a disallowed role is refused
+              regardless of approval.
+            */}}
+            {{- $requestedBy := $spec.requestedBy | default "" }}
+            {{- $approval := $spec.approval | default dict }}
+            {{- $approvedBy := $approval.approvedBy | default "" }}
+            {{- $approvedAt := $approval.approvedAt | default "" }}
+            {{- $approved := and (ne $approvedBy "") (ne $approvedBy $requestedBy) }}
+            {{- if not $allowed }}
             ---
-            # Bind the subject (a User or a Group, as an openinfra:* assertion) to the granted
-            # ClusterRole. The reason + duration ride as annotations: the audit log captures the
-            # ClusterRoleBinding create/delete, and the reconciler reads the duration to expire it.
+            # Requested role is outside the grantable ceiling — confer nothing.
+            apiVersion: iam.openinfra.dev/v1
+            kind: XGrant
+            status:
+              ready: false
+              phase: NotGrantable
+              boundTo: ""
+              message: "clusterRole '{{ $cr }}' is not grantable; use a kind: Role (openinfra-role-*) or open-infra-readonly / open-infra-poweruser"
+            {{- else if not $approved }}
+            ---
+            # Not yet approved by a distinct second party — confer nothing (AC-2(2)/AC-5).
+            apiVersion: iam.openinfra.dev/v1
+            kind: XGrant
+            status:
+              ready: false
+              {{- if eq $approvedBy $requestedBy }}
+              phase: NotGrantable
+              boundTo: ""
+              message: "approver '{{ $approvedBy }}' must differ from the requester (separation of duties, AC-5)"
+              {{- else }}
+              phase: AwaitingApproval
+              boundTo: ""
+              message: "awaiting approval by a second party before access is granted (AC-2(2))"
+              {{- end }}
+            {{- else }}
+            ---
+            # Approved by a distinct second party — bind the subject (a User or a Group, as an
+            # openinfra:* assertion) to the granted ClusterRole. The reason + duration + approver ride as
+            # annotations: the audit log captures the ClusterRoleBinding create/delete, and the reconciler
+            # reads the duration (from approvedAt) to expire it.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -66,6 +106,9 @@ spec:
                     annotations:
                       openinfra.dev/grant-reason: "{{ $spec.reason | default "" }}"
                       openinfra.dev/grant-duration: "{{ $spec.duration }}"
+                      openinfra.dev/grant-requested-by: "{{ $requestedBy }}"
+                      openinfra.dev/grant-approved-by: "{{ $approvedBy }}"
+                      openinfra.dev/grant-approved-at: "{{ $approvedAt }}"
                   roleRef:
                     apiGroup: rbac.authorization.k8s.io
                     kind: ClusterRole
@@ -79,14 +122,7 @@ spec:
             kind: XGrant
             status:
               ready: true
+              phase: Active
               boundTo: "{{ $subjectName }}"
-            {{- else }}
-            ---
-            # Requested role is outside the grantable ceiling — confer nothing.
-            apiVersion: iam.openinfra.dev/v1
-            kind: XGrant
-            status:
-              ready: false
-              boundTo: ""
-              message: "clusterRole '{{ $cr }}' is not grantable; use a kind: Role (openinfra-role-*) or open-infra-readonly / open-infra-poweruser"
+              message: "approved by {{ $approvedBy }}{{ if $approvedAt }} at {{ $approvedAt }}{{ end }}"
             {{- end }}

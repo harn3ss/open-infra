@@ -144,12 +144,20 @@ func TestBuild_Grants(t *testing.T) {
 			// grant to a different user — must NOT attach
 			{Name: "g-other", SubjectKind: "User", SubjectName: "zzz", ClusterRole: "open-infra-poweruser",
 				Duration: "1h", CreatedAt: created, Bound: true},
+			// direct grant to alice but AWAITING APPROVAL (not bound) — confers nothing, must NOT count
+			{Name: "g-pending", SubjectKind: "User", SubjectName: "alice", ClusterRole: "open-infra-poweruser",
+				Duration: "4h", CreatedAt: created, Bound: false},
 		},
 	}
 	r := Build(in, now)
 	p, _ := principalByName(r, "alice")
 	if len(p.Grants) != 2 {
-		t.Fatalf("alice grants = %d, want 2 (%v)", len(p.Grants), p.Grants)
+		t.Fatalf("alice grants = %d, want 2 (unapproved grant must be excluded) (%v)", len(p.Grants), p.Grants)
+	}
+	for _, g := range p.Grants {
+		if g.Name == "g-pending" {
+			t.Errorf("unapproved grant g-pending must not count as active access")
+		}
 	}
 	var direct, viaGroup *GrantRef
 	for i := range p.Grants {
