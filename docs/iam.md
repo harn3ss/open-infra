@@ -233,6 +233,8 @@ save silently; don't put the correctness-checking tool on a different page from 
 A `Grant` binds a subject (a `kind: User` or `kind: Group`) to a ClusterRole **for a bounded time**, then
 revokes itself — open-infra's answer to standing privilege, and the analog of AWS STS AssumeRole with a
 session duration. It renders one `ClusterRoleBinding` of `openinfra:<subject>` to the role, plus a clock.
+A Grant is a **request, not an entitlement**: it confers nothing until a second party approves it (see
+[Approval](#approval-second-party-authorization) below).
 
 ```yaml
 apiVersion: iam.openinfra.dev/v1
@@ -243,7 +245,28 @@ spec:
   clusterRole: open-infra-poweruser   # or openinfra-role-<yourRole>
   duration: 4h                         # Go duration; hard-capped at 24h
   reason: "oncall incident 1234"       # recorded for audit (AC-2(2))
+  # requestedBy is stamped by the console from the authenticated requester; approval is set by a
+  # DIFFERENT admin via the approve action — never in the create request.
 ```
+
+### Approval (second-party authorization)
+
+A Grant does not confer access on its own — that would be self-service elevation with no oversight
+(AC-2(2), AC-6(2)/(5)), and it would collapse separation of duties (AC-5). Instead:
+
+- **Request** (console → Security & Identity → Grants → *Request grant*, or `POST /api/iam/grants`) creates
+  the Grant with `spec.requestedBy` stamped from the authenticated requester. The composition renders **no
+  binding** — `status.phase: AwaitingApproval` — so it confers nothing.
+- **Approve** (the grant's *Approve* tab, or `POST /api/iam/grants/{name}/approve`) is a distinct,
+  SAR-gated action that records the approver in `spec.approval.approvedBy`/`approvedAt` from the
+  authenticated session and **refuses if the approver equals the requester** (HTTP 409). Only then does the
+  composition render the `ClusterRoleBinding` — `status.phase: Active`.
+
+Separation of duties is enforced in **two** places: the BFF rejects a self-approval, and the composition is
+a fail-safe — it renders no binding when `approvedBy` is empty or `approvedBy == requestedBy`, so even a
+Grant edited directly with `kubectl` cannot self-approve into a binding. (The residual: a party with direct
+`create` on `grants` could forge `requestedBy` to frame a two-party approval; that is an IAM-admin-level
+capability already, and `requestedBy` is authoritative when the console sets it from the session.)
 
 **What a Grant may confer (the ceiling).** Unlike `kind: Group` — a permanent, admin-only act that can bind
 any role — a Grant is restricted to a deliberately narrow allowlist: a `kind: Role` (`openinfra-role-*`, itself
@@ -256,9 +279,11 @@ secrets. The composition enforces the allowlist by rendering **no binding at all
 Grant then confers nothing and says so in `status.message`); a render test guards it.
 
 Expiry is enforced by a reconciler (`platform/security/grant-reconciler.yaml`, a once-a-minute CronJob whose
-only power is get/list/**delete** on `grants`): when `creationTimestamp + duration` has passed — or the
-duration is invalid/over the 24h cap — it deletes the Grant, and Crossplane tears down the binding, so access
-ends with no one having to remember to revoke it. All time math runs in `jq` (`now` / `fromdateiso8601`) and
+only power is get/list/**delete** on `grants`): when `approvedAt + duration` has passed — the access clock
+starts at approval, not at creation, so a grant waiting for approval does not silently burn its window (a
+never-approved grant falls back to `creationTimestamp + duration`, so it is still bounded) — or the duration
+is invalid/over the 24h cap, it deletes the Grant, and Crossplane tears down the binding, so access ends with
+no one having to remember to revoke it. All time math runs in `jq` (`now` / `fromdateiso8601`) and
 the duration must match a strict integer Go-duration form; anything unparseable, non-positive, over-cap, or
 with an unreadable timestamp is **revoked, not kept** (fail-safe). The binding's create and delete both land in
 the audit log, and the reason rides as an annotation.

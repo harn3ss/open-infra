@@ -103,8 +103,9 @@ func TestSecurityGroup_AlwaysAllowsConsole(t *testing.T) {
 	}
 }
 
-// kind: Grant (temporal access) renders ONE ClusterRoleBinding binding openinfra:<subject> to the
-// requested ClusterRole, carrying the reason + duration annotations the reconciler and audit rely on.
+// An APPROVED kind: Grant (temporal access) renders ONE ClusterRoleBinding binding openinfra:<subject>
+// to the requested ClusterRole, carrying the reason + duration + requester/approver annotations the
+// reconciler and audit rely on. Approval requires a second party (approvedBy != requestedBy).
 func TestGrant_RendersTimeBoundedBinding(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/grant-composition.yaml")
 	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
@@ -113,6 +114,8 @@ func TestGrant_RendersTimeBoundedBinding(t *testing.T) {
 			"clusterRole": "openinfra-role-dev",
 			"duration":    "4h",
 			"reason":      "oncall incident 1234",
+			"requestedBy": "alice",
+			"approval":    map[string]any{"approvedBy": "carol", "approvedAt": "2026-08-20T10:00:00Z"},
 		},
 		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "jit-alice"}},
 	}}}}
@@ -122,10 +125,55 @@ func TestGrant_RendersTimeBoundedBinding(t *testing.T) {
 		"name: openinfra-role-dev",              // roleRef
 		"kind: User", `name: "openinfra:alice"`, // subject bound as the namespaced identity
 		"openinfra.dev/grant-duration:", "openinfra.dev/grant-reason:", "oncall incident 1234",
+		"openinfra.dev/grant-approved-by:", "carol", // approver recorded on the binding for audit
+		"phase: Active",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Grant render missing %q; got:\n%s", want, grepCtx(out, "grant"))
 		}
+	}
+}
+
+// The approval gate (AC-2(2)/AC-5): a grant for an in-ceiling role confers NOTHING until a distinct
+// second party approves it. No approval → AwaitingApproval, no binding. Self-approval (approvedBy ==
+// requestedBy) → NotGrantable, no binding (self-service elevation is not separation of duties).
+func TestGrant_ApprovalGate(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/grant-composition.yaml")
+	base := func(approval map[string]any, requestedBy string) map[string]any {
+		spec := map[string]any{
+			"subject": map[string]any{"kind": "User", "name": "alice"}, "clusterRole": "openinfra-role-dev", "duration": "4h",
+		}
+		if requestedBy != "" {
+			spec["requestedBy"] = requestedBy
+		}
+		if approval != nil {
+			spec["approval"] = approval
+		}
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec, "metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "jit-alice"}},
+		}}}}
+	}
+	cases := []struct {
+		name          string
+		ctx           map[string]any
+		wantPhase     string
+		wantNoBinding bool
+	}{
+		{"no approval", base(nil, "alice"), "AwaitingApproval", true},
+		{"empty approval object", base(map[string]any{}, "alice"), "AwaitingApproval", true},
+		{"self-approval refused", base(map[string]any{"approvedBy": "alice", "approvedAt": "2026-08-20T10:00:00Z"}, "alice"), "NotGrantable", true},
+		{"approved by second party", base(map[string]any{"approvedBy": "carol", "approvedAt": "2026-08-20T10:00:00Z"}, "alice"), "Active", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := render(t, tmpl, c.ctx)
+			if !strings.Contains(out, "phase: "+c.wantPhase) {
+				t.Errorf("want phase %q; got:\n%s", c.wantPhase, out)
+			}
+			if got := strings.Contains(out, "kind: ClusterRoleBinding"); got == c.wantNoBinding {
+				t.Errorf("binding present=%v, wantNoBinding=%v; got:\n%s", got, c.wantNoBinding, out)
+			}
+		})
 	}
 }
 
@@ -152,10 +200,13 @@ func TestGrant_DeniesRoleOutsideCeiling(t *testing.T) {
 			t.Errorf("Grant for disallowed role %q should report refusal in status; got:\n%s", role, out)
 		}
 	}
-	// The two bounded built-in console roles ARE allowed (readonly, poweruser).
+	// The two bounded built-in console roles ARE allowed (readonly, poweruser) — once approved.
 	for _, role := range []string{"open-infra-readonly", "open-infra-poweruser"} {
 		ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
-			"spec":     map[string]any{"subject": map[string]any{"kind": "User", "name": "alice"}, "clusterRole": role, "duration": "1h"},
+			"spec": map[string]any{
+				"subject": map[string]any{"kind": "User", "name": "alice"}, "clusterRole": role, "duration": "1h",
+				"requestedBy": "alice", "approval": map[string]any{"approvedBy": "carol", "approvedAt": "2026-08-20T10:00:00Z"},
+			},
 			"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "jit-alice"}},
 		}}}}
 		out := render(t, tmpl, ctx)
