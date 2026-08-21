@@ -71,12 +71,17 @@ metadata:
   namespace: crossplane-system
 spec:
   schedule: "*/5 * * * *"
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: this reconcile is idempotent (it re-ensures the Vault PKI/CA state), so a
+  # superseding run is harmless — whereas Forbid + a run stuck in Terminating (DeadlineExceeded) counts
+  # as "active" forever and wedges every later reconcile. Replace supersedes a stuck run on the next
+  # tick; ttlSecondsAfterFinished GCs finished jobs so a wedged one cannot accumulate. (See #71/#32.)
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 300
       backoffLimit: 1
       template:
         spec:
