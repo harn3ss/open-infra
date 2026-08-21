@@ -1,7 +1,11 @@
 # Expiry reconciler for kind: Grant (temporal access). A CronJob sweeps every minute and DELETES any
-# Grant whose metadata.creationTimestamp + spec.duration has passed (or whose duration exceeds the hard
-# cap) — deleting the Grant makes Crossplane tear down its ClusterRoleBinding, so access ends on its own.
-# This is the "self-destructing privilege" half of temporal access; the grant itself is declarative.
+# Grant whose expiry base + spec.duration has passed (or whose duration exceeds the hard cap) — deleting
+# the Grant makes Crossplane tear down its ClusterRoleBinding, so access ends on its own. This is the
+# "self-destructing privilege" half of temporal access; the grant itself is declarative.
+#
+# Expiry base = spec.approval.approvedAt when the grant has been approved (access starts at approval, so
+# the window runs from there, not from a creation that may have sat pending), else creationTimestamp — so
+# a grant that is never approved is still bounded and swept at creation + duration.
 #
 # Least privilege: the reconciler's ONLY power is get/list/delete on grants.iam.openinfra.dev — it can
 # revoke a temporary grant but cannot read secrets, touch other RBAC, or grant anything.
@@ -97,7 +101,9 @@ spec:
                     | .metadata.namespace as $ns
                     | .metadata.name as $name
                     | ((.spec.duration // "") | dursecs) as $secs
-                    | ((.metadata.creationTimestamp // "") | (try fromdateiso8601 catch -1)) as $created
+                    # Expiry base: approvedAt when approved (window starts at approval), else creation.
+                    | (if ((.spec.approval.approvedAt // "") != "") then .spec.approval.approvedAt else .metadata.creationTimestamp end) as $baseTs
+                    | (($baseTs // "") | (try fromdateiso8601 catch -1)) as $created
                     | (if ($secs <= 0 or $secs > $max) then "revoke:invalid-or-over-cap"
                        elif ($created < 0) then "revoke:unparseable-timestamp"
                        elif ($now >= ($created + $secs)) then "revoke:expired"

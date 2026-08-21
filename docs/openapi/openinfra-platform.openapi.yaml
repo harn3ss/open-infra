@@ -3266,6 +3266,25 @@ components:
             reason:
               type: string
               description: Justification for the elevation, recorded for audit (AC-2(2)/AU).
+            requestedBy:
+              type: string
+              description: Who requested this grant. Stamped by the console from the authenticated requester and recorded
+                for audit (AC-2(2)/AU); the approver must differ from this identity (AC-5).
+            approval:
+              type: object
+              description: "Second-party authorization (AC-2(2)/AC-5/AC-6(2)). A grant renders NO binding \u2014 confers no\
+                \ access \u2014 until approvedBy is set to an identity DIFFERENT from requestedBy. Set through the console's\
+                \ SAR-gated approve action, never self-service."
+              properties:
+                approvedBy:
+                  type: string
+                  description: The approver's identity. Must differ from requestedBy or the grant stays inert.
+                approvedAt:
+                  type: string
+                  description: RFC3339 time of approval; the expiry clock starts here, not at creation.
+                note:
+                  type: string
+                  description: Optional approver note, recorded for audit.
           required:
           - subject
           - clusterRole
@@ -3275,13 +3294,17 @@ components:
           properties:
             ready:
               type: boolean
+            phase:
+              type: string
+              description: "AwaitingApproval (approved by nobody yet \u2014 no binding), Active (approved + bound), or NotGrantable\
+                \ (role outside the ceiling, or approver == requester)."
             boundTo:
               type: string
               description: The Kubernetes subject the grant bound (openinfra:<name>).
             message:
               type: string
-              description: "Set when the grant confers nothing \u2014 e.g. the requested clusterRole is outside the grantable\
-                \ ceiling (a kind: Role or a bounded built-in console role)."
+              description: "Set when the grant confers nothing \u2014 awaiting approval, an approver equal to the requester\
+                \ (AC-5), or a clusterRole outside the grantable ceiling."
     GraphQLApi:
       type: object
       description: 'open-infra kind: GraphQLApi.'

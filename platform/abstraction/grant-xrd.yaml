@@ -3,13 +3,21 @@
 # STS-AssumeRole-with-duration analog: grant someone poweruser for four hours with a recorded reason,
 # and the grant self-destructs — no standing privilege, a full audit trail of who held what, when, why.
 #
-# Mechanism (identical to kind: Group, plus a clock): the composition renders ONE ClusterRoleBinding
-# binding openinfra:<subject> to the chosen ClusterRole. A reconciler (platform/security/grant-reconciler)
-# deletes the Grant once metadata.creationTimestamp + spec.duration has passed; Crossplane then removes
-# the composed binding, so access ends WITHOUT anyone having to remember to revoke it. The binding can
-# only reference a ClusterRole within the openinfra.dev permission boundary or one of the fenced console
-# roles — the same hard ceiling every kind: Group is subject to (see provider-setup.yaml). Government
-# control mapping: AC-2(2) temporary accounts, AC-6(2)/(5) least privilege + elevation, AU on the grant.
+# APPROVAL (AC-2(2)/AC-5/AC-6(2)): a grant is a REQUEST, not an entitlement. It confers NOTHING until a
+# second party approves it — the composition renders no binding while spec.approval.approvedBy is empty,
+# and refuses to render one if the approver equals spec.requestedBy (self-service elevation is not
+# separation of duties). Approval is set through the console's SAR-gated approve action, which stamps the
+# approver from the authenticated session and rejects approver == requester. The expiry clock then runs
+# from approvedAt, so a grant that waits for approval does not silently burn its window.
+#
+# Mechanism (identical to kind: Group, plus a clock + the approval gate): once approved, the composition
+# renders ONE ClusterRoleBinding binding openinfra:<subject> to the chosen ClusterRole. A reconciler
+# (platform/security/grant-reconciler) deletes the Grant once approvedAt (or, if never approved,
+# creationTimestamp) + spec.duration has passed; Crossplane then removes the composed binding, so access
+# ends WITHOUT anyone having to remember to revoke it. The binding can only reference a ClusterRole within
+# the openinfra.dev permission boundary or one of the fenced console roles — the same hard ceiling every
+# kind: Group is subject to (see provider-setup.yaml). Government control mapping: AC-2(2) temporary
+# accounts + approval, AC-5 separation of duties, AC-6(2)/(5) least privilege + elevation, AU on the grant.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -74,20 +82,46 @@ spec:
                 reason:
                   type: string
                   description: Justification for the elevation, recorded for audit (AC-2(2)/AU).
+                requestedBy:
+                  type: string
+                  description: >-
+                    Who requested this grant. Stamped by the console from the authenticated requester and
+                    recorded for audit (AC-2(2)/AU); the approver must differ from this identity (AC-5).
+                approval:
+                  type: object
+                  description: >-
+                    Second-party authorization (AC-2(2)/AC-5/AC-6(2)). A grant renders NO binding — confers
+                    no access — until approvedBy is set to an identity DIFFERENT from requestedBy. Set
+                    through the console's SAR-gated approve action, never self-service.
+                  properties:
+                    approvedBy:
+                      type: string
+                      description: The approver's identity. Must differ from requestedBy or the grant stays inert.
+                    approvedAt:
+                      type: string
+                      description: RFC3339 time of approval; the expiry clock starts here, not at creation.
+                    note:
+                      type: string
+                      description: Optional approver note, recorded for audit.
               required: [subject, clusterRole, duration]
             status:
               type: object
               properties:
                 ready:
                   type: boolean
+                phase:
+                  type: string
+                  description: >-
+                    AwaitingApproval (approved by nobody yet — no binding), Active (approved + bound),
+                    or NotGrantable (role outside the ceiling, or approver == requester).
                 boundTo:
                   type: string
                   description: The Kubernetes subject the grant bound (openinfra:<name>).
                 message:
                   type: string
                   description: >-
-                    Set when the grant confers nothing — e.g. the requested clusterRole is outside
-                    the grantable ceiling (a kind: Role or a bounded built-in console role).
+                    Set when the grant confers nothing — awaiting approval, an approver equal to the
+                    requester (AC-5), or a clusterRole outside the grantable ceiling.
       additionalPrinterColumns:
         - name: Subject
           type: string
@@ -98,6 +132,9 @@ spec:
         - name: Duration
           type: string
           jsonPath: .spec.duration
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
         - name: Age
           type: date
           jsonPath: .metadata.creationTimestamp
