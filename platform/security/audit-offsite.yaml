@@ -262,7 +262,7 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 600
+      activeDeadlineSeconds: 900   # verify re-hashes the WHOLE chain; give it headroom (was 600, chain grew)
       ttlSecondsAfterFinished: 600 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 0
       template:
@@ -285,5 +285,10 @@ spec:
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
               resources:
-                requests: { cpu: 20m, memory: 48Mi }
-                limits: { cpu: 500m, memory: 256Mi }
+                # Verify is CPU-bound: it re-hashes the entire audit chain each run, and at 500m it was
+                # pegged and blew the deadline as the chain grew (~3k+ entries) — the cause of the failing
+                # runs. Raise the ceiling so it finishes. NOTE: this is the immediate fix; the durable fix
+                # is incremental verification (checkpoint the last-verified head + a periodic full pass)
+                # so cost stops scaling with total chain length.
+                requests: { cpu: 250m, memory: 64Mi }
+                limits: { cpu: 2000m, memory: 256Mi }
