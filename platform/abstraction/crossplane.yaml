@@ -27,6 +27,33 @@ spec:
             - xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0
             - xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.6.0
             - xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.4.0
+        # Restricted-PSA-conformant securityContext for the core + rbac-manager pods
+        # (#34). The chart default sets runAsUser/APE/roRootfs but omits capabilities.drop
+        # and seccompProfile, so these pods fail a restricted PodSecurity namespace; add
+        # them here. (Provider/function pods are hardened separately — see
+        # platform/overlays/restricted-psa/crossplane-provider-runtimeconfig.yaml.)
+        securityContextCrossplane:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          capabilities:
+            drop: [ALL]
+        podSecurityContextCrossplane:
+          seccompProfile:
+            type: RuntimeDefault
+        securityContextRBACManager:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          capabilities:
+            drop: [ALL]
+        podSecurityContextRBACManager:
+          seccompProfile:
+            type: RuntimeDefault
   destination:
     server: https://kubernetes.default.svc
     namespace: crossplane-system
