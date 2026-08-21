@@ -40,8 +40,9 @@ non-exception workload retains any `runAsUser`/`runAsGroup`/`fsGroup` field in t
 - Privileged host-level workloads — `audit-offsite-ship` (hostPath+root), `longhorn-host-prereq`,
   `airgap-node-registries` — are left as-is and need a **scoped custom SCC** on OpenShift (e.g. grant
   their ServiceAccount a `hostmount-anyuid`/custom SCC), not this overlay.
-- Upstream **Crossplane** (hardcodes 65532) and **CloudNativePG** (10001) are Helm charts; on OpenShift
-  grant their namespaces the `nonroot-v2` SCC or set chart values. Tracked as a follow-up.
+- Upstream **Crossplane** (uid 65532 / providers 2000) and **CloudNativePG** (10001) are Helm charts whose
+  hardcoded `runAsUser` can't be cleanly stripped, so on OpenShift grant their namespaces the built-in
+  `nonroot-v2` SCC — ready RoleBindings in [`upstream-nonroot-scc.yaml`](upstream-nonroot-scc.yaml) (#34).
 
 ## Apply (on OpenShift, after validation)
 

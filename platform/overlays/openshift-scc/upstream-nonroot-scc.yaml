@@ -1,0 +1,45 @@
+# OpenShift SCC grants for the Helm-installed upstream components (#34).
+#
+# Crossplane (core/rbac-manager/providers hardcode uid 65532 or 2000) and CloudNativePG
+# (operator uid 10001, operand Postgres pods likewise) are installed from Helm charts, so
+# their pods carry a literal runAsUser that OpenShift's restricted-v2 SCC REJECTS (it wants a
+# UID from the namespace range). Unlike open-infra's own manifests — where the openshift-scc
+# overlay simply removes runAsUser — you cannot cleanly strip it from a third-party chart, so
+# on OpenShift grant these namespaces the built-in `nonroot-v2` SCC, which admits a pod-declared
+# non-root uid and defaults the rest (drop ALL, seccomp).
+#
+# OpenShift-ONLY — `SecurityContextConstraints` and `system:openshift:scc:*` do not exist on
+# vanilla Kubernetes. Apply with `oc apply -f` on an OKD/OpenShift cluster. NOT verified on a
+# live OpenShift cluster (the 2026-08-14 OKD test cluster was torn down); the SCC name + binding
+# shape are standard, but confirm admission on your cluster.
+#
+# Grants the SCC to every ServiceAccount in each namespace (the operator + operand pods run under
+# several SAs). Scope it tighter (per-SA RoleBindings) if your policy requires.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nonroot-v2-crossplane
+  namespace: crossplane-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:nonroot-v2
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nonroot-v2-cnpg
+  namespace: cnpg-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:nonroot-v2
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:cnpg-system
