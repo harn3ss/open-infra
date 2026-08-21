@@ -84,11 +84,16 @@ metadata:
     argocd.argoproj.io/sync-wave: "3"
 spec:
   schedule: "*/15 * * * *"
-  concurrencyPolicy: Forbid
+  # Replace, not Forbid: re-applying the backup-target credentials is idempotent, so a superseding run
+  # is harmless — whereas Forbid + a run stuck in Terminating wedges every later refresh. Replace
+  # supersedes a stuck run; ttlSecondsAfterFinished GCs finished jobs so a wedged one cannot accumulate.
+  # (See #71/#32.)
+  concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 2
   jobTemplate:
     spec:
+      ttlSecondsAfterFinished: 300
       backoffLimit: 2
       template:
         spec:
