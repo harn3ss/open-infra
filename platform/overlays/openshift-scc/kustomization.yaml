@@ -1,0 +1,147 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../airgap/image-prefetch.yaml
+- ../../airgap/registry-mirror.yaml
+- ../../aws-shim/aws-shim.yaml
+- ../../console/manifests/deployment.yaml
+- ../../data/redis.yaml
+- ../../open-appsync/open-appsync.yaml
+- ../../query/manifests/iceberg-rest.yaml
+- ../../query/manifests/trino.yaml
+- ../../security/audit-offsite.yaml
+- ../../security/ca-issuer.yaml
+- ../../security/ca-reconciler.yaml
+- ../../security/compliance-attest.yaml
+- ../../security/destruction-reconciler.yaml
+- ../../security/encryptionkey-reconciler.yaml
+- ../../security/grant-reconciler.yaml
+patches:
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: console
+    namespace: open-infra-console
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: CronJob
+    name: compliance-attest
+    namespace: crossplane-system
+  patch: "- op: remove\n  path: /spec/jobTemplate/spec/template/spec/securityContext/runAsUser\n\
+    - op: remove\n  path: /spec/jobTemplate/spec/template/spec/initContainers/1/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: CronJob
+    name: grant-reconciler
+    namespace: crossplane-system
+  patch: "- op: remove\n  path: /spec/jobTemplate/spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: Job
+    name: audit-offsite-setup
+    namespace: minio
+  patch: "- op: remove\n  path: /spec/template/spec/initContainers/0/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: CronJob
+    name: audit-offsite-verify
+    namespace: monitoring
+  patch: "- op: remove\n  path: /spec/jobTemplate/spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: CronJob
+    name: encryptionkey-destroyer
+    namespace: crossplane-system
+  patch: "- op: remove\n  path: /spec/jobTemplate/spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: CronJob
+    name: ca-provisioner
+    namespace: crossplane-system
+  patch: "- op: remove\n  path: /spec/jobTemplate/spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: CronJob
+    name: encryptionkey-reconciler
+    namespace: crossplane-system
+  patch: "- op: remove\n  path: /spec/jobTemplate/spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: ca-issuer
+    namespace: crossplane-system
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: iceberg-rest
+    namespace: lakehouse
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n- op:\
+    \ remove\n  path: /spec/template/spec/securityContext/runAsGroup\n- op: remove\n\
+    \  path: /spec/template/spec/securityContext/fsGroup\n"
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: trino
+    namespace: lakehouse
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n- op:\
+    \ remove\n  path: /spec/template/spec/securityContext/runAsGroup\n- op: remove\n\
+    \  path: /spec/template/spec/securityContext/fsGroup\n"
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: open-appsync
+    namespace: open-infra-open-appsync
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: Job
+    name: airgap-prefetch
+    namespace: openinfra-airgap
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: airgap-registry
+    namespace: openinfra-airgap
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n- op:\
+    \ remove\n  path: /spec/template/spec/securityContext/runAsGroup\n- op: remove\n\
+    \  path: /spec/template/spec/securityContext/fsGroup\n"
+- target:
+    group: apps
+    version: v1
+    kind: Deployment
+    name: aws-shim
+    namespace: open-infra-aws-shim
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: batch
+    version: v1
+    kind: Job
+    name: valkey-secret-bootstrap
+    namespace: redis
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n"
+- target:
+    group: apps
+    version: v1
+    kind: StatefulSet
+    name: redis
+    namespace: redis
+  patch: "- op: remove\n  path: /spec/template/spec/securityContext/runAsUser\n- op:\
+    \ remove\n  path: /spec/template/spec/securityContext/runAsGroup\n- op: remove\n\
+    \  path: /spec/template/spec/securityContext/fsGroup\n"
