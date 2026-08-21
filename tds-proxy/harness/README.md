@@ -25,6 +25,38 @@ curl -s localhost:29114/status            # per-run verdicts
 Container-gated drivers (no host install): pyodbc/`msodbcsql18` in a `python:3`+`apt msodbcsql18`
 container, `Microsoft.Data.SqlClient` in `mcr.microsoft.com/dotnet/sdk` — each forcing `Encrypt=no`.
 
+## Fault axis (issue #4)
+
+`fault/` is a Go fault-injection client (its own module, `go-mssqldb`) that drives failure scenarios
+through the proxy against the throwaway backend and reads the verdicts from `/status`. The proxy stays
+stdlib-only; the dependency lives only in the harness.
+
+```bash
+BACKEND=$(./throwaway-backend.sh)
+../.. && go build -o /tmp/tds-proxy ./tds-proxy
+/tmp/tds-proxy -listen 127.0.0.1:23433 -backend "$BACKEND" -metrics 127.0.0.1:29114 -pool-max 2 -acquire-timeout-ms 800 &
+cd harness/fault && go build -o /tmp/fault .
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=pinned-drop    /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=stampede       /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=handshake-drop /tmp/fault
+./throwaway-backend.sh --down
+```
+
+Verified live against SQL Server 2022 (2026-08-21), rows in `grid.jsonl`:
+
+- **client-disconnect-while-pinned** → **pinned-discard**: a session that pins (`CREATE #temp`) then drops
+  triggers pinned-discard (`sessions_pinned+1`, `pool_discards+1`) and frees the token — a fresh client
+  connects immediately, so a pinned session cannot leak a pool slot.
+- **pool-exhaustion-stampede** → **backpressure**: 6 concurrent pinned sessions vs `pool-max=2` → exactly 2
+  acquire a backend, the other 4 hit acquire-timeout backpressure; the pool never opens more than 2 backends
+  (the per-key semaphore ceiling holds, no over-issue, no leak).
+- **connection-drop-mid-handshake** → **clean**: truncated PRELOGIN connects dropped before login reserve no
+  pool slot (`pool_cold_opens` unchanged) and leave the proxy usable.
+
+The token-leak / over-issue invariants these demonstrate are also proven deterministically under `-race` in
+`pool/pool_test.go`. Still uncaptured (need richer injection): drop **mid-result-set** and backend
+**failover during an open explicit transaction**.
+
 ## Findings so far (see grid.jsonl)
 
 - **go-mssqldb** sends raw `SQLBatch`es: a `#temp`/`BEGIN TRAN` is **session-scoped** → pins. Parameterized
