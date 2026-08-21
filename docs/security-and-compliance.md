@@ -68,8 +68,9 @@ encryption and crypto-erase are Vault-gated and remain **not-live-verified**).
 | Control | Implementation | Status |
 |---------|----------------|--------|
 | AC-2 Account Management | `kind: User` / `kind: Group` created, disabled, and deleted from the console (Security & Identity) or `kubectl`; a break-glass `root` account for recovery. | Implemented |
+| AC-2(2) Temporary / Emergency Accounts | `kind: Grant` gives time-bounded, self-revoking access; each grant requires **second-party approval** before it confers anything (a grant is AwaitingApproval until a different admin approves it). | Implemented |
 | AC-3 Access Enforcement | Every console action runs as the signed-in user via Kubernetes **impersonation** (`Impersonate-User`/`-Group`); Kubernetes RBAC is the decision point. BFF-native endpoints are gated by a `SubjectAccessReview` first. | Implemented |
-| AC-5 Separation of Duties | Built-in roles (admin / poweruser / readonly) plus `kind: Policy`/`Role` separate identity management, workload management, and read-only access. | Implemented |
+| AC-5 Separation of Duties | Built-in roles (admin / poweruser / readonly) plus `kind: Policy`/`Role` separate identity management, workload management, and read-only access; `kind: Grant` approval **requires a distinct approver** — the BFF rejects self-approval and the composition renders no binding when `approvedBy == requestedBy`. | Implemented |
 | AC-6 Least Privilege | Policies/Roles grant only within the `openinfra.dev` workload-kind permission **boundary** (never secrets or RBAC); an **impersonation ceiling** caps what the console SA may impersonate; service identities are scoped (per-bucket MinIO users, non-root read-only-rootfs pods, no SA token where unused). | Implemented |
 | AC-6(9) Audit Use of Privileged Functions | IAM/RBAC/`openinfra.dev` writes are captured at `RequestResponse` in the audit log. | Implemented |
 | AC-14 Permitted Actions w/o Auth | None in the hardened posture; `AUTH_MODE=none` (dev only) disables auth and raises a persistent banner. | Implemented (secure default) |
@@ -189,8 +190,8 @@ Babelfish image, for instance, ships at 0 fixable CVEs).
 
 Delivered so far:
 
-- **`kind: Grant`** — temporal, auto-expiring access grants (AC-2(2)/AC-6 just-in-time). See
-  [`iam.md`](iam.md#kind-grant--temporal-just-in-time-access).
+- **`kind: Grant`** — temporal, auto-expiring access grants with a second-party **approval workflow**
+  (AC-2(2)/AC-5/AC-6 just-in-time). See [`iam.md`](iam.md#kind-grant--temporal-just-in-time-access).
 - **Audit off-siting** — hash-chained, WORM (object-lock) tamper-evident copy of the audit log,
   verifiable from the console, with an optional external sink (AU-9/AU-9(2)/AU-9(3)/AU-11). See
   [`audit-offsite.md`](audit-offsite.md).
