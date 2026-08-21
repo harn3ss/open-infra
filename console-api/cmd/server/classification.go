@@ -24,12 +24,21 @@ import (
 //
 // Honesty about scope: it checks what is checkable NOW from the typed API — public exposure
 // (LoadBalancer Services targeting the workload), network restriction (a NetworkPolicy selecting its
-// pods), and residency (nodeSelector pinning). encryptionAtRest and backup are reported as UNKNOWN
-// until the encryption/backup features can be interrogated, rather than pretending to verify them.
+// pods), residency (nodeSelector pinning), and encryptionAtRest from two independent live mechanisms
+// (an encrypted/LUKS StorageClass for the volume layer, and a bound + provisioned Vault Transit
+// EncryptionKey for the app layer). backup is still reported UNKNOWN — the backup subsystem is
+// on-demand snapshot / final-snapshot-before-delete, with no standing per-workload policy to
+// interrogate — rather than pretending to verify it.
 //
 // Admin-gated with the same SubjectAccessReview as the rest of Security & Identity.
 
 const classificationLabel = "openinfra.dev/classification"
+
+// encryptionKeyLabel binds a workload to a kind: EncryptionKey (Vault Transit) for app-layer
+// (envelope) encryption at rest: openinfra.dev/encryptionkey: <key-name>. encKeyMirrorLabel is the
+// label the composition/reconciler put on that key's mirror ConfigMaps in the console namespace.
+const encryptionKeyLabel = "openinfra.dev/encryptionkey"
+const encKeyMirrorLabel = "openinfra.dev/enckey"
 
 type ruleCheck struct {
 	Rule   string `json:"rule"`
@@ -73,6 +82,7 @@ type workload struct {
 	name         string
 	kind         string
 	class        string
+	encKeyRef    string // openinfra.dev/encryptionkey — bound EncryptionKey for app-layer encryption ("" = none)
 	podLabels    map[string]string
 	nodeSelector map[string]string
 	// Data volumes, for the encryptionAtRest check: a Deployment references existing PVCs by claim name
@@ -126,6 +136,7 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 				wl := workload{
 					namespace: d.Namespace, name: d.Name, kind: "Deployment",
 					class:        d.Labels[classificationLabel],
+					encKeyRef:    d.Labels[encryptionKeyLabel],
 					podLabels:    d.Spec.Template.Labels,
 					nodeSelector: d.Spec.Template.Spec.NodeSelector,
 				}
@@ -143,6 +154,7 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 				wl := workload{
 					namespace: s.Namespace, name: s.Name, kind: "StatefulSet",
 					class:        s.Labels[classificationLabel],
+					encKeyRef:    s.Labels[encryptionKeyLabel],
 					podLabels:    s.Spec.Template.Labels,
 					nodeSelector: s.Spec.Template.Spec.NodeSelector,
 				}
@@ -171,7 +183,7 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 				continue
 			}
 			res.Level = pol.level
-			res.Checks = evaluateWorkload(ctx, cs, wl, pol)
+			res.Checks = evaluateWorkload(ctx, cs, auth.ns, wl, pol)
 			res.Compliant = true
 			for _, c := range res.Checks {
 				if c.Status == "fail" {
@@ -193,7 +205,7 @@ func handleClassificationCompliance(cs kubernetes.Interface, auth *authStore, lo
 
 // evaluateWorkload runs the mechanically-checkable requirements. Requirements not requested by the
 // class are skipped; requirements we cannot verify yet are reported "unknown", never silently passed.
-func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, wl workload, pol classPolicy) []ruleCheck {
+func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, consoleNS string, wl workload, pol classPolicy) []ruleCheck {
 	// Non-nil so it marshals to [] (not null) when a class requests no checkable
 	// requirements — the console maps over res.checks directly.
 	checks := []ruleCheck{}
@@ -247,7 +259,7 @@ func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, wl workload,
 	}
 
 	if pol.encryptionAtRest {
-		checks = append(checks, evalEncryptionAtRest(ctx, cs, wl))
+		checks = append(checks, evalEncryptionAtRest(ctx, cs, consoleNS, wl))
 	}
 	if pol.backup {
 		// No standing per-workload backup POLICY resource exists to interrogate yet: the backup subsystem
@@ -257,11 +269,71 @@ func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, wl workload,
 	return checks
 }
 
-// evalEncryptionAtRest reports whether every persistent data volume a workload uses sits on an encrypted
-// StorageClass (parameter encrypted=true, e.g. the Longhorn LUKS class). It matches on the parameter, not
-// a class name, so it stays correct for any encrypted StorageClass. Unknown (never a false pass) when the
-// workload has no persistent volumes or a StorageClass/PVC cannot be read.
-func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, wl workload) ruleCheck {
+// evalEncryptionAtRest reports whether a workload's data is protected at rest, from two INDEPENDENT
+// mechanisms, either of which satisfies SC-28:
+//   - volume layer: every persistent data volume sits on an encrypted StorageClass (parameter
+//     encrypted=true, e.g. the Longhorn LUKS class) — matched by the parameter, not a class name, so
+//     it stays correct for any encrypted StorageClass;
+//   - app layer: the workload is bound to a kind: EncryptionKey via the openinfra.dev/encryptionkey
+//     label, and that key's Vault Transit key is provisioned — i.e. the app envelope-encrypts its data,
+//     which is ciphertext at rest regardless of the underlying volume.
+//
+// It reads only the typed API and the key's mirror ConfigMap (never Vault, never key material), so both
+// layers are the SAME evidence tier: the mechanism is verified in place and provisioned, not that every
+// write is encrypted. It is UNKNOWN (never a false pass) when neither can be established — a stateless
+// workload with no key bound, or a StorageClass/PVC/key that cannot be read. It FAILS when a data volume
+// is on an unencrypted StorageClass with no app-layer key covering it, or a bound Transit key is declared
+// but not provisioned.
+func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, consoleNS string, wl workload) ruleCheck {
+	// App layer: Vault Transit binding. "" = no key bound.
+	transit := ""
+	if wl.encKeyRef != "" {
+		prov, found := transitKeyProvisioned(ctx, cs, consoleNS, wl.encKeyRef)
+		switch {
+		case !found:
+			transit = "notfound"
+		case prov:
+			transit = "provisioned"
+		default:
+			transit = "unprovisioned"
+		}
+	}
+
+	// Volume layer: encrypted StorageClass. "" = no persistent volumes.
+	volume, volDetail := volumeVerdict(ctx, cs, wl)
+
+	key := wl.encKeyRef
+	switch {
+	case transit == "provisioned":
+		d := "app-layer encryption via provisioned Vault Transit key " + key
+		if volume == "encrypted" {
+			d += "; data volumes also on encrypted StorageClass(es)"
+		}
+		return ruleCheck{"encryptionAtRest", "pass", d}
+	case volume == "encrypted":
+		d := volDetail
+		if transit == "unprovisioned" {
+			d += " (note: bound Transit key " + key + " is not yet provisioned)"
+		}
+		return ruleCheck{"encryptionAtRest", "pass", d}
+	case transit == "unprovisioned":
+		return ruleCheck{"encryptionAtRest", "fail", "bound Vault Transit key " + key + " is not provisioned"}
+	case volume == "plaintext":
+		return ruleCheck{"encryptionAtRest", "fail", volDetail}
+	case volume == "unreadable":
+		return ruleCheck{"encryptionAtRest", "unknown", volDetail}
+	case transit == "notfound":
+		return ruleCheck{"encryptionAtRest", "unknown", "bound encryption key " + key + " not found"}
+	default:
+		return ruleCheck{"encryptionAtRest", "unknown", "no persistent volumes and no encryption key bound (stateless workload)"}
+	}
+}
+
+// volumeVerdict classifies a workload's persistent volumes as "encrypted" (all on encrypted
+// StorageClasses), "plaintext" (at least one is not), "unreadable" (a PVC/StorageClass could not be
+// resolved), or "" (the workload has no persistent volumes). detail is a human string for the non-empty
+// verdicts.
+func volumeVerdict(ctx context.Context, cs kubernetes.Interface, wl workload) (verdict, detail string) {
 	scNames := map[string]bool{}
 	for _, sc := range wl.stsSCs {
 		scNames[sc] = true
@@ -269,7 +341,7 @@ func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, wl workl
 	for _, claim := range wl.pvcClaims {
 		pvc, err := cs.CoreV1().PersistentVolumeClaims(wl.namespace).Get(ctx, claim, metav1.GetOptions{})
 		if err != nil {
-			return ruleCheck{"encryptionAtRest", "unknown", "PVC " + claim + " could not be read"}
+			return "unreadable", "PVC " + claim + " could not be read"
 		}
 		sc := ""
 		if pvc.Spec.StorageClassName != nil {
@@ -278,13 +350,13 @@ func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, wl workl
 		scNames[sc] = true
 	}
 	if len(scNames) == 0 {
-		return ruleCheck{"encryptionAtRest", "unknown", "no persistent volumes to check (stateless workload)"}
+		return "", ""
 	}
 	var unencrypted []string
 	for name := range scNames {
 		enc, ok := storageClassEncrypted(ctx, cs, name)
 		if !ok {
-			return ruleCheck{"encryptionAtRest", "unknown", "StorageClass " + scLabel(name) + " could not be read"}
+			return "unreadable", "StorageClass " + scLabel(name) + " could not be read"
 		}
 		if !enc {
 			unencrypted = append(unencrypted, scLabel(name))
@@ -292,9 +364,27 @@ func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, wl workl
 	}
 	if len(unencrypted) > 0 {
 		sort.Strings(unencrypted)
-		return ruleCheck{"encryptionAtRest", "fail", "data on unencrypted StorageClass(es): " + strings.Join(unencrypted, ", ")}
+		return "plaintext", "data on unencrypted StorageClass(es): " + strings.Join(unencrypted, ", ")
 	}
-	return ruleCheck{"encryptionAtRest", "pass", "all data volumes on encrypted StorageClass(es)"}
+	return "encrypted", "all data volumes on encrypted StorageClass(es)"
+}
+
+// transitKeyProvisioned resolves a kind: EncryptionKey by name via its mirror ConfigMaps (label
+// openinfra.dev/enckey=<name> in the console namespace) and reports whether its Vault Transit key is
+// actually provisioned (the reconciler's state mirror carries exists=true). found=false means no such
+// key is defined. It reads only the mirror the reconciler maintains — never Vault, never key material.
+func transitKeyProvisioned(ctx context.Context, cs kubernetes.Interface, consoleNS, name string) (provisioned, found bool) {
+	cms, err := cs.CoreV1().ConfigMaps(consoleNS).List(ctx, metav1.ListOptions{LabelSelector: encKeyMirrorLabel + "=" + name})
+	if err != nil {
+		return false, false
+	}
+	for i := range cms.Items {
+		found = true
+		if cms.Items[i].Data["exists"] == "true" {
+			provisioned = true
+		}
+	}
+	return provisioned, found
 }
 
 // storageClassEncrypted resolves a StorageClass by name ("" = the cluster default) and reports whether it
