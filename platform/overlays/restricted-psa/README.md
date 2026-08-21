@@ -1,8 +1,13 @@
 # restricted-PSA overlay
 
 An **opt-in** kustomize overlay that adds a restricted-`PodSecurity`-conformant `securityContext` to
-open-infra's own setup Jobs and reconciler CronJobs, for substrates that enforce the **restricted** Pod
-Security Standard (OpenShift/OKD's `restricted-v2` SCC, RKE2/SLES with restricted PSA, hardened kubeadm).
+open-infra's own setup Jobs and reconciler CronJobs, for substrates that enforce the **restricted**
+Kubernetes Pod Security Standard (RKE2/SLES with restricted PSA, hardened kubeadm).
+
+> **OpenShift/OKD uses the sibling [`openshift-scc`](../openshift-scc/README.md) overlay instead**, not
+> this one. OpenShift's `restricted-v2` SCC assigns UIDs from the namespace range and **rejects** a
+> hardcoded `runAsUser`, so it needs the *opposite* treatment (drop `runAsUser`, not set it). Applying
+> this overlay on OpenShift would fail admission. Never apply both.
 
 It patches **only** — the base manifests are untouched, so the default (k3s) deploy is unaffected. This
 directory is **outside** the root app-of-apps `include` glob (`platform/root-app.yaml`), so Argo never
