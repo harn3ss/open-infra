@@ -36,9 +36,11 @@ BACKEND=$(./throwaway-backend.sh)
 ../.. && go build -o /tmp/tds-proxy ./tds-proxy
 /tmp/tds-proxy -listen 127.0.0.1:23433 -backend "$BACKEND" -metrics 127.0.0.1:29114 -pool-max 2 -acquire-timeout-ms 800 &
 cd harness/fault && go build -o /tmp/fault .
-PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=pinned-drop    /tmp/fault
-PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=stampede       /tmp/fault
-PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=handshake-drop /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=pinned-drop     /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=stampede        /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=handshake-drop  /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status SCENARIO=midresult-drop  /tmp/fault
+PROXY=127.0.0.1:23433 STATUS=http://127.0.0.1:29114/status BACKEND=127.0.0.1:21433 CONTAINER=tdsgrid-mssql SCENARIO=backend-failover /tmp/fault
 ./throwaway-backend.sh --down
 ```
 
@@ -52,10 +54,16 @@ Verified live against SQL Server 2022 (2026-08-21), rows in `grid.jsonl`:
   (the per-key semaphore ceiling holds, no over-issue, no leak).
 - **connection-drop-mid-handshake** → **clean**: truncated PRELOGIN connects dropped before login reserve no
   pool slot (`pool_cold_opens` unchanged) and leave the proxy usable.
+- **client-drop-mid-result-set** → **backend-discarded**: a client that hard-closes its socket mid-result-set
+  (a capturing dialer supplies the raw conn, since `database/sql` would otherwise drain on Close) causes the
+  proxy to **discard** the mid-stream backend (`pool_discards+1`) rather than return a half-read one; a fresh
+  client gets a clean backend.
+- **backend-failover-during-txn** → **clean-error-and-recover**: restarting the backend while a client holds
+  an open `BEGIN TRAN` makes the in-flight statement fail cleanly (`Read: EOF`, no hang), discards the dead
+  backend (`pool_discards+1`), and a fresh client connects+queries once the backend is back (no leak).
 
 The token-leak / over-issue invariants these demonstrate are also proven deterministically under `-race` in
-`pool/pool_test.go`. Still uncaptured (need richer injection): drop **mid-result-set** and backend
-**failover during an open explicit transaction**.
+`pool/pool_test.go`. All five fault scenarios from issue #4 are now captured.
 
 ## Findings so far (see grid.jsonl)
 
