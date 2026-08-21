@@ -63,7 +63,11 @@ spec:
                   properties:
                     encryptionAtRest:
                       type: boolean
-                      description: Data must be encrypted at rest (evaluated once encryption ships).
+                      description: >-
+                        Data must be encrypted at rest. Satisfied by either an encrypted (LUKS)
+                        StorageClass for the volume layer, or by binding the workload to a provisioned
+                        kind: EncryptionKey (Vault Transit) for the app layer via the label
+                        openinfra.dev/encryptionkey: <key-name>.
                     networkRestricted:
                       type: boolean
                       description: The resource must be covered by a SecurityGroup / NetworkPolicy.

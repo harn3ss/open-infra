@@ -53,12 +53,14 @@ Kubernetes API:
 | `noPublicExposure` | no `LoadBalancer` Service selects the workload's pods |
 | `networkRestricted` | a `NetworkPolicy` selects the workload's pods |
 | `residencyNodeLabel` | the pod template's `nodeSelector` pins to the required node label |
-| `encryptionAtRest` | every persistent data volume sits on an **encrypted** StorageClass (parameter `encrypted=true`, e.g. the Longhorn LUKS class) — **fail** if any is not, **unknown** (never a false pass) for a stateless workload or an unreadable class/PVC |
+| `encryptionAtRest` | satisfied by **either** layer: (volume) every persistent data volume sits on an **encrypted** StorageClass (parameter `encrypted=true`, e.g. the Longhorn LUKS class), **or** (app) the workload is bound to a provisioned `kind: EncryptionKey` (Vault Transit) via the label `openinfra.dev/encryptionkey: <key-name>`. **pass** if either holds; **fail** if a data volume is unencrypted with no key covering it, or a bound Transit key is declared but not provisioned; **unknown** (never a false pass) for a stateless workload with no key bound, or an unreadable class/PVC/key |
 | `backup` | **unknown** — there is no standing per-workload backup *policy* resource to interrogate (the backup subsystem is on-demand snapshot / final-snapshot-before-delete, not scheduled per-workload protection) |
 
 Requirements a class does not ask for are skipped; requirements that cannot yet be verified are
-reported `unknown` rather than passed silently. As the encryption and backup features land, their
-checks move from `unknown` to real verification.
+reported `unknown` rather than passed silently. Both `encryptionAtRest` layers read only the typed API
+and the key's mirror ConfigMap (never Vault, never key material) — they verify the mechanism is in place
+and provisioned, not that every write is encrypted. `backup` moves from `unknown` to a real check once a
+standing per-workload backup policy exists to interrogate.
 
 **Coverage today.** The auditor evaluates labelled **Deployments and StatefulSets**. Managed
 databases (CloudNativePG `Cluster`s), `Volume`s, `FileShare`s, and object buckets are not yet
