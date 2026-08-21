@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../aws-shim/aws-shim.yaml
+- ../../backup/velero-setup.yaml
+- ../../console/console-minio-user.yaml
+- ../../query/manifests/lakehouse-setup.yaml
+- ../../security/audit-offsite.yaml
+- ../../security/ca-reconciler.yaml
+- ../../security/destruction-reconciler.yaml
+- ../../security/encryptionkey-reconciler.yaml
+- ../../security/vault.yaml
+- ../../storage/chaos-node-longhorn-reconciler.yaml
+- ../../storage/longhorn-backup-setup.yaml
+patches:
+- path: patches.yaml

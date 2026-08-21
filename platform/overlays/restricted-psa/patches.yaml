@@ -1,0 +1,305 @@
+# Generated restricted-PSA securityContext patches (see kustomization.yaml). Regenerate with the
+# generator in the commit that introduced this overlay if base workloads change.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: console-iam-setup
+  namespace: minio
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: &id001
+            drop:
+            - ALL
+      initContainers:
+      - name: fetch-mc
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: *id001
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: audit-offsite-setup
+  namespace: minio
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: &id001
+            drop:
+            - ALL
+      initContainers:
+      - name: fetch-mc
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: *id001
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: encryptionkey-destroyer
+  namespace: crossplane-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+          - name: fetch-vault
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ca-provisioner
+  namespace: crossplane-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+          - name: fetch-vault
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: encryptionkey-reconciler
+  namespace: crossplane-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+          - name: fetch-vault
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-transit-setup
+  namespace: vault
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lakehouse-setup
+  namespace: minio
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: &id001
+            drop:
+            - ALL
+      initContainers:
+      - name: fetch-mc
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: *id001
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chaos-node-longhorn-reconciler
+  namespace: longhorn-system
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: reconcile
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chaos-node-longhorn-reconciler
+  namespace: longhorn-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: reconcile
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: longhorn-backup-setup
+  namespace: longhorn-system
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: longhorn-backup-creds-refresh
+  namespace: longhorn-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: refresh
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aws-shim-iam-setup
+  namespace: minio
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: &id001
+            drop:
+            - ALL
+      initContainers:
+      - name: fetch-mc
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: *id001
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: velero-setup
+  namespace: minio
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: setup
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
