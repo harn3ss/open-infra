@@ -1,0 +1,73 @@
+# Restricted-PSA hardening for Crossplane PROVIDER / FUNCTION pods (#34).
+#
+# The provider/function package-runtime pods already run non-root (uid 2000) with
+# allowPrivilegeEscalation=false, but omit capabilities.drop and seccompProfile, so they
+# fail a restricted PodSecurity namespace. A DeploymentRuntimeConfig injects the missing
+# fields; each Provider/Function must reference it via spec.runtimeConfigRef.
+#
+# OPERATOR STEP — NOT auto-applied. The provider/function packages are currently installed
+# as chart strings (platform/abstraction/crossplane.yaml → provider.packages / function.packages),
+# which create these same-named CRs WITHOUT a runtimeConfigRef. To wire the runtime config you
+# must declare the packages as CRs (below) AND remove the corresponding strings from the chart
+# values, so the packages are managed here (with the runtimeConfigRef) rather than by the chart.
+# Done live this restructures the composition engine, so validate on a non-prod cluster first.
+# (For OpenShift, the nonroot-v2 SCC grant in ../openshift-scc/upstream-nonroot-scc.yaml covers
+# these pods instead — the SCC injects drop/seccomp and a range UID.)
+---
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: restricted-runtime
+spec:
+  deploymentTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: [ALL]
+                seccompProfile:
+                  type: RuntimeDefault
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-kubernetes
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.14.1
+  runtimeConfigRef:
+    name: restricted-runtime
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: crossplane-contrib-function-patch-and-transform
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0
+  runtimeConfigRef:
+    name: restricted-runtime
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: crossplane-contrib-function-go-templating
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.6.0
+  runtimeConfigRef:
+    name: restricted-runtime
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: crossplane-contrib-function-auto-ready
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.4.0
+  runtimeConfigRef:
+    name: restricted-runtime

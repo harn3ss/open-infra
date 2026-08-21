@@ -50,13 +50,19 @@ or an alternative:
 - `longhorn-host-prereq` — `privileged` + `hostPID` DaemonSet that installs open-iscsi on the node.
 - `airgap-node-registries` — `privileged` + `hostPath` DaemonSet that writes the node `registries.yaml`.
 
-## Upstream Crossplane & CNPG (Helm — separate mechanism)
+## Upstream Crossplane & CNPG (Helm — separate mechanism, #34)
 
-Crossplane (`platform/abstraction/crossplane.yaml`) and CloudNativePG (`platform/data/cloudnativepg.yaml`)
-are installed from Helm charts, so their pods are hardened via **chart values**, not this overlay — set
-`securityContext`/`podSecurityContext` in each Application's `helm.values`, and for Crossplane's **provider**
-pods via a `DeploymentRuntimeConfig`. Tracked as a follow-up (needs chart-version-specific `helm template`
-verification).
+Installed from Helm charts, so hardened via chart values / CRs, not this overlay:
+
+- **Crossplane core + rbac-manager** — hardened **in place** via chart values in
+  `platform/abstraction/crossplane.yaml` (`securityContextCrossplane`/`securityContextRBACManager` +
+  `podSecurityContext*`), verified with `helm template` to render drop-ALL + seccomp + runAsNonRoot.
+- **Crossplane provider/function pods** — need a `DeploymentRuntimeConfig` referenced via
+  `runtimeConfigRef`; ready manifest + operator wiring notes in
+  [`crossplane-provider-runtimeconfig.yaml`](crossplane-provider-runtimeconfig.yaml) (an operator step —
+  wiring it supersedes the chart's package strings).
+- **CloudNativePG** — the operator pod is **already restricted-conformant** as shipped (runAsNonRoot +
+  `drop:[ALL]` + seccomp RuntimeDefault; verified on the live pod), so no change is needed for k8s PSA.
 
 ## Apply (on a restricted substrate, after validation)
 
