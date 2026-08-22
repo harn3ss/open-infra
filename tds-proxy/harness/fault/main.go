@@ -298,8 +298,60 @@ func main() {
 			recovered, num(after, "pool_dead_evicted")-num(before, "pool_dead_evicted"),
 			num(after, "pool_discards")-num(before, "pool_discards"))
 
+	case "tls-modes":
+		// #6: connect through the proxy in each TLS mode and run SELECT 1. encrypt=disable is the
+		// plaintext path; encrypt=true is legacy encrypt=on (TLS tunneled in PRELOGIN); encrypt=strict is
+		// TDS 8.0 (TLS-first). TrustServerCertificate=true accepts the proxy's self-signed cert.
+		modes := []struct{ name, enc string }{{"disable", "disable"}, {"on", "true"}, {"strict", "strict"}}
+		allok := true
+		for _, m := range modes {
+			q := url.Values{
+				"encrypt": {m.enc}, "TrustServerCertificate": {"true"}, "database": {"master"},
+				"dial timeout": {"5"}, "connection timeout": {"8"},
+			}
+			// strict (TDS 8.0) ignores TrustServerCertificate by design, so hand it the proxy cert to
+			// trust explicitly (in production cert-manager issues a chain the client already trusts).
+			if c := os.Getenv("CERT"); c != "" {
+				q.Set("certificate", c)
+				q.Set("hostNameInCertificate", "localhost")
+			}
+			u := &url.URL{
+				Scheme: "sqlserver", User: url.UserPassword("sa", os.Getenv("PW")), Host: proxy,
+				RawQuery: q.Encode(),
+			}
+			db, err := sql.Open("sqlserver", u.String())
+			if err != nil {
+				fmt.Printf("encrypt=%-7s -> OPEN ERR %v\n", m.enc, err)
+				allok = false
+				continue
+			}
+			db.SetMaxOpenConns(1)
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			var one int
+			qerr := db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+			cancel()
+			db.Close()
+			ok := qerr == nil && one == 1
+			allok = allok && ok
+			fmt.Printf("encrypt=%-7s (%s) -> ok=%v%s\n", m.enc, m.name, ok,
+				func() string {
+					if qerr != nil {
+						return " :: " + qerr.Error()
+					}
+					return ""
+				}())
+		}
+		after := status(statusURL)
+		fmt.Printf("STATUS deltas: strict=%d on=%d handshake_errors=%d\n",
+			num(after, "tls_terminated_strict")-num(before, "tls_terminated_strict"),
+			num(after, "tls_terminated_on")-num(before, "tls_terminated_on"),
+			num(after, "tls_handshake_errors")-num(before, "tls_handshake_errors"))
+		if !allok {
+			os.Exit(1)
+		}
+
 	default:
-		fmt.Println("set SCENARIO=stampede|pinned-drop|handshake-drop|midresult-drop|backend-failover")
+		fmt.Println("set SCENARIO=stampede|pinned-drop|handshake-drop|midresult-drop|backend-failover|tls-modes")
 		os.Exit(2)
 	}
 }

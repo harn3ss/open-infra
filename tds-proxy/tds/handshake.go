@@ -42,12 +42,28 @@ func WithResetConnection(raw []byte) []byte {
 	return out
 }
 
+// ENCRYPTION option values in a PRELOGIN option table (MS-TDS §2.2.6.5). The client advertises what it
+// supports/wants; the server answers with what it will do.
+const (
+	EncryptOff    byte = 0x00 // encryption available, off unless the peer requires it
+	EncryptOn     byte = 0x01 // encryption available and on (historically: login packet only)
+	EncryptNotSup byte = 0x02 // no encryption available (the plaintext path)
+	EncryptReq    byte = 0x03 // encryption REQUIRED — all traffic after the handshake stays TLS
+)
+
+// preloginOptEncryption is the ENCRYPTION option token in a PRELOGIN option table.
+const preloginOptEncryption = 0x01
+
 // BuildPreloginResponse synthesizes a server PRELOGIN response advertising no encryption support
 // (ENCRYPT_NOT_SUP), so the client proceeds in plaintext — matching Babelfish's TDS-no-TLS reality and
 // SQL Server with ForceEncryption off. The proxy answers the client's PRELOGIN with this itself, before
 // it has seen the credentials, so it can pick a pooled backend by identity from the LOGIN7 that follows.
 // One packet, type 0x04 (server reply), EOM set.
-func BuildPreloginResponse() []byte {
+func BuildPreloginResponse() []byte { return BuildPreloginResponseEnc(EncryptNotSup) }
+
+// BuildPreloginResponseEnc is BuildPreloginResponse with a chosen ENCRYPTION answer — EncryptNotSup for
+// the plaintext path, EncryptReq to require TLS for the rest of the session (encrypt=on/strict).
+func BuildPreloginResponseEnc(enc byte) []byte {
 	// Option table: VERSION(0x00) + ENCRYPTION(0x01) + TERMINATOR(0xFF); each non-terminator entry is
 	// token(1) offset(2, big-endian) length(2, big-endian). Data follows the table.
 	const verOff = 11 // 5 (version entry) + 5 (encryption entry) + 1 (terminator)
@@ -55,9 +71,9 @@ func BuildPreloginResponse() []byte {
 	payload := []byte{
 		0x00, 0x00, verOff, 0x00, 0x06, // VERSION  @11 len 6
 		0x01, 0x00, encOff, 0x00, 0x01, // ENCRYPTION @17 len 1
-		0xFF,                           // TERMINATOR
+		0xFF,                               // TERMINATOR
 		0x10, 0x00, 0x03, 0xE8, 0x00, 0x00, // version 16.0.1000.0
-		0x02,                           // ENCRYPT_NOT_SUP
+		enc, // the ENCRYPTION answer
 	}
 	total := headerLen + len(payload)
 	pkt := make([]byte, total)
@@ -68,6 +84,43 @@ func BuildPreloginResponse() []byte {
 	pkt[6] = 1 // packet id
 	copy(pkt[headerLen:], payload)
 	return pkt
+}
+
+// BuildClientPrelogin synthesizes a minimal CLIENT PRELOGIN request (type 0x12) advertising
+// ENCRYPT_NOT_SUP. When the proxy terminates the client's TLS (encrypt=on/strict) it must still open the
+// backend in PLAINTEXT (the managed engine is TDS-no-TLS), so it sends the backend this rather than
+// replaying the client's encryption-advertising PRELOGIN. The backend's PRELOGIN reply is discarded, so
+// only validity + the NOT_SUP answer matter.
+func BuildClientPrelogin() []byte {
+	pkt := BuildPreloginResponseEnc(EncryptNotSup)
+	pkt[0] = TypePreLogin // 0x12 client request (BuildPreloginResponseEnc emits 0x04 server reply)
+	return pkt
+}
+
+// PreloginEncryption reads the ENCRYPTION option a client advertised in its PRELOGIN (EncryptOff/On/
+// NotSup/Req). Defaults to EncryptNotSup when the option is absent or the table is malformed — i.e. treat
+// an unreadable prelogin as "no encryption", never as "encryption on", so a parse slip fails safe to the
+// existing plaintext path rather than into a half-built TLS handshake.
+func PreloginEncryption(body []byte) byte {
+	for i := 0; i < len(body); {
+		tok := body[i]
+		if tok == 0xFF { // TERMINATOR
+			return EncryptNotSup
+		}
+		if i+5 > len(body) {
+			return EncryptNotSup
+		}
+		off := int(body[i+1])<<8 | int(body[i+2]) // big-endian offset from payload start
+		ln := int(body[i+3])<<8 | int(body[i+4])
+		if tok == preloginOptEncryption {
+			if ln >= 1 && off >= 0 && off < len(body) {
+				return body[off]
+			}
+			return EncryptNotSup
+		}
+		i += 5
+	}
+	return EncryptNotSup
 }
 
 // preloginOptMARS is the MARS option token in a PRELOGIN option table (MS-TDS §2.2.6.5).

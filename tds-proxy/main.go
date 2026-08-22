@@ -19,6 +19,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"hash/fnv"
@@ -49,12 +50,18 @@ var (
 	marsRequested   atomic.Int64 // clients that asked for MARS in PRELOGIN (the pool does not grant it)
 	integratedAuth  atomic.Int64 // integrated/Windows (SSPI) logins refused — not poolable by credential
 	deadEvicted     atomic.Int64 // pooled backends found dead/dirty at borrow time and evicted (fault axis)
+	tlsStrict       atomic.Int64 // clients terminated via TDS 8.0 strict (TLS-first)
+	tlsOn           atomic.Int64 // clients terminated via legacy encrypt=on (TLS tunneled in PRELOGIN)
+	tlsHandshakeErr atomic.Int64 // TLS handshakes that failed
+	tlsUnsupported  atomic.Int64 // clients that required encryption while the proxy has no cert (rejected)
 	pinReasonsMu    sync.Mutex
 	pinReasonCounts = map[string]int64{}
 
-	backendPool   *pool.Pool
-	preloginResp  = tds.BuildPreloginResponse()
-	debugClassify = os.Getenv("TDSPROXY_DEBUG") != ""
+	backendPool    *pool.Pool
+	preloginResp   = tds.BuildPreloginResponse()
+	clientPrelogin = tds.BuildClientPrelogin() // plaintext PRELOGIN sent to the backend when client TLS is terminated
+	tlsConfig      *tls.Config                 // set when -tls-cert/-tls-key are given; enables TLS termination (#6)
+	debugClassify  = os.Getenv("TDSPROXY_DEBUG") != ""
 )
 
 func main() {
@@ -63,9 +70,28 @@ func main() {
 	metrics := flag.String("metrics", ":9114", "address for the /metrics + /status endpoints")
 	poolMax := flag.Int("pool-max", 20, "max backend connections per credential key (the connection ceiling)")
 	acquireMs := flag.Int("acquire-timeout-ms", 10000, "how long a client waits for a backend when the pool is at its cap")
+	tlsCert := flag.String("tls-cert", "", "PEM cert to TERMINATE client TLS (encrypt=on/strict); backend stays plaintext (#6)")
+	tlsKey := flag.String("tls-key", "", "PEM key for -tls-cert")
 	flag.Parse()
 	if *backend == "" {
 		log.Fatal("tds-proxy: -backend host:port is required")
+	}
+	// TLS termination is opt-in: only when a cert is supplied. Without it the proxy stays plaintext-only
+	// and a client that REQUIRES encryption is refused cleanly (never silently downgraded).
+	if *tlsCert != "" || *tlsKey != "" {
+		if *tlsCert == "" || *tlsKey == "" {
+			log.Fatal("tds-proxy: -tls-cert and -tls-key must be given together")
+		}
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			log.Fatalf("tds-proxy: load TLS cert: %v", err)
+		}
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+			NextProtos:   []string{"tds/8.0"}, // ALPN for TDS 8.0 strict; harmless for legacy clients
+		}
+		log.Printf("tds-proxy: TLS termination ENABLED (encrypt=on + strict); backend connection stays plaintext")
 	}
 	backendPool = pool.New(*poolMax)
 	acquireTimeout := time.Duration(*acquireMs) * time.Millisecond
@@ -95,8 +121,32 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 	defer sessionsActive.Add(-1)
 	defer client.Close()
 
-	// 1. Terminate the client PRELOGIN ourselves (no encryption), so we can pick a backend by the
-	//    identity in the LOGIN7 that follows.
+	// 0. TLS termination (#6), opt-in via -tls-cert. TDS negotiates TLS INSIDE the protocol, so the proxy
+	//    must be the TLS peer; the backend connection stays plaintext (the managed engine is TDS-no-TLS).
+	//    A TDS 8.0 "strict" client opens with a raw TLS ClientHello (record type 0x16) before any TDS —
+	//    detect it by peeking one byte and wrap the conn immediately.
+	tlsTerminated := false
+	if tlsConfig != nil {
+		pc := tds.NewPrefaceConn(client)
+		client = pc
+		first, e := pc.Peek(1)
+		if e != nil {
+			return
+		}
+		if first[0] == 0x16 { // TLS ClientHello → TDS 8.0 strict (TLS-first)
+			tconn := tls.Server(pc, tlsConfig)
+			if e := tconn.Handshake(); e != nil {
+				tlsHandshakeErr.Add(1)
+				return
+			}
+			client = tconn
+			tlsTerminated = true
+			tlsStrict.Add(1)
+		}
+	}
+
+	// 1. PRELOGIN. Read the client's, then either tunnel a TLS handshake (legacy encrypt=on/mandatory) or
+	//    answer plaintext — so we can pick a backend by the LOGIN7 identity that follows.
 	pType, preBody, preRaw, err := tds.ReadMessage(client)
 	if err != nil || pType != tds.TypePreLogin {
 		return
@@ -104,8 +154,44 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 	if tds.PreloginRequestsMARS(preBody) {
 		marsRequested.Add(1) // visibility only — the synthesized response omits MARS, so it is not granted
 	}
-	if _, err := client.Write(preloginResp); err != nil {
+	clientEnc := tds.PreloginEncryption(preBody)
+	switch {
+	case tlsTerminated:
+		// strict: encryption already established by the outer TLS; answer the inner PRELOGIN as on.
+		if _, err := client.Write(tds.BuildPreloginResponseEnc(tds.EncryptOn)); err != nil {
+			return
+		}
+	case tlsConfig != nil && (clientEnc == tds.EncryptOn || clientEnc == tds.EncryptReq):
+		// legacy encrypt=on/mandatory: require TLS, then carry the handshake inside PRELOGIN packets.
+		if _, err := client.Write(tds.BuildPreloginResponseEnc(tds.EncryptReq)); err != nil {
+			return
+		}
+		hc := tds.NewTDSHandshakeConn(client)
+		tconn := tls.Server(hc, tlsConfig)
+		if e := tconn.Handshake(); e != nil {
+			tlsHandshakeErr.Add(1)
+			return
+		}
+		hc.SetDone() // handshake done → TLS now rides the bare stream
+		client = tconn
+		tlsTerminated = true
+		tlsOn.Add(1)
+	case clientEnc == tds.EncryptReq:
+		// client REQUIRES encryption but no cert is configured — refuse cleanly, never silently downgrade.
+		tlsUnsupported.Add(1)
+		log.Printf("tds-proxy: session %d: client requires TLS but no -tls-cert configured — refusing", id)
 		return
+	default:
+		// plaintext path (encrypt=disable/off): unchanged original behaviour.
+		if _, err := client.Write(preloginResp); err != nil {
+			return
+		}
+	}
+	// When TLS was terminated, the client's PRELOGIN advertised encryption; the plaintext backend must get
+	// a plaintext one instead. (LOGIN7 replays verbatim — it's the same login, just now decrypted.)
+	backendPre := preRaw
+	if tlsTerminated {
+		backendPre = clientPrelogin
 	}
 
 	// 2. Read the client LOGIN7 and key the pool on (backend, user, db, password).
@@ -160,7 +246,7 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 			log.Printf("tds-proxy: session %d: dial backend: %v", id, err)
 			return
 		}
-		if _, err := bc.Write(preRaw); err != nil { // client PRELOGIN → backend
+		if _, err := bc.Write(backendPre); err != nil { // client PRELOGIN → backend (plaintext if client TLS was terminated)
 			bc.Close()
 			backendPool.Discard(key, nil)
 			return
@@ -404,6 +490,8 @@ func serveMetrics(addr string) {
 		fmt.Fprintf(w, "mars_requested %d\n", marsRequested.Load())
 		fmt.Fprintf(w, "integrated_auth_refused %d\n", integratedAuth.Load())
 		fmt.Fprintf(w, "pool_dead_evicted %d\n", deadEvicted.Load())
+		fmt.Fprintf(w, "tls_terminated_strict %d\ntls_terminated_on %d\ntls_handshake_errors %d\ntls_required_no_cert %d\n",
+			tlsStrict.Load(), tlsOn.Load(), tlsHandshakeErr.Load(), tlsUnsupported.Load())
 		pinReasonsMu.Lock()
 		for reason, n := range pinReasonCounts {
 			fmt.Fprintf(w, "pin_reason{reason=%q} %d\n", reason, n)
