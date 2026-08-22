@@ -66,6 +66,24 @@ Verified live against SQL Server 2022 (2026-08-21), rows in `grid.jsonl`:
 The token-leak / over-issue invariants these demonstrate are also proven deterministically under `-race` in
 `pool/pool_test.go`. All five fault scenarios from issue #4 are now captured.
 
+## Per-transaction multiplexing (issue #7)
+
+The `tx-multiplex` scenario proves the opt-in `-tx-multiplex` mode (return the backend between autocommit
+statements, not at session close). `CLIENTS` mostly-idle clients each run `PER_CLIENT` autocommit queries
+with `THINK_MS` think-time; the pass check is that every `SELECT n` returns exactly `n` (no cross-client
+corruption/leak), a sticky `#temp` client works across its own statements, and `tx_multiplex_returns > 0`.
+
+```bash
+# proxy started with -tx-multiplex -pool-max 3
+PROXY=127.0.0.1:23443 STATUS=http://127.0.0.1:29144/status \
+  CLIENTS=8 PER_CLIENT=4 THINK_MS=500 SCENARIO=tx-multiplex /tmp/fault
+```
+
+Live contrast (2026-08-22, SQL Server 2022, pool-max 3, 8 clients, 500 ms think): with `-tx-multiplex`
+all 32 queries succeed on **3** backends (30 warm reuses, 0 acquire-timeouts); the session-level default —
+where each live session holds a backend — saturates and times out **7 of 8** clients. Zero corrupted reads
+and the sticky `#temp` is correct in **both** modes.
+
 ## Findings so far (see grid.jsonl)
 
 - **go-mssqldb** sends raw `SQLBatch`es: a `#temp`/`BEGIN TRAN` is **session-scoped** → pins. Parameterized
