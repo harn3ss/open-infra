@@ -55,7 +55,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: setup
-          image: bitnami/kubectl
+          image: alpine/k8s:1.30.0 # non-Bitnami (Bitnami purged public tags Aug 2025); has kubectl+sh
           command: [sh, -c]
           args:
             - |
@@ -101,7 +101,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: refresh
-              image: bitnami/kubectl
+              image: alpine/k8s:1.30.0 # non-Bitnami (Bitnami purged public tags Aug 2025); has kubectl+sh
               command: [sh, -c]
               args:
                 - |
