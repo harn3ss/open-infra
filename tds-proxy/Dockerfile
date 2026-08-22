@@ -5,7 +5,7 @@ COPY go.mod ./
 COPY tds/ ./tds/
 COPY classify/ ./classify/
 COPY pool/ ./pool/
-COPY main.go ./
+COPY *.go ./
 ENV CGO_ENABLED=0 GOOS=linux
 RUN go build -trimpath -ldflags "-s -w" -o /out/tds-proxy .
 
