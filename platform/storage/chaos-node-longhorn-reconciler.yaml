@@ -99,7 +99,7 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: reconcile
-          image: bitnami/kubectl
+          image: alpine/k8s:1.30.0 # non-Bitnami (Bitnami purged public tags Aug 2025); has kubectl+sh
           command: [sh, /scripts/reconcile.sh]
           volumeMounts:
             - { name: script, mountPath: /scripts }
@@ -135,7 +135,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: reconcile
-              image: bitnami/kubectl
+              image: alpine/k8s:1.30.0 # non-Bitnami (Bitnami purged public tags Aug 2025); has kubectl+sh
               command: [sh, /scripts/reconcile.sh]
               volumeMounts:
                 - { name: script, mountPath: /scripts }
