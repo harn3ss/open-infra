@@ -216,6 +216,56 @@ func TestGrant_DeniesRoleOutsideCeiling(t *testing.T) {
 	}
 }
 
+// kind: DatabaseProxy with TLS off (default): renders the pooler Deployment + Service + conn Secret,
+// and does NOT render a cert or pass -tls-cert (the plaintext path, unchanged).
+func TestDatabaseProxy_TLSOff(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/databaseproxy-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec":     map[string]any{"targetDatabase": "shop", "poolMax": 10},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "shopproxy", "crossplane.io/claim-namespace": "app"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{"kind: Deployment", "shopproxy-proxy", "-backend=shop-babelfish.app.svc.cluster.local:1433", "ENCRYPT: \"disable\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("TLS-off render missing %q; got:\n%s", want, grepCtx(out, "proxy"))
+		}
+	}
+	for _, absent := range []string{"kind: Certificate", "-tls-cert", "/tls/tls.crt"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("TLS-off render should NOT contain %q", absent)
+		}
+	}
+}
+
+// kind: DatabaseProxy with tls.terminate=true: renders a cert-manager Certificate signed by the named
+// issuer, mounts it, and passes -tls-cert/-tls-key so the proxy terminates client TLS (#6).
+func TestDatabaseProxy_TLSOn(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/databaseproxy-composition.yaml")
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"targetDatabase": "shop",
+			"tls": map[string]any{
+				"terminate": true,
+				"issuerRef": map[string]any{"name": "openinfra-issuer", "kind": "ClusterIssuer"},
+				"dnsNames":  []any{"shop.example.com"},
+			},
+		},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "shopproxy", "crossplane.io/claim-namespace": "app"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{
+		"kind: Certificate", "secretName: shopproxy-proxy-tls",
+		"name: openinfra-issuer", "shop.example.com", // custom SAN carried through
+		"- -tls-cert=/tls/tls.crt", "- -tls-key=/tls/tls.key",
+		"mountPath: /tls", "secretName: shopproxy-proxy-tls",
+		"ENCRYPT: \"supported\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("TLS-on render missing %q; got:\n%s", want, grepCtx(out, "tls"))
+		}
+	}
+}
+
 // kind: DataClassification renders a ConfigMap mirror in the console namespace carrying the level
 // and handling requirements, so the compliance auditor can read the taxonomy by label.
 func TestDataClassification_RendersConfigMapMirror(t *testing.T) {

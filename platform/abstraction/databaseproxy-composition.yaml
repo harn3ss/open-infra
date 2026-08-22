@@ -44,6 +44,8 @@ spec:
             {{- $acquireMs := $spec.acquireTimeoutMs | default 10000 }}
             {{- $replicas := $spec.replicas | default 1 }}
             {{- $backend := printf "%s-%s.%s.svc.cluster.local:1433" $target $engine $ns }}
+            {{- $tls := $spec.tls | default dict }}
+            {{- $tlsOn := $tls.terminate | default false }}
             ---
             # The pooler Deployment.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -76,6 +78,10 @@ spec:
                               - -metrics=:9114
                               - -pool-max={{ $poolMax }}
                               - -acquire-timeout-ms={{ $acquireMs }}
+                              {{- if $tlsOn }}
+                              - -tls-cert=/tls/tls.crt
+                              - -tls-key=/tls/tls.key
+                              {{- end }}
                             ports:
                               - { name: tds, containerPort: 1433 }
                               - { name: metrics, containerPort: 9114 }
@@ -92,6 +98,15 @@ spec:
                             resources:
                               requests: { cpu: 25m, memory: 32Mi }
                               limits: { cpu: 500m, memory: 128Mi }
+                            {{- if $tlsOn }}
+                            volumeMounts:
+                              - { name: tls, mountPath: /tls, readOnly: true }
+                            {{- end }}
+                        {{- if $tlsOn }}
+                        volumes:
+                          - name: tls
+                            secret: { secretName: {{ $name }}-proxy-tls }
+                        {{- end }}
             ---
             # The client-facing Service (TDS + metrics).
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -113,6 +128,43 @@ spec:
                     ports:
                       - { name: tds, port: 1433, targetPort: 1433 }
                       - { name: metrics, port: 9114, targetPort: 9114 }
+            {{- if $tlsOn }}
+            ---
+            # cert-manager serving cert for TLS termination (#6). Issued to <name>-proxy-tls, which the
+            # Deployment mounts at /tls. strict (TDS 8.0) clients validate the chain, so this must be
+            # signed by an issuer the clients trust and cover the name they dial (the Service DNS by
+            # default, plus any spec.tls.dnsNames).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: proxy-cert
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: cert-manager.io/v1
+                  kind: Certificate
+                  metadata:
+                    name: {{ $name }}-proxy-tls
+                    namespace: {{ $ns }}
+                  spec:
+                    secretName: {{ $name }}-proxy-tls
+                    duration: 2160h0m0s   # 90d
+                    renewBefore: 360h0m0s # 15d
+                    privateKey: { algorithm: RSA, size: 2048 }
+                    usages: [server auth]
+                    dnsNames:
+                      - {{ $name }}-proxy.{{ $ns }}.svc.cluster.local
+                      - {{ $name }}-proxy.{{ $ns }}.svc
+                      - {{ $name }}-proxy
+                      {{- range $d := ($tls.dnsNames | default list) }}
+                      - {{ $d }}
+                      {{- end }}
+                    issuerRef:
+                      name: {{ $tls.issuerRef.name }}
+                      kind: {{ $tls.issuerRef.kind | default "ClusterIssuer" }}
+                      group: cert-manager.io
+            {{- end }}
             ---
             # Connection secret: where clients point (the pooled endpoint, not the DB).
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -133,6 +185,7 @@ spec:
                     TDS_PORT: "1433"
                     TARGET: {{ $target }}
                     POOL_MAX: "{{ $poolMax }}"
+                    ENCRYPT: "{{ if $tlsOn }}supported{{ else }}disable{{ end }}"
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
