@@ -34,6 +34,25 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
+  # Previously unwatched Go modules — the shipped open-appsync + tds-proxy engines, the
+  # tds-proxy fault harness (its stale x/crypto raised 13 security alerts before this was added),
+  # and the dev tools. Security ALERTS fired regardless; this adds the version-update PRs that
+  # keep them from going stale in the first place.
+  - package-ecosystem: gomod
+    directories:
+      - /open-appsync
+      - /tds-proxy
+      - /tds-proxy/harness/fault
+      - /tools/chainforge
+      - /tools/chaosdoc
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "chore(deps)" }
+    groups:
+      go:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
   # ── Console SPA (npm) ─────────────────────────────────────────────────────────
   - package-ecosystem: npm
     directory: /ui
@@ -72,6 +91,9 @@ updates:
       - /console-api
       - /query
       - /examples/hello-web
+      - /mc
+      - /open-appsync
+      - /tds-proxy
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     commit-message: { prefix: "chore(deps)" }
