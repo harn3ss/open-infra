@@ -3,6 +3,8 @@
 # substrate: 3-node SLES 15 SP7 + RKE2 v1.35.7 + FIPS (fips=1, 11 crypto pkgs version-locked, all nodes)
 # chaos 17 GREEN/2 RED/1 INCONC | OpenSCAP STIG 63/154 PCI 109/132 HIPAA 29/99 ANSSI-high 146/193 | CIS-k8s 53/9/46 | SI-2 channel+locks OK
 # pushed fixes: open-infra b619721/9ec194b/ae6ed0d; provider 17463a3 (unreleased)
+# post-remediation re-scan 2026-08-22 (node hardened): STIG 194/25 PCI 166/76 HIPAA 92/36 ANSSI-high 209/131 — every framework improved
+#
 #
 d8894576abcbd174582216f1093062d94e958ee603c1d7adb9c0485db85d37ed  VALIDATION-FINDINGS.md
 3beaae443d96efdbb1ec72d5d15ee19680b3d7ff57872fc0caf8595f3e35d22c  evidence/chaos-batch-14-scenarios.log
@@ -29,3 +31,20 @@ cf0075d0174b36ad9a571662ee0124cdd7a109e3c30ae31835dd550e8935b3f7  evidence/scena
 5cab871688e83041a1a1234c80de426443a90bad32728738cb9d28489a9103ac  evidence/scenario-sinkkill.log
 4bef16a0353c48728b1d61175b5d45a0e7fbbd0635004fc98f8a6863253487bc  evidence/scenario-stream-function.log
 1e7ac20d3997f3b2560ed8259fdebc6a10521b5e3cc576c188a6943e18af7eec  evidence/substrate-evidence.txt
+#
+# --- post-remediation multi-framework re-scan (2026-08-22): STIG fixes from 08-19 applied ---
+# STIG 194/25 | PCI 166/76 | HIPAA 92/36 | ANSSI-high 209/131 (every framework improved vs as-provisioned)
+0dc9fc0dece85ee6836be9488fe88dca02aaed687a06222cb3748deea27c5084  evidence/compliance-postremediation-2026-08-22/anssi-bp028-high-arf.xml.gz
+d9acb06343885c92cbeecbda79e4abe9572f758bccbd8f67c6a245770715a9da  evidence/compliance-postremediation-2026-08-22/anssi-bp028-high-eval.log
+a562bab3acbe66a2ee065338485d1d9378459039a72a6f842cfebd4476882396  evidence/compliance-postremediation-2026-08-22/anssi-bp028-high-report.html
+762e3e40ebb6909215bc42d35847e675fbd72128670eb4fa5a394b0ab4af10c3  evidence/compliance-postremediation-2026-08-22/COMPLIANCE-SCAN-SUMMARY.md
+192a6d69f76cc315a39a91fcbb85a1d29c79dc48fc004f5d7c290120032c4cc4  evidence/compliance-postremediation-2026-08-22/hipaa-arf.xml.gz
+b026a687e460d6f4fcc6e63240fee0091547686f9d11fbcf97999e7965a1da85  evidence/compliance-postremediation-2026-08-22/hipaa-eval.log
+f940c43bb0c3682a5fc962de810f0e359ceff6ad90433b5151757437801e1db8  evidence/compliance-postremediation-2026-08-22/hipaa-report.html
+d80158792c90eb1f5700d0b772f06873f7bd8f169c65ace74690a45a49c8869c  evidence/compliance-postremediation-2026-08-22/pci-dss-4-arf.xml.gz
+a1b24f8b5f2f92724ae1551c3ebeefc144290384c2851238c1b6bb55ee52d60a  evidence/compliance-postremediation-2026-08-22/pci-dss-4-eval.log
+ab750d5921cb6732383e2ab334de10f38e7f63ecaaad639c2b4ec0abe5e3c5fb  evidence/compliance-postremediation-2026-08-22/pci-dss-4-report.html
+2c722ac0752e1ae0046944ce5d500da87884d302351c3af2c483bf7a536defd7  evidence/compliance-postremediation-2026-08-22/stig-arf.xml.gz
+f51e97cfb08cf30a31d71315e4fd9f77493fda8a0f589f2e58be66a6233238a8  evidence/compliance-postremediation-2026-08-22/stig-eval.log
+d1ddb4005973b7103c13381ed18b97ebf94c4b363de665225103b30e09ddb5fb  evidence/compliance-postremediation-2026-08-22/stig-report.html
+762e3e40ebb6909215bc42d35847e675fbd72128670eb4fa5a394b0ab4af10c3  evidence/compliance-postremediation-2026-08-22/summary.txt
