@@ -62,6 +62,14 @@ func TestClassifyRPC(t *testing.T) {
 		{"sp_cursorprepare", true},
 		{"", true},            // unparseable → fail-safe pin
 		{"dbo.my_proc", true}, // unknown user proc → fail-safe pin
+		// Read-only ODBC catalog metadata procs multiplex — incl. schema-qualified/bracketed/versioned
+		// forms as ODBC Driver 18 sends them (this is what false-pinned every pyodbc connection, #3).
+		{"[sys].sp_datatype_info_100", false},
+		{"sp_datatype_info", false},
+		{"sp_columns_100", false},
+		{"[sys].sp_tables", false},
+		{"SP_STATISTICS", false},    // case-insensitive
+		{"[sys].sp_prepexec", true}, // still pins after normalization (real prepared handle)
 	}
 	for _, c := range cases {
 		if v := classifyRPC(c.proc); v.Pin != c.pin {

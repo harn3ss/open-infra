@@ -94,16 +94,53 @@ func classifyBatch(text string) Verdict {
 	return multiplexable // plain SELECT/INSERT/UPDATE/DELETE autocommit — the multiplexable common path
 }
 
+// readOnlyCatalogRPC is the set of MS-documented ODBC catalog stored procedures — the ones a driver calls
+// to implement SQLTables/SQLColumns/SQLGetTypeInfo/etc. They return metadata result sets and leave NO
+// session state (no temp table, prepared handle, cursor, or session option), so they are multiplexable.
+// The ODBC Driver 18 issues sp_datatype_info_100 on EVERY connect, so without this a benign metadata call
+// fail-safe-pinned every ODBC connection and killed pooling for all ODBC/pyodbc clients (#3). Versioned
+// (_100) variants are the same read-only family; both forms are listed explicitly rather than pattern-
+// stripped, to keep the whitelist auditable.
+var readOnlyCatalogRPC = map[string]bool{
+	"sp_column_privileges": true, "sp_column_privileges_ex": true,
+	"sp_columns": true, "sp_columns_ex": true, "sp_columns_100": true,
+	"sp_databases":     true,
+	"sp_datatype_info": true, "sp_datatype_info_100": true,
+	"sp_fkeys": true, "sp_pkeys": true,
+	"sp_server_info":     true,
+	"sp_special_columns": true, "sp_special_columns_100": true,
+	"sp_sproc_columns": true, "sp_sproc_columns_100": true,
+	"sp_statistics": true, "sp_statistics_100": true,
+	"sp_stored_procedures": true,
+	"sp_table_privileges":  true, "sp_table_privileges_ex": true,
+	"sp_tables": true, "sp_tables_ex": true,
+}
+
+// normalizeProc strips a schema qualifier ([sys].), brackets, and case so a name-invoked RPC like
+// "[sys].sp_datatype_info_100" matches the bare, lowercase names below (ProcID-invoked RPCs already
+// arrive bare and lowercase via procIDName, so normalization is a no-op for them).
+func normalizeProc(proc string) string {
+	p := strings.ToLower(strings.TrimSpace(proc))
+	if i := strings.LastIndexByte(p, '.'); i >= 0 { // drop "[sys]." / "master.dbo." etc.
+		p = p[i+1:]
+	}
+	return strings.NewReplacer("[", "", "]", "").Replace(p)
+}
+
 func classifyRPC(proc string) Verdict {
-	switch proc {
-	case "sp_executesql", "sp_execute", "sp_unprepare", "sp_cursorclose", "sp_cursorunprepare":
-		return multiplexable // no NEW session-scoped handle created
-	case "sp_prepare", "sp_prepexec", "sp_prepexecrpc":
-		return Verdict{Pin: true, Reason: "server-side prepared handle (" + proc + ")"}
-	case "sp_cursor", "sp_cursoropen", "sp_cursorprepare", "sp_cursorprepexec", "sp_cursorexecute", "sp_cursorfetch", "sp_cursoroption":
-		return Verdict{Pin: true, Reason: "cursor (" + proc + ")"}
-	case "":
+	if proc == "" {
 		return Verdict{Pin: true, Reason: "unparseable RPC (fail-safe)"}
+	}
+	name := normalizeProc(proc)
+	switch {
+	case name == "sp_executesql", name == "sp_execute", name == "sp_unprepare", name == "sp_cursorclose", name == "sp_cursorunprepare":
+		return multiplexable // no NEW session-scoped handle created
+	case readOnlyCatalogRPC[name]:
+		return multiplexable // read-only catalog metadata — no session state
+	case name == "sp_prepare", name == "sp_prepexec", name == "sp_prepexecrpc":
+		return Verdict{Pin: true, Reason: "server-side prepared handle (" + name + ")"}
+	case name == "sp_cursor", name == "sp_cursoropen", name == "sp_cursorprepare", name == "sp_cursorprepexec", name == "sp_cursorexecute", name == "sp_cursorfetch", name == "sp_cursoroption":
+		return Verdict{Pin: true, Reason: "cursor (" + name + ")"}
 	default:
 		// A user stored proc or an unknown system proc — we can't prove it leaves no state.
 		return Verdict{Pin: true, Reason: "unrecognized RPC (" + proc + ", fail-safe)"}
@@ -137,4 +174,3 @@ func isSetOnly(text string) bool {
 	}
 	return found
 }
-
