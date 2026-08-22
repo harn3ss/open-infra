@@ -20,6 +20,55 @@ spec:
         global:
           leaderElection:
             namespace: cert-manager
+        # Production HA (#26): a leader-elected pair for each component — leaderElection is
+        # already enabled, so the second controller/cainjector is a warm standby, and the
+        # webhook (stateless) load-balances. A PodDisruptionBudget keeps ≥1 up through a
+        # node drain / rollout, and soft pod-anti-affinity spreads the pair across nodes when
+        # capacity allows (preferred, so it never blocks scheduling on a small cluster).
+        replicaCount: 2
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/instance: cert-manager
+                      app.kubernetes.io/component: controller
+        webhook:
+          replicaCount: 2
+          podDisruptionBudget:
+            enabled: true
+            minAvailable: 1
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        app.kubernetes.io/instance: cert-manager
+                        app.kubernetes.io/component: webhook
+        cainjector:
+          replicaCount: 2
+          podDisruptionBudget:
+            enabled: true
+            minAvailable: 1
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        app.kubernetes.io/instance: cert-manager
+                        app.kubernetes.io/component: cainjector
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager
