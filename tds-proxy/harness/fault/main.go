@@ -370,6 +370,8 @@ func main() {
 		clients := envInt("CLIENTS", 8)
 		perClient := envInt("PER_CLIENT", 4)
 		thinkMS := envInt("THINK_MS", 40)
+		txn := os.Getenv("TXN") != "" // TXN=1: wrap each op in an EXPLICIT BEGIN..COMMIT (exercises v2.1's
+		// commit-boundary release) instead of an autocommit statement (v2.0).
 		var okQ, badQ, connErr atomic.Int64
 		var wg sync.WaitGroup
 		for c := 0; c < clients; c++ {
@@ -386,9 +388,24 @@ func main() {
 				db.SetConnMaxIdleTime(time.Hour)
 				for i := 0; i < perClient; i++ {
 					want := cid*100 + i
-					ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					var got int
-					err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT %d", want)).Scan(&got)
+					var err error
+					if txn {
+						// Explicit transaction: BEGIN..SELECT..COMMIT. Under v2.1 the backend is held for the
+						// txn's lifetime (server DONE_INXACT) and released at COMMIT — so mostly-idle clients
+						// still share far fewer than N backends, and the value proves no cross-client mixup.
+						var tx *sql.Tx
+						if tx, err = db.BeginTx(ctx, nil); err == nil {
+							if err = tx.QueryRowContext(ctx, fmt.Sprintf("SELECT %d", want)).Scan(&got); err == nil {
+								err = tx.Commit()
+							} else {
+								tx.Rollback()
+							}
+						}
+					} else {
+						err = db.QueryRowContext(ctx, fmt.Sprintf("SELECT %d", want)).Scan(&got)
+					}
 					cancel()
 					switch {
 					case err != nil:

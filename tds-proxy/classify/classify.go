@@ -19,6 +19,13 @@ type Verdict struct {
 	Reason  string // why it pins (empty if multiplexable)
 	Prelude bool   // a SET-only batch: the session may treat the connection's FIRST such batch as the
 	// driver login prelude (re-applied on every fresh backend) and NOT pin on it.
+	Txn bool // the pin is because a transaction is OPENING (BEGIN TRAN / TM request) rather than because
+	// the session left surviving state. Per-transaction multiplexing (#7 v2.1) tracks such a transaction's
+	// begin/commit boundaries and releases the backend at COMMIT/ROLLBACK instead of pinning it for the
+	// whole session — so a Txn pin is NOT session-sticky.
+	ImplicitTxn bool // SET IMPLICIT_TRANSACTIONS ON: statements auto-open transactions with no explicit
+	// begin to pair to a commit, so per-transaction multiplexing can't safely bound them — the tx-multiplex
+	// relay holds the backend for the whole session (v1 behavior). v1's across-session pooling is unaffected.
 }
 
 var multiplexable = Verdict{}
@@ -36,6 +43,7 @@ var (
 	reAppLock    = regexp.MustCompile(`(?is)sp_getapplock`)
 	reWaitFor    = regexp.MustCompile(`(?im)^\s*waitfor\s`)
 	reSetContext = regexp.MustCompile(`(?is)sp_set_session_context`)
+	reImplicitTx = regexp.MustCompile(`(?is)set\s+implicit_transactions\s+on\b`)
 )
 
 const maxStatementBytes = 16 * 1024 // AWS RDS Proxy's ~16KB pin ceiling
@@ -50,7 +58,7 @@ func Classify(msgType byte, body []byte) Verdict {
 	case tds.TypeBulkLoad:
 		return Verdict{Pin: true, Reason: "bulk load stream"}
 	case tds.TypeTxMgr:
-		return Verdict{Pin: true, Reason: "transaction manager request (explicit txn/savepoint)"}
+		return Verdict{Pin: true, Reason: "transaction manager request (explicit txn/savepoint)", Txn: true}
 	case tds.TypeLogin7, tds.TypePreLogin, tds.TypeSSPI, tds.TypeFedAuth, tds.TypeAttention:
 		return multiplexable // control/setup — not client work
 	default:
@@ -79,7 +87,7 @@ func classifyBatch(text string) Verdict {
 	case reUseDB.MatchString(text):
 		return Verdict{Pin: true, Reason: "USE database (context change)"}
 	case reBeginTran.MatchString(text):
-		return Verdict{Pin: true, Reason: "explicit transaction"}
+		return Verdict{Pin: true, Reason: "explicit transaction", Txn: true}
 	case reAppLock.MatchString(text):
 		return Verdict{Pin: true, Reason: "session-scoped applock"}
 	case reWaitFor.MatchString(text):
@@ -89,7 +97,9 @@ func classifyBatch(text string) Verdict {
 	if m := reSetOption.FindStringSubmatch(text); m != nil {
 		// Prelude: if the batch is ONLY SET statements, the session may treat the connection's first
 		// such batch as the driver login prelude and re-apply it on fresh backends instead of pinning.
-		return Verdict{Pin: true, Reason: "SET session option (" + m[1] + ")", Prelude: isSetOnly(text)}
+		// ImplicitTxn is surfaced separately: it's a poolable prelude for v1 (across-session), but the
+		// tx-multiplex relay must NOT per-transaction-multiplex a session in implicit-transaction mode.
+		return Verdict{Pin: true, Reason: "SET session option (" + m[1] + ")", Prelude: isSetOnly(text), ImplicitTxn: reImplicitTx.MatchString(text)}
 	}
 	return multiplexable // plain SELECT/INSERT/UPDATE/DELETE autocommit — the multiplexable common path
 }
