@@ -13,9 +13,9 @@
 // are retained; this adds the pooling that acts on the verdict.
 //
 // Client attention/cancel IS forwarded promptly mid-response (a two-direction relay), so cancelling a
-// slow query takes effect immediately. Not yet handled (honestly scoped): per-transaction multiplexing
-// within one session (a session holds its backend for its lifetime, not per-statement), MARS, and
-// TLS-terminated (encrypt=strict) sessions — the engine is TDS-no-TLS.
+// slow query takes effect immediately. Per-transaction multiplexing within one session (return the backend
+// between autocommit statements, not at session close) is available opt-in via -tx-multiplex (#7, see
+// txmultiplex.go); the default holds the backend for the session. Not yet handled: MARS.
 package main
 
 import (
@@ -58,6 +58,10 @@ var (
 	pinReasonsMu    sync.Mutex
 	pinReasonCounts = map[string]int64{}
 
+	txReturns      atomic.Int64  // backends returned to the pool at a transaction boundary (mid-session, #7)
+	txMultiplex    bool          // -tx-multiplex: per-transaction multiplexing within a session (opt-in)
+	acquireTimeout time.Duration // how long a client waits for a backend when the pool is at its cap
+
 	backendPool    *pool.Pool
 	preloginResp   = tds.BuildPreloginResponse()
 	clientPrelogin = tds.BuildClientPrelogin() // plaintext PRELOGIN sent to the backend when client TLS is terminated
@@ -73,7 +77,9 @@ func main() {
 	acquireMs := flag.Int("acquire-timeout-ms", 10000, "how long a client waits for a backend when the pool is at its cap")
 	tlsCert := flag.String("tls-cert", "", "PEM cert to TERMINATE client TLS (encrypt=on/strict); backend stays plaintext (#6)")
 	tlsKey := flag.String("tls-key", "", "PEM key for -tls-cert")
+	txMux := flag.Bool("tx-multiplex", false, "per-transaction multiplexing: return the backend between autocommit statements, not at session close (#7, opt-in)")
 	flag.Parse()
+	txMultiplex = *txMux
 	if *backend == "" {
 		log.Fatal("tds-proxy: -backend host:port is required")
 	}
@@ -95,7 +101,7 @@ func main() {
 		log.Printf("tds-proxy: TLS termination ENABLED (encrypt=on + strict); backend connection stays plaintext")
 	}
 	backendPool = pool.New(*poolMax)
-	acquireTimeout := time.Duration(*acquireMs) * time.Millisecond
+	acquireTimeout = time.Duration(*acquireMs) * time.Millisecond
 
 	go serveMetrics(*metrics)
 
@@ -110,13 +116,13 @@ func main() {
 			log.Printf("tds-proxy: accept: %v", err)
 			continue
 		}
-		go handle(c, *backend, acquireTimeout)
+		go handle(c, *backend)
 	}
 }
 
 // handle terminates one client's handshake, borrows a backend, relays the session, and returns or
 // discards the backend based on the classifier verdict.
-func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
+func handle(client net.Conn, backendAddr string) {
 	id := sessionsTotal.Add(1)
 	sessionsActive.Add(1)
 	defer sessionsActive.Add(-1)
@@ -303,7 +309,14 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 		coldOpens.Add(1)
 	}
 
-	// 4. Relay the session synchronously (TDS is request/response), classifying each client message.
+	// 4. Per-transaction multiplexing (#7, opt-in): hand the session to a relay that returns the backend to
+	//    the pool between autocommit statements. Default path below holds the backend for the whole session.
+	if txMultiplex {
+		txMultiplexRelay(client, be, needReset, key, backendAddr, backendPre, lRaw, id)
+		return
+	}
+
+	// 4b. Relay the session synchronously (TDS is request/response), classifying each client message.
 	pinned, reasons, returnable := relaySession(client, be.Conn, needReset)
 
 	// 5. Return the backend for reuse only if the session stayed clean AND the backend is quiescent.
@@ -514,6 +527,7 @@ func serveMetrics(addr string) {
 		fmt.Fprintf(w, "multiplex_opportunity %.3f\n", ratio)
 		fmt.Fprintf(w, "pool_cold_opens %d\npool_warm_reuses %d\npool_returns %d\npool_discards %d\npool_acquire_timeouts %d\n",
 			coldOpens.Load(), warmReuses.Load(), returns.Load(), discards.Load(), acquireTimeouts.Load())
+		fmt.Fprintf(w, "tx_multiplex_returns %d\n", txReturns.Load())
 		fmt.Fprintf(w, "pool_reuse_ratio %.3f\n", reuse)
 		// MARS visibility: how many clients asked for MARS (not granted). A high count flags a fleet a
 		// future per-transaction multiplexer would have to pin or specially handle — measured, not guessed.
