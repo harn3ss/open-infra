@@ -181,3 +181,26 @@ func decodeUTF16LE(b []byte) string {
 	}
 	return string(utf16.Decode(u))
 }
+
+// TransactionManager (message type 0x0E) request subtypes (MS-TDS §2.2.6.8). Drivers open and close
+// explicit transactions with these — database/sql + go-mssqldb, Microsoft.Data.SqlClient, mssql-jdbc's
+// setAutoCommit, etc. — so tracking them on the request side is how the multiplexer knows a transaction's
+// exact begin/commit boundaries (the server's DONE_INXACT is not set on the begin-ack DONE, so it can't).
+const (
+	TMBeginXact    uint16 = 5
+	TMPromoteXact  uint16 = 6
+	TMCommitXact   uint16 = 7
+	TMRollbackXact uint16 = 8
+	TMSaveXact     uint16 = 9
+)
+
+// TxMgrRequestType returns the RequestType USHORT of a TransactionManager (0x0E) message body — an
+// ALL_HEADERS block (self-describing length prefix) followed by the 2-byte request type. Returns
+// (0, false) if the body is too short or the ALL_HEADERS length is malformed.
+func TxMgrRequestType(body []byte) (uint16, bool) {
+	off := allHeadersLen(body)
+	if off == 0 || off+2 > len(body) {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint16(body[off : off+2]), true
+}

@@ -109,3 +109,27 @@ func buildSQLBatch(text string) []byte {
 	}
 	return append(hdr, u...)
 }
+
+// The transaction/implicit-txn flags that drive #7 v2.1 per-transaction multiplexing.
+func TestClassify_TxnFlags(t *testing.T) {
+	// BEGIN TRAN batch → Txn (releasable at commit under tx-multiplex), not implicit.
+	if v := classifyBatch("BEGIN TRANSACTION"); !v.Pin || !v.Txn || v.ImplicitTxn {
+		t.Fatalf("BEGIN TRAN: got %+v, want Pin+Txn, not ImplicitTxn", v)
+	}
+	// A TransactionManager request → Txn.
+	if v := Classify(tds.TypeTxMgr, nil); !v.Pin || !v.Txn {
+		t.Fatalf("TxMgr: got %+v, want Pin+Txn", v)
+	}
+	// SET IMPLICIT_TRANSACTIONS ON → ImplicitTxn (tx-multiplex must hold the session, not multiplex it).
+	if v := classifyBatch("SET IMPLICIT_TRANSACTIONS ON"); !v.ImplicitTxn {
+		t.Fatalf("SET IMPLICIT_TRANSACTIONS ON: got %+v, want ImplicitTxn", v)
+	}
+	// A plain SET is neither.
+	if v := classifyBatch("SET NOCOUNT ON"); v.Txn || v.ImplicitTxn {
+		t.Fatalf("SET NOCOUNT: got %+v, want neither Txn nor ImplicitTxn", v)
+	}
+	// A plain SELECT multiplexes — no flags.
+	if v := classifyBatch("SELECT 1"); v.Pin || v.Txn || v.ImplicitTxn {
+		t.Fatalf("SELECT: got %+v, want no flags", v)
+	}
+}
