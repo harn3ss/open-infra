@@ -23,7 +23,8 @@ curl -s localhost:29114/status            # per-run verdicts
 ```
 
 Container-gated drivers (no host install): pyodbc/`msodbcsql18` in a `python:3`+`apt msodbcsql18`
-container, `Microsoft.Data.SqlClient` in `mcr.microsoft.com/dotnet/sdk` — each forcing `Encrypt=no`.
+container (`harness/pyodbc/`, run against a TLS-terminating proxy — see the driver notes below),
+`Microsoft.Data.SqlClient` in `mcr.microsoft.com/dotnet/sdk`.
 
 ## Fault axis (issue #4)
 
@@ -74,6 +75,24 @@ The token-leak / over-issue invariants these demonstrate are also proven determi
   as expected. tedious also issues `SET TRANSACTION ISOLATION LEVEL` in its connect prelude — which the
   classifier now treats as a **poolable login prelude** (re-applied per connection), so tedious went from
   100% pinned to fully poolable. `.NET`'s SqlClient sets isolation the same way and benefits identically.
-- **mssql-jdbc / msodbcsql18 / Microsoft.Data.SqlClient**: even with `encrypt=false` these negotiate
-  **login-time TLS** the plaintext proxy can't satisfy, so the handshake fails → **unhandled** until the
-  proxy terminates TLS (issue C3F57E74). Only the `encryption=disable` column is capturable until then.
+- **mssql-jdbc** (12.8.1): negotiates login-time TLS even at `encrypt=false`, so it needed **TLS
+  termination** (#6). Now connects at `encrypt=on` (tunneled) *and* `encrypt=strict` (TDS 8.0, via a
+  PKCS12 truststore). A `#temp` pins; a single `prepareStatement` goes via `sp_executesql` → multiplexes;
+  `autoCommit(false)` uses `SET IMPLICIT_TRANSACTIONS` (a poolable prelude). The prelude allowlist built
+  from go-mssqldb held for it unchanged — no false-pin, no leak.
+- **pyodbc / msodbcsql18** (18.6.2): also TLS-only; runs at `Encrypt=yes` (tunneled) and `Encrypt=strict`
+  (via the `ServerCertificate` keyword). Two ODBC-specific findings: (1) it issues
+  `[sys].sp_datatype_info_100` on **every connect** — a benign read-only metadata RPC that the classifier
+  fail-safe-pinned as unrecognized, false-pinning *every* ODBC connection and killing pooling; fixed by
+  whitelisting the read-only ODBC catalog procs. (2) a parameterized query is framed as **`sp_prepexec`**
+  (a real server-side prepared handle) → **pins**, where JDBC/go-mssqldb's `sp_executesql` multiplexes — a
+  legitimate driver-framing difference; the classifier's verdict is correct for each. No leak in any shape.
+
+Build the pyodbc image + run against a TLS-terminating proxy:
+
+```bash
+docker build -t tdsgrid-pyodbc harness/pyodbc
+# proxy started with -tls-cert/-tls-key; cert mounted for strict
+docker run --rm --network host -v /path/proxy.crt:/proxy.crt:ro \
+  -e HOST=127.0.0.1 -e PORT=23443 -e USER=sa -e PW='…' -e ENCRYPT=strict -e CERT=/proxy.crt tdsgrid-pyodbc
+```
