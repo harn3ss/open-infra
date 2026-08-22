@@ -49,6 +49,7 @@ var (
 	acquireTimeouts atomic.Int64
 	marsRequested   atomic.Int64 // clients that asked for MARS in PRELOGIN (the pool does not grant it)
 	integratedAuth  atomic.Int64 // integrated/Windows (SSPI) logins refused — not poolable by credential
+	fedAuthRefused  atomic.Int64 // federated/Azure AD (FEDAUTH) logins refused — principal is in the token, not the key
 	deadEvicted     atomic.Int64 // pooled backends found dead/dirty at borrow time and evicted (fault axis)
 	tlsStrict       atomic.Int64 // clients terminated via TDS 8.0 strict (TLS-first)
 	tlsOn           atomic.Int64 // clients terminated via legacy encrypt=on (TLS tunneled in PRELOGIN)
@@ -222,13 +223,19 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 	if !ok {
 		return
 	}
-	// Integrated/Windows (SSPI) auth carries no credential to key on — pooling it would risk collapsing
-	// distinct Windows identities onto one shared backend, and the multi-round SSPI token exchange isn't
-	// relayed by the pool's terminated handshake. Refuse cleanly; SQL auth is the supported mode. (A
-	// transparent pass-through mode for integrated auth is a documented follow-up.)
+	// Integrated/Windows (SSPI) and federated/Azure AD (FEDAUTH) auth carry the real identity in a
+	// per-connection SSPI blob or a FeatureExt token, not the password field the pool keys on — pooling
+	// either would risk collapsing distinct principals onto one shared backend, and neither token exchange
+	// is relayed by the pool's terminated handshake. Refuse cleanly; SQL auth is the supported mode.
+	// (Transparent pass-through for these identity modes is a documented follow-up.)
 	if info.Integrated {
 		integratedAuth.Add(1)
 		log.Printf("tds-proxy: session %d: integrated/Windows (SSPI) auth is not poolable — use SQL auth", id)
+		return
+	}
+	if info.FedAuth {
+		fedAuthRefused.Add(1)
+		log.Printf("tds-proxy: session %d: federated/Azure AD auth is not poolable — use SQL auth", id)
 		return
 	}
 	key := poolKey(backendAddr, info)
@@ -508,6 +515,7 @@ func serveMetrics(addr string) {
 		// future per-transaction multiplexer would have to pin or specially handle — measured, not guessed.
 		fmt.Fprintf(w, "mars_requested %d\n", marsRequested.Load())
 		fmt.Fprintf(w, "integrated_auth_refused %d\n", integratedAuth.Load())
+		fmt.Fprintf(w, "fedauth_refused %d\n", fedAuthRefused.Load())
 		fmt.Fprintf(w, "pool_dead_evicted %d\n", deadEvicted.Load())
 		fmt.Fprintf(w, "tls_terminated_strict %d\ntls_terminated_on %d\ntls_handshake_errors %d\ntls_required_no_cert %d\n",
 			tlsStrict.Load(), tlsOn.Load(), tlsHandshakeErr.Load(), tlsUnsupported.Load())
