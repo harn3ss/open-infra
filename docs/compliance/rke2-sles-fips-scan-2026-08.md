@@ -115,6 +115,10 @@ generalizes — every framework improved, not just STIG:
 - The STIG remediation set (audit rules, password/PAM policy, file permissions, login banners, umask,
   AIDE) overlaps heavily with the PCI/HIPAA/ANSSI control families, so applying it once lifts all of
   them — quantified deployer-hardening leverage, not four separate hardening efforts.
+- The **Kubernetes CIS benchmark barely moved** on re-bench (kube-bench rke2-cis: 53/9/46 → **55/8/45**),
+  confirming that OS-level STIG remediation closes a kubelet file-permission check or two but does not
+  materially change the k8s *config* controls — which is the expected separation of concerns. Report:
+  `kube-bench-report.txt`.
 - The **residual fails are the expected tail**: the ~15 documented Kubernetes-incompatible controls
   (IP forwarding, CNI sysctls, firewalld, mount/partition rules), the FIPS-vs-STIG ordered-cipher
   exceptions, and build-time deviations that the *hardened* AutoYaST profile (not the minimal one on
