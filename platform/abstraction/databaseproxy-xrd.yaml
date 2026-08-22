@@ -59,8 +59,9 @@ spec:
                   enum: [babelfish, sqlserver]
                   default: babelfish
                   description: >-
-                    Wire family of the target. Only babelfish (TDS-no-TLS) is served in
-                    v1; sqlserver is reserved for when the proxy terminates TLS.
+                    Wire family of the target backend (the proxy connects to it in plaintext — the
+                    managed engine is TDS-no-TLS). Client-side TLS is a separate concern: set spec.tls
+                    to terminate encrypt=on/strict clients regardless of engineFamily (#6).
                 poolMax:
                   type: integer
                   default: 20
@@ -79,6 +80,38 @@ spec:
                   default: 1
                   minimum: 1
                   description: Proxy Deployment replicas (each keeps its own pool; size the cap accordingly).
+                tls:
+                  type: object
+                  description: >-
+                    Terminate client TLS at the proxy (issue #6). Off by default. When enabled the proxy
+                    presents a cert-manager-issued serving certificate and accepts encrypt=on (TLS tunneled
+                    in PRELOGIN) and encrypt=strict (TDS 8.0) clients — the modes JDBC/ODBC/.NET default to
+                    — while the backend connection stays plaintext (the managed engine is TDS-no-TLS). A
+                    client that requires encryption when this is off is refused, never downgraded.
+                  properties:
+                    terminate:
+                      type: boolean
+                      default: false
+                      description: Enable TLS termination. A cert is issued via issuerRef.
+                    issuerRef:
+                      type: object
+                      description: The cert-manager (Cluster)Issuer that signs the proxy's serving cert.
+                      properties:
+                        name:
+                          type: string
+                        kind:
+                          type: string
+                          enum: [Issuer, ClusterIssuer]
+                          default: ClusterIssuer
+                      required: [name]
+                    dnsNames:
+                      type: array
+                      items:
+                        type: string
+                      description: >-
+                        Additional SANs for the serving cert. The proxy Service DNS names are always
+                        included; add the external name clients dial if different (strict clients validate
+                        the chain, so the connect name must be covered).
             status:
               type: object
               properties:
