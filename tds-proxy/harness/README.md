@@ -88,10 +88,32 @@ The token-leak / over-issue invariants these demonstrate are also proven determi
   (a real server-side prepared handle) → **pins**, where JDBC/go-mssqldb's `sp_executesql` multiplexes — a
   legitimate driver-framing difference; the classifier's verdict is correct for each. No leak in any shape.
 
-Build the pyodbc image + run against a TLS-terminating proxy:
+- **Microsoft.Data.SqlClient** (5.2.2 / .NET 8, `harness/dotnet/`): TLS-only; runs at `Encrypt=Mandatory`
+  (tunneled) and `Encrypt=Strict` (via the `ServerCertificate` keyword). A parameterized command goes via
+  `sp_executesql` → multiplexes (like go-mssqldb/JDBC, unlike pyodbc's `sp_prepexec`); `#temp` pins;
+  `BeginTransaction()` → TxMgr → pins.
+- **SQLAlchemy** (2.x over pyodbc, `harness/sqlalchemy/`) — the ORM. SQLAlchemy runs the connection in
+  manual-commit mode (autobegin), so **every** unit of work, even a `SELECT`, opens an explicit transaction
+  → TxMgr → **pins**. That's a correct pin (a real open transaction is session state), not a false-pin; the
+  consequence is a transactional ORM gets the connection *ceiling* but little warm-reuse until
+  per-transaction multiplexing (#7). `AUTOCOMMIT` isolation lets read-only ORM work multiplex.
+
+**Cross-driver pool corruption (found here, fixed).** Interleaving drivers on the *same* credential
+surfaced a real bug that single-driver testing can't: `Microsoft.Data.SqlClient` reusing a pooled backend
+that **pyodbc/ODBC** had opened intermittently mis-parsed responses (`invalid SqlDbType` — a TDS token
+desync). The backend's response wire-format is fixed by the **cold opener's** replayed `LOGIN7` (packet
+size + FeatureExt differ: pyodbc vs .NET), and `RESETCONNECTION` does **not** renegotiate it, yet the pool
+key omitted the login profile — so a driver with a different profile got another driver's format. Fixed by
+folding `tds.LoginProfile` (TDS version + packet size + option flags + LCID + FeatureExt) into the pool
+key: same driver still pools, different drivers get separate buckets. Repro: prime the pool with pyodbc,
+then run `.NET` — was 8 errors / 5 runs, now 0 / 6, mixed-driver matrix clean.
+
+Build the container harnesses + run against a TLS-terminating proxy:
 
 ```bash
-docker build -t tdsgrid-pyodbc harness/pyodbc
+docker build -t tdsgrid-pyodbc     harness/pyodbc
+docker build -t tdsgrid-dotnet     harness/dotnet
+docker build -t tdsgrid-sqlalchemy harness/sqlalchemy
 # proxy started with -tls-cert/-tls-key; cert mounted for strict
 docker run --rm --network host -v /path/proxy.crt:/proxy.crt:ro \
   -e HOST=127.0.0.1 -e PORT=23443 -e USER=sa -e PW='…' -e ENCRYPT=strict -e CERT=/proxy.crt tdsgrid-pyodbc

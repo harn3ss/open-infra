@@ -101,6 +101,33 @@ func TestParseLogin7_FedAuth(t *testing.T) {
 	}
 }
 
+func TestLoginProfile(t *testing.T) {
+	base := buildLogin7("sa", []byte{0x01, 0x02}, "master")
+	if LoginProfile(base) != LoginProfile(buildLogin7("sa", []byte{0x01, 0x02}, "master")) {
+		t.Fatal("identical logins must hash to the same profile")
+	}
+	// Per-client noise that does NOT affect wire format must NOT change the profile, or two connections
+	// from the same driver would never share a pooled backend. ClientPID is bytes 16-19.
+	noisy := buildLogin7("sa", []byte{0x01, 0x02}, "master")
+	binary.LittleEndian.PutUint32(noisy[16:], 0xDEADBEEF)
+	if LoginProfile(noisy) != LoginProfile(base) {
+		t.Fatal("ClientPID (format-irrelevant) must not change the profile")
+	}
+	// A different packet size (bytes 8-11) DOES change the format profile → separate pool bucket.
+	pkt := buildLogin7("sa", []byte{0x01, 0x02}, "master")
+	binary.LittleEndian.PutUint32(pkt[8:], 8000)
+	if LoginProfile(pkt) == LoginProfile(base) {
+		t.Fatal("different packet size must change the profile")
+	}
+	// A different FeatureExt set (COLUMNENCRYPTION present) DOES change the profile — this is the exact
+	// pyodbc-vs-.NET mismatch that corrupted cross-driver warm reuse.
+	fed := withFeatureExt(buildLogin7("sa", []byte{0x01, 0x02}, "master"), map[byte][]byte{0x0A: {0x01}})
+	ce := withFeatureExt(buildLogin7("sa", []byte{0x01, 0x02}, "master"), map[byte][]byte{0x0A: {0x01}, 0x04: {0x01}})
+	if LoginProfile(fed) == LoginProfile(ce) {
+		t.Fatal("a different FeatureExt set must change the profile")
+	}
+}
+
 func TestParseLogin7_TooShort(t *testing.T) {
 	if _, ok := ParseLogin7(make([]byte, 40)); ok {
 		t.Fatal("expected ok=false for a truncated payload")

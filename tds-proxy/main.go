@@ -481,7 +481,11 @@ func isClientWork(t byte) bool {
 func poolKey(backendAddr string, info tds.Login7Info) string {
 	h := fnv.New64a()
 	h.Write(info.PassField)
-	return fmt.Sprintf("%s|%s|%s|%x", backendAddr, info.User, info.Database, h.Sum64())
+	// info.Profile keys on the login's wire-format fingerprint so a backend is only ever reused by a client
+	// whose LOGIN7 negotiated the SAME response format as the cold opener whose login was replayed onto it —
+	// otherwise a driver with a different packet size / FeatureExt set mis-parses the responses (see
+	// tds.LoginProfile). Same driver → same profile → still pools; different driver → separate bucket.
+	return fmt.Sprintf("%s|%s|%s|%x|%x", backendAddr, info.User, info.Database, h.Sum64(), info.Profile)
 }
 
 func recordReasons(reasons []string) {
