@@ -25,7 +25,7 @@ RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@
       -ldflags "-s -w -X github.com/minio/mc/cmd.Version=${MC_VERSION} -X github.com/minio/mc/cmd.ReleaseTag=${MC_VERSION}" \
       -o /mc .
 
-FROM alpine:3.20
+FROM alpine:3.24
 COPY --from=build /mc /usr/bin/mc
 RUN chmod 0755 /usr/bin/mc && /usr/bin/mc --version
 USER 65532:65532
