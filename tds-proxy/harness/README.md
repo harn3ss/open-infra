@@ -68,21 +68,26 @@ The token-leak / over-issue invariants these demonstrate are also proven determi
 
 ## Per-transaction multiplexing (issue #7)
 
-The `tx-multiplex` scenario proves the opt-in `-tx-multiplex` mode (return the backend between autocommit
-statements, not at session close). `CLIENTS` mostly-idle clients each run `PER_CLIENT` autocommit queries
-with `THINK_MS` think-time; the pass check is that every `SELECT n` returns exactly `n` (no cross-client
-corruption/leak), a sticky `#temp` client works across its own statements, and `tx_multiplex_returns > 0`.
+The `tx-multiplex` scenario proves the opt-in `-tx-multiplex` mode (return the backend at each safe boundary,
+not at session close). `CLIENTS` mostly-idle clients each run `PER_CLIENT` ops with `THINK_MS` think-time;
+the pass check is that every `SELECT n` returns exactly `n` (no cross-client corruption/leak), a sticky
+`#temp` client works across its own statements, and `tx_multiplex_returns > 0`. `TXN=1` wraps each op in an
+**explicit** `BEGIN…COMMIT` (v2.1 — commit-boundary release) instead of an autocommit statement (v2.0).
 
 ```bash
 # proxy started with -tx-multiplex -pool-max 3
 PROXY=127.0.0.1:23443 STATUS=http://127.0.0.1:29144/status \
-  CLIENTS=8 PER_CLIENT=4 THINK_MS=500 SCENARIO=tx-multiplex /tmp/fault
+  CLIENTS=8 PER_CLIENT=4 THINK_MS=500 SCENARIO=tx-multiplex /tmp/fault          # v2.0 autocommit
+PROXY=127.0.0.1:23443 STATUS=http://127.0.0.1:29144/status \
+  CLIENTS=8 PER_CLIENT=4 THINK_MS=500 TXN=1 SCENARIO=tx-multiplex /tmp/fault    # v2.1 explicit txns
 ```
 
-Live contrast (2026-08-22, SQL Server 2022, pool-max 3, 8 clients, 500 ms think): with `-tx-multiplex`
-all 32 queries succeed on **3** backends (30 warm reuses, 0 acquire-timeouts); the session-level default —
-where each live session holds a backend — saturates and times out **7 of 8** clients. Zero corrupted reads
-and the sticky `#temp` is correct in **both** modes.
+Live (2026-08-22, SQL Server 2022, pool-max 3, 8 clients, 500 ms think), both autocommit **and** explicit
+transactions: with `-tx-multiplex` all 32 ops succeed on **3** backends (30 warm reuses, 0 acquire-timeouts);
+the session-level default — where each live session holds a backend — saturates and times out **7 of 8**
+clients. Zero corrupted reads and the sticky `#temp` correct in **both** modes. Explicit transactions are
+tracked from the TM request subtype and released at COMMIT/ROLLBACK; a raw `BEGIN TRAN` batch or
+`SET IMPLICIT_TRANSACTIONS ON` (JDBC `autoCommit(false)`) stays sticky.
 
 ## Findings so far (see grid.jsonl)
 

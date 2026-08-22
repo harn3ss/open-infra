@@ -187,6 +187,28 @@ session goes **sticky** and reverts to v1 behaviour (hold the one backend, disca
 
 **Parity caveat (matches RDS Proxy):** a multiplexed session's backend — and thus `@@SPID`/`@@SPID`-derived
 identity — can change between statements. Apps that depend on cross-statement session identity without
-temp/txn state should not enable `-tx-multiplex`, exactly as RDS Proxy advises. v2.1 (later): release at
-`COMMIT`/`ROLLBACK` for *explicit* transactions too, driven by the server's `ENVCHANGE`/`DONE_INXACT`
-transaction signal rather than falling back to sticky.
+temp/txn state should not enable `-tx-multiplex`, exactly as RDS Proxy advises.
+
+**v2.1 — explicit-transaction multiplexing (shipped).** v2.0 fell back to sticky on any transaction; v2.1
+multiplexes explicit transactions too, holding one backend for the transaction's lifetime and releasing it
+exactly at `COMMIT`/`ROLLBACK`.
+
+- **Signal = the TM request subtype, not `DONE_INXACT`.** Drivers open/close explicit transactions with the
+  TDS transaction manager (message 0x0E: `TM_BEGIN_XACT` / `TM_COMMIT_XACT` / `TM_ROLLBACK_XACT`) — that's
+  what `database/sql`+go-mssqldb, `Microsoft.Data.SqlClient`, and ODBC's autocommit-off send. The relay
+  tracks a transaction depth from those subtypes (`tds.TxMgrRequestType`) and releases only at depth 0, so a
+  transaction can never span backends. NOTE (found empirically): SQL Server does **not** set `DONE_INXACT`
+  on the begin-ack DONE token, so the response-side signal is unreliable for "is a txn now open" — the
+  request side is authoritative here.
+- **Conservative fallbacks stay sticky.** A raw `BEGIN TRAN` *batch* (not the TM path) and
+  `SET IMPLICIT_TRANSACTIONS ON` (e.g. JDBC `autoCommit(false)` — statements auto-open txns with no explicit
+  begin to pair to a commit) can't be safely bounded, so the session holds one backend for its lifetime,
+  exactly like v1. v1's across-session pooling of those is unaffected.
+- **Verified:** live vs SQL Server 2022 (`SCENARIO=tx-multiplex TXN=1`) — 8 clients running explicit
+  BEGIN/…/COMMIT on `pool-max 3` all succeed sharing 3 backends (released at commit, 0 corrupt reads), while
+  the session-level default saturates and times out 7 of 8. Autocommit (v2.0) unregressed. Implicit-txn
+  sticky fallback is unit-tested (classifier detection) and reuses the proven sticky path.
+
+**Still open (v2.2, later):** forwarding a client `ATTENTION` (cancel) mid-response race-free *across* a
+mid-session backend swap — tx-multiplex still relays each response synchronously, so a mid-query cancel
+waits for the response to complete (the default session-level relay keeps prompt cancel).
