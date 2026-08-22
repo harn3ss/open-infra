@@ -33,6 +33,13 @@ Terraform provider.
   (`pool_dead_evicted`; verified by restarting the backend under a warm pool). A backend that dies
   *mid-session* still surfaces a clean connection error to that one client, which retries; pool exhaustion
   queues up to the acquire timeout.
+- **TLS termination** (`-tls-cert`/`-tls-key`, opt-in) — TDS negotiates TLS *inside* the protocol, so the
+  proxy terminates it as the TLS peer and relays **plaintext to the backend** (the managed engine is
+  TDS-no-TLS): **TDS 8.0 strict** (TLS-first, detected by peeking the ClientHello) and legacy
+  **`encrypt=on`/mandatory** (the TLS handshake tunneled inside PRELOGIN packets, then raw). This unblocks
+  the JDBC/ODBC/.NET drivers that default to encryption. A client that *requires* encryption when no cert
+  is configured is refused, never silently downgraded (`tls_terminated_{strict,on}`,
+  `tls_handshake_errors`). Via `kind: DatabaseProxy` the cert is issued by cert-manager (`spec.tls`).
 - **MARS visibility** — `mars_requested` counts clients that ask for MARS (Multiple Active Result Sets)
   in PRELOGIN. The pool does **not** grant MARS (the synthesized PRELOGIN response omits the option), so
   those sessions run single-request-per-connection. Counting the *requests* is a measurement no pooler
@@ -45,10 +52,12 @@ Terraform provider.
 [`grid.jsonl`](grid.jsonl)); the pool tested end-to-end against Babelfish — cold→warm reuse, clean-return
 vs pinned-discard, and the connection cap (6 concurrent clients, cap 3 → only 3 backends opened).
 
+TLS termination (`encrypt=on`/`strict`) is verified live via go-mssqldb against SQL Server 2022 (all three
+of disable/on/strict connect through the proxy; the backend stays plaintext).
+
 **Not yet built:** **per-transaction** multiplexing *within* a session (a session holds its backend for
-its lifetime; reuse is across sessions, not per-statement), MARS, and TLS termination
-(`Encrypt=mandatory`/`strict` — the engine is TDS-no-TLS, so those are out of scope for now). Client
-attention/cancel **is** forwarded promptly (a slow query cancels immediately, not after it finishes).
+its lifetime; reuse is across sessions, not per-statement), and granting MARS (it is counted, not granted).
+Client attention/cancel **is** forwarded promptly (a slow query cancels immediately, not after it finishes).
 
 ## Run
 
