@@ -62,6 +62,15 @@ func (p *Pool) subFor(key string) *sub {
 // returns warm=false, be=nil, ok=false.
 func (p *Pool) Acquire(key string, timeout time.Duration) (be *Backend, warm bool, ok bool) {
 	s := p.subFor(key)
+	// Prefer a warm idle backend over opening a new one. A plain 3-way select would pick between a ready
+	// idle backend and a free token at RANDOM (Go select is nondeterministic when several cases are ready),
+	// so a warm backend would be passed over for a needless cold open ~half the time — wasting reuse and,
+	// under -tx-multiplex where every next statement re-borrows, wasting it constantly. Check idle first.
+	select {
+	case b := <-s.idle:
+		return b, true, true
+	default:
+	}
 	select {
 	case b := <-s.idle:
 		return b, true, true

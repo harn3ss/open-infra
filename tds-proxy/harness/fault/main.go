@@ -71,6 +71,16 @@ func status(url string) map[string]int64 {
 
 func num(m map[string]int64, k string) int64 { return m[k] }
 
+// envInt reads an int env var with a default (for tunable scenario knobs like CLIENTS / THINK_MS).
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 // capturingDialer records the raw client-side net.Conn so a test can hard-close it mid-stream (a
 // vanished client), which database/sql's graceful Close cannot simulate.
 type capturingDialer struct{ conn net.Conn }
@@ -350,8 +360,86 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "tx-multiplex":
+		// #7: N clients each hold a connection open and run several autocommit queries with think-time
+		// between them. Under -tx-multiplex the proxy returns each backend to the pool BETWEEN statements,
+		// so N mostly-idle clients share far fewer than N backends. The proof is the contrast with the
+		// session-level default, where each of N live sessions holds a backend and (with pool-max < N) the
+		// surplus clients time out. Also asserts correctness: every "SELECT <n>" returns exactly n (no
+		// cross-client corruption), and a sticky client's #temp survives across its own statements.
+		clients := envInt("CLIENTS", 8)
+		perClient := envInt("PER_CLIENT", 4)
+		thinkMS := envInt("THINK_MS", 40)
+		var okQ, badQ, connErr atomic.Int64
+		var wg sync.WaitGroup
+		for c := 0; c < clients; c++ {
+			wg.Add(1)
+			go func(cid int) {
+				defer wg.Done()
+				db, err := sql.Open("sqlserver", dsn(proxy))
+				if err != nil {
+					connErr.Add(1)
+					return
+				}
+				defer db.Close()
+				db.SetMaxOpenConns(1) // one client = one live proxy session
+				db.SetConnMaxIdleTime(time.Hour)
+				for i := 0; i < perClient; i++ {
+					want := cid*100 + i
+					ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+					var got int
+					err := db.QueryRowContext(ctx, fmt.Sprintf("SELECT %d", want)).Scan(&got)
+					cancel()
+					switch {
+					case err != nil:
+						connErr.Add(1)
+					case got == want:
+						okQ.Add(1)
+					default:
+						badQ.Add(1) // wrong value = a cross-client corruption/leak
+					}
+					time.Sleep(time.Duration(thinkMS) * time.Millisecond) // think-time: the client is idle, backend can be reused
+				}
+			}(c)
+		}
+		wg.Wait()
+
+		// Sticky correctness: a session that creates a #temp must keep working across its own statements
+		// (the proxy holds ONE backend for it), and the temp's rows must be exactly what it inserted.
+		stickyOK := false
+		{
+			db, err := sql.Open("sqlserver", dsn(proxy))
+			if err == nil {
+				db.SetMaxOpenConns(1)
+				conn, cerr := db.Conn(context.Background())
+				if cerr == nil {
+					ctx := context.Background()
+					_, e1 := conn.ExecContext(ctx, "CREATE TABLE #s(id int)")
+					_, e2 := conn.ExecContext(ctx, "INSERT INTO #s VALUES (11),(22),(33)")
+					var sum int
+					e3 := conn.QueryRowContext(ctx, "SELECT SUM(id) FROM #s").Scan(&sum)
+					stickyOK = e1 == nil && e2 == nil && e3 == nil && sum == 66
+					conn.Close()
+				}
+				db.Close()
+			}
+		}
+
+		after := status(statusURL)
+		txRet := num(after, "tx_multiplex_returns") - num(before, "tx_multiplex_returns")
+		cold := num(after, "pool_cold_opens") - num(before, "pool_cold_opens")
+		warm := num(after, "pool_warm_reuses") - num(before, "pool_warm_reuses")
+		tos := num(after, "pool_acquire_timeouts") - num(before, "pool_acquire_timeouts")
+		fmt.Printf("clients=%d perClient=%d queries ok=%d bad=%d connErr=%d\n", clients, perClient, okQ.Load(), badQ.Load(), connErr.Load())
+		fmt.Printf("sticky #temp correct=%v\n", stickyOK)
+		fmt.Printf("STATUS deltas: tx_multiplex_returns=%d cold_opens=%d warm_reuses=%d acquire_timeouts=%d\n", txRet, cold, warm, tos)
+		// Pass = every query correct, no bad/corrupt reads, sticky works, and multiplexing actually happened.
+		if badQ.Load() != 0 || connErr.Load() != 0 || !stickyOK || okQ.Load() != int64(clients*perClient) || txRet == 0 {
+			os.Exit(1)
+		}
+
 	default:
-		fmt.Println("set SCENARIO=stampede|pinned-drop|handshake-drop|midresult-drop|backend-failover|tls-modes")
+		fmt.Println("set SCENARIO=stampede|pinned-drop|handshake-drop|midresult-drop|backend-failover|tls-modes|tx-multiplex")
 		os.Exit(2)
 	}
 }
