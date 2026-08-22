@@ -17,7 +17,9 @@ ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 RUN git clone --depth 1 --branch ${MC_VERSION} https://github.com/minio/mc /src
 WORKDIR /src
 # Recompiling with the current Go clears the stdlib CVEs; bumping the Trivy-flagged deps clears theirs.
-RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@latest google.golang.org/grpc@latest \
+# (prometheus is a transitive dep mc embeds for metrics — its two flagged CVEs are server-side
+# remote-read/Azure-SD paths mc never uses, but bumping to the fixed release clears them cleanly.)
+RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@latest google.golang.org/grpc@latest github.com/prometheus/prometheus@v0.311.3 \
  && go mod tidy \
  && CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X github.com/minio/mc/cmd.Version=${MC_VERSION} -X github.com/minio/mc/cmd.ReleaseTag=${MC_VERSION}" \
