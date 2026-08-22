@@ -19,9 +19,9 @@ func buildLogin7(user string, pass []byte, db string) []byte {
 		body = append(body, data...)
 		return ib
 	}
-	put(40, u, len(user))       // ibUserName/cchUserName
-	put(44, pass, len(pass)/2)  // ibPassword/cchPassword (cch = chars)
-	put(68, d, len(db))         // ibDatabase/cchDatabase
+	put(40, u, len(user))      // ibUserName/cchUserName
+	put(44, pass, len(pass)/2) // ibPassword/cchPassword (cch = chars)
+	put(68, d, len(db))        // ibDatabase/cchDatabase
 	binary.LittleEndian.PutUint32(body[0:], uint32(len(body)))
 	return body
 }
@@ -51,6 +51,53 @@ func TestParseLogin7(t *testing.T) {
 	}
 	if !bytes.Equal(info.PassField, pass) {
 		t.Errorf("passfield = %x, want %x", info.PassField, pass)
+	}
+}
+
+// withFeatureExt appends a FeatureExt block (MS-TDS §2.2.6.4) to a LOGIN7 body: it sets the fExtension
+// bit, points ExtensionOffset at a DWORD, and lays out each feature as id(1)+len(4)+data followed by the
+// 0xFF terminator — matching what a driver writes for FEDAUTH/UTF8/etc.
+func withFeatureExt(body []byte, feats map[byte][]byte) []byte {
+	body[27] |= 0x10                                               // OptionFlags3 fExtension
+	dwordAt := len(body)                                           // the 4-byte DWORD lives here
+	binary.LittleEndian.PutUint16(body[56:], uint16(dwordAt))      // ExtensionOffset → the DWORD
+	body = append(body, 0, 0, 0, 0)                                // reserve the DWORD
+	blockAt := len(body)                                           // FeatureExt block starts here
+	binary.LittleEndian.PutUint32(body[dwordAt:], uint32(blockAt)) // DWORD → the block
+	for id, data := range feats {
+		var l [4]byte
+		binary.LittleEndian.PutUint32(l[:], uint32(len(data)))
+		body = append(body, id)
+		body = append(body, l[:]...)
+		body = append(body, data...)
+	}
+	body = append(body, 0xFF) // FEATUREEXT_TERMINATOR
+	binary.LittleEndian.PutUint32(body[0:], uint32(len(body)))
+	return body
+}
+
+func TestParseLogin7_FedAuth(t *testing.T) {
+	// A plain SQL-auth login (no FeatureExt) is not federated.
+	if info, ok := ParseLogin7(buildLogin7("sa", []byte{0x01, 0x02}, "master")); !ok || info.FedAuth {
+		t.Fatalf("SQL-auth login must not be flagged FedAuth (ok=%v fedauth=%v)", ok, info.FedAuth)
+	}
+	// A FeatureExt carrying only benign features (UTF8_SUPPORT 0x0A) — as modern drivers send on ordinary
+	// SQL-auth connects — must NOT be refused, or every real connection breaks.
+	benign := withFeatureExt(buildLogin7("sa", []byte{0x01, 0x02}, "master"), map[byte][]byte{0x0A: {0x01}})
+	if info, ok := ParseLogin7(benign); !ok || info.FedAuth {
+		t.Fatalf("benign FeatureExt (UTF8) must not be flagged FedAuth (ok=%v fedauth=%v)", ok, info.FedAuth)
+	}
+	// A FeatureExt carrying FEDAUTH (0x02) — even alongside a benign feature — is federated → refuse.
+	fed := withFeatureExt(buildLogin7("", nil, "master"), map[byte][]byte{0x0A: {0x01}, 0x02: {0x01, 0x00}})
+	if info, ok := ParseLogin7(fed); !ok || !info.FedAuth {
+		t.Fatalf("FEDAUTH FeatureExt must be flagged FedAuth (ok=%v fedauth=%v)", ok, info.FedAuth)
+	}
+	// Fail-safe: fExtension set but the extension pointer is off the end → refuse rather than miss it.
+	bad := buildLogin7("", nil, "master")
+	bad[27] |= 0x10
+	binary.LittleEndian.PutUint16(bad[56:], uint16(len(bad)+50))
+	if info, ok := ParseLogin7(bad); !ok || !info.FedAuth {
+		t.Fatalf("malformed FeatureExt pointer must fail safe to FedAuth (ok=%v fedauth=%v)", ok, info.FedAuth)
 	}
 }
 
@@ -102,7 +149,7 @@ func buildPrelogin(marsOn bool) []byte {
 		0x04, 0x00, marsOff, 0x00, 0x01, // MARS @17 len 1
 		0xFF,                               // TERMINATOR
 		0x10, 0x00, 0x03, 0xE8, 0x00, 0x00, // version data
-		marsVal,                            // MARS data
+		marsVal, // MARS data
 	}
 }
 

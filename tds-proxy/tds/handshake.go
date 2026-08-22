@@ -156,13 +156,56 @@ func PreloginRequestsMARS(body []byte) bool {
 // the raw obfuscated password field (used only to prove a reusing client presents the same credentials —
 // TDS password obfuscation is deterministic and unsalted, so equal plaintext ⇒ equal bytes). Integrated
 // reports SSPI/Windows integrated security (fIntegratedSecurity): such logins carry NO password (the
-// identity is in a per-connection SSPI blob), so they cannot be keyed or pooled by credential — the pool
-// refuses them rather than risk collapsing distinct Windows identities onto one shared backend.
+// identity is in a per-connection SSPI blob). FedAuth reports federated/Azure AD auth (a FEDAUTH token in
+// the FeatureExt block): the principal is in the token, not the (empty) password field. Neither can be
+// keyed or pooled by credential — the pool refuses both rather than risk collapsing distinct principals
+// onto one shared backend.
 type Login7Info struct {
 	User       string
 	Database   string
 	PassField  []byte
 	Integrated bool
+	FedAuth    bool
+}
+
+// fedAuth reports whether a LOGIN7 carries a FEDAUTH feature (Azure AD / federated auth) in its FeatureExt
+// block. Federated auth puts the real principal in a token inside FeatureExt, not the (empty) password
+// field, so the pool's user+db+password key cannot tell two federated principals apart — exactly the
+// identity collapse the pool must never allow. Fail-safe: once fExtension announces a FeatureExt block, any
+// parse ambiguity returns true (refuse) rather than risk a silent collapse; with fExtension clear there is
+// no block and it returns false. Bit/offset/id values per MS-TDS §2.2.6.4 (OptionFlags3 fExtension=0x10 at
+// byte 27; ExtensionOffset uint16 at byte 56 → a DWORD pointing at the block; FEATUREEXT ids FEDAUTH=0x02,
+// TERMINATOR=0xFF; each non-terminator feature is id(1)+len(4)+data).
+func fedAuth(body []byte) bool {
+	const fExtension = 0x10 // OptionFlags3 (byte 27) bit
+	if len(body) < 58 || body[27]&fExtension == 0 {
+		return false // no FeatureExt block announced
+	}
+	ptr := int(binary.LittleEndian.Uint16(body[56:])) // ExtensionOffset → a 4-byte DWORD
+	if ptr < 0 || ptr+4 > len(body) {
+		return true
+	}
+	block := int(binary.LittleEndian.Uint32(body[ptr:])) // DWORD → FeatureExt block offset
+	if block < 0 || block >= len(body) {
+		return true
+	}
+	for p := block; p < len(body); {
+		switch body[p] {
+		case 0xFF: // FEATUREEXT_TERMINATOR
+			return false
+		case 0x02: // FEATUREEXT_FEDAUTH
+			return true
+		}
+		if p+5 > len(body) { // truncated feature header (id + 4-byte len)
+			return true
+		}
+		dlen := int(binary.LittleEndian.Uint32(body[p+1:]))
+		if dlen < 0 || p+5+dlen > len(body) {
+			return true
+		}
+		p += 5 + dlen
+	}
+	return true // ran off the end with no terminator — malformed, fail safe
 }
 
 // ParseLogin7 extracts the identity fields from a LOGIN7 payload (MS-TDS §2.2.6.4). The offset/length
@@ -193,5 +236,5 @@ func ParseLogin7(body []byte) (Login7Info, bool) {
 	// OptionFlags2 is byte 25; fIntegratedSecurity is its high bit (0x80). When set, the credentials are a
 	// per-connection SSPI blob, not the (empty) password field — such a login must not be pooled by credential.
 	integrated := body[25]&0x80 != 0
-	return Login7Info{User: user, Database: db, PassField: pass, Integrated: integrated}, true
+	return Login7Info{User: user, Database: db, PassField: pass, Integrated: integrated, FedAuth: fedAuth(body)}, true
 }
