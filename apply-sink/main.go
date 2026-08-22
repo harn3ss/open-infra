@@ -11,6 +11,13 @@
 //
 //	tables on the target (auto-create). Same-engine = verbatim DDL; cross-engine
 //	uses the type-mapping matrix.
+//
+// MODE=schema-drift: periodically introspect every member of a multi-master flow and alert when a
+//
+//	table's shape (column-name set + primary key + presence of _mm_version/_mm_origin) is not identical
+//	across the members that have it — the silent divergence that later surfaces as apply errors. Reuses
+//	the same introspection + MEMBERS config as reconcile; DRIFT_ONESHOT=true runs one cycle and exits
+//	non-zero on drift (usable as a probe). See schema_drift.go.
 package main
 
 import (
@@ -152,6 +159,8 @@ func main() {
 		runPump()
 	case "reconcile":
 		runReconcile()
+	case "schema-drift":
+		runSchemaDrift()
 	default:
 		runStream()
 	}

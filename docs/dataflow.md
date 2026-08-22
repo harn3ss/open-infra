@@ -106,6 +106,20 @@ Caveat: a table created **already full of data** won't back-load its existing ro
 Debezium incremental snapshot runs — the common *create-then-insert* flow syncs fully (the
 table is created on peers and new rows replicate). Tables without a primary key are skipped.
 
+### Schema-drift detection
+
+Where the reconciler keeps the table *set* aligned, `apply-sink` `MODE=schema-drift` guards each
+table's *shape*: it introspects every member each cycle and alerts (`schema-drift: DIVERGENCE …`, a
+log line an alert can match) when a table's **column-name set + primary key + presence of the
+`_mm_version`/`_mm_origin` columns** is not identical across the members that have it — the silent
+divergence (a column added on one member, a missing PK, a member that never got mm-prepped) that
+otherwise surfaces much later as apply errors or lost writes. It reuses the same `MEMBERS` config as
+the reconciler; `DRIFT_ONESHOT=true` runs a single pass and exits non-zero on drift, so it doubles as
+a probe. Column *types* are deliberately excluded from the signature — across engines the same logical
+column carries different type names (`integer` vs `int`), which the CDC path maps rather than requires
+equal. (It is a runnable engine mode today; wiring it as an always-on per-flow companion of the
+reconciler in the composition is a follow-up.)
+
 > **Altering an existing table** under a multi-master flow has ordering rules of its own
 > (receivers before writers; nullable → backfill → default → NOT NULL; deterministic literal
 > defaults only). See the [schema-migration runbook](replication.md#changing-a-table-under-multi-master-runbook).
