@@ -114,17 +114,22 @@ incl airgap "airgap/registry-mirror.yaml,airgap/image-prefetch.yaml,airgap/node-
 # is on AND airgap.denyPublicEgress is true. Front-load the mirror and point nodes at it first, or
 # image pulls will fail once the internet is cut (docs/airgapping.md). Reversible: flip back + re-sync.
 if [ "$(yget components.airgap)" = "true" ] && [ "$(yget airgap.denyPublicEgress)" = "true" ]; then
-  # The egress cutoff is CNI-specific: Cilium uses a CiliumClusterwideNetworkPolicy, Calico/Canal a
-  # GlobalNetworkPolicy. Apply the one matching this cluster's CNI and exclude the other. If neither
-  # policy CRD exists, skip the cutoff (front-load only) rather than hard-failing on "no matches for kind".
+  # The egress cutoff is CNI-specific: Cilium uses a CiliumClusterwideNetworkPolicy (cilium.io/v2),
+  # Calico/Canal a GlobalNetworkPolicy (projectcalico.org/v3). Detect each by the EXACT resource its
+  # manifest applies — not a proxy — so the guard can't pass while the target is unappliable or vice
+  # versa. Cilium's CCNP is a plain CRD, so `get crd …cilium.io` is exact. Calico's projectcalico.org/v3
+  # is served by the Calico APISERVER (aggregated), NOT the underlying crd.projectcalico.org (v1) CRD —
+  # so checking that CRD is the wrong surface (it can exist while v3 is unserved, e.g. CRD-only Calico,
+  # → the v3 manifest would fail). Probe the served v3 resource path directly instead. If neither is
+  # present, skip the cutoff (front-load only) rather than hard-failing on "no matches for kind".
   if $KUBECTL get crd ciliumclusterwidenetworkpolicies.cilium.io >/dev/null 2>&1; then
     LOG "air-gap cutoff ELECTED — Cilium detected; using egress-deny.yaml (CiliumClusterwideNetworkPolicy)"
     EXCLUDES="${EXCLUDES},airgap/egress-deny-calico.yaml"
-  elif $KUBECTL get crd globalnetworkpolicies.crd.projectcalico.org >/dev/null 2>&1; then
-    LOG "air-gap cutoff ELECTED — Calico/Canal detected; using egress-deny-calico.yaml (GlobalNetworkPolicy)"
+  elif $KUBECTL get --raw /apis/projectcalico.org/v3/globalnetworkpolicies >/dev/null 2>&1; then
+    LOG "air-gap cutoff ELECTED — Calico/Canal detected (projectcalico.org/v3 served); using egress-deny-calico.yaml (GlobalNetworkPolicy)"
     EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml"
   else
-    LOG "air-gap cutoff ELECTED but no Cilium/Calico policy CRD present — SKIPPING the egress cutoff (front-load only; add egress denial in your CNI)"
+    LOG "air-gap cutoff ELECTED but no Cilium CRD / served projectcalico.org/v3 present — SKIPPING the egress cutoff (front-load only; add egress denial in your CNI)"
     EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml,airgap/egress-deny-calico.yaml"
   fi
 else
