@@ -2,6 +2,7 @@ package tds
 
 import (
 	"encoding/binary"
+	"hash/fnv"
 	"io"
 )
 
@@ -166,6 +167,49 @@ type Login7Info struct {
 	PassField  []byte
 	Integrated bool
 	FedAuth    bool
+	Profile    uint64 // wire-format fingerprint (see LoginProfile) — part of the pool key
+}
+
+// LoginProfile hashes the LOGIN7 fields that determine the wire format of the backend's RESPONSES — TDS
+// version, packet size, the option/type flags, the LCID, and the requested FeatureExt features. The pool
+// MUST fold this into its key: the backend's response format is fixed by whichever client's LOGIN7 the
+// proxy replayed (the cold opener), and RESETCONNECTION does NOT renegotiate it. So handing a backend
+// opened by driver A to a driver B that negotiated a different packet size or FeatureExt set makes B
+// mis-parse A's-format responses — observed as an intermittent token desync when Microsoft.Data.SqlClient
+// reused a pyodbc/ODBC-opened backend (different packet size + COLUMNENCRYPTION/GLOBALTRANSACTIONS feats).
+// Per-client noise that does NOT affect format (ClientProgVer, ClientPID, ConnectionID, timezone, and the
+// host/user/app strings) is deliberately excluded so two connections from the SAME driver still share a
+// backend.
+func LoginProfile(body []byte) uint64 {
+	h := fnv.New64a()
+	if len(body) >= 36 {
+		h.Write(body[4:12])  // TDSVersion (4:8) + PacketSize (8:12)
+		h.Write(body[24:28]) // OptionFlags1, OptionFlags2, TypeFlags, OptionFlags3
+		h.Write(body[32:36]) // ClientLCID
+	}
+	// FeatureExt features (id + len + data) — UTF8_SUPPORT, COLUMNENCRYPTION, etc. change result framing.
+	if len(body) >= 58 && body[27]&0x10 != 0 { // OptionFlags3 fExtension
+		ptr := int(binary.LittleEndian.Uint16(body[56:])) // ExtensionOffset → a DWORD
+		if ptr >= 0 && ptr+4 <= len(body) {
+			blk := int(binary.LittleEndian.Uint32(body[ptr:]))
+			for p := blk; p >= 0 && p < len(body); {
+				if body[p] == 0xFF { // FEATUREEXT_TERMINATOR
+					h.Write([]byte{0xFF})
+					break
+				}
+				if p+5 > len(body) {
+					break
+				}
+				dl := int(binary.LittleEndian.Uint32(body[p+1:]))
+				if dl < 0 || p+5+dl > len(body) {
+					break
+				}
+				h.Write(body[p : p+5+dl])
+				p += 5 + dl
+			}
+		}
+	}
+	return h.Sum64()
 }
 
 // fedAuth reports whether a LOGIN7 carries a FEDAUTH feature (Azure AD / federated auth) in its FeatureExt
@@ -236,5 +280,5 @@ func ParseLogin7(body []byte) (Login7Info, bool) {
 	// OptionFlags2 is byte 25; fIntegratedSecurity is its high bit (0x80). When set, the credentials are a
 	// per-connection SSPI blob, not the (empty) password field — such a login must not be pooled by credential.
 	integrated := body[25]&0x80 != 0
-	return Login7Info{User: user, Database: db, PassField: pass, Integrated: integrated, FedAuth: fedAuth(body)}, true
+	return Login7Info{User: user, Database: db, PassField: pass, Integrated: integrated, FedAuth: fedAuth(body), Profile: LoginProfile(body)}, true
 }
