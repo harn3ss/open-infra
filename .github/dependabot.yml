@@ -102,12 +102,14 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
     ignore:
-      # babelfish compiles Babelfish-for-PostgreSQL from source with `-Werror`; Ubuntu's
-      # newer GCC (24.04+) flags warnings the pinned source hits, and 26.04 also drops the
+      # Pin babelfish to Ubuntu 22.04 LTS. It compiles Babelfish-for-PostgreSQL from source with
+      # `-Werror`; newer GCC (24.04+) flags warnings the pinned source hits, and 26.04 drops the
       # `libicu70` this Dockerfile needs. Moving the base OS is a source-porting task, not a
-      # dependency bump — hold the major until that's done deliberately, then remove this.
+      # dependency bump. Hold BOTH minor and major: a minor bump lands on the interim non-LTS
+      # releases (22.10/23.x), which go EOL fast and 404 their apt repos (that broke the build once).
+      # Take the next LTS deliberately, then remove this.
       - dependency-name: "ubuntu"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # Stay on the Node LTS line for the console SPA builder; odd majors (23/25/…) are not
       # LTS. Take the next even LTS deliberately rather than tracking every major.
       - dependency-name: "node"
