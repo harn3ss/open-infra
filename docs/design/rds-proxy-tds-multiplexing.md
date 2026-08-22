@@ -155,3 +155,38 @@ trace, not an assumption — the same honest-by-construction bar as the substrat
 - Babelfish's `sp_prepare`/server-prepared support — present, emulated, or ignored?
 - Does the proxy terminate TLS (so it can read the TDS to classify), or pass through (then it can't
   classify encrypted sessions and must pin them)? This single choice reshapes the encryption column.
+
+## 7. v2 — per-transaction multiplexing within a session (issue #7)
+
+v1 borrows a backend for the whole client session; reuse is *across* sessions. RDS Proxy's headline
+throughput comes from reusing *within* a session — returning the backend at each transaction boundary so
+one backend serves many mostly-idle clients. This is where a bug silently leaks one client's state into
+another, so it is gated on the driver + fault corpus (issues #3/#4, both closed) and ships **opt-in**
+(`-tx-multiplex`, default off): the default stays the proven session-level pool.
+
+**v2.0 scope — autocommit multiplexing (conservative, correct).** A session releases its backend after a
+completed request **only while it has left no state that outlives a transaction**. The moment it does, the
+session goes **sticky** and reverts to v1 behaviour (hold the one backend, discard on close). Concretely:
+
+- **Sticky triggers = the v1 pin set** (temp table, prepared handle, cursor, `CONTEXT_INFO`, applock, `USE`,
+  a mid-session SET, an explicit/implicit transaction). Reusing the exact classifier verdict means v2 can
+  only ever be *more* conservative than v1, never less — the safety proof is inherited.
+- **Released only between requests**, when the session is not sticky. In autocommit the server commits each
+  statement before the response completes, so "response EOM + not sticky" is a proven-clean boundary with no
+  open transaction to reason about — no response-token parsing required for v2.0.
+- **Per-borrow prelude replay.** The client logs in once; on each *re*-borrow the (different) backend is
+  wiped (`RESETCONNECTION`) and the client's captured login-prelude SET batch is replayed before its request,
+  so session options are restored. A cold re-borrow replays the client's `LOGIN7`; the login response is
+  consumed, never re-sent to the already-logged-in client.
+- **Attention/cancel (v2.0 limitation).** The default session-level relay forwards a client `ATTENTION`
+  (0x06) mid-response for prompt cancel. tx-multiplex v2.0 relays each response **synchronously** (it does
+  not read the client while streaming a response), so a mid-query cancel is not forwarded until the response
+  completes — a deliberate trade to keep the borrow/return path race-free and auditable. Forwarding attention
+  race-free *across* a mid-session backend swap is v2.1. Workloads that depend on prompt cancel should stay
+  on the default session-level pool.
+
+**Parity caveat (matches RDS Proxy):** a multiplexed session's backend — and thus `@@SPID`/`@@SPID`-derived
+identity — can change between statements. Apps that depend on cross-statement session identity without
+temp/txn state should not enable `-tx-multiplex`, exactly as RDS Proxy advises. v2.1 (later): release at
+`COMMIT`/`ROLLBACK` for *explicit* transactions too, driven by the server's `ENVCHANGE`/`DONE_INXACT`
+transaction signal rather than falling back to sticky.
