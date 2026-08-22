@@ -68,19 +68,24 @@ func TestTDSHandshakeConnFramingThenPassthrough(t *testing.T) {
 	if err != nil || string(got[:n]) != "serverhello" {
 		t.Fatalf("wrapped read = %q (err %v), want serverhello", got[:n], err)
 	}
-	// Write: bytes go out wrapped in a TDS packet.
+	// Write buffers; the flight is framed + sent on flush (SetDone here), under a single EOM.
 	if _, err := hc.Write([]byte("finished")); err != nil {
 		t.Fatal(err)
 	}
+	if in.w.Len() != 0 {
+		t.Fatalf("Write should buffer, not send immediately; got %d bytes", in.w.Len())
+	}
+	if err := hc.SetDone(); err != nil { // flushes the buffered flight, then raw
+		t.Fatal(err)
+	}
 	p, _ := ReadPacket(bytes.NewReader(in.w.Bytes()))
-	if p.Type != TypePreLogin || string(p.Body) != "finished" {
-		t.Fatalf("wrapped write body = %q type 0x%02x", p.Body, p.Type)
+	if p.Type != TypePreLogin || !p.EOM() || string(p.Body) != "finished" {
+		t.Fatalf("flushed write body = %q type 0x%02x eom=%v", p.Body, p.Type, p.EOM())
 	}
 	// After SetDone, I/O is raw passthrough (no TDS framing).
-	hc.SetDone()
 	raw := &bufConn{r: bytes.NewBufferString("rawappdata"), w: &bytes.Buffer{}}
 	hc2 := NewTDSHandshakeConn(raw)
-	hc2.SetDone()
+	_ = hc2.SetDone()
 	n, _ = hc2.Read(got)
 	if string(got[:n]) != "rawappdata" {
 		t.Fatalf("passthrough read = %q, want rawappdata", got[:n])

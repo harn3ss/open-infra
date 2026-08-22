@@ -137,6 +137,7 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 			tconn := tls.Server(pc, tlsConfig)
 			if e := tconn.Handshake(); e != nil {
 				tlsHandshakeErr.Add(1)
+				log.Printf("tds-proxy: session %d: TLS handshake failed: %v", id, e)
 				return
 			}
 			client = tconn
@@ -166,13 +167,31 @@ func handle(client net.Conn, backendAddr string, acquireTimeout time.Duration) {
 		if _, err := client.Write(tds.BuildPreloginResponseEnc(tds.EncryptReq)); err != nil {
 			return
 		}
+		if debugClassify {
+			if pcp, ok := client.(*tds.PrefaceConn); ok {
+				if b, e := pcp.Peek(6); e == nil {
+					log.Printf("tds-proxy: session %d: post-prelogin first bytes: % x", id, b)
+				} else {
+					log.Printf("tds-proxy: session %d: post-prelogin peek err: %v", id, e)
+				}
+			}
+		}
 		hc := tds.NewTDSHandshakeConn(client)
-		tconn := tls.Server(hc, tlsConfig)
+		// The legacy tunneled handshake maps cleanly to TLS 1.2's round-trips; TLS 1.3 folds the server
+		// Finished into the first flight, which some clients (mssql-jdbc) don't complete over this
+		// transport. Cap the tunneled path at 1.2 (strict/TDS 8.0 keeps 1.3 — it's plain TLS).
+		tunneledCfg := tlsConfig.Clone()
+		tunneledCfg.MaxVersion = tls.VersionTLS12
+		tconn := tls.Server(hc, tunneledCfg)
 		if e := tconn.Handshake(); e != nil {
+			tlsHandshakeErr.Add(1)
+			log.Printf("tds-proxy: session %d: TLS handshake failed: %v", id, e)
+			return
+		}
+		if e := hc.SetDone(); e != nil { // flush the server's final flight, then TLS rides the bare stream
 			tlsHandshakeErr.Add(1)
 			return
 		}
-		hc.SetDone() // handshake done → TLS now rides the bare stream
 		client = tconn
 		tlsTerminated = true
 		tlsOn.Add(1)

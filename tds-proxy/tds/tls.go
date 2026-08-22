@@ -40,18 +40,30 @@ func (p *PrefaceConn) Read(b []byte) (int, error) { return p.r.Read(b) }
 type tdsHandshakeConn struct {
 	net.Conn
 	rbuf []byte // leftover decoded payload from the last TDS packet
+	wbuf []byte // accumulated handshake output, flushed as one framed flight
 	done bool
 }
 
 // NewTDSHandshakeConn wraps c for the tunneled (legacy encrypt=on) TLS handshake.
 func NewTDSHandshakeConn(c net.Conn) *tdsHandshakeConn { return &tdsHandshakeConn{Conn: c} }
 
-// SetDone switches to raw passthrough — call it once tls.Handshake has returned.
-func (c *tdsHandshakeConn) SetDone() { c.done = true }
+// SetDone flushes any buffered handshake output (the server's final CCS+Finished flight, written after
+// tls.Handshake's last Read) and switches to raw passthrough. Call it once tls.Handshake has returned.
+func (c *tdsHandshakeConn) SetDone() error {
+	err := c.flush()
+	c.done = true
+	return err
+}
 
 func (c *tdsHandshakeConn) Read(b []byte) (int, error) {
 	if c.done {
 		return c.Conn.Read(b)
+	}
+	// Flush our accumulated flight as ONE TDS message before blocking on the peer's next flight — a
+	// handshake flight is several TLS records (ServerHello/Certificate/…) written separately; a client
+	// that respects EOM (mssql-jdbc) must see the whole flight under a single EOM, not one EOM per record.
+	if err := c.flush(); err != nil {
+		return 0, err
 	}
 	if len(c.rbuf) == 0 {
 		p, err := ReadPacket(c.Conn)
@@ -65,24 +77,58 @@ func (c *tdsHandshakeConn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
+// handshakePacketSize is the TDS packet size while tunneling the TLS handshake. LOGIN7 (where a larger
+// size could be negotiated) hasn't happened yet, so the default 4096 applies — and stricter clients
+// (mssql-jdbc) REJECT a PRELOGIN packet larger than this, so a big server flight (ServerHello +
+// Certificate) must be SPLIT across packets, not sent as one oversized packet.
+const handshakePacketSize = 4096
+const maxHandshakePayload = handshakePacketSize - headerLen
+
+// Write buffers the handshake output; the flight is framed + sent by flush (on the next Read or SetDone),
+// so all records of one flight go under a single EOM.
 func (c *tdsHandshakeConn) Write(b []byte) (int, error) {
 	if c.done {
 		return c.Conn.Write(b)
 	}
-	// A TLS record is <= ~16KB, well under the 65535 TDS packet-length ceiling, so one packet per Write.
-	if _, err := c.Conn.Write(FramePrelogin(b)); err != nil {
-		return 0, err
-	}
+	c.wbuf = append(c.wbuf, b...)
 	return len(b), nil
 }
 
-// FramePrelogin wraps payload in a single TDS PRELOGIN (0x12) packet with the EOM bit set — the envelope
-// used to carry TLS handshake records in the legacy tunneled handshake.
-func FramePrelogin(payload []byte) []byte {
+// flush sends the buffered flight as one TDS message: <=4096-byte PRELOGIN (0x12) packets, EOM on the
+// last packet only.
+func (c *tdsHandshakeConn) flush() error {
+	if len(c.wbuf) == 0 {
+		return nil
+	}
+	b := c.wbuf
+	c.wbuf = nil
+	for off := 0; ; {
+		end := off + maxHandshakePayload
+		if end >= len(b) {
+			end = len(b)
+		}
+		if _, err := c.Conn.Write(framePrelogin(b[off:end], end >= len(b))); err != nil {
+			return err
+		}
+		off = end
+		if off >= len(b) {
+			return nil
+		}
+	}
+}
+
+// FramePrelogin wraps payload in a single EOM TDS PRELOGIN (0x12) packet.
+func FramePrelogin(payload []byte) []byte { return framePrelogin(payload, true) }
+
+// framePrelogin builds one TDS PRELOGIN (0x12) packet, setting the EOM bit only when eom is true, so a
+// multi-packet flight marks just its final packet.
+func framePrelogin(payload []byte, eom bool) []byte {
 	total := headerLen + len(payload)
 	pkt := make([]byte, total)
 	pkt[0] = TypePreLogin // 0x12
-	pkt[1] = statusEOM
+	if eom {
+		pkt[1] = statusEOM
+	}
 	pkt[2] = byte(total >> 8)
 	pkt[3] = byte(total)
 	pkt[6] = 1 // packet id
