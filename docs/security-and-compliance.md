@@ -256,7 +256,10 @@ benchmark — establishing an assessor-legible hardening posture (a baseline, wi
 remediation path; full hardening is the deployer's). The scan results (DISA STIG 63 pass / 154 fail,
 PCI-DSS v4 109/132, HIPAA 29/99, ANSSI-BP-028-high 146/193; CIS Kubernetes 53 pass / 9 fail / 46 warn,
 all as-provisioned) and their remediation analysis are recorded in
-[`docs/compliance/rke2-sles-fips-scan-2026-08.md`](compliance/rke2-sles-fips-scan-2026-08.md); the full
+[`docs/compliance/rke2-sles-fips-scan-2026-08.md`](compliance/rke2-sles-fips-scan-2026-08.md). A follow-on
+re-scan after the STIG remediation was applied (2026-08-22) improved **every** framework — DISA STIG
+194/25, PCI-DSS v4 166/76, HIPAA 92/36, ANSSI-BP-028-high 209/131 — showing the deployer-hardening step
+generalizes across baselines rather than closing STIG alone. The full
 OpenSCAP and kube-bench reports are retained in a dated evidence bundle (captured 2026-08-16, integrity
 manifest [`rke2-sles-fips-evidence.MANIFEST.sha256`](compliance/rke2-sles-fips-evidence.MANIFEST.sha256),
 SHA-256 `7baa8c10…`), available for assessor review. This is a validation **event**, not a certification of open-infra:

@@ -95,3 +95,31 @@ All are as-provisioned baselines (the substrate is a minimal SLES + FIPS install
 hardening is the deployer's). The consistent pattern: FIPS/crypto and secure-default controls pass
 across frameworks; the fails are the deployer-applied hardening set. Reports: `{pci-dss-4,hipaa,
 anssi_bp28_high}-report.html`.
+
+## Post-remediation multi-framework re-scan — 2026-08-22
+
+The as-provisioned tables above are the *baseline*. Separately (2026-08-19) the STIG remediation was
+applied to chaos-node-3 and survived a reboot (STIG 63/154 → 196/23 → 194/25). Re-scanning the **same
+node in that hardened state** against all four frameworks on 2026-08-22 shows the deployer-hardening
+generalizes — every framework improved, not just STIG:
+
+| Framework | Profile | as-provisioned (08-16) | post-remediation (08-22) | fails closed |
+|---|---|---|---|---|
+| DISA STIG | stig | 63 / 154 | **194 / 25** | 129 |
+| PCI-DSS v4 | pci-dss-4 | 109 / 132 | **166 / 76** | 56 |
+| HIPAA | hipaa | 29 / 99 | **92 / 36** | 63 |
+| ANSSI-BP-028 (high) | anssi_bp28_high | 146 / 193 | **209 / 131** | 62 |
+
+(pass / fail; `notapplicable` ≈ unchanged at 16–28 per profile.)
+
+- The STIG remediation set (audit rules, password/PAM policy, file permissions, login banners, umask,
+  AIDE) overlaps heavily with the PCI/HIPAA/ANSSI control families, so applying it once lifts all of
+  them — quantified deployer-hardening leverage, not four separate hardening efforts.
+- The **residual fails are the expected tail**: the ~15 documented Kubernetes-incompatible controls
+  (IP forwarding, CNI sysctls, firewalld, mount/partition rules), the FIPS-vs-STIG ordered-cipher
+  exceptions, and build-time deviations that the *hardened* AutoYaST profile (not the minimal one on
+  this node) closes — the same exceptions catalogued in the `openinfra-substrate` STIG tailoring doc.
+- **Framing is unchanged:** these remain assessor-legible posture snapshots of the substrate, not a
+  certification of open-infra, and "post-remediation" means the deployer-hardening step was exercised
+  and measured — not that the node ships hardened. Full reports + gzipped ARFs:
+  `evidence/compliance-postremediation-2026-08-22/` (hashes in the evidence manifest).
