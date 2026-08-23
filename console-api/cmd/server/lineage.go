@@ -54,6 +54,13 @@ type lineageFlow struct {
 // crList fetches a cluster-wide list of an openinfra.dev kind as raw JSON items. Best-effort: a kind
 // whose CRD is absent (feature disabled) simply yields nothing.
 func crList(ctx context.Context, cs kubernetes.Interface, plural string) []json.RawMessage {
+	return crListPath(ctx, cs, "/apis/openinfra.dev/v1/"+plural)
+}
+
+// crListPath lists a CRD collection at an absolute apiserver path (/apis/<group>/<version>/<plural>) and
+// returns each item's raw JSON — the generalized form of crList, for CRs outside the openinfra.dev group
+// (e.g. velero.io Schedules). Same fake-clientset guards.
+func crListPath(ctx context.Context, cs kubernetes.Interface, apiPath string) []json.RawMessage {
 	rc := cs.CoreV1().RESTClient()
 	// A fake clientset hands back a TYPED nil *rest.RESTClient (non-nil interface, panics on use).
 	if rc == nil {
@@ -62,7 +69,7 @@ func crList(ctx context.Context, cs kubernetes.Interface, plural string) []json.
 	if v := reflect.ValueOf(rc); v.Kind() == reflect.Ptr && v.IsNil() {
 		return nil
 	}
-	raw, err := rc.Get().AbsPath("/apis/openinfra.dev/v1/" + plural).DoRaw(ctx)
+	raw, err := rc.Get().AbsPath(apiPath).DoRaw(ctx)
 	if err != nil {
 		return nil
 	}

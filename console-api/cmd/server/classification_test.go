@@ -145,3 +145,34 @@ func TestEvalEncryptionAtRestTransit(t *testing.T) {
 		})
 	}
 }
+
+func TestNamespaceBackupCovered(t *testing.T) {
+	cases := []struct {
+		name     string
+		ns       string
+		included []string
+		excluded []string
+		want     bool
+	}{
+		{"all-namespaces star covers", "team-a", []string{"*"}, nil, true},
+		{"empty include = all", "team-a", nil, nil, true},
+		{"explicit exclude wins over star", "minio", []string{"*"}, []string{"kube-system", "velero", "minio"}, false},
+		{"explicit include match", "team-a", []string{"team-a", "team-b"}, nil, true},
+		{"not in explicit include", "team-c", []string{"team-a", "team-b"}, nil, false},
+		{"exclude wins over explicit include", "team-a", []string{"team-a"}, []string{"team-a"}, false},
+	}
+	for _, c := range cases {
+		if got := namespaceBackupCovered(c.ns, c.included, c.excluded); got != c.want {
+			t.Errorf("%s: namespaceBackupCovered(%q,%v,%v)=%v want %v", c.name, c.ns, c.included, c.excluded, got, c.want)
+		}
+	}
+}
+
+// With a fake clientset (no readable Velero Schedules), backup must report "unknown" — never a silent pass.
+func TestEvalBackup_NoSchedulesUnknown(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	got := evalBackup(context.Background(), cs, workload{namespace: "team-a"})
+	if got.Rule != "backup" || got.Status != "unknown" {
+		t.Fatalf("evalBackup with no schedules = %+v, want backup/unknown", got)
+	}
+}
