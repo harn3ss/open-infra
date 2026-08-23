@@ -81,6 +81,18 @@ After that, create `EncryptionKey`s. Because the reconciler uses Kubernetes auth
 These change how data at rest is encrypted; apply them deliberately (they are hard to reverse). Take
 a snapshot first.
 
+**Why these are operator runbooks, not shipped manifests** (a deliberate choice, not a gap):
+- **etcd KMS** is an API-server flag (`--encryption-provider-config`) plus a KMS-plugin static pod on the
+  control-plane node — node/control-plane configuration that a GitOps controller cannot apply (k3s/RKE2
+  serve it from a file on the server node). It is inherently an operator step.
+- **MinIO SSE-KMS (KES)** *is* manifestable (a KES Deployment + a Vault AppRole for KES + MinIO KMS env),
+  but turning it on reconfigures the **live MinIO** that holds your backups and the tamper-evident audit
+  WORM chain — a change to make under a snapshot, deliberately, not via a background sync that could make
+  existing objects unreadable. Shipping it as an opt-in, tested KES stack is a scoped follow-up; the
+  runbook below is the current, safe path.
+- **Longhorn** is the one layer that already ships as a manifest (the `longhorn-encrypted` StorageClass
+  below) — because it is per-PVC and never touches a shared, live system.
+
 ### Longhorn volumes (shipped SC — just use it)
 
 Set `storageClassName: longhorn-encrypted` on a PVC and provide its LUKS passphrase in a Secret named
