@@ -147,8 +147,10 @@ encryption and crypto-erase are Vault-gated and remain **not-live-verified**).
   **point-in-time for the wider plane** (on-demand); folding the whole plane into the counted nightly,
   plus a formal control-evidence export, is **roadmap**. *(Partial)*
 - **MP-6 Media Sanitization** — crypto-erase per NIST **SP 800-88**: `kind: Destruction` destroys a
-  customer key (per-volume/DB) and writes a destruction certificate to the WORM store. **Shipped but
-  experimental — not yet live-verified** (shares the Vault init/unseal gate with encryption, #71). *(Partial)*
+  customer key (per-volume/DB) and writes a destruction certificate to the WORM store. **Live-verified**
+  end-to-end by `probe/encryption-vault.sh` (provision → byte-identical round-trip → crypto-erase to
+  unrecoverable), a re-runnable gate; bringing Vault up remains operator-gated (the customer holds the
+  unseal keys). *(Verified; opt-in + operator-gated)*
 - **RA / PL / PS / IR / AT / CA process controls** — risk assessment, planning, personnel
   security, incident response, and awareness training are **organizational** controls the
   operator supplies; the platform provides evidence sources (audit, monitoring), not the
