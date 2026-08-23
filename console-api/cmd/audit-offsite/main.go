@@ -34,6 +34,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -328,6 +329,34 @@ type statusReport struct {
 	Bucket     string `json:"bucket"`
 }
 
+// readAnchor reads the external head anchor (a different trust domain than the bucket). Returns ok=false
+// when no valid anchor exists yet (first run) — incremental verification falls back to full then.
+func readAnchor(ctx context.Context) (anchorState, bool) {
+	cs, ns := k8sClient()
+	cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, anchorConfigMap, metav1.GetOptions{})
+	if err != nil {
+		return anchorState{}, false
+	}
+	var a anchorState
+	if json.Unmarshal([]byte(cm.Data["anchor.json"]), &a) != nil || a.HeadHash == "" {
+		return anchorState{}, false
+	}
+	return a, true
+}
+
+// seqFromKey extracts a segment's Seq from its object key (segments/<012d>.json) without a GET, so the
+// incremental path can decide "already-verified prefix vs new" from the listing alone.
+func seqFromKey(key string) (int, bool) {
+	if !strings.HasPrefix(key, segmentPrefix) || !strings.HasSuffix(key, ".json") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(key, segmentPrefix), ".json"))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 func verify() bool {
 	ctx := context.Background()
 	cl, bucket := primaryClient()
@@ -352,12 +381,53 @@ func verify() bool {
 	}
 	sort.Strings(keys)
 
-	var sv auditchain.StreamVerifier
+	// Full (default) re-derives every segment from its locked contents, trusting nothing. Incremental
+	// (opt-in, AUDIT_VERIFY_MODE=incremental) trusts the external anchor for the already-verified prefix
+	// and only re-GETs + chain-verifies segments NEWER than it — O(new) instead of O(chain) — while still
+	// checking the WORM-locked prefix cheaply from the version LIST (a delete-marker or any extra version
+	// on a locked segment is a lock-bypass attempt, visible without a GET). PAIR it with a periodic FULL
+	// run (AUDIT_VERIFY_MODE unset) so a prefix content-tamper is still re-derived from contents; incremental
+	// only shortens the common path, it does not replace the trust-nothing sweep.
+	var sv *auditchain.StreamVerifier
+	verifiedSeq := -1
+	var verifiedHash string
+	if getenv("AUDIT_VERIFY_MODE", "full") == "incremental" {
+		if a, ok := readAnchor(ctx); ok {
+			verifiedSeq, verifiedHash = a.HeadSeq, a.HeadHash
+			sv = auditchain.NewStreamVerifierFrom(a.HeadSeq, a.HeadHash)
+		} else {
+			fmt.Fprintln(os.Stderr, "audit-offsite: incremental requested but no anchor yet — doing a full verify")
+		}
+	}
+	if sv == nil {
+		sv = &auditchain.StreamVerifier{}
+	}
+
 	// heads holds only Seq+Hash per segment (never records) — the anchor cross-check needs no more.
 	heads := make([]auditchain.Segment, 0, len(keys))
+	if verifiedSeq >= 0 {
+		// Seed with the trusted anchor so checkAndUpdateAnchor cross-checks the new head against it.
+		heads = append(heads, auditchain.Segment{Seq: verifiedSeq, Hash: verifiedHash})
+	}
 	shadow := 0
 	for _, key := range keys {
 		versions := perKey[key]
+		if seq, ok := seqFromKey(key); ok && seq <= verifiedSeq {
+			// Already-verified, WORM-locked prefix: skip the GET + chain re-derivation. Still confirm the
+			// lock held — exactly one real version and no delete marker; anything else is a bypass ATTEMPT.
+			real := 0
+			for i := range versions {
+				if versions[i].IsDeleteMarker {
+					shadow++
+				} else {
+					real++
+				}
+			}
+			if real > 1 {
+				shadow += real - 1
+			}
+			continue
+		}
 		orig := oldestReal(versions)
 		if orig == nil {
 			shadow++ // only delete markers — the original is fully shadowed

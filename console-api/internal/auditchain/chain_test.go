@@ -207,3 +207,37 @@ func TestHashRecords_OrderAndSplitSensitive(t *testing.T) {
 		t.Fatal("record framing must be unambiguous")
 	}
 }
+
+// Incremental verification: a verifier seeded from a trusted anchor (seq,hash) continues the chain,
+// accepting the correct next segments and rejecting a break in the link onto the anchor.
+func TestNewStreamVerifierFrom_ContinuesFromAnchor(t *testing.T) {
+	segs := buildChain(t, 6)
+	anchorAt := 2 // pretend seg 0..2 were verified + anchored on a prior run
+	anchor := segs[anchorAt]
+
+	// Push only the NEW segments (3..5), seeded from the anchor — should verify intact.
+	v := NewStreamVerifierFrom(anchor.Seq, anchor.Hash)
+	for _, s := range segs[anchorAt+1:] {
+		v.Push(s)
+	}
+	res := v.Result()
+	if !res.OK {
+		t.Fatalf("incremental from a correct anchor should verify: %+v", res)
+	}
+	if res.HeadSeq != segs[len(segs)-1].Seq || res.HeadHash != segs[len(segs)-1].Hash {
+		t.Fatalf("head not advanced to the real head: got seq=%d", res.HeadSeq)
+	}
+
+	// A WRONG anchor hash must break at the first new segment (the link onto the anchor is enforced).
+	bad := NewStreamVerifierFrom(anchor.Seq, "sha256:deadbeef")
+	bad.Push(segs[anchorAt+1])
+	if r := bad.Result(); r.OK || r.BrokenAt == nil || *r.BrokenAt != segs[anchorAt+1].Seq {
+		t.Fatalf("a tampered anchor must break the link onto it: %+v", r)
+	}
+
+	// No new segments since the anchor → head stays at the anchor, still OK.
+	empty := NewStreamVerifierFrom(anchor.Seq, anchor.Hash)
+	if r := empty.Result(); !r.OK || r.HeadSeq != anchor.Seq || r.HeadHash != anchor.Hash {
+		t.Fatalf("empty incremental should hold at the anchor head: %+v", r)
+	}
+}
