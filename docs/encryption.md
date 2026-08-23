@@ -5,10 +5,14 @@ Encryption at rest keyed by **keys the customer owns and controls** (NIST SP 800
 sees key material — and the operator can rotate, disable, or **destroy** it. Destroying it
 crypto-erases everything wrapped by it (the basis for [`crypto-erase`](destruction.md), SP 800-88).
 
-> **Opt-in, off by default, experimental.** This is the `encryption` component. Enable it with
-> `components.encryption: true` and re-run `install.sh`. It is shipped built + reviewed but **not**
-> live-verified in this repo's reference environment, and — per design — it does not rewire your
-> live etcd / MinIO / Longhorn for you. The storage-layer wiring below is an **operator runbook**.
+> **Opt-in, off by default.** This is the `encryption` component. Enable it with
+> `components.encryption: true` and re-run `install.sh`. It is shipped built + reviewed **and
+> live-verified** on a running cluster by [`probe/encryption-vault.sh`](../probe/encryption-vault.sh)
+> (a re-runnable gate: `kind: EncryptionKey` provisions a real Transit key, a value round-trips
+> byte-identical through it, and `kind: Destruction` crypto-erases it to unrecoverable). It remains
+> **operator-gated** — the customer holds the Vault unseal keys (open-infra cannot unseal your KMS) —
+> and, per design, it does not rewire your live etcd / MinIO / Longhorn for you: the storage-layer
+> wiring below is an **operator runbook**.
 
 ## The pieces
 

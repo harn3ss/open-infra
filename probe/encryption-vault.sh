@@ -20,11 +20,26 @@ KEY="enc-verify"
 PLAIN="govstack-encryption-roundtrip-OK"
 
 fail() { echo "▸ FAIL — $*" >&2; exit 1; }
-vault_() { kubectl -n "$NS_VAULT" exec "$POD" -- env VAULT_TOKEN="${VAULT_TOKEN:?export VAULT_TOKEN (see header)}" vault "$@"; }
+# </dev/null is load-bearing: without it `kubectl exec` (no -i) inherits the script's stdin, and a
+# command-substitution call — ct="$(vault_ write …)" — hangs forever waiting for EOF. Redirecting stdin
+# makes every vault_ call return.
+vault_() { kubectl -n "$NS_VAULT" exec "$POD" -- env VAULT_TOKEN="${VAULT_TOKEN:?export VAULT_TOKEN (see header)}" vault "$@" </dev/null; }
 
 echo "▸ pre-flight: Vault reachable + UNSEALED?"
 sealed="$(kubectl -n "$NS_VAULT" exec "$POD" -- vault status -format=json 2>/dev/null | grep -o '"sealed": *[a-z]*' | grep -o '[a-z]*$')"
 [ "$sealed" = "false" ] || fail "Vault is sealed or unreachable — an operator must init + unseal it first (see header). Not a product failure."
+
+# Reset any state left by a PRIOR run of this probe so it re-exercises the destroyer end-to-end. The
+# throwaway enc-verify Destruction's state ConfigMap goes terminal ("Destroyed") on success, and the
+# destroyer never retries a terminal destruction (correct one-shot semantics) — so a fixed-name re-run
+# would silently no-op crypto-erase without clearing it. enc-verify is a dedicated verification key, never
+# a real customer key, so wiping its ephemeral state is safe.
+CONSOLE_NS="${CONSOLE_NS:-open-infra-console}"
+echo "▸ resetting prior enc-verify state (this probe is re-runnable)"
+kubectl delete encryptionkey "$KEY" destruction "$KEY" -n default --ignore-not-found >/dev/null 2>&1 || true
+kubectl -n "$CONSOLE_NS" delete configmap \
+  "openinfra-destruction-state-$KEY" "openinfra-enckey-state-$KEY" \
+  "openinfra-destruction-$KEY" "openinfra-enckey-$KEY" --ignore-not-found >/dev/null 2>&1 || true
 
 echo "▸ provisioning kind: EncryptionKey/$KEY and waiting for the reconciler to create the Transit key"
 kubectl apply -f - >/dev/null <<YAML || fail "could not apply EncryptionKey"
@@ -52,6 +67,11 @@ kind: Destruction
 metadata: { name: $KEY, namespace: default }
 spec: { encryptionKey: $KEY, confirm: $KEY, reason: "govstack live-verify crypto-erase" }
 YAML
+# Trigger the destroyer now rather than waiting on its */5 cron, so the verification is deterministic
+# (not dependent on where we land in the cron window). Best-effort: if the manual job can't be created,
+# the cron still fires within the wait budget below.
+kubectl -n crossplane-system delete job enc-verify-probe-destroy --ignore-not-found >/dev/null 2>&1 || true
+kubectl -n crossplane-system create job enc-verify-probe-destroy --from=cronjob/encryptionkey-destroyer >/dev/null 2>&1 || true
 for _ in $(seq 1 60); do vault_ read "transit/keys/$KEY" >/dev/null 2>&1 || break; sleep 5; done
 if vault_ read "transit/keys/$KEY" >/dev/null 2>&1; then fail "key still present after Destruction — crypto-erase did not complete."; fi
 # the wrapped data is now unrecoverable — decrypt must fail
@@ -60,4 +80,5 @@ echo "  PASS — key destroyed; the previously-encrypted value is now unrecovera
 
 echo "▸ cleanup"
 kubectl delete encryptionkey "$KEY" destruction "$KEY" -n default --ignore-not-found >/dev/null 2>&1 || true
+kubectl -n crossplane-system delete job enc-verify-probe-destroy --ignore-not-found >/dev/null 2>&1 || true
 echo "▸ PASS — encryption stack live-verified: provision -> round-trip -> crypto-erase. Safe to drop the EXPERIMENTAL flag on vault.yaml (see docs/encryption.md)."

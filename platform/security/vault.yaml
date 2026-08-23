@@ -11,10 +11,12 @@
 # human-in-the-loop step: the whole point of customer-owned keys is that open-infra cannot unseal
 # your KMS for you. See docs/encryption.md for the init/unseal/bootstrap runbook.
 #
-# LIVE-VERIFIED (2026-08-20): provision -> round-trip -> crypto-erase proven on the running cluster by
+# LIVE-VERIFIED: provision -> round-trip -> crypto-erase proven END-TO-END on the running cluster by
 # probe/encryption-vault.sh (customer KEK wraps/unwraps byte-identical; kind: Destruction makes the key
-# unrecoverable). Bringing Vault up is still operator-gated — custody of the unseal keys is the customer's
-# by design (open-infra cannot unseal your KMS); see docs/encryption.md for the init/unseal runbook.
+# unrecoverable). The probe is re-runnable — it resets its own throwaway enc-verify state and triggers the
+# destroyer, so it is a repeatable gate, not a one-shot. Bringing Vault up is still operator-gated — custody
+# of the unseal keys is the customer's by design (open-infra cannot unseal your KMS); see docs/encryption.md
+# for the init/unseal runbook.
 #
 # The `vault` namespace is created HERE (early sync-wave) rather than left to the Helm chart's
 # CreateNamespace=true: the app-of-apps applies the raw ServiceAccount/Job below into namespace `vault`,
