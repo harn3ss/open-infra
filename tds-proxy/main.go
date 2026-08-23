@@ -529,8 +529,12 @@ func serveMetrics(addr string) {
 			coldOpens.Load(), warmReuses.Load(), returns.Load(), discards.Load(), acquireTimeouts.Load())
 		fmt.Fprintf(w, "tx_multiplex_returns %d\n", txReturns.Load())
 		fmt.Fprintf(w, "pool_reuse_ratio %.3f\n", reuse)
-		// MARS visibility: how many clients asked for MARS (not granted). A high count flags a fleet a
-		// future per-transaction multiplexer would have to pin or specially handle — measured, not guessed.
+		// MARS visibility (#9): how many clients requested MARS in PRELOGIN. The proxy DECLINES MARS (its
+		// PRELOGIN response omits it) to preserve pooling, same posture as AWS RDS Proxy. Live-verified: a
+		// MARS=true client connects fine and only fails if it actually INTERLEAVES two result sets — and it
+		// fails client-side without sending SMP to the proxy (no corruption). The common case (negotiate but
+		// never interleave) works single-stream. This counter measures demand for a future SMP-demux (the
+		// genuine ahead-of-AWS feature) — see docs/design §8.
 		fmt.Fprintf(w, "mars_requested %d\n", marsRequested.Load())
 		fmt.Fprintf(w, "integrated_auth_refused %d\n", integratedAuth.Load())
 		fmt.Fprintf(w, "fedauth_refused %d\n", fedAuthRefused.Load())

@@ -52,6 +52,36 @@ class Run
             b.ServerCertificate = cert;      // Strict validates the chain; pin the proxy cert (5.1+)
             b.HostNameInCertificate = "localhost";
         }
+
+        // MARS mode (#9): open ONE connection with MultipleActiveResultSets=true and actually INTERLEAVE two
+        // result sets on it — a second reader opened while the first is still active. That's real MARS use
+        // (not just negotiation). Reports whether the connect succeeds and whether the interleave works, so
+        // we can see empirically what a MARS client does through the proxy (which declines MARS).
+        if (Environment.GetEnvironmentVariable("MARS") is string m && m != "")
+        {
+            b.MultipleActiveResultSets = true;
+            Console.WriteLine($"Microsoft.Data.SqlClient MARS=true Encrypt={enc} -> {host}:{port}");
+            try
+            {
+                using var cn = new SqlConnection(b.ConnectionString);
+                cn.Open();
+                Console.WriteLine("  connect            ok");
+                using var c1 = new SqlCommand("SELECT TOP 5 object_id FROM sys.all_objects", cn);
+                using var r1 = c1.ExecuteReader();
+                r1.Read(); // first result set now ACTIVE
+                using var c2 = new SqlCommand("SELECT 42", cn);
+                using var r2 = c2.ExecuteReader(); // second ACTIVE result set on the SAME connection = interleave
+                r2.Read();
+                int got = r2.GetInt32(0);
+                Console.WriteLine($"  mars-interleave    {(got == 42 ? "ok (two active result sets on one connection)" : "WRONG value " + got)}");
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"  mars-interleave    ERR {e.Message.Split('\n')[0]}");
+            }
+            return;
+        }
+
         connStr = b.ConnectionString;
         Console.WriteLine($"Microsoft.Data.SqlClient Encrypt={enc} -> {host}:{port}");
 
