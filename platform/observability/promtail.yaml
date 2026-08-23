@@ -41,7 +41,7 @@ spec:
                   - targets: [localhost]
                     labels:
                       job: k3s-audit
-                      __path__: /var/lib/rancher/k3s/server/logs/audit.log
+                      __path__: /audit/audit.log   # fixed internal mount (see extraVolumes)
                 pipeline_stages:
                   - json:
                       expressions:
@@ -60,14 +60,19 @@ spec:
         # The audit log lives on the control-plane node's host filesystem. promtail already
         # runs as root, so it can read the 0600 file; it just needs the directory mounted.
         # DirectoryOrCreate so promtail still schedules on agent nodes that have no such dir.
+        # Mounted at the fixed path /audit, so only the hostPath is substrate-specific.
         extraVolumes:
-          - name: k3s-audit
+          # SUBSTRATE-SPECIFIC: the API-server audit-log directory on the control-plane node.
+          # Default = k3s. On RKE2/kubeadm/Talos set this to your audit-log directory and keep
+          # it in sync with cluster.auditLogDir (config.yaml) + audit-offsite.yaml. Only this
+          # line changes per distro (the mount is fixed at /audit). See docs/portability.md.
+          - name: audit-log
             hostPath:
               path: /var/lib/rancher/k3s/server/logs
               type: DirectoryOrCreate
         extraVolumeMounts:
-          - name: k3s-audit
-            mountPath: /var/lib/rancher/k3s/server/logs
+          - name: audit-log
+            mountPath: /audit
             readOnly: true
   destination:
     server: https://kubernetes.default.svc
