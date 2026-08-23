@@ -19,6 +19,21 @@ cluster:
   # k3s version channel. "stable" is fine for most.
   k3sChannel: stable
 
+  # API-server AUDIT LOG directory on the control-plane node. The audit-trail
+  # features — off-siting to a WORM store and the console CloudTrail view — read
+  # the log from this HOST directory. The default is the k3s location; on other
+  # distributions set it to match your API server's --audit-log-path directory:
+  #   k3s      /var/lib/rancher/k3s/server/logs
+  #   RKE2     /var/lib/rancher/rke2/server/logs
+  #   kubeadm  the directory of your --audit-log-path (e.g. /var/log/kubernetes/audit)
+  #   Talos    the directory your audit policy writes to
+  # install.sh probes the control-plane node and WARNS if the log isn't found
+  # here. Because these two manifests mount the directory and are synced from git
+  # (not templated), set the SAME path in both when you change it — they are
+  # flagged: platform/observability/promtail.yaml and
+  # platform/security/audit-offsite.yaml. See docs/portability.md.
+  auditLogDir: /var/lib/rancher/k3s/server/logs
+
   # HA control plane needs 3 servers with embedded etcd. In dev, leave as-is.
   # Real hostnames/IPs belong here ONLY (this file is ignored by git).
   servers: []          # e.g. ["10.0.0.11", "10.0.0.12", "10.0.0.13"]
