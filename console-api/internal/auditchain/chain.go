@@ -152,6 +152,21 @@ type StreamVerifier struct {
 	broken bool
 }
 
+// NewStreamVerifierFrom returns a StreamVerifier seeded to CONTINUE an already-verified chain from a
+// trusted anchor (seq, hash) — for incremental verification. The prefix up to `seq` was verified on an
+// earlier run and recorded in the external anchor, and its segments are WORM-locked; incremental trades
+// re-deriving that locked prefix for trusting the anchor, and is paired with a periodic FULL re-verify
+// (which trusts nothing) so lock-bypass on the old prefix is still caught. The first segment pushed MUST
+// be seq+1 and link (prevHash) to `hash`, exactly as if the anchored segment had just been pushed. Full
+// verification uses the zero-value StreamVerifier instead.
+func NewStreamVerifierFrom(seq int, hash string) *StreamVerifier {
+	v := &StreamVerifier{prev: &Segment{Seq: seq, Hash: hash}}
+	v.res.BaseSeq = seq
+	v.res.HeadSeq = seq
+	v.res.HeadHash = hash
+	return v
+}
+
 func (v *StreamVerifier) broke(seq int, reason string) {
 	s := seq
 	v.res.OK = false
