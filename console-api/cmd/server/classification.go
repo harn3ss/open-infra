@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -26,9 +27,9 @@ import (
 // (LoadBalancer Services targeting the workload), network restriction (a NetworkPolicy selecting its
 // pods), residency (nodeSelector pinning), and encryptionAtRest from two independent live mechanisms
 // (an encrypted/LUKS StorageClass for the volume layer, and a bound + provisioned Vault Transit
-// EncryptionKey for the app layer). backup is still reported UNKNOWN — the backup subsystem is
-// on-demand snapshot / final-snapshot-before-delete, with no standing per-workload policy to
-// interrogate — rather than pretending to verify it.
+// EncryptionKey for the app layer), and backup from Velero Schedule coverage of the workload's namespace
+// (scheduled coverage, not per-volume proof — the detail says so; UNKNOWN when there is no Schedule to
+// read, never a silent pass).
 //
 // Admin-gated with the same SubjectAccessReview as the rest of Security & Identity.
 
@@ -262,11 +263,75 @@ func evaluateWorkload(ctx context.Context, cs kubernetes.Interface, consoleNS st
 		checks = append(checks, evalEncryptionAtRest(ctx, cs, consoleNS, wl))
 	}
 	if pol.backup {
-		// No standing per-workload backup POLICY resource exists to interrogate yet: the backup subsystem
-		// is on-demand snapshot / final-snapshot-before-delete, not scheduled per-workload protection.
-		checks = append(checks, ruleCheck{"backup", "unknown", "no standing backup policy per workload to interrogate"})
+		checks = append(checks, evalBackup(ctx, cs, wl))
 	}
 	return checks
+}
+
+// veleroSchedule is the slice of a velero.io/v1 Schedule the backup check needs.
+type veleroSchedule struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Paused   bool `json:"paused"`
+		Template struct {
+			IncludedNamespaces []string `json:"includedNamespaces"`
+			ExcludedNamespaces []string `json:"excludedNamespaces"`
+		} `json:"template"`
+	} `json:"spec"`
+	Status struct {
+		Phase      string `json:"phase"`
+		LastBackup string `json:"lastBackup"`
+	} `json:"status"`
+}
+
+// evalBackup reports whether the workload's namespace is covered by an enabled scheduled backup — the
+// interrogable signal open-infra actually has (a Velero Schedule; the platform default is a daily
+// all-namespaces schedule). This is namespace-granular scheduled coverage, NOT per-PVC backup proof, so
+// the detail says exactly that. No Schedule to read → "unknown" (can't verify), never a silent pass.
+func evalBackup(ctx context.Context, cs kubernetes.Interface, wl workload) ruleCheck {
+	items := crListPath(ctx, cs, "/apis/velero.io/v1/schedules")
+	if len(items) == 0 {
+		return ruleCheck{"backup", "unknown", "no Velero Schedule found to interrogate — backup coverage not verifiable"}
+	}
+	for _, it := range items {
+		var s veleroSchedule
+		if json.Unmarshal(it, &s) != nil {
+			continue
+		}
+		// Only an active schedule counts: paused, or a non-Enabled phase, protects nothing.
+		if s.Spec.Paused || (s.Status.Phase != "" && s.Status.Phase != "Enabled") {
+			continue
+		}
+		if namespaceBackupCovered(wl.namespace, s.Spec.Template.IncludedNamespaces, s.Spec.Template.ExcludedNamespaces) {
+			d := "namespace covered by enabled Velero Schedule " + s.Metadata.Name + " (scheduled coverage, not per-volume proof)"
+			if s.Status.LastBackup != "" {
+				d += "; last backup " + s.Status.LastBackup
+			}
+			return ruleCheck{"backup", "pass", d}
+		}
+	}
+	return ruleCheck{"backup", "fail", "no enabled Velero Schedule covers namespace " + wl.namespace}
+}
+
+// namespaceBackupCovered mirrors Velero's namespace selection: an explicit exclude wins; an empty include
+// list or a "*" entry means all namespaces; otherwise the namespace must be listed.
+func namespaceBackupCovered(ns string, included, excluded []string) bool {
+	for _, e := range excluded {
+		if e == ns {
+			return false
+		}
+	}
+	if len(included) == 0 {
+		return true
+	}
+	for _, i := range included {
+		if i == "*" || i == ns {
+			return true
+		}
+	}
+	return false
 }
 
 // evalEncryptionAtRest reports whether a workload's data is protected at rest, from two INDEPENDENT
