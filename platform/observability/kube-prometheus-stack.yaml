@@ -32,9 +32,9 @@ spec:
           # and serve them read-only without a login. Grafana is ClusterIP-only and the
           # console BFF fronts it under /grafana behind a session gate (requireSignedIn),
           # so this anonymous Viewer access is NOT reachable by unauthenticated callers —
-          # only by a signed-in console user, or by another in-cluster pod hitting the
-          # ClusterIP directly (a NetworkPolicy restricting Grafana ingress to the console
-          # namespace is the tracked follow-up that closes that last gap).
+          # only by a signed-in console user. Direct in-cluster access to the ClusterIP is
+          # restricted to the console and monitoring namespaces by grafana-netpol.yaml, so
+          # an arbitrary in-cluster pod can no longer hit it and read dashboards anonymously.
           grafana.ini:
             security:
               allow_embedding: true
