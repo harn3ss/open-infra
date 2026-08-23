@@ -228,6 +228,9 @@ spec:
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
                 - { name: STATE_NAMESPACE, value: "monitoring" }
+                # The audit log is mounted at a FIXED internal path (/audit) so this container
+                # is substrate-agnostic; only the hostPath below is distribution-specific.
+                - { name: AUDIT_LOG_PATH, value: "/audit/audit.log" }
                 - { name: RETENTION_DAYS, value: "2555" } # ~7 years (AU-11); segments are undeletable until then
                 # ── Off-site copy (AU-9(2)): point these at an EXTERNAL, operator-controlled S3 to
                 #    keep a second immutable copy outside this cluster. Left unset = single WORM copy.
@@ -240,9 +243,14 @@ spec:
                 requests: { cpu: 20m, memory: 48Mi }
                 limits: { cpu: 500m, memory: 256Mi }
               volumeMounts:
-                - { name: k3s-audit, mountPath: /var/lib/rancher/k3s/server/logs, readOnly: true }
+                - { name: audit-log, mountPath: /audit, readOnly: true }
           volumes:
-            - name: k3s-audit
+            # SUBSTRATE-SPECIFIC: the API-server audit-log directory on the control-plane
+            # node. Default = k3s. On RKE2/kubeadm/Talos set this to your audit-log directory
+            # and keep it in sync with cluster.auditLogDir (config.yaml) + promtail.yaml.
+            # It is mounted at the fixed path /audit, so only THIS line changes per distro.
+            # See docs/portability.md.
+            - name: audit-log
               hostPath:
                 path: /var/lib/rancher/k3s/server/logs
                 type: DirectoryOrCreate

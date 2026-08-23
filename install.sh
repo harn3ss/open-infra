@@ -54,9 +54,41 @@ yget() { # yget some.nested.key  -> value (or empty)
 MODE="$(yget mode)";            MODE="${MODE:-dev}"
 CLUSTER_NAME="$(yget cluster.name)"; CLUSTER_NAME="${CLUSTER_NAME:-open-infra}"
 K3S_CHANNEL="$(yget cluster.k3sChannel)"; K3S_CHANNEL="${K3S_CHANNEL:-stable}"
+AUDIT_LOG_DIR="$(yget cluster.auditLogDir)"; AUDIT_LOG_DIR="${AUDIT_LOG_DIR:-/var/lib/rancher/k3s/server/logs}"
 METALLB_POOL="$(yget networking.metallbPool)"
 GITOPS_REPO="$(yget gitops.repoUrl)"
 GITOPS_PATH="$(yget gitops.path)"; GITOPS_PATH="${GITOPS_PATH:-deploy}"
+
+# ── Audit-log portability preflight (#15) ────────────────────
+# The audit-trail features (off-siting to WORM + the console CloudTrail view) read
+# the API-server audit log from a HOST directory (cluster.auditLogDir), which is
+# k3s-shaped by default. On other distributions the path differs, and a wrong path
+# yields a SILENTLY empty audit trail. Probe the node so it fails LOUDLY here instead.
+# Best-effort: only meaningful when install.sh runs on a control-plane node (the norm).
+audit_preflight() {
+  [ -d /etc/rancher ] || [ -d /var/lib/rancher ] || [ -d /etc/kubernetes ] || return 0
+  if [ -f "$AUDIT_LOG_DIR/audit.log" ]; then
+    LOG "audit log present at $AUDIT_LOG_DIR (cluster.auditLogDir)"
+    return 0
+  fi
+  local found=""
+  for d in /var/lib/rancher/k3s/server/logs /var/lib/rancher/rke2/server/logs /var/log/kubernetes/audit; do
+    [ -f "$d/audit.log" ] && found="$d" && break
+  done
+  if [ -n "$found" ]; then
+    WARN "API-server audit log is at $found, but cluster.auditLogDir=$AUDIT_LOG_DIR."
+    WARN "  Audit off-siting + the console CloudTrail view will be EMPTY until these match."
+    WARN "  Set cluster.auditLogDir: $found and the flagged hostPath in both"
+    WARN "  platform/observability/promtail.yaml and platform/security/audit-offsite.yaml."
+    WARN "  See docs/portability.md."
+  else
+    WARN "No API-server audit log found at $AUDIT_LOG_DIR or known k3s/RKE2/kubeadm paths."
+    WARN "  If audit logging isn't enabled on the API server, the audit-trail features won't"
+    WARN "  work — enable --audit-log-path + --audit-policy-file and point cluster.auditLogDir"
+    WARN "  at its directory. See docs/portability.md."
+  fi
+}
+audit_preflight
 
 # Per-component install toggles (config.yaml `components.*`). Default = install
 # everything; a component set to "false" is excluded from the app-of-apps include
