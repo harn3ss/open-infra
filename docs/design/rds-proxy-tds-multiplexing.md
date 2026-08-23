@@ -212,3 +212,37 @@ exactly at `COMMIT`/`ROLLBACK`.
 **Still open (v2.2, later):** forwarding a client `ATTENTION` (cancel) mid-response race-free *across* a
 mid-session backend swap — tx-multiplex still relays each response synchronously, so a mid-query cancel
 waits for the response to complete (the default session-level relay keeps prompt cancel).
+
+## 8. MARS (Multiple Active Result Sets) — posture & the ahead-of-AWS opportunity (issue #9)
+
+MARS lets one connection have several interleaved active result sets. It rides the **SMP** session-multiplex
+protocol (each packet wrapped with an SMID `0x53` header carrying a per-stream SID), negotiated by a `B_MARS`
+byte in PRELOGIN.
+
+**Posture: the proxy DECLINES MARS** — its synthesized PRELOGIN response omits the MARS option. This is
+deliberate and matches **AWS RDS Proxy**, which also does not support MARS: granting MARS means every packet
+is SMP-wrapped, which the proxy can't classify (it can't see the inner TDS), so *every* MARS connection would
+pin — destroying the pooling the proxy exists for. Declining MARS keeps pooling. It is **not a correctness
+bug**: the classifier's fail-safe already pins anything it can't read.
+
+**Live finding (2026-08-22, Microsoft.Data.SqlClient vs SQL Server 2022, harness `MARS=1`):**
+- Direct to the backend, `MultipleActiveResultSets=true` interleaves two readers on one connection — works
+  (SQL Server supports MARS).
+- Through the proxy, the same client **connects fine**; it only fails if it *actually interleaves*, and then
+  it fails **client-side** (SqlClient error 35) — **no SMP traffic reaches the proxy** (SqlClient honours the
+  declined negotiation and won't start a second stream), so there is nothing malformed to handle and no
+  corruption. The common case — negotiate MARS but never interleave, which per the issue is nearly every
+  client — runs single-stream and pools normally.
+- Guidance (same as AWS RDS Proxy): set `MultipleActiveResultSets=false` when connecting through the pool.
+
+**The measurement that matters** (the issue's insight): MARS *negotiation* is near-useless as a signal
+(drivers send it even with MARS off), and actual *interleaving* does not occur through the proxy (it's
+declined client-side). `mars_requested` in `/status` measures negotiation demand — the input to deciding
+whether the hard feature below is worth building.
+
+**Ahead-of-AWS opportunity (deferred, gated on demand):** genuinely **demultiplex** SMP — split a MARS
+connection's interleaved streams across pooled backends — so MARS sessions pool instead of pinning. Nobody
+ships this (AWS included), so it would be a real first. It's large (full SMP framing + per-SID stream state
++ correctness proof that streams don't cross backends mid-statement) and only worth it if `mars_requested`
+shows real demand. The near-term work (count negotiation, validate real interleaving behaviour, document the
+gap and the decision) is done; the demux is a scoped future feature, not a gap in today's correct posture.
