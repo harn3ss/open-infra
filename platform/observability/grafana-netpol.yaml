@@ -1,0 +1,41 @@
+# Restrict who can reach Grafana on the pod network.
+#
+# Grafana ships anonymous Viewer access so the console can embed dashboards read-only
+# (see kube-prometheus-stack.yaml). Grafana is ClusterIP-only and the console BFF fronts
+# it under /grafana behind a session gate, so that anonymous access is not reachable from
+# OUTSIDE the cluster — but until now ANY pod in ANY namespace could hit the Grafana
+# ClusterIP directly and read dashboards anonymously. This NetworkPolicy closes that last
+# gap (the follow-up called out in kube-prometheus-stack.yaml): ingress to the Grafana pod
+# is allowed only from
+#   - open-infra-console  — the BFF that proxies /grafana for signed-in console users
+#   - monitoring          — Prometheus scraping Grafana's /metrics (ServiceMonitor
+#                           kube-prometheus-stack-grafana); Grafana serves the UI and
+#                           /metrics on the same port (3000), so they can't be split by port
+# Every other pod is denied. This is a k8s NetworkPolicy (core kind), enforced by Cilium.
+# It restricts only pod->pod ingress; kubelet health probes come from the node (the Cilium
+# "host" identity, allowed by default) and are unaffected.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-ingress-restrict
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: open-infra
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - open-infra-console
+                  - monitoring
+      ports:
+        - protocol: TCP
+          port: 3000
