@@ -38,8 +38,14 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    versioning still lets a bucket-writer lay a *newer* version over it at "latest", but the locked
    original survives and can be verified against the anchored hash — the same shadowing caveat as
    [audit off-siting](audit-offsite.md#immutability-worm-vs-tamper-evidence-chain--stated-precisely).
-4. **Records the outcome** — `status.phase` and the certificate path + sha256, shown on the console
-   **Security & Identity → Encryption Keys** page.
+4. **Records the outcome** — phase (`Destroyed`/`Refused`/`Error`), the certificate path + sha256, and
+   the time, shown on the console **Security & Identity → Encryption Keys** page. The privileged
+   destroyer writes this to a single-writer **state ConfigMap**, which the console reads — it does **not**
+   write back onto the `Destruction` CR, so the CR's own `status.phase` stays `Pending` even after a
+   successful erase. Read completion from the **console** or the **WORM destruction certificate** (the
+   authoritative evidence), not from `kubectl get destruction`. (The async destroyer runs with least
+   privilege — Vault + the state ConfigMap + the WORM store — and deliberately has no write access to the
+   CR's status.)
 
 The `Destruction` object's own create/complete lifecycle is captured in the API-server audit log,
 which [audit off-siting](audit-offsite.md) makes tamper-evident — so **who** requested the erase and
