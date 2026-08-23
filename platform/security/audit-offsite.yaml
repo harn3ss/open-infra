@@ -253,7 +253,9 @@ metadata:
   name: audit-offsite-verify
   namespace: monitoring
 spec:
-  schedule: "0 * * * *" # re-verify the whole chain hourly
+  schedule: "0 * * * *" # incremental re-verify hourly — O(new): trusts the anchored, WORM-locked prefix
+  # and only re-derives segments newer than the anchor (+ a cheap lock-bypass check on the prefix from the
+  # version list). The daily full pass below is the trust-nothing backstop. See AUDIT_VERIFY_MODE.
   # Replace, not Forbid: ship resumes from the bucket head and verify is read-only, so both are
   # idempotent — but Forbid + a stuck run (verify is long-running / was OOM-prone) blocks every later
   # run indefinitely. See the grant-reconciler incident.
@@ -284,11 +286,51 @@ spec:
                 - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: accessKey } } }
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+                - { name: AUDIT_VERIFY_MODE, value: "incremental" } # O(new) hourly; daily full is the backstop
               resources:
-                # Verify is CPU-bound: it re-hashes the entire audit chain each run, and at 500m it was
-                # pegged and blew the deadline as the chain grew (~3k+ entries) — the cause of the failing
-                # runs. Raise the ceiling so it finishes. NOTE: this is the immediate fix; the durable fix
-                # is incremental verification (checkpoint the last-verified head + a periodic full pass)
-                # so cost stops scaling with total chain length.
+                # Incremental re-derives only segments newer than the anchor, so hourly cost no longer scales
+                # with total chain length (the durable fix the full-verify comment called for; the daily full
+                # CronJob below still does the trust-nothing sweep and keeps the larger headroom).
+                requests: { cpu: 250m, memory: 64Mi }
+                limits: { cpu: 2000m, memory: 256Mi }
+---
+# Daily FULL re-verify — the trust-nothing backstop for the hourly incremental above. It re-derives the
+# ENTIRE chain from each segment's locked contents (AUDIT_VERIFY_MODE unset), so any content-tamper of an
+# already-anchored segment (a lock bypass the incremental prefix check would only flag as an attempt) is
+# caught here from first principles. Cost scales with chain length, so it runs once a day, not hourly.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: audit-offsite-verify-full
+  namespace: monitoring
+spec:
+  schedule: "30 3 * * *" # once daily, off-peak (offset from the 03:00 backup)
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800  # full re-hash of the whole chain — more headroom than the hourly
+      ttlSecondsAfterFinished: 600
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: audit-offsite
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          containers:
+            - name: verify
+              image: ghcr.io/harn3ss/open-infra-audit-offsite:latest
+              args: ["verify"] # AUDIT_VERIFY_MODE unset => full, trust-nothing re-derivation
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              env:
+                - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
+                - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: accessKey } } }
+                - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
+                - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+              resources:
                 requests: { cpu: 250m, memory: 64Mi }
                 limits: { cpu: 2000m, memory: 256Mi }
