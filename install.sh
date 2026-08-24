@@ -337,13 +337,17 @@ EOF
     #    bypassed Multus after the Cilium migration; do NOT sed them.)
     curl -sfL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
       | $KUBECTL apply -f - || WARN "Multus install failed"
-    # Make the shim install ATOMIC (copy to a temp name, then rename over the target).
-    # A plain `cp` truncates the existing binary in place, which fails with "Text file
-    # busy" (ETXTBSY) if a stuck multus-shim is running during a re-roll — that wedges
-    # the node's CNI (the init container BackOffs and the daemon never restarts). rename()
-    # over a busy binary is fine (running processes keep the old inode).
+    # Two hardening patches to the upstream Multus DS, both learned the hard way:
+    #  1) ATOMIC shim install (copy to a temp name, then rename over the target). A plain
+    #     `cp` truncates the existing binary in place → fails "Text file busy" (ETXTBSY) if
+    #     a stuck multus-shim is running during a re-roll, wedging the node's CNI (init
+    #     BackOffs, daemon never restarts). rename() over a busy binary is safe.
+    #  2) RAISE the daemon's memory limit. Upstream ships 50Mi — fine when Multus is bypassed,
+    #     but as the PRIMARY CNI on a busy node (many concurrent CNI ADDs from CronJobs/backups)
+    #     50Mi OOMKills the daemon (exit 137) → it crash-loops → new pods stick in
+    #     ContainerCreating with "CmdAdd (shim): timed out". 512Mi gives headroom.
     $KUBECTL -n kube-system patch ds kube-multus-ds --type=json \
-      -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/command","value":["sh","-c","cp -f /usr/src/multus-cni/bin/multus-shim /host/opt/cni/bin/.multus-shim.new && mv -f /host/opt/cni/bin/.multus-shim.new /host/opt/cni/bin/multus-shim"]}]' 2>/dev/null || WARN "multus init atomic-install patch failed"
+      -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/command","value":["sh","-c","cp -f /usr/src/multus-cni/bin/multus-shim /host/opt/cni/bin/.multus-shim.new && mv -f /host/opt/cni/bin/.multus-shim.new /host/opt/cni/bin/multus-shim"]},{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"1","memory":"512Mi"}}}]' 2>/dev/null || WARN "multus init/resources hardening patch failed"
     $KUBECTL -n kube-system rollout status ds/kube-multus-ds --timeout=180s || WARN "Multus not ready yet"
     # 3. The macvlan NetworkAttachmentDefinition (no IPAM -> guest DHCP).
     cat <<EOF | $KUBECTL apply -f - || WARN "NAD create failed"
