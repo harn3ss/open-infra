@@ -212,8 +212,15 @@ $KUBECTL version >/dev/null 2>&1 || [ "$DRY_RUN" = 1 ] || DIE "k3s not respondin
 # the kubernetes Service), so k8sServiceHost = this node's IP.
 if $KUBECTL -n kube-system get ds/cilium >/dev/null 2>&1; then
   LOG "Cilium already installed — skipping"
+  # Ensure cni.exclusive=false even on an existing install, so Multus (VM direct-LAN
+  # networking) can layer on top as the primary CNI delegating to Cilium. With
+  # cni.exclusive=true, Cilium evicts Multus's config and NADs never attach.
+  if [ "$($KUBECTL -n kube-system get cm cilium-config -o jsonpath='{.data.cni-exclusive}' 2>/dev/null)" = "true" ]; then
+    RUN "$KUBECTL -n kube-system patch cm cilium-config --type=merge -p '{\"data\":{\"cni-exclusive\":\"false\"}}'"
+    WARN "flipped cilium cni-exclusive=false — restart Cilium to apply: kubectl -n kube-system rollout restart ds/cilium"
+  fi
 elif [ "$DRY_RUN" = 1 ]; then
-  printf '  + install Cilium (kubeProxyReplacement=true, ipam=kubernetes)\n'
+  printf '  + install Cilium (kubeProxyReplacement=true, ipam=kubernetes, cni.exclusive=false)\n'
 else
   LOG "installing Cilium (CNI, kube-proxy replacement)…"
   NODE_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
@@ -223,7 +230,10 @@ else
     ARCH="amd64"; [ "$(uname -m)" = "aarch64" ] && ARCH="arm64"
     RUN "curl -sL --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${ARCH}.tar.gz | tar xz -C /usr/local/bin cilium"
   fi
-  RUN "cilium install --set kubeProxyReplacement=true --set k8sServiceHost='$NODE_IP' --set k8sServicePort=6443 --set ipam.mode=kubernetes"
+  # cni.exclusive=false lets Multus be layered on as the primary CNI delegating to Cilium
+  # (VM direct-LAN networking, networking.vmLan). Without it Cilium evicts Multus's config
+  # from the CNI conf dir and NADs never attach.
+  RUN "cilium install --set kubeProxyReplacement=true --set k8sServiceHost='$NODE_IP' --set k8sServicePort=6443 --set ipam.mode=kubernetes --set cni.exclusive=false"
   RUN "cilium status --wait --wait-duration 5m || true"
 fi
 
@@ -282,9 +292,13 @@ fi
 if [ "$(yget networking.vmLan.enabled)" = "true" ]; then
   VMLAN_IFACE="$(yget networking.vmLan.interface)"; VMLAN_IFACE="${VMLAN_IFACE:-eno1}"
   MULTUS_VERSION="v4.1.0"; CNI_PLUGINS_VERSION="v1.5.1"
-  K3S_CNI_BIN="/var/lib/rancher/k3s/data/current/bin"
-  K3S_CNI_CONF="/var/lib/rancher/k3s/agent/etc/cni/net.d"
-  LOG "VM LAN bridge: Multus + macvlan (parent NIC: $VMLAN_IFACE)…"
+  # Cilium + k3s' containerd use the UPSTREAM CNI defaults (/opt/cni/bin, /etc/cni/net.d),
+  # NOT k3s' own dirs. Multus, its plugins, and its config MUST live there or Multus is
+  # bypassed (containerd talks straight to Cilium) and NADs never attach — the regression
+  # that silently broke VM direct-LAN networking when Cilium replaced flannel.
+  CNI_BIN="/opt/cni/bin"
+  CNI_CONF="/etc/cni/net.d"
+  LOG "VM direct-LAN networking: Multus + macvlan/macvtap (parent NIC: $VMLAN_IFACE)…"
   if [ "$DRY_RUN" = 1 ]; then
     printf '  + install macvlan plugin + Multus %s; create NAD; label nodes with %s\n' "$MULTUS_VERSION" "$VMLAN_IFACE"
   else
@@ -314,11 +328,14 @@ spec:
       containers:
         - { name: pause, image: registry.k8s.io/pause:3.9 }
       volumes:
-        - { name: bin, hostPath: { path: ${K3S_CNI_BIN} } }
+        - { name: bin, hostPath: { path: ${CNI_BIN} } }
 EOF
-    # 2. Multus (thick), pointed at k3s' CNI paths; delegates default to Cilium.
+    # 2. Multus (thick) as the PRIMARY CNI, delegating the default network to Cilium.
+    #    Leave the upstream paths (/etc/cni/net.d + /opt/cni/bin) unchanged — that is where
+    #    Cilium writes its config and containerd looks, so Multus auto-detects Cilium as the
+    #    cluster master and sits in front of it. (Rewriting these to k3s' dirs is what
+    #    bypassed Multus after the Cilium migration; do NOT sed them.)
     curl -sfL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
-      | sed -e "s#/etc/cni/net.d#${K3S_CNI_CONF}#g" -e "s#/opt/cni/bin#${K3S_CNI_BIN}#g" \
       | $KUBECTL apply -f - || WARN "Multus install failed"
     $KUBECTL -n kube-system rollout status ds/kube-multus-ds --timeout=180s || WARN "Multus not ready yet"
     # 3. The macvlan NetworkAttachmentDefinition (no IPAM -> guest DHCP).
@@ -329,6 +346,70 @@ metadata: { name: openinfra-lan, namespace: default }
 spec:
   config: '{ "cniVersion": "0.3.1", "type": "macvlan", "master": "${VMLAN_IFACE}", "mode": "bridge", "ipam": {} }'
 EOF
+    # 3b. macvtap — the SUPPORTED direct-LAN mode (network=macvtap). Unlike bridge/macvlan
+    #     (a macvlan sub-iface can't be a KubeVirt bridge port), macvtap gives the VM a real
+    #     LAN presence + its own DHCP lease. A device plugin exposes the LAN NIC as
+    #     macvtap.network.kubevirt.io/<iface>; the macvtap-cni binary installs into ${CNI_BIN};
+    #     a NAD + a KubeVirt binding plugin wire it to kind: VirtualMachine network=macvtap.
+    cat <<EOF | $KUBECTL apply -f - || WARN "macvtap device-plugin config failed"
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: macvtap-deviceplugin-config, namespace: default }
+data:
+  DP_MACVTAP_CONF: '[ { "name": "${VMLAN_IFACE}", "lowerDevice": "${VMLAN_IFACE}", "mode": "bridge", "capacity": 50 } ]'
+EOF
+    cat <<EOF | $KUBECTL apply -f - || WARN "macvtap-cni install failed"
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: macvtap-cni, namespace: default, labels: { name: macvtap-cni } }
+spec:
+  selector: { matchLabels: { name: macvtap-cni } }
+  template:
+    metadata: { labels: { name: macvtap-cni } }
+    spec:
+      hostNetwork: true
+      hostPID: true
+      priorityClassName: system-node-critical
+      nodeSelector: { openinfra.dev/vm-lan: "true" }
+      tolerations: [ { operator: Exists } ]
+      containers:
+        - name: macvtap-cni
+          command: ["/macvtap-deviceplugin", "-v", "3", "-logtostderr"]
+          envFrom: [ { configMapRef: { name: macvtap-deviceplugin-config } } ]
+          image: quay.io/kubevirt/macvtap-cni:latest
+          securityContext: { privileged: true }
+          volumeMounts: [ { name: deviceplugin, mountPath: /var/lib/kubelet/device-plugins } ]
+          readinessProbe:
+            exec: { command: ["sh","-c","ls /var/lib/kubelet/device-plugins/macvtap.network.kubevirt.io* >/dev/null 2>&1"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      initContainers:
+        - name: install-cni
+          command: ["cp", "/macvtap-cni", "/host/cni/macvtap"]   # into ${CNI_BIN}
+          image: quay.io/kubevirt/macvtap-cni:latest
+          securityContext: { privileged: true }
+          volumeMounts: [ { name: cni, mountPath: /host/cni, mountPropagation: Bidirectional } ]
+      volumes:
+        - { name: deviceplugin, hostPath: { path: /var/lib/kubelet/device-plugins } }
+        - { name: cni, hostPath: { path: ${CNI_BIN} } }
+EOF
+    cat <<EOF | $KUBECTL apply -f - || WARN "macvtap NAD create failed"
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: openinfra-lan-macvtap
+  namespace: default
+  annotations: { k8s.v1.cni.cncf.io/resourceName: macvtap.network.kubevirt.io/${VMLAN_IFACE} }
+spec:
+  config: '{ "cniVersion": "0.3.1", "name": "openinfra-lan-macvtap", "type": "macvtap", "mtu": 1500 }'
+EOF
+    # Register the macvtap binding plugin on the KubeVirt CR (GA/no feature gate in KubeVirt
+    # >=1.5). 'add' if spec.configuration.network is absent, else 'merge' to preserve siblings.
+    $KUBECTL patch kubevirt kubevirt -n kubevirt --type=json \
+      -p='[{"op":"add","path":"/spec/configuration/network","value":{"binding":{"macvtap":{"domainAttachmentType":"tap"}}}}]' >/dev/null 2>&1 \
+      || $KUBECTL patch kubevirt kubevirt -n kubevirt --type=merge \
+      -p='{"spec":{"configuration":{"network":{"binding":{"macvtap":{"domainAttachmentType":"tap"}}}}}}' >/dev/null 2>&1 \
+      || WARN "macvtap binding registration failed (is KubeVirt installed? components.virtualization)"
     # 4. Auto-label nodes that actually have the LAN NIC (handles per-node NIC
     #    name differences — only matching nodes can host bridged VMs).
     for node in $($KUBECTL get nodes -o jsonpath='{.items[*].metadata.name}'); do

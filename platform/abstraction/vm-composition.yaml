@@ -75,6 +75,12 @@ spec:
                    golden rebuild grows past 100Gi. */}}
             {{- if $isWin }}{{- $disk = "100Gi" }}{{- end }}
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
+            {{- /* macvtap: supported direct-LAN mode — a second NIC on a macvtap device
+                   over the parent LAN NIC. Unlike bridge (macvlan can't be a KubeVirt
+                   bridge port), macvtap gives the VM a real LAN presence + DHCP lease. */}}
+            {{- $macvtap := eq ($spec.network | default "masquerade") "macvtap" }}
+            {{- /* $lan: either direct-LAN mode — shared node-affinity + dual-NIC DHCP. */}}
+            {{- $lan := or $bridge $macvtap }}
             {{- /* highAvailability: root disk on Longhorn (migratable RWX block) + live migration */}}
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
@@ -145,8 +151,8 @@ spec:
                         # of killing it. Requires the migratable RWX block root disk above.
                         evictionStrategy: LiveMigrate
                         {{- end }}
-                        {{- if $bridge }}
-                        # Bridge VMs must land where the macvlan parent NIC exists
+                        {{- if $lan }}
+                        # Direct-LAN VMs must land where the parent LAN NIC exists
                         # (label those nodes openinfra.dev/vm-lan=true).
                         affinity:
                           nodeAffinity:
@@ -212,9 +218,15 @@ spec:
                               - name: default
                                 masquerade: {}
                               {{- if $bridge }}
-                              # Second NIC bridged onto the physical LAN (macvlan).
+                              # Second NIC bridged onto the physical LAN (macvlan). NOTE: does not
+                              # work here — a macvlan sub-iface can't be a KubeVirt bridge port. Use macvtap.
                               - name: lan
                                 bridge: {}
+                              {{- else if $macvtap }}
+                              # Second NIC on a macvtap device over the LAN NIC (direct LAN + own DHCP lease).
+                              - name: lan
+                                binding:
+                                  name: macvtap
                               {{- end }}
                             networkInterfaceMultiqueue: true
                         networks:
@@ -224,6 +236,10 @@ spec:
                           - name: lan
                             multus:
                               networkName: default/openinfra-lan
+                          {{- else if $macvtap }}
+                          - name: lan
+                            multus:
+                              networkName: default/openinfra-lan-macvtap
                           {{- end }}
                         volumes:
                           - name: root
@@ -263,8 +279,8 @@ spec:
                                   - qemu-guest-agent
                                 runcmd:
                                   - [systemctl, enable, --now, qemu-guest-agent]
-                              {{- if $bridge }}
-                              # DHCP both NICs: eth0 (pod) + eth1 (LAN bridge).
+                              {{- if $lan }}
+                              # DHCP both NICs: eth0 (pod) + eth1 (direct LAN).
                               networkData: |
                                 version: 2
                                 ethernets:
