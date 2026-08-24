@@ -73,9 +73,9 @@ spec:
                   description: "Extra TCP/UDP ports to publish on the VM's LAN IP, beyond the access port (SSH/RDP) — e.g. [{port: 80}, {port: 53, protocol: UDP}]. They ride the same MetalLB IP as SSH/RDP (one LAN IP, the ports you pick). Adding any port also gives the VM a LAN IP (implies expose)."
                 network:
                   type: string
-                  enum: [masquerade, bridge]
+                  enum: [masquerade, bridge, macvtap]
                   default: masquerade
-                  description: "Network attachment. masquerade (default, supported) puts the VM behind the pod network (NAT) — reach it in-cluster via its Service, or from the LAN via expose/MetalLB. bridge is an advanced LAN-attach mode (Multus+macvlan, the VM pulls its own DHCP lease) that requires networking.vmLan enabled at install and nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md before using it."
+                  description: "Network attachment. masquerade (default, supported) puts the VM behind the pod network (NAT) — reach it in-cluster via its Service, or from the LAN via expose/MetalLB. macvtap is the supported direct-LAN mode: a second NIC attaches straight to the physical LAN via a macvtap device (the VM pulls its own DHCP lease and is a first-class LAN host, e.g. reachable on SMB/445). bridge is the legacy LAN mode (Multus+macvlan with KubeVirt bridge binding) and does NOT work on this stack — a macvlan sub-interface cannot be a KubeVirt bridge port; use macvtap instead. macvtap/bridge require networking.vmLan enabled at install and nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md."
                 securityGroups:
                   type: array
                   items: { type: string }
