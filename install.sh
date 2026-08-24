@@ -337,6 +337,13 @@ EOF
     #    bypassed Multus after the Cilium migration; do NOT sed them.)
     curl -sfL "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml" \
       | $KUBECTL apply -f - || WARN "Multus install failed"
+    # Make the shim install ATOMIC (copy to a temp name, then rename over the target).
+    # A plain `cp` truncates the existing binary in place, which fails with "Text file
+    # busy" (ETXTBSY) if a stuck multus-shim is running during a re-roll — that wedges
+    # the node's CNI (the init container BackOffs and the daemon never restarts). rename()
+    # over a busy binary is fine (running processes keep the old inode).
+    $KUBECTL -n kube-system patch ds kube-multus-ds --type=json \
+      -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/command","value":["sh","-c","cp -f /usr/src/multus-cni/bin/multus-shim /host/opt/cni/bin/.multus-shim.new && mv -f /host/opt/cni/bin/.multus-shim.new /host/opt/cni/bin/multus-shim"]}]' 2>/dev/null || WARN "multus init atomic-install patch failed"
     $KUBECTL -n kube-system rollout status ds/kube-multus-ds --timeout=180s || WARN "Multus not ready yet"
     # 3. The macvlan NetworkAttachmentDefinition (no IPAM -> guest DHCP).
     cat <<EOF | $KUBECTL apply -f - || WARN "NAD create failed"
