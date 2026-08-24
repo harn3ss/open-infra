@@ -131,7 +131,7 @@ fully-qualified `virtualmachines.openinfra.dev`.
 > Web (in-browser) console is intentionally **not** provided — access is native
 > SSH / RDP, so there is no extra in-cluster console dependency to run.
 
-## Networking: NAT vs direct-LAN (bridge)
+## Networking: NAT vs direct-LAN (macvtap)
 
 `spec.network` controls how the VM attaches:
 
@@ -139,9 +139,13 @@ fully-qualified `virtualmachines.openinfra.dev`.
   in-cluster via its `Service`, or from the LAN via `expose: true` (a MetalLB
   LoadBalancer hands it a LAN IP). The pod overlay (`10.42/16`) is **not** routable
   from your LAN, which is why a raw pod IP isn't reachable from a workstation.
-- **`bridge`** — the VM joins the **physical LAN directly** (Multus + macvlan) and
-  pulls a real **DHCP lease** from your router. It's a first-class LAN host — no
-  MetalLB, no NAT.
+- **`macvtap`** — the VM joins the **physical LAN directly** via a macvtap device on
+  the parent NIC and pulls a real **DHCP lease** from your router. It's a first-class
+  LAN host — no MetalLB, no NAT — reachable on *every* port (e.g. SMB/445, which is
+  outside the NodePort range), keeping a pod NIC (eth0) as well for in-cluster access.
+- **`bridge`** — *legacy, does not work on this stack.* It tried to bind a macvlan
+  sub-interface with KubeVirt's bridge binding, but a macvlan interface cannot be a
+  KubeVirt bridge port (the VMI crash-loops `pod link is missing`). Use `macvtap`.
 
 ### Opening extra ports (masquerade)
 
@@ -157,11 +161,11 @@ groups under **Security groups** — there's no separate "publish a port" contro
 > Under the hood the LoadBalancer's listeners live in `spec.ports`; the console keeps
 > that list in sync with the attached security groups (each specific inbound port
 > becomes a listener). The guest must actually be listening on the port. For a *full*
-> LAN host (every port, a real DHCP IP), use `network: bridge` instead.
+> LAN host (every port, a real DHCP IP), use `network: macvtap` instead.
 
-### Enabling bridge mode
+### Enabling direct-LAN (macvtap) mode
 
-Bridge mode needs Multus (a cluster CNI change), so it's opt-in — but it's a
+Direct-LAN mode needs Multus (a cluster CNI change), so it's opt-in — but it's a
 config flag, not a manual step. In `config.yaml`:
 
 ```yaml
@@ -177,26 +181,34 @@ then re-run the installer:
 ./install.sh            # idempotent
 ```
 
-`install.sh` installs Multus + the macvlan plugin (k3s paths), creates the
-`default/openinfra-lan` NetworkAttachmentDefinition (macvlan, no IPAM → guest
-DHCP), and **auto-labels every node that actually has `interface`** with
-`openinfra.dev/vm-lan=true` (so bridged VMs schedule only where they can work —
-NIC names may differ per node). Once a node is labelled, the console's New VM
-dialog enables "Bridged to LAN" on its own. Then:
+`install.sh` layers **Multus** on as the primary CNI (delegating the default network
+to Cilium — this requires Cilium's `cni.exclusive=false`, which the installer sets),
+installs the macvlan + **macvtap** plugins into the CNI bin dir, deploys the
+**macvtap device plugin** (exposing the LAN NIC as `macvtap.network.kubevirt.io/<iface>`),
+registers the **macvtap KubeVirt binding**, creates the
+`default/openinfra-lan-macvtap` NetworkAttachmentDefinition, and **auto-labels every
+node that actually has `interface`** with `openinfra.dev/vm-lan=true` (so direct-LAN
+VMs schedule only where they can work — NIC names may differ per node). Then:
 
 ```yaml
 spec:
   os: ubuntu-24.04
-  network: bridge        # real LAN IP via DHCP
+  network: macvtap       # real LAN IP via DHCP, first-class LAN host
 ```
 
+> **Cilium note.** Cilium ships `cni.exclusive=true`, which evicts any other CNI
+> config so Multus is bypassed and NADs never attach. The installer sets
+> `cni.exclusive=false`; on a cluster where Cilium was installed before this, re-run
+> `install.sh` (it flips the flag and tells you to `rollout restart ds/cilium`).
+
 **Caveats**
-- **NIC names may differ per node** (e.g. `eno1` vs `enp4s0`); the NAD has one
-  `master`, so only nodes that have that NIC can host bridged VMs. `install.sh`
-  detects this and labels just those nodes `openinfra.dev/vm-lan=true` (the VM
-  carries a matching node affinity) — no manual labelling.
-- **macvlan limitation**: the *host node* cannot talk to its own bridged VMs
-  (other LAN hosts can) — a kernel macvlan property.
+- **NIC names may differ per node** (e.g. `eno1` vs `enp4s0`); the device plugin/NAD
+  target one parent NIC, so only nodes that have it can host direct-LAN VMs.
+  `install.sh` detects this and labels just those nodes `openinfra.dev/vm-lan=true`
+  (the VM carries a matching node affinity) — no manual labelling.
+- **macvtap limitation**: the *host node* cannot talk to its own macvtap VMs (other
+  LAN hosts can) — a kernel macvtap/macvlan property. Announce MetalLB VIPs from a
+  different node than the one hosting the VM if the VM must reach them.
 - The VM still keeps a pod NIC (eth0) for in-cluster/Service access; the LAN lease
   lands on eth1.
 
