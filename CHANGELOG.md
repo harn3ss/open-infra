@@ -27,14 +27,38 @@ the product's public contract.
 
 ### Data
 
-- **`kind: DatabaseProxy` pooling is verified against real drivers.** The TDS connection pool's
-  pin-vs-multiplex decisions are exercised by real client drivers (Tedious and JDBC harnesses under
-  `tds-proxy/harness/`, plus a documented ODBC/.NET path). A driver's connect-time
-  `SET TRANSACTION ISOLATION LEVEL` — and any SET-only opening batch — is now treated as a re-applied login
-  prelude rather than session state, so drivers that issue one (Tedious, .NET SqlClient) pool instead of
-  pinning; a non-SET statement or session-context state still pins. A client that negotiates login-time TLS
-  even with encryption disabled (e.g. the Microsoft JDBC driver) is reported as unhandled pending proxy TLS
-  termination.
+- **`kind: DatabaseProxy` — RDS-Proxy-equivalent connection pooling, verified across six client drivers.**
+  The TDS pool's pin-vs-multiplex decisions are live-verified against go-mssqldb, Tedious, the Microsoft
+  JDBC driver, pyodbc / msodbcsql18, Microsoft.Data.SqlClient (.NET), and SQLAlchemy (coverage grid
+  `tds-proxy/grid.jsonl`). A driver's connect-time `SET TRANSACTION ISOLATION LEVEL` — and any SET-only
+  opening batch — is treated as a re-applied login prelude rather than session state, so drivers that issue
+  one (Tedious, .NET SqlClient) pool instead of pinning; a non-SET statement or session-context state pins.
+  The proxy **terminates client TLS** (strict and tunnelled), so a client that negotiates login-time TLS
+  even with encryption disabled (e.g. the Microsoft JDBC driver) is handled. Integrated (SSPI) and
+  federated (Azure AD / FEDAUTH) logins are **refused** — the same posture as AWS RDS Proxy — so distinct
+  principals never collapse onto one pooled backend. MARS is **declined** to preserve pooling (again
+  matching RDS Proxy; a multiplexed demux is a demand-gated future option). Opt-in per-transaction
+  multiplexing (`-tx-multiplex`) shares fewer backends across autocommit and explicit transactions.
+  Coverage today is per-driver pooling/TLS/auth; behaviour of the non-Go drivers **during a backend
+  fault** (failover, mid-result-set drop) is not yet exercised.
+
+### Compute & networking
+
+- **VM direct-LAN networking — `kind: VirtualMachine` `network: macvtap`.** A VM can attach directly to
+  the physical LAN through a macvtap device on the host NIC, pulling its own DHCP lease as a first-class
+  LAN host (reachable on every port, e.g. SMB/445) while keeping a pod NIC for in-cluster access. Opt-in
+  via `networking.vmLan`; the installer wires Multus (as the primary CNI delegating to Cilium), the
+  macvtap device plugin, and the KubeVirt binding, and auto-labels nodes that carry the LAN NIC. The
+  earlier `network: bridge` mode is superseded — a macvlan sub-interface cannot be a KubeVirt bridge port.
+  See [`docs/virtual-machines.md`](docs/virtual-machines.md).
+
+### Portability
+
+- **Configurable audit-log source path.** The audit-trail features (off-siting and the console CloudTrail
+  view) read the API-server audit log from a configurable host directory (`cluster.auditLogDir`, default
+  the k3s path) rather than a hard-coded k3s location, with an install-time preflight that warns when the
+  node's audit log isn't where configured — so the audit trail works on non-Rancher distributions. See
+  [`docs/portability.md`](docs/portability.md).
 
 ## v2.6.0 — 2026-08-16
 
