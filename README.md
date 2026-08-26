@@ -219,7 +219,10 @@ client setup, the identity model, the per-service matrix, and the probe — is i
 **Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Valkey, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The public
++ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The validated architecture is
+**amd64**; **arm64** is partially supported — the control plane and `install.sh` run
+natively, but several first-party data-plane images are amd64-only
+(see [`docs/architecture-support.md`](docs/architecture-support.md)). The public
 abstractions are shipped and exercised on that cluster — but **maturity varies by
 capability** (see [Maturity & guarantees](#maturity--guarantees)):
 

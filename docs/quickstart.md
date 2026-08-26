@@ -6,7 +6,9 @@ zero raw Kubernetes authored by you.
 ## 0. Prerequisites
 
 - One or more Linux nodes (a single node is fine for `dev` mode). Commodity
-  x86-64 hardware is the target — a single node up to a small pool of servers.
+  **x86-64 (amd64)** hardware is the target — a single node up to a small pool of servers.
+  arm64 is partially supported (the control plane runs; some kinds don't yet) — see
+  [`architecture-support.md`](architecture-support.md).
 - A non-root user with `sudo`, and `curl`.
 - For **dev mode**: nothing else — DNS resolves automatically via sslip.io and TLS
   is self-signed.

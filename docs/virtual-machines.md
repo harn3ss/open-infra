@@ -54,6 +54,11 @@ The catalog lives in two places that must stay in sync: the XRD enum
 (`platform/abstraction/vm-composition.yaml`). The console mirrors it in
 `ui/src/features/vms/vm-shared.ts`.
 
+> **Architecture:** this catalog is **x86 (amd64)**. VMs therefore do not run on **arm64** nodes
+> even though KubeVirt itself is arm64-capable — an arm64 host cannot boot an x86 guest. On an
+> arm64-only cluster a `VirtualMachine` claim is refused at admission. See
+> [architecture-support.md](architecture-support.md).
+
 ## High availability & live migration
 
 By default a VM's root disk is `local-path` (local NVMe) — fast, but **pinned to one
