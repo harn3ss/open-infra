@@ -1,0 +1,39 @@
+# #41 Phase 2 enforcement — fail-closed admission.
+#
+# Refuse a claim for a kind that cannot be satisfied on any node architecture in THIS cluster,
+# with an honest error, instead of accepting it and leaving it silently Pending (the fake green
+# check the platform must not produce itself). Satisfiability is precomputed by the reconciler in
+# kind-satisfiable.yaml into the ConfigMap this policy reads as its param. `untested` kinds are
+# permitted (they show up as satisfiable), never blocked.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-arch-satisfiable
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["openinfra.dev", "iam.openinfra.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE"]
+        resources: ["*"]
+  validations:
+    # Allow when: no param data yet, OR the kind isn't tracked, OR it is satisfiable.
+    - expression: "params.data == null || !(object.kind in params.data) || params.data[object.kind] == 'true'"
+      reason: Forbidden
+      messageExpression: "'open-infra: kind ' + object.kind + ' cannot run on any architecture present in this cluster — its declared arch support is unavailable on every node (fail-closed; see platform/arch/kind-architectures.yaml). Add a node of a supported arch, or use a different kind.'"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-arch-satisfiable
+spec:
+  policyName: openinfra-arch-satisfiable
+  validationActions: [Deny]
+  paramRef:
+    name: openinfra-kind-satisfiable
+    namespace: crossplane-system
+    parameterNotFoundAction: Allow

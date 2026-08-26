@@ -1,0 +1,93 @@
+# #41 Phase 2 enforcement — compute per-kind satisfiability on THIS cluster.
+#
+# A kind is "satisfiable" if, for some architecture actually present on a node, the kind is
+# `supported` OR `untested` (untested is permitted, never blocked — #41). If every present arch
+# marks the kind `unsupported`, it is unsatisfiable and the admission policy (arch-admission-policy.yaml)
+# refuses the claim rather than let it be accepted and sit silently Pending.
+#
+# This reconciler reads the declared registry + the nodes' kubernetes.io/arch and writes the result
+# to the ConfigMap `openinfra-kind-satisfiable`, which the ValidatingAdmissionPolicy consumes as its param.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: kind-satisfiable, namespace: crossplane-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: openinfra-kind-satisfiable }
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list, get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: openinfra-kind-satisfiable }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-kind-satisfiable }
+subjects:
+  - { kind: ServiceAccount, name: kind-satisfiable, namespace: crossplane-system }
+---
+# Seed so the admission policy has data before the first reconcile (all-true is safe: it only ever
+# tightens as the reconciler marks unsupported-on-every-present-arch kinds false).
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: openinfra-kind-satisfiable, namespace: crossplane-system }
+data: {}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: kind-satisfiable, namespace: crossplane-system }
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 120
+      activeDeadlineSeconds: 120
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: kind-satisfiable
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+          containers:
+            - name: reconcile
+              image: alpine/k8s:1.30.0
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              resources: { requests: { cpu: 20m, memory: 48Mi }, limits: { cpu: 200m, memory: 128Mi } }
+              volumeMounts: [{ name: tmp, mountPath: /tmp }]
+              command: [sh, -ceu]
+              args:
+                - |
+                  # arches actually present on nodes
+                  ARCHES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.kubernetes\.io/arch}{"\n"}{end}' | sort -u | tr '\n' ' ')
+                  echo "present node arches: $ARCHES"
+                  REG=$(kubectl -n crossplane-system get cm openinfra-kind-architectures -o jsonpath='{.data.kinds\.yaml}')
+                  ARGS=""
+                  echo "$REG" | grep -E '^[A-Za-z][A-Za-z0-9]+:' | while IFS= read -r line; do
+                    kind=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
+                    amd=$(echo "$line" | grep -oE 'amd64: *[a-z]+' | awk '{print $2}')
+                    arm=$(echo "$line" | grep -oE 'arm64: *[a-z]+' | awk '{print $2}')
+                    sat=false
+                    for a in $ARCHES; do
+                      s=untested
+                      [ "$a" = amd64 ] && s=$amd
+                      [ "$a" = arm64 ] && s=$arm
+                      case "$s" in supported|untested) sat=true ;; esac
+                    done
+                    echo "$kind=$sat"
+                  done > /tmp/sat.txt
+                  # rebuild the ConfigMap from the computed lines
+                  SETARGS=$(awk -F= '{printf " --from-literal=%s=%s", $1, $2}' /tmp/sat.txt)
+                  kubectl -n crossplane-system create configmap openinfra-kind-satisfiable $SETARGS \
+                    --dry-run=client -o yaml | kubectl apply -f -
+                  echo "updated openinfra-kind-satisfiable:"; cat /tmp/sat.txt
+          volumes:
+            - { name: tmp, emptyDir: {} }
