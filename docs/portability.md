@@ -6,6 +6,9 @@ the platform is substrate-neutral: it is ordinary Kubernetes objects, Crossplane
 and Argo CD Applications that run on any conformant cluster. This page tracks the places that
 are **not** yet neutral, and how to configure them for another distribution.
 
+> **CPU architecture** (amd64 / arm64) is a separate axis from the substrate/distribution covered
+> here — see [architecture-support.md](architecture-support.md).
+
 > **Honest scope.** k3s and RKE2 are **both Rancher-family** distributions and share the same
 > `/var/lib/rancher/...` layout, so "runs on k3s and RKE2" is narrower evidence than it looks.
 > The roadmap below is ordered to break out of that family: **vanilla kubeadm first** (a
