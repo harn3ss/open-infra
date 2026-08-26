@@ -1,0 +1,38 @@
+# Reproducible arm64 Linux VM for the #41 survey (Phase 1b, runtime layer).
+# Native aarch64 on Apple Silicon — no emulation, so guests are real arm64.
+# NOT YET EXECUTED: running it needs internet egress in the guest to pull images.
+#
+# Network — two options:
+#   A) bridged (below): the guest gets its own LAN IP; an agent SSHes STRAIGHT to the
+#      guest, never touching macOS — #41's stated preference. Needs `socket_vmnet`
+#      (`brew install socket_vmnet` + `limactl sudoers | sudo tee /etc/sudoers.d/lima`).
+#   B) default vzNAT (drop the `networks:` block): reachable only from the Mac itself,
+#      via `limactl shell`. Simpler, but the agent then hops through macOS.
+#
+# Blast radius stays inside the VM. Evidence commits to the repo, never the Mac.
+arch: aarch64
+vmType: vz
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+cpus: 6
+memory: "16GiB"
+disk: "80GiB"
+networks:
+  - lima: bridged
+    macAddress: "52:55:55:0a:41:29"   # fixed MAC so the survey host can find the guest by ARP
+mounts: []
+ssh:
+  loadDotSSHPubKeys: false
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      # Deterministic survey user + the agent's key (replace with your public key).
+      id survey &>/dev/null || useradd -m -s /bin/bash -G sudo survey
+      echo 'survey ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/survey && chmod 440 /etc/sudoers.d/survey
+      install -d -m 700 -o survey -g survey /home/survey/.ssh
+      echo '<your-ssh-public-key>' > /home/survey/.ssh/authorized_keys
+      chmod 600 /home/survey/.ssh/authorized_keys && chown survey:survey /home/survey/.ssh/authorized_keys
+      systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true
