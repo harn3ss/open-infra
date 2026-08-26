@@ -1,0 +1,27 @@
+# #41 Phase 2 — keep declared kind architecture honest against the real manifests.
+# Runs on registry changes and weekly (so an image quietly gaining/losing an arch is caught even
+# when nobody touches platform/arch). This is the "not a field someone types once" guard.
+name: arch-check
+on:
+  push:
+    paths: ['platform/arch/**', '.github/workflows/arch-check.yml']
+  pull_request:
+    paths: ['platform/arch/**', '.github/workflows/arch-check.yml']
+  schedule:
+    - cron: '17 6 * * 1'
+permissions:
+  contents: read
+  packages: read
+jobs:
+  arch-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR (read the first-party image manifests)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+      - name: Declared-vs-actual architecture check
+        env:
+          DOCKER_CLI_EXPERIMENTAL: enabled
+        run: python3 platform/arch/arch-check.py
