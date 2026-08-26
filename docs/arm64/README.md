@@ -59,6 +59,25 @@ provider-kubernetes are arm64) but are not claimed as `works` until run.
 Silicon). It is **not yet executed** — running it requires internet egress in the guest to pull
 images. When run, it confirms the `did_not_schedule` set and resolves the `not_attempted` rows.
 
+## Runtime layer — CONFIRMED on native arm64 (2026-08-25)
+
+The runtime layer was executed on a native aarch64 VM (Lima on Apple Silicon; def in
+`openinfra-arm64.lima.yaml`). The environment had no direct internet, so all pulls were routed
+through a proxy chain (guest → Mac relay → an amd64 host's forward proxy → internet) — the arm64
+images themselves are real, only the transport was proxied.
+
+- **Bootstrap `works`.** k3s **v1.36.3+k3s1** installed and ran (its arm64 binary pulled cleanly),
+  and **Cilium 1.16.6** (full kube-proxy replacement) brought the node **Ready** — the whole
+  networking layer runs natively on arm64. `evidence_ref: runtime 2026-08-25 (arm64 Lima)`.
+- **All 11 first-party images `did_not_schedule` — confirmed at runtime.** Each pod scheduled onto
+  the arm64 node (so it is not a scheduling failure) and then kubelet failed the pull with
+  `no match for platform in manifest: not found`. This is the manifest-layer `did_not_schedule`
+  prediction, now proven live on real arm64 hardware — the images have no arm64 build.
+  `evidence_ref: runtime 2026-08-25 (arm64 Lima)`.
+
+The orchestration kinds (the `not_attempted` rows) and the full upstream data-plane convergence
+were not run in this pass; the manifest layer already shows them arm64-capable via upstream.
+
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
 The manifest layer already gives phase 2 its honest majority: architecture per kind would be
