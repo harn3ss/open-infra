@@ -75,8 +75,20 @@ images themselves are real, only the transport was proxied.
   prediction, now proven live on real arm64 hardware — the images have no arm64 build.
   `evidence_ref: runtime 2026-08-25 (arm64 Lima)`.
 
-The orchestration kinds (the `not_attempted` rows) and the full upstream data-plane convergence
-were not run in this pass; the manifest layer already shows them arm64-capable via upstream.
+- **The product's own installer `works` on arm64.** `install.sh` ran to completion on the arm64
+  node — k3s + Cilium (already up) + **KubeVirt/CDI + ArgoCD** all installed and rolled out, and the
+  app-of-apps `open-infra-platform` Application was created. 26 platform pods Running, 0 crash. So
+  the entire control plane and the bootstrap path are arm64-clean.
+
+- **The app-of-apps convergence to the upstream data planes was NOT completed — for an
+  ENVIRONMENT reason, not an arm64 one.** ArgoCD could not fetch manifests: the survey's egress
+  proxy (needed because the host had no direct internet) refuses non-443 `CONNECT`, and putting
+  `HTTPS_PROXY` on the ArgoCD pods routes their internal gRPC/redis through it too. Cleanly
+  threading the proxy through ArgoCD's per-repo git **and every Helm-repo** fetch is
+  disproportionate plumbing, so the orchestration/data-plane kinds were left at their manifest-layer
+  verdict (`not_attempted`, arm64 available upstream) rather than run. This is a survey-transport
+  limitation; on a machine with normal internet it is a non-issue. It must NOT be read as an arm64
+  failure of those kinds.
 
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
