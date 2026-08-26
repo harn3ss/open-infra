@@ -1,0 +1,55 @@
+# Declared architecture support per open-infra kind (#41 Phase 2).
+#
+# States (never collapse them): supported | unsupported | untested.
+#   supported   — verified to run on this arch.
+#   unsupported — known NOT to run (e.g. the first-party data-plane image is single-arch,
+#                 or a structural reason like VirtualMachine's x86 guest catalog).
+#   untested    — no first-party blocker; arch is available upstream, but not yet run here.
+#
+# This file is the DECLARED truth. It is checked against reality by CI
+# (platform/arch/arch-check.sh, workflow arch-check.yml): a kind declared `supported` for an
+# arch MUST have that arch in its first-party image's published manifest, and a kind declared
+# `unsupported` while its image HAS gained that arch is flagged as stale — so the declaration
+# can never silently drift from what actually ships.
+#
+# `image` is the first-party data-plane image whose manifest gates the claim (omitted for kinds
+# with no first-party image — those inherit their arch from upstream, hence `untested` until run).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-kind-architectures
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/part-of: open-infra
+data:
+  kinds.yaml: |
+    # First-party data-plane images are amd64-only (survey 2026-08-24/25) -> arm64 unsupported.
+    DatabaseProxy:  {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-tds-proxy, note: "data plane image is amd64-only"}
+    DataFlow:       {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
+    Migration:      {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
+    Replication:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
+    Query:          {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-query}
+    GraphQLApi:     {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-open-appsync}
+    Destruction:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-mc, note: "crypto-erase destroyer is an mc-consumer (amd64-only)"}
+    # Structural (not a build flag): an arm64 host cannot run the x86 VM guest catalog.
+    VirtualMachine: {amd64: supported, arm64: unsupported, note: "x86 guest OS catalog; KubeVirt itself is arm64"}
+    VmImage:        {amd64: supported, arm64: unsupported, note: "builds/holds the x86 golden images"}
+    # No first-party image; arch available upstream (crossplane/provider-kubernetes/etc. publish
+    # arm64) but not runtime-confirmed here (survey convergence blocked by the survey proxy).
+    CertificateAuthority: {amd64: supported, arm64: untested}
+    DataClassification:   {amd64: supported, arm64: untested}
+    Directory:            {amd64: supported, arm64: untested}
+    EncryptionKey:        {amd64: supported, arm64: untested}
+    FaultInjection:       {amd64: supported, arm64: untested}
+    FileShare:            {amd64: supported, arm64: untested}
+    Function:             {amd64: supported, arm64: untested}
+    Grant:                {amd64: supported, arm64: untested}
+    Group:                {amd64: supported, arm64: untested}
+    HttpApi:              {amd64: supported, arm64: untested}
+    Model:                {amd64: supported, arm64: untested}
+    Policy:               {amd64: supported, arm64: untested}
+    Role:                 {amd64: supported, arm64: untested}
+    SecurityGroup:        {amd64: supported, arm64: untested}
+    Stream:               {amd64: supported, arm64: untested}
+    User:                 {amd64: supported, arm64: untested}
+    Volume:               {amd64: supported, arm64: untested}
