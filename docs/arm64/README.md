@@ -90,6 +90,40 @@ images themselves are real, only the transport was proxied.
   limitation; on a machine with normal internet it is a non-issue. It must NOT be read as an arm64
   failure of those kinds.
 
+## Runtime retest — network RESTORED (2026-08-27, `survey-2026-08-27.jsonl`)
+
+Issue #43 asked to re-run the runtime layer once the transport limitation was gone. It was re-run on
+a native aarch64 Lima VM with **real internet** (vzNAT, no proxy). The proxy wall that capped the
+2026-08-25 run is gone, so the orchestration and data-plane kinds finally got **real runtime
+verdicts**. What flipped:
+
+- **Bootstrap still `works` — and surfaced + fixed a real portability bug.** `install.sh` extracted
+  the Cilium CLI into `/usr/local/bin` *without* `sudo`; on a clean non-root box that is
+  `Permission denied` and `set -e` aborts the whole install (the node never gets a CNI). The amd64
+  dev host hid it (writable `/usr/local/bin`). Fixed (`install.sh:231`, `| sudo tar …`) and validated
+  live — Cilium then installed and the node went Ready.
+- **app-of-apps: `not_attempted (proxy)` → `works_partial`.** ArgoCD repo-server fetched and rendered
+  the platform manifests cleanly and the root applied its 150 managed resources (24 XRDs + 24
+  Compositions + RBAC + CronJobs + the arch admission policy). The transport blocker is gone. Full
+  one-shot convergence of all 19 child apps on a single NAT node churns on bootstrap sync-wave /
+  CRD-and-namespace ordering — the known `gitops-raw-crd-dryrun` class, **environmental, not arm64**;
+  the representative data-plane apps were deployed directly to get their verdicts.
+- **Orchestration + composition engine: `not_attempted` → `works`.** Runtime-confirmed Running on
+  arm64 (0 crashes): ArgoCD v3.5.2, Cilium v1.16.6, KubeVirt v1.8.4, CDI v1.65.0, MetalLB v0.14.8,
+  cert-manager, sealed-secrets, snapshot-controller, **crossplane + provider-kubernetes v0.14.1 + all
+  three composition functions + rbac-manager**. The 24 XRDs/Compositions install on arm64.
+- **Data-plane operators: `not_attempted` → `works`.** CNPG operator `1.25.1` (kind: Database), MinIO
+  (Bucket/FileShare, the object store), NATS `2.10.18` (Stream/Queue), Redis/Valkey — all Running on
+  the arm64 node.
+- **First-party images: unchanged — `did_not_schedule`.** All 11 re-inspected 2026-08-27 are still
+  single-arch amd64. Confirmed live: the `audit-offsite` CronJob's pod hit `ImagePullBackOff:
+  NotFound` on arm64. **The platform's own images remain the entire arm64 gap**; making them
+  multi-arch is the separate FIPS-consequential CI decision tracked in #42.
+
+Net: with the network restored, everything that was transport-blocked runs on real arm64. The only
+remaining arm64 failure is the first-party amd64-only images — exactly the gap the manifest layer
+predicted, now proven from both directions.
+
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
 The manifest layer already gives phase 2 its honest majority: architecture per kind would be
