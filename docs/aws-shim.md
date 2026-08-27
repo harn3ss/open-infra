@@ -105,7 +105,7 @@ error dialect.
 |---|---|---|---|
 | **S3** | MinIO | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets` | **Faithful, proven live** — byte-identical round-trip + auth/boundary negatives (`probe/aws-shim-s3.sh`) |
 | **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
-| **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse) | **Built + unit-tested** — live proof pending a deployed Function |
+| **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse + `Event` async + `DryRun`) | **Built + unit-tested** — live proof pending a deployed Function |
 | **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); runtime **behavior-faithful** (goldens captured from a live AWS AppSync account, CI-green), broader parity experimental. Needs `components.openAppsync` |
 | DynamoDB, Secrets Manager, Kinesis, IAM, Bedrock, … | Postgres/FerretDB, Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
 
@@ -134,9 +134,10 @@ translate and nothing to get subtly wrong. Any authenticated principal may call 
 `Invoke` maps onto `kind: Function`: `POST /2015-03-31/functions/{name}/invocations` forwards the
 payload to the Function's cluster-local Knative address (which drives scale-from-zero) and returns
 the response, with Lambda's JSON error dialect and `X-Amz-Function-Error` semantics. Authorization
-is the same impersonated `SubjectAccessReview` (invoke → `get` on `functions`). v1 is synchronous
-(`RequestResponse`) and resolves Functions in a single configured namespace; async invocation,
-version qualifiers, and cross-namespace resolution are the flagged next steps.
+is the same impersonated `SubjectAccessReview` (invoke → `get` on `functions`). v1 supports `RequestResponse` (sync),
+`Event` (async — durably queued via JetStream with retries + a per-function DLQ), and `DryRun`,
+resolving Functions in a single configured namespace; version qualifiers and cross-namespace
+resolution are the flagged next steps.
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 

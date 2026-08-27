@@ -88,7 +88,7 @@ spec and starting **Halted** so you boot it when ready. Snapshot + restore live 
   tracked follow-up (as was done for `kind: Query`). The Longhorn backup target reuses MinIO's
   root creds, kept fresh by a self-healing refresh CronJob (they had gone stale on a MinIO
   reprovision, which silently breaks all backups — see `platform/storage/longhorn-backup-setup.yaml`).
-- **VMs** (KubeVirt, Longhorn-backed) will reuse this same `longhorn-backup` CSI path — next.
+- **VMs** (KubeVirt, Longhorn-backed) use this same `longhorn-backup` CSI path (shipped — see the **VMs** section above).
 
 ## See also
 

@@ -13,9 +13,9 @@
 >
 > It ships as a **resource** — `kind: DatabaseProxy` (XRD + composition in `platform/abstraction/`, the
 > `ghcr.io/harn3ss/open-infra-tds-proxy` image, and `openinfra_database_proxy` in the Terraform provider)
-> — the open-infra analog of AWS RDS Proxy's `aws_db_proxy`. Still proposed: **per-transaction**
-> multiplexing *within* one session (v1 holds a backend for the session's lifetime, reusing across
-> sessions, not per-statement), MARS, mid-response attention/cancel, and TLS termination (see §6).
+> — the open-infra analog of AWS RDS Proxy's `aws_db_proxy`. Still proposed: **mid-response
+> attention/cancel** (v2.2, §7). Per-transaction multiplexing shipped opt-in (`-tx-multiplex`, §7),
+> TLS termination shipped (#6, `spec.tls`), and MARS was analyzed and declined by design (§8).
 
 open-infra's managed SQL-Server engine (`database: { engine: babelfish }`, TDS on 1433) has no
 connection multiplexer. AWS RDS Proxy is the reference: it pools a few backend connections and lets
@@ -155,6 +155,7 @@ trace, not an assumption — the same honest-by-construction bar as the substrat
 - Babelfish's `sp_prepare`/server-prepared support — present, emulated, or ignored?
 - Does the proxy terminate TLS (so it can read the TDS to classify), or pass through (then it can't
   classify encrypted sessions and must pin them)? This single choice reshapes the encryption column.
+  **Resolved (#6):** the proxy terminates client TLS when `spec.tls` is enabled.
 
 ## 7. v2 — per-transaction multiplexing within a session (issue #7)
 
