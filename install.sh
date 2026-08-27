@@ -228,7 +228,7 @@ else
   if ! command -v cilium >/dev/null 2>&1; then
     CILIUM_CLI_VERSION="v0.16.24"
     ARCH="amd64"; [ "$(uname -m)" = "aarch64" ] && ARCH="arm64"
-    RUN "curl -sL --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${ARCH}.tar.gz | tar xz -C /usr/local/bin cilium"
+    RUN "curl -sL --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${ARCH}.tar.gz | sudo tar xz -C /usr/local/bin cilium"
   fi
   # cni.exclusive=false lets Multus be layered on as the primary CNI delegating to Cilium
   # (VM direct-LAN networking, networking.vmLan). Without it Cilium evicts Multus's config
