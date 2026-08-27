@@ -57,7 +57,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | CloudWatch | metrics/logs/alerts | **kube-prometheus-stack** + **Loki** | Grafana = the console |
 | IAM | users/authz/isolation | k8s **RBAC** + **impersonation** + namespaces + **NetworkPolicy** | `kind: User` / `kind: Group` (`iam.openinfra.dev`); the console signs you in then proxies your calls as *you*, so RBAC enforces and the audit log names a person — see [iam.md](iam.md) and [auth.md](auth.md). One namespace per app |
 | Directory Service | Active Directory | **Samba AD DC** | `kind: Directory`; Windows domain join |
-| Secrets Manager | secrets | **Sealed Secrets** | encrypted secrets safe in Git; Vault planned |
+| Secrets Manager | secrets | **Sealed Secrets** (+ opt-in **Vault**) | encrypted secrets safe in Git; Vault ships as an opt-in component (Transit KMS for `kind: EncryptionKey`, PKI for `kind: CertificateAuthority`) |
 | VPC | network isolation | namespaces + **NetworkPolicy** | the Application composition authors per-app NetworkPolicies; **Cilium** enforces them |
 | VPC Security Groups | host firewall | **Cilium NetworkPolicy** | `kind: SecurityGroup`; reusable rule sets (CIDR / SG / namespace, ingress + egress) attached to apps/functions/VMs — see [security-groups.md](security-groups.md) |
 | AWS Backup | backup/DR | **Velero** → MinIO/NAS; **final snapshots before deprovision** for DBs & VMs (Postgres `pg_dump`; babelfish/mysql/mongo/VM disks via durable Longhorn backup) — see [snapshots.md](snapshots.md) |

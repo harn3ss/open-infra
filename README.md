@@ -221,8 +221,9 @@ k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Valkey, Longhorn, kube-prometheus-stack
 + Loki, Sealed Secrets, Knative, Velero, KubeVirt). The validated architecture is
 **amd64**; **arm64** is partially supported — the control plane and `install.sh` run
-natively, but several first-party data-plane images are amd64-only
-(see [`docs/architecture-support.md`](docs/architecture-support.md)). The public
+natively, and the first-party images are now published for arm64 (`-arm64` tags) — but the kinds
+that use them don't run by default yet (the compositions still pin the amd64 `:latest`; babelfish
+stays amd64-only) (see [`docs/architecture-support.md`](docs/architecture-support.md)). The public
 abstractions are shipped and exercised on that cluster — but **maturity varies by
 capability** (see [Maturity & guarantees](#maturity--guarantees)):
 
@@ -279,9 +280,10 @@ capability** (see [Maturity & guarantees](#maturity--guarantees)):
 real LAN IP (MetalLB LoadBalancer) — Applications, Models, Databases, VMs;
 Functions are LAN-reachable via the Knative gateway (`expose: false` makes them
 cluster-local). VMs reach in-cluster services (databases, file shares) through their
-host node at `<nodeIP>:<nodePort>`; a fully on-LAN VM mode (`network: bridge`, a real
-DHCP lease) is **experimental and not currently working** on the reference cluster —
-see [Maturity & guarantees](#maturity--guarantees).
+host node at `<nodeIP>:<nodePort>`; a fully on-LAN VM mode (`network: macvtap`, a real
+DHCP lease — the VM becomes a first-class LAN host) is the **supported** direct-LAN mode (opt-in via
+`networking.vmLan`). The older `network: bridge` is superseded and does not work on this stack —
+see [`docs/virtual-machines.md`](docs/virtual-machines.md).
 
 ---
 

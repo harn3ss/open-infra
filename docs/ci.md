@@ -6,7 +6,7 @@ built, signed, or pushed unless the test suite passes on that exact ref.
 ## The suite (Stage A)
 
 [`.github/workflows/test.yml`](../.github/workflows/test.yml) runs `go vet` +
-`go test -race` across three modules, on every push to `main`, every PR, and whenever
+`go test -race` across four modules (plus the `tools/*` helper modules), on every push to `main`, every PR, and whenever
 it is called as a gate (below):
 
 - **`apply-sink`** — pure-function unit tests for the CDC engine: driver dialects,
@@ -15,6 +15,7 @@ it is called as a gate (below):
 - **`console-api`** — the BFF handlers (crd, proxy).
 - **`test/render`** — stdlib composition-render assertions (e.g. "Start" always writes
   `cnpg.io/hibernation: "off"`; HA renders `instances: 2` + anti-affinity).
+- **`open-appsync`** — the VTL resolver engine (request/response mapping, `$util`, wire-protocol goldens).
 
 Two heavier suites are **opt-in** (build-tagged, need a live DB/flow, kept out of the
 fast lane):
@@ -33,8 +34,9 @@ Run it all locally:
 
 ## The gate
 
-`test.yml` is a **reusable workflow** (`on: workflow_call`). The three workflows that
-publish images each run it as a `test` job that the build/package job `needs:`:
+`test.yml` is a **reusable workflow** (`on: workflow_call`). Every image-publishing workflow runs it
+as a `test` job that the build/package job `needs:` (representative examples below; all `build-*.yml`
+gate on it except `build-mc`):
 
 | Workflow | Trigger | Gated job |
 |----------|---------|-----------|
