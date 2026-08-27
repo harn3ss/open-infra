@@ -1,8 +1,13 @@
 # ARM64 capability survey (issue #41, Phase 1)
 
-Whether open-infra runs on arm64 (Apple Silicon / Graviton / Ampere). This is a **survey, not
-remediation** — no CI/multi-arch change was made, so the FIPS/BoringCrypto validation story is
-untouched. Anything that would need a multi-arch rebuild is a separate, human-gated decision.
+Whether open-infra runs on arm64 (Apple Silicon / Graviton / Ampere). This began as a **survey** (no
+code change); a runtime retest and the `-arm64` image builds came later — read it top-to-bottom as a log.
+
+> **Update (2026-08-27), superseding the original survey framing:** the `-arm64` images have since been
+> **published** — 10 first-party images via `build-arm64.yml` (see *Runtime retest — network RESTORED*
+> below). On FIPS: it is a **substrate** property (SLES/RKE2, amd64), never an *image* one — the
+> first-party images are plain `CGO_ENABLED=0` Go builds with **no image-level FIPS on any arch** — so
+> publishing arm64 removes nothing FIPS-wise. See [`../architecture-support.md`](../architecture-support.md).
 
 ## Method (and why it's split)
 
@@ -118,15 +123,18 @@ verdicts**. What flipped:
 - **First-party images: unchanged — `did_not_schedule`.** All 11 re-inspected 2026-08-27 are still
   single-arch amd64. Confirmed live: the `audit-offsite` CronJob's pod hit `ImagePullBackOff:
   NotFound` on arm64. **The platform's own images remain the entire arm64 gap**; making them
-  multi-arch is the separate FIPS-consequential CI decision tracked in #42.
+  multi-arch is a separate CI decision tracked in #42 (subsequently DONE — the `-arm64` images are now published; see the Update at the top).
 
 Net: with the network restored, everything that was transport-blocked runs on real arm64. The only
 remaining arm64 failure is the first-party amd64-only images — exactly the gap the manifest layer
-predicted, now proven from both directions.
+predicted, now proven from both directions. *(Subsequently closed: the `-arm64` images were published
+later the same day — see the Update at the top. The kinds still need composition tag-selection to use
+them by default.)*
 
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
 The manifest layer already gives phase 2 its honest majority: architecture per kind would be
 `unsupported` (amd64) for the six first-party-data-plane kinds + VirtualMachine, and `untested`
-for the orchestration kinds until the runtime layer runs. **Making these images multi-arch is the
-separate, FIPS-consequential CI decision #41 says must be its own issue — it is not done here.**
+for the orchestration kinds until the runtime layer runs. **Making these images multi-arch was a
+separate CI decision (#42) — it has since been DONE: the `-arm64` images are now published (see the
+Update at the top). It is not a FIPS decision — the images were never FIPS at the image layer.**

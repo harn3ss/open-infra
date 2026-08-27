@@ -71,7 +71,11 @@ Destroying a key is irreversible, so the power is fenced hard:
   encrypted under a different/again-wrapped key, are out of scope — classify and encrypt data (see
   [`data-classification.md`](data-classification.md), [`encryption.md`](encryption.md)) for the
   guarantee to hold.
-- **Experimental**: shipped built + reviewed, not live-verified in the reference environment.
+- **Live-verified** end-to-end by [`probe/encryption-vault.sh`](../probe/encryption-vault.sh) — a
+  re-runnable gate: provision a real Transit key → byte-identical round-trip → crypto-erase to
+  unrecoverable + destruction certificate. Remains **opt-in + operator-gated** (the customer holds the
+  Vault unseal keys). The at-rest *storage wiring* it protects (etcd KMS / MinIO SSE / Longhorn LUKS)
+  is a separate operator runbook, not part of this verification — see [`encryption.md`](encryption.md).
 
 ## Control mapping
 

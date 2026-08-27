@@ -4,7 +4,7 @@
 > you *are* paying, open-infra shows the bill you're **not** paying: *"what AWS would
 > have charged to run this cluster."*
 
-The console **Billing → Cost Explorer** page prices your live cluster against AWS
+The console **Observability → Cost Explorer** page prices your live cluster against AWS
 public on-demand list rates and shows the monthly/annual estimate next to your actual
 cost (**$0** — it's your hardware).
 

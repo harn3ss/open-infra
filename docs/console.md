@@ -16,14 +16,14 @@ time, so the same image runs in any cluster.
 The sidebar is grouped like a cloud console:
 
 - **Dashboard** — counts + health for every resource type, plus recent events.
-- **Compute** — Applications, Functions, Virtual Machines.
-- **Storage** — Volumes, File Shares, Snapshots.
-- **Security & Identity** — Users, Groups, Policies, Roles (IAM), Audit, Security Groups, Active Directory.
-- **AI** — Models.
-- **Data** — Databases, **Data Flows**, Streams, Buckets, Queues. (Data Flows is the
+- **Compute** — Applications, Functions, GraphQL, Virtual Machines, Models.
+- **Data** — Databases, Query, **Data Flows**, Lineage, Streams, Queues, Buckets. (Data Flows is the
   single data-movement entry — migration and replication are modes within it.)
+- **Storage** — Volumes, File Shares, Snapshots.
+- **Security & Identity** — Users, Groups, Policies, Roles (IAM), Grants, Security Groups, Active
+  Directory, Data Classification, Encryption Keys, Audit, Attestation, Access Review.
 - **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity), Network.
-- **Observability** — Monitoring (embedded Grafana dashboards), **Chaos** (fault injection).
+- **Observability** — Monitoring (embedded Grafana dashboards), **Chaos** (fault injection), Cost Explorer.
 
 ## Resource views & detail pages
 

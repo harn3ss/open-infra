@@ -63,6 +63,8 @@ Every kind, with full CRUD and `terraform import` via `namespace/name`:
 | `openinfra_stream` | `Stream` |
 | `openinfra_directory` | `Directory` |
 | `openinfra_fault_injection` | `FaultInjection` |
+| `openinfra_graphql_api` | `GraphQLApi` — AppSync-style GraphQL API (schema + resolvers) |
+| `openinfra_certificate_authority` | `CertificateAuthority` — PKI CA (root/intermediate), experimental |
 | `openinfra_vm_image` | `VmImage` |
 
 Plus a **data source for every kind**, which returns `spec` and `status` as JSON strings:
@@ -75,7 +77,7 @@ output "vm_os" {
 }
 ```
 
-That's deliberate. Mirroring fifteen evolving schemas in a *read* path would guarantee silent
+That's deliberate. Mirroring nineteen evolving schemas in a *read* path would guarantee silent
 drift — a field added here would simply be unreadable there. JSON stays correct as the
 platform changes. Typed resources are for the things you *author*.
 
