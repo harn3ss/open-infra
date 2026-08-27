@@ -82,7 +82,7 @@ targets `kind: Function` over its Knative address. All three invocation types ar
   function's response back; a function-side error is signalled with `X-Amz-Function-Error`.
 - **`Event`** (asynchronous) — the shim enqueues the payload to a durable JetStream stream and returns
   `202` immediately; a background worker delivers it to the function, **retries** on failure, and
-  **dead-letters** (to `dlq.lambda.async.<fn>`) after the delivery cap. It survives a shim restart and
+  **dead-letters** (to `lambda.dlq.<fn>`) after the delivery cap. It survives a shim restart and
   is shared across shim replicas. Requires the shim to have NATS; without it, `Event` is refused (`503`)
   rather than silently dropped.
 - **`DryRun`** — runs the authorization check (the shared SubjectAccessReview) and returns `204` without
