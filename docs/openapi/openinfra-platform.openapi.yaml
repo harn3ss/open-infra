@@ -4551,11 +4551,15 @@ components:
               enum:
               - masquerade
               - bridge
+              - macvtap
               default: masquerade
               description: "Network attachment. masquerade (default, supported) puts the VM behind the pod network (NAT) \u2014\
-                \ reach it in-cluster via its Service, or from the LAN via expose/MetalLB. bridge is an advanced LAN-attach\
-                \ mode (Multus+macvlan, the VM pulls its own DHCP lease) that requires networking.vmLan enabled at install\
-                \ and nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md before using it."
+                \ reach it in-cluster via its Service, or from the LAN via expose/MetalLB. macvtap is the supported direct-LAN\
+                \ mode: a second NIC attaches straight to the physical LAN via a macvtap device (the VM pulls its own DHCP\
+                \ lease and is a first-class LAN host, e.g. reachable on SMB/445). bridge is the legacy LAN mode (Multus+macvlan\
+                \ with KubeVirt bridge binding) and does NOT work on this stack \u2014 a macvlan sub-interface cannot be a\
+                \ KubeVirt bridge port; use macvtap instead. macvtap/bridge require networking.vmLan enabled at install and\
+                \ nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md."
             securityGroups:
               type: array
               items:
