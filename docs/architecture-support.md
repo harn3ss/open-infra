@@ -14,7 +14,7 @@ verified.
 | Architecture | Status | Notes |
 |---|---|---|
 | **amd64 (x86-64)** | **Supported** | The shipped, exercised architecture; the validated **FIPS substrate** (SLES 15 SP7 + RKE2 in FIPS mode) runs here. See *FIPS* below for what that does and does not cover. |
-| **arm64 (aarch64)** | **Partial** | The control plane and the installer run natively; several first-party data-plane images are amd64-only, so the kinds that use them do not yet run. See below. |
+| **arm64 (aarch64)** | **Partial** | The control plane and installer run natively, and the first-party images are now **published for arm64** (`-arm64` tags). The kinds that use them don't run *by default* yet — the compositions still pin the amd64 `:latest` tag; see below. |
 
 Nothing here is a certification claim — it is verified capability, with the evidence in
 [`docs/arm64/`](arm64/).
@@ -32,18 +32,24 @@ Verified on a native Apple Silicon (aarch64) node (evidence: [`docs/arm64/`](arm
   not exercise them end-to-end (an environment limitation, not an arm64 one); their images are
   arm64-available.
 
-## What does not run on arm64 (yet)
+## arm64 first-party images (published) and the one wiring step left
 
-The blocker is specific and honest: **several first-party data-plane images are built amd64-only**
-(a plain single-arch `docker build`), so a kind whose workload is one of them cannot pull on arm64
-(`no match for platform in manifest`). Making those images multi-arch is a deliberate, FIPS-gated
-decision tracked separately (see *FIPS* below).
+The first-party images are now **built for arm64 and published under `-arm64` tags** (`build-arm64.yml`
+— native arm64 runners; non-FIPS, see *FIPS*). Ten images ship arm64: console, mc, query, tds-proxy,
+aws-shim, apply-sink, attest, audit-offsite, ca-issuer, open-appsync. `babelfish` is the exception (its
+experimental C++/ANTLR source build stays amd64-only).
 
-| Kind | arm64 | Why |
-|---|---|---|
-| DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi | **unsupported** | first-party data-plane image is amd64-only |
-| Destruction (crypto-erase) | **unsupported** | its destroyer is an `mc` consumer; the `mc` image is amd64-only |
-| VirtualMachine, VmImage | **unsupported** | *structural, not a build flag* — an arm64 host cannot run the shipped **x86 guest OS catalog** (Ubuntu/Fedora/Debian/CentOS/Windows). KubeVirt itself is arm64. |
+**But the kinds do not run on arm64 *by default* yet — one wiring step remains.** The compositions pin
+the amd64 `:latest` tag, so on an arm64 node a kind's pod still pulls the amd64 image and fails
+(`no match for platform in manifest`). The `-arm64` images are pullable directly today; making the kinds
+select them automatically on arm64 nodes needs a per-cluster image-suffix mechanism (see *Roadmap*).
+
+| Kind | arm64 image | Runs on arm64 by default? | Note |
+|---|---|---|---|
+| DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi | **published** (`-arm64`) | **not yet** | composition pins `:latest` (amd64); needs the `-arm64` tag selected on arm64 nodes |
+| Destruction (crypto-erase) | **published** (`mc:…-arm64`) | **not yet** | same — its destroyer is an `mc` consumer |
+| Database (engine=babelfish) | **amd64-only** | **no** | experimental C++/ANTLR source build; arm64 compile not undertaken |
+| VirtualMachine, VmImage | n/a | **no (structural)** | an arm64 host cannot run the shipped **x86 guest OS catalog** (Ubuntu/Fedora/Debian/CentOS/Windows). KubeVirt itself is arm64; multi-arch *images* don't help here. |
 
 The full, authoritative, CI-checked per-kind list (three states: `supported` / `unsupported` /
 `untested`) is [`platform/arch/kind-architectures.yaml`](../platform/arch/kind-architectures.yaml).
@@ -89,9 +95,12 @@ claim is only ever made once it is true.
 
 ## Roadmap
 
-- **arm64 first-party images (`-arm64` tags)** flip most `unsupported` rows above to `supported`. They
-  are standard-Go (non-FIPS) builds published under **explicit `-arm64` tags** — the default tags stay
-  amd64, so a FIPS/amd64 deployment can never pull a non-FIPS arm64 image by accident. *(In progress.)*
+- **arm64 first-party images (`-arm64` tags) — published.** Ten first-party images now build natively on
+  arm64 and push under explicit `-arm64` tags (`build-arm64.yml`); the default tags stay amd64, so a
+  FIPS/amd64 deployment can never pull a non-FIPS arm64 image by accident.
+- **Composition arm64 tag-selection — the remaining step to make the kinds run on arm64.** The
+  compositions pin `:latest` (amd64); a per-cluster image-suffix toggle (append `-arm64` on an arm64
+  cluster) would let the data-plane kinds actually schedule and run on arm64. Not started.
 - **Per-image FIPS crypto on the amd64 builds** (the Go 1.24 native FIPS module) — a separate hardening
   tracked as its own item; it would give the amd64 images an *image-level* FIPS claim, which today only
   the substrate carries. Not started.
