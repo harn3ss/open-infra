@@ -17,7 +17,12 @@ ENV HOME=/duckdb
 # unzip is only needed to unpack the DuckDB CLI.
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates curl unzip python3 \
-    && curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip \
+    && case "$(uname -m)" in \
+         x86_64)  DUCKDB_ARCH=amd64 ;; \
+         aarch64) DUCKDB_ARCH=aarch64 ;; \
+         *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-${DUCKDB_ARCH}.zip" -o /tmp/duckdb.zip \
     && unzip -q /tmp/duckdb.zip -d /usr/local/bin \
     && rm /tmp/duckdb.zip \
     && apt-get purge -y unzip && apt-get autoremove -y \
