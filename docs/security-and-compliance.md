@@ -270,5 +270,9 @@ manifest [`rke2-sles-fips-evidence.MANIFEST.sha256`](compliance/rke2-sles-fips-e
 SHA-256 `7baa8c10…`), available for assessor review. This is a validation **event**, not a certification of open-infra:
 Common Criteria / FIPS 140-3 evaluations cover the **operating system and the Kubernetes cryptographic
 module**, not the orchestration layer, and remain the deployer's to maintain via a subscribed,
-in-evaluation-configuration substrate. Consistent with the maturity note above, multi-master
+in-evaluation-configuration substrate. This validation event is **amd64-only** — there is no arm64
+FIPS substrate — and the first-party application images are standard `CGO_ENABLED=0` Go builds that
+carry **no image-level FIPS claim on any architecture**. Run FIPS/regulated workloads on the amd64 +
+SLES/RKE2 substrate; arm64 images (`-arm64` tags) are for portability and non-regulated use. See
+[`architecture-support.md`](architecture-support.md). Consistent with the maturity note above, multi-master
 reconvergence stays **Experimental** — a substrate exercise like this exists partly to find its edges.

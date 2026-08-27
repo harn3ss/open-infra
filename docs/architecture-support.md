@@ -13,7 +13,7 @@ verified.
 
 | Architecture | Status | Notes |
 |---|---|---|
-| **amd64 (x86-64)** | **Supported** | The shipped, exercised, and FIPS-validated architecture. |
+| **amd64 (x86-64)** | **Supported** | The shipped, exercised architecture; the validated **FIPS substrate** (SLES 15 SP7 + RKE2 in FIPS mode) runs here. See *FIPS* below for what that does and does not cover. |
 | **arm64 (aarch64)** | **Partial** | The control plane and the installer run natively; several first-party data-plane images are amd64-only, so the kinds that use them do not yet run. See below. |
 
 Nothing here is a certification claim — it is verified capability, with the evidence in
@@ -64,15 +64,37 @@ So a mixed or arm64-only cluster fails *closed and legibly*, not with an obscure
 
 ## FIPS
 
-The validated cryptographic path is **BoringCrypto/GoBoring on amd64**. An arm64 rebuild of the
-first-party images does **not** inherit that validation event — so enabling multi-arch builds is a
-conscious decision about the FIPS posture of the arm64 artifacts, not a mechanical coverage step. It
-is tracked as its own item, with that consequence stated explicitly.
+**FIPS is a *substrate* property, and we have validated it on amd64 — not a property of our images.**
+open-infra's FIPS posture comes from the platform underneath the workloads: **SLES 15 SP7 + RKE2 run
+in FIPS mode** (kernel FIPS + FIPS crypto policy — the OS and the Kubernetes cryptographic modules),
+which we have exercised end-to-end on **amd64 only** (see
+[`security-and-compliance.md`](security-and-compliance.md) and [`docs/compliance/`](compliance/)).
+There is no validated FIPS substrate for arm64.
+
+The first-party application **images** are a separate matter, and the honest statement is stronger than
+"amd64 is FIPS, arm64 is not": every first-party image is a plain `CGO_ENABLED=0` Go build (standard Go
+crypto), so **none of them are independently FIPS-validated cryptographic modules on *any*
+architecture — amd64 included.** FIPS 140-3 evaluation covers the OS and the Kubernetes crypto module,
+not the orchestration layer. Concretely:
+
+- **Run FIPS / regulated workloads on the amd64 + SLES/RKE2 FIPS substrate.**
+- **arm64 is for portability, development, and non-regulated use** — its images (published under
+  explicit `-arm64` tags, see *Roadmap*) carry no FIPS claim, and neither does an arm64 substrate.
+- Because the images were never FIPS at the image layer, publishing arm64 images **loses nothing**
+  there; the entire FIPS story is the amd64 substrate, which arm64 simply does not target.
+
+Giving the amd64 image builds an *image-level* FIPS crypto path (the Go 1.24 native FIPS module,
+`GODEBUG=fips140=on`) is a distinct hardening we have **not** done; it is tracked as its own item so the
+claim is only ever made once it is true.
 
 ## Roadmap
 
-- **Multi-arch first-party images** would flip most `unsupported` rows above to `supported`; it is the
-  single change that unlocks arm64 for the data-plane kinds. Gated on the FIPS decision above.
+- **arm64 first-party images (`-arm64` tags)** flip most `unsupported` rows above to `supported`. They
+  are standard-Go (non-FIPS) builds published under **explicit `-arm64` tags** — the default tags stay
+  amd64, so a FIPS/amd64 deployment can never pull a non-FIPS arm64 image by accident. *(In progress.)*
+- **Per-image FIPS crypto on the amd64 builds** (the Go 1.24 native FIPS module) — a separate hardening
+  tracked as its own item; it would give the amd64 images an *image-level* FIPS claim, which today only
+  the substrate carries. Not started.
 - `VirtualMachine` / `VmImage` stay amd64 regardless until (and unless) an arm64 guest OS catalog is
   offered — multi-arch *images* do not help there.
 - Other architectures (e.g. ppc64le, s390x — the control plane's upstream images often publish them)
