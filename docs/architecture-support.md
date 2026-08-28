@@ -49,7 +49,8 @@ select them automatically on arm64 nodes needs a per-cluster image-suffix mechan
 | DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi | **published** (`-arm64`) | **not yet** | composition pins `:latest` (amd64); needs the `-arm64` tag selected on arm64 nodes |
 | Destruction (crypto-erase) | **published** (`mc:…-arm64`) | **not yet** | same — its destroyer is an `mc` consumer |
 | Database (engine=babelfish) | **amd64-only** | **no** | experimental C++/ANTLR source build; arm64 compile not undertaken |
-| VirtualMachine, VmImage | n/a | **no (structural)** | an arm64 host cannot run the shipped **x86 guest OS catalog** (Ubuntu/Fedora/Debian/CentOS/Windows). KubeVirt itself is arm64; multi-arch *images* don't help here. |
+| VirtualMachine — **Linux** guests (ubuntu/fedora/debian/centos) | multi-arch containerDisk | **capable — not yet live-booted** | the catalog uses **multi-arch KubeVirt containerDisks** (`quay.io/containerdisks/*` → amd64+arm64) and the composition hardcodes no x86 machine type for Linux (KubeVirt selects `virt` on arm64). Longhorn **v1.12.0** (arm64) backs the disks. Should boot on arm64; end-to-end boot not yet verified. |
+| VirtualMachine — **Windows** / VmImage | n/a | **no (structural)** | there is **no arm64 Windows Server ISO**, and the Windows path is hardwired amd64 (`q35` + MBR BIOS + `processorArchitecture="amd64"` sysprep). Multi-arch images can't fix this. |
 
 The full, authoritative, CI-checked per-kind list (three states: `supported` / `unsupported` /
 `untested`) is [`platform/arch/kind-architectures.yaml`](../platform/arch/kind-architectures.yaml).
@@ -104,8 +105,10 @@ claim is only ever made once it is true.
 - **Per-image FIPS crypto on the amd64 builds** (the Go 1.24 native FIPS module) — a separate hardening
   tracked as its own item; it would give the amd64 images an *image-level* FIPS claim, which today only
   the substrate carries. Not started.
-- `VirtualMachine` / `VmImage` stay amd64 regardless until (and unless) an arm64 guest OS catalog is
-  offered — multi-arch *images* do not help there.
+- `VirtualMachine` **Windows** guests / `VmImage` stay amd64 — there is no arm64 Windows Server ISO and
+  the Windows path is hardwired amd64. **Linux** VM guests are already arm64-capable (multi-arch
+  containerDisks + no hardcoded x86 machine type); live-booting one on arm64 to move the row from
+  *capable* to *proven* is the open item.
 - Other architectures (e.g. ppc64le, s390x — the control plane's upstream images often publish them)
   are untested; add a column here and a row set to the registry when one is surveyed.
 
