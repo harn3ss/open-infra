@@ -92,6 +92,21 @@ jobs:
           cache-from: type=gha,scope=arm64-${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=arm64-${{ matrix.image }}
 
+      # Prove the image actually EXECUTES on arm64 — the runner is native aarch64, so
+      # running the just-built arm64 image here is a real arm64 runtime check. A wrong-arch
+      # binary fails immediately with "exec format error"; a server that runs until the
+      # timeout kills it, or a CLI that exits on missing args, both mean it executed → PASS.
+      - name: Smoke-test — the arm64 image runs on arm64
+        run: |
+          IMG="ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}"
+          echo "runner arch: $(uname -m); running $IMG"
+          out="$(timeout -s KILL 25 docker run --rm "$IMG" 2>&1 || true)"
+          echo "--- container output (head) ---"; printf '%s\n' "$out" | head -25
+          if printf '%s' "$out" | grep -qiE 'exec format error|cannot execute binary file|exec .*: no such file'; then
+            echo "::error::${{ matrix.image }}:latest-arm64 did NOT execute on arm64 (exec format error)"; exit 1
+          fi
+          echo "PASS: ${{ matrix.image }} arm64 image executed on $(uname -m) — no exec-format-error"
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
