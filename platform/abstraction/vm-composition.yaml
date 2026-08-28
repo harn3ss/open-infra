@@ -60,6 +60,12 @@ spec:
             {{- $isWin := eq $profile.osType "windows" }}
             {{- $port := 22 }}{{- $user := "openinfra" }}{{- $proto := "ssh" }}
             {{- if $isWin }}{{- $port = 3389 }}{{- $user = "Administrator" }}{{- $proto = "rdp" }}{{- end }}
+            {{- /* Arch pin: Windows is STRUCTURALLY amd64 (q35 + MBR BIOS + amd64 sysprep), so it must
+                   never schedule onto an arm64 node. Linux guests use multi-arch containerDisks and stay
+                   flexible unless a per-resource openinfra.dev/arch (amd64|arm64) targets one. */}}
+            {{- $vmAnnos := .observed.composite.resource.metadata.annotations | default dict }}
+            {{- $vmArch := index $vmAnnos "openinfra.dev/arch" | default "" }}
+            {{- if $isWin }}{{- $vmArch = "amd64" }}{{- end }}
             {{- /* Extra TCP ports to publish on the VM's LAN IP (the masquerade NIC
                    forwards all ports to the guest; the Service just advertises these). */}}
             {{- $ports := $spec.ports | default (list) }}
@@ -146,6 +152,11 @@ spec:
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
                       spec:
+                        {{- if $vmArch }}
+                        # Pin the launcher to a matching-arch node: Windows -> amd64 (structural),
+                        # Linux only when openinfra.dev/arch targets one.
+                        nodeSelector: { kubernetes.io/arch: {{ $vmArch }} }
+                        {{- end }}
                         {{- if $ha }}
                         # Drain a node -> live-migrate this VM off it (zero downtime) instead
                         # of killing it. Requires the migratable RWX block root disk above.
