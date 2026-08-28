@@ -42,15 +42,21 @@ Outcome vocabulary is #41's, kept strictly distinct: `not_attempted` · `did_not
   `open-infra-mc` image** (amd64-only), not an arch-selected download, so every consumer (attest,
   audit-offsite, the crypto-erase destroyer, query, aws-shim, console-minio-user, lakehouse-setup)
   inherits the amd64-only constraint.
-- **`kind: VirtualMachine` is a structural failure, not a build flag.** KubeVirt itself is arm64,
-  but an arm64 host cannot run x86 guests, and the entire shipped OS catalog (ubuntu/fedora/debian/
-  centos/windows) is x86. No catalog entry boots on arm64.
+- **`kind: VirtualMachine`: Windows is structural, Linux is NOT.** KubeVirt is arm64. The **Linux**
+  catalog entries (ubuntu/fedora/debian/centos) use **multi-arch containerDisks**
+  (`quay.io/containerdisks/*` → amd64+arm64) and the composition hardcodes no x86 machine type for
+  Linux (the `q35`/MBR/Hyper-V block is guarded by `{{ if $isWin }}`), so they should boot on arm64
+  (KubeVirt selects the `virt` machine type). **This CORRECTS the original claim that "the entire
+  catalog is x86" — that was a reasoning error; the containerDisk manifests were never checked, and
+  Linux ones are multi-arch.** **Windows** is the genuine structural case: there is no arm64 Windows
+  Server ISO, and its path is hardwired amd64 (q35 + MBR BIOS + `processorArchitecture="amd64"`
+  sysprep). Storage is fine either way — Longhorn v1.12.0 is arm64.
 
 ## What maps to what
 
 | Outcome | Components |
 |---|---|
-| `did_not_schedule` (proven from manifests) | all 11 first-party images; kinds **DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi** (first-party data plane); **Destruction** (destroyer is an mc-consumer); **VirtualMachine / VmImage** (x86 guest catalog) |
+| `did_not_schedule` (proven from manifests) | all 11 first-party images; kinds **DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi** (first-party data plane); **Destruction** (destroyer is an mc-consumer); **VmImage / Windows VirtualMachine** (no arm64 Windows ISO — but **Linux** VirtualMachine guests are arm64-capable, see the correction above) |
 | `not_attempted` (arm64 build present upstream; runtime not run here) | CertificateAuthority, DataClassification, Directory, EncryptionKey, FaultInjection, FileShare, Function, Grant, Group, HttpApi, Model, Policy, Role, SecurityGroup, Stream, User, Volume; the control-plane images |
 
 Honest edges carried in the grid: `HttpApi` needs a runtime check that it doesn't share the
@@ -134,7 +140,7 @@ them by default.)*
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
 The manifest layer already gives phase 2 its honest majority: architecture per kind would be
-`unsupported` (amd64) for the six first-party-data-plane kinds + VirtualMachine, and `untested`
+`unsupported` (amd64) for the six first-party-data-plane kinds + **Windows** VmImage (Linux VMs are arm64-capable), and `untested`
 for the orchestration kinds until the runtime layer runs. **Making these images multi-arch was a
 separate CI decision (#42) — it has since been DONE: the `-arm64` images are now published (see the
 Update at the top). It is not a FIPS decision — the images were never FIPS at the image layer.**
