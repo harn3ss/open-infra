@@ -1,0 +1,18 @@
+# Per-cluster image configuration, read by the compositions via function-environment-configs
+# so first-party image tags can be arch-selected WITHOUT a multi-arch :latest manifest (a shared
+# multi-arch tag would let a FIPS/amd64 deployment silently pull a non-FIPS arm64 image — see
+# docs/architecture-support.md, "FIPS").
+#
+#   imageArchSuffix: ""        -> ghcr.io/…/open-infra-<x>:latest         (amd64 default; the arch the
+#                                                                          FIPS substrate is validated on)
+#   imageArchSuffix: "-arm64"  -> ghcr.io/…/open-infra-<x>:latest-arm64   (non-FIPS arm64 portability
+#                                                                          builds from build-arm64.yml)
+#
+# install.sh sets this from config.yaml `platform.imageArch` (default: amd64 -> ""). Changing it
+# re-renders every first-party-image composition to the matching tag.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: openinfra-platform
+data:
+  imageArchSuffix: ""
