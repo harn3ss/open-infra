@@ -17,5 +17,12 @@ apiVersion: apiextensions.crossplane.io/v1alpha1
 kind: EnvironmentConfig
 metadata:
   name: openinfra-platform
+  annotations:
+    # Bootstrap safety: this CR's CRD (crossplane's EnvironmentConfig) does not exist until crossplane
+    # installs (crossplane.yaml, sync-wave -1). On a FRESH install / DR sync the root app-of-apps must
+    # SKIP the dry-run discovery for it and apply it AFTER crossplane — otherwise the WHOLE root sync
+    # deadlocks on "could not find apiextensions.crossplane.io/v1alpha1" and nothing installs.
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 data:
   imageArchSuffix: ""
