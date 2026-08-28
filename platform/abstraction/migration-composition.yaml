@@ -31,6 +31,17 @@ spec:
     kind: XMigration
   mode: Pipeline
   pipeline:
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -45,6 +56,8 @@ spec:
             {{- $labels := $xr.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
             {{- $src := $spec.source }}
             {{- $tgt := $spec.target }}
             {{- $mode := $spec.mode | default "full-load-and-cdc" }}
@@ -259,7 +272,7 @@ spec:
                         restartPolicy: OnFailure
                         containers:
                           - name: schema-sync
-                            image: ghcr.io/harn3ss/open-infra-apply-sink:latest
+                            image: ghcr.io/harn3ss/open-infra-apply-sink:latest{{ $arch }}
                             env:
                               - { name: MODE, value: schema-sync }
                               - { name: SOURCE_ENGINE, value: "{{ $sengine }}" }
@@ -300,7 +313,7 @@ spec:
                       spec:
                         containers:
                           - name: apply-sink
-                            image: ghcr.io/harn3ss/open-infra-apply-sink:latest
+                            image: ghcr.io/harn3ss/open-infra-apply-sink:latest{{ $arch }}
                             env:
                               - { name: MODE, value: stream }
                               - { name: TARGET_ENGINE, value: "{{ $tengine }}" }

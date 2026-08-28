@@ -27,6 +27,9 @@ spec:
             - xpkg.upbound.io/crossplane-contrib/function-patch-and-transform:v0.7.0
             - xpkg.upbound.io/crossplane-contrib/function-go-templating:v0.6.0
             - xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.4.0
+            # Loads the openinfra-platform EnvironmentConfig into the pipeline .context so
+            # compositions can read the per-cluster image arch suffix (amd64="" / arm64="-arm64").
+            - xpkg.upbound.io/crossplane-contrib/function-environment-configs:v0.2.0
         # Restricted-PSA-conformant securityContext for the core + rbac-manager pods
         # (#34). The chart default sets runAsUser/APE/roRootfs but omits capabilities.drop
         # and seccompProfile, so these pods fail a restricted PodSecurity namespace; add
