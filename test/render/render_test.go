@@ -746,6 +746,30 @@ func TestQuery_ImageArchSuffix(t *testing.T) {
 	}
 }
 
+// TestDatabaseProxy_ImageArchSuffix covers the literal-image interpolation style (`:latest{{ $arch }}`,
+// distinct from query's printf): amd64 default -> tds-proxy:latest, arm64 -> :latest-arm64.
+func TestDatabaseProxy_ImageArchSuffix(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/databaseproxy-composition.yaml")
+	base := func(archCtx map[string]any) map[string]any {
+		m := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec":     map[string]any{"targetDatabase": "shop", "poolMax": 10},
+			"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "shopproxy", "crossplane.io/claim-namespace": "app"}},
+		}}}}
+		if archCtx != nil {
+			m["context"] = archCtx
+		}
+		return m
+	}
+	amd := grepCtx(render(t, tmpl, base(nil)), "open-infra-tds-proxy")
+	if !strings.Contains(amd, "open-infra-tds-proxy:latest") || strings.Contains(amd, "open-infra-tds-proxy:latest-") {
+		t.Errorf("amd64 default must render tds-proxy:latest with NO suffix; got:\n%s", amd)
+	}
+	arm := grepCtx(render(t, tmpl, base(map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}})), "open-infra-tds-proxy")
+	if !strings.Contains(arm, "open-infra-tds-proxy:latest-arm64") {
+		t.Errorf("imageArchSuffix=-arm64 must render tds-proxy:latest-arm64; got:\n%s", arm)
+	}
+}
+
 func queryCtx() map[string]any {
 	return map[string]any{
 		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{

@@ -23,14 +23,17 @@ metadata:
     app.kubernetes.io/part-of: open-infra
 data:
   kinds.yaml: |
-    # First-party data-plane images are amd64-only (survey 2026-08-24/25) -> arm64 unsupported.
-    DatabaseProxy:  {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-tds-proxy, note: "data plane image is amd64-only"}
-    DataFlow:       {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
-    Migration:      {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
-    Replication:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
+    # First-party data-plane images now ship -arm64 tags (build-arm64.yml) AND the compositions
+    # arch-select them (imageArchSuffix wiring) -> the wired kinds are arm64: supported. arch-check
+    # enforces the -arm64 manifest exists; the end-to-end path (registry->admission->wiring->-arm64
+    # image) is runtime-proven for Query on a real arm64 cluster.
+    DatabaseProxy:  {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-tds-proxy, note: "arm64 via -arm64 tag + composition imageArchSuffix wiring"}
+    DataFlow:       {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-apply-sink, note: "arm64 via -arm64 tag + composition wiring"}
+    Migration:      {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-apply-sink, note: "arm64 via -arm64 tag + composition wiring"}
+    Replication:    {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-apply-sink, note: "arm64 via -arm64 tag + composition wiring"}
     Query:          {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-query, note: "arm64 via the -arm64 tag (build-arm64.yml) + the composition's imageArchSuffix wiring; -arm64 image runtime-proven on arm64"}
-    GraphQLApi:     {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-open-appsync}
-    Destruction:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-mc, note: "crypto-erase destroyer is an mc-consumer (amd64-only)"}
+    GraphQLApi:     {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-open-appsync, note: "arm64 via -arm64 tag + composition wiring"}
+    Destruction:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-mc, note: "mc image now has -arm64, but the destruction composition is not yet arch-wired"}
     # Structural (not a build flag): an arm64 host cannot run the x86 VM guest catalog.
     VirtualMachine: {amd64: supported, arm64: unsupported, note: "x86 guest OS catalog; KubeVirt itself is arm64"}
     VmImage:        {amd64: supported, arm64: unsupported, note: "builds/holds the x86 golden images"}
