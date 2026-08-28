@@ -58,6 +58,12 @@ spec:
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
             {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- /* Per-resource override: annotation openinfra.dev/arch (amd64|arm64) beats the cluster
+                   default, so a specific claim can target the other arch in a MIXED cluster. */}}
+            {{- $annos := .observed.composite.resource.metadata.annotations | default dict }}
+            {{- $reqArch := index $annos "openinfra.dev/arch" | default "" }}
+            {{- if eq $reqArch "arm64" }}{{- $arch = "-arm64" }}{{- else if eq $reqArch "amd64" }}{{- $arch = "" }}{{- end }}
+            {{- $nodeArch := "amd64" }}{{- if eq $arch "-arm64" }}{{- $nodeArch = "arm64" }}{{- end }}
             {{- $src := $spec.source }}
             {{- $tgt := $spec.target }}
             {{- $mode := $spec.mode | default "full-load-and-cdc" }}
@@ -269,6 +275,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-migration-schemasync } }
                       spec:
+                        # Pin to a node whose arch matches the rendered first-party image.
+                        nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         restartPolicy: OnFailure
                         containers:
                           - name: schema-sync
@@ -311,6 +319,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-migration-applysink } }
                       spec:
+                        # Pin to a node whose arch matches the rendered first-party image.
+                        nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:
                           - name: apply-sink
                             image: ghcr.io/harn3ss/open-infra-apply-sink:latest{{ $arch }}

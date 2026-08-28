@@ -14,7 +14,7 @@ verified.
 | Architecture | Status | Notes |
 |---|---|---|
 | **amd64 (x86-64)** | **Supported** | The shipped, exercised architecture; the validated **FIPS substrate** (SLES 15 SP7 + RKE2 in FIPS mode) runs here. See *FIPS* below for what that does and does not cover. |
-| **arm64 (aarch64)** | **Partial** | The control plane, installer, **and the first-party kinds** run natively on arm64 — the compositions arch-select the `-arm64` images per cluster (set `imageArchSuffix: -arm64`), verified end-to-end on **AWS Graviton** and **Apple Silicon**. Mixed amd64/arm64 clusters (per-node routing) are validated and landing. `babelfish`, Windows VMs, and the FIPS substrate stay amd64. See below. |
+| **arm64 (aarch64)** | **Partial** | The control plane, installer, **and the first-party kinds** run natively on arm64 — the compositions arch-select the `-arm64` images per cluster (set `imageArchSuffix: -arm64`), verified end-to-end on **AWS Graviton** and **Apple Silicon**. Mixed amd64/arm64 clusters are supported — every first-party kind + VMs carry a per-node arch pin, validated on a live mixed cluster. `babelfish`, Windows VMs, and the FIPS substrate stay amd64. See below. |
 
 Nothing here is a certification claim — it is verified capability, with the evidence in
 [`docs/arm64/`](arm64/).
@@ -49,12 +49,13 @@ kubectl patch environmentconfig openinfra-platform --type merge -p '{"data":{"im
 ```
 
 Verified end-to-end: a `kind: Query` renders and runs on `…/open-infra-query:latest-arm64` on real
-**AWS Graviton** and **Apple Silicon** nodes. **Mixed** amd64/arm64 clusters need one more piece — a
-per-node arch pin (a `kubernetes.io/arch` nodeSelector on the rendered workload plus a per-resource
-`openinfra.dev/arch` override) so each kind lands on a node of its image's arch. That is **validated
-end-to-end on a live mixed cluster** (an arm64 node joined a running cluster over a mesh; a Query
-annotated `openinfra.dev/arch: arm64` rendered the `-arm64` image + an `arch: arm64` nodeSelector, was
-placed on the arm64 node, and read an object from the in-cluster store) and is **landing** (see *Roadmap*).
+**AWS Graviton** and **Apple Silicon** nodes. **Mixed** amd64/arm64 clusters carry a **per-node arch
+pin**: every first-party composition (and VMs) renders a `kubernetes.io/arch` nodeSelector matching the
+arch-selected image, plus a per-resource `openinfra.dev/arch` override, so each kind lands on a node of
+its image's arch and a wrong-arch image can't be scheduled onto the wrong node. Validated end-to-end on a
+live mixed cluster (an arm64 node joined a running cluster over a mesh; a Query annotated
+`openinfra.dev/arch: arm64` rendered the `-arm64` image + an `arch: arm64` nodeSelector, was placed on the
+arm64 node, and read an object from the in-cluster store).
 
 | Kind | arm64 image | Runs on arm64? | Note |
 |---|---|---|---|
@@ -117,13 +118,15 @@ claim is only ever made once it is true.
   from the `openinfra-platform` EnvironmentConfig (`imageArchSuffix`), so setting `-arm64` on an arm64
   cluster makes the data-plane kinds schedule and run on arm64. Verified end-to-end on AWS Graviton and
   Apple Silicon.
-- **Mixed amd64/arm64 clusters (per-node arch routing) — validated, landing.** A per-node arch pin
-  renders a `kubernetes.io/arch` nodeSelector matching the arch-selected image (with a per-resource
-  `openinfra.dev/arch` override), so on a mixed cluster each kind lands on a node its image can run on
-  and a wrong-arch image can't be scheduled onto the wrong node. Validated end-to-end on a live mixed
-  cluster (an arm64 node joined over a mesh; positive/negative/isolation cases all held). Remaining: an
-  explicit arch nodeSelector on **VirtualMachine** so a Windows VM is pinned off arm64 nodes, and rolling
-  the pin across the remaining compositions.
+- **Mixed amd64/arm64 clusters (per-node arch routing) — done.** Every first-party composition
+  (Query, DatabaseProxy, DataFlow, Replication, Migration, GraphQLApi) renders a `kubernetes.io/arch`
+  nodeSelector matching the arch-selected image (with a per-resource `openinfra.dev/arch` override), so on
+  a mixed cluster each kind lands on a node its image can run on and a wrong-arch image can't be scheduled
+  onto the wrong node. Upstream multi-arch sidecars (Debezium/NATS) stay unpinned; a user-supplied image
+  is left unpinned (unknown arch). **VirtualMachine** carries the same pin: a Windows VM is forced to
+  `arch: amd64` (structural), a Linux VM stays flexible unless annotated. Validated end-to-end on a live
+  mixed cluster (an arm64 node joined over a mesh; positive/negative/isolation cases all held) and
+  render-tested.
 - **Per-image FIPS crypto on the amd64 builds** (the Go 1.24 native FIPS module) — a separate hardening
   tracked as its own item; it would give the amd64 images an *image-level* FIPS claim, which today only
   the substrate carries. Not started.
