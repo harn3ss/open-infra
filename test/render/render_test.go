@@ -685,6 +685,59 @@ func TestManagedDB_BabelfishEngine(t *testing.T) {
 	}
 }
 
+// TestVirtualMachine_ArchPin: a Windows VM is STRUCTURALLY amd64 (q35/MBR/amd64 sysprep) and must pin
+// nodeSelector arch: amd64 so it can never schedule onto an arm64 node; a Linux VM (multi-arch
+// containerDisk) stays flexible unless a per-resource openinfra.dev/arch targets one.
+func TestVirtualMachine_ArchPin(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+
+	win := render(t, tmpl, vmCtx("windows-server-2022", ""))
+	if !strings.Contains(win, "kubernetes.io/arch: amd64") {
+		t.Errorf("Windows VM must pin nodeSelector arch: amd64 (structural); got:\n%s", grepCtx(win, "arch"))
+	}
+
+	lin := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
+	if strings.Contains(lin, "kubernetes.io/arch:") {
+		t.Errorf("Linux VM (no annotation) must NOT be arch-pinned (multi-arch containerDisk); got:\n%s", grepCtx(lin, "arch"))
+	}
+
+	arm := render(t, tmpl, vmCtx("ubuntu-24.04", "arm64"))
+	if !strings.Contains(arm, "kubernetes.io/arch: arm64") {
+		t.Errorf("Linux VM annotated arm64 must pin nodeSelector arch: arm64; got:\n%s", grepCtx(arm, "arch"))
+	}
+}
+
+// TestArchNodeSelectorMerge validates the exact merge expression the replication composition uses to
+// combine the arch pin with any user-supplied nodeSelector: the user's selector must be preserved AND
+// kubernetes.io/arch added (arch authoritative). This is the one novel construct the per-composition
+// rollout introduced beyond query's plain nodeSelector.
+func TestArchNodeSelectorMerge(t *testing.T) {
+	tmpl := `nodeSelector:{{ toYaml (merge (dict "kubernetes.io/arch" $.nodeArch) ($.sched.nodeSelector | default dict)) | nindent 2 }}`
+
+	withUser := render(t, tmpl, map[string]any{"nodeArch": "arm64", "sched": map[string]any{"nodeSelector": map[string]any{"disktype": "ssd"}}})
+	if !strings.Contains(withUser, "kubernetes.io/arch: arm64") || !strings.Contains(withUser, "disktype: ssd") {
+		t.Errorf("merge must keep the user nodeSelector AND add the arch pin; got:\n%s", withUser)
+	}
+	noUser := render(t, tmpl, map[string]any{"nodeArch": "amd64", "sched": map[string]any{}})
+	if !strings.Contains(noUser, "kubernetes.io/arch: amd64") {
+		t.Errorf("merge with no user selector must still pin the arch; got:\n%s", noUser)
+	}
+}
+
+func vmCtx(os, arch string) map[string]any {
+	res := map[string]any{
+		"spec": map[string]any{"os": os, "cpu": int64(2), "memory": "4Gi"},
+		"metadata": map[string]any{
+			"uid":    "00000000-0000-0000-0000-0000000000vm",
+			"labels": map[string]any{"crossplane.io/claim-name": "myvm", "crossplane.io/claim-namespace": "default"},
+		},
+	}
+	if arch != "" {
+		res["metadata"].(map[string]any)["annotations"] = map[string]any{"openinfra.dev/arch": arch}
+	}
+	return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": res}}}
+}
+
 // ---- helpers ----
 
 // TestQuery_SecurityHardening pins the kind: Query engine-pod sandbox. The query pod runs
@@ -778,13 +831,51 @@ func TestDatabaseProxy_ImageArchSuffix(t *testing.T) {
 		}
 		return m
 	}
-	amd := grepCtx(render(t, tmpl, base(nil)), "open-infra-tds-proxy")
+	amdFull := render(t, tmpl, base(nil))
+	amd := grepCtx(amdFull, "open-infra-tds-proxy")
 	if !strings.Contains(amd, "open-infra-tds-proxy:latest") || strings.Contains(amd, "open-infra-tds-proxy:latest-") {
 		t.Errorf("amd64 default must render tds-proxy:latest with NO suffix; got:\n%s", amd)
 	}
-	arm := grepCtx(render(t, tmpl, base(map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}})), "open-infra-tds-proxy")
+	if !strings.Contains(amdFull, "kubernetes.io/arch: amd64") {
+		t.Errorf("amd64 default must pin nodeSelector arch: amd64; got:\n%s", grepCtx(amdFull, "arch"))
+	}
+	armFull := render(t, tmpl, base(map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}}))
+	arm := grepCtx(armFull, "open-infra-tds-proxy")
 	if !strings.Contains(arm, "open-infra-tds-proxy:latest-arm64") {
 		t.Errorf("imageArchSuffix=-arm64 must render tds-proxy:latest-arm64; got:\n%s", arm)
+	}
+	if !strings.Contains(armFull, "kubernetes.io/arch: arm64") {
+		t.Errorf("imageArchSuffix=-arm64 must pin nodeSelector arch: arm64; got:\n%s", grepCtx(armFull, "arch"))
+	}
+}
+
+// TestGraphQLApi_ArchPin: the engine Deployment pins to a matching-arch node for the DEFAULT
+// first-party image (amd64 :latest → arch: amd64; cluster -arm64 → :latest-arm64 + arch: arm64), but a
+// user-supplied spec.image (unknown arch) must NOT be arch-pinned.
+func TestGraphQLApi_ArchPin(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+
+	amd := render(t, tmpl, graphqlApiCtx(""))
+	if !strings.Contains(amd, "open-infra-open-appsync:latest") || strings.Contains(amd, "open-infra-open-appsync:latest-") {
+		t.Errorf("amd64 default must render open-appsync:latest; got:\n%s", grepCtx(amd, "open-appsync:latest"))
+	}
+	if !strings.Contains(amd, "kubernetes.io/arch: amd64") {
+		t.Errorf("default image must pin nodeSelector arch: amd64; got:\n%s", grepCtx(amd, "arch"))
+	}
+
+	armCtx := graphqlApiCtx("")
+	armCtx["context"] = map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}}
+	arm := render(t, tmpl, armCtx)
+	if !strings.Contains(arm, "open-infra-open-appsync:latest-arm64") || !strings.Contains(arm, "kubernetes.io/arch: arm64") {
+		t.Errorf("cluster arm64 must render :latest-arm64 + arch: arm64; got:\n%s", grepCtx(arm, "open-appsync")+grepCtx(arm, "arch"))
+	}
+
+	ovCtx := graphqlApiCtx("")
+	ovRes := ovCtx["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)
+	ovRes["spec"].(map[string]any)["image"] = "registry.example.com/custom/appsync:v1"
+	ov := render(t, tmpl, ovCtx)
+	if strings.Contains(ov, "kubernetes.io/arch:") {
+		t.Errorf("a user-supplied image must NOT be arch-pinned (unknown arch); got:\n%s", grepCtx(ov, "arch"))
 	}
 }
 
@@ -1152,9 +1243,25 @@ func sprigLite() template.FuncMap {
 			return strings.Join(parts, sep)
 		},
 		"upper": func(s string) string { return strings.ToUpper(s) },
+		"lower": func(s string) string { return strings.ToLower(s) },
 		// sprig's replace is replace(old, new, src) — used piped: `s | replace "-" "_"`.
 		"replace":   func(old, new, src string) string { return strings.ReplaceAll(src, old, new) },
 		"hasPrefix": func(prefix, s string) bool { return strings.HasPrefix(s, prefix) },
+		// sprig's merge(dst, src...): copy src keys into dst, dst wins on conflict. The arch pin
+		// uses it to add kubernetes.io/arch to any user nodeSelector (arch is authoritative → dst).
+		"merge": func(dst map[string]any, srcs ...map[string]any) map[string]any {
+			if dst == nil {
+				dst = map[string]any{}
+			}
+			for _, src := range srcs {
+				for k, v := range src {
+					if _, ok := dst[k]; !ok {
+						dst[k] = v
+					}
+				}
+			}
+			return dst
+		},
 	}
 }
 
