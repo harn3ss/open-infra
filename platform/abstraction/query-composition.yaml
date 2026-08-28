@@ -28,6 +28,19 @@ spec:
     kind: XQuery
   mode: Pipeline
   pipeline:
+    # Load the openinfra-platform EnvironmentConfig (imageArchSuffix) into .context so the
+    # template can arch-select the first-party image tag (amd64 "" / arm64 "-arm64").
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -48,7 +61,12 @@ spec:
                    name (k8s, no "/") uses dashes and is capped at 63 chars. */}}
             {{- $jobName := printf "q-%s-%s" $ns $name | trunc 63 }}
             {{- $out := printf "s3://%s/%s/%s.csv" $bucket $ns $name }}
-            {{- $img := "ghcr.io/harn3ss/open-infra-query:latest" }}
+            {{- /* arch-select the first-party image: "" (amd64, default) or "-arm64" from the
+                   openinfra-platform EnvironmentConfig. Robust to a missing context/env — every
+                   level defaults, so amd64 renders byte-identical :latest even if unset. */}}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- $img := printf "ghcr.io/harn3ss/open-infra-query:latest%s" $arch }}
             {{- $minioEP := "minio.minio.svc.cluster.local:9000" }}
             {{- $engine := $spec.engine | default "duckdb" }}
             ---

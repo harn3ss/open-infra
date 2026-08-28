@@ -20,6 +20,17 @@ spec:
     kind: XReplication
   mode: Pipeline
   pipeline:
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -38,7 +49,9 @@ spec:
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
             {{- $tables := $spec.tables }}
             {{- $sched := $spec.scheduling | default dict }}
-            {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- $img := printf "ghcr.io/harn3ss/open-infra-apply-sink:latest%s" $arch }}
             {{- range $pair := (list (dict "src" $spec.siteA "dst" $spec.siteB) (dict "src" $spec.siteB "dst" $spec.siteA)) }}
             {{-   $src := $pair.src }}{{- $dst := $pair.dst }}
             {{-   $sname := $src.name }}{{- $dname := $dst.name }}

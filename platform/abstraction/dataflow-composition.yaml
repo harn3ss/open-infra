@@ -26,6 +26,17 @@ spec:
     kind: XDataFlow
   mode: Pipeline
   pipeline:
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -55,7 +66,9 @@ spec:
             {{- if $autoSync }}{{ $allTables = true }}{{- end }}
             {{- $vcol := $spec.versionColumn | default "_mm_version" }}
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
-            {{- $img := "ghcr.io/harn3ss/open-infra-apply-sink:latest" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- $img := printf "ghcr.io/harn3ss/open-infra-apply-sink:latest%s" $arch }}
             {{- /* ---- per-node maps: engine, schema, dsn (with ${PW}), include list ---- */}}
             {{- $nmap := dict }}{{- $eng := dict }}{{- $sch := dict }}{{- $dsn := dict }}{{- $inc := dict }}{{- $sec := dict }}{{- $seck := dict }}
             {{- range $n := $nodes }}

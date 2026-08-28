@@ -23,22 +23,24 @@ import json, os, subprocess, sys, yaml
 ARCHES = ("amd64", "arm64")
 
 
-def image_arches(ref):
-    """Return the set of real (non-attestation) architectures in the image's manifest, or None."""
-    r = f"{ref}:latest"
+def _tag_arches(r, required):
+    """Architectures in one tag's manifest. `required` tags being unfetchable is inconclusive
+    (None); an optional tag that simply doesn't exist is an empty set (definitively not published)."""
     try:
         out = subprocess.run(["docker", "manifest", "inspect", r],
                              capture_output=True, text=True, timeout=60)
     except Exception as e:
         print(f"  ! docker manifest inspect failed for {r}: {e}")
-        return None
+        return None if required else set()
     if out.returncode != 0:
-        print(f"  ! cannot inspect {r}: {out.stderr.strip()[:160]}")
-        return None
+        if required:
+            print(f"  ! cannot inspect {r}: {out.stderr.strip()[:160]}")
+            return None
+        return set()  # e.g. no :latest-arm64 published (babelfish) — arm64 simply absent, not an error
     try:
         d = json.loads(out.stdout)
     except Exception:
-        return None
+        return None if required else set()
     arches = set()
     for m in d.get("manifests", [d]):
         a = m.get("platform", {}).get("architecture")
@@ -47,13 +49,27 @@ def image_arches(ref):
     return arches
 
 
+def image_arches(ref):
+    """Set of architectures the image publishes under the DISTINCT-TAGS convention: amd64 under
+    :latest, arm64 under :latest-arm64 (never a shared multi-arch :latest — a shared tag would let a
+    FIPS/amd64 deploy silently pull a non-FIPS arm64 image; see docs/architecture-support.md). Returns
+    None only if the amd64 :latest tag itself can't be inspected (inconclusive)."""
+    amd = _tag_arches(f"{ref}:latest", required=True)
+    if amd is None:
+        return None
+    arm = _tag_arches(f"{ref}:latest-arm64", required=False)
+    if arm is None:
+        return None
+    return amd | arm
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "kind-architectures.yaml")
     cm = yaml.safe_load(open(path))
     kinds = yaml.safe_load(cm["data"]["kinds.yaml"])
 
-    drift, inconclusive, checked = [], [], 0
+    drift, warn, inconclusive, checked = [], [], [], 0
     for kind, spec in kinds.items():
         img = spec.get("image")
         if not img:
@@ -69,10 +85,17 @@ def main():
             if declared == "supported" and not has:
                 drift.append(f"{kind}: declares {arch}=supported but {img} has no {arch} manifest {sorted(actual)}")
             if declared == "unsupported" and has:
-                drift.append(f"{kind}: declares {arch}=unsupported but {img} now HAS {arch} (stale — update the registry) {sorted(actual)}")
+                # Under-promise: the image publishes this arch, but the kind is declared unsupported.
+                # Legit if the composition isn't arch-wired yet (image-has-arch != kind-runs-on-arch),
+                # so it's a WARNING, not a hard failure — wire it, or flip the registry.
+                warn.append(f"{kind}: declares {arch}=unsupported but {img} publishes {arch} (wire the composition or flip the registry) {sorted(actual)}")
         print(f"  ok  {kind:16s} {img.split('/')[-1]:26s} actual={sorted(actual)}")
 
     print(f"\nchecked {checked} first-party-backed kinds")
+    if warn:
+        print("UNDER-PROMISE (non-fatal — image has the arch but the kind is declared unsupported):")
+        for w in warn:
+            print("  ~ " + w)
     if drift:
         print("DRIFT:")
         for d in drift:
