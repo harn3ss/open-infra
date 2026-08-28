@@ -14,7 +14,7 @@ verified.
 | Architecture | Status | Notes |
 |---|---|---|
 | **amd64 (x86-64)** | **Supported** | The shipped, exercised architecture; the validated **FIPS substrate** (SLES 15 SP7 + RKE2 in FIPS mode) runs here. See *FIPS* below for what that does and does not cover. |
-| **arm64 (aarch64)** | **Partial** | The control plane and installer run natively, and the first-party images are now **published for arm64** (`-arm64` tags). The kinds that use them don't run *by default* yet — the compositions still pin the amd64 `:latest` tag; see below. |
+| **arm64 (aarch64)** | **Partial** | The control plane, installer, **and the first-party kinds** run natively on arm64 — the compositions arch-select the `-arm64` images per cluster (set `imageArchSuffix: -arm64`), verified end-to-end on **AWS Graviton** and **Apple Silicon**. Mixed amd64/arm64 clusters (per-node routing) are validated and landing. `babelfish`, Windows VMs, and the FIPS substrate stay amd64. See below. |
 
 Nothing here is a certification claim — it is verified capability, with the evidence in
 [`docs/arm64/`](arm64/).
@@ -32,22 +32,34 @@ Verified on a native Apple Silicon (aarch64) node (evidence: [`docs/arm64/`](arm
   not exercise them end-to-end (an environment limitation, not an arm64 one); their images are
   arm64-available.
 
-## arm64 first-party images (published) and the one wiring step left
+## arm64 first-party images and how the kinds select them
 
-The first-party images are now **built for arm64 and published under `-arm64` tags** (`build-arm64.yml`
+The first-party images are **built for arm64 and published under `-arm64` tags** (`build-arm64.yml`
 — native arm64 runners; non-FIPS, see *FIPS*). Ten images ship arm64: console, mc, query, tds-proxy,
 aws-shim, apply-sink, attest, audit-offsite, ca-issuer, open-appsync. `babelfish` is the exception (its
 experimental C++/ANTLR source build stays amd64-only).
 
-**But the kinds do not run on arm64 *by default* yet — one wiring step remains.** The compositions pin
-the amd64 `:latest` tag, so on an arm64 node a kind's pod still pulls the amd64 image and fails
-(`no match for platform in manifest`). The `-arm64` images are pullable directly today; making the kinds
-select them automatically on arm64 nodes needs a per-cluster image-suffix mechanism (see *Roadmap*).
+**The kinds run on arm64 — the compositions arch-select the tag per cluster.** An `openinfra-platform`
+EnvironmentConfig carries `imageArchSuffix`; the compositions render `…:latest{{ imageArchSuffix }}`, so
+the default (`""`) stays byte-identical amd64 `:latest`, and setting `-arm64` makes every first-party
+kind pull its `-arm64` image. On an arm64 cluster:
 
-| Kind | arm64 image | Runs on arm64 by default? | Note |
+```
+kubectl patch environmentconfig openinfra-platform --type merge -p '{"data":{"imageArchSuffix":"-arm64"}}'
+```
+
+Verified end-to-end: a `kind: Query` renders and runs on `…/open-infra-query:latest-arm64` on real
+**AWS Graviton** and **Apple Silicon** nodes. **Mixed** amd64/arm64 clusters need one more piece — a
+per-node arch pin (a `kubernetes.io/arch` nodeSelector on the rendered workload plus a per-resource
+`openinfra.dev/arch` override) so each kind lands on a node of its image's arch. That is **validated
+end-to-end on a live mixed cluster** (an arm64 node joined a running cluster over a mesh; a Query
+annotated `openinfra.dev/arch: arm64` rendered the `-arm64` image + an `arch: arm64` nodeSelector, was
+placed on the arm64 node, and read an object from the in-cluster store) and is **landing** (see *Roadmap*).
+
+| Kind | arm64 image | Runs on arm64? | Note |
 |---|---|---|---|
-| DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi | **published** (`-arm64`) | **not yet** | composition pins `:latest` (amd64); needs the `-arm64` tag selected on arm64 nodes |
-| Destruction (crypto-erase) | **published** (`mc:…-arm64`) | **not yet** | same — its destroyer is an `mc` consumer |
+| DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi | **published** (`-arm64`) | **yes** | composition arch-selects via `imageArchSuffix`; set it to `-arm64` on an arm64 cluster |
+| Destruction (crypto-erase) | **published** (`mc:…-arm64`) | **yes** | same mechanism; its destroyer is an `mc` consumer |
 | Database (engine=babelfish) | **amd64-only** | **no** | experimental C++/ANTLR source build; arm64 compile not undertaken |
 | VirtualMachine — **Linux** guests (ubuntu/fedora/debian/centos) | multi-arch containerDisk | **capable — not yet live-booted** | the catalog uses **multi-arch KubeVirt containerDisks** (`quay.io/containerdisks/*` → amd64+arm64) and the composition hardcodes no x86 machine type for Linux (KubeVirt selects `virt` on arm64). Longhorn **v1.12.0** (arm64) backs the disks. Should boot on arm64; end-to-end boot not yet verified. |
 | VirtualMachine — **Windows** / VmImage | n/a | **no (structural)** | there is **no arm64 Windows Server ISO**, and the Windows path is hardwired amd64 (`q35` + MBR BIOS + `processorArchitecture="amd64"` sysprep). Multi-arch images can't fix this. |
@@ -66,8 +78,10 @@ with an honest error:
 > declared arch support is unavailable on every node … Add a node of a supported arch, or use a
 > different kind.`
 
-So a mixed or arm64-only cluster fails *closed and legibly*, not with an obscure scheduling hang. See
-[`platform/arch/README.md`](../platform/arch/README.md).
+So a mixed or arm64-only cluster fails *closed and legibly*, not with an obscure scheduling hang. Both
+directions are exercised: the refusal on an arm64-only cluster (a kind declared amd64-only rejected at
+admission), and the allow-path live on a mixed cluster (the policy, its binding, the satisfiability
+ConfigMap, and the recomputing CronJob all active). See [`platform/arch/README.md`](../platform/arch/README.md).
 
 ## FIPS
 
@@ -99,9 +113,17 @@ claim is only ever made once it is true.
 - **arm64 first-party images (`-arm64` tags) — published.** Ten first-party images now build natively on
   arm64 and push under explicit `-arm64` tags (`build-arm64.yml`); the default tags stay amd64, so a
   FIPS/amd64 deployment can never pull a non-FIPS arm64 image by accident.
-- **Composition arm64 tag-selection — the remaining step to make the kinds run on arm64.** The
-  compositions pin `:latest` (amd64); a per-cluster image-suffix toggle (append `-arm64` on an arm64
-  cluster) would let the data-plane kinds actually schedule and run on arm64. Not started.
+- **Composition arm64 tag-selection — done.** The compositions arch-select the first-party image tag
+  from the `openinfra-platform` EnvironmentConfig (`imageArchSuffix`), so setting `-arm64` on an arm64
+  cluster makes the data-plane kinds schedule and run on arm64. Verified end-to-end on AWS Graviton and
+  Apple Silicon.
+- **Mixed amd64/arm64 clusters (per-node arch routing) — validated, landing.** A per-node arch pin
+  renders a `kubernetes.io/arch` nodeSelector matching the arch-selected image (with a per-resource
+  `openinfra.dev/arch` override), so on a mixed cluster each kind lands on a node its image can run on
+  and a wrong-arch image can't be scheduled onto the wrong node. Validated end-to-end on a live mixed
+  cluster (an arm64 node joined over a mesh; positive/negative/isolation cases all held). Remaining: an
+  explicit arch nodeSelector on **VirtualMachine** so a Windows VM is pinned off arm64 nodes, and rolling
+  the pin across the remaining compositions.
 - **Per-image FIPS crypto on the amd64 builds** (the Go 1.24 native FIPS module) — a separate hardening
   tracked as its own item; it would give the amd64 images an *image-level* FIPS claim, which today only
   the substrate carries. Not started.
