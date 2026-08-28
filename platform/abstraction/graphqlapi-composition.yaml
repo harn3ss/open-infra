@@ -20,6 +20,15 @@ spec:
   compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XGraphQLApi }
   mode: Pipeline
   pipeline:
+    - step: environment
+      functionRef: { name: crossplane-contrib-function-environment-configs }
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref: { name: openinfra-platform }
     - step: render-resources
       functionRef: { name: crossplane-contrib-function-go-templating }
       input:
@@ -32,7 +41,9 @@ spec:
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
-            {{- $image := $spec.image | default "ghcr.io/harn3ss/open-infra-open-appsync:latest" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- $image := $spec.image | default (printf "ghcr.io/harn3ss/open-infra-open-appsync:latest%s" $arch) }}
             {{- $replicas := $spec.replicas | default 1 }}
             {{- /* Checksum over schema + every data source + every resolver, so ANY authoring change
                    rolls the pod (the reload mechanism, since the engine reads a directory once). */ -}}

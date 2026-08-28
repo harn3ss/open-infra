@@ -725,6 +725,51 @@ func TestQuery_SecurityHardening(t *testing.T) {
 }
 
 // queryCtx builds the observed composite for the Query composition.
+// TestQuery_ImageArchSuffix pins the arch-select wiring (#42): the first-party query image is
+// :latest on amd64 (default, or ANY missing/empty context — the amd64 path MUST NOT change or break),
+// and :latest-arm64 only when the openinfra-platform EnvironmentConfig sets imageArchSuffix="-arm64".
+func TestQuery_ImageArchSuffix(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/query-composition.yaml")
+
+	// amd64 default: no .context at all -> :latest, and never an arch suffix (byte-identical to before).
+	amd := grepCtx(render(t, tmpl, queryCtx()), "open-infra-query")
+	if !strings.Contains(amd, "open-infra-query:latest") || strings.Contains(amd, "open-infra-query:latest-") {
+		t.Errorf("amd64 default must render :latest with NO suffix; got:\n%s", amd)
+	}
+
+	// arm64: EnvironmentConfig imageArchSuffix="-arm64" -> :latest-arm64.
+	ctx := queryCtx()
+	ctx["context"] = map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}}
+	arm := grepCtx(render(t, tmpl, ctx), "open-infra-query")
+	if !strings.Contains(arm, "open-infra-query:latest-arm64") {
+		t.Errorf("imageArchSuffix=-arm64 must render :latest-arm64; got:\n%s", arm)
+	}
+}
+
+// TestDatabaseProxy_ImageArchSuffix covers the literal-image interpolation style (`:latest{{ $arch }}`,
+// distinct from query's printf): amd64 default -> tds-proxy:latest, arm64 -> :latest-arm64.
+func TestDatabaseProxy_ImageArchSuffix(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/databaseproxy-composition.yaml")
+	base := func(archCtx map[string]any) map[string]any {
+		m := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec":     map[string]any{"targetDatabase": "shop", "poolMax": 10},
+			"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "shopproxy", "crossplane.io/claim-namespace": "app"}},
+		}}}}
+		if archCtx != nil {
+			m["context"] = archCtx
+		}
+		return m
+	}
+	amd := grepCtx(render(t, tmpl, base(nil)), "open-infra-tds-proxy")
+	if !strings.Contains(amd, "open-infra-tds-proxy:latest") || strings.Contains(amd, "open-infra-tds-proxy:latest-") {
+		t.Errorf("amd64 default must render tds-proxy:latest with NO suffix; got:\n%s", amd)
+	}
+	arm := grepCtx(render(t, tmpl, base(map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}})), "open-infra-tds-proxy")
+	if !strings.Contains(arm, "open-infra-tds-proxy:latest-arm64") {
+		t.Errorf("imageArchSuffix=-arm64 must render tds-proxy:latest-arm64; got:\n%s", arm)
+	}
+}
+
 func queryCtx() map[string]any {
 	return map[string]any{
 		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
