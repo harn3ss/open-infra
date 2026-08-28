@@ -134,8 +134,36 @@ verdicts**. What flipped:
 Net: with the network restored, everything that was transport-blocked runs on real arm64. The only
 remaining arm64 failure is the first-party amd64-only images — exactly the gap the manifest layer
 predicted, now proven from both directions. *(Subsequently closed: the `-arm64` images were published
-later the same day — see the Update at the top. The kinds still need composition tag-selection to use
-them by default.)*
+later the same day, and the compositions now arch-select them from the `openinfra-platform`
+EnvironmentConfig (`imageArchSuffix`, #112) — so setting `-arm64` makes the kinds run on arm64. See the
+mixed-cluster validation below.)*
+
+## Mixed amd64/arm64 cluster — front-to-back validation (2026-08-28, `survey-2026-08-28.jsonl`)
+
+With the `-arm64` images published and the compositions arch-selecting them (`imageArchSuffix`, #112),
+the last thing unproven was the whole chain on a **real, mixed** cluster — an arm64 node running
+alongside amd64 under one control plane. A native **AWS Graviton** (m7g, aarch64) joined a running
+k3s + Cilium cluster over a mesh and the end-to-end path was exercised:
+
+| Layer | What it proves | Result |
+|---|---|---|
+| Substrate | arm64 node `Ready`, arm64 Cilium agent running, versions matched | ✅ |
+| Cross-mesh data path | an arm64 pod resolves cluster DNS and reaches in-cluster Services (API, object store) by ClusterIP over the mesh | ✅ |
+| Composition (render) | `openinfra.dev/arch: arm64` renders **both** the `-arm64` image **and** a `kubernetes.io/arch: arm64` nodeSelector (asserted by `test/render`) | ✅ |
+| Composition (run) | that workload is **placed on the arm64 node** and its DuckDB engine **reads a real object from the in-cluster store** over the mesh, returning the correct result | ✅ |
+| Isolation | an arm64-pinned workload goes **Pending** rather than ever landing on an amd64 node (`didn't match node selector`) | ✅ |
+| Admission | the arch-satisfiability policy + binding + param ConfigMap + recomputing CronJob are live and evaluating | ✅ |
+
+So the full chain holds: annotate → composition arch-selects image + nodeSelector → scheduler places on
+the matching-arch node → the arm64 engine runs → it reaches its data-plane dependency over the mesh →
+correct result; and the mirror (a wrong-arch image cannot land on the wrong node) holds too.
+
+**Honest edges.** The per-node arch pin used for mixed clusters is validated but still **landing** (it is
+not yet the default composition path). One case is **not built**: an explicit arch nodeSelector on
+`VirtualMachine`, so a Windows VM is not yet *explicitly* pinned off arm64 nodes (today only KubeVirt's
+`q35` implicitly fails there). **Stateful** kinds on arm64 (a `Database` PVC) were out of scope — the
+arm64 node carried no distributed storage — so this validation covers **stateless** kinds that call back
+to in-cluster services, not storage-backed ones.
 
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
