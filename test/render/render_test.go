@@ -731,18 +731,36 @@ func TestQuery_SecurityHardening(t *testing.T) {
 func TestQuery_ImageArchSuffix(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/query-composition.yaml")
 
-	// amd64 default: no .context at all -> :latest, and never an arch suffix (byte-identical to before).
-	amd := grepCtx(render(t, tmpl, queryCtx()), "open-infra-query")
+	// amd64 default (no .context): :latest image + a kubernetes.io/arch: amd64 nodeSelector so the
+	// amd64 image can never land on an arm64 node in a mixed cluster.
+	amd := render(t, tmpl, queryCtx())
 	if !strings.Contains(amd, "open-infra-query:latest") || strings.Contains(amd, "open-infra-query:latest-") {
-		t.Errorf("amd64 default must render :latest with NO suffix; got:\n%s", amd)
+		t.Errorf("amd64 default must render :latest with NO suffix; got:\n%s", grepCtx(amd, "open-infra-query"))
+	}
+	if !strings.Contains(amd, "kubernetes.io/arch: amd64") {
+		t.Errorf("amd64 default must pin nodeSelector arch: amd64; got:\n%s", grepCtx(amd, "arch"))
 	}
 
-	// arm64: EnvironmentConfig imageArchSuffix="-arm64" -> :latest-arm64.
+	// arm64 via cluster EnvironmentConfig: :latest-arm64 image + arch: arm64 nodeSelector.
 	ctx := queryCtx()
 	ctx["context"] = map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"imageArchSuffix": "-arm64"}}
-	arm := grepCtx(render(t, tmpl, ctx), "open-infra-query")
-	if !strings.Contains(arm, "open-infra-query:latest-arm64") {
-		t.Errorf("imageArchSuffix=-arm64 must render :latest-arm64; got:\n%s", arm)
+	arm := render(t, tmpl, ctx)
+	if !strings.Contains(arm, "open-infra-query:latest-arm64") || !strings.Contains(arm, "kubernetes.io/arch: arm64") {
+		t.Errorf("cluster arm64 must render :latest-arm64 + arch: arm64; got:\n%s", grepCtx(arm, "open-infra-query")+grepCtx(arm, "arch"))
+	}
+}
+
+// TestQuery_ArchAnnotationOverride: a per-resource annotation openinfra.dev/arch=arm64 selects the
+// arm64 image + arch nodeSelector even when the cluster default is amd64 — per-resource targeting in
+// a mixed cluster.
+func TestQuery_ArchAnnotationOverride(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/query-composition.yaml")
+	ctx := queryCtx() // cluster default amd64 (no context)
+	res := ctx["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)
+	res["metadata"].(map[string]any)["annotations"] = map[string]any{"openinfra.dev/arch": "arm64"}
+	out := render(t, tmpl, ctx)
+	if !strings.Contains(out, "open-infra-query:latest-arm64") || !strings.Contains(out, "kubernetes.io/arch: arm64") {
+		t.Errorf("openinfra.dev/arch=arm64 must select the -arm64 image + arch: arm64; got:\n%s", grepCtx(out, "open-infra-query")+grepCtx(out, "arch"))
 	}
 }
 

@@ -66,6 +66,12 @@ spec:
                    level defaults, so amd64 renders byte-identical :latest even if unset. */}}
             {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
             {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- /* Per-resource override: annotation openinfra.dev/arch (amd64|arm64) beats the cluster
+                   default, so a specific claim can target the other arch in a MIXED cluster. */}}
+            {{- $annos := .observed.composite.resource.metadata.annotations | default dict }}
+            {{- $reqArch := index $annos "openinfra.dev/arch" | default "" }}
+            {{- if eq $reqArch "arm64" }}{{- $arch = "-arm64" }}{{- else if eq $reqArch "amd64" }}{{- $arch = "" }}{{- end }}
+            {{- $nodeArch := "amd64" }}{{- if eq $arch "-arm64" }}{{- $nodeArch = "arm64" }}{{- end }}
             {{- $img := printf "ghcr.io/harn3ss/open-infra-query:latest%s" $arch }}
             {{- $minioEP := "minio.minio.svc.cluster.local:9000" }}
             {{- $engine := $spec.engine | default "duckdb" }}
@@ -94,6 +100,9 @@ spec:
                     template:
                       metadata: { labels: { openinfra.dev/query: "true" } }
                       spec:
+                        # Pin to a node whose arch matches the rendered image (amd64 :latest /
+                        # arm64 :latest-arm64) — a wrong-arch image can never land on the wrong node.
+                        nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         restartPolicy: Never
                         # No cluster API access from the query sandbox.
                         automountServiceAccountToken: false
