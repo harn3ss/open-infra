@@ -25,6 +25,17 @@ spec:
     kind: XDatabaseProxy
   mode: Pipeline
   pipeline:
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -38,6 +49,8 @@ spec:
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
             {{- $target := $spec.targetDatabase }}
             {{- $engine := $spec.engineFamily | default "babelfish" }}
             {{- $poolMax := $spec.poolMax | default 20 }}
@@ -71,7 +84,7 @@ spec:
                         securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
                         containers:
                           - name: tds-proxy
-                            image: ghcr.io/harn3ss/open-infra-tds-proxy:latest
+                            image: ghcr.io/harn3ss/open-infra-tds-proxy:latest{{ $arch }}
                             args:
                               - -listen=:1433
                               - -backend={{ $backend }}

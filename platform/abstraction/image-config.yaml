@@ -1,0 +1,21 @@
+# Per-cluster image configuration, read by the compositions via function-environment-configs
+# so first-party image tags can be arch-selected WITHOUT a multi-arch :latest manifest (a shared
+# multi-arch tag would let a FIPS/amd64 deployment silently pull a non-FIPS arm64 image — see
+# docs/architecture-support.md, "FIPS").
+#
+#   imageArchSuffix: ""        -> ghcr.io/…/open-infra-<x>:latest         (amd64 default; the arch the
+#                                                                          FIPS substrate is validated on)
+#   imageArchSuffix: "-arm64"  -> ghcr.io/…/open-infra-<x>:latest-arm64   (non-FIPS arm64 portability
+#                                                                          builds from build-arm64.yml)
+#
+# Default is "" (amd64). To run the kinds on an arm64 cluster, set imageArchSuffix: "-arm64" — in
+# your GitOps copy of this file, or by patching the live EnvironmentConfig:
+#   kubectl patch environmentconfig openinfra-platform --type merge -p '{"data":{"imageArchSuffix":"-arm64"}}'
+# Changing it re-renders every first-party-image composition to the matching tag. (Wiring install.sh
+# to set this automatically from config.yaml `platform.imageArch` is a tracked follow-up.)
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata:
+  name: openinfra-platform
+data:
+  imageArchSuffix: ""
