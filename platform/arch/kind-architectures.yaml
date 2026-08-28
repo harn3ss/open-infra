@@ -28,7 +28,7 @@ data:
     DataFlow:       {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
     Migration:      {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
     Replication:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-apply-sink}
-    Query:          {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-query}
+    Query:          {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-query, note: "arm64 via the -arm64 tag (build-arm64.yml) + the composition's imageArchSuffix wiring; -arm64 image runtime-proven on arm64"}
     GraphQLApi:     {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-open-appsync}
     Destruction:    {amd64: supported, arm64: unsupported, image: ghcr.io/harn3ss/open-infra-mc, note: "crypto-erase destroyer is an mc-consumer (amd64-only)"}
     # Structural (not a build flag): an arm64 host cannot run the x86 VM guest catalog.
