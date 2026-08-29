@@ -83,6 +83,11 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           platforms: linux/arm64
+          # arm64 stays NON-FIPS: override the Dockerfiles' amd64-default GOFIPS140 to empty so the
+          # arm64 binaries are plain Go builds, matching the openinfra.dev/fips=false label below.
+          build-args: |
+            GOFIPS140=
+            OPENINFRA_FIPS=false
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
