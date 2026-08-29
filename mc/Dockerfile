@@ -12,8 +12,11 @@
 #      unprivileged, so those pods stay restricted-PSA clean.
 #
 # Bump MC_VERSION periodically (latest at https://github.com/minio/mc/releases) to stay current.
-FROM golang:1.26 AS build
+# --platform=$BUILDPLATFORM keeps the build stage NATIVE on the builder (amd64) and cross-compiles to
+# the target arch via GOARCH below — so the multi-arch build never emulates the Go toolchain under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
+ARG TARGETARCH
 RUN git clone --depth 1 --branch ${MC_VERSION} https://github.com/minio/mc /src
 WORKDIR /src
 # Recompiling with the current Go clears the stdlib CVEs; bumping the Trivy-flagged deps clears theirs.
@@ -21,7 +24,7 @@ WORKDIR /src
 # remote-read/Azure-SD paths mc never uses, but bumping to the fixed release clears them cleanly.)
 RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@latest google.golang.org/grpc@latest github.com/prometheus/prometheus@v0.311.3 \
  && go mod tidy \
- && CGO_ENABLED=0 go build -trimpath \
+ && CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X github.com/minio/mc/cmd.Version=${MC_VERSION} -X github.com/minio/mc/cmd.ReleaseTag=${MC_VERSION}" \
       -o /mc .
 

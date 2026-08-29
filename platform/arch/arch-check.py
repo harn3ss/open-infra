@@ -50,10 +50,12 @@ def _tag_arches(r, required):
 
 
 def image_arches(ref):
-    """Set of architectures the image publishes under the DISTINCT-TAGS convention: amd64 under
-    :latest, arm64 under :latest-arm64 (never a shared multi-arch :latest — a shared tag would let a
-    FIPS/amd64 deploy silently pull a non-FIPS arm64 image; see docs/architecture-support.md). Returns
-    None only if the amd64 :latest tag itself can't be inspected (inconclusive)."""
+    """Set of architectures the image publishes. Convention is DISTINCT TAGS: amd64 under :latest, arm64
+    under :latest-arm64 (never a shared multi-arch :latest — a shared tag would let a FIPS/amd64 deploy
+    silently pull a non-FIPS arm64 image; see docs/architecture-support.md). The ONE exception is
+    open-infra-mc: it carries no FIPS claim (fips=false always), so it ships as a shared multi-arch
+    :latest — which this reads correctly (a multi-arch :latest reports both arches). Returns None only if
+    the amd64 :latest tag itself can't be inspected (inconclusive)."""
     amd = _tag_arches(f"{ref}:latest", required=True)
     if amd is None:
         return None
