@@ -35,9 +35,12 @@ Verified on a native Apple Silicon (aarch64) node (evidence: [`docs/arm64/`](arm
 ## arm64 first-party images and how the kinds select them
 
 The first-party images are **built for arm64 and published under `-arm64` tags** (`build-arm64.yml`
-— native arm64 runners; non-FIPS, see *FIPS*). Ten images ship arm64: console, mc, query, tds-proxy,
-aws-shim, apply-sink, attest, audit-offsite, ca-issuer, open-appsync. `babelfish` is the exception (its
-experimental C++/ANTLR source build stays amd64-only).
+— native arm64 runners; non-FIPS, see *FIPS*). Nine images ship a distinct `-arm64` tag: console, query,
+tds-proxy, aws-shim, apply-sink, attest, audit-offsite, ca-issuer, open-appsync. **`mc` is the one
+exception**: it carries no FIPS claim (`fips=false` on every arch), so a shared tag can't hide a non-FIPS
+build of a FIPS image — it therefore ships as a single **multi-arch `:latest`** (amd64+arm64) rather than a
+distinct tag, so the static jobs that consume it (crypto-erase / audit off-siting / attestation) pull the
+arch-matching binary from one image ref. `babelfish` stays amd64-only (experimental C++/ANTLR source build).
 
 **The kinds run on arm64 — the compositions arch-select the tag per cluster.** An `openinfra-platform`
 EnvironmentConfig carries `imageArchSuffix`; the compositions render `…:latest{{ imageArchSuffix }}`, so
@@ -60,7 +63,7 @@ arm64 node, and read an object from the in-cluster store).
 | Kind | arm64 image | Runs on arm64? | Note |
 |---|---|---|---|
 | DatabaseProxy, DataFlow, Migration, Replication, Query, GraphQLApi | **published** (`-arm64`) | **yes** | composition arch-selects via `imageArchSuffix`; set it to `-arm64` on an arm64 cluster |
-| Destruction (crypto-erase) | **published** (`mc:…-arm64`) | **yes** | same mechanism; its destroyer is an `mc` consumer |
+| Destruction (crypto-erase) | **published** (`mc` multi-arch `:latest`) | **yes** | its destroyer is a static CronJob (not a composition), so it can't arch-select a tag — the `mc` image it stages is multi-arch, so the arch-matching binary is pulled automatically |
 | Database (engine=babelfish) | **amd64-only** | **no** | experimental C++/ANTLR source build; arm64 compile not undertaken |
 | VirtualMachine — **Linux** guests (ubuntu/fedora/debian/centos) | multi-arch containerDisk | **capable — not yet live-booted** | the catalog uses **multi-arch KubeVirt containerDisks** (`quay.io/containerdisks/*` → amd64+arm64) and the composition hardcodes no x86 machine type for Linux (KubeVirt selects `virt` on arm64). Longhorn **v1.12.0** (arm64) backs the disks. Should boot on arm64; end-to-end boot not yet verified. |
 | VirtualMachine — **Windows** / VmImage | n/a | **no (structural)** | there is **no arm64 Windows Server ISO**, and the Windows path is hardwired amd64 (`q35` + MBR BIOS + `processorArchitecture="amd64"` sysprep). Multi-arch images can't fix this. |
