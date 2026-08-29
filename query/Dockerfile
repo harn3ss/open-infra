@@ -6,6 +6,7 @@
 # Phase 2 swaps/augments this with a Trino coordinator + a kind: Catalog metastore
 # for distributed, multi-source federation; the kind: Query contract stays the same.
 FROM debian:13-slim
+LABEL openinfra.dev/fips=false   # not a Go build — carries no image-level FIPS claim
 
 ARG DUCKDB_VERSION=v1.1.3
 ENV DEBIAN_FRONTEND=noninteractive
