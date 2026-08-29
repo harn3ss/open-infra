@@ -259,6 +259,12 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(12*time.Second)).
 			Get("/nodes/disk", handleNodeDisk(*client.Clientset, auth, logger))
 
+		// Architecture capability (#41 Phase 3) — fuses the declared per-kind arch registry
+		// (kind-architectures.yaml) with the cluster's live node arches so create surfaces can
+		// disable-with-reason instead of silently hiding kinds. Read-only; fails open.
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/capabilities", handleCapabilities(*client.Clientset, logger))
+
 		// Database snapshots — "final snapshot before you deprovision" (RDS-style): a
 		// pg_dump to MinIO that survives the DB's deletion, restorable into a new DB.
 		api.With(middleware.Timeout(20*time.Second)).
