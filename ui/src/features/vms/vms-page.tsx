@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { kindDocsUrl } from "@/lib/kind-docs";
 import { Button } from "@/components/ui/button";
+import { CreateButton } from "@/components/create/create-button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
 import { cdiPaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
@@ -177,10 +178,10 @@ export function VmsPage() {
               <Disc className="size-4" />
               VM Images
             </Button>
-            <Button onClick={() => navigate({ to: "/vms/new" })}>
+            <CreateButton kind="VirtualMachine" onClick={() => navigate({ to: "/vms/new" })}>
               <Plus className="size-4" />
               New VM
-            </Button>
+            </CreateButton>
           </div>
         }
       />
