@@ -76,7 +76,8 @@ RUN make -j ${JOBS} && make PG_CONFIG=${PG_CONFIG} install
 
 # ---------------------------------------------------------------------------- runtime
 FROM base AS runner
-LABEL openinfra.dev/fips=false   # not a Go build — carries no image-level FIPS claim
+# not a Go build — carries no image-level FIPS claim
+LABEL openinfra.dev/fips=false
 ENV DEBIAN_FRONTEND=noninteractive
 ENV BABELFISH_HOME=/opt/babelfish
 ENV POSTGRES_USER_HOME=/var/lib/babelfish
