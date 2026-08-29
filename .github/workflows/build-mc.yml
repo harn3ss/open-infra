@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: docker/setup-qemu-action@v3   # arm64 emulation for the multi-arch mc build
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
@@ -51,6 +53,11 @@ jobs:
         with:
           context: mc
           file: mc/Dockerfile
+          # mc is the ONE first-party image published as a shared MULTI-ARCH :latest (amd64+arm64):
+          # it is the upstream MinIO client with NO FIPS claim (fips=false), so a shared tag can't
+          # silently serve a non-FIPS build of a FIPS image. This lets the static mc-consumer manifests
+          # (destruction/audit-offsite/compliance-attest) run on either arch from a single image ref.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
