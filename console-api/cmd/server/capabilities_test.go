@@ -49,9 +49,9 @@ func TestJoinOr(t *testing.T) {
 		in   []string
 		want string
 	}{
-		"none": {nil, "none"},
-		"one":  {[]string{"amd64"}, "amd64"},
-		"two":  {[]string{"amd64", "arm64"}, "amd64 or arm64"},
+		"none":  {nil, "none"},
+		"one":   {[]string{"amd64"}, "amd64"},
+		"two":   {[]string{"amd64", "arm64"}, "amd64 or arm64"},
 		"three": {[]string{"a", "b", "c"}, "a, b, or c"},
 	}
 	for name, c := range cases {
