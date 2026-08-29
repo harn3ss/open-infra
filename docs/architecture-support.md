@@ -94,8 +94,21 @@ modules), exercised end-to-end on **amd64 only** (see
 Precise about the 2026-08-15 event: the nodes ran FIPS **mode** on **stock SP7 crypto packages** — the
 11 version-locked RPMs are the running SP7 builds, **not the CMVP-certified SP6 module builds** (SUSE
 does publish those SP6-certified modules for installation on SP7; that install step was not performed).
-So the honest claim is "operating in FIPS mode," never "running the FIPS-140-3-validated module
-versions." No FIPS-mode substrate has been exercised on arm64 yet.
+So the honest claim about that event is "operating in FIPS mode," never "running the
+FIPS-140-3-validated module versions."
+
+**Since then (2026-08-28) the certified-module path is proven.** SUSE's SP6-certified crypto modules
+install on SP7 (via the Certifications Module) and the OpenSSL FIPS provider goes **active** in FIPS
+mode — validated end-to-end on **both amd64 (a SLES SP7 OptiPlex) and arm64 (a SLES SP7 Graviton)**, the
+identical certified versions on each arch, so **arm64 carries no substrate-FIPS disadvantage**. The
+provisioning method now installs + locks those certified modules. This was validated on
+throwaway/temporary nodes; it is *not* a claim that a permanent production fleet is currently running the
+certified modules.
+
+**The boundary, stated plainly:** a certified cryptographic module installed and running in FIPS mode is
+**not** the same as *the platform* being certified. The FIPS 140-3 certificates cover the OS crypto
+modules (and RKE2's Kubernetes crypto module); the **orchestration layer — Crossplane, the compositions,
+and our first-party images — is out of scope and carries no FIPS claim**. Built ≠ verified ≠ certified.
 
 The first-party application **images** are a separate matter, and the honest statement is stronger than
 "amd64 is FIPS, arm64 is not": every first-party image is a plain `CGO_ENABLED=0` Go build (standard Go
