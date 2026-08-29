@@ -26,6 +26,7 @@ RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@
       -o /mc .
 
 FROM alpine:3.24
+LABEL openinfra.dev/fips=false   # not a Go build — carries no image-level FIPS claim
 COPY --from=build /mc /usr/bin/mc
 RUN chmod 0755 /usr/bin/mc && /usr/bin/mc --version
 USER 65532:65532
