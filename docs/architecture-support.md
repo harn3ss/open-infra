@@ -105,6 +105,14 @@ provisioning method now installs + locks those certified modules. This was valid
 throwaway/temporary nodes; it is *not* a claim that a permanent production fleet is currently running the
 certified modules.
 
+One more precision, because CMVP validation is **operational-environment-specific**: the SUSE OpenSSL 3
+module is **CMVP cert #5096** (module `fips.so` v1.1), and its tested/affirmed environments are specific
+server platforms — AMD EPYC 7343, Intel Xeon Gold 5416S, **Ampere Altra Q80-30 (aarch64)**, IBM Telum
+(SP6 tested; SP7 vendor-affirmed on Intel/AMD). The boxes used here (an OptiPlex with a consumer Intel
+CPU, an AWS Graviton with an Arm Neoverse core) are **not** on that list. So what is proven is that the
+**validated module binary installs and goes active in FIPS mode** on SP7 on both arches — not that these
+particular boxes constitute a CMVP-listed validated configuration.
+
 **The boundary, stated plainly:** a certified cryptographic module installed and running in FIPS mode is
 **not** the same as *the platform* being certified. The FIPS 140-3 certificates cover the OS crypto
 modules (and RKE2's Kubernetes crypto module); the **orchestration layer — Crossplane, the compositions,
