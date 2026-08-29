@@ -143,6 +143,34 @@ export function getConfig(): Promise<AppConfig> {
   return request<AppConfig>("/config");
 }
 
+/* ------------------------ Architecture capability (#41 Phase 3) ------------------------ */
+
+/** Whether a kind can be created on this cluster, from GET /capabilities. */
+export type ArchVerdict = "available" | "untested" | "unavailable";
+
+export interface KindCapability {
+  kind: string;
+  verdict: ArchVerdict;
+  supportedArches: string[];
+  untestedArches?: string[];
+  /** Human-readable reason, set for untested/unavailable. */
+  reason?: string;
+  note?: string;
+}
+
+export interface Capabilities {
+  nodeArches: string[];
+  kinds: Record<string, KindCapability>;
+  /** True when arch data could not be determined, so verdicts are permissive (nothing gated). */
+  degraded: boolean;
+  note?: string;
+}
+
+/** Cluster architecture capability: the declared per-kind registry fused with live node arches. */
+export function getCapabilities(): Promise<Capabilities> {
+  return request<Capabilities>("/capabilities");
+}
+
 /* ------------------------------ k8s REST ------------------------------ */
 
 /**
