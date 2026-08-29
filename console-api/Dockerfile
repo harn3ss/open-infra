@@ -33,6 +33,8 @@ RUN npm run build
 # Stage 2 — build the Go BFF with the SPA embedded.
 # ---------------------------------------------------------------------------
 FROM golang:1.26-alpine AS go-builder
+ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
+ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
 
 # Module graph first for layer caching (re-downloads only when go.mod/sum change).
@@ -61,6 +63,8 @@ RUN go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
 # Stage 3 — minimal runtime.
 # ---------------------------------------------------------------------------
 FROM alpine:3.24 AS runtime
+ARG OPENINFRA_FIPS=true   # amd64 default; build-arm64 sets false via the label
+LABEL openinfra.dev/fips=${OPENINFRA_FIPS}
 
 # wget (busybox) is used by the healthcheck; ca-certificates lets the BFF verify
 # the API server / Grafana TLS chains when needed.
