@@ -13,7 +13,7 @@ verified.
 
 | Architecture | Status | Notes |
 |---|---|---|
-| **amd64 (x86-64)** | **Supported** | The shipped, exercised architecture; the validated **FIPS substrate** (SLES 15 SP7 + RKE2 in FIPS mode) runs here. See *FIPS* below for what that does and does not cover. |
+| **amd64 (x86-64)** | **Supported** | The shipped, exercised architecture; the amd64 **FIPS-mode substrate** (SLES 15 SP7 + RKE2) was exercised here — FIPS *mode* on stock SP7 crypto, **not** the CMVP-certified module builds. See *FIPS* below for what that does and does not cover. |
 | **arm64 (aarch64)** | **Partial** | The control plane, installer, **and the first-party kinds** run natively on arm64 — the compositions arch-select the `-arm64` images per cluster (set `imageArchSuffix: -arm64`), verified end-to-end on **AWS Graviton** and **Apple Silicon**. Mixed amd64/arm64 clusters are supported — every first-party kind + VMs carry a per-node arch pin, validated on a live mixed cluster. `babelfish`, Windows VMs, and the FIPS substrate stay amd64. See below. |
 
 Nothing here is a certification claim — it is verified capability, with the evidence in
@@ -86,12 +86,16 @@ ConfigMap, and the recomputing CronJob all active). See [`platform/arch/README.m
 
 ## FIPS
 
-**FIPS is a *substrate* property, and we have validated it on amd64 — not a property of our images.**
-open-infra's FIPS posture comes from the platform underneath the workloads: **SLES 15 SP7 + RKE2 run
-in FIPS mode** (kernel FIPS + FIPS crypto policy — the OS and the Kubernetes cryptographic modules),
-which we have exercised end-to-end on **amd64 only** (see
+**FIPS is a *substrate* property we have exercised in FIPS *mode* on amd64 — not a property of our
+images.** open-infra's FIPS posture comes from the platform underneath the workloads: **SLES 15 SP7 +
+RKE2 run in FIPS mode** (kernel FIPS + FIPS crypto policy — the OS and the Kubernetes cryptographic
+modules), exercised end-to-end on **amd64 only** (see
 [`security-and-compliance.md`](security-and-compliance.md) and [`docs/compliance/`](compliance/)).
-There is no validated FIPS substrate for arm64.
+Precise about the 2026-08-15 event: the nodes ran FIPS **mode** on **stock SP7 crypto packages** — the
+11 version-locked RPMs are the running SP7 builds, **not the CMVP-certified SP6 module builds** (SUSE
+does publish those SP6-certified modules for installation on SP7; that install step was not performed).
+So the honest claim is "operating in FIPS mode," never "running the FIPS-140-3-validated module
+versions." No FIPS-mode substrate has been exercised on arm64 yet.
 
 The first-party application **images** are a separate matter, and the honest statement is stronger than
 "amd64 is FIPS, arm64 is not": every first-party image is a plain `CGO_ENABLED=0` Go build (standard Go

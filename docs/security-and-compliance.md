@@ -243,7 +243,9 @@ RWX `longhorn-migratable` class — so a Longhorn-free substrate runs the data-p
 not VM live-migration or standalone block volumes.)
 
 The platform has been **exercised end-to-end on a certified-track substrate** — SUSE Linux Enterprise
-Server 15 SP7 + RKE2, **under FIPS mode** (kernel FIPS + FIPS crypto policy on every node) — including
+Server 15 SP7 + RKE2, **under FIPS mode** (kernel FIPS + FIPS crypto policy on every node; this is FIPS
+*mode* on the **stock SP7** crypto packages, **not** the CMVP-certified module builds — see
+[`architecture-support.md`](architecture-support.md)) — including
 the Crossplane control plane, the Stream/Function chain (CDC → JetStream → Knative), and multi-master
 replication, with chaos-oracle fault injection (network partition, capture/sink kill) and enforced
 PodSecurity `restricted` admission. The chaos run was **17 green / 2 red / 1 inconclusive**: the two
