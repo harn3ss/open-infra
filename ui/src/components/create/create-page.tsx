@@ -4,7 +4,7 @@ import type { IChangeEvent } from "@rjsf/core";
 import type { RJSFSchema, UiSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Rocket } from "lucide-react";
+import { ArrowLeft, Ban, Rocket, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ErrorState, LoadingState, Spinner } from "@/components/common/states";
+import { EmptyState, ErrorState, LoadingState, Spinner } from "@/components/common/states";
 import { ExpandableSection } from "@/components/create/expandable-section";
 import { InfoLink } from "@/components/help/info-link";
 import { LearnMore } from "@/components/help/learn-more";
@@ -25,6 +25,7 @@ import type { CredentialSpec, SectionSpec } from "@/components/create/create-reg
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
+import { useKindAvailability } from "@/hooks/use-capabilities";
 import { corePaths } from "@/lib/k8s-paths";
 import { useNamespace } from "@/lib/namespace-context";
 import { ApiError, getCrdSchema, k8sCreate } from "@/lib/api";
@@ -78,6 +79,10 @@ export function CreatePage(cfg: CreatePageConfig) {
   );
 
   const creds = cfg.credentials ?? [];
+
+  // #41 Phase 3: respect the kind's architecture capability. Unavailable kinds are blocked here with
+  // an honest reason (not silently hidden); untested kinds are permitted with a warning banner.
+  const avail = useKindAvailability(cfg.kind);
 
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(scoped ?? "default");
@@ -187,6 +192,37 @@ export function CreatePage(cfg: CreatePageConfig) {
     formRef.current?.submit();
   };
 
+  // Architecture gate: this kind cannot run on any node arch in this cluster. Show WHY (an
+  // explanatory blocked state) rather than a form that would only fail at admission.
+  if (avail.unavailable) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-6">
+        <div>
+          <Button variant="ghost" size="sm" className="mb-2 -ml-2 text-muted-foreground" onClick={cfg.onCancel}>
+            <ArrowLeft className="size-4" /> Back
+          </Button>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold">
+            {cfg.icon} Create {cfg.kind}
+          </h1>
+        </div>
+        <EmptyState
+          icon={<Ban className="size-8" />}
+          title={`${cfg.kind} can't run on this cluster`}
+          description={
+            avail.reason ||
+            `No node in this cluster has an architecture that ${cfg.kind} supports. Add a compatible node, then try again.`
+          }
+          action={
+            <Button variant="outline" onClick={cfg.onCancel}>
+              Back
+            </Button>
+          }
+          learnMore={kindDocsUrl(cfg.kind) ?? undefined}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 pb-24">
       <div>
@@ -238,6 +274,17 @@ export function CreatePage(cfg: CreatePageConfig) {
           </div>
         </div>
       </div>
+
+      {/* Untested on this cluster's arch — permitted (never blocked), but flagged honestly. */}
+      {avail.untested ? (
+        <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          <span>
+            {avail.reason ||
+              `${cfg.kind} is untested on this cluster's architecture — you can create it, but it is not verified to run here.`}
+          </span>
+        </div>
+      ) : null}
 
       {/* Spec, from the CRD schema */}
       {schemaQuery.isLoading ? (
