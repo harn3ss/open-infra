@@ -3,11 +3,14 @@
 Whether open-infra runs on arm64 (Apple Silicon / Graviton / Ampere). This began as a **survey** (no
 code change); a runtime retest and the `-arm64` image builds came later — read it top-to-bottom as a log.
 
-> **Update (2026-08-27), superseding the original survey framing:** the `-arm64` images have since been
-> **published** — 10 first-party images via `build-arm64.yml` (see *Runtime retest — network RESTORED*
-> below). On FIPS: it is a **substrate** property (SLES/RKE2, amd64), never an *image* one — the
-> first-party images are plain `CGO_ENABLED=0` Go builds with **no image-level FIPS on any arch** — so
-> publishing arm64 removes nothing FIPS-wise. See [`../architecture-support.md`](../architecture-support.md).
+> **Update (2026-08-29), superseding the original survey framing:** the arm64 image gap is **closed** —
+> **#42** (multi-arch images) and **#43** (runtime retest on a restored network) are both **done**. The
+> images ship arm64 (9 first-party images via distinct `-arm64` tags in `build-arm64.yml`; `open-infra-mc`
+> as a shared multi-arch `:latest`), the compositions arch-select them, and it is **runtime-proven on a
+> standing Apple-Silicon node in the live cluster** (see *#43 closed …* below). On FIPS: it is primarily a
+> **substrate** property (SLES/RKE2, amd64); **arm64 images are non-FIPS and inherit nothing** from that
+> validation — so publishing arm64 removes nothing FIPS-wise. (Separately, the amd64 Go images since build
+> in Go-native FIPS mode, #46.) Full posture in [`../architecture-support.md`](../architecture-support.md).
 
 ## Method (and why it's split)
 
@@ -18,10 +21,11 @@ The survey has two layers, run cheapest-first:
    build even exist*. A missing arm64 manifest **is** a `did_not_schedule` result by #41's own
    definition ("no arm64 manifest entry / image pull refused / exec format error") — provable
    without an arm64 machine, and it costs kilobytes, not the gigabytes a full pull would.
-2. **Runtime layer (not yet run).** A native arm64 Linux VM (`openinfra-arm64.lima.yaml`) to
-   confirm the `did_not_schedule` predictions with real `exec format error`s and to move the
-   `not_attempted` (arm64-available-upstream) rows to `works` / `scheduled_but_failed`. This needs
-   internet egress in the guest to pull images; deferred while only a metered hotspot is available.
+2. **Runtime layer (originally deferred; since run — see the retest sections below).** A native arm64
+   Linux VM (`openinfra-arm64.lima.yaml`) to confirm the `did_not_schedule` predictions with real
+   `exec format error`s and to move the `not_attempted` (arm64-available-upstream) rows to `works` /
+   `scheduled_but_failed`. This needs internet egress in the guest to pull images, so it was deferred
+   while only a metered hotspot was available — then run on 2026-08-27/28/29 once the link was restored.
 
 Outcome vocabulary is #41's, kept strictly distinct: `not_attempted` · `did_not_schedule` ·
 `scheduled_but_failed` · `works`. The manifest layer can only ever produce `did_not_schedule`
@@ -164,6 +168,30 @@ not yet the default composition path). One case is **not built**: an explicit ar
 `q35` implicitly fails there). **Stateful** kinds on arm64 (a `Database` PVC) were out of scope — the
 arm64 node carried no distributed storage — so this validation covers **stateless** kinds that call back
 to in-cluster services, not storage-backed ones.
+
+## #43 closed — a standing arm64 node + the last runtime verdicts (2026-08-29, `survey-2026-08-29.jsonl`)
+
+The Graviton was borrowed and is gone; the durable substitute #43's standing-caution called for is now in
+place: an **Apple Silicon (M2 Max) node stands in the `.194` cluster** (`lima-openinfra-arm64`, a bridged
+Lima VM with a real LAN IP, native-arm64 Cilium, `Ready`). On it, the two runtime verdicts #43 named were
+settled and the outstanding flips were observed on real hardware:
+
+- **`kind: HttpApi`: `not_attempted` → `works`.** Deployed live — the composition renders exactly one
+  Traefik `Ingress` and **no pods**, so it is orchestration-only and does *not* share the
+  open-appsync/aws-shim data plane (the concern that would have made it `did_not_schedule`). Its only
+  runtime deps (Traefik, provider-kubernetes) are arm64-confirmed.
+- **First-party images: `did_not_schedule` → `works`.** The "amd64-only, the entire arm64 gap" finding
+  that ran through every prior survey is retired by #42. Proven on the node, not by reasoning:
+  `open-infra-mc:latest` (now a multi-arch manifest) pulled its `linux/arm64` variant and ran
+  (`ARCH=aarch64`, `mc RELEASE.2025-08-13`).
+- **Confirmed unchanged:** `app-of-apps-convergence` stays `works_partial` (its tail is bootstrap
+  sync-wave ordering — environmental, not arm64); the upstream data-plane operators still run on arm64.
+
+**Honest residual:** the pure-orchestration kinds that render only Kubernetes objects
+(Policy/Role/Group/User/Grant/SecurityGroup/…) inherit their arm64 answer from provider-kubernetes
+(arm64-confirmed) but were not each individually deployed-and-observed on the node; they stay
+`arm64_capable_unverified`, not silently upgraded. A full per-kind runtime sweep on the standing node is
+available future work, outside #43's named scope.
 
 ## Consequences for phases 2 and 3 (not done here — survey only)
 
