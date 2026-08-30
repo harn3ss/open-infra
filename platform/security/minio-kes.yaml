@@ -1,0 +1,148 @@
+# MinIO SSE-KMS via MinIO KES → Vault KV (#37). OPT-IN (components.objectEncryption). Ships the KES
+# key-management service so MinIO can server-side-encrypt objects with customer keys held in Vault, and
+# destroying a key crypto-erases the objects it wrapped (proven: put→read, then delete the Vault-KV key
+# → the object persists but reads fail "failed to decrypt ciphertext"; NIST SC-28(1)).
+#
+# WHAT THIS DOES NOT DO: it does NOT touch the live MinIO. Turning SSE-KMS ON for the platform MinIO is a
+# DELIBERATE, snapshot-first operator step (add the MINIO_KMS_KES_* env — see docs/encryption.md), never
+# a background sync, because the live MinIO holds the velero backups + the openinfra-audit WORM chain and
+# SSE-KMS only encrypts NEW writes. This stack (KES + certs + the Vault identity) is safe to deploy; it
+# just makes SSE-KMS *available*.
+#
+# KES↔Vault = plain HTTP + Kubernetes auth (role minio-kes, set up by vault.yaml's transit-setup Job).
+# KES↔MinIO = mTLS: the cert-gen Job below issues a self-signed CA + a KES server cert + a MinIO client
+# cert, computes the client's KES identity (sha256 of its public-key DER), and writes the KES config with
+# that identity allow-listed. All in ns `minio`.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: minio-kes, namespace: minio }
+---
+# The cert-gen Job needs to create the cert Secrets + the KES config ConfigMap in ns minio.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: minio-kes-setup, namespace: minio }
+rules:
+  - apiGroups: [""]
+    resources: [secrets, configmaps]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: minio-kes-setup, namespace: minio }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: minio-kes-setup }
+subjects:
+  - { kind: ServiceAccount, name: minio-kes-setup, namespace: minio }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: minio-kes-setup, namespace: minio }
+---
+# Cert-gen: self-signed CA → KES server cert (SANs for the in-cluster service) + MinIO client cert →
+# Secrets kes-server-tls / minio-kes-client → the kes-config ConfigMap with the client's KES identity
+# allow-listed. Idempotent: re-runs are a no-op once the config ConfigMap exists. sync-wave 1 (before KES).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-kes-certgen
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      serviceAccountName: minio-kes-setup
+      restartPolicy: Never
+      securityContext: { runAsNonRoot: true, runAsUser: 65532 }
+      containers:
+        - name: certgen
+          image: alpine/k8s:1.30.0
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          command: [sh, -ceu]
+          args:
+            - |
+              if kubectl -n minio get configmap kes-config >/dev/null 2>&1; then
+                echo "kes-config exists — certs already generated, nothing to do"; exit 0
+              fi
+              cd /tmp
+              # self-signed CA
+              openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 3650 -subj "/CN=openinfra-kes-ca"
+              # KES server cert (SANs: the in-cluster service)
+              openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=kes"
+              printf 'subjectAltName=DNS:kes,DNS:kes.minio.svc,DNS:kes.minio.svc.cluster.local\nextendedKeyUsage=serverAuth\n' > server.ext
+              openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 3650 -extfile server.ext
+              # MinIO client cert
+              openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=minio-sse-kms"
+              printf 'extendedKeyUsage=clientAuth\n' > client.ext
+              openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt -days 3650 -extfile client.ext
+              # KES identity of the MinIO client cert = sha256(public-key DER)
+              ID=$(openssl x509 -in client.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 | awk '{print $2}')
+              echo "MinIO KES identity: $ID"
+              kubectl -n minio create secret generic kes-server-tls --from-file=server.crt --from-file=server.key --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
+              kubectl -n minio create secret generic minio-kes-client --from-file=client.crt --from-file=client.key --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
+              cat > /tmp/config.yaml <<KESCFG
+              address: 0.0.0.0:7373
+              admin:
+                identity: "0000000000000000000000000000000000000000000000000000000000000000"
+              tls:
+                key: /certs/server.key
+                cert: /certs/server.crt
+                ca: /certs/ca.crt
+              policy:
+                minio:
+                  allow: [ /v1/key/create/*, /v1/key/generate/*, /v1/key/decrypt/* ]
+                  identities: [ "$ID" ]
+              keystore:
+                vault:
+                  endpoint: "http://vault.vault.svc.cluster.local:8200"
+                  version: "v1"
+                  engine: "kes"
+                  kubernetes:
+                    role: "minio-kes"
+                    jwt: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+              KESCFG
+              kubectl -n minio create configmap kes-config --from-file=config.yaml=/tmp/config.yaml --dry-run=client -o yaml | kubectl apply -f -
+              echo "KES certs + config generated"
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kes
+  namespace: minio
+  annotations: { argocd.argoproj.io/sync-wave: "2" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: kes } }
+  template:
+    metadata: { labels: { app: kes } }
+    spec:
+      serviceAccountName: minio-kes
+      securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      containers:
+        - name: kes
+          image: minio/kes:2024-09-11T07-22-50Z
+          args: ["server", "--config=/etc/kes/config.yaml"]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          ports: [{ containerPort: 7373, name: https }]
+          volumeMounts:
+            - { name: config, mountPath: /etc/kes }
+            - { name: certs, mountPath: /certs }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+      volumes:
+        - { name: config, configMap: { name: kes-config } }
+        - { name: certs, secret: { secretName: kes-server-tls } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: kes, namespace: minio }
+spec:
+  selector: { app: kes }
+  ports: [{ port: 7373, targetPort: 7373, name: https }]
