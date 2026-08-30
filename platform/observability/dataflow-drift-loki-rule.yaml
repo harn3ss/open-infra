@@ -1,0 +1,32 @@
+# #36: Loki alerting rule for DataFlow multi-master schema drift. The per-flow schema-drift companion
+# (spec.driftDetection, dataflow-composition.yaml) logs `schema-drift: DIVERGENCE` when members' schemas
+# diverge — a silent multi-master hazard. This rule turns that log line into an Alertmanager alert.
+#
+# Loaded by the Loki ruler (enabled in loki.yaml): storage.local dir /rules, tenant "fake"
+# (auth_enabled: false), so this ConfigMap is mounted at /rules/fake. sync-wave 1 so it exists before
+# the Loki pod (wave 2) mounts it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-alerting-rules
+  namespace: monitoring
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/part-of: open-infra
+data:
+  dataflow-schema-drift.yaml: |
+    groups:
+      - name: dataflow-schema-drift
+        rules:
+          - alert: DataFlowSchemaDrift
+            # The drift companion logs this line each cycle a member's schema has diverged. Container
+            # name is "drift" (the companion's only container), so this selector is specific.
+            expr: |
+              sum by (namespace) (count_over_time({container="drift"} |= "schema-drift: DIVERGENCE" [10m])) > 0
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "DataFlow multi-master schema drift detected in {{ $labels.namespace }}"
+              description: "A kind: DataFlow member's table schema has diverged from the others (schema-drift: DIVERGENCE). Multi-master members are out of sync; writes that depend on the missing/changed columns may fail to replicate. Inspect the <flow>-flow-drift pod logs and reconcile the schemas."
