@@ -136,6 +136,11 @@ incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-co
 # reconciler, and the synchronous ca-issuer. OFF unless components.pki: true; RIDES ON the encryption
 # component (reuses its Vault + Kubernetes-auth wiring — see docs/certificate-authority.md).
 incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateauthority-composition.yaml,security/ca-reconciler.yaml,security/ca-issuer.yaml"
+# Object encryption at rest: MinIO SSE-KMS via MinIO KES → Vault KV, with crypto-erase (destroy the key
+# → objects unreadable). OFF unless components.objectEncryption: true; RIDES ON the encryption component
+# (reuses its Vault + the minio-kes k8s-auth identity). Ships KES + certs; it does NOT touch the live
+# MinIO — turning SSE-KMS on for the platform MinIO is a deliberate, snapshot-first step (docs/encryption.md).
+incl objectEncryption "security/minio-kes.yaml"
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
 incl attestation "security/compliance-attest.yaml"
