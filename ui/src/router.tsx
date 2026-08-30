@@ -66,6 +66,11 @@ import { MonitoringPage } from "@/features/monitoring/monitoring-page";
 import { CostPage } from "@/features/cost/cost-page";
 import { SnapshotsPage } from "@/features/snapshots/snapshots-page";
 import { UsersPage } from "@/features/iam/users-page";
+import { CreateUserPage } from "@/features/iam/create-user-page";
+import { CreateGroupPage } from "@/features/iam/create-group-page";
+import { CreatePolicyPage } from "@/features/iam/create-policy-page";
+import { CreateRolePage } from "@/features/iam/create-role-page";
+import { CreateGrantPage } from "@/features/iam/create-grant-page";
 import { UserDetailPage } from "@/features/iam/user-detail-page";
 import { GroupsPage } from "@/features/iam/groups-page";
 import { GroupDetailPage } from "@/features/iam/group-detail-page";
@@ -249,6 +254,11 @@ const securityGroupsRoute = createRoute({
   path: "/security-groups",
   component: SecurityGroupsPage,
 });
+const groupCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/groups/new",
+  component: CreateGroupPage,
+});
 
 // Static "/new" — matched before the "$namespace/$name" detail route.
 const securityGroupCreateRoute = createRoute({
@@ -400,6 +410,11 @@ const usersRoute = createRoute({
   path: "/users",
   component: UsersPage,
 });
+const userCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/users/new",
+  component: CreateUserPage,
+});
 const userDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/users/$name",
@@ -420,6 +435,11 @@ const policiesRoute = createRoute({
   path: "/policies",
   component: PoliciesPage,
 });
+const policyCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/policies/new",
+  component: CreatePolicyPage,
+});
 const policyDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/policies/$name",
@@ -430,6 +450,11 @@ const rolesRoute = createRoute({
   path: "/roles",
   component: RolesPage,
 });
+const roleCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/roles/new",
+  component: CreateRolePage,
+});
 const roleDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/roles/$name",
@@ -439,6 +464,11 @@ const grantsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/grants",
   component: GrantsPage,
+});
+const grantCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/grants/new",
+  component: CreateGrantPage,
 });
 const grantDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -552,14 +582,19 @@ const routeTree = rootRoute.addChildren([
   costRoute,
   snapshotsRoute,
   usersRoute,
+  userCreateRoute,
   userDetailRoute,
   groupsRoute,
+  groupCreateRoute,
   groupDetailRoute,
   policiesRoute,
+  policyCreateRoute,
   policyDetailRoute,
   rolesRoute,
+  roleCreateRoute,
   roleDetailRoute,
   grantsRoute,
+  grantCreateRoute,
   grantDetailRoute,
   auditRoute,
   dataClassificationRoute,

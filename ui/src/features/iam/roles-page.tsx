@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Boxes, Plus } from "lucide-react";
@@ -8,11 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
 import { listIamRoles } from "@/lib/api";
-import { NewRoleDialog } from "./new-role-dialog";
 
 export function RolesPage() {
   const navigate = useNavigate();
-  const [newOpen, setNewOpen] = useState(false);
   const { data = [], isLoading, isError, error } = useQuery({
     queryKey: ["iam", "roles"],
     queryFn: listIamRoles,
@@ -26,7 +23,7 @@ export function RolesPage() {
         title="Roles"
         description="Bundles of policies — the union of their permissions. Point a Group at a role to grant it. A role takes effect only once a Group uses it and that group is impersonable."
         actions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/roles/new" })}>
             <Plus className="size-4" /> New role
           </Button>
         }
@@ -42,7 +39,7 @@ export function RolesPage() {
           title="No roles yet"
           description="Create a role, attach policies to it, then point a Group at openinfra-role-<name>."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/roles/new" })}>
               <Plus className="size-4" /> New role
             </Button>
           }
@@ -98,7 +95,6 @@ export function RolesPage() {
         </Card>
       )}
 
-      <NewRoleDialog open={newOpen} onOpenChange={setNewOpen} />
     </div>
   );
 }
