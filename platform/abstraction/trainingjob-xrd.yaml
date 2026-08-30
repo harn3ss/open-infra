@@ -1,0 +1,104 @@
+# open-infra's "SageMaker Training Jobs": kind: TrainingJob — a run-once, GPU-capable
+# training run. Give it a training container image (+ optional command, hyperparameters
+# as env, and MinIO dataset/output locations); it runs to completion on a GPU node of the
+# right class, and its status is the underlying batch Job's. This is the training-loop
+# counterpart to kind: Model (Bedrock-style inference).
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xtrainingjobs.openinfra.dev
+  annotations:
+    # Not a chaos data-node (see tools/chainforge); "none" is the non-participating sentinel.
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XTrainingJob
+    plural: xtrainingjobs
+  claimNames:
+    kind: TrainingJob        # what users write in infra.yaml
+    plural: trainingjobs
+  defaultCompositionRef:
+    name: trainingjob
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  description: "The training container image. It runs to completion; write model artifacts to the output bucket (see output)."
+                command:
+                  type: array
+                  items: { type: string }
+                  description: "Optional entrypoint override (container command)."
+                args:
+                  type: array
+                  items: { type: string }
+                  description: "Optional container args."
+                env:
+                  type: array
+                  description: "Environment variables — the place to pass hyperparameters and config to the training script."
+                  items:
+                    type: object
+                    properties:
+                      name:  { type: string }
+                      value: { type: string }
+                gpu:
+                  type: integer
+                  default: 1
+                  description: "GPUs to request. `0` runs CPU-only (useful for smoke tests); >0 schedules on a GPU node and sets nvidia.com/gpu."
+                gpuTier:
+                  type: string
+                  enum: [smallgpu, largegpu]
+                  default: smallgpu
+                  description: "GPU class when gpu>0: smallgpu (A2000 class, may use a large GPU) or largegpu (requires a large GPU, e.g. 3090). Ignored when gpu=0."
+                cpu:
+                  type: string
+                  description: "CPU request/limit as a Kubernetes quantity (e.g. \"2\", \"500m\"). Unset uses a modest default."
+                memory:
+                  type: string
+                  description: "Memory request/limit as a Kubernetes quantity (e.g. \"8Gi\"). Unset uses a modest default."
+                dataset:
+                  type: object
+                  description: "Input data location in the object store (MinIO). Injected as DATASET_BUCKET/DATASET_PREFIX plus S3-compatible credentials."
+                  properties:
+                    bucket: { type: string, description: "Existing bucket holding the training data." }
+                    prefix: { type: string, description: "Optional key prefix within the bucket." }
+                output:
+                  type: object
+                  description: "Where the job writes model artifacts (MinIO). The bucket is created if absent; injected as OUTPUT_BUCKET/OUTPUT_PREFIX plus S3-compatible credentials."
+                  properties:
+                    bucket: { type: string, description: "Artifact bucket (created on demand)." }
+                    prefix: { type: string, description: "Optional key prefix for artifacts." }
+                secrets:
+                  type: array
+                  items: { type: string }
+                  description: "Extra secrets to inject with envFrom — e.g. a model-registry or Hugging Face token."
+                backoffLimit:
+                  type: integer
+                  default: 0
+                  description: "How many times the Job retries a failed pod before it is marked Failed. Defaults to 0 (no retry)."
+                maxRuntimeSeconds:
+                  type: integer
+                  description: "Hard wall-clock cap (Job activeDeadlineSeconds). The job is failed if it runs longer. Unset means no cap."
+            status:
+              type: object
+              properties:
+                # The batch/v1 Job the run executes as — the console reads it for phase + logs.
+                jobName: { type: string }
