@@ -21,6 +21,10 @@ import { VmDetailPage } from "@/features/vms/vm-detail-page";
 import { VmImagesPage } from "@/features/vms/vm-images-page";
 import { CreateVmPage } from "@/features/vms/create-vm-page";
 import { CreateFunctionPage } from "@/features/functions/create-function-page";
+import { StateMachinesPage } from "@/features/statemachines/statemachines-page";
+import { StateMachineDetailPage } from "@/features/statemachines/statemachine-detail-page";
+import { CreateStateMachinePage } from "@/features/statemachines/create-statemachine-page";
+import { ExecutionDetailPage } from "@/features/statemachines/execution-detail-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -179,6 +183,13 @@ const directoryCreateRoute = createRoute({ getParentRoute: () => rootRoute, path
 const streamCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/streams/new", component: CreateStreamPage });
 const migrationCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/migrations/new", component: CreateMigrationPage });
 const replicationCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/replications/new", component: CreateReplicationPage });
+
+// kind: StateMachine (#23) — list, static /new (before the detail route), detail, and
+// the Execution detail route (executions are run under a state machine).
+const statemachinesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines", component: StateMachinesPage });
+const statemachineCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines/new", component: CreateStateMachinePage });
+const statemachineDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines/$namespace/$name", component: StateMachineDetailPage });
+const executionDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/executions/$namespace/$name", component: ExecutionDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -552,6 +563,10 @@ const routeTree = rootRoute.addChildren([
   streamCreateRoute,
   migrationCreateRoute,
   replicationCreateRoute,
+  statemachinesRoute,
+  statemachineCreateRoute,
+  statemachineDetailRoute,
+  executionDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
