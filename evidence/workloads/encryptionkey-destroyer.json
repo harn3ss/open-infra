@@ -1,0 +1,10 @@
+{
+  "name": "encryptionkey-destroyer",
+  "namespace": "crossplane-system",
+  "healthy": true,
+  "evidence_level": "verified",
+  "when": "2026-08-30T02:40:00Z",
+  "detail": "CronJob crossplane-system/encryptionkey-destroyer HEALTHY. Recent scheduled runs Complete 1/1 (jobs -29800960 @ 2026-08-30T02:40 succeeded=1, -29800955 @ 02:35 succeeded=1): init containers fetch-vault + fetch-mc terminate exitCode=0, AND the destroy container terminates exitCode=0/Completed. The earlier functional failure (#39: destroy container exit=2, observed 2026-08-20) no longer reproduces. Recovered within the window that includes the removal of a full-tunnel VPN on the control-plane host (2026-08-27), which had broken host-network egress for crossplane-system mc-consumers. Verified live.",
+  "supersedes": "2026-08-20 observation (healthy:false, destroy container exit=2)",
+  "refs": ["#39", "#10"]
+}
