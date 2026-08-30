@@ -64,6 +64,8 @@ spec:
                    Implies capture-all CDC so newly-created tables are picked up without a spec edit. */}}
             {{- $autoSync := $spec.autoSyncTables | default false }}
             {{- if $autoSync }}{{ $allTables = true }}{{- end }}
+            {{- /* driftDetection: always-on schema-drift detector companion (opt-in, detection only). */}}
+            {{- $drift := $spec.driftDetection | default false }}
             {{- $vcol := $spec.versionColumn | default "_mm_version" }}
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
             {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
@@ -360,6 +362,57 @@ spec:
                             resources:
                               requests: { cpu: 50m, memory: 128Mi }
                               limits: { cpu: 500m, memory: 512Mi }
+            {{- end }}
+            {{- /* ============ schema-drift detector: always-on companion that introspects every member and logs `schema-drift: DIVERGENCE` on divergence (#36; detection only, never mutates) ============ */}}
+            {{- if and $drift (gt (len $replSet) 0) }}
+            {{-   $dmembers := list }}
+            {{-   range $n := $nodes }}
+            {{-     if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
+            {{-       $envk := regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
+            {{-       $mdsn := replace "${PW}" (printf "${PW_%s}" $envk) (index $dsn $n.name) }}
+            {{-       $dmembers = append $dmembers (dict "name" $n.name "engine" $n.engine "dsn" $mdsn "site" $n.name "schema" (index $sch $n.name)) }}
+            {{-     end }}
+            {{-   end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: drift
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-flow-drift
+                    namespace: {{ $ns }}
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-flow-drift } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-flow-drift } }
+                      spec:
+                        # Pin to a node whose arch matches the rendered first-party image.
+                        nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
+                        containers:
+                          - name: drift
+                            image: {{ $img }}
+                            env:
+                              - { name: MODE, value: schema-drift }
+                              - { name: MEMBERS, value: {{ toJson $dmembers | quote }} }
+                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
+                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: DRIFT_INTERVAL, value: "60" }
+                              {{- range $n := $nodes }}
+                              {{-   if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
+                              - name: PW_{{ regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $n.name }}, key: {{ index $seck $n.name }} } }
+                              {{-   end }}
+                              {{- end }}
+                            resources:
+                              requests: { cpu: 50m, memory: 128Mi }
+                              limits: { cpu: 300m, memory: 256Mi }
             {{- end }}
             {{- /* ============ function nodes: the Transform stage (pump: input stream -> function HTTP -> output stream) ============ */}}
             {{- range $n := $nodes }}
