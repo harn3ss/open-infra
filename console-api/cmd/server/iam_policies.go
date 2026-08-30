@@ -33,7 +33,7 @@ var policyResources = []string{
 	"applications", "functions", "models", "virtualmachines", "vmimages", "volumes",
 	"fileshares", "directories", "migrations", "replications", "dataflows", "streams",
 	"securitygroups", "faultinjections", "queries", "httpapis", "graphqlapis",
-	"databaseproxies", "statemachines",
+	"databaseproxies", "statemachines", "trainingjobs",
 }
 
 // policyVerbs are the verbs an action may use (case-insensitive), plus "*".

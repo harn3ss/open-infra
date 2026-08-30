@@ -1,0 +1,193 @@
+# The compiler for kind: TrainingJob -> a run-once, GPU-capable batch Job.
+# It renders:
+#   - (when a dataset/output bucket is named) a bucket-setup Job that ensures the
+#     bucket(s) exist and writes a <name>-minio creds secret — the same pre-defined
+#     openinfra-bucket-setup identity kind: Application uses, so the provider needs no
+#     bucket/RBAC power of its own;
+#   - the training batch/v1 Job itself: the user's container on a GPU node of the right
+#     class (runtimeClassName nvidia + gpu-tier affinity + nvidia.com/gpu), with the
+#     hyperparameter env, S3-compatible MinIO credentials, and dataset/output locations.
+# The run's status is the Job's — the console reads the batch Job for phase and logs.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: trainingjob
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XTrainingJob
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $job := printf "%s-train" $name }}
+            {{- /* GPU: gpu=0 is CPU-only. Avoid sprig `default` on gpu (it treats 0 as empty). */}}
+            {{- $gpu := 1 }}{{- if hasKey $spec "gpu" }}{{- $gpu = $spec.gpu }}{{- end }}
+            {{- $useGpu := gt $gpu 0 }}
+            {{- $tier := $spec.gpuTier | default "smallgpu" }}
+            {{- $cpu := $spec.cpu | default "2" }}
+            {{- $mem := $spec.memory | default "4Gi" }}
+            {{- $ds := $spec.dataset | default dict }}
+            {{- $out := $spec.output | default dict }}
+            {{- $dsBucket := $ds.bucket | default "" }}
+            {{- $outBucket := $out.bucket | default "" }}
+            {{- $buckets := list }}
+            {{- if $dsBucket }}{{- $buckets = append $buckets $dsBucket }}{{- end }}
+            {{- if $outBucket }}{{- $buckets = append $buckets $outBucket }}{{- end }}
+            {{- $hasBuckets := gt (len $buckets) 0 }}
+            {{- if $hasBuckets }}
+            ---
+            # Ensure the dataset/output bucket(s) exist and write the S3-compatible creds
+            # secret (<name>-minio) — MinIO root creds come from the minio secret via env,
+            # never from this Composition; runs as the pre-defined openinfra-bucket-setup SA.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-tj-bucket-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'for b in {{ range $buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ join "," $buckets }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+            {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: train
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $job }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/trainingjob: {{ $name }} }
+                  spec:
+                    backoffLimit: {{ $spec.backoffLimit | default 0 }}
+                    {{- if $spec.maxRuntimeSeconds }}
+                    activeDeadlineSeconds: {{ $spec.maxRuntimeSeconds }}
+                    {{- end }}
+                    template:
+                      metadata: { labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/trainingjob: {{ $name }} } }
+                      spec:
+                        restartPolicy: Never
+                        {{- if $useGpu }}
+                        runtimeClassName: nvidia
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - key: openinfra.dev/gpu-tier
+                                      operator: In
+                                      {{- if eq $tier "largegpu" }}
+                                      values: [large]
+                                      {{- else }}
+                                      values: [small, large]
+                                      {{- end }}
+                            {{- if eq $tier "smallgpu" }}
+                            preferredDuringSchedulingIgnoredDuringExecution:
+                              - weight: 100
+                                preference:
+                                  matchExpressions:
+                                    - { key: openinfra.dev/gpu-tier, operator: In, values: [small] }
+                            {{- end }}
+                        {{- end }}
+                        containers:
+                          - name: train
+                            image: {{ $spec.image }}
+                            {{- if $spec.command }}
+                            command: {{ $spec.command | toJson }}
+                            {{- end }}
+                            {{- if $spec.args }}
+                            args: {{ $spec.args | toJson }}
+                            {{- end }}
+                            env:
+                              {{- range $e := ($spec.env | default (list)) }}
+                              - { name: {{ $e.name | quote }}, value: {{ $e.value | quote }} }
+                              {{- end }}
+                              {{- if $dsBucket }}
+                              - { name: DATASET_BUCKET, value: {{ $dsBucket | quote }} }
+                              - { name: DATASET_PREFIX, value: {{ $ds.prefix | default "" | quote }} }
+                              {{- end }}
+                              {{- if $outBucket }}
+                              - { name: OUTPUT_BUCKET, value: {{ $outBucket | quote }} }
+                              - { name: OUTPUT_PREFIX, value: {{ $out.prefix | default "" | quote }} }
+                              {{- end }}
+                              {{- if $hasBuckets }}
+                              # S3-compatible access to MinIO so boto3 / aws-cli work out of the box.
+                              - { name: AWS_ENDPOINT_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+                              - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } }
+                              {{- end }}
+                            {{- $envFrom := $spec.secrets | default (list) }}
+                            {{- if or (gt (len $envFrom) 0) $hasBuckets }}
+                            envFrom:
+                              {{- if $hasBuckets }}
+                              - secretRef: { name: {{ $name }}-minio }
+                              {{- end }}
+                              {{- range $s := $envFrom }}
+                              - secretRef: { name: {{ $s | quote }} }
+                              {{- end }}
+                            {{- end }}
+                            resources:
+                              requests: { cpu: 500m, memory: 1Gi }
+                              limits:
+                                cpu: "{{ $cpu }}"
+                                memory: {{ $mem | quote }}
+                                {{- if $useGpu }}
+                                nvidia.com/gpu: {{ $gpu }}
+                                {{- end }}
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XTrainingJob
+            status:
+              jobName: {{ $job }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
