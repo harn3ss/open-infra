@@ -40,6 +40,9 @@ metadata: { name: minio-kes-setup, namespace: minio }
 # Cert-gen: self-signed CA → KES server cert (SANs for the in-cluster service) + MinIO client cert →
 # Secrets kes-server-tls / minio-kes-client → the kes-config ConfigMap with the client's KES identity
 # allow-listed. Idempotent: re-runs are a no-op once the config ConfigMap exists. sync-wave 1 (before KES).
+# Two stages because no single small image carries both CLIs: the initContainer (alpine/openssl — has the
+# openssl CLI) generates the certs + templates the config, the main container (alpine/k8s — has kubectl)
+# applies them. They share an emptyDir (/work).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -56,19 +59,16 @@ spec:
     spec:
       serviceAccountName: minio-kes-setup
       restartPolicy: Never
-      securityContext: { runAsNonRoot: true, runAsUser: 65532 }
-      containers:
-        - name: certgen
-          image: alpine/k8s:1.30.0
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532 }
+      initContainers:
+        - name: certgen-openssl
+          image: alpine/openssl:3.3.2
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
-          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          volumeMounts: [{ name: work, mountPath: /work }]
           command: [sh, -ceu]
           args:
             - |
-              if kubectl -n minio get configmap kes-config >/dev/null 2>&1; then
-                echo "kes-config exists — certs already generated, nothing to do"; exit 0
-              fi
-              cd /tmp
+              cd /work
               # self-signed CA
               openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 3650 -subj "/CN=openinfra-kes-ca"
               # KES server cert (SANs: the in-cluster service)
@@ -82,9 +82,7 @@ spec:
               # KES identity of the MinIO client cert = sha256(public-key DER)
               ID=$(openssl x509 -in client.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 | awk '{print $2}')
               echo "MinIO KES identity: $ID"
-              kubectl -n minio create secret generic kes-server-tls --from-file=server.crt --from-file=server.key --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
-              kubectl -n minio create secret generic minio-kes-client --from-file=client.crt --from-file=client.key --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
-              cat > /tmp/config.yaml <<KESCFG
+              cat > /work/config.yaml <<KESCFG
               address: 0.0.0.0:7373
               admin:
                 identity: "0000000000000000000000000000000000000000000000000000000000000000"
@@ -105,10 +103,25 @@ spec:
                     role: "minio-kes"
                     jwt: "/var/run/secrets/kubernetes.io/serviceaccount/token"
               KESCFG
-              kubectl -n minio create configmap kes-config --from-file=config.yaml=/tmp/config.yaml --dry-run=client -o yaml | kubectl apply -f -
-              echo "KES certs + config generated"
+              echo "certs + config generated in /work"
+      containers:
+        - name: certgen-apply
+          image: alpine/k8s:1.30.0
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          volumeMounts: [{ name: work, mountPath: /work }]
+          command: [sh, -ceu]
+          args:
+            - |
+              if kubectl -n minio get configmap kes-config >/dev/null 2>&1; then
+                echo "kes-config exists — certs already applied, nothing to do (not rotating)"; exit 0
+              fi
+              cd /work
+              kubectl -n minio create secret generic kes-server-tls --from-file=server.crt --from-file=server.key --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
+              kubectl -n minio create secret generic minio-kes-client --from-file=client.crt --from-file=client.key --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
+              kubectl -n minio create configmap kes-config --from-file=config.yaml=/work/config.yaml --dry-run=client -o yaml | kubectl apply -f -
+              echo "KES certs + config applied"
       volumes:
-        - { name: tmp, emptyDir: {} }
+        - { name: work, emptyDir: {} }
 ---
 apiVersion: apps/v1
 kind: Deployment
