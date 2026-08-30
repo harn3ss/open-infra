@@ -182,7 +182,22 @@ spec:
                 bound_service_account_names=encryptionkey-destroyer \
                 bound_service_account_namespaces=crossplane-system \
                 token_policies=encryptionkey-destroyer token_ttl=10m
-              echo "Transit ready; reconciler + destroyer authenticate via Kubernetes auth (no stored secrets)."
+
+              echo "writing the MinIO-KES identity (SSE-KMS via KES → Vault KV; #37)…"
+              # MinIO KES keeps its OWN keys in a KV mount (KES does the wrap/unwrap; it does NOT use
+              # Transit). Distinct from the transit engine above. Inert unless the objectEncryption
+              # component ships the KES Deployment (platform/security/minio-kes.yaml), which runs in
+              # ns `minio` under SA `minio-kes` and logs in with this role.
+              vault secrets enable -path=kes -version=1 kv 2>/dev/null || echo "  kes KV already enabled"
+              vault policy write minio-kes - <<'POLICY'
+              path "kes/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+              POLICY
+              vault write auth/kubernetes/role/minio-kes \
+                bound_service_account_names=minio-kes \
+                bound_service_account_namespaces=minio \
+                token_policies=minio-kes token_ttl=20m
+
+              echo "Transit ready; reconciler + destroyer + minio-kes authenticate via Kubernetes auth (no stored secrets)."
 
               # ── kind: CertificateAuthority — PKI engines + least-priv provisioner/issuer split ──
               # Same discipline as Transit above: two identities, each bound to its OWN ServiceAccount
