@@ -3,3 +3,5 @@ tedious/package-lock.json
 jdbc/*.jar
 jdbc/*.class
 fault/openinfra-tds-fault
+dotnet/**/bin/
+dotnet/**/obj/
