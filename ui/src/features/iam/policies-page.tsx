@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Plus } from "lucide-react";
@@ -7,13 +6,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
-import { getIamConfig, listIamPolicies } from "@/lib/api";
-import { NewPolicyDialog } from "./new-policy-dialog";
+import { listIamPolicies } from "@/lib/api";
 
 export function PoliciesPage() {
   const navigate = useNavigate();
-  const [newOpen, setNewOpen] = useState(false);
-  const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const { data = [], isLoading, isError, error } = useQuery({
     queryKey: ["iam", "policies"],
     queryFn: listIamPolicies,
@@ -27,7 +23,7 @@ export function PoliciesPage() {
         title="Policies"
         description="Attachable permission sets over open-infra resources — AWS-style managed policies. A policy grants nothing until a Role includes it, and can only ever grant on openinfra.dev kinds (the permission boundary)."
         actions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/policies/new" })}>
             <Plus className="size-4" /> New policy
           </Button>
         }
@@ -43,7 +39,7 @@ export function PoliciesPage() {
           title="No policies yet"
           description="Create one, attach it to a Role, then point a Group at that Role."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/policies/new" })}>
               <Plus className="size-4" /> New policy
             </Button>
           }
@@ -85,11 +81,6 @@ export function PoliciesPage() {
         </Card>
       )}
 
-      <NewPolicyDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        resources={cfg.data?.policyResources ?? []}
-      />
     </div>
   );
 }
