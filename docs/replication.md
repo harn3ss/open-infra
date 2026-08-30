@@ -70,8 +70,8 @@ So a write to **any** engine is auto-stamped — no application changes required
 **All** engines advance a true, *monotonic* HLC (a shared `mm_hlc_state` row: the version is
 `max(stored, wall-clock)` with a logical counter, and apply-side writes *observe* the remote
 version) — so a backwards wall-clock (NTP step / skew) can never make a version go backwards
-and silently lose last-write-wins. (This was hardened after a clock-skew chaos experiment caught
-MySQL/MariaDB lacking the guard; see [`chaos.md`](chaos.md).)
+and silently lose last-write-wins. (The guard is uniform across engines; see [`chaos.md`](chaos.md)
+for the clock-skew experiment that exercises it.)
 
 ## Topology
 

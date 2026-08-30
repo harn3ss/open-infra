@@ -7,7 +7,7 @@ the product's public contract.
 ## Unreleased
 
 ### Security & compliance
-- **Air-gap support (opt-in, off by default).** A two-phase, reversible air-gapped posture (issue #72):
+- **Air-gap support (opt-in, off by default).** A two-phase, reversible air-gapped posture:
   front-load an in-cluster, PVC-backed registry mirror plus a prefetch that derives the image set from
   what is actually running, then — as a separate, deliberate election — a cluster-wide public-egress
   cutoff that keeps the LAN, cluster, and DNS reachable while severing the public internet. The cutoff
@@ -39,8 +39,10 @@ the product's public contract.
   principals never collapse onto one pooled backend. MARS is **declined** to preserve pooling (again
   matching RDS Proxy; a multiplexed demux is a demand-gated future option). Opt-in per-transaction
   multiplexing (`-tx-multiplex`) shares fewer backends across autocommit and explicit transactions.
-  Coverage today is per-driver pooling/TLS/auth; behaviour of the non-Go drivers **during a backend
-  fault** (failover, mid-result-set drop) is not yet exercised.
+  Behaviour **under a backend fault** is verified for every driver too: a backend failover during an
+  open transaction surfaces a clean error with no silent commit, a mid-result-set drop surfaces a clean
+  error rather than a truncated set, and the pool's pinned-discard and connection-ceiling guards hold —
+  across all six drivers plus the SQLAlchemy ORM (grid `tds-proxy/grid.jsonl`).
 
 ### Compute & networking
 
@@ -70,14 +72,14 @@ the product's public contract.
   attestation immutably to the WORM audit store (`attestations/<date>/`), and the same document can be
   GPG-signed out-of-band with the release key (kept out of the cluster) and verified with the
   published public key. Controls: CA-2/CA-7, AU, SI-12. See [`docs/compliance-attestation.md`].
-  Completes the government feature *build* track (issue #71) — the control machinery is now shipped;
+  Completes the government feature *build* track — the control machinery is now shipped;
   certification itself remains external, lives with the deployer's substrate, and is a maintained state,
   not a shipped feature.
 - **Data lineage — provenance of data movement.** A new **Data → Lineage** console page (and
   `/api/lineage`) reads the DataFlow, Migration, Replication, and Stream topology and shows every data
   movement — source → sink, with its type — so you can trace where data comes from and where it goes.
   Derived from live resources (can't drift) and assembled server-side (so the compliance attestation
-  can vouch for it). Controls: SI-12 / AU. See [`docs/lineage.md`]. Part of the government feature track (issue #71).
+  can vouch for it). Controls: SI-12 / AU. See [`docs/lineage.md`]. Part of the government feature track.
 - **Crypto-erase — `kind: Destruction` (NIST SP 800-88).** Destroying a customer-owned key makes every
   byte it wrapped — primary, replica, backup, snapshot — permanently unrecoverable, the fast provable
   alternative to overwriting terabytes. A `Destruction` names an `EncryptionKey` and must repeat its
@@ -85,14 +87,14 @@ the product's public contract.
   reconciler, which cannot destroy) crypto-erases the Vault Transit key and writes an immutable
   **destruction certificate** to the WORM audit store, while the request's lifecycle is captured
   tamper-evidently in the off-sited audit log. Admin-only, opt-in. Controls: MP-6, SP 800-88, AU. See
-  [`docs/destruction.md`]. Part of the government feature track (issue #71).
+  [`docs/destruction.md`]. Part of the government feature track.
 - **Encryption with customer-owned keys.** A new opt-in `encryption` component: `kind: EncryptionKey`
   provisions a customer-owned key in a HashiCorp Vault **Transit** KMS (open-infra never sees the key
   material), a reconciler creates/rotates it and reflects its state on the console **Security &
   Identity → Encryption Keys** page, and an additive encrypted Longhorn StorageClass (LUKS) plus a
   documented MinIO SSE-KMS / etcd-KMS runbook wire storage layers to it. Destroying a key crypto-erases
   what it protects (the basis for the next item). Off by default; Vault is operator-initialized.
-  Controls: SC-12/13/28/28(1). See [`docs/encryption.md`]. Part of the government feature track (issue #71).
+  Controls: SC-12/13/28/28(1). See [`docs/encryption.md`]. Part of the government feature track.
 - **`kind: DataClassification` — categorize data, then check its handling.** A DataClassification names
   a sensitivity level (public→restricted) and the handling requirements data at that level must meet
   (encryption at rest, network restriction, no public exposure, backup, residency, retention). Tag a
@@ -101,14 +103,14 @@ the product's public contract.
   checking public exposure, network restriction, and residency from the live cluster today, and
   reporting not-yet-verifiable requirements honestly as unknown. Admin/security-team managed (not
   grantable by a Policy). Controls: RA-2, MP-3, AC-4/SC-28. See [`docs/data-classification.md`].
-  Part of the government feature track (issue #71).
+  Part of the government feature track.
 - **Audit off-siting — a tamper-evident, immutable copy of the audit trail.** The API-server audit log is
   now shipped off the node it is written on, as a SHA-256 **hash chain** of segments, into a MinIO bucket
   under **Object Lock (COMPLIANCE mode)** — undeletable by anyone, including root, until retention expires
   (default ~7 years). An hourly job re-verifies the whole chain from the segments' own contents and the
   console **Audit** page shows whether it is intact; any deleted, reordered, or edited segment (or record)
   is detected. An optional external S3 sink keeps a copy on a separate system. Controls: AU-9, AU-9(2),
-  AU-9(3), AU-11. See [`docs/audit-offsite.md`]. Part of the government feature track (issue #71).
+  AU-9(3), AU-11. See [`docs/audit-offsite.md`]. Part of the government feature track.
 
 ### Console
 - **Live disk usage on the Nodes page.** Each node card now shows root-filesystem utilization —
@@ -116,7 +118,7 @@ the product's public contract.
   figure is read live from the cluster's Prometheus (node-exporter) through a BFF endpoint gated by
   the same `list nodes` permission as the page, refreshes on its own, and is simply omitted when no
   metrics backend is reachable.
-- **Resource creation, rewritten (issue #96).** Creating a resource is moving from cramped modal
+- **Resource creation, rewritten.** Creating a resource is moving from cramped modal
   pop-ups to a full-page, schema-driven experience: essential fields up front with everything else
   under a collapsed **Advanced settings**, optional fields marked (rather than required), inline help
   drawn from each field's CRD description, a live **YAML preview** of exactly what will be applied, and
@@ -146,7 +148,7 @@ the product's public contract.
   `creation + duration` passes (hard-capped at 24h; anything invalid or over-cap is revoked, not kept), and
   Crossplane tears down the binding with it; the reconciler is itself alerted on so expiry can't silently
   stall. The grant and its revocation are audited. Government controls: AC-2(2), AC-6(2)/(5), AU. Part of the
-  government feature track (issue #71).
+  government feature track.
 - **open-appsync — GraphQL query execution.** Named and inline fragments (with unknown-fragment and
   cycle rejection); variable coercion against declared wrapped types (nullability, lists, enums, and
   input objects with defaults; mismatches rejected as `ValidationError`); nested `__typename`;
@@ -583,11 +585,11 @@ the product's public contract.
   ([docs/chaos-oracle.md](docs/chaos-oracle.md)):
   - **`partition-flapping`** — the cut is injected/healed in short repeated cycles while
     conflicting writes flow; the mesh must reconverge byte-identical **after** flapping stops,
-    with ≥1 cut confirmed live. *(shaken out live before folding in.)*
+    with ≥1 cut confirmed live. *(verified live before folding in.)*
   - **`partition-latency`** — a *degrade*, not a cut: 800ms both ways on the sink↔B apply path.
     The oracle expectation **inverts** — a degrade never severs, so the mesh must **keep
     converging** and there is no `MIN_ELAPSED` floor (fast convergence is the goal, not a false
-    green). *(shaken out live: converged — 220 keys / 20 conflicts / zero lost — under sustained
+    green). *(verified live: converged — 220 keys / 20 conflicts / zero lost — under sustained
     800ms, a ~4× slower apply path.)* Required a composition fix: Chaos Mesh rejects a netem
     `delay` with `direction: both` unless a peer `target` block is present, so the FaultInjection
     composition now emits that block for **any** peer-scoped `NetworkChaos`, not just partitions.
@@ -597,14 +599,14 @@ the product's public contract.
     it via the shared `openinfra.dev/replication` label; this surfaced a latent omission —
     that label was on the replication Deployments' metadata but **not** their pod templates,
     so Chaos Mesh and NetworkPolicy (which select pods) couldn't see it. Now on the pods.
-    *(shaken out live: both diverged, reconverged byte-identical in 126s, cut confirmed.)*
+    *(verified live: both diverged, reconverged byte-identical in 126s, cut confirmed.)*
   - **`partition-loss`** — a *degrade* like latency: drop 15% of the sink↔B packets, mesh must
     keep converging (no `MIN_ELAPSED`). Proof-of-fire is **statistical** (`probe-loss.sh`:
     20 handshakes, a non-trivial impaired fraction — a single connect can't witness
     probabilistic loss). Deliberately calibrated to 15%: TCP throughput falls ~1/√p, so past
     ~20% an established link brown-outs into a de-facto slow cut — the 40% attempt correctly
     *failed* to converge (a throughput brownout, not a safety fault), which is why the value is
-    tuned down. *(shaken out live: converged byte-identical in 22s under sustained 15% loss.)*
+    tuned down. *(verified live: converged byte-identical in 22s under sustained 15% loss.)*
   - The proof-of-fire probe now **times** the handshake (busybox `time`, 0.01s resolution) and
     classifies `up`/`slow`/`down`, so one probe witnesses both cuts and degrades — a degraded
     link an up/down probe would have misread as "up = no fault fired." This completes the
@@ -626,7 +628,7 @@ the product's public contract.
   a different fault type on a different target; the DB stays queryable and the mesh converges
   zero-lost. **DNS was evaluated and found INERT on this cluster** — a full `dns-error` path
   (XRD type + DNSChaos composition mapping + provider RBAC + a resolv-witness probe) was built
-  and shaken out, but Chaos Mesh's DNS injector *panics* on inject (`exit 101 … Os NotFound`,
+  and exercised, but Chaos Mesh's DNS injector *panics* on inject (`exit 101 … Os NotFound`,
   `Not Injected`, `injectedCount:0`) — the same Rust-injector-panic class as io-latency's `toda`,
   a runtime/host incompatibility, not a config. Rather than carry a second silently-inert fault
   type (the project is trying to *remove* io-latency from the enum, not add more), the DNS work
@@ -673,7 +675,7 @@ the product's public contract.
   `fusedev.GrantAccess` wants a legacy cgroup-v1 `devices` controller, so on a unified-v2 host
   `toda` never gets `/dev/fuse` and every IOChaos sits "Not Injected". Documented; `io-latency`
   stays disabled on this host.
-- **Three correctness bugs fixed** (#67): the `test.yml` `paths:` filter now watches
+- **Three correctness bugs fixed:** the `test.yml` `paths:` filter now watches
   `platform/console/manifests/**` (RBAC-role drift there shipped green before); the Longhorn
   creds-refresh CronJob compares **both** MinIO credential values, not just the access-key ID
   (a password-only rotation silently broke backups); and a new `TestArgoExcludeListNoDrift`
@@ -689,8 +691,8 @@ the product's public contract.
   read-only rootfs, dropped caps). Drops the Bitnami dependency entirely.
 
 ### Fixes
-_Three product bugs surfaced by composite, cross-kind chaos runs — each a cross-resource
-interaction that per-kind unit tests miss — found and fixed, then re-verified live._
+_Three product bugs in cross-resource interactions that per-kind unit tests miss — caught by
+composite, cross-kind chaos runs:_
 - **Cross-engine `Migration`/`DataFlow` into MySQL or SQL Server dropped the primary key,
   leaving the target empty.** The schema-sync step maps a source Postgres `text`/UUID-as-text
   primary-key column to the target engine's `TEXT` type, but MySQL forbids a `TEXT`/`BLOB`
@@ -1222,8 +1224,7 @@ serves have very different tolerance for failure:
   across PostgreSQL + MySQL + MariaDB + SQL Server. Caveat: a table created *already full of
   data* needs a Debezium incremental snapshot to back-load existing rows (create-then-insert
   syncs fully).
-- **Durability + correctness hardening** (much found by an adversarial review pass and
-  reproduced before fixing): Debezium offsets/schema-history moved from `emptyDir` to a
+- **Durability + correctness hardening:** Debezium offsets/schema-history moved from `emptyDir` to a
   per-node **Longhorn PVC** (a capture-pod restart no longer triggers a full re-snapshot);
   mm-prep now **backfills** version/origin on pre-existing rows (a `NULL` version could never
   win last-write-wins → silent divergence); consumer **`AckWait` 2m** (a slow batch is no
@@ -1294,7 +1295,7 @@ serves have very different tolerance for failure:
   stateful recovery, CNPG HA failover, a 9-piece mixed mesh+migration+stream pipeline (converged
   under concurrent capture-kill + partition + sink-kill), and a 4-engine migration relay chain
   (recovered from a mid-chain capture+sink kill).
-- **Chaos found a real bug (T6) — now fixed** (commit 2f858fc): a `clock-skew` experiment showed
+- **Monotonic-clock guard for MySQL/MariaDB stamping (T6).** A `clock-skew` experiment showed
   MySQL/MariaDB stamping had no monotonic HLC guard, so a backward clock produced a lower
   `_mm_version` → the write lost last-write-wins and silently diverged. MySQL/MariaDB now use a
   monotonic `mm_hlc_state` HLC (+ observe remote versions) like Postgres/SQL Server; re-running
