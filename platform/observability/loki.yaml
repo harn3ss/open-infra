@@ -36,11 +36,30 @@ spec:
                   period: 24h
           limits_config:
             retention_period: 168h   # 7 days
+          # Ruler: turn distinctive log lines into Alertmanager alerts (#36: DataFlow schema drift).
+          # Rules are mounted from the loki-alerting-rules ConfigMap at /rules/fake (tenant "fake",
+          # since auth_enabled: false). rule_path is scratch space the ruler needs to be writable.
+          rulerConfig:
+            storage:
+              type: local
+              local:
+                directory: /rules
+            rule_path: /tmp/loki-ruler
+            alertmanager_url: http://kube-prometheus-stack-alertmanager.monitoring.svc:9093
+            enable_alertmanager_v2: true
         singleBinary:
           replicas: 1
           persistence:
             enabled: true
             size: 10Gi
+          # Mount the alerting rules (a separate ConfigMap) into the ruler's local storage dir.
+          extraVolumes:
+            - name: loki-rules
+              configMap:
+                name: loki-alerting-rules
+          extraVolumeMounts:
+            - name: loki-rules
+              mountPath: /rules/fake
         # SingleBinary requires the scalable targets at zero.
         read: { replicas: 0 }
         write: { replicas: 0 }
