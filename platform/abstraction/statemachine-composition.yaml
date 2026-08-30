@@ -1,13 +1,10 @@
-# The compiler for kind: StateMachine -> open-infra's workflow engine.
-# It turns the ASL definition into a running per-machine controller:
-#   - a ConfigMap (<name>-statemachine) holding the compiled definition.json,
-#   - a least-privilege ServiceAccount + Role + RoleBinding scoped to reading and
-#     status-patching kind: Execution objects in this namespace,
-#   - a small controller Deployment (the open-infra-statemachine image) that mounts
-#     the definition, polls for Executions that reference THIS state machine, and
-#     runs each one — invoking Task states' Functions over their cluster-local URL,
-#     with Retry/Catch/Wait/Choice and durable status checkpointing.
-# This mirrors the per-CR reconciler pattern used by kind: DataFlow.
+# The composition for kind: StateMachine. Unusually, it emits NO child resources:
+# a state machine is just a validated ASL definition (spec.definition), and it is run
+# by the singleton statemachine controller (platform/abstraction/statemachine-controller.yaml),
+# which reads the StateMachine directly and watches kind: Execution objects. There is
+# therefore no per-machine Deployment/RBAC to render — which also keeps this within the
+# provider's deliberately RBAC-free permission boundary (see provider-setup.yaml). The
+# composition just marks the claim Ready and records which controller runs it.
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -23,17 +20,6 @@ spec:
     kind: XStateMachine
   mode: Pipeline
   pipeline:
-    - step: environment
-      functionRef:
-        name: crossplane-contrib-function-environment-configs
-      input:
-        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
-        kind: Input
-        spec:
-          environmentConfigs:
-            - type: Reference
-              ref:
-                name: openinfra-platform
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -43,162 +29,12 @@ spec:
         source: Inline
         inline:
           template: |
-            {{- $xr := .observed.composite.resource }}
-            {{- $spec := $xr.spec }}
-            {{- $labels := $xr.metadata.labels | default dict }}
-            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
-            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
-            {{- $type := $spec.type | default "Standard" }}
-            {{- $cm := printf "%s-statemachine" $name }}
-            {{- /* Pick the first-party image arch (cluster default, per-claim override via annotation). */}}
-            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
-            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
-            {{- $annos := $xr.metadata.annotations | default dict }}
-            {{- $reqArch := index $annos "openinfra.dev/arch" | default "" }}
-            {{- if eq $reqArch "arm64" }}{{- $arch = "-arm64" }}{{- else if eq $reqArch "amd64" }}{{- $arch = "" }}{{- end }}
-            {{- $nodeArch := "amd64" }}{{- if eq $arch "-arm64" }}{{- $nodeArch = "arm64" }}{{- end }}
-            {{- $img := printf "ghcr.io/harn3ss/open-infra-statemachine:latest%s" $arch }}
-            ---
-            # Compiled definition: the ASL the controller executes. Stored as a JSON
-            # string (toJson is robust to any content/newlines in the definition).
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: definition
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: v1
-                  kind: ConfigMap
-                  metadata:
-                    name: {{ $cm }}
-                    namespace: {{ $ns }}
-                    labels:
-                      openinfra.dev/statemachine: {{ $name }}
-                  data:
-                    definition.json: {{ $spec.definition | toJson }}
-                    type: {{ $type | quote }}
-            ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: sa
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: v1
-                  kind: ServiceAccount
-                  metadata:
-                    name: {{ $name }}-sm
-                    namespace: {{ $ns }}
-            ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: role
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: rbac.authorization.k8s.io/v1
-                  kind: Role
-                  metadata:
-                    name: {{ $name }}-sm
-                    namespace: {{ $ns }}
-                  rules:
-                    - apiGroups: ["openinfra.dev"]
-                      resources: ["executions"]
-                      verbs: ["get", "list", "watch", "update", "patch"]
-                    - apiGroups: ["openinfra.dev"]
-                      resources: ["executions/status"]
-                      verbs: ["get", "update", "patch"]
-                    - apiGroups: [""]
-                      resources: ["events"]
-                      verbs: ["create", "patch"]
-            ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: rolebinding
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: rbac.authorization.k8s.io/v1
-                  kind: RoleBinding
-                  metadata:
-                    name: {{ $name }}-sm
-                    namespace: {{ $ns }}
-                  roleRef:
-                    apiGroup: rbac.authorization.k8s.io
-                    kind: Role
-                    name: {{ $name }}-sm
-                  subjects:
-                    - kind: ServiceAccount
-                      name: {{ $name }}-sm
-                      namespace: {{ $ns }}
-            ---
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: controller
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: apps/v1
-                  kind: Deployment
-                  metadata:
-                    name: {{ $name }}-sm
-                    namespace: {{ $ns }}
-                    labels:
-                      openinfra.dev/statemachine: {{ $name }}
-                  spec:
-                    replicas: 1
-                    # Single writer per state machine: a rolling second replica must not
-                    # double-run executions. Recreate keeps exactly one controller.
-                    strategy: { type: Recreate }
-                    selector: { matchLabels: { app: {{ $name }}-sm } }
-                    template:
-                      metadata: { labels: { app: {{ $name }}-sm, openinfra.dev/statemachine: {{ $name }} } }
-                      spec:
-                        serviceAccountName: {{ $name }}-sm
-                        # Pin to a node whose arch matches the rendered first-party image.
-                        nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
-                        securityContext:
-                          runAsNonRoot: true
-                          runAsUser: 65532
-                          seccompProfile: { type: RuntimeDefault }
-                        containers:
-                          - name: controller
-                            image: {{ $img }}
-                            env:
-                              - { name: STATE_MACHINE, value: "{{ $name }}" }
-                              - name: NAMESPACE
-                                valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
-                              - { name: DEF_PATH, value: /def/definition.json }
-                              - { name: POLL_INTERVAL, value: "5" }
-                            volumeMounts:
-                              - { name: def, mountPath: /def, readOnly: true }
-                            securityContext:
-                              allowPrivilegeEscalation: false
-                              readOnlyRootFilesystem: true
-                              capabilities: { drop: ["ALL"] }
-                            resources:
-                              requests: { cpu: 25m, memory: 64Mi }
-                              limits: { cpu: 250m, memory: 256Mi }
-                        volumes:
-                          - name: def
-                            configMap:
-                              name: {{ $cm }}
-            ---
-            # Reflect the compiled-definition ConfigMap into the XR status.
+            {{- /* No child resources: the singleton controller runs executions. Just
+                   reflect the controller name into status. */}}
             apiVersion: openinfra.dev/v1
             kind: XStateMachine
             status:
-              definitionConfigMap: {{ $cm }}
+              controller: openinfra-statemachine
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

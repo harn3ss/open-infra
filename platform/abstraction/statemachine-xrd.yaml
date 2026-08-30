@@ -18,8 +18,8 @@ metadata:
   name: xstatemachines.openinfra.dev
   annotations:
     # Chaos topology tags (consumed by tools/chainforge): a state machine drives
-    # Functions over http-invoke; it is not itself a data node in a chaos chain.
-    openinfra.dev/chaos-role: "statemachine"
+    # Functions over http-invoke but is not itself a data node in a chaos chain.
+    openinfra.dev/chaos-role: "none"
     openinfra.dev/chaos-offers: ""
     openinfra.dev/chaos-accepts: ""
     argocd.argoproj.io/sync-wave: "2"
@@ -64,5 +64,5 @@ spec:
             status:
               type: object
               properties:
-                # The compiled-definition ConfigMap the controller reads (<name>-statemachine).
-                definitionConfigMap: { type: string }
+                # The singleton controller that runs this state machine's executions.
+                controller: { type: string }
