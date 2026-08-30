@@ -979,7 +979,7 @@ flowchart LR
 
 ## Discovery batch (S-series)
 
-A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config — the sweep that surfaced the cross-engine primary-key regression (found + fixed).
+A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config.
 
 <a id="s-S01"></a>
 ### S01 · MariaDB Galera node kill &nbsp; 🟢 PASS
@@ -1069,13 +1069,13 @@ flowchart LR
 <a id="s-S04"></a>
 ### S04 · Cross-engine primary-key coercion &nbsp; 🟢 PASS
 
-**Category:** Migration (cross-engine) &nbsp;•&nbsp; **Oracle:** recover — target builds + fully populates (regression fixed)
+**Category:** Migration (cross-engine) &nbsp;•&nbsp; **Oracle:** recover — target builds + fully populates
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
 **Verified:** 2026-08-02 · hand-driven
 
-> Surfaced a real regression: a pg text/UUID primary key mapped to MySQL TEXT failed CREATE (Error 1170) → empty target. FIXED — PK LOB columns now coerce to VARCHAR(255)/NVARCHAR(255); verified 25/25.
+> A pg text/UUID primary key would fail CREATE on MySQL as TEXT (Error 1170) → empty target; PK LOB columns coerce to VARCHAR(255)/NVARCHAR(255), so cross-engine migration of such keys builds and fully populates (verified 25/25).
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1086,7 +1086,7 @@ flowchart LR
   n_pg -->|"CDC + schema-sync"| n_my
   FAULT(("⚡ TEXT primary key on a MySQL target")):::fault
   FAULT -.-> n_my
-  ORACLE{{"recover · target builds + fully populates (regression fixed)"}}:::oracle_recover
+  ORACLE{{"recover · target builds + fully populates"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
@@ -1604,7 +1604,7 @@ flowchart LR
 <a id="s-M08"></a>
 ### M08 · clock-skew &nbsp; 🟢 PASS
 
-**Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — LWW still converges (no lost-write regression)
+**Category:** Multi-master mesh &nbsp;•&nbsp; **Oracle:** recover — LWW still converges (no lost write)
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
@@ -1623,7 +1623,7 @@ flowchart LR
   n_a__sandbox_node_01 <-->|"replication"| n_b__sandbox_node_02
   FAULT(("⚡ clock skew on a member")):::fault
   FAULT -.-> n_b__sandbox_node_02
-  ORACLE{{"recover · LWW still converges (no lost-write regression)"}}:::oracle_recover
+  ORACLE{{"recover · LWW still converges (no lost write)"}}:::oracle_recover
   classDef fault fill:#ef4444,color:#fff,stroke:#b91c1c;
   classDef oracle_recover fill:#dcfce7,stroke:#16a34a,color:#14532d;
   classDef oracle_tolerate fill:#fef9c3,stroke:#ca8a04,color:#713f12;
@@ -2131,7 +2131,7 @@ flowchart LR
 
 **Verified:** 2026-08-10 · hand-driven live run (green once; pending the nightly streak)
 
-> Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts the dead-letter stream covers every accepted invocation without a runaway — accepted <= DLQ <= 4x). Runnable via workflow_dispatch; keyless, so NOT in the lottery. RAN GREEN ONCE on the live cluster (killed 1 of 2 replicas mid-drain; all 31 accepted invocations reached the DLQ, no loss, no runaway). That first run caught a REAL bug: the async DLQ used subjects dlq.lambda.async.> which OVERLAP apply-sink's platform-wide dlq.> stream, so the DLQ stream silently failed to create and the oracle passed vacuously — fixed to lambda.dlq.> (overlaps neither dlq.> nor the work subject). STATUS PENDING = green-once, not yet the nightly streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.
+> Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts the dead-letter stream covers every accepted invocation without a runaway — accepted <= DLQ <= 4x). Runnable via workflow_dispatch; keyless, so NOT in the lottery. Status: green once on the live cluster (a shim replica killed mid-drain; all accepted invocations reached the DLQ, no loss, no runaway), pending the nightly streak. Exercises the durable async delivery worker. Follow-ups: a SigV4 HTTP front-door variant and a delivered-path variant against a live function.
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -2164,7 +2164,7 @@ flowchart LR
 
 **Verified:** 2026-08-10 · hand-driven live run (green once; pending the nightly streak)
 
-> Sibling of N22 for the SUCCESS path. chaos/scenario-async-invoke-delivered.sh provisions a 2-replica aws-shim on the platform NATS plus a real echo kind: Function (Knative, min 1), publishes async Event invocations at the function across a shim-pod kill, and asserts every accepted invocation is DELIVERED: the WorkQueue work stream drains to 0 (each acked on 2xx) AND the DLQ stays 0 (none dead-lettered), with accepted == everything published. N22 proves nothing is silently lost (all reach the DLQ when delivery fails); N23 proves delivery actually succeeds under the kill — together the full at-least-once guarantee. RAN GREEN ONCE on the live cluster (all 31 accepted invocations delivered, work drained to 0, DLQ 0, across a shim kill). Runnable via workflow_dispatch; keyless, so NOT in the lottery. STATUS PENDING (graduates after the nightly streak). Gotcha the first run caught: wait on the Function CLAIM (Ready cascades from the Knative service), not the ksvc — Crossplane creates the ksvc a few seconds after apply, so a bare `wait ksvc` races and errors 'not found'. Follow-ups: a SigV4 HTTP front-door variant, and a scale-from-zero (min 0) delivery variant.
+> Sibling of N22 for the SUCCESS path. chaos/scenario-async-invoke-delivered.sh provisions a 2-replica aws-shim on the platform NATS plus a real echo kind: Function (Knative, min 1), publishes async Event invocations at the function across a shim-pod kill, and asserts every accepted invocation is DELIVERED: the WorkQueue work stream drains to 0 (each acked on 2xx) AND the DLQ stays 0 (none dead-lettered), with accepted == everything published. N22 proves nothing is silently lost (all reach the DLQ when delivery fails); N23 proves delivery actually succeeds under the kill — together the full at-least-once guarantee. Runnable via workflow_dispatch; keyless, so NOT in the lottery. Status: green once on the live cluster (all accepted invocations delivered, work drained to 0, DLQ 0, across a shim kill), pending the nightly streak. Follow-ups: a SigV4 HTTP front-door variant, and a scale-from-zero (min 0) delivery variant.
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 

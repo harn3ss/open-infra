@@ -5,8 +5,8 @@
 A chaos suite is only as trustworthy as the judge that prints "safe." This document defines
 that judge — the **oracle**. The
 prime directive: *the oracle comes before the injector.* An injector without a trustworthy
-oracle just manufactures green you can't stand behind — which is precisely the 2026-07-23
-failure (the fault silently didn't fire and the night went green on a lie).
+oracle just manufactures green you can't stand behind — precisely the failure mode that has
+slipped through before (a fault silently didn't fire and the night went green on a lie).
 
 ## Verdict space — three outcomes, biased toward suspicion
 
