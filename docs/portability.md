@@ -70,6 +70,38 @@ when you move off k3s. Making these a single templated value is a tracked follow
   the ship job needs it (root + hostPath to read the `0600` file). See the restricted-PSA
   overlay and [security-and-compliance.md](security-and-compliance.md).
 
+## Repurposing a node between clusters (Cilium/multus residue)
+
+Moving a node from one open-infra cluster to another — the fleet-rebuild / chaos-node-borrow
+pattern — leaves **stale CNI state that breaks pod networking on the new cluster** if you only
+run `k3s-agent-uninstall`. Two kinds of residue (open-infra's CNI is Cilium + multus — this does
+**not** apply to a Canal/RKE2 substrate):
+
+1. A stale `/etc/cni/net.d/00-multus.conf` → the multus shim keeps trying the old delegate and pods
+   fail with sandbox-creation timeouts.
+2. Stale `OLD_CILIUM_*` iptables chains from the previous Cilium install → **no pod egress** (seen
+   concretely as CDI unable to pull an install ISO).
+
+`k3s-agent-uninstall` cleans **neither**, and restarting the new cluster's Cilium pod does **not**
+flush the old iptables chains.
+
+**Sanctioned procedure (deterministic): reboot between clusters.**
+
+```sh
+# on the node being moved, after draining/removing it from the OLD cluster:
+/usr/local/bin/k3s-agent-uninstall.sh      # (or k3s-uninstall.sh for a server)
+sudo reboot                                 # clears /etc/cni/net.d/* AND the OLD_CILIUM_* chains
+# only AFTER it comes back up: join the NEW cluster (curl … K3S_URL=… agent)
+```
+
+The reboot is the one step proven to leave a clean CNI slate. An explicit cleanup — deleting
+`/etc/cni/net.d/*` and flushing/deleting the `OLD_CILIUM_*` chains — is a plausible reboot-free
+substitute but is **not yet proven** to fully replace the reboot; prefer the reboot until it is.
+
+Reference this from any node-move step. Verified on a real move: during the #45 hybrid-cluster run
+`chaos-node-1` was moved out of the main cluster and exhibited exactly this residue (multus timeouts
++ no egress); a reboot restored pod egress and multus health, after which it joined cleanly.
+
 ## Roadmap
 
 1. **vanilla kubeadm** — first real break out of the Rancher family.
