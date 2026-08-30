@@ -24,6 +24,8 @@ import {
   DATAFLOWS_PLURAL,
   STREAMS_PLURAL,
   SECURITYGROUPS_PLURAL,
+  STATEMACHINES_PLURAL,
+  EXECUTIONS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -114,6 +116,12 @@ export const openinfraPaths = {
     `${oiGV}${nsSegment(ns)}/${SECURITYGROUPS_PLURAL}`,
   securitygroup: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${SECURITYGROUPS_PLURAL}/${name}`,
+  statemachines: (ns?: string) => `${oiGV}${nsSegment(ns)}/${STATEMACHINES_PLURAL}`,
+  statemachine: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${STATEMACHINES_PLURAL}/${name}`,
+  executions: (ns?: string) => `${oiGV}${nsSegment(ns)}/${EXECUTIONS_PLURAL}`,
+  execution: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${EXECUTIONS_PLURAL}/${name}`,
   // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
   // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
   certificateauthorities: (ns?: string) =>
