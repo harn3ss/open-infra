@@ -698,6 +698,32 @@ export type Execution = K8sObject<ExecutionSpec, ExecutionStatus>;
 export const EXECUTIONS_PLURAL = "executions";
 export const EXECUTIONS_CRD_NAME = "executions.openinfra.dev";
 
+/* ---------------------- open-infra TrainingJob CRD ------------------------ */
+// A run-once, GPU-capable model-training Job (SageMaker Training Jobs). Runs the
+// user's container to completion; run status is the underlying batch Job's.
+export interface TrainingJobSpec {
+  image: string;
+  command?: string[];
+  args?: string[];
+  env?: { name: string; value: string }[];
+  gpu?: number;
+  gpuTier?: "smallgpu" | "largegpu";
+  cpu?: string;
+  memory?: string;
+  dataset?: { bucket?: string; prefix?: string };
+  output?: { bucket?: string; prefix?: string };
+  secrets?: string[];
+  backoffLimit?: number;
+  maxRuntimeSeconds?: number;
+}
+export interface TrainingJobStatus {
+  jobName?: string;
+  conditions?: Condition[];
+}
+export type TrainingJob = K8sObject<TrainingJobSpec, TrainingJobStatus>;
+export const TRAININGJOBS_PLURAL = "trainingjobs";
+export const TRAININGJOBS_CRD_NAME = "trainingjobs.openinfra.dev";
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;

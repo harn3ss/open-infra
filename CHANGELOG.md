@@ -46,6 +46,14 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: TrainingJob` — GPU model training (SageMaker Training Jobs equivalent), experimental.** The
+  training-loop counterpart to `kind: Model` (inference): a run-once batch Job that runs your training
+  container to completion on a GPU node of the chosen tier (`smallgpu` / `largegpu`), with
+  hyperparameters passed as env and S3-compatible object-store credentials injected so it can read a
+  dataset and write model artifacts to MinIO (the bucket is created on demand). `gpu: 0` runs CPU-only.
+  Managed from the console (Compute → Training Jobs) and expressible in Terraform; run status is the
+  underlying Job's. See [`docs/training-jobs.md`](docs/training-jobs.md).
+
 - **`kind: StateMachine` — workflow orchestration (Step Functions equivalent), experimental.** Define a
   workflow in Amazon States Language (the same JSON as `aws_sfn_state_machine.definition`) and run it by
   creating a `kind: Execution`. An owned, dependency-free engine interprets the ASL — no Argo/Temporal —

@@ -66,6 +66,7 @@ CNCF projects — not a reinvention of databases or storage.
 | Step Functions | workflow orchestration (`kind: StateMachine`) | owned Amazon States Language engine → Functions (experimental) |
 | AppSync | resolver-first GraphQL (`kind: GraphQLApi`) | open-appsync — VTL-faithful engine (experimental) |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
+| SageMaker Training | model training (`kind: TrainingJob`) | run-once GPU batch Job → artifacts to object store (experimental) |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
 | Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |
