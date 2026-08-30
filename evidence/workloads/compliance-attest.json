@@ -1,0 +1,10 @@
+{
+  "name": "compliance-attest",
+  "namespace": "crossplane-system",
+  "healthy": true,
+  "evidence_level": "verified",
+  "when": "2026-08-30T02:39:00Z",
+  "detail": "CronJob crossplane-system/compliance-attest HEALTHY. CronJob status lastSuccessfulTime 2026-08-29T11:00:11Z; a fresh on-demand run (compliance-attest-manual, 2026-08-30) terminated exitCode=0/Completed, produced the NIST-800-53-mapped attestation JSON and stored it ('compliance attestation stored: attestations/2026-08-30', unsigned — signed out-of-band per docs/compliance-attestation.md). The earlier functional failure (#39: latest job Failed failed=2, observed 2026-08-20) no longer reproduces (0 checks failing). Same recovery window and likely shared root cause as encryptionkey-destroyer (both crossplane-system mc-consumers dependent on host-network egress; 2026-08-27 network restoration). Verified live.",
+  "supersedes": "2026-08-20 observation (healthy:false, latest job failed=2)",
+  "refs": ["#39", "#10"]
+}
