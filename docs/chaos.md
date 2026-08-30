@@ -147,13 +147,13 @@ radius scoped to those resources. Summary of what was validated:
 **Fault types** — pod kill/failure, network latency/loss/partition, CPU/memory stress, clock
 skew, and disk-IO latency have all been exercised.
 
-**Chaos found (and we fixed) a real bug.** A `clock-skew` experiment on a multi-master member
+**A concrete example.** A `clock-skew` experiment on a multi-master member
 revealed that the MySQL/MariaDB change-stamping lacked a *monotonic* clock guard (which
 PostgreSQL and SQL Server already had): a backwards wall-clock produced a lower version, so the
-write lost last-write-wins and silently diverged. The stamping was changed to a monotonic
-hybrid logical clock, and re-running the **same** experiment confirmed the fix (the version
-advanced instead of going backwards, and the write converged). That loop — *inject → observe →
-fix → re-inject* — is the point of keeping these experiments around.
+write lost last-write-wins and silently diverged. The stamping now uses a monotonic
+hybrid logical clock, and re-running the **same** experiment confirms it (the version
+advances instead of going backwards, and the write converges). That loop — *inject → observe →
+fix → re-inject* — is the point of these experiments.
 
 ## See also
 

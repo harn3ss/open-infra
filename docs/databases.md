@@ -81,11 +81,11 @@ spec:
 
 Clients then point at `orders-proxy` (its `<name>-proxy` connection Secret carries `HOST` / `TDS_PORT`)
 with `encrypt=disable` by default (or `encrypt=on`/`strict` when the proxy terminates client TLS via
-`spec.tls` — #6; Babelfish itself is TDS-no-TLS behind the proxy). `/status` on port 9114 reports pool reuse, discards,
+`spec.tls`; Babelfish itself is TDS-no-TLS behind the proxy). `/status` on port 9114 reports pool reuse, discards,
 and the multiplex-opportunity metric. Backed by open-infra's own `tds-proxy`
 (`ghcr.io/…/open-infra-tds-proxy`); see `docs/design/rds-proxy-tds-multiplexing.md`. **Experimental**,
 same as the `babelfish` engine it fronts. Today a session holds its backend for its lifetime (reuse is
-across sessions); per-transaction multiplexing shipped as an opt-in proxy mode (`-tx-multiplex`, #7),
+across sessions); per-transaction multiplexing is available as an opt-in proxy mode (`-tx-multiplex`),
 not yet surfaced as a `DatabaseProxy` spec field.
 
 ## High availability
@@ -119,7 +119,7 @@ for HA rather than the storage layer. Set `spec.database.storageClass` to overri
 database — e.g. `longhorn` to put a non-HA database on replicated storage, or your cluster's
 StorageClass on a substrate that doesn't ship `local-path`. Data persists across pod restarts.
 Hardening the single-instance/durability story (node-resilient storage for non-HA DBs,
-off-cluster backups) is tracked in issue #61.
+off-cluster backups) is a planned follow-up.
 
 ## Start / Stop
 
