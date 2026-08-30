@@ -6,7 +6,7 @@ info:
   description: "The declarative resource API a GovStack building block provisions infrastructure through. Every path is a\
     \ standard Kubernetes resource endpoint under the openinfra.dev group; the schemas are GENERATED from platform/abstraction/*-xrd.yaml\
     \ (the CRD source of truth), so this spec can never drift from the running API. GENERATED \u2014 do not hand-edit."
-  x-openinfra-kinds: 28
+  x-openinfra-kinds: 29
 servers:
 - url: /apis/openinfra.dev/v1
   description: Kubernetes API server (openinfra.dev group)
@@ -35,6 +35,7 @@ tags:
 - name: SecurityGroup
 - name: StateMachine
 - name: Stream
+- name: TrainingJob
 - name: User
 - name: VirtualMachine
 - name: VmImage
@@ -2056,11 +2057,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/users:
+  /namespaces/{namespace}/trainingjobs:
     get:
       tags:
-      - User
-      summary: List User resources
+      - TrainingJob
+      summary: List TrainingJob resources
       parameters:
       - &id073
         name: namespace
@@ -2079,11 +2080,11 @@ paths:
                   items:
                     type: array
                     items: &id074
-                      $ref: '#/components/schemas/User'
+                      $ref: '#/components/schemas/TrainingJob'
     post:
       tags:
-      - User
-      summary: Create a User
+      - TrainingJob
+      summary: Create a TrainingJob
       parameters:
       - *id073
       requestBody:
@@ -2103,11 +2104,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/users/{name}:
+  /namespaces/{namespace}/trainingjobs/{name}:
     get:
       tags:
-      - User
-      summary: Get a User
+      - TrainingJob
+      summary: Get a TrainingJob
       parameters:
       - *id073
       - &id075
@@ -2130,8 +2131,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - User
-      summary: Delete a User
+      - TrainingJob
+      summary: Delete a TrainingJob
       parameters:
       - *id073
       - *id075
@@ -2140,11 +2141,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/virtualmachines:
+  /namespaces/{namespace}/users:
     get:
       tags:
-      - VirtualMachine
-      summary: List VirtualMachine resources
+      - User
+      summary: List User resources
       parameters:
       - &id076
         name: namespace
@@ -2163,11 +2164,11 @@ paths:
                   items:
                     type: array
                     items: &id077
-                      $ref: '#/components/schemas/VirtualMachine'
+                      $ref: '#/components/schemas/User'
     post:
       tags:
-      - VirtualMachine
-      summary: Create a VirtualMachine
+      - User
+      summary: Create a User
       parameters:
       - *id076
       requestBody:
@@ -2187,11 +2188,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/virtualmachines/{name}:
+  /namespaces/{namespace}/users/{name}:
     get:
       tags:
-      - VirtualMachine
-      summary: Get a VirtualMachine
+      - User
+      summary: Get a User
       parameters:
       - *id076
       - &id078
@@ -2214,8 +2215,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VirtualMachine
-      summary: Delete a VirtualMachine
+      - User
+      summary: Delete a User
       parameters:
       - *id076
       - *id078
@@ -2224,11 +2225,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/vmimages:
+  /namespaces/{namespace}/virtualmachines:
     get:
       tags:
-      - VmImage
-      summary: List VmImage resources
+      - VirtualMachine
+      summary: List VirtualMachine resources
       parameters:
       - &id079
         name: namespace
@@ -2247,11 +2248,11 @@ paths:
                   items:
                     type: array
                     items: &id080
-                      $ref: '#/components/schemas/VmImage'
+                      $ref: '#/components/schemas/VirtualMachine'
     post:
       tags:
-      - VmImage
-      summary: Create a VmImage
+      - VirtualMachine
+      summary: Create a VirtualMachine
       parameters:
       - *id079
       requestBody:
@@ -2271,11 +2272,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/vmimages/{name}:
+  /namespaces/{namespace}/virtualmachines/{name}:
     get:
       tags:
-      - VmImage
-      summary: Get a VmImage
+      - VirtualMachine
+      summary: Get a VirtualMachine
       parameters:
       - *id079
       - &id081
@@ -2298,8 +2299,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VmImage
-      summary: Delete a VmImage
+      - VirtualMachine
+      summary: Delete a VirtualMachine
       parameters:
       - *id079
       - *id081
@@ -2308,11 +2309,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/volumes:
+  /namespaces/{namespace}/vmimages:
     get:
       tags:
-      - Volume
-      summary: List Volume resources
+      - VmImage
+      summary: List VmImage resources
       parameters:
       - &id082
         name: namespace
@@ -2331,11 +2332,11 @@ paths:
                   items:
                     type: array
                     items: &id083
-                      $ref: '#/components/schemas/Volume'
+                      $ref: '#/components/schemas/VmImage'
     post:
       tags:
-      - Volume
-      summary: Create a Volume
+      - VmImage
+      summary: Create a VmImage
       parameters:
       - *id082
       requestBody:
@@ -2355,11 +2356,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/volumes/{name}:
+  /namespaces/{namespace}/vmimages/{name}:
     get:
       tags:
-      - Volume
-      summary: Get a Volume
+      - VmImage
+      summary: Get a VmImage
       parameters:
       - *id082
       - &id084
@@ -2382,11 +2383,95 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Volume
-      summary: Delete a Volume
+      - VmImage
+      summary: Delete a VmImage
       parameters:
       - *id082
       - *id084
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Not found
+  /namespaces/{namespace}/volumes:
+    get:
+      tags:
+      - Volume
+      summary: List Volume resources
+      parameters:
+      - &id085
+        name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: &id086
+                      $ref: '#/components/schemas/Volume'
+    post:
+      tags:
+      - Volume
+      summary: Create a Volume
+      parameters:
+      - *id085
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: *id086
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: *id086
+        '409':
+          description: Already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+  /namespaces/{namespace}/volumes/{name}:
+    get:
+      tags:
+      - Volume
+      summary: Get a Volume
+      parameters:
+      - *id085
+      - &id087
+        name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: *id086
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+    delete:
+      tags:
+      - Volume
+      summary: Delete a Volume
+      parameters:
+      - *id085
+      - *id087
       responses:
         '200':
           description: Deleted
@@ -4158,7 +4243,7 @@ components:
           - siteB
           - tables
           properties:
-            siteA: &id085
+            siteA: &id088
               type: object
               description: "One endpoint of the replication pair. Both sites are simultaneously source and target \u2014 changes\
                 \ captured here are applied to the peer and vice-versa. The two sites may run different engines (e.g. sqlserver\
@@ -4220,7 +4305,7 @@ components:
                   default: false
                   description: Connect to this site's database over TLS (default false). Applied for Postgres (sslmode=require)
                     and SQL Server (encrypt=true).
-            siteB: *id085
+            siteB: *id088
             tables:
               type: array
               items:
@@ -4529,6 +4614,110 @@ components:
               type: string
             ready:
               type: boolean
+    TrainingJob:
+      type: object
+      description: 'open-infra kind: TrainingJob.'
+      required:
+      - spec
+      properties:
+        apiVersion:
+          type: string
+          enum:
+          - openinfra.dev/v1
+        kind:
+          type: string
+          enum:
+          - TrainingJob
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          type: object
+          required:
+          - image
+          properties:
+            image:
+              type: string
+              description: The training container image. It runs to completion; write model artifacts to the output bucket
+                (see output).
+            command:
+              type: array
+              items:
+                type: string
+              description: Optional entrypoint override (container command).
+            args:
+              type: array
+              items:
+                type: string
+              description: Optional container args.
+            env:
+              type: array
+              description: "Environment variables \u2014 the place to pass hyperparameters and config to the training script."
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  value:
+                    type: string
+            gpu:
+              type: integer
+              default: 1
+              description: GPUs to request. `0` runs CPU-only (useful for smoke tests); >0 schedules on a GPU node and sets
+                nvidia.com/gpu.
+            gpuTier:
+              type: string
+              enum:
+              - smallgpu
+              - largegpu
+              default: smallgpu
+              description: 'GPU class when gpu>0: smallgpu (A2000 class, may use a large GPU) or largegpu (requires a large
+                GPU, e.g. 3090). Ignored when gpu=0.'
+            cpu:
+              type: string
+              description: CPU request/limit as a Kubernetes quantity (e.g. "2", "500m"). Unset uses a modest default.
+            memory:
+              type: string
+              description: Memory request/limit as a Kubernetes quantity (e.g. "8Gi"). Unset uses a modest default.
+            dataset:
+              type: object
+              description: Input data location in the object store (MinIO). Injected as DATASET_BUCKET/DATASET_PREFIX plus
+                S3-compatible credentials.
+              properties:
+                bucket:
+                  type: string
+                  description: Existing bucket holding the training data.
+                prefix:
+                  type: string
+                  description: Optional key prefix within the bucket.
+            output:
+              type: object
+              description: Where the job writes model artifacts (MinIO). The bucket is created if absent; injected as OUTPUT_BUCKET/OUTPUT_PREFIX
+                plus S3-compatible credentials.
+              properties:
+                bucket:
+                  type: string
+                  description: Artifact bucket (created on demand).
+                prefix:
+                  type: string
+                  description: Optional key prefix for artifacts.
+            secrets:
+              type: array
+              items:
+                type: string
+              description: "Extra secrets to inject with envFrom \u2014 e.g. a model-registry or Hugging Face token."
+            backoffLimit:
+              type: integer
+              default: 0
+              description: How many times the Job retries a failed pod before it is marked Failed. Defaults to 0 (no retry).
+            maxRuntimeSeconds:
+              type: integer
+              description: Hard wall-clock cap (Job activeDeadlineSeconds). The job is failed if it runs longer. Unset means
+                no cap.
+        status:
+          type: object
+          properties:
+            jobName:
+              type: string
     User:
       type: object
       description: 'open-infra kind: User.'
