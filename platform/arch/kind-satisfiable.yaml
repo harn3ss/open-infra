@@ -66,11 +66,18 @@ spec:
               command: [sh, -ceu]
               args:
                 - |
-                  # arches actually present on nodes
+                  set -o pipefail
+                  # arches actually present on nodes. Fail loudly if we can't read them — NEVER go on to
+                  # rewrite the params ConfigMap from incomplete inputs (a data-less CM fails the VAP
+                  # closed for every kind — #48).
                   ARCHES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.kubernetes\.io/arch}{"\n"}{end}' | sort -u | tr '\n' ' ')
                   echo "present node arches: $ARCHES"
+                  [ -n "$ARCHES" ] || { echo "FATAL: no node architectures read; leaving ConfigMap unchanged"; exit 1; }
                   REG=$(kubectl -n crossplane-system get cm openinfra-kind-architectures -o jsonpath='{.data.kinds\.yaml}')
-                  ARGS=""
+                  [ -n "$REG" ] || { echo "FATAL: arch registry empty/unreadable; leaving ConfigMap unchanged"; exit 1; }
+                  : > /tmp/sat.txt
+                  # grep matches nothing -> exit 1; guard it so an empty parse doesn't abort before the
+                  # explicit check below (|| true keeps set -e/pipefail from killing us here).
                   echo "$REG" | grep -E '^[A-Za-z][A-Za-z0-9]+:' | while IFS= read -r line; do
                     kind=$(echo "$line" | sed 's/:.*//' | tr -d ' ')
                     amd=$(echo "$line" | grep -oE 'amd64: *[a-z]+' | awk '{print $2}')
@@ -83,7 +90,11 @@ spec:
                       case "$s" in supported|untested) sat=true ;; esac
                     done
                     echo "$kind=$sat"
-                  done > /tmp/sat.txt
+                  done > /tmp/sat.txt || true
+                  # GUARD: never rewrite the ConfigMap with empty data. If the parse produced nothing,
+                  # fail and leave the existing (good, or seed) ConfigMap intact — do not create a
+                  # data-less CM that would make the arch VAP deny every kind (#48).
+                  [ -s /tmp/sat.txt ] || { echo "FATAL: computed 0 kinds from the registry; leaving ConfigMap unchanged"; exit 1; }
                   # rebuild the ConfigMap from the computed lines
                   SETARGS=$(awk -F= '{printf " --from-literal=%s=%s", $1, $2}' /tmp/sat.txt)
                   kubectl -n crossplane-system create configmap openinfra-kind-satisfiable $SETARGS \
