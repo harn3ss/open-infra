@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { UsersRound, Plus, AlertTriangle } from "lucide-react";
@@ -7,14 +6,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
-import { getIamConfig, listIamGroups } from "@/lib/api";
-import { NewGroupDialog } from "./new-group-dialog";
+import { listIamGroups } from "@/lib/api";
 
 export function GroupsPage() {
   const navigate = useNavigate();
-  const [newOpen, setNewOpen] = useState(false);
 
-  const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const { data = [], isLoading, isError, error } = useQuery({
     queryKey: ["iam", "groups"],
     queryFn: listIamGroups,
@@ -28,7 +24,7 @@ export function GroupsPage() {
         title="Groups"
         description="Permission sets. A group binds its members to a ClusterRole — the only thing that grants access — and takes effect only if its name is in the impersonation ceiling."
         actions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/groups/new" })}>
             <Plus className="size-4" /> New group
           </Button>
         }
@@ -44,7 +40,7 @@ export function GroupsPage() {
           title="No groups yet"
           description="The built-in admins / powerusers / readers groups work without being created here. Create a Group to bind members to a specific ClusterRole."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/groups/new" })}>
               <Plus className="size-4" /> New group
             </Button>
           }
@@ -95,11 +91,6 @@ export function GroupsPage() {
         </Card>
       )}
 
-      <NewGroupDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        builtins={cfg.data?.builtinGroups ?? []}
-      />
     </div>
   );
 }

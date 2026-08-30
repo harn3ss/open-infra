@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Clock, Plus } from "lucide-react";
@@ -8,7 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
 import { listIamGrants, type IamGrant } from "@/lib/api";
-import { NewGrantDialog } from "./new-grant-dialog";
 
 export function phaseBadge(phase: string): { variant: "default" | "secondary" | "destructive" | "outline"; label: string } {
   switch (phase) {
@@ -25,7 +23,6 @@ export function phaseBadge(phase: string): { variant: "default" | "secondary" | 
 
 export function GrantsPage() {
   const navigate = useNavigate();
-  const [newOpen, setNewOpen] = useState(false);
   const { data = [], isLoading, isError, error } = useQuery({
     queryKey: ["iam", "grants"],
     queryFn: listIamGrants,
@@ -41,7 +38,7 @@ export function GrantsPage() {
         title="Grants"
         description="Just-in-time access, time-bounded and self-revoking. A grant is a request: it confers nothing until a different admin approves it (separation of duties, AC-2(2)/AC-5), then expires on its own."
         actions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/grants/new" })}>
             <Plus className="size-4" /> Request grant
           </Button>
         }
@@ -63,7 +60,7 @@ export function GrantsPage() {
           title="No grants"
           description="Request temporal access; a second admin approves it before it takes effect."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/grants/new" })}>
               <Plus className="size-4" /> Request grant
             </Button>
           }
@@ -110,7 +107,6 @@ export function GrantsPage() {
         </Card>
       )}
 
-      <NewGrantDialog open={newOpen} onOpenChange={setNewOpen} />
     </div>
   );
 }
