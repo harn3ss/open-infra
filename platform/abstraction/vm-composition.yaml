@@ -153,8 +153,14 @@ spec:
                           {{- end }}
                       spec:
                         {{- if $vmArch }}
-                        # Pin the launcher to a matching-arch node: Windows -> amd64 (structural),
-                        # Linux only when openinfra.dev/arch targets one.
+                        # Pin BOTH the VMI architecture and the launcher node arch. `architecture` matters
+                        # at ADMISSION: on a non-amd64 control plane virt-api derives allowed machine types
+                        # from the CP arch, so an x86 (q35) VM is REJECTED unless spec.architecture says
+                        # amd64 (which also needs the KubeVirt CR architectureConfiguration for amd64 — set
+                        # by install.sh on a mixed-arch cluster). nodeSelector then lands the launcher on a
+                        # matching-arch node. Windows -> amd64 (structural); Linux only when
+                        # openinfra.dev/arch targets one. (#51)
+                        architecture: {{ $vmArch }}
                         nodeSelector: { kubernetes.io/arch: {{ $vmArch }} }
                         {{- end }}
                         {{- if $ha }}

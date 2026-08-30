@@ -200,3 +200,37 @@ The manifest layer already gives phase 2 its honest majority: architecture per k
 for the orchestration kinds until the runtime layer runs. **Making these images multi-arch was a
 separate CI decision (#42) — it has since been DONE: the `-arm64` images are now published (see the
 Update at the top). It is not a FIPS decision — the images were never FIPS at the image layer.**
+
+## Mixed-arch VMs: x86 guests on an arm64 control plane (#51, shipped)
+
+open-infra assumes a single-arch cluster by default. To run the x86 VM catalog (all Windows, and any
+`architecture: amd64` guest) when the **control plane is arm64** and the **workers include amd64**, two
+things must line up — both now shipped, not hand edits:
+
+1. **The VM declares its architecture.** The `vm` and `vmimage` compositions emit
+   `spec.template.spec.architecture` on the KubeVirt VirtualMachine — `amd64` for Windows (structural)
+   and for the golden **installer** VM (the catalog is x86), `arm64`/`amd64` for Linux when a
+   per-resource `openinfra.dev/arch` annotation targets one, and nothing for a plain Linux guest (it
+   stays flexible on multi-arch containerDisks). This matters at **admission**: `virt-api` runs on the
+   control plane and derives the allowed machine types from `spec.architecture`; without it the arch is
+   inferred as the CP's (arm64) and a `q35` VM is rejected *before scheduling* — even though a capable
+   x86 worker is present and advertises `q35`.
+
+2. **KubeVirt is told amd64 is a real target.** On an **arm64 control plane**, `install.sh` patches the
+   `KubeVirt` CR with `spec.configuration.architectureConfiguration.amd64` (`machineType: q35`,
+   `emulatedMachines: [q35*, pc-q35*]`, `ovmfPath`), so virt-api admits amd64 machine types. This is
+   guarded on `uname -m = aarch64`, so an all-amd64 cluster's KubeVirt is left at its default.
+
+**Longhorn placement on a mixed cluster.** VM root disks are provisioned by CDI/Longhorn and must land
+on the **amd64 worker** (the arm64 CP can't run the x86 guest, and is usually too small for a Windows
+golden anyway). On a fresh mixed cluster Longhorn starts with **no disks** (the
+`node.longhorn.io/create-default-disk` gate), so:
+
+- Label **only the amd64 worker(s)** for a Longhorn disk:
+  `kubectl label node <amd64-worker> node.longhorn.io/create-default-disk=true`.
+- Set the golden/VM StorageClass (or the Longhorn default) to **`numberOfReplicas: "1"`** — with a
+  single disked node, a higher replica count leaves volumes stuck `Degraded`/unschedulable.
+
+The end-to-end path (arm64 CP builds the Windows golden and boots a VirtualMachine on an x86 worker) was
+proven with hand edits in the #45 run — see [`hybrid-arm64cp-x86worker-2026-08-29.md`](hybrid-arm64cp-x86worker-2026-08-29.md);
+#51 is those edits made permanent in the compositions + `install.sh`.

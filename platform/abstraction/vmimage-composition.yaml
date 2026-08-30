@@ -229,6 +229,11 @@ spec:
                     runStrategy: Once
                     template:
                       spec:
+                        # The golden is always x86 Windows -> q35/amd64. Declare architecture so that on a
+                        # non-amd64 control plane virt-api admits the q35 machine type (otherwise it infers
+                        # the CP arch and rejects q35). Needs the KubeVirt CR architectureConfiguration for
+                        # amd64 on a mixed-arch cluster (set by install.sh). (#51)
+                        architecture: amd64
                         domain:
                           cpu: { cores: 4 }
                           resources: { requests: { memory: 6Gi } }
