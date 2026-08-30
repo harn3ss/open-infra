@@ -661,6 +661,43 @@ export type SecurityGroup = K8sObject<SecurityGroupSpec, SecurityGroupStatus>;
 export const SECURITYGROUPS_PLURAL = "securitygroups";
 export const SECURITYGROUPS_CRD_NAME = "securitygroups.openinfra.dev";
 
+/* ---------------------- open-infra StateMachine CRD ----------------------- */
+// open-infra's Step Functions: an ASL workflow. spec.definition is the ASL JSON
+// string (like aws_sfn_state_machine.definition); runs are kind: Execution.
+export interface StateMachineSpec {
+  definition: string;
+  type?: "Standard";
+}
+export interface StateMachineStatus {
+  definitionConfigMap?: string;
+  conditions?: Condition[];
+}
+export type StateMachine = K8sObject<StateMachineSpec, StateMachineStatus>;
+export const STATEMACHINES_PLURAL = "statemachines";
+export const STATEMACHINES_CRD_NAME = "statemachines.openinfra.dev";
+
+/* ------------------------ open-infra Execution CRD ------------------------ */
+// One run of a StateMachine. Creating one is StartExecution; the controller
+// checkpoints progress into status.
+export interface ExecutionSpec {
+  stateMachineRef: { name: string };
+  input?: string;
+}
+export interface ExecutionStatus {
+  phase?: string; // Running | Succeeded | Failed | TimedOut
+  output?: string;
+  error?: string;
+  cause?: string;
+  currentState?: string;
+  startedAt?: string;
+  stoppedAt?: string;
+  waitUntil?: string;
+  history?: Record<string, unknown>[];
+}
+export type Execution = K8sObject<ExecutionSpec, ExecutionStatus>;
+export const EXECUTIONS_PLURAL = "executions";
+export const EXECUTIONS_CRD_NAME = "executions.openinfra.dev";
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;
