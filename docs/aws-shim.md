@@ -201,7 +201,7 @@ Native/neutral model first; AWS door second. See [open-appsync/README.md](../ope
 - **Path-style only**, header-auth only (no presigned URLs yet), no multipart upload yet.
 
 Each new operation or service graduates the same gated way the chaos-oracle adapters do: built →
-shaken out → proven by the probe → counted.
+exercised → proven by the probe → counted.
 
 ## The compatibility probe
 
