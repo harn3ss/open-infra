@@ -98,8 +98,8 @@ The reboot is the one step proven to leave a clean CNI slate. An explicit cleanu
 `/etc/cni/net.d/*` and flushing/deleting the `OLD_CILIUM_*` chains — is a plausible reboot-free
 substitute but is **not yet proven** to fully replace the reboot; prefer the reboot until it is.
 
-Reference this from any node-move step. Verified on a real move: during the #45 hybrid-cluster run
-`chaos-node-1` was moved out of the main cluster and exhibited exactly this residue (multus timeouts
+Reference this from any node-move step. Verified on a real node move: a worker moved out of a live
+cluster exhibited exactly this residue (multus timeouts
 + no egress); a reboot restored pod egress and multus health, after which it joined cleanly.
 
 ## Roadmap

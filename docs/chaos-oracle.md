@@ -142,11 +142,11 @@ worthless:
   samba-tool / smbclient / raw-block read / the KubeVirt VMI phase respectively (reliable, no
   guessing).
 - **dataflow-converge** — RED on divergence after a capture kill; GREEN when the mesh reconverges.
-  Building this chain **found a real product bug**: a DataFlow node named with a hyphen (`pg-a`)
-  leaked the hyphen into the Debezium Postgres replication slot name, which PostgreSQL rejects, so
-  the capture crash-looped and replication never started. Fixed by sanitizing the node name in the
+  This chain guards a real class of defect: a DataFlow node named with a hyphen (`pg-a`)
+  would leak the hyphen into the Debezium Postgres replication slot name, which PostgreSQL rejects, so
+  the capture would crash-loop and replication never start. The composition sanitizes the node name in the
   slot/publication derivation (`dataflow-composition.yaml`). This is exactly the suite's purpose —
-  an injector that surfaces a real defect, caught before a user hit it.
+  an injector that catches a real defect before a user hits it.
 
 The availability and deny probers run **in-cluster** because the Application's own NetworkPolicy
 correctly denies off-cluster ingress (a host-side prober is blocked by Cilium) — the fence working

@@ -69,7 +69,7 @@ driver that gives up after 3s produces spurious reds while the system under test
 
 ## Proving it under a fault (the point)
 
-> **This is now automated.** The [Nightly Chaos Suite](chaos-suite.md) drives this harness
+> **This is automated.** The [Nightly Chaos Suite](chaos-suite.md) drives this harness
 > unattended every night — partition, clock-skew, sink-kill, CNPG failover, and all of them at
 > once — each scenario asserting the fault *actually landed* and that the mesh re-converges. A
 > red night blocks the release. What follows is the manual equivalent, for one-off GameDays.
@@ -110,13 +110,12 @@ member DSNs, the fault, and the output.
 
 ## Roadmap
 
-This first version verifies convergence and tolerates a fault applied out-of-band. Next:
+This harness verifies convergence and tolerates a fault applied out-of-band. The
+[Nightly Chaos Suite](chaos-suite.md) drives it unattended with an orchestrated
+partition/kill/skew/failover matrix, on a schedule and on demand (`nightly-chaos.yml`) against a
+disposable sandbox mesh (as scenario scripts around the harness rather than client-go inside it).
+Further work:
 
-- ~~**Auto-orchestrated faults**~~ — **done**: the [Nightly Chaos Suite](chaos-suite.md)
-  orchestrates the partition/kill/skew/failover matrix unattended (as scenario scripts around
-  the harness rather than client-go inside it).
 - **Continuous-write mode** — sustained writes across the whole fault window (not one burst)
   for a harsher test.
-- ~~**A `workflow_dispatch` CI job**~~ — **done**: `nightly-chaos.yml` runs on a schedule *and*
-  on demand against a disposable sandbox mesh.
 - **More topologies** — 3+ members and cross-engine meshes (PG ⇄ MySQL ⇄ SQL Server).
