@@ -16,10 +16,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"hash/adler32"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1156,6 +1159,42 @@ func sprigLite() template.FuncMap {
 			h := sha256.Sum256([]byte(s))
 			return hex.EncodeToString(h[:])
 		},
+		// sprig: is `needle` an element of `list`? (dataflow uses `has "*" $tables`).
+		"has": func(needle any, list any) bool {
+			rv := reflect.ValueOf(list)
+			if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+				return false
+			}
+			for i := 0; i < rv.Len(); i++ {
+				if reflect.DeepEqual(rv.Index(i).Interface(), needle) {
+					return true
+				}
+			}
+			return false
+		},
+		// sprig: regex replace (dataflow uses it to sanitize node names into env-var keys).
+		"regexReplaceAll": func(pattern, src, repl string) string {
+			return regexp.MustCompile(pattern).ReplaceAllString(src, repl)
+		},
+		// sprig: JSON-encode (dataflow passes $members/$dmembers as a JSON env var).
+		"toJson": func(v any) string {
+			b, err := json.Marshal(v)
+			if err != nil {
+				return ""
+			}
+			return string(b)
+		},
+		// sprig: ternary trueVal falseVal cond.
+		"ternary": func(vt any, vf any, cond bool) any {
+			if cond {
+				return vt
+			}
+			return vf
+		},
+		// sprig: adler32 checksum as a decimal string (dataflow uses it for short stable suffixes).
+		"adler32sum": func(s string) string {
+			return strconv.FormatUint(uint64(adler32.Checksum([]byte(s))), 10)
+		},
 		"trunc": func(c int, s string) string {
 			if c < 0 {
 				if -c > len(s) {
@@ -1401,4 +1440,53 @@ func pluralFromXRD(t *testing.T, path string) string {
 		return claimPlural
 	}
 	return namesPlural
+}
+
+// #36: the dataflow composition template (reconciler + the new schema-drift companion) must parse
+// with the same funcmap the go-templating function uses. A template syntax error here breaks EVERY
+// DataFlow render, so this guards the drift-companion edit.
+func TestDataFlow_TemplateParses(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/dataflow-composition.yaml")
+	if _, err := template.New("df").Funcs(sprigLite()).Parse(tmpl); err != nil {
+		t.Fatalf("dataflow-composition template must parse: %v", err)
+	}
+}
+
+// #36: the schema-drift detector is auto-deployed as a per-flow companion, opt-in via
+// spec.driftDetection. On -> a `<flow>-flow-drift` Deployment with MODE=schema-drift renders next to
+// the reconciler for the multi-master repl set; off (default) -> nothing. Guards the composition edit.
+func dataflowCtx(drift bool) any {
+	node := func(name, host, secret string) map[string]any {
+		return map[string]any{
+			"name": name, "engine": "postgres", "username": "u", "host": host,
+			"port": 5432, "database": "db", "role": "database",
+			"passwordSecretRef": map[string]any{"name": secret, "key": "password"},
+		}
+	}
+	return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"metadata": map[string]any{"name": "flow1", "labels": map[string]any{}, "annotations": map[string]any{}},
+		"spec": map[string]any{
+			"nodes":          []any{node("a", "ha", "a-sec"), node("b", "hb", "b-sec")},
+			"edges":          []any{map[string]any{"type": "replication", "from": "a", "to": "b"}},
+			"tables":         []any{"public.orders"},
+			"driftDetection": drift,
+		},
+	}}}}
+}
+
+func TestDataFlow_DriftCompanionOptIn(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/dataflow-composition.yaml")
+
+	on := render(t, tmpl, dataflowCtx(true))
+	if !strings.Contains(on, "flow1-flow-drift") {
+		t.Errorf("driftDetection:true must render the -flow-drift Deployment; got:\n%s", grepCtx(on, "flow-drift"))
+	}
+	if !strings.Contains(on, "value: schema-drift") {
+		t.Errorf("drift companion must set MODE=schema-drift; got:\n%s", grepCtx(on, "MODE"))
+	}
+
+	off := render(t, tmpl, dataflowCtx(false))
+	if strings.Contains(off, "flow-drift") {
+		t.Errorf("driftDetection:false (default) must NOT render the -flow-drift Deployment; got:\n%s", grepCtx(off, "flow-drift"))
+	}
 }
