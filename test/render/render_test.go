@@ -695,18 +695,40 @@ func TestVirtualMachine_ArchPin(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
 
 	win := render(t, tmpl, vmCtx("windows-server-2022", ""))
+	// Windows is structurally amd64: it must pin BOTH the VMI architecture (admission gate on a
+	// non-amd64 control plane) and the launcher node arch. (#51)
 	if !strings.Contains(win, "kubernetes.io/arch: amd64") {
 		t.Errorf("Windows VM must pin nodeSelector arch: amd64 (structural); got:\n%s", grepCtx(win, "arch"))
 	}
+	if !strings.Contains(win, "architecture: amd64") {
+		t.Errorf("Windows VM must set spec.architecture: amd64 (else virt-api on an arm64 CP rejects q35); got:\n%s", grepCtx(win, "arch"))
+	}
 
 	lin := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
-	if strings.Contains(lin, "kubernetes.io/arch:") {
-		t.Errorf("Linux VM (no annotation) must NOT be arch-pinned (multi-arch containerDisk); got:\n%s", grepCtx(lin, "arch"))
+	if strings.Contains(lin, "kubernetes.io/arch:") || strings.Contains(lin, "architecture:") {
+		t.Errorf("Linux VM (no annotation) must NOT be arch-pinned (multi-arch containerDisk) — neither nodeSelector nor architecture; got:\n%s", grepCtx(lin, "arch"))
 	}
 
 	arm := render(t, tmpl, vmCtx("ubuntu-24.04", "arm64"))
 	if !strings.Contains(arm, "kubernetes.io/arch: arm64") {
 		t.Errorf("Linux VM annotated arm64 must pin nodeSelector arch: arm64; got:\n%s", grepCtx(arm, "arch"))
+	}
+	if !strings.Contains(arm, "architecture: arm64") {
+		t.Errorf("Linux VM annotated arm64 must set spec.architecture: arm64; got:\n%s", grepCtx(arm, "arch"))
+	}
+}
+
+// TestVmImage_ArchAmd64 asserts the golden-building installer VM declares architecture: amd64 — the
+// golden catalog is x86 Windows, and without this virt-api on a non-amd64 control plane rejects the q35
+// installer at admission (inferring the CP arch). (#51)
+func TestVmImage_ArchAmd64(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vmimage-composition.yaml")
+	out := render(t, tmpl, map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec":     map[string]any{"os": "windows-server-2022"},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "win2022", "crossplane.io/claim-namespace": "openinfra-images"}},
+	}}}})
+	if !strings.Contains(out, "architecture: amd64") {
+		t.Errorf("VmImage installer VM must declare architecture: amd64 (x86 golden); got:\n%s", grepCtx(out, "arch"))
 	}
 }
 
