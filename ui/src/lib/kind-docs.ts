@@ -16,6 +16,7 @@ const KIND_DOC_FILE: Record<string, string> = {
   Function: "serverless.md",
   StateMachine: "state-machines.md",
   Model: "gpu.md",
+  TrainingJob: "training-jobs.md",
   GraphQLApi: "aws-shim.md",
   Query: "query.md",
   Stream: "streaming.md",

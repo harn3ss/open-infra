@@ -26,6 +26,7 @@ import {
   SECURITYGROUPS_PLURAL,
   STATEMACHINES_PLURAL,
   EXECUTIONS_PLURAL,
+  TRAININGJOBS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -122,6 +123,9 @@ export const openinfraPaths = {
   executions: (ns?: string) => `${oiGV}${nsSegment(ns)}/${EXECUTIONS_PLURAL}`,
   execution: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${EXECUTIONS_PLURAL}/${name}`,
+  trainingjobs: (ns?: string) => `${oiGV}${nsSegment(ns)}/${TRAININGJOBS_PLURAL}`,
+  trainingjob: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${TRAININGJOBS_PLURAL}/${name}`,
   // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
   // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
   certificateauthorities: (ns?: string) =>

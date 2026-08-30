@@ -124,6 +124,21 @@ export const MODEL_CREATE: CreateKindSpec = {
   ],
 };
 
+export const TRAININGJOB_CREATE: CreateKindSpec = {
+  kind: "TrainingJob",
+  crdName: "trainingjobs.openinfra.dev",
+  description:
+    "A run-once model-training job on a GPU (SageMaker-style) — your training container runs to completion; read a dataset and write model artifacts to the object store.",
+  sections: [
+    { title: "Training job", fields: ["image", "gpu", "gpuTier"] },
+    { title: "Command", fields: ["command", "args"], advanced: true },
+    { title: "Hyperparameters & config", fields: ["env", "secrets"], advanced: true },
+    { title: "Data (object store)", fields: ["dataset", "output"], advanced: true },
+    { title: "Resources & run", fields: ["cpu", "memory", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
+  ],
+  uiSchema: { image: { "ui:placeholder": "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime" } },
+};
+
 export const GRAPHQLAPI_CREATE: CreateKindSpec = {
   kind: "GraphQLApi",
   crdName: "graphqlapis.openinfra.dev",
