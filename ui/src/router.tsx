@@ -53,6 +53,7 @@ import { DataFlowsPage } from "@/features/dataflow/dataflows-page";
 import { DataFlowCanvasPage } from "@/features/dataflow/dataflow-canvas";
 import { StreamsPage } from "@/features/streams/streams-page";
 import { DatabasesPage } from "@/features/databases/databases-page";
+import { CreateDatabasePage } from "@/features/databases/create-database-page";
 import { DatabaseDetailPage } from "@/features/databases/database-detail-page";
 import { ManagedDatabaseDetailPage } from "@/features/databases/managed-detail-page";
 import { QueueDetailPage } from "@/features/queues/queue-detail-page";
@@ -332,6 +333,11 @@ const databasesRoute = createRoute({
   path: "/databases",
   component: DatabasesPage,
 });
+const databaseCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/databases/new",
+  component: CreateDatabasePage,
+});
 
 const databaseDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -569,6 +575,7 @@ const routeTree = rootRoute.addChildren([
   streamsRoute,
   streamDetailRoute,
   databasesRoute,
+  databaseCreateRoute,
   databaseDetailRoute,
   managedDbDetailRoute,
   bucketsRoute,
