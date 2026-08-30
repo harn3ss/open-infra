@@ -33,26 +33,26 @@ data:
     Replication:    {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-apply-sink, note: "arm64 via -arm64 tag + composition wiring"}
     Query:          {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-query, note: "arm64 via the -arm64 tag (build-arm64.yml) + the composition's imageArchSuffix wiring; -arm64 image runtime-proven on arm64"}
     GraphQLApi:     {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-open-appsync, note: "arm64 via -arm64 tag + composition wiring"}
-    Destruction:    {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-mc, note: "arm64 via the mc image published as a shared multi-arch :latest (mc is non-FIPS, so a shared tag is safe); the destroyer CronJob's other images (vault, alpine/k8s) are already multi-arch"}
+    Destruction:    {amd64: supported, arm64: supported, image: ghcr.io/harn3ss/open-infra-mc, note: "arm64 RUN-VERIFIED 2026-08-30: the destroyer pod ran on lima-openinfra-arm64 and crypto-erased a Vault Transit key (certificate written, ciphertext unrecoverable). Was manifest-verified before (#42): mc as a shared multi-arch :latest (non-FIPS, so a shared tag is safe) + the destroyer's vault/alpine-k8s images already multi-arch"}
     # Structural (not a build flag): an arm64 host cannot run the x86 VM guest catalog.
     VirtualMachine: {amd64: supported, arm64: unsupported, note: "x86 guest OS catalog; KubeVirt itself is arm64"}
     VmImage:        {amd64: supported, arm64: unsupported, note: "builds/holds the x86 golden images"}
     # No first-party image; arch available upstream (crossplane/provider-kubernetes/etc. publish
     # arm64) but not runtime-confirmed here (survey convergence blocked by the survey proxy).
-    CertificateAuthority: {amd64: supported, arm64: untested}
-    DataClassification:   {amd64: supported, arm64: untested}
-    Directory:            {amd64: supported, arm64: untested}
-    EncryptionKey:        {amd64: supported, arm64: untested}
+    CertificateAuthority: {amd64: supported, arm64: untested, note: "pki component OFF on the survey cluster (ca-reconciler not deployed); not runnable here — see survey-2026-08-30"}
+    DataClassification:   {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration, no arm64-node data plane to observe"}
+    Directory:            {amd64: supported, arm64: untested, note: "experimental Samba AD DC; heavy data plane not exercised on arm64 (effort cap) — see survey-2026-08-30"}
+    EncryptionKey:        {amd64: supported, arm64: supported, note: "arm64 RUN-VERIFIED 2026-08-30: the encryptionkey-reconciler ran on lima-openinfra-arm64 and created a working Vault Transit key (canary encrypt/decrypt round-trip). No first-party image (vault/alpine-k8s multi-arch)"}
     FaultInjection:       {amd64: supported, arm64: untested}
     FileShare:            {amd64: supported, arm64: untested}
-    Function:             {amd64: supported, arm64: untested}
-    Grant:                {amd64: supported, arm64: untested}
-    Group:                {amd64: supported, arm64: untested}
-    HttpApi:              {amd64: supported, arm64: untested}
-    Model:                {amd64: supported, arm64: untested}
-    Policy:               {amd64: supported, arm64: untested}
-    Role:                 {amd64: supported, arm64: untested}
-    SecurityGroup:        {amd64: supported, arm64: untested}
-    Stream:               {amd64: supported, arm64: untested}
-    User:                 {amd64: supported, arm64: untested}
-    Volume:               {amd64: supported, arm64: untested}
+    Function:             {amd64: supported, arm64: supported, note: "arm64 RUN-VERIFIED 2026-08-30: the Knative serving data plane (user container + queue-proxy) ran and served an HTTP request on lima-openinfra-arm64. Verified via a node-pinned Knative Service (the exact substrate the composition emits); the Function XRD itself exposes node-pinning only for GPU, so the wrapper CR was not itself pinned"}
+    Grant:                {amd64: supported, arm64: supported, note: "arm64 RUN-VERIFIED 2026-08-30: the grant expiry-reconciler ran on lima-openinfra-arm64 and swept an expired Grant (binding teardown). No first-party image (alpine-k8s multi-arch)"}
+    Group:                {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration (RBAC via provider-kubernetes), no arm64-node data plane"}
+    HttpApi:              {amd64: supported, arm64: supported, note: "arm64 RUN-VERIFIED 2026-08-29 (survey-2026-08-29): live HttpApi rendered a Traefik Ingress and zero pods — pure orchestration; Traefik (k3s arm64) + provider-kubernetes both arm64"}
+    Model:                {amd64: supported, arm64: untested, note: "heavy inference data plane not exercised on arm64 (effort cap) — see survey-2026-08-30"}
+    Policy:               {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration, no arm64-node data plane"}
+    Role:                 {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration, no arm64-node data plane"}
+    SecurityGroup:        {amd64: supported, arm64: untested, note: "renders a CiliumNetworkPolicy (central orchestration); enforcement is by the native-arm64 Cilium agent (confirmed Running on lima-openinfra-arm64), but SG-specific enforcement not directly exercised on arm64 — see survey-2026-08-30"}
+    Stream:               {amd64: supported, arm64: untested, note: "bespoke Debezium+Benthos data plane not run on arm64 (effort cap); NATS/JetStream substrate is arm64-confirmed — see survey-2026-08-30"}
+    User:                 {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration, no arm64-node data plane"}
+    Volume:               {amd64: supported, arm64: untested, note: "CR reconciles Synced=True (2026-08-30); the Longhorn arm64 data plane (attach/mount on the arm64 node) was NOT exercised — longhorn-host-prereq is unhealthy on lima-openinfra-arm64"}
