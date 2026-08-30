@@ -1,0 +1,96 @@
+# The singleton controller for kind: StateMachine — open-infra's workflow engine.
+# One small pod, cluster-wide, watches kind: Execution objects; for each it reads the
+# referenced StateMachine's ASL definition and runs the workflow, invoking Task states'
+# Functions over their cluster-local URL and checkpointing progress into the Execution
+# status. Pre-defined here (SA + ClusterRole + ClusterRoleBinding + Deployment), NOT
+# emitted per-machine by the composition, so it needs no RBAC-creation power from the
+# provider (whose SA is deliberately RBAC-free — see provider-setup.yaml). This mirrors
+# how the bucket-setup identity is pre-defined rather than provider-created.
+#
+# Runs in crossplane-system (a namespace guaranteed to exist alongside the compositions).
+# Synced after the CRDs (sync-wave 3).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-statemachine
+  namespace: crossplane-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-statemachine
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+rules:
+  # Read state-machine definitions.
+  - apiGroups: ["openinfra.dev"]
+    resources: ["statemachines"]
+    verbs: ["get", "list", "watch"]
+  # Drive executions and checkpoint their status.
+  - apiGroups: ["openinfra.dev"]
+    resources: ["executions"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["openinfra.dev"]
+    resources: ["executions/status"]
+    verbs: ["get", "update", "patch"]
+  # Best-effort execution events (visible in the namespace like CloudWatch events).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-statemachine
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-statemachine
+subjects:
+  - kind: ServiceAccount
+    name: openinfra-statemachine
+    namespace: crossplane-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openinfra-statemachine
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/part-of: open-infra
+    app: openinfra-statemachine
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 1
+  # Single writer: never run two controllers that could double-drive an execution.
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: openinfra-statemachine } }
+  template:
+    metadata:
+      labels: { app: openinfra-statemachine }
+    spec:
+      serviceAccountName: openinfra-statemachine
+      # The default :latest image is amd64 (the FIPS/default arch); pin there so the
+      # singleton lands on an amd64 node. An arm64-only cluster would override the image.
+      nodeSelector: { kubernetes.io/arch: amd64 }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: controller
+          image: ghcr.io/harn3ss/open-infra-statemachine:latest
+          env:
+            - { name: POLL_INTERVAL, value: "5" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 256Mi }
