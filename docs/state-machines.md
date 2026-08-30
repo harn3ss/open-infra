@@ -141,5 +141,6 @@ rejected with a `States.Runtime` error rather than silently ignored:
 - Executions are runtime objects, not declared infrastructure, so — like AWS —
   `kind: StateMachine` is a Terraform resource but you start executions from the
   console or `kubectl`, not from Terraform.
-- Each state machine runs its own small controller (compiled from the definition), so
-  deleting the `StateMachine` tears the controller down with it.
+- A single cluster-wide controller runs every state machine's executions; deleting a
+  `StateMachine` stops new executions from starting (the definition is gone), and its
+  past `Execution` objects remain until you delete them.

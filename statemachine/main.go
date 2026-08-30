@@ -1,13 +1,12 @@
 // statemachine — open-infra's kind: StateMachine controller (the "Step Functions"
-// execution engine). One controller runs per state machine (emitted by
-// statemachine-composition.yaml). It mounts the compiled ASL definition, polls the
-// namespace for kind: Execution objects that reference this state machine, and runs
-// each one to completion — invoking Task states' Functions over their cluster-local
-// URL, applying Choice/Wait/Pass/Retry/Catch, and checkpointing progress into the
+// execution engine). A single cluster-wide controller (deployed by
+// statemachine-controller.yaml) watches kind: Execution objects across all
+// namespaces; for each it reads the referenced StateMachine's ASL definition and
+// runs the workflow — invoking Task states' Functions over their cluster-local URL,
+// applying Choice/Wait/Pass/Retry/Catch, and checkpointing progress into the
 // Execution's status so a Running execution resumes across a controller restart.
 //
-// Env: STATE_MACHINE (this machine's name), NAMESPACE, DEF_PATH (mounted
-// definition.json), POLL_INTERVAL (seconds, default 5).
+// Env: POLL_INTERVAL (seconds, default 5).
 package main
 
 import (
@@ -24,32 +23,11 @@ import (
 )
 
 func main() {
-	sm := os.Getenv("STATE_MACHINE")
-	ns := os.Getenv("NAMESPACE")
-	defPath := os.Getenv("DEF_PATH")
-	if sm == "" || ns == "" || defPath == "" {
-		log.Fatal("STATE_MACHINE, NAMESPACE and DEF_PATH are required")
-	}
 	poll := 5
 	if v := os.Getenv("POLL_INTERVAL"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			poll = n
 		}
-	}
-
-	// Parse the definition once. A bad definition is not a crashloop: keep running
-	// and fail each referencing execution with a clear error (defErr).
-	var def *Definition
-	var defErr error
-	if raw, err := os.ReadFile(defPath); err != nil {
-		defErr = err
-	} else {
-		def, defErr = ParseDefinition(raw)
-	}
-	if defErr != nil {
-		log.Printf("statemachine %s/%s: definition invalid: %v (executions will be failed)", ns, sm, defErr)
-	} else {
-		log.Printf("statemachine %s/%s: loaded definition, StartAt=%s, %d states", ns, sm, def.StartAt, len(def.States))
 	}
 
 	client, err := newInClusterClient()
@@ -60,16 +38,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	ctrl := &controller{sm: sm, ns: ns, def: def, defErr: defErr, client: client}
+	ctrl := &controller{client: client}
 	ticker := time.NewTicker(time.Duration(poll) * time.Second)
 	defer ticker.Stop()
 
-	log.Printf("statemachine %s/%s: polling every %ds", ns, sm, poll)
+	log.Printf("statemachine controller: watching executions cluster-wide, polling every %ds", poll)
 	ctrl.reconcile(ctx)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("statemachine %s/%s: shutting down", ns, sm)
+			log.Printf("statemachine controller: shutting down")
 			ctrl.wg.Wait()
 			return
 		case <-ticker.C:
@@ -79,18 +57,13 @@ func main() {
 }
 
 type controller struct {
-	sm     string
-	ns     string
-	def    *Definition
-	defErr error
 	client *k8sClient
-
 	active sync.Map // uid -> struct{}
 	wg     sync.WaitGroup
 }
 
 func (c *controller) reconcile(ctx context.Context) {
-	execs, err := c.client.listExecutions(ctx, c.ns)
+	execs, err := c.client.listAllExecutions(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("list executions: %v", err)
@@ -99,9 +72,6 @@ func (c *controller) reconcile(ctx context.Context) {
 	}
 	for i := range execs {
 		e := execs[i]
-		if e.Spec.StateMachineRef.Name != c.sm {
-			continue
-		}
 		switch e.Status.Phase {
 		case "Succeeded", "Failed", "TimedOut":
 			continue
@@ -119,14 +89,25 @@ func (c *controller) reconcile(ctx context.Context) {
 }
 
 func (c *controller) run(ctx context.Context, e Execution) {
+	ns := e.Metadata.Namespace
 	name := e.Metadata.Name
+	smName := e.Spec.StateMachineRef.Name
 	now := func() string { return time.Now().UTC().Format(time.RFC3339) }
 
-	if c.defErr != nil {
-		c.finalize(e, map[string]any{
+	// Read + parse the referenced state machine's ASL definition.
+	rawDef, err := c.client.getStateMachineDefinition(ctx, ns, smName)
+	if err != nil {
+		c.finalize(ns, name, map[string]any{
 			"phase": "Failed", "error": ErrRuntime,
-			"cause":     "state machine definition is invalid: " + c.defErr.Error(),
-			"stoppedAt": now(),
+			"cause": "cannot read state machine " + smName + ": " + err.Error(), "stoppedAt": now(),
+		})
+		return
+	}
+	def, err := ParseDefinition([]byte(rawDef))
+	if err != nil {
+		c.finalize(ns, name, map[string]any{
+			"phase": "Failed", "error": ErrRuntime,
+			"cause": "state machine definition is invalid: " + err.Error(), "stoppedAt": now(),
 		})
 		return
 	}
@@ -148,31 +129,31 @@ func (c *controller) run(ctx context.Context, e Execution) {
 			data = map[string]any{}
 		}
 		input = data
-		log.Printf("execution %s/%s: resuming at %s", c.ns, name, startState)
+		log.Printf("execution %s/%s: resuming at %s", ns, name, startState)
 	} else {
 		in := strings.TrimSpace(e.Spec.Input)
 		if in == "" {
 			in = "{}"
 		}
 		if err := json.Unmarshal([]byte(in), &input); err != nil {
-			c.finalize(e, map[string]any{
+			c.finalize(ns, name, map[string]any{
 				"phase": "Failed", "error": ErrRuntime,
 				"cause": "spec.input is not valid JSON: " + err.Error(), "stoppedAt": now(),
 			})
 			return
 		}
-		startState = c.def.StartAt
+		startState = def.StartAt
 		data = input
 		hist = nil
 		// Claim the execution: mark Running before we start doing work.
-		if err := c.client.patchStatus(ctx, c.ns, name, map[string]any{
+		if err := c.client.patchStatus(ctx, ns, name, map[string]any{
 			"phase": "Running", "startedAt": now(), "currentState": startState,
 			"context": toJSONString(input), "error": "", "cause": "",
 		}); err != nil {
-			log.Printf("execution %s/%s: claim failed: %v", c.ns, name, err)
+			log.Printf("execution %s/%s: claim failed: %v", ns, name, err)
 			return
 		}
-		log.Printf("execution %s/%s: started at %s", c.ns, name, startState)
+		log.Printf("execution %s/%s: started %s at %s", ns, name, smName, startState)
 	}
 
 	startedAt := e.Status.StartedAt
@@ -181,10 +162,11 @@ func (c *controller) run(ctx context.Context, e Execution) {
 	}
 	ctxObj := map[string]any{
 		"Execution":    map[string]any{"Id": e.Metadata.UID, "Name": name, "StartTime": startedAt, "Input": input},
-		"StateMachine": map[string]any{"Name": c.sm},
+		"StateMachine": map[string]any{"Name": smName},
 	}
 
-	eng := newEngine(c.def, newHTTPInvoker(c.ns), ctxObj)
+	// Task states invoke Functions in the execution's namespace.
+	eng := newEngine(def, newHTTPInvoker(ns), ctxObj)
 	eng.record = func(ev map[string]any) { hist = append(hist, ev) }
 	eng.checkpoint = func(state string, d any, waitUntil *time.Time) error {
 		st := map[string]any{
@@ -196,11 +178,11 @@ func (c *controller) run(ctx context.Context, e Execution) {
 		} else {
 			st["waitUntil"] = ""
 		}
-		return c.client.patchStatus(ctx, c.ns, name, st)
+		return c.client.patchStatus(ctx, ns, name, st)
 	}
 	// Honor a checkpointed Wait's original deadline on resume.
 	if resuming && e.Status.WaitUntil != "" {
-		if s, ok := c.def.States[startState]; ok && s.Type == "Wait" {
+		if s, ok := def.States[startState]; ok && s.Type == "Wait" {
 			if t, err := time.Parse(time.RFC3339, e.Status.WaitUntil); err == nil {
 				eng.resumeWait = &t
 			}
@@ -212,7 +194,7 @@ func (c *controller) run(ctx context.Context, e Execution) {
 	// A controller shutdown mid-run leaves the execution checkpointed as Running so
 	// the next controller resumes it — don't overwrite it with a terminal state.
 	if ctx.Err() != nil {
-		log.Printf("execution %s/%s: interrupted, left Running for resume", c.ns, name)
+		log.Printf("execution %s/%s: interrupted, left Running for resume", ns, name)
 		return
 	}
 
@@ -228,16 +210,16 @@ func (c *controller) run(ctx context.Context, e Execution) {
 		final["error"] = res.Error
 		final["cause"] = res.Cause
 	}
-	c.finalize(e, final)
-	log.Printf("execution %s/%s: %s", c.ns, name, res.Phase)
+	c.finalize(ns, name, final)
+	log.Printf("execution %s/%s: %s", ns, name, res.Phase)
 }
 
-func (c *controller) finalize(e Execution, status map[string]any) {
+func (c *controller) finalize(ns, name string, status map[string]any) {
 	// Use a fresh context for the terminal patch so a cancelled run still records
 	// its outcome.
 	pctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := c.client.patchStatus(pctx, c.ns, e.Metadata.Name, status); err != nil {
-		log.Printf("execution %s/%s: final status patch failed: %v", c.ns, e.Metadata.Name, err)
+	if err := c.client.patchStatus(pctx, ns, name, status); err != nil {
+		log.Printf("execution %s/%s: final status patch failed: %v", ns, name, err)
 	}
 }
