@@ -1,4 +1,4 @@
-# Compliance scans on the certified substrate — 2026-08-16
+# Compliance scans on the FIPS-mode substrate — 2026-08-16
 
 Gathered while the SLES eval subscription is active (expires 2026-10-14). Substrate: 3-node
 SLES 15 SP7 + RKE2 v1.35.7 + FIPS mode (all nodes `fips_enabled=1`, crypto packages version-locked).
@@ -51,12 +51,15 @@ Report: `kube-bench-report.txt` (full per-check). Run as an in-cluster Job on a 
   `zypper list-patches` needed = **0** (node is current — `install_updates` ran at build).
 - `zypper update --dry-run` → *"The following 11 items are locked and will not be changed by any action"*
   (crypto-policies, dracut-fips, kernel-default, libgcrypt20, libgnutls30, libopenssl1_1/3, openssl-3,
-  mozilla-nss, patterns-base-fips) → **"Nothing to do."** The certified crypto modules stay pinned
-  across updates — drift-proof, as required for a maintained FIPS configuration.
+  mozilla-nss, patterns-base-fips) → **"Nothing to do."** The version-locked crypto packages stay pinned
+  across updates — drift-proof, as required for a maintained FIPS configuration. (Provenance: the 11
+  packages captured 2026-08-16 were the **stock SP7 builds**, not the SP6 CMVP-certified module versions
+  — corrected on later review; the certified-module path is proven separately and is not what this
+  2026-08-16 run locked.)
 
 ## Honest framing
 These scans make the point-in-time validation **assessor-legible**: the OS was DISA-STIG-scanned and
-the Kubernetes distro CIS-benchmarked, both under FIPS mode, on a subscribed/certified substrate, with
+the Kubernetes distro CIS-benchmarked, both under FIPS mode, on a subscribed, FIPS-mode substrate, with
 a documented remediation path and enforced crypto version-locks. What they do NOT claim: that the
 substrate is *STIG-compliant as shipped* (it is a baseline needing deployer hardening) or that
 open-infra itself is certified (the CC/FIPS evaluations cover the OS + Kubernetes crypto module).
