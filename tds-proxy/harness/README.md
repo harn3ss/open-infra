@@ -141,3 +141,35 @@ docker build -t tdsgrid-sqlalchemy harness/sqlalchemy
 docker run --rm --network host -v /path/proxy.crt:/proxy.crt:ro \
   -e HOST=127.0.0.1 -e PORT=23443 -e USER=sa -e PW='…' -e ENCRYPT=strict -e CERT=/proxy.crt tdsgrid-pyodbc
 ```
+
+## Fault matrix — driver × fault (#40)
+
+`fault-matrix.sh` drives each real client driver (`jdbc/Fault.java`, `tedious/fault.js`,
+`pyodbc/fault.py` in `MODE=pyodbc|sqlalchemy`, `dotnet/fault/`) through the fault scenarios and records
+the CLIENT-observed outcome — closing the gap where only go-mssqldb had ever seen a fault. The proxy runs
+TLS-terminating (`-tls-cert/-tls-key`, a self-signed localhost cert) because the modern drivers default to
+`encrypt=true`. Each client prints `FAULT_WINDOW_OPEN` then a `RESULT` line; the orchestrator injects the
+backend fault at a fixed offset with `docker kill` + `docker start` (an immediate SIGKILL — `docker restart`
+does a graceful 10s stop that a WAITFOR window can outlast), and reports the proxy `/status` deltas.
+
+```bash
+BACKEND=$(harness/throwaway-backend.sh)                 # docker SQL Server 2022, 127.0.0.1:21433
+go build -o /tmp/tds-proxy .
+openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/p.key -out /tmp/p.crt -days 3650 \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+/tmp/tds-proxy -listen 127.0.0.1:23433 -backend 127.0.0.1:21433 -metrics 127.0.0.1:29114 \
+  -pool-max 4 -tls-cert /tmp/p.crt -tls-key /tmp/p.key &
+# container drivers: docker build -t tdsgrid-pyodbc -f pyodbc/Dockerfile.fault pyodbc ;
+#                    docker build -t tdsgrid-dotnet-fault dotnet/fault
+harness/fault-matrix.sh cell jdbc failover-during-txn      # scenarios: failover-idle
+harness/fault-matrix.sh cell pyodbc midresult-drop         #   failover-during-txn midresult-drop
+harness/fault-matrix.sh cell dotnet pinned-discard none    #   pinned-discard
+harness/fault-matrix.sh stampede sqlalchemy 6              # semaphore-ceiling
+harness/throwaway-backend.sh --down
+```
+
+Scenarios: **failover-idle** (idle pooled conn survives a backend restart transparently),
+**failover-during-txn** (a clean error, never a silent half-applied commit), **midresult-drop** (a clean
+error mid-stream, never a truncated set that looks complete), **pinned-discard** (a pinned backend is
+discarded on client drop), **pool-exhaustion-stampede** (the per-key semaphore ceiling holds). Verdicts
+land in `../grid.jsonl` with `evidence_ref: live <date>`.
