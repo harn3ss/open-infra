@@ -29,13 +29,13 @@ roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinf
 subjects:
   - { kind: ServiceAccount, name: kind-satisfiable, namespace: crossplane-system }
 ---
-# Seed so the admission policy has data before the first reconcile (all-true is safe: it only ever
-# tightens as the reconciler marks unsupported-on-every-present-arch kinds false).
-apiVersion: v1
-kind: ConfigMap
-metadata: { name: openinfra-kind-satisfiable, namespace: crossplane-system }
-data: {}
----
+# NOTE: no seed ConfigMap. The openinfra-kind-satisfiable ConfigMap is created and owned entirely by
+# the CronJob below (single writer). Until the first reconcile writes it the ConfigMap is absent, and
+# the admission policy fails OPEN via parameterNotFoundAction: Allow (arch-admission-policy.yaml); a
+# data-less ConfigMap likewise fails open via `!has(params.data)`. A seed here (data: {}) would fight
+# the CronJob's writes under ArgoCD self-heal — git would say data:{} while the CronJob writes the real
+# kinds — so it is deliberately omitted now that platform/arch is GitOps-managed (see root-app.yaml
+# include). This is what makes the fix from #48 actually reach the cluster instead of drifting. (#49)
 apiVersion: batch/v1
 kind: CronJob
 metadata: { name: kind-satisfiable, namespace: crossplane-system }
