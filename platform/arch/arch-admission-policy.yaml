@@ -21,8 +21,12 @@ spec:
         operations: ["CREATE"]
         resources: ["*"]
   validations:
-    # Allow when: no param data yet, OR the kind isn't tracked, OR it is satisfiable.
-    - expression: "params.data == null || !(object.kind in params.data) || params.data[object.kind] == 'true'"
+    # Allow when: the param ConfigMap has no data field yet (fresh/DR bootstrap, or a reconcile that
+    # wrote nothing), OR the kind isn't tracked, OR it is satisfiable. `has(params.data)` — NOT
+    # `params.data == null` — because a ConfigMap with no `data:` field makes `params.data` THROW
+    # ("no such key: data"), which under failurePolicy:Fail would deny EVERY kind. Fail open on
+    # missing data; only an explicit `<kind>: false` from a successful reconcile blocks. (#48)
+    - expression: "!has(params.data) || !(object.kind in params.data) || params.data[object.kind] == 'true'"
       reason: Forbidden
       messageExpression: "'open-infra: kind ' + object.kind + ' cannot run on any architecture present in this cluster — its declared arch support is unavailable on every node (fail-closed; see platform/arch/kind-architectures.yaml). Add a node of a supported arch, or use a different kind.'"
 ---
