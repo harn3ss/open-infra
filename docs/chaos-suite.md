@@ -218,14 +218,14 @@ change is the asterisk an auditor distrusts.
   Scenario 5 (`longhorn-replica-loss`); bidirectional isolation (needs `partitionPeer` to
   accept multiple selectors).
 
-## Scenario 5 — storage replica-loss (now runnable; mechanism proven 2026-08-01)
+## Scenario 5 — storage replica-loss
 
-Formerly blocked for two reasons; the first is now **solved** and the second is **moot**. The
-real replica-loss test runs end-to-end (`chaos/scenario-storage-replica-loss.sh`): provision the
+The real replica-loss test runs end-to-end (`chaos/scenario-storage-replica-loss.sh`): provision the
 sandbox DBs on Longhorn, lose a replica of pg-b's volume mid-write, and assert the volume
 degrades-but-survives, the DB stays queryable off the surviving replica, the mesh converges
-byte-identical (zero lost writes), and Longhorn rebuilds to healthy. *(Shaken out live as admin:
-degrade confirmed, converged 22s, rebuilt to 2 replicas across 2 chaos nodes.)*
+byte-identical (zero lost writes), and Longhorn rebuilds to healthy. *(Verified live as admin:
+degrade confirmed, converged in 22s, rebuilt to 2 replicas across 2 chaos nodes.)* It stays
+admin-only (not graduation-required) pending a scoped `longhorn-system` RBAC decision, below.
 
 **1. Faulting a real replica used to be unsafe — now the sandbox has its OWN fault-able
 storage.** Replicas live in `instance-manager` pods in `longhorn-system`, each hosting replicas
@@ -245,11 +245,10 @@ closes that from the one durable signal — the node label — setting the creat
 and the Longhorn node tag/scheduling on every `openinfra.dev/chaos` node (Sync Job now + a
 self-healing CronJob), so a rebuilt chaos node reacquires its disk and `chaos` tag on its own.
 
-**2. The safe alternative — `io-latency` — does not actually inject, and now we know
-exactly why.** Degrading the sandbox's *own* Longhorn-backed volume would have answered the
+**2. The safe alternative — `io-latency` — does not actually inject, for a known reason.**
+Degrading the sandbox's *own* Longhorn-backed volume would have answered the
 same question safely, but every IOChaos sits at `phase: Not Injected/Wait, injectedCount: 0`
-**forever, silently**. Re-tested 2026-07-27 (once the cert-manager freeze was in, on the
-hypothesis it shared that root cause — it does **not**). The confirmed root cause is a
+**forever, silently**. The root cause is a
 **cgroup-v2 incompatibility in Chaos Mesh 2.7.2**, not certs and not really `toda`:
 
 ```
@@ -263,11 +262,11 @@ runs the **unified cgroup-v2 hierarchy** — there is no `/sys/fs/cgroup/devices
 no `/dev/fuse`, `toda` (the FUSE injector) can't mount, so the earlier "Starting toda takes
 too long → kill toda" / `jsonrpc.rs` panic is a *downstream* symptom of this grant failure.
 
-**2b. `io-latency` is a confirmed DEAD END — and now moot.** io-latency was only ever a *safe
+**2b. `io-latency` is a confirmed dead end, and moot.** io-latency was only ever a *safe
 stand-in* for faulting storage; with the real replica-loss test above, it isn't needed. And the
 one apparent fix is impossible: booting the chaos nodes to cgroup v1
-(`systemd.unified_cgroup_hierarchy=0`) to restore the `devices` controller was **tried on all
-three (2026-08-01) and reverted** — the devices controller reappeared, but **this k3s's kubelet
+(`systemd.unified_cgroup_hierarchy=0`) to restore the `devices` controller was **tried and
+reverted** — the devices controller reappeared, but **this k3s's kubelet
 refuses to run on cgroup v1** (`kubelet is configured to not run on a host using cgroup v1`),
 so the nodes went NotReady. io-latency needs cgroup v1; the kubelet needs cgroup v2 — mutually
 exclusive on this Kubernetes version. The only theoretical path left is a Chaos Mesh release
@@ -298,11 +297,11 @@ faults overlap) with a uniform wildcard tail; `scenario-lottery.sh` applies them
 **proves each one fired**, drives the convergence harness through the combined chaos, heals, and
 requires byte-identical reconvergence with zero lost. Design: seeded + **replayable** (a red
 reruns with `LOTTERY_SEED=<seed>`, printed prominently), draw-**without-replacement**, blast-cap
-2–4, convergence oracle as judge. *(Shaken out live: seed 7 `[latency, capture-kill, stress-mem]`
-converged 250s; seed 42 `[isolation, stress-mem, sink-failure]` — a max-blast cut combo —
-reconverged 599s.)*
+2–4, convergence oracle as judge. *(Verified live: seed 7 `[latency, capture-kill, stress-mem]`
+converged in 250s; seed 42 `[isolation, stress-mem, sink-failure]` — a max-blast cut combo —
+reconverged in 599s.)*
 
-Baked-in lessons (all learned the hard way here):
+Baked-in design constraints:
 
 1. **The palette excludes inert faults.** `io-latency` and `dns-error` never inject on this
    cluster (their Chaos Mesh Rust injectors panic); a random draw of them would silently
@@ -316,13 +315,12 @@ Baked-in lessons (all learned the hard way here):
    of a peer pod (the peer's IP churns and the netem can't inject) — those are two ways to break
    the same link, not an interesting combo.
 
-**Bandit-weighting** (weighting arms by past yield) is the tracked next refinement; v1 uses
+**Bandit-weighting** (weighting arms by past yield) is a planned next refinement; v1 uses
 uniform arm weights + the surface-tag correlation bias, which is where the spec's value is.
 
-## What the suite has already caught
+## What the suite guards against
 
-It has earned its keep before ever running a nightly — each of these was found by making a
-scenario real, and each is fixed:
+Concrete failure modes the suite catches — each is now guarded:
 
 - **A partition that injected nothing.** The mesh is *pod-mediated* (pg → Debezium → NATS →
   apply-sink → pg), so cutting pg-a↔pg-b does nothing. Drove the `partitionPeer` fault
