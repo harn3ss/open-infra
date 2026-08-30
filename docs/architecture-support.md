@@ -94,13 +94,13 @@ images.** open-infra's FIPS posture comes from the platform underneath the workl
 RKE2 run in FIPS mode** (kernel FIPS + FIPS crypto policy — the OS and the Kubernetes cryptographic
 modules), exercised end-to-end on **amd64 only** (see
 [`security-and-compliance.md`](security-and-compliance.md) and [`docs/compliance/`](compliance/)).
-Precise about the 2026-08-15 event: the nodes ran FIPS **mode** on **stock SP7 crypto packages** — the
+To be precise: the nodes ran FIPS **mode** on **stock SP7 crypto packages** — the
 11 version-locked RPMs are the running SP7 builds, **not the CMVP-certified SP6 module builds** (SUSE
 does publish those SP6-certified modules for installation on SP7; that install step was not performed).
 So the honest claim about that event is "operating in FIPS mode," never "running the
 FIPS-140-3-validated module versions."
 
-**Since then (2026-08-28) the certified-module path is proven.** SUSE's SP6-certified crypto modules
+**The certified-module path is proven.** SUSE's SP6-certified crypto modules
 install on SP7 (via the Certifications Module) and the OpenSSL FIPS provider goes **active** in FIPS
 mode — validated end-to-end on **both amd64 (a SLES SP7 OptiPlex) and arm64 (a SLES SP7 Graviton)**, the
 identical certified versions on each arch, so **arm64 carries no substrate-FIPS disadvantage**. The
@@ -123,8 +123,8 @@ and our first-party images — is out of scope of those substrate certificates**
 carry a separate *image-level* FIPS-**mode** build — see below — which is itself not a certificate).
 Built ≠ verified ≠ certified.
 
-The first-party application **images** are a separate layer, and its FIPS state changed on 2026-08-28:
-the **amd64 Go-built images now compile with the Go native FIPS 140-3 module** (`GOFIPS140=v1.0.0`, which
+The first-party application **images** are a separate layer with their own FIPS posture:
+the **amd64 Go-built images compile with the Go native FIPS 140-3 module** (`GOFIPS140=v1.0.0`, which
 bakes `DefaultGODEBUG=fips140=on` into the binary, so `crypto/fips140.Enabled()` is true at runtime with
 no env) and are stamped **`openinfra.dev/fips=true`**. The **arm64** images (built with `GOFIPS140` empty)
 and the **non-Go** images — `query` (DuckDB), `babelfish` (C++/ANTLR), `mc` (upstream MinIO client) —
@@ -143,8 +143,8 @@ verified ≠ certified.
   for the substrate validation and not itself a certificate.
 - **arm64 stays portability / non-regulated** — its images, and any arm64 substrate, carry no FIPS claim.
 
-Giving the amd64 Go image builds an *image-level* FIPS crypto path — the Go native FIPS 140-3 module
-(`GOFIPS140=v1.0.0`, `fips140=on`) — was **done 2026-08-28**: the amd64 Go images build with it and are
+The amd64 Go image builds carry an *image-level* FIPS crypto path — the Go native FIPS 140-3 module
+(`GOFIPS140=v1.0.0`, `fips140=on`): they build with it and are
 stamped `openinfra.dev/fips=true` (verified — the binary carries `-tags=fips140v1.0` / `GOFIPS140=v1.0.0`).
 The claim is scoped to exactly what it is: an image-level FIPS-**mode** build, not a CMVP certificate (the
 Go module is CMVP *in process*) and not the substrate validation.
@@ -167,7 +167,7 @@ Go module is CMVP *in process*) and not the substrate validation.
   `arch: amd64` (structural), a Linux VM stays flexible unless annotated. Validated end-to-end on a live
   mixed cluster (an arm64 node joined over a mesh; positive/negative/isolation cases all held) and
   render-tested.
-- **Per-image FIPS crypto on the amd64 builds — done (2026-08-28).** The amd64 Go images build with the
+- **Per-image FIPS crypto on the amd64 builds — done.** The amd64 Go images build with the
   Go native FIPS 140-3 module (`GOFIPS140=v1.0.0`) and carry `openinfra.dev/fips=true`; arm64 and the
   non-Go images (`query`/`babelfish`/`mc`) stay `false`. It is an image-level FIPS-*mode* build, not a
   CMVP certificate (the Go module is CMVP in-process).

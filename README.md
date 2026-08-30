@@ -329,9 +329,9 @@ writes and asserts every member ends identical with zero lost writes — now dri
 **unattended, nightly** by a [chaos suite](docs/chaos-suite.md) that partitions the
 mesh, kills its own capture/sink pods, fails over a managed Postgres primary, forces a
 backward clock, and runs all of it at once, with every scenario asserting the fault
-*actually landed*. That automation is **new**: the bar to call this Stable is **30
-consecutive green nights with zero unexplained reds**, and that clock has only just
-started. Until it runs out this stays **Experimental**: use it, keep an authoritative
+*actually landed*. The bar to call this Stable is **30
+consecutive green nights with zero unexplained reds**, which has not yet been met;
+until it is, this stays **Experimental**: use it, keep an authoritative
 source, and don't make multi-master the system of record for data you can't
 reconstruct.
 

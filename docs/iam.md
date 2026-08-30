@@ -136,13 +136,13 @@ spec:
 
 Each `Allow` compiles to a **labelled ClusterRole**; `kind: Role` is an **aggregated ClusterRole**
 selecting those labels. Attaching or detaching a policy in the UI is adding or removing a label.
-This is exactly how Kubernetes' own `admin`/`edit`/`view` are built and where Rancher landed.
+This is exactly how Kubernetes' own `admin`/`edit`/`view` are built, and the approach Rancher also uses.
 
 **Solve the escalation problem before writing the composition:** you cannot create a Role granting
 verbs you don't hold unless you hold `escalate`. Whatever renders these ClusterRoles must hold a
 superset of anything it can emit — there is no third option. Document the choice honestly.
 
-#### What is built (2026-07-22) — shipped
+#### What is built
 
 `kind: Policy`, `kind: Role`, the permission boundary, the BFF endpoints and the console UI are
 all live and verified end-to-end. How it actually works:
@@ -156,9 +156,9 @@ all live and verified end-to-end. How it actually works:
   Proven live: `secrets:Get` in a policy → 400 from the BFF; forced in at the CR level → compiled
   to an openinfra.dev-only ClusterRole with the bad rule gone.
 - **`kind: Role`** — a named bundle of policies, compiled to an *aggregated* ClusterRole that
-  unions them by label. Aggregation is where the escalation problem actually bit: Kubernetes
+  unions them by label. Aggregation is where the escalation problem arises: Kubernetes
   requires `escalate` to create **any** ClusterRole carrying an `aggregationRule`, which the
-  boundary does not satisfy. We chose to grant the rendering ServiceAccount `escalate` on
+  boundary does not satisfy. The rendering ServiceAccount is therefore granted `escalate` on
   clusterroles — **bounded-harmless**, because the `bind` verb stays `resourceName`-fenced to the
   three built-in roles and the SA holds no secrets/RBAC, so even with escalate it can *create* a
   powerful ClusterRole but can never *bind* one exceeding the boundary to a user. Escalate widens

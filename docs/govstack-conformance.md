@@ -40,7 +40,7 @@ the Blueprint reconciliation is the open item.
 | CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI — per-CA mount, least-privilege provisioner/issuer split, SAR-gated **and** NetworkPolicy-fenced issue/revoke, HA issuer (2 replicas + PDB); OpenAPI-described; `kind: EncryptionKey` alongside | ✅ shipped; live issuance is Vault-operator-gated (needs an initialized + unsealed Vault) |
 | Interfaces conform to the Architecture Blueprint OpenAPI | platform OpenAPI generated (above) | 🟡 needs the external Blueprint to reconcile |
 | Hardened deployment profile | opt-in `components.hardened`: enforce restricted PSS on the control plane + warn/audit elsewhere; Cilium default-deny + `kind: SecurityGroup` already shipped; console now non-root/RO-rootfs/seccomp/drop-ALL | ✅ profile shipped (opt-in) |
-| Encryption stack live-verified | Vault Transit customer keys; `probe/encryption-vault.sh` proves provision → round-trip → crypto-erase | ✅ live-verified 2026-08-20 on the reference cluster (KEK wraps/unwraps byte-identical; `kind: Destruction` makes the key unrecoverable). Bringing Vault up remains operator-gated (unseal-key custody is the customer's) |
+| Encryption stack live-verified | Vault Transit customer keys; `probe/encryption-vault.sh` proves provision → round-trip → crypto-erase | ✅ live-verified on the reference cluster (KEK wraps/unwraps byte-identical; `kind: Destruction` makes the key unrecoverable). Bringing Vault up remains operator-gated (unseal-key custody is the customer's) |
 
 ## Reliability evidence (the differentiator)
 

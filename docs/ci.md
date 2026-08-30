@@ -54,19 +54,16 @@ protection on `main` alone would not guarantee the tagged commit is green. The
 > release + both build workflows would share one group and `cancel-in-progress` would
 > cancel sibling gates.
 
-## Verifying the gate blocks (a real red rollout)
+## Verifying the gate blocks
 
-The gate was verified end-to-end with a deliberately failing build, not just by
-reading the YAML. On a throwaway `ci/red-build-demo` branch, a test was made to fail
-(`t.Fatal` in `apply-sink`), then `build-apply-sink` was dispatched against it:
+The gate is verifiable end-to-end with a deliberately failing build, not just by
+reading the YAML. On a throwaway branch, make a test fail (`t.Fatal` in `apply-sink`)
+and dispatch `build-apply-sink` against it:
 
-- Run: <https://github.com/harn3ss/open-infra/actions/runs/28594973144> (2026-07-02)
-- Result:
-  - `test / apply-sink` → **failure** (`go test -race`)
-  - `test / console-api` → success
-  - `test / test/render` → success
-  - `build` → **skipped**
+- `test / apply-sink` → **failure** (`go test -race`)
+- `test / console-api` → success
+- `test / test/render` → success
+- `build` → **skipped**
 
-No image was built, signed, or pushed. The branch was then deleted (the run history
-persists as the record). This is the difference between "tests exist" and "a bad tag
-cannot ship."
+No image is built, signed, or pushed. This is the difference between "tests exist" and
+"a bad tag cannot ship."

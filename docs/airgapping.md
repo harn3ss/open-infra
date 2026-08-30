@@ -99,4 +99,4 @@ egress and will be cut — expected for an air-gapped cluster.
 - **v1 scope:** the mirror is a single-replica, PVC-backed registry over plain HTTP on the cluster
   network. Charts/Helm repos and OS package mirrors are out of scope here — front-load those with your
   own mirror if your workloads pull them at runtime. TLS on the mirror and a full offline drill are
-  tracked in issue #72.
+  planned follow-ups.

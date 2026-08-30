@@ -110,7 +110,7 @@ error dialect.
 | DynamoDB, Secrets Manager, Kinesis, IAM, Bedrock, … | Postgres/FerretDB, Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
 
 Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters
-do — built → shaken out → proven by a probe → counted. The shim never claims a service it hasn't
+do — built → exercised → proven by a probe → counted. The shim never claims a service it hasn't
 made faithful: an unsupported service is an honest `501`, not a silent partial.
 
 ### S3 (faithful, proven)
@@ -156,9 +156,9 @@ end-to-end** — a SigV4-signed `createTodo` mutation then `getTodo` query round
 → open-appsync → a real VTL resolver (autoId + DynamoDB typed marshalling) → the data source → `{data}`
 (verified on-cluster). The runtime is **behavior-faithful**: `$util`/VTL and the JS runtime are diffed in
 CI against goldens **captured from a live AWS AppSync account** (via the `evaluate-mapping-template` /
-`evaluate-code` APIs), not just AWS's *documented* behavior — and much of the original slice-1 "not yet"
-list has since shipped (subscriptions over WS + JetStream, JS/pipeline resolvers, additional data-source
-types, a Stage-2 management wire protocol). What stays open — hence "broader parity experimental" — is a
+`evaluate-code` APIs), not just AWS's *documented* behavior. The runtime covers subscriptions over
+WS + JetStream, JS/pipeline resolvers, additional data-source types, and a Stage-2 management wire
+protocol. What stays open — hence "broader parity experimental" — is a
 subscription node-kill chaos streak, per-source fidelity captures, and the authoring-plane rung. See the
 current parity map in [open-appsync/README.md](../open-appsync/README.md).
 
