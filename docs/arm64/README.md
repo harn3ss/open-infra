@@ -216,10 +216,14 @@ things must line up — both now shipped, not hand edits:
    inferred as the CP's (arm64) and a `q35` VM is rejected *before scheduling* — even though a capable
    x86 worker is present and advertises `q35`.
 
-2. **KubeVirt is told amd64 is a real target.** On an **arm64 control plane**, `install.sh` patches the
+2. **KubeVirt has an amd64 runtime target.** On an **arm64 control plane**, `install.sh` patches the
    `KubeVirt` CR with `spec.configuration.architectureConfiguration.amd64` (`machineType: q35`,
-   `emulatedMachines: [q35*, pc-q35*]`, `ovmfPath`), so virt-api admits amd64 machine types. This is
-   guarded on `uname -m = aarch64`, so an all-amd64 cluster's KubeVirt is left at its default.
+   `emulatedMachines: [q35*, pc-q35*]`, `ovmfPath`). Guarded on `uname -m = aarch64`, so an all-amd64
+   cluster's KubeVirt is left at its default. Note (validated 2026-08-30 on a throwaway arm64 CP,
+   KubeVirt v1.8.4): the composition's `architecture: amd64` in (1) is what fixes **admission** — a q35
+   amd64 VMI admits on an arm64 CP using KubeVirt's built-in amd64 machine defaults, *with or without*
+   this patch. This patch's job is the **virt-launcher / qemu runtime** on the amd64 worker
+   (emulated-machine + OVMF config), which is what #45's actual Windows boot needed.
 
 **Longhorn placement on a mixed cluster.** VM root disks are provisioned by CDI/Longhorn and must land
 on the **amd64 worker** (the arm64 CP can't run the x86 guest, and is usually too small for a Windows
