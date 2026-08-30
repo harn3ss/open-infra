@@ -15,7 +15,7 @@
 > `ghcr.io/harn3ss/open-infra-tds-proxy` image, and `openinfra_database_proxy` in the Terraform provider)
 > — the open-infra analog of AWS RDS Proxy's `aws_db_proxy`. Still proposed: **mid-response
 > attention/cancel** (v2.2, §7). Per-transaction multiplexing shipped opt-in (`-tx-multiplex`, §7),
-> TLS termination shipped (#6, `spec.tls`), and MARS was analyzed and declined by design (§8).
+> TLS termination shipped (`spec.tls`), and MARS was analyzed and declined by design (§8).
 
 open-infra's managed SQL-Server engine (`database: { engine: babelfish }`, TDS on 1433) has no
 connection multiplexer. AWS RDS Proxy is the reference: it pools a few backend connections and lets
@@ -155,14 +155,14 @@ trace, not an assumption — the same honest-by-construction bar as the substrat
 - Babelfish's `sp_prepare`/server-prepared support — present, emulated, or ignored?
 - Does the proxy terminate TLS (so it can read the TDS to classify), or pass through (then it can't
   classify encrypted sessions and must pin them)? This single choice reshapes the encryption column.
-  **Resolved (#6):** the proxy terminates client TLS when `spec.tls` is enabled.
+  **Resolved:** the proxy terminates client TLS when `spec.tls` is enabled.
 
-## 7. v2 — per-transaction multiplexing within a session (issue #7)
+## 7. v2 — per-transaction multiplexing within a session
 
 v1 borrows a backend for the whole client session; reuse is *across* sessions. RDS Proxy's headline
 throughput comes from reusing *within* a session — returning the backend at each transaction boundary so
 one backend serves many mostly-idle clients. This is where a bug silently leaks one client's state into
-another, so it is gated on the driver + fault corpus (issues #3/#4, both closed) and ships **opt-in**
+another, so it is gated on the driver + fault corpus (both now covered) and ships **opt-in**
 (`-tx-multiplex`, default off): the default stays the proven session-level pool.
 
 **v2.0 scope — autocommit multiplexing (conservative, correct).** A session releases its backend after a
@@ -198,7 +198,7 @@ exactly at `COMMIT`/`ROLLBACK`.
   TDS transaction manager (message 0x0E: `TM_BEGIN_XACT` / `TM_COMMIT_XACT` / `TM_ROLLBACK_XACT`) — that's
   what `database/sql`+go-mssqldb, `Microsoft.Data.SqlClient`, and ODBC's autocommit-off send. The relay
   tracks a transaction depth from those subtypes (`tds.TxMgrRequestType`) and releases only at depth 0, so a
-  transaction can never span backends. NOTE (found empirically): SQL Server does **not** set `DONE_INXACT`
+  transaction can never span backends. NOTE: SQL Server does **not** set `DONE_INXACT`
   on the begin-ack DONE token, so the response-side signal is unreliable for "is a txn now open" — the
   request side is authoritative here.
 - **Conservative fallbacks stay sticky.** A raw `BEGIN TRAN` *batch* (not the TM path) and
@@ -214,7 +214,7 @@ exactly at `COMMIT`/`ROLLBACK`.
 mid-session backend swap — tx-multiplex still relays each response synchronously, so a mid-query cancel
 waits for the response to complete (the default session-level relay keeps prompt cancel).
 
-## 8. MARS (Multiple Active Result Sets) — posture & the ahead-of-AWS opportunity (issue #9)
+## 8. MARS (Multiple Active Result Sets) — posture (declined, at parity)
 
 MARS lets one connection have several interleaved active result sets. It rides the **SMP** session-multiplex
 protocol (each packet wrapped with an SMID `0x53` header carrying a per-stream SID), negotiated by a `B_MARS`
@@ -226,7 +226,7 @@ is SMP-wrapped, which the proxy can't classify (it can't see the inner TDS), so 
 pin — destroying the pooling the proxy exists for. Declining MARS keeps pooling. It is **not a correctness
 bug**: the classifier's fail-safe already pins anything it can't read.
 
-**Live finding (2026-08-22, Microsoft.Data.SqlClient vs SQL Server 2022, harness `MARS=1`):**
+**Finding (Microsoft.Data.SqlClient vs SQL Server 2022, harness `MARS=1`):**
 - Direct to the backend, `MultipleActiveResultSets=true` interleaves two readers on one connection — works
   (SQL Server supports MARS).
 - Through the proxy, the same client **connects fine**; it only fails if it *actually interleaves*, and then

@@ -57,11 +57,11 @@ artifact; this shows what the platform provides toward it.
 Status legend: **Implemented** (shipped and exercised) · **Partial** (core in place, hardening
 tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** (planned).
 
-The government control machinery (issue #71) was exercised end-to-end on the reference cluster on
-2026-08-18 — see [`govt-track-verification-2026-08.md`](compliance/govt-track-verification-2026-08.md)
+The government control machinery has been exercised end-to-end on the reference cluster — see
+[`govt-track-verification-2026-08.md`](compliance/govt-track-verification-2026-08.md)
 for exactly what was verified (audit off-siting integrity, Grant self-revoke, DataClassification,
-attestation store), the three latent bugs that pass found and fixed, and what stays gated (customer-key
-encryption and crypto-erase are Vault-gated and remain **not-live-verified**).
+attestation store) and what stays gated (customer-key encryption and crypto-erase are Vault-gated and
+remain **not-live-verified**).
 
 ### AC — Access Control
 
@@ -172,11 +172,11 @@ change and on a schedule, which is what an assessor looks for under SI-2:
    demand across all ecosystems (Go modules, the console npm tree, GitHub Actions). Nothing
    relies on someone remembering to check.
 3. **Verify.** CI gates every dependency PR — Go race tests plus a **UI typecheck + build**
-   job — so a bump that breaks the build or types cannot merge. (That gate was added after a
-   TypeScript major slipped through unverified; the loop now closes that hole.)
+   job — so a bump that breaks the build or types cannot merge, closing the gap where a type-level
+   break could otherwise reach the cluster unverified.
 4. **Remediate.** The fix merges through the normal reviewed-git → Argo path. Worked example:
    `CVE-2026-56852` (an infinite-loop DoS in `golang.org/x/text`) was surfaced by Trivy and
-   remediated by a dependency bump, verified green, the same day.
+   remediated by a dependency bump, verified green.
 
 Two guardrails keep the loop from doing harm: fragile major upgrades (e.g. the `@rjsf`
 form-library family, whose packages must move in lockstep) are **held** for a deliberate
@@ -256,15 +256,15 @@ re-run on a clean, unhardened, homogeneous fleet and reconverged byte-identical 
 so they were artifacts of the hardened-substrate environment and the root-cause deep-dive's overloaded
 control-plane node (its convergence runner exhausted etcd on one box), not defects in the multi-master
 engine itself. That is the expected result of exercising something that is still **Experimental**
-(multi-master reconvergence, below); the same run also surfaced real issues that were fixed in-window — a
-sandbox seed-vs-Postgres startup race and the data-plane `storageClass` portability gap. The substrate was additionally scanned against recognized baselines
+(multi-master reconvergence, below). The exercise also identified and fixed a sandbox startup race and a
+data-plane `storageClass` portability gap. The substrate was additionally scanned against recognized baselines
 — the OS with the DISA STIG OpenSCAP profile and the Kubernetes distribution with the CIS Kubernetes
 benchmark — establishing an assessor-legible hardening posture (a baseline, with a documented
 remediation path; full hardening is the deployer's). The scan results (DISA STIG 63 pass / 154 fail,
 PCI-DSS v4 109/132, HIPAA 29/99, ANSSI-BP-028-high 146/193; CIS Kubernetes 53 pass / 9 fail / 46 warn,
 all as-provisioned) and their remediation analysis are recorded in
 [`docs/compliance/rke2-sles-fips-scan-2026-08.md`](compliance/rke2-sles-fips-scan-2026-08.md). A follow-on
-re-scan after the STIG remediation was applied (2026-08-22) improved **every** framework — DISA STIG
+re-scan after the STIG remediation was applied improved **every** framework — DISA STIG
 194/25, PCI-DSS v4 166/76, HIPAA 92/36, ANSSI-BP-028-high 209/131 — showing the deployer-hardening step
 generalizes across baselines rather than closing STIG alone. The full
 OpenSCAP and kube-bench reports are retained in a dated evidence bundle (captured 2026-08-16, integrity
