@@ -74,11 +74,27 @@ kubectl -n vault exec vault-0 -- env VAULT_TOKEN="$VAULT_TOKEN" vault read "kes/
 
 echo "== crypto-erase: destroy the key, restart, confirm unreadable but present =="
 kubectl -n vault exec vault-0 -- env VAULT_TOKEN="$VAULT_TOKEN" vault delete "kes/$KEY" >/dev/null
+# Restart clears KES's key cache + MinIO's in-process DEK cache so the next read must re-unwrap via Vault.
 kubectl -n minio rollout restart deploy/kes >/dev/null; kubectl -n minio rollout status deploy/kes --timeout=60s >/dev/null
 kubectl -n "$NS" rollout restart deploy/minio-probe >/dev/null; kubectl -n "$NS" rollout status deploy/minio-probe --timeout=90s >/dev/null
-if run_mc "$MC; mc ls s/enc/o.txt >/dev/null && (mc cat s/enc/o.txt >/dev/null 2>&1 && echo STILL_READABLE || echo CRYPTO_ERASED)" | grep -q CRYPTO_ERASED; then
+# rollout status returns when the pod is Ready, but minio-probe has no readiness probe, so its HTTP may not be
+# serving yet. Don't hinge the verdict on mc's exit code during that window (a transient connect/list error
+# short-circuits an && chain and looks like a false fail); instead retry, and key the verdict off the actual
+# signals: the object must still be PRESENT, its read must fail with a decrypt error, and it must NEVER return
+# plaintext. NOTE: MinIO re-creates kes/$KEY (fresh material) on startup for new writes — expected, and it does
+# NOT un-erase anything: the existing object was wrapped by the OLD material, so it stays unrecoverable.
+erased=0
+for i in $(seq 1 20); do
+  # || true: mc cat exits non-zero on a crypto-erased object, which would trip `set -e` in this assignment.
+  out=$(run_mc "$MC; mc stat s/enc/o.txt >/dev/null 2>&1 && echo __PRESENT__; mc cat s/enc/o.txt 2>&1" || true)
+  echo "$out" | grep -q __PRESENT__ || { sleep 3; continue; }         # wait until MinIO serves the object
+  if echo "$out" | grep -q secret-payload; then echo "FAIL: object STILL READABLE after key destruction"; exit 1; fi
+  if echo "$out" | grep -qi 'decrypt'; then erased=1; break; fi        # "failed to decrypt ciphertext"
+  sleep 3
+done
+if [ "$erased" = 1 ]; then
   echo "PASS: object persists but is undecryptable after key destruction (crypto-erased)"
 else
-  echo "FAIL: object still readable (or missing) after key destruction"; exit 1
+  echo "FAIL: could not confirm crypto-erase (object never became present, or an unexpected error)"; exit 1
 fi
 echo "SSE-KMS probe PASSED"
