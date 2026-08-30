@@ -46,6 +46,18 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: StateMachine` — workflow orchestration (Step Functions equivalent), experimental.** Define a
+  workflow in Amazon States Language (the same JSON as `aws_sfn_state_machine.definition`) and run it by
+  creating a `kind: Execution`. An owned, dependency-free engine interprets the ASL — no Argo/Temporal —
+  invoking `kind: Function` Task states over their cluster-local URL. v1 covers Task, Choice, Wait, Pass,
+  Succeed and Fail, with Retry/Catch, TimeoutSeconds, and JSONPath data shaping
+  (InputPath/Parameters/ResultPath/OutputPath); Parallel, Map and the Express type are not yet
+  implemented (they fail loudly with `States.Runtime`, never silently). Executions checkpoint into their
+  status for durable resume across a controller restart (so Task handlers should be idempotent). Managed
+  from the console (Compute → State Machines) and expressible in Terraform; executions are runtime
+  objects, started from the console or `kubectl` rather than Terraform. See
+  [`docs/state-machines.md`](docs/state-machines.md).
+
 - **VM direct-LAN networking — `kind: VirtualMachine` `network: macvtap`.** A VM can attach directly to
   the physical LAN through a macvtap device on the host NIC, pulling its own DHCP lease as a first-class
   LAN host (reachable on every port, e.g. SMB/445) while keeping a pod NIC for in-cluster access. Opt-in
