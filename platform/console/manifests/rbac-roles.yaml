@@ -124,6 +124,8 @@ rules:
       - httpapis
       - graphqlapis
       - databaseproxies
+      - statemachines
+      - executions
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
     resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]

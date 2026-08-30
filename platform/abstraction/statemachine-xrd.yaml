@@ -1,0 +1,68 @@
+# open-infra's "Step Functions": kind: StateMachine — an Amazon States Language
+# (ASL) workflow that orchestrates kind: Function calls with branching, retries,
+# error handling and waits. The workflow definition is ASL JSON (the same document
+# you would put in aws_sfn_state_machine.definition), and you run it by creating a
+# kind: Execution that references it (see execution-crd.yaml).
+#
+# v1 state types: Task (invoke a Function), Choice, Wait, Pass, Succeed, Fail —
+# with Retry/Catch, TimeoutSeconds, and JSONPath data shaping
+# (InputPath/Parameters/ResultPath/OutputPath). Parallel, Map and Express type are
+# not yet implemented (see docs/state-machines.md).
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xstatemachines.openinfra.dev
+  annotations:
+    # Chaos topology tags (consumed by tools/chainforge): a state machine drives
+    # Functions over http-invoke; it is not itself a data node in a chaos chain.
+    openinfra.dev/chaos-role: "statemachine"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XStateMachine
+    plural: xstatemachines
+  claimNames:
+    kind: StateMachine       # what users write in infra.yaml
+    plural: statemachines
+  defaultCompositionRef:
+    name: statemachine
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [definition]
+              properties:
+                definition:
+                  type: string
+                  description: >-
+                    The workflow as an Amazon States Language (ASL) JSON document — the
+                    same string you would pass to aws_sfn_state_machine.definition. Must
+                    have a top-level "StartAt" and "States". Task states invoke a
+                    kind: Function via "Resource": "function:<name>" (resolved to the
+                    Function's cluster-local URL) or a raw "http(s)://..." URL.
+                type:
+                  type: string
+                  enum: [Standard]
+                  default: Standard
+                  description: >-
+                    Workflow class. Only Standard (durable, checkpointed, full execution
+                    history) is implemented in v1; Express is a planned follow-up.
+            status:
+              type: object
+              properties:
+                # The compiled-definition ConfigMap the controller reads (<name>-statemachine).
+                definitionConfigMap: { type: string }
