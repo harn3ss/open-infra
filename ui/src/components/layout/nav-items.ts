@@ -2,6 +2,7 @@ import {
   Camera,
   Bomb,
   BrainCircuit,
+  BrainCog,
   Boxes,
   Building2,
   Database,
@@ -66,6 +67,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "GraphQL", to: "/graphql", icon: Waypoints, matchPrefix: true, section: "Compute" },
   { label: "Virtual Machines", to: "/vms", icon: Monitor, matchPrefix: true, section: "Compute" },
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "Compute" },
+  { label: "Training Jobs", to: "/trainingjobs", icon: BrainCog, matchPrefix: true, section: "Compute" },
   { label: "State Machines", to: "/statemachines", icon: Route, matchPrefix: true, section: "Compute" },
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },

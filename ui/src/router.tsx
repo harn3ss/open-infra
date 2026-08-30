@@ -25,6 +25,9 @@ import { StateMachinesPage } from "@/features/statemachines/statemachines-page";
 import { StateMachineDetailPage } from "@/features/statemachines/statemachine-detail-page";
 import { CreateStateMachinePage } from "@/features/statemachines/create-statemachine-page";
 import { ExecutionDetailPage } from "@/features/statemachines/execution-detail-page";
+import { TrainingJobsPage } from "@/features/trainingjobs/trainingjobs-page";
+import { TrainingJobDetailPage } from "@/features/trainingjobs/trainingjob-detail-page";
+import { CreateTrainingJobPage } from "@/features/trainingjobs/create-trainingjob-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -190,6 +193,11 @@ const statemachinesRoute = createRoute({ getParentRoute: () => rootRoute, path: 
 const statemachineCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines/new", component: CreateStateMachinePage });
 const statemachineDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines/$namespace/$name", component: StateMachineDetailPage });
 const executionDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/executions/$namespace/$name", component: ExecutionDetailPage });
+
+// kind: TrainingJob (#27) — list, static /new (before detail), detail.
+const trainingjobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/trainingjobs", component: TrainingJobsPage });
+const trainingjobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/trainingjobs/new", component: CreateTrainingJobPage });
+const trainingjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/trainingjobs/$namespace/$name", component: TrainingJobDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -567,6 +575,9 @@ const routeTree = rootRoute.addChildren([
   statemachineCreateRoute,
   statemachineDetailRoute,
   executionDetailRoute,
+  trainingjobsRoute,
+  trainingjobCreateRoute,
+  trainingjobDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
