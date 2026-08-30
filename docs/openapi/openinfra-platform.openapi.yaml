@@ -2764,6 +2764,12 @@ components:
               description: 'Multi-master only: automatically keep the table SET in sync across all members. A table created
                 on ANY member is auto-created on the others (cross-engine) and made multi-master-ready, with no spec edit.
                 Implies capturing all tables.'
+            driftDetection:
+              type: boolean
+              default: false
+              description: 'Multi-master only: run an always-on schema-drift detector alongside the flow that periodically
+                introspects every member and logs `schema-drift: DIVERGENCE` when their table schemas diverge (a silent multi-master
+                hazard). Opt-in; detection only, it never mutates schemas.'
         status:
           type: object
           properties:
