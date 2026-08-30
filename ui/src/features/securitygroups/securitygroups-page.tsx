@@ -1,20 +1,16 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Shield, Plus } from "lucide-react";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
-import { NewSecurityGroupDialog } from "./new-security-group-dialog";
 import { Button } from "@/components/ui/button";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import {
   type Condition,
-  type K8sObject,
   type SecurityGroup,
 } from "@/types/k8s";
 
@@ -51,16 +47,7 @@ function sgStatus(sg: SecurityGroup): { label: string; tone: StatusTone } {
 }
 
 export function SecurityGroupsPage() {
-  const { scoped } = useNamespace();
   const navigate = useNavigate();
-  const [newOpen, setNewOpen] = useState(false);
-  const [editing, setEditing] = useState<SecurityGroup | null>(null);
-
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = nsWatch.items
-    .map((n) => n.metadata.name)
-    .filter((n): n is string => Boolean(n))
-    .sort((a, b) => a.localeCompare(b));
 
   const columns = useMemo<ColumnDef<SecurityGroup, unknown>[]>(
     () => [
@@ -160,25 +147,10 @@ export function SecurityGroupsPage() {
         emptyDescription="Create a rule set, then attach it to a resource."
         docsHref={kindDocsUrl("SecurityGroup")}
         headerActions={
-          <Button
-            onClick={() => {
-              setEditing(null);
-              setNewOpen(true);
-            }}
-          >
+          <Button onClick={() => navigate({ to: "/security-groups/new" })}>
             <Plus className="size-4" /> New Security Group
           </Button>
         }
-      />
-      <NewSecurityGroupDialog
-        open={newOpen}
-        onOpenChange={(o) => {
-          setNewOpen(o);
-          if (!o) setEditing(null);
-        }}
-        namespaces={namespaces}
-        defaultNamespace={scoped}
-        editing={editing}
       />
     </>
   );
