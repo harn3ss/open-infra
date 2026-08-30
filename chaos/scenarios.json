@@ -13,7 +13,7 @@
     {
       "id": "discovery",
       "title": "Discovery batch (S-series)",
-      "desc": "A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config — the sweep that surfaced the cross-engine primary-key regression (found + fixed)."
+      "desc": "A broad first wave across non-Postgres engines, new fault types, control-plane, storage, and security/config."
     },
     {
       "id": "nightly",
@@ -1312,7 +1312,7 @@
       "title": "Cross-engine primary-key coercion",
       "category": "Migration (cross-engine)",
       "status": "PASS",
-      "note": "Surfaced a real regression: a pg text/UUID primary key mapped to MySQL TEXT failed CREATE (Error 1170) → empty target. FIXED — PK LOB columns now coerce to VARCHAR(255)/NVARCHAR(255); verified 25/25.",
+      "note": "A pg text/UUID primary key would fail CREATE on MySQL as TEXT (Error 1170) → empty target; PK LOB columns coerce to VARCHAR(255)/NVARCHAR(255), so cross-engine migration of such keys builds and fully populates (verified 25/25).",
       "chain": {
         "nodes": [
           {
@@ -1341,7 +1341,7 @@
       },
       "oracle": {
         "mode": "recover",
-        "invariant": "target builds + fully populates (regression fixed)"
+        "invariant": "target builds + fully populates"
       },
       "lastVerified": "2026-08-02",
       "verifiedBy": "hand-driven"
@@ -2125,7 +2125,7 @@
       },
       "oracle": {
         "mode": "recover",
-        "invariant": "LWW still converges (no lost-write regression)"
+        "invariant": "LWW still converges (no lost write)"
       },
       "lastVerified": "",
       "verifiedBy": "on-demand"
@@ -2852,7 +2852,7 @@
       "title": "Async Lambda invoke no-loss under shim kill",
       "category": "Lambda (aws-shim) async invoke + NATS JetStream",
       "status": "PENDING",
-      "note": "Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts the dead-letter stream covers every accepted invocation without a runaway — accepted <= DLQ <= 4x). Runnable via workflow_dispatch; keyless, so NOT in the lottery. RAN GREEN ONCE on the live cluster (killed 1 of 2 replicas mid-drain; all 31 accepted invocations reached the DLQ, no loss, no runaway). That first run caught a REAL bug: the async DLQ used subjects dlq.lambda.async.> which OVERLAP apply-sink's platform-wide dlq.> stream, so the DLQ stream silently failed to create and the oracle passed vacuously — fixed to lambda.dlq.> (overlaps neither dlq.> nor the work subject). STATUS PENDING = green-once, not yet the nightly streak. Exercises the durable async delivery worker (the code the adversarial review found silent-loss bugs in); a SigV4 HTTP front-door variant and a delivered-path variant against a live function are follow-ups.",
+      "note": "Self-provisioning + runnable (chaos/scenario-async-invoke-noloss.sh provisions a 2-replica aws-shim wired to the platform NATS JetStream, publishes async Event invocations onto the durable work stream targeting a non-existent function, kills a shim pod mid-drain, and asserts the dead-letter stream covers every accepted invocation without a runaway — accepted <= DLQ <= 4x). Runnable via workflow_dispatch; keyless, so NOT in the lottery. Status: green once on the live cluster (a shim replica killed mid-drain; all accepted invocations reached the DLQ, no loss, no runaway), pending the nightly streak. Exercises the durable async delivery worker. Follow-ups: a SigV4 HTTP front-door variant and a delivered-path variant against a live function.",
       "chain": {
         "nodes": [
           {
@@ -2912,7 +2912,7 @@
       "title": "Async Lambda invoke delivered (happy path) under shim kill",
       "category": "Lambda (aws-shim) async invoke + Knative Function + NATS JetStream",
       "status": "PENDING",
-      "note": "Sibling of N22 for the SUCCESS path. chaos/scenario-async-invoke-delivered.sh provisions a 2-replica aws-shim on the platform NATS plus a real echo kind: Function (Knative, min 1), publishes async Event invocations at the function across a shim-pod kill, and asserts every accepted invocation is DELIVERED: the WorkQueue work stream drains to 0 (each acked on 2xx) AND the DLQ stays 0 (none dead-lettered), with accepted == everything published. N22 proves nothing is silently lost (all reach the DLQ when delivery fails); N23 proves delivery actually succeeds under the kill — together the full at-least-once guarantee. RAN GREEN ONCE on the live cluster (all 31 accepted invocations delivered, work drained to 0, DLQ 0, across a shim kill). Runnable via workflow_dispatch; keyless, so NOT in the lottery. STATUS PENDING (graduates after the nightly streak). Gotcha the first run caught: wait on the Function CLAIM (Ready cascades from the Knative service), not the ksvc — Crossplane creates the ksvc a few seconds after apply, so a bare `wait ksvc` races and errors 'not found'. Follow-ups: a SigV4 HTTP front-door variant, and a scale-from-zero (min 0) delivery variant.",
+      "note": "Sibling of N22 for the SUCCESS path. chaos/scenario-async-invoke-delivered.sh provisions a 2-replica aws-shim on the platform NATS plus a real echo kind: Function (Knative, min 1), publishes async Event invocations at the function across a shim-pod kill, and asserts every accepted invocation is DELIVERED: the WorkQueue work stream drains to 0 (each acked on 2xx) AND the DLQ stays 0 (none dead-lettered), with accepted == everything published. N22 proves nothing is silently lost (all reach the DLQ when delivery fails); N23 proves delivery actually succeeds under the kill — together the full at-least-once guarantee. Runnable via workflow_dispatch; keyless, so NOT in the lottery. Status: green once on the live cluster (all accepted invocations delivered, work drained to 0, DLQ 0, across a shim kill), pending the nightly streak. Follow-ups: a SigV4 HTTP front-door variant, and a scale-from-zero (min 0) delivery variant.",
       "chain": {
         "nodes": [
           {
