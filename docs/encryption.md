@@ -85,11 +85,12 @@ a snapshot first.
 - **etcd KMS** is an API-server flag (`--encryption-provider-config`) plus a KMS-plugin static pod on the
   control-plane node — node/control-plane configuration that a GitOps controller cannot apply (k3s/RKE2
   serve it from a file on the server node). It is inherently an operator step.
-- **MinIO SSE-KMS (KES)** *is* manifestable (a KES Deployment + a Vault AppRole for KES + MinIO KMS env),
-  but turning it on reconfigures the **live MinIO** that holds your backups and the tamper-evident audit
-  WORM chain — a change to make under a snapshot, deliberately, not via a background sync that could make
-  existing objects unreadable. Shipping it as an opt-in, tested KES stack is a scoped follow-up; the
-  runbook below is the current, safe path.
+- **MinIO SSE-KMS (KES)** now ships as an opt-in stack (`components.objectEncryption`): a KES Deployment
+  keyed to Vault, its `minio-kes` Kubernetes-auth identity, and self-signed KES↔MinIO mTLS — all in ns
+  `minio`. Deploying the stack is safe: it does NOT touch the live MinIO. Turning SSE-KMS ON for the
+  platform MinIO (adding the `MINIO_KMS_KES_*` env) stays a deliberate, snapshot-first operator step,
+  because the live MinIO holds your backups + the tamper-evident audit WORM chain and SSE-KMS encrypts
+  only NEW writes — see below.
 - **Longhorn** is the one layer that already ships as a manifest (the `longhorn-encrypted` StorageClass
   below) — because it is per-PVC and never touches a shared, live system.
 
@@ -103,15 +104,23 @@ EncryptionKey then makes the LUKS master key unrecoverable → the volume is cry
 
 ### MinIO objects (SSE-KMS via KES)
 
-Run [MinIO KES](https://github.com/minio/kes) pointing at Vault Transit, and point MinIO at KES:
+Set `components.objectEncryption: true` and re-run `./install.sh`. This deploys [MinIO KES](https://github.com/minio/kes)
+(ns `minio`) with a **Vault KV** keystore — KES stores and wraps its own keys there; note KES uses Vault's
+**KV** engine, not Transit — plus the `minio-kes` Kubernetes-auth identity and a self-signed CA + KES↔MinIO
+mTLS (issued by a one-shot cert Job). Deploying the stack does not touch the live MinIO.
 
-```
-# KES config → Vault Transit (keystore: vault, endpoint: http://vault.vault:8200, approle)
-# MinIO:  MINIO_KMS_KES_ENDPOINT / MINIO_KMS_KES_KEY_NAME=<EncryptionKey name> / KES certs
-mc encrypt set sse-kms <EncryptionKey-name> myminio/<bucket>
-```
+To then turn SSE-KMS ON for the platform MinIO — deliberately, under a snapshot, and never on the buckets
+holding backups or the audit WORM chain (SSE-KMS encrypts only NEW writes):
 
-New objects in that bucket are then wrapped by the customer's Transit key.
+1. Add to the MinIO env (`platform/storage/minio.yaml` values, applied deliberately):
+   `MINIO_KMS_KES_ENDPOINT=https://kes.minio.svc:7373`, `MINIO_KMS_KES_KEY_NAME=<key>`,
+   `MINIO_KMS_KES_CERT_FILE` / `_KEY_FILE` (from the `minio-kes-client` Secret) and `MINIO_KMS_KES_CAPATH`
+   (its `ca.crt`).
+2. `mc encrypt set sse-kms <key> myminio/<bucket>` on a target bucket.
+
+New objects are then wrapped by a key held in Vault; **destroying that key crypto-erases them** — the
+object persists but reads fail `failed to decrypt ciphertext`. `probe/sse-kms.sh` validates the whole flow
+(round-trip + crypto-erase) against a throwaway MinIO, never the live one. NIST SC-28(1).
 
 ### etcd (Kubernetes Secrets at rest)
 
