@@ -107,9 +107,10 @@ func (c *k8sClient) do(ctx context.Context, method, path string, contentType str
 	return b, resp.StatusCode, nil
 }
 
-func (c *k8sClient) listExecutions(ctx context.Context, ns string) ([]Execution, error) {
-	path := fmt.Sprintf("/apis/openinfra.dev/v1/namespaces/%s/executions", ns)
-	b, code, err := c.do(ctx, http.MethodGet, path, "", nil)
+// listAllExecutions lists Execution objects across every namespace (cluster-scoped
+// collection endpoint) — the singleton controller watches them all.
+func (c *k8sClient) listAllExecutions(ctx context.Context) ([]Execution, error) {
+	b, code, err := c.do(ctx, http.MethodGet, "/apis/openinfra.dev/v1/executions", "", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +124,30 @@ func (c *k8sClient) listExecutions(ctx context.Context, ns string) ([]Execution,
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+// getStateMachineDefinition reads a StateMachine's spec.definition (the ASL JSON).
+func (c *k8sClient) getStateMachineDefinition(ctx context.Context, ns, name string) (string, error) {
+	path := fmt.Sprintf("/apis/openinfra.dev/v1/namespaces/%s/statemachines/%s", ns, name)
+	b, code, err := c.do(ctx, http.MethodGet, path, "", nil)
+	if err != nil {
+		return "", err
+	}
+	if code != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d: %s", code, truncate(string(b), 256))
+	}
+	var sm struct {
+		Spec struct {
+			Definition string `json:"definition"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(b, &sm); err != nil {
+		return "", err
+	}
+	if sm.Spec.Definition == "" {
+		return "", fmt.Errorf("state machine has an empty spec.definition")
+	}
+	return sm.Spec.Definition, nil
 }
 
 // patchStatus merge-patches an Execution's status subresource.
