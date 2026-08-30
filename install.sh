@@ -281,6 +281,16 @@ else
   # Opt into HotplugVolumes (attach/detach EBS-style volumes to running VMs) and
   # Snapshot (VM/volume snapshots) — both are feature-gated in v1.8.4, not GA.
   RUN "$KUBECTL patch kubevirt kubevirt -n kubevirt --type=merge -p '{\"spec\":{\"configuration\":{\"developerConfiguration\":{\"featureGates\":[\"HotplugVolumes\",\"Snapshot\"]}}}}'"
+  # Mixed-arch (non-amd64 control plane + amd64 workers): virt-api derives the allowed machine
+  # types from the CONTROL-PLANE arch, so an x86 (q35) VM — the whole Windows/x86 catalog — is
+  # rejected at ADMISSION on an arm64 CP unless the KubeVirt CR declares an amd64
+  # architectureConfiguration. Add it so amd64 VMs build + boot on amd64 workers under an arm64
+  # CP. Guarded on an arm64 CP so an all-amd64 cluster's KubeVirt is left at its default. Pairs
+  # with spec.architecture: amd64 emitted by the vm/vmimage compositions. (#51)
+  if [ "$(uname -m)" = "aarch64" ]; then
+    LOG "arm64 control plane — enabling amd64 architectureConfiguration so x86 VMs admit on amd64 workers"
+    RUN "$KUBECTL patch kubevirt kubevirt -n kubevirt --type=merge -p '{\"spec\":{\"configuration\":{\"architectureConfiguration\":{\"amd64\":{\"machineType\":\"q35\",\"emulatedMachines\":[\"q35*\",\"pc-q35*\"],\"ovmfPath\":\"/usr/share/OVMF\"}}}}}'"
+  fi
   RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-operator.yaml"
   RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-cr.yaml"
   RUN "$KUBECTL -n kubevirt wait --for=condition=Available kubevirt/kubevirt --timeout=300s || true"
