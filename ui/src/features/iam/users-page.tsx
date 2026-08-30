@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Users, UserPlus, AlertTriangle, KeyRound } from "lucide-react";
@@ -7,22 +6,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
-import { getIamConfig, listIamGroups, listIamUsers } from "@/lib/api";
-import { NewUserDialog } from "./new-user-dialog";
+import { listIamUsers } from "@/lib/api";
 
 export function UsersPage() {
   const navigate = useNavigate();
-  const [newOpen, setNewOpen] = useState(false);
 
-  const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
-  const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
   const { data = [], isLoading, isError, error } = useQuery({
     queryKey: ["iam", "users"],
     queryFn: listIamUsers,
     refetchInterval: 15000,
   });
-
-  const builtins = cfg.data?.builtinGroups ?? [];
 
   return (
     <div className="space-y-6">
@@ -31,7 +24,7 @@ export function UsersPage() {
         title="Users"
         description="Console sign-ins, stored as kind: User. Permissions come from group membership; the root account is separate break-glass and isn't listed here."
         actions={
-          <Button onClick={() => setNewOpen(true)}>
+          <Button onClick={() => navigate({ to: "/users/new" })}>
             <UserPlus className="size-4" /> New user
           </Button>
         }
@@ -47,7 +40,7 @@ export function UsersPage() {
           title="No users yet"
           description="Create one, or note that people can also be defined as kind: User in Git. The break-glass root account signs in regardless."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/users/new" })}>
               <UserPlus className="size-4" /> New user
             </Button>
           }
@@ -130,13 +123,6 @@ export function UsersPage() {
           </CardContent>
         </Card>
       )}
-
-      <NewUserDialog
-        open={newOpen}
-        onOpenChange={setNewOpen}
-        builtins={builtins}
-        groups={groups.data ?? []}
-      />
     </div>
   );
 }
