@@ -42,7 +42,7 @@ import {
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 let SEQ = 0;
-const nextId = () => `r${SEQ++}`;
+export const nextId = () => `r${SEQ++}`;
 
 /**
  * Create OR edit a Security Group, AWS-style: each rule is a "Type" preset
@@ -230,7 +230,7 @@ export function NewSecurityGroupDialog({
   );
 }
 
-function RuleSection({
+export function RuleSection({
   title,
   hint,
   dir,

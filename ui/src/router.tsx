@@ -36,6 +36,7 @@ import { QueriesPage } from "@/features/queries/queries-page";
 import { ChaosPage } from "@/features/chaos/chaos-page";
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
+import { CreateSecurityGroupPage } from "@/features/securitygroups/create-security-group-page";
 import {
   StreamDetailPage,
   FaultInjectionDetailPage,
@@ -239,6 +240,13 @@ const securityGroupsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/security-groups",
   component: SecurityGroupsPage,
+});
+
+// Static "/new" — matched before the "$namespace/$name" detail route.
+const securityGroupCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/security-groups/new",
+  component: CreateSecurityGroupPage,
 });
 
 const securityGroupDetailRoute = createRoute({
@@ -510,6 +518,7 @@ const routeTree = rootRoute.addChildren([
   chaosRoute,
   faultInjectionDetailRoute,
   securityGroupsRoute,
+  securityGroupCreateRoute,
   securityGroupDetailRoute,
   migrationsRoute,
   migrationDetailRoute,
