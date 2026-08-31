@@ -1,0 +1,98 @@
+# The singleton controller for kind: TuningJob — open-infra's hyperparameter-tuning
+# engine. One small pod, cluster-wide, watches TuningJobs; for each it runs a
+# kind: TrainingJob per hyperparameter combination (grid search) up to maxParallel at a
+# time, reads each trial's metric from its pod logs, and records the best in status.
+# Pre-defined here (SA + ClusterRole + ClusterRoleBinding + Deployment), NOT emitted by a
+# composition, so it needs no RBAC-creation power from the provider (the bucket-setup
+# pattern). Trials are ordinary kind: TrainingJob claims (owner-referenced to the
+# TuningJob, so deleting it garbage-collects them).
+#
+# Runs in crossplane-system. Synced after the CRDs (sync-wave 3).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-hpo
+  namespace: crossplane-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-hpo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+rules:
+  # Read tuning jobs and checkpoint their status.
+  - apiGroups: ["openinfra.dev"]
+    resources: ["tuningjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["openinfra.dev"]
+    resources: ["tuningjobs/status"]
+    verbs: ["get", "update", "patch"]
+  # Create + observe trial TrainingJobs.
+  - apiGroups: ["openinfra.dev"]
+    resources: ["trainingjobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Observe each trial's batch Job + read its metric from the pod logs.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-hpo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-hpo
+subjects:
+  - kind: ServiceAccount
+    name: openinfra-hpo
+    namespace: crossplane-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openinfra-hpo
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/part-of: open-infra
+    app: openinfra-hpo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: openinfra-hpo } }
+  template:
+    metadata:
+      labels: { app: openinfra-hpo }
+    spec:
+      serviceAccountName: openinfra-hpo
+      nodeSelector: { kubernetes.io/arch: amd64 }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: controller
+          image: ghcr.io/harn3ss/open-infra-hpo:latest
+          env:
+            - { name: POLL_INTERVAL, value: "10" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 256Mi }

@@ -1,0 +1,83 @@
+# Build the open-infra hpo image and push it to GHCR.
+#
+# hpo is the controller behind kind: TuningJob (hyperparameter tuning): it runs a
+# kind: TrainingJob per hyperparameter combination and records the best. Same
+# supply-chain treatment as the other first-party images (Trivy-scanned + cosign-signed).
+name: build-hpo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hpo/**"
+      - ".github/workflows/build-hpo.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  security-events: write
+
+concurrency:
+  group: build-hpo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/open-infra-hpo
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: hpo
+          file: hpo/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy vulnerability scan (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-hpo@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: "true"
+          limit-severities-for-sarif: "true"
+        env:
+          TRIVY_CACHE_DIR: .trivycache
+      - name: Upload Trivy results to the Security tab
+        uses: github/codeql-action/upload-sarif@v4.37.7
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-hpo
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign the image (keyless, Sigstore)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/open-infra-hpo@${{ steps.build.outputs.digest }}

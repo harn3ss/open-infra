@@ -15,6 +15,7 @@ on:
     paths:
       - "apply-sink/**"
       - "statemachine/**"
+      - "hpo/**"
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
@@ -29,6 +30,7 @@ on:
     paths:
       - "apply-sink/**"
       - "statemachine/**"
+      - "hpo/**"
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
@@ -60,6 +62,7 @@ jobs:
         module:
           - apply-sink # pure-Go CDC apply logic (coerce, dialects, table parsing)
           - statemachine # the ASL workflow engine (parse, JSONPath, choice, retry/catch)
+          - hpo # the hyperparameter-tuning engine (grid search, metric extraction)
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
