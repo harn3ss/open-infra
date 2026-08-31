@@ -22,6 +22,7 @@ import {
   Search,
   ScrollText,
   Send,
+  Target,
   BadgeCheck,
   ClipboardCheck,
   Clock,
@@ -72,6 +73,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Training Jobs", to: "/trainingjobs", icon: BrainCog, matchPrefix: true, section: "Compute" },
   { label: "Model Registry", to: "/model-registry", icon: Package, matchPrefix: true, section: "Compute" },
   { label: "Batch Transform", to: "/batch-transform", icon: Layers, matchPrefix: true, section: "Compute" },
+  { label: "Tuning Jobs", to: "/tuning", icon: Target, matchPrefix: true, section: "Compute" },
   { label: "State Machines", to: "/statemachines", icon: Route, matchPrefix: true, section: "Compute" },
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },

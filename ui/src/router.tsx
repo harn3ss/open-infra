@@ -34,6 +34,9 @@ import { CreateModelPackagePage } from "@/features/modelpackages/create-modelpac
 import { BatchTransformsPage } from "@/features/batchtransforms/batchtransforms-page";
 import { BatchTransformDetailPage } from "@/features/batchtransforms/batchtransform-detail-page";
 import { CreateBatchTransformPage } from "@/features/batchtransforms/create-batchtransform-page";
+import { TuningJobsPage } from "@/features/tuningjobs/tuningjobs-page";
+import { TuningJobDetailPage } from "@/features/tuningjobs/tuningjob-detail-page";
+import { CreateTuningJobPage } from "@/features/tuningjobs/create-tuningjob-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -214,6 +217,11 @@ const modelpackageDetailRoute = createRoute({ getParentRoute: () => rootRoute, p
 const batchtransformsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/batch-transform", component: BatchTransformsPage });
 const batchtransformCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/batch-transform/new", component: CreateBatchTransformPage });
 const batchtransformDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/batch-transform/$namespace/$name", component: BatchTransformDetailPage });
+
+// kind: TuningJob (#27) — hyperparameter tuning: list, static /new (before detail), detail.
+const tuningjobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tuning", component: TuningJobsPage });
+const tuningjobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tuning/new", component: CreateTuningJobPage });
+const tuningjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tuning/$namespace/$name", component: TuningJobDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -600,6 +608,9 @@ const routeTree = rootRoute.addChildren([
   batchtransformsRoute,
   batchtransformCreateRoute,
   batchtransformDetailRoute,
+  tuningjobsRoute,
+  tuningjobCreateRoute,
+  tuningjobDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
