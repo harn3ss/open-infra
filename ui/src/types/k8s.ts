@@ -317,8 +317,23 @@ export const GRAPHQLAPIS_CRD_NAME = "graphqlapis.openinfra.dev";
 
 /* -------------------------- open-infra Model CRD -------------------------- */
 
+export interface ModelServeSpec {
+  image?: string;
+  command?: string[];
+  args?: string[];
+  port?: number;
+  artifact?: { bucket?: string; key?: string };
+  gpu?: number;
+  gpuTier?: "smallgpu" | "largegpu";
+  cpu?: string;
+  memory?: string;
+  modelPackage?: string;
+  env?: { name: string; value: string }[];
+}
+
 export interface ModelSpec {
-  model: string;
+  model?: string; // catalog model (OR serve)
+  serve?: ModelServeSpec; // custom trained-artifact serving
   gpu?: number;
   /** Run two replicas across nodes (load-balanced, survives a node loss). */
   highAvailability?: boolean;
@@ -335,6 +350,27 @@ export interface ModelStatus {
 export type Model = K8sObject<ModelSpec, ModelStatus>;
 export const MODELS_PLURAL = "models";
 export const MODELS_CRD_NAME = "models.openinfra.dev";
+
+/* ---------------------- open-infra ModelPackage CRD ----------------------- */
+// The model registry: a versioned, approvable record of a trained artifact.
+export interface ModelPackageSpec {
+  modelName: string;
+  version?: string;
+  artifact: { bucket?: string; key?: string };
+  image: string;
+  port?: number;
+  framework?: string;
+  metrics?: string;
+  description?: string;
+  approvalStatus?: "PendingManualApproval" | "Approved" | "Rejected";
+}
+export interface ModelPackageStatus {
+  approvalStatus?: string;
+  conditions?: Condition[];
+}
+export type ModelPackage = K8sObject<ModelPackageSpec, ModelPackageStatus>;
+export const MODELPACKAGES_PLURAL = "modelpackages";
+export const MODELPACKAGES_CRD_NAME = "modelpackages.openinfra.dev";
 
 /* ---------------------- open-infra VirtualMachine CRD --------------------- */
 

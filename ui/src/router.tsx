@@ -28,6 +28,9 @@ import { ExecutionDetailPage } from "@/features/statemachines/execution-detail-p
 import { TrainingJobsPage } from "@/features/trainingjobs/trainingjobs-page";
 import { TrainingJobDetailPage } from "@/features/trainingjobs/trainingjob-detail-page";
 import { CreateTrainingJobPage } from "@/features/trainingjobs/create-trainingjob-page";
+import { ModelPackagesPage } from "@/features/modelpackages/modelpackages-page";
+import { ModelPackageDetailPage } from "@/features/modelpackages/modelpackage-detail-page";
+import { CreateModelPackagePage } from "@/features/modelpackages/create-modelpackage-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -198,6 +201,11 @@ const executionDetailRoute = createRoute({ getParentRoute: () => rootRoute, path
 const trainingjobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/trainingjobs", component: TrainingJobsPage });
 const trainingjobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/trainingjobs/new", component: CreateTrainingJobPage });
 const trainingjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/trainingjobs/$namespace/$name", component: TrainingJobDetailPage });
+
+// kind: ModelPackage (#27) — the model registry: list, static /new (before detail), detail.
+const modelpackagesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-registry", component: ModelPackagesPage });
+const modelpackageCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-registry/new", component: CreateModelPackagePage });
+const modelpackageDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-registry/$namespace/$name", component: ModelPackageDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -578,6 +586,9 @@ const routeTree = rootRoute.addChildren([
   trainingjobsRoute,
   trainingjobCreateRoute,
   trainingjobDetailRoute,
+  modelpackagesRoute,
+  modelpackageCreateRoute,
+  modelpackageDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
