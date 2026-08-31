@@ -1429,6 +1429,42 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 	}
 }
 
+// TestConsoleAdminRole_NoKindDrift guards the SAME silent drift for the admin/console role
+// (open-infra-console in rbac.yaml), which root/admins bind to (see rbac-roles.yaml:
+// openinfra:admins -> open-infra-console). The poweruser guard above did NOT cover it, so a new
+// kind could be listable via kubectl yet "Not authorized" in the console for root — exactly how
+// statemachines/trainingjobs (and, pre-existing, databaseproxies/certificateauthorities) fell out
+// of admin access. Every openinfra.dev XRD claim kind must appear in rbac.yaml: under the
+// openinfra.dev rule for workload kinds, or the iam.openinfra.dev rule for identity kinds.
+func TestConsoleAdminRole_NoKindDrift(t *testing.T) {
+	xrds, err := filepath.Glob("../../platform/abstraction/*xrd*.yaml")
+	if err != nil || len(xrds) == 0 {
+		t.Fatalf("could not list XRDs: %v", err)
+	}
+	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac.yaml")
+	if err != nil {
+		t.Fatalf("read rbac.yaml: %v", err)
+	}
+	roleYAML := string(roleBytes)
+
+	var missing []string
+	for _, path := range xrds {
+		plural := pluralFromXRD(t, path)
+		if plural == "" {
+			continue
+		}
+		if !strings.Contains(roleYAML, "- "+plural+"\n") {
+			missing = append(missing, plural+"  (from "+filepath.Base(path)+")")
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("these open-infra kinds are missing from the open-infra-console ClusterRole in\n"+
+			"platform/console/manifests/rbac.yaml, so console admins (root) get \"Not authorized\" on them.\n"+
+			"Add each plural to the openinfra.dev rule (or iam.openinfra.dev for identity kinds):\n  %s",
+			strings.Join(missing, "\n  "))
+	}
+}
+
 // pluralFromXRD pulls the CLAIM plural out of a Crossplane XRD without a YAML
 // dependency. An XRD carries two: spec.names.plural is the composite (X-prefixed,
 // e.g. xvirtualmachines) and spec.claimNames.plural is what users actually create
