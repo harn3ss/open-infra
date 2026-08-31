@@ -32,6 +32,7 @@ import {
   TUNINGJOBS_PLURAL,
   PROCESSINGJOBS_PLURAL,
   MODELMONITORS_PLURAL,
+  FEATUREGROUPS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -147,6 +148,9 @@ export const openinfraPaths = {
   modelmonitors: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MODELMONITORS_PLURAL}`,
   modelmonitor: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${MODELMONITORS_PLURAL}/${name}`,
+  featuregroups: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FEATUREGROUPS_PLURAL}`,
+  featuregroup: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${FEATUREGROUPS_PLURAL}/${name}`,
   // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
   // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
   certificateauthorities: (ns?: string) =>
