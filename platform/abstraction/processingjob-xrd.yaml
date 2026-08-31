@@ -1,0 +1,114 @@
+# open-infra's "SageMaker Processing": kind: ProcessingJob — a run-once, GPU-capable
+# data-processing job. Give it a container and any number of named inputs and outputs in
+# the object store; it runs to completion for preprocessing, feature engineering, dataset
+# validation, or model evaluation. More general than kind: BatchTransform (which is
+# single-model inference) — a ProcessingJob has N inputs and N outputs.
+#
+# Each input/output is injected as INPUT_<NAME>_BUCKET / INPUT_<NAME>_PREFIX and
+# OUTPUT_<NAME>_BUCKET / OUTPUT_<NAME>_PREFIX (NAME upper-cased), plus S3-compatible
+# credentials; INPUTS/OUTPUTS list the channel names.
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xprocessingjobs.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XProcessingJob
+    plural: xprocessingjobs
+  claimNames:
+    kind: ProcessingJob      # what users write in infra.yaml
+    plural: processingjobs
+  defaultCompositionRef:
+    name: processingjob
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  description: "The processing container. Reads its inputs, writes its outputs, and runs to completion."
+                command:
+                  type: array
+                  items: { type: string }
+                  description: "Optional entrypoint override."
+                args:
+                  type: array
+                  items: { type: string }
+                  description: "Optional container args."
+                inputs:
+                  type: array
+                  description: "Named input channels in the object store (injected as INPUT_<NAME>_BUCKET/PREFIX)."
+                  items:
+                    type: object
+                    required: [name, bucket]
+                    properties:
+                      name:   { type: string, description: "Channel name (used in the env var; upper-cased)." }
+                      bucket: { type: string }
+                      prefix: { type: string, description: "Optional key prefix." }
+                outputs:
+                  type: array
+                  description: "Named output channels (injected as OUTPUT_<NAME>_BUCKET/PREFIX; buckets created on demand)."
+                  items:
+                    type: object
+                    required: [name, bucket]
+                    properties:
+                      name:   { type: string }
+                      bucket: { type: string }
+                      prefix: { type: string }
+                gpu:
+                  type: integer
+                  default: 0
+                  description: "GPUs to request. 0 (default) runs CPU-only; >0 schedules on a GPU node."
+                gpuTier:
+                  type: string
+                  enum: [smallgpu, largegpu]
+                  default: smallgpu
+                  description: "GPU class when gpu>0."
+                cpu:
+                  type: string
+                  description: "CPU request/limit (e.g. \"2\")."
+                memory:
+                  type: string
+                  description: "Memory request/limit (e.g. \"4Gi\")."
+                env:
+                  type: array
+                  description: "Environment variables for the processing container."
+                  items:
+                    type: object
+                    properties:
+                      name:  { type: string }
+                      value: { type: string }
+                secrets:
+                  type: array
+                  items: { type: string }
+                  description: "Extra secrets to inject with envFrom."
+                backoffLimit:
+                  type: integer
+                  default: 0
+                  description: "Pod retries before the job is marked Failed. Defaults to 0."
+                maxRuntimeSeconds:
+                  type: integer
+                  description: "Hard wall-clock cap (Job activeDeadlineSeconds). Unset means no cap."
+            status:
+              type: object
+              properties:
+                jobName: { type: string }

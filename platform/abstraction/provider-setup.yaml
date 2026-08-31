@@ -116,6 +116,7 @@ rules:
       - trainingjobs
       - modelpackages
       - batchtransforms
+      - processingjobs
     verbs: [get, list, watch, create, update, patch, delete]
 
   # Knative Services for the kind: Function (serverless) abstraction.
