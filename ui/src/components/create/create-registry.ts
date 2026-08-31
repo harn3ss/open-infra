@@ -163,6 +163,19 @@ export const TUNINGJOB_CREATE: CreateKindSpec = {
   ],
 };
 
+export const PROCESSINGJOB_CREATE: CreateKindSpec = {
+  kind: "ProcessingJob",
+  crdName: "processingjobs.openinfra.dev",
+  description:
+    "Data processing (SageMaker-style) — a run-once job with named inputs and outputs for preprocessing, feature engineering, validation, or model evaluation.",
+  sections: [
+    { title: "Processing job", fields: ["image", "gpu", "gpuTier"] },
+    { title: "Channels", fields: ["inputs", "outputs"] },
+    { title: "Command", fields: ["command", "args"], advanced: true },
+    { title: "Config", fields: ["env", "secrets", "cpu", "memory", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
+  ],
+};
+
 export const BATCHTRANSFORM_CREATE: CreateKindSpec = {
   kind: "BatchTransform",
   crdName: "batchtransforms.openinfra.dev",
