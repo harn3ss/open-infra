@@ -6,12 +6,13 @@ info:
   description: "The declarative resource API a GovStack building block provisions infrastructure through. Every path is a\
     \ standard Kubernetes resource endpoint under the openinfra.dev group; the schemas are GENERATED from platform/abstraction/*-xrd.yaml\
     \ (the CRD source of truth), so this spec can never drift from the running API. GENERATED \u2014 do not hand-edit."
-  x-openinfra-kinds: 30
+  x-openinfra-kinds: 31
 servers:
 - url: /apis/openinfra.dev/v1
   description: Kubernetes API server (openinfra.dev group)
 tags:
 - name: Application
+- name: BatchTransform
 - name: CertificateAuthority
 - name: DataClassification
 - name: DataFlow
@@ -126,11 +127,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/certificateauthorities:
+  /namespaces/{namespace}/batchtransforms:
     get:
       tags:
-      - CertificateAuthority
-      summary: List CertificateAuthority resources
+      - BatchTransform
+      summary: List BatchTransform resources
       parameters:
       - &id004
         name: namespace
@@ -149,11 +150,11 @@ paths:
                   items:
                     type: array
                     items: &id005
-                      $ref: '#/components/schemas/CertificateAuthority'
+                      $ref: '#/components/schemas/BatchTransform'
     post:
       tags:
-      - CertificateAuthority
-      summary: Create a CertificateAuthority
+      - BatchTransform
+      summary: Create a BatchTransform
       parameters:
       - *id004
       requestBody:
@@ -173,11 +174,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/certificateauthorities/{name}:
+  /namespaces/{namespace}/batchtransforms/{name}:
     get:
       tags:
-      - CertificateAuthority
-      summary: Get a CertificateAuthority
+      - BatchTransform
+      summary: Get a BatchTransform
       parameters:
       - *id004
       - &id006
@@ -200,8 +201,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - CertificateAuthority
-      summary: Delete a CertificateAuthority
+      - BatchTransform
+      summary: Delete a BatchTransform
       parameters:
       - *id004
       - *id006
@@ -210,11 +211,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/dataclassifications:
+  /namespaces/{namespace}/certificateauthorities:
     get:
       tags:
-      - DataClassification
-      summary: List DataClassification resources
+      - CertificateAuthority
+      summary: List CertificateAuthority resources
       parameters:
       - &id007
         name: namespace
@@ -233,11 +234,11 @@ paths:
                   items:
                     type: array
                     items: &id008
-                      $ref: '#/components/schemas/DataClassification'
+                      $ref: '#/components/schemas/CertificateAuthority'
     post:
       tags:
-      - DataClassification
-      summary: Create a DataClassification
+      - CertificateAuthority
+      summary: Create a CertificateAuthority
       parameters:
       - *id007
       requestBody:
@@ -257,11 +258,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/dataclassifications/{name}:
+  /namespaces/{namespace}/certificateauthorities/{name}:
     get:
       tags:
-      - DataClassification
-      summary: Get a DataClassification
+      - CertificateAuthority
+      summary: Get a CertificateAuthority
       parameters:
       - *id007
       - &id009
@@ -284,8 +285,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - DataClassification
-      summary: Delete a DataClassification
+      - CertificateAuthority
+      summary: Delete a CertificateAuthority
       parameters:
       - *id007
       - *id009
@@ -294,11 +295,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/dataflows:
+  /namespaces/{namespace}/dataclassifications:
     get:
       tags:
-      - DataFlow
-      summary: List DataFlow resources
+      - DataClassification
+      summary: List DataClassification resources
       parameters:
       - &id010
         name: namespace
@@ -317,11 +318,11 @@ paths:
                   items:
                     type: array
                     items: &id011
-                      $ref: '#/components/schemas/DataFlow'
+                      $ref: '#/components/schemas/DataClassification'
     post:
       tags:
-      - DataFlow
-      summary: Create a DataFlow
+      - DataClassification
+      summary: Create a DataClassification
       parameters:
       - *id010
       requestBody:
@@ -341,11 +342,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/dataflows/{name}:
+  /namespaces/{namespace}/dataclassifications/{name}:
     get:
       tags:
-      - DataFlow
-      summary: Get a DataFlow
+      - DataClassification
+      summary: Get a DataClassification
       parameters:
       - *id010
       - &id012
@@ -368,8 +369,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - DataFlow
-      summary: Delete a DataFlow
+      - DataClassification
+      summary: Delete a DataClassification
       parameters:
       - *id010
       - *id012
@@ -378,11 +379,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/databaseproxies:
+  /namespaces/{namespace}/dataflows:
     get:
       tags:
-      - DatabaseProxy
-      summary: List DatabaseProxy resources
+      - DataFlow
+      summary: List DataFlow resources
       parameters:
       - &id013
         name: namespace
@@ -401,11 +402,11 @@ paths:
                   items:
                     type: array
                     items: &id014
-                      $ref: '#/components/schemas/DatabaseProxy'
+                      $ref: '#/components/schemas/DataFlow'
     post:
       tags:
-      - DatabaseProxy
-      summary: Create a DatabaseProxy
+      - DataFlow
+      summary: Create a DataFlow
       parameters:
       - *id013
       requestBody:
@@ -425,11 +426,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/databaseproxies/{name}:
+  /namespaces/{namespace}/dataflows/{name}:
     get:
       tags:
-      - DatabaseProxy
-      summary: Get a DatabaseProxy
+      - DataFlow
+      summary: Get a DataFlow
       parameters:
       - *id013
       - &id015
@@ -452,8 +453,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - DatabaseProxy
-      summary: Delete a DatabaseProxy
+      - DataFlow
+      summary: Delete a DataFlow
       parameters:
       - *id013
       - *id015
@@ -462,11 +463,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/destructions:
+  /namespaces/{namespace}/databaseproxies:
     get:
       tags:
-      - Destruction
-      summary: List Destruction resources
+      - DatabaseProxy
+      summary: List DatabaseProxy resources
       parameters:
       - &id016
         name: namespace
@@ -485,11 +486,11 @@ paths:
                   items:
                     type: array
                     items: &id017
-                      $ref: '#/components/schemas/Destruction'
+                      $ref: '#/components/schemas/DatabaseProxy'
     post:
       tags:
-      - Destruction
-      summary: Create a Destruction
+      - DatabaseProxy
+      summary: Create a DatabaseProxy
       parameters:
       - *id016
       requestBody:
@@ -509,11 +510,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/destructions/{name}:
+  /namespaces/{namespace}/databaseproxies/{name}:
     get:
       tags:
-      - Destruction
-      summary: Get a Destruction
+      - DatabaseProxy
+      summary: Get a DatabaseProxy
       parameters:
       - *id016
       - &id018
@@ -536,8 +537,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Destruction
-      summary: Delete a Destruction
+      - DatabaseProxy
+      summary: Delete a DatabaseProxy
       parameters:
       - *id016
       - *id018
@@ -546,11 +547,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/directories:
+  /namespaces/{namespace}/destructions:
     get:
       tags:
-      - Directory
-      summary: List Directory resources
+      - Destruction
+      summary: List Destruction resources
       parameters:
       - &id019
         name: namespace
@@ -569,11 +570,11 @@ paths:
                   items:
                     type: array
                     items: &id020
-                      $ref: '#/components/schemas/Directory'
+                      $ref: '#/components/schemas/Destruction'
     post:
       tags:
-      - Directory
-      summary: Create a Directory
+      - Destruction
+      summary: Create a Destruction
       parameters:
       - *id019
       requestBody:
@@ -593,11 +594,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/directories/{name}:
+  /namespaces/{namespace}/destructions/{name}:
     get:
       tags:
-      - Directory
-      summary: Get a Directory
+      - Destruction
+      summary: Get a Destruction
       parameters:
       - *id019
       - &id021
@@ -620,8 +621,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Directory
-      summary: Delete a Directory
+      - Destruction
+      summary: Delete a Destruction
       parameters:
       - *id019
       - *id021
@@ -630,11 +631,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/encryptionkeys:
+  /namespaces/{namespace}/directories:
     get:
       tags:
-      - EncryptionKey
-      summary: List EncryptionKey resources
+      - Directory
+      summary: List Directory resources
       parameters:
       - &id022
         name: namespace
@@ -653,11 +654,11 @@ paths:
                   items:
                     type: array
                     items: &id023
-                      $ref: '#/components/schemas/EncryptionKey'
+                      $ref: '#/components/schemas/Directory'
     post:
       tags:
-      - EncryptionKey
-      summary: Create a EncryptionKey
+      - Directory
+      summary: Create a Directory
       parameters:
       - *id022
       requestBody:
@@ -677,11 +678,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/encryptionkeys/{name}:
+  /namespaces/{namespace}/directories/{name}:
     get:
       tags:
-      - EncryptionKey
-      summary: Get a EncryptionKey
+      - Directory
+      summary: Get a Directory
       parameters:
       - *id022
       - &id024
@@ -704,8 +705,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - EncryptionKey
-      summary: Delete a EncryptionKey
+      - Directory
+      summary: Delete a Directory
       parameters:
       - *id022
       - *id024
@@ -714,11 +715,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/faultinjections:
+  /namespaces/{namespace}/encryptionkeys:
     get:
       tags:
-      - FaultInjection
-      summary: List FaultInjection resources
+      - EncryptionKey
+      summary: List EncryptionKey resources
       parameters:
       - &id025
         name: namespace
@@ -737,11 +738,11 @@ paths:
                   items:
                     type: array
                     items: &id026
-                      $ref: '#/components/schemas/FaultInjection'
+                      $ref: '#/components/schemas/EncryptionKey'
     post:
       tags:
-      - FaultInjection
-      summary: Create a FaultInjection
+      - EncryptionKey
+      summary: Create a EncryptionKey
       parameters:
       - *id025
       requestBody:
@@ -761,11 +762,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/faultinjections/{name}:
+  /namespaces/{namespace}/encryptionkeys/{name}:
     get:
       tags:
-      - FaultInjection
-      summary: Get a FaultInjection
+      - EncryptionKey
+      summary: Get a EncryptionKey
       parameters:
       - *id025
       - &id027
@@ -788,8 +789,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - FaultInjection
-      summary: Delete a FaultInjection
+      - EncryptionKey
+      summary: Delete a EncryptionKey
       parameters:
       - *id025
       - *id027
@@ -798,11 +799,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/fileshares:
+  /namespaces/{namespace}/faultinjections:
     get:
       tags:
-      - FileShare
-      summary: List FileShare resources
+      - FaultInjection
+      summary: List FaultInjection resources
       parameters:
       - &id028
         name: namespace
@@ -821,11 +822,11 @@ paths:
                   items:
                     type: array
                     items: &id029
-                      $ref: '#/components/schemas/FileShare'
+                      $ref: '#/components/schemas/FaultInjection'
     post:
       tags:
-      - FileShare
-      summary: Create a FileShare
+      - FaultInjection
+      summary: Create a FaultInjection
       parameters:
       - *id028
       requestBody:
@@ -845,11 +846,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/fileshares/{name}:
+  /namespaces/{namespace}/faultinjections/{name}:
     get:
       tags:
-      - FileShare
-      summary: Get a FileShare
+      - FaultInjection
+      summary: Get a FaultInjection
       parameters:
       - *id028
       - &id030
@@ -872,8 +873,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - FileShare
-      summary: Delete a FileShare
+      - FaultInjection
+      summary: Delete a FaultInjection
       parameters:
       - *id028
       - *id030
@@ -882,11 +883,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/functions:
+  /namespaces/{namespace}/fileshares:
     get:
       tags:
-      - Function
-      summary: List Function resources
+      - FileShare
+      summary: List FileShare resources
       parameters:
       - &id031
         name: namespace
@@ -905,11 +906,11 @@ paths:
                   items:
                     type: array
                     items: &id032
-                      $ref: '#/components/schemas/Function'
+                      $ref: '#/components/schemas/FileShare'
     post:
       tags:
-      - Function
-      summary: Create a Function
+      - FileShare
+      summary: Create a FileShare
       parameters:
       - *id031
       requestBody:
@@ -929,11 +930,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/functions/{name}:
+  /namespaces/{namespace}/fileshares/{name}:
     get:
       tags:
-      - Function
-      summary: Get a Function
+      - FileShare
+      summary: Get a FileShare
       parameters:
       - *id031
       - &id033
@@ -956,8 +957,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Function
-      summary: Delete a Function
+      - FileShare
+      summary: Delete a FileShare
       parameters:
       - *id031
       - *id033
@@ -966,11 +967,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/grants:
+  /namespaces/{namespace}/functions:
     get:
       tags:
-      - Grant
-      summary: List Grant resources
+      - Function
+      summary: List Function resources
       parameters:
       - &id034
         name: namespace
@@ -989,11 +990,11 @@ paths:
                   items:
                     type: array
                     items: &id035
-                      $ref: '#/components/schemas/Grant'
+                      $ref: '#/components/schemas/Function'
     post:
       tags:
-      - Grant
-      summary: Create a Grant
+      - Function
+      summary: Create a Function
       parameters:
       - *id034
       requestBody:
@@ -1013,11 +1014,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/grants/{name}:
+  /namespaces/{namespace}/functions/{name}:
     get:
       tags:
-      - Grant
-      summary: Get a Grant
+      - Function
+      summary: Get a Function
       parameters:
       - *id034
       - &id036
@@ -1040,8 +1041,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Grant
-      summary: Delete a Grant
+      - Function
+      summary: Delete a Function
       parameters:
       - *id034
       - *id036
@@ -1050,11 +1051,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/graphqlapis:
+  /namespaces/{namespace}/grants:
     get:
       tags:
-      - GraphQLApi
-      summary: List GraphQLApi resources
+      - Grant
+      summary: List Grant resources
       parameters:
       - &id037
         name: namespace
@@ -1073,11 +1074,11 @@ paths:
                   items:
                     type: array
                     items: &id038
-                      $ref: '#/components/schemas/GraphQLApi'
+                      $ref: '#/components/schemas/Grant'
     post:
       tags:
-      - GraphQLApi
-      summary: Create a GraphQLApi
+      - Grant
+      summary: Create a Grant
       parameters:
       - *id037
       requestBody:
@@ -1097,11 +1098,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/graphqlapis/{name}:
+  /namespaces/{namespace}/grants/{name}:
     get:
       tags:
-      - GraphQLApi
-      summary: Get a GraphQLApi
+      - Grant
+      summary: Get a Grant
       parameters:
       - *id037
       - &id039
@@ -1124,8 +1125,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - GraphQLApi
-      summary: Delete a GraphQLApi
+      - Grant
+      summary: Delete a Grant
       parameters:
       - *id037
       - *id039
@@ -1134,11 +1135,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/groups:
+  /namespaces/{namespace}/graphqlapis:
     get:
       tags:
-      - Group
-      summary: List Group resources
+      - GraphQLApi
+      summary: List GraphQLApi resources
       parameters:
       - &id040
         name: namespace
@@ -1157,11 +1158,11 @@ paths:
                   items:
                     type: array
                     items: &id041
-                      $ref: '#/components/schemas/Group'
+                      $ref: '#/components/schemas/GraphQLApi'
     post:
       tags:
-      - Group
-      summary: Create a Group
+      - GraphQLApi
+      summary: Create a GraphQLApi
       parameters:
       - *id040
       requestBody:
@@ -1181,11 +1182,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/groups/{name}:
+  /namespaces/{namespace}/graphqlapis/{name}:
     get:
       tags:
-      - Group
-      summary: Get a Group
+      - GraphQLApi
+      summary: Get a GraphQLApi
       parameters:
       - *id040
       - &id042
@@ -1208,8 +1209,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Group
-      summary: Delete a Group
+      - GraphQLApi
+      summary: Delete a GraphQLApi
       parameters:
       - *id040
       - *id042
@@ -1218,11 +1219,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/httpapis:
+  /namespaces/{namespace}/groups:
     get:
       tags:
-      - HttpApi
-      summary: List HttpApi resources
+      - Group
+      summary: List Group resources
       parameters:
       - &id043
         name: namespace
@@ -1241,11 +1242,11 @@ paths:
                   items:
                     type: array
                     items: &id044
-                      $ref: '#/components/schemas/HttpApi'
+                      $ref: '#/components/schemas/Group'
     post:
       tags:
-      - HttpApi
-      summary: Create a HttpApi
+      - Group
+      summary: Create a Group
       parameters:
       - *id043
       requestBody:
@@ -1265,11 +1266,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/httpapis/{name}:
+  /namespaces/{namespace}/groups/{name}:
     get:
       tags:
-      - HttpApi
-      summary: Get a HttpApi
+      - Group
+      summary: Get a Group
       parameters:
       - *id043
       - &id045
@@ -1292,8 +1293,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - HttpApi
-      summary: Delete a HttpApi
+      - Group
+      summary: Delete a Group
       parameters:
       - *id043
       - *id045
@@ -1302,11 +1303,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/migrations:
+  /namespaces/{namespace}/httpapis:
     get:
       tags:
-      - Migration
-      summary: List Migration resources
+      - HttpApi
+      summary: List HttpApi resources
       parameters:
       - &id046
         name: namespace
@@ -1325,11 +1326,11 @@ paths:
                   items:
                     type: array
                     items: &id047
-                      $ref: '#/components/schemas/Migration'
+                      $ref: '#/components/schemas/HttpApi'
     post:
       tags:
-      - Migration
-      summary: Create a Migration
+      - HttpApi
+      summary: Create a HttpApi
       parameters:
       - *id046
       requestBody:
@@ -1349,11 +1350,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/migrations/{name}:
+  /namespaces/{namespace}/httpapis/{name}:
     get:
       tags:
-      - Migration
-      summary: Get a Migration
+      - HttpApi
+      summary: Get a HttpApi
       parameters:
       - *id046
       - &id048
@@ -1376,8 +1377,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Migration
-      summary: Delete a Migration
+      - HttpApi
+      summary: Delete a HttpApi
       parameters:
       - *id046
       - *id048
@@ -1386,11 +1387,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/models:
+  /namespaces/{namespace}/migrations:
     get:
       tags:
-      - Model
-      summary: List Model resources
+      - Migration
+      summary: List Migration resources
       parameters:
       - &id049
         name: namespace
@@ -1409,11 +1410,11 @@ paths:
                   items:
                     type: array
                     items: &id050
-                      $ref: '#/components/schemas/Model'
+                      $ref: '#/components/schemas/Migration'
     post:
       tags:
-      - Model
-      summary: Create a Model
+      - Migration
+      summary: Create a Migration
       parameters:
       - *id049
       requestBody:
@@ -1433,11 +1434,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/models/{name}:
+  /namespaces/{namespace}/migrations/{name}:
     get:
       tags:
-      - Model
-      summary: Get a Model
+      - Migration
+      summary: Get a Migration
       parameters:
       - *id049
       - &id051
@@ -1460,8 +1461,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Model
-      summary: Delete a Model
+      - Migration
+      summary: Delete a Migration
       parameters:
       - *id049
       - *id051
@@ -1470,11 +1471,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/modelpackages:
+  /namespaces/{namespace}/models:
     get:
       tags:
-      - ModelPackage
-      summary: List ModelPackage resources
+      - Model
+      summary: List Model resources
       parameters:
       - &id052
         name: namespace
@@ -1493,11 +1494,11 @@ paths:
                   items:
                     type: array
                     items: &id053
-                      $ref: '#/components/schemas/ModelPackage'
+                      $ref: '#/components/schemas/Model'
     post:
       tags:
-      - ModelPackage
-      summary: Create a ModelPackage
+      - Model
+      summary: Create a Model
       parameters:
       - *id052
       requestBody:
@@ -1517,11 +1518,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/modelpackages/{name}:
+  /namespaces/{namespace}/models/{name}:
     get:
       tags:
-      - ModelPackage
-      summary: Get a ModelPackage
+      - Model
+      summary: Get a Model
       parameters:
       - *id052
       - &id054
@@ -1544,8 +1545,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - ModelPackage
-      summary: Delete a ModelPackage
+      - Model
+      summary: Delete a Model
       parameters:
       - *id052
       - *id054
@@ -1554,11 +1555,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/policies:
+  /namespaces/{namespace}/modelpackages:
     get:
       tags:
-      - Policy
-      summary: List Policy resources
+      - ModelPackage
+      summary: List ModelPackage resources
       parameters:
       - &id055
         name: namespace
@@ -1577,11 +1578,11 @@ paths:
                   items:
                     type: array
                     items: &id056
-                      $ref: '#/components/schemas/Policy'
+                      $ref: '#/components/schemas/ModelPackage'
     post:
       tags:
-      - Policy
-      summary: Create a Policy
+      - ModelPackage
+      summary: Create a ModelPackage
       parameters:
       - *id055
       requestBody:
@@ -1601,11 +1602,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/policies/{name}:
+  /namespaces/{namespace}/modelpackages/{name}:
     get:
       tags:
-      - Policy
-      summary: Get a Policy
+      - ModelPackage
+      summary: Get a ModelPackage
       parameters:
       - *id055
       - &id057
@@ -1628,8 +1629,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Policy
-      summary: Delete a Policy
+      - ModelPackage
+      summary: Delete a ModelPackage
       parameters:
       - *id055
       - *id057
@@ -1638,11 +1639,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/queries:
+  /namespaces/{namespace}/policies:
     get:
       tags:
-      - Query
-      summary: List Query resources
+      - Policy
+      summary: List Policy resources
       parameters:
       - &id058
         name: namespace
@@ -1661,11 +1662,11 @@ paths:
                   items:
                     type: array
                     items: &id059
-                      $ref: '#/components/schemas/Query'
+                      $ref: '#/components/schemas/Policy'
     post:
       tags:
-      - Query
-      summary: Create a Query
+      - Policy
+      summary: Create a Policy
       parameters:
       - *id058
       requestBody:
@@ -1685,11 +1686,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/queries/{name}:
+  /namespaces/{namespace}/policies/{name}:
     get:
       tags:
-      - Query
-      summary: Get a Query
+      - Policy
+      summary: Get a Policy
       parameters:
       - *id058
       - &id060
@@ -1712,8 +1713,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Query
-      summary: Delete a Query
+      - Policy
+      summary: Delete a Policy
       parameters:
       - *id058
       - *id060
@@ -1722,11 +1723,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/replications:
+  /namespaces/{namespace}/queries:
     get:
       tags:
-      - Replication
-      summary: List Replication resources
+      - Query
+      summary: List Query resources
       parameters:
       - &id061
         name: namespace
@@ -1745,11 +1746,11 @@ paths:
                   items:
                     type: array
                     items: &id062
-                      $ref: '#/components/schemas/Replication'
+                      $ref: '#/components/schemas/Query'
     post:
       tags:
-      - Replication
-      summary: Create a Replication
+      - Query
+      summary: Create a Query
       parameters:
       - *id061
       requestBody:
@@ -1769,11 +1770,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/replications/{name}:
+  /namespaces/{namespace}/queries/{name}:
     get:
       tags:
-      - Replication
-      summary: Get a Replication
+      - Query
+      summary: Get a Query
       parameters:
       - *id061
       - &id063
@@ -1796,8 +1797,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Replication
-      summary: Delete a Replication
+      - Query
+      summary: Delete a Query
       parameters:
       - *id061
       - *id063
@@ -1806,11 +1807,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/roles:
+  /namespaces/{namespace}/replications:
     get:
       tags:
-      - Role
-      summary: List Role resources
+      - Replication
+      summary: List Replication resources
       parameters:
       - &id064
         name: namespace
@@ -1829,11 +1830,11 @@ paths:
                   items:
                     type: array
                     items: &id065
-                      $ref: '#/components/schemas/Role'
+                      $ref: '#/components/schemas/Replication'
     post:
       tags:
-      - Role
-      summary: Create a Role
+      - Replication
+      summary: Create a Replication
       parameters:
       - *id064
       requestBody:
@@ -1853,11 +1854,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/roles/{name}:
+  /namespaces/{namespace}/replications/{name}:
     get:
       tags:
-      - Role
-      summary: Get a Role
+      - Replication
+      summary: Get a Replication
       parameters:
       - *id064
       - &id066
@@ -1880,8 +1881,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Role
-      summary: Delete a Role
+      - Replication
+      summary: Delete a Replication
       parameters:
       - *id064
       - *id066
@@ -1890,11 +1891,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/securitygroups:
+  /namespaces/{namespace}/roles:
     get:
       tags:
-      - SecurityGroup
-      summary: List SecurityGroup resources
+      - Role
+      summary: List Role resources
       parameters:
       - &id067
         name: namespace
@@ -1913,11 +1914,11 @@ paths:
                   items:
                     type: array
                     items: &id068
-                      $ref: '#/components/schemas/SecurityGroup'
+                      $ref: '#/components/schemas/Role'
     post:
       tags:
-      - SecurityGroup
-      summary: Create a SecurityGroup
+      - Role
+      summary: Create a Role
       parameters:
       - *id067
       requestBody:
@@ -1937,11 +1938,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/securitygroups/{name}:
+  /namespaces/{namespace}/roles/{name}:
     get:
       tags:
-      - SecurityGroup
-      summary: Get a SecurityGroup
+      - Role
+      summary: Get a Role
       parameters:
       - *id067
       - &id069
@@ -1964,8 +1965,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - SecurityGroup
-      summary: Delete a SecurityGroup
+      - Role
+      summary: Delete a Role
       parameters:
       - *id067
       - *id069
@@ -1974,11 +1975,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/statemachines:
+  /namespaces/{namespace}/securitygroups:
     get:
       tags:
-      - StateMachine
-      summary: List StateMachine resources
+      - SecurityGroup
+      summary: List SecurityGroup resources
       parameters:
       - &id070
         name: namespace
@@ -1997,11 +1998,11 @@ paths:
                   items:
                     type: array
                     items: &id071
-                      $ref: '#/components/schemas/StateMachine'
+                      $ref: '#/components/schemas/SecurityGroup'
     post:
       tags:
-      - StateMachine
-      summary: Create a StateMachine
+      - SecurityGroup
+      summary: Create a SecurityGroup
       parameters:
       - *id070
       requestBody:
@@ -2021,11 +2022,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/statemachines/{name}:
+  /namespaces/{namespace}/securitygroups/{name}:
     get:
       tags:
-      - StateMachine
-      summary: Get a StateMachine
+      - SecurityGroup
+      summary: Get a SecurityGroup
       parameters:
       - *id070
       - &id072
@@ -2048,8 +2049,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - StateMachine
-      summary: Delete a StateMachine
+      - SecurityGroup
+      summary: Delete a SecurityGroup
       parameters:
       - *id070
       - *id072
@@ -2058,11 +2059,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/streams:
+  /namespaces/{namespace}/statemachines:
     get:
       tags:
-      - Stream
-      summary: List Stream resources
+      - StateMachine
+      summary: List StateMachine resources
       parameters:
       - &id073
         name: namespace
@@ -2081,11 +2082,11 @@ paths:
                   items:
                     type: array
                     items: &id074
-                      $ref: '#/components/schemas/Stream'
+                      $ref: '#/components/schemas/StateMachine'
     post:
       tags:
-      - Stream
-      summary: Create a Stream
+      - StateMachine
+      summary: Create a StateMachine
       parameters:
       - *id073
       requestBody:
@@ -2105,11 +2106,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/streams/{name}:
+  /namespaces/{namespace}/statemachines/{name}:
     get:
       tags:
-      - Stream
-      summary: Get a Stream
+      - StateMachine
+      summary: Get a StateMachine
       parameters:
       - *id073
       - &id075
@@ -2132,8 +2133,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Stream
-      summary: Delete a Stream
+      - StateMachine
+      summary: Delete a StateMachine
       parameters:
       - *id073
       - *id075
@@ -2142,11 +2143,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/trainingjobs:
+  /namespaces/{namespace}/streams:
     get:
       tags:
-      - TrainingJob
-      summary: List TrainingJob resources
+      - Stream
+      summary: List Stream resources
       parameters:
       - &id076
         name: namespace
@@ -2165,11 +2166,11 @@ paths:
                   items:
                     type: array
                     items: &id077
-                      $ref: '#/components/schemas/TrainingJob'
+                      $ref: '#/components/schemas/Stream'
     post:
       tags:
-      - TrainingJob
-      summary: Create a TrainingJob
+      - Stream
+      summary: Create a Stream
       parameters:
       - *id076
       requestBody:
@@ -2189,11 +2190,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/trainingjobs/{name}:
+  /namespaces/{namespace}/streams/{name}:
     get:
       tags:
-      - TrainingJob
-      summary: Get a TrainingJob
+      - Stream
+      summary: Get a Stream
       parameters:
       - *id076
       - &id078
@@ -2216,8 +2217,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - TrainingJob
-      summary: Delete a TrainingJob
+      - Stream
+      summary: Delete a Stream
       parameters:
       - *id076
       - *id078
@@ -2226,11 +2227,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/users:
+  /namespaces/{namespace}/trainingjobs:
     get:
       tags:
-      - User
-      summary: List User resources
+      - TrainingJob
+      summary: List TrainingJob resources
       parameters:
       - &id079
         name: namespace
@@ -2249,11 +2250,11 @@ paths:
                   items:
                     type: array
                     items: &id080
-                      $ref: '#/components/schemas/User'
+                      $ref: '#/components/schemas/TrainingJob'
     post:
       tags:
-      - User
-      summary: Create a User
+      - TrainingJob
+      summary: Create a TrainingJob
       parameters:
       - *id079
       requestBody:
@@ -2273,11 +2274,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/users/{name}:
+  /namespaces/{namespace}/trainingjobs/{name}:
     get:
       tags:
-      - User
-      summary: Get a User
+      - TrainingJob
+      summary: Get a TrainingJob
       parameters:
       - *id079
       - &id081
@@ -2300,8 +2301,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - User
-      summary: Delete a User
+      - TrainingJob
+      summary: Delete a TrainingJob
       parameters:
       - *id079
       - *id081
@@ -2310,11 +2311,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/virtualmachines:
+  /namespaces/{namespace}/users:
     get:
       tags:
-      - VirtualMachine
-      summary: List VirtualMachine resources
+      - User
+      summary: List User resources
       parameters:
       - &id082
         name: namespace
@@ -2333,11 +2334,11 @@ paths:
                   items:
                     type: array
                     items: &id083
-                      $ref: '#/components/schemas/VirtualMachine'
+                      $ref: '#/components/schemas/User'
     post:
       tags:
-      - VirtualMachine
-      summary: Create a VirtualMachine
+      - User
+      summary: Create a User
       parameters:
       - *id082
       requestBody:
@@ -2357,11 +2358,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/virtualmachines/{name}:
+  /namespaces/{namespace}/users/{name}:
     get:
       tags:
-      - VirtualMachine
-      summary: Get a VirtualMachine
+      - User
+      summary: Get a User
       parameters:
       - *id082
       - &id084
@@ -2384,8 +2385,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VirtualMachine
-      summary: Delete a VirtualMachine
+      - User
+      summary: Delete a User
       parameters:
       - *id082
       - *id084
@@ -2394,11 +2395,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/vmimages:
+  /namespaces/{namespace}/virtualmachines:
     get:
       tags:
-      - VmImage
-      summary: List VmImage resources
+      - VirtualMachine
+      summary: List VirtualMachine resources
       parameters:
       - &id085
         name: namespace
@@ -2417,11 +2418,11 @@ paths:
                   items:
                     type: array
                     items: &id086
-                      $ref: '#/components/schemas/VmImage'
+                      $ref: '#/components/schemas/VirtualMachine'
     post:
       tags:
-      - VmImage
-      summary: Create a VmImage
+      - VirtualMachine
+      summary: Create a VirtualMachine
       parameters:
       - *id085
       requestBody:
@@ -2441,11 +2442,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/vmimages/{name}:
+  /namespaces/{namespace}/virtualmachines/{name}:
     get:
       tags:
-      - VmImage
-      summary: Get a VmImage
+      - VirtualMachine
+      summary: Get a VirtualMachine
       parameters:
       - *id085
       - &id087
@@ -2468,8 +2469,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VmImage
-      summary: Delete a VmImage
+      - VirtualMachine
+      summary: Delete a VirtualMachine
       parameters:
       - *id085
       - *id087
@@ -2478,11 +2479,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/volumes:
+  /namespaces/{namespace}/vmimages:
     get:
       tags:
-      - Volume
-      summary: List Volume resources
+      - VmImage
+      summary: List VmImage resources
       parameters:
       - &id088
         name: namespace
@@ -2501,11 +2502,11 @@ paths:
                   items:
                     type: array
                     items: &id089
-                      $ref: '#/components/schemas/Volume'
+                      $ref: '#/components/schemas/VmImage'
     post:
       tags:
-      - Volume
-      summary: Create a Volume
+      - VmImage
+      summary: Create a VmImage
       parameters:
       - *id088
       requestBody:
@@ -2525,11 +2526,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/volumes/{name}:
+  /namespaces/{namespace}/vmimages/{name}:
     get:
       tags:
-      - Volume
-      summary: Get a Volume
+      - VmImage
+      summary: Get a VmImage
       parameters:
       - *id088
       - &id090
@@ -2552,11 +2553,95 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Volume
-      summary: Delete a Volume
+      - VmImage
+      summary: Delete a VmImage
       parameters:
       - *id088
       - *id090
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Not found
+  /namespaces/{namespace}/volumes:
+    get:
+      tags:
+      - Volume
+      summary: List Volume resources
+      parameters:
+      - &id091
+        name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: &id092
+                      $ref: '#/components/schemas/Volume'
+    post:
+      tags:
+      - Volume
+      summary: Create a Volume
+      parameters:
+      - *id091
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: *id092
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: *id092
+        '409':
+          description: Already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+  /namespaces/{namespace}/volumes/{name}:
+    get:
+      tags:
+      - Volume
+      summary: Get a Volume
+      parameters:
+      - *id091
+      - &id093
+        name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: *id092
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+    delete:
+      tags:
+      - Volume
+      summary: Delete a Volume
+      parameters:
+      - *id091
+      - *id093
       responses:
         '200':
           description: Deleted
@@ -2725,6 +2810,124 @@ components:
           type: object
           properties:
             url:
+              type: string
+    BatchTransform:
+      type: object
+      description: 'open-infra kind: BatchTransform.'
+      required:
+      - spec
+      properties:
+        apiVersion:
+          type: string
+          enum:
+          - openinfra.dev/v1
+        kind:
+          type: string
+          enum:
+          - BatchTransform
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          type: object
+          required:
+          - image
+          - input
+          - output
+          properties:
+            image:
+              type: string
+              description: The inference container. It reads the input records (INPUT_BUCKET/INPUT_PREFIX), optionally loads
+                a model artifact (ARTIFACT_BUCKET/ARTIFACT_KEY), and writes predictions to OUTPUT_BUCKET/OUTPUT_PREFIX. Runs
+                to completion.
+            command:
+              type: array
+              items:
+                type: string
+              description: Optional entrypoint override.
+            args:
+              type: array
+              items:
+                type: string
+              description: Optional container args.
+            artifact:
+              type: object
+              description: The model artifact to score with (injected as ARTIFACT_BUCKET/ARTIFACT_KEY). Optional if the model
+                is baked into the image.
+              properties:
+                bucket:
+                  type: string
+                key:
+                  type: string
+                  description: Object key of the model artifact.
+            input:
+              type: object
+              required:
+              - bucket
+              description: The dataset to score (injected as INPUT_BUCKET/INPUT_PREFIX).
+              properties:
+                bucket:
+                  type: string
+                prefix:
+                  type: string
+                  description: Key prefix of the input records.
+            output:
+              type: object
+              required:
+              - bucket
+              description: Where predictions are written (injected as OUTPUT_BUCKET/OUTPUT_PREFIX). The bucket is created
+                on demand.
+              properties:
+                bucket:
+                  type: string
+                prefix:
+                  type: string
+                  description: Key prefix for the predictions.
+            modelPackage:
+              type: string
+              description: 'Provenance: the ModelPackage this job scores with (informational).'
+            gpu:
+              type: integer
+              default: 0
+              description: GPUs to request. 0 (default) runs CPU-only; >0 schedules on a GPU node and sets nvidia.com/gpu.
+            gpuTier:
+              type: string
+              enum:
+              - smallgpu
+              - largegpu
+              default: smallgpu
+              description: GPU class when gpu>0. Ignored when gpu=0.
+            cpu:
+              type: string
+              description: CPU request/limit (e.g. "2").
+            memory:
+              type: string
+              description: Memory request/limit (e.g. "4Gi").
+            env:
+              type: array
+              description: Environment variables for the inference container.
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  value:
+                    type: string
+            secrets:
+              type: array
+              items:
+                type: string
+              description: Extra secrets to inject with envFrom.
+            backoffLimit:
+              type: integer
+              default: 0
+              description: Pod retries before the job is marked Failed. Defaults to 0.
+            maxRuntimeSeconds:
+              type: integer
+              description: Hard wall-clock cap (Job activeDeadlineSeconds). Unset means no cap.
+        status:
+          type: object
+          properties:
+            jobName:
               type: string
     CertificateAuthority:
       type: object
@@ -4463,7 +4666,7 @@ components:
           - siteB
           - tables
           properties:
-            siteA: &id091
+            siteA: &id094
               type: object
               description: "One endpoint of the replication pair. Both sites are simultaneously source and target \u2014 changes\
                 \ captured here are applied to the peer and vice-versa. The two sites may run different engines (e.g. sqlserver\
@@ -4525,7 +4728,7 @@ components:
                   default: false
                   description: Connect to this site's database over TLS (default false). Applied for Postgres (sslmode=require)
                     and SQL Server (encrypt=true).
-            siteB: *id091
+            siteB: *id094
             tables:
               type: array
               items:

@@ -1,0 +1,177 @@
+# The compiler for kind: BatchTransform -> a run-once, offline batch-inference Job.
+# It renders a bucket-setup Job (ensures the input/output/artifact buckets exist and
+# writes a <name>-minio creds secret, the pre-defined openinfra-bucket-setup identity)
+# and the inference batch/v1 Job: the user's container on an optional GPU node, with the
+# input/output/artifact locations + S3-compatible credentials injected. Structurally the
+# same as kind: TrainingJob, but for scoring rather than training. Status is the Job's.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: batchtransform
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XBatchTransform
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $job := printf "%s-transform" $name }}
+            {{- $gpu := 0 }}{{- if hasKey $spec "gpu" }}{{- $gpu = $spec.gpu }}{{- end }}
+            {{- $useGpu := gt $gpu 0 }}
+            {{- $tier := $spec.gpuTier | default "smallgpu" }}
+            {{- $cpu := $spec.cpu | default "2" }}
+            {{- $mem := $spec.memory | default "4Gi" }}
+            {{- $in := $spec.input | default dict }}
+            {{- $out := $spec.output | default dict }}
+            {{- $art := $spec.artifact | default dict }}
+            {{- $buckets := list }}
+            {{- if $in.bucket }}{{- $buckets = append $buckets $in.bucket }}{{- end }}
+            {{- if $out.bucket }}{{- $buckets = append $buckets $out.bucket }}{{- end }}
+            {{- if $art.bucket }}{{- $buckets = append $buckets $art.bucket }}{{- end }}
+            ---
+            # Ensure the buckets exist + write the S3 creds secret (<name>-minio).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-bt-bucket-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'for b in {{ range $buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: transform
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $job }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/batchtransform: {{ $name }} }
+                  spec:
+                    backoffLimit: {{ $spec.backoffLimit | default 0 }}
+                    {{- if $spec.maxRuntimeSeconds }}
+                    activeDeadlineSeconds: {{ $spec.maxRuntimeSeconds }}
+                    {{- end }}
+                    template:
+                      metadata: { labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/batchtransform: {{ $name }} } }
+                      spec:
+                        restartPolicy: Never
+                        {{- if $useGpu }}
+                        runtimeClassName: nvidia
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - key: openinfra.dev/gpu-tier
+                                      operator: In
+                                      {{- if eq $tier "largegpu" }}
+                                      values: [large]
+                                      {{- else }}
+                                      values: [small, large]
+                                      {{- end }}
+                            {{- if eq $tier "smallgpu" }}
+                            preferredDuringSchedulingIgnoredDuringExecution:
+                              - weight: 100
+                                preference:
+                                  matchExpressions:
+                                    - { key: openinfra.dev/gpu-tier, operator: In, values: [small] }
+                            {{- end }}
+                        {{- end }}
+                        containers:
+                          - name: transform
+                            image: {{ $spec.image }}
+                            {{- if $spec.command }}
+                            command: {{ $spec.command | toJson }}
+                            {{- end }}
+                            {{- if $spec.args }}
+                            args: {{ $spec.args | toJson }}
+                            {{- end }}
+                            env:
+                              {{- range $e := ($spec.env | default (list)) }}
+                              - { name: {{ $e.name | quote }}, value: {{ $e.value | quote }} }
+                              {{- end }}
+                              - { name: INPUT_BUCKET, value: {{ $in.bucket | quote }} }
+                              - { name: INPUT_PREFIX, value: {{ $in.prefix | default "" | quote }} }
+                              - { name: OUTPUT_BUCKET, value: {{ $out.bucket | quote }} }
+                              - { name: OUTPUT_PREFIX, value: {{ $out.prefix | default "" | quote }} }
+                              {{- if $art.bucket }}
+                              - { name: ARTIFACT_BUCKET, value: {{ $art.bucket | quote }} }
+                              - { name: ARTIFACT_KEY, value: {{ $art.key | default "" | quote }} }
+                              {{- end }}
+                              - { name: AWS_ENDPOINT_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+                              - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } }
+                            {{- $envFrom := $spec.secrets | default (list) }}
+                            {{- if gt (len $envFrom) 0 }}
+                            envFrom:
+                              {{- range $s := $envFrom }}
+                              - secretRef: { name: {{ $s | quote }} }
+                              {{- end }}
+                            {{- end }}
+                            resources:
+                              requests: { cpu: 250m, memory: 512Mi }
+                              limits:
+                                cpu: "{{ $cpu }}"
+                                memory: {{ $mem | quote }}
+                                {{- if $useGpu }}
+                                nvidia.com/gpu: {{ $gpu }}
+                                {{- end }}
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XBatchTransform
+            status:
+              jobName: {{ $job }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
