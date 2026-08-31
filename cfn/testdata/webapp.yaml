@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: A small web app — exercises supported + partial kinds, intrinsics, a condition, and dependency ordering.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+
+Resources:
+  AppKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "encryption key for ${AWS::StackName}"
+
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Stage}-app-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+
+  Assets:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Stage}-assets"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Ref AppKey
+              SSEAlgorithm: aws:kms
+
+  Api:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Stage}-api"
+      Role: !GetAtt AppRole.Arn
+      Runtime: provided.al2
+      Handler: bootstrap
+      Environment:
+        Variables:
+          BUCKET: !Ref Assets
+          KEY_ARN: !GetAtt AppKey.Arn
+
+  Workflow:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn: [Api]
+    Properties:
+      StateMachineName: !Sub "${Stage}-flow"
+      DefinitionString: !Sub |
+        {"StartAt":"Call","States":{"Call":{"Type":"Task","Resource":"${Api.Arn}","End":true}}}
+
+  ProdAlarms:
+    Type: AWS::SNS::Topic
+    Condition: IsProd
+    Properties:
+      TopicName: prod-alarms
+
+Outputs:
+  ApiName:
+    Value: !Ref Api
+  BucketName:
+    Value: !Ref Assets
