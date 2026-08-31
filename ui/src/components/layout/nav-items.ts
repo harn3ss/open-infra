@@ -11,6 +11,7 @@ import {
   FolderTree,
   Globe,
   HardDrive,
+  Layers,
   LayoutDashboard,
   LineChart,
   Monitor,
@@ -70,6 +71,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "Compute" },
   { label: "Training Jobs", to: "/trainingjobs", icon: BrainCog, matchPrefix: true, section: "Compute" },
   { label: "Model Registry", to: "/model-registry", icon: Package, matchPrefix: true, section: "Compute" },
+  { label: "Batch Transform", to: "/batch-transform", icon: Layers, matchPrefix: true, section: "Compute" },
   { label: "State Machines", to: "/statemachines", icon: Route, matchPrefix: true, section: "Compute" },
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },

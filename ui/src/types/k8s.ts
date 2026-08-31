@@ -760,6 +760,33 @@ export type TrainingJob = K8sObject<TrainingJobSpec, TrainingJobStatus>;
 export const TRAININGJOBS_PLURAL = "trainingjobs";
 export const TRAININGJOBS_CRD_NAME = "trainingjobs.openinfra.dev";
 
+/* ---------------------- open-infra BatchTransform CRD --------------------- */
+// A run-once, offline batch-inference Job (SageMaker Batch Transform).
+export interface BatchTransformSpec {
+  image: string;
+  command?: string[];
+  args?: string[];
+  artifact?: { bucket?: string; key?: string };
+  input: { bucket?: string; prefix?: string };
+  output: { bucket?: string; prefix?: string };
+  modelPackage?: string;
+  gpu?: number;
+  gpuTier?: "smallgpu" | "largegpu";
+  cpu?: string;
+  memory?: string;
+  env?: { name: string; value: string }[];
+  secrets?: string[];
+  backoffLimit?: number;
+  maxRuntimeSeconds?: number;
+}
+export interface BatchTransformStatus {
+  jobName?: string;
+  conditions?: Condition[];
+}
+export type BatchTransform = K8sObject<BatchTransformSpec, BatchTransformStatus>;
+export const BATCHTRANSFORMS_PLURAL = "batchtransforms";
+export const BATCHTRANSFORMS_CRD_NAME = "batchtransforms.openinfra.dev";
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;
