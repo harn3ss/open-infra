@@ -132,6 +132,11 @@ rules:
       - queries
       - httpapis
       - graphqlapis
+      - databaseproxies
+      - statemachines
+      - executions
+      - trainingjobs
+      - certificateauthorities
       - dataclassifications
       - encryptionkeys
       - destructions
