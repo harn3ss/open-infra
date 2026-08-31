@@ -1,0 +1,113 @@
+# open-infra's "SageMaker Batch Transform": kind: BatchTransform — a run-once, offline
+# batch-inference Job. Give it an inference container (+ a model artifact), an input
+# dataset and an output location; it loads the model, scores every input record, and
+# writes predictions to the object store, then exits. The offline counterpart to
+# kind: Model (a live endpoint) — score a whole dataset without standing up a server.
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xbatchtransforms.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XBatchTransform
+    plural: xbatchtransforms
+  claimNames:
+    kind: BatchTransform     # what users write in infra.yaml
+    plural: batchtransforms
+  defaultCompositionRef:
+    name: batchtransform
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [image, input, output]
+              properties:
+                image:
+                  type: string
+                  description: "The inference container. It reads the input records (INPUT_BUCKET/INPUT_PREFIX), optionally loads a model artifact (ARTIFACT_BUCKET/ARTIFACT_KEY), and writes predictions to OUTPUT_BUCKET/OUTPUT_PREFIX. Runs to completion."
+                command:
+                  type: array
+                  items: { type: string }
+                  description: "Optional entrypoint override."
+                args:
+                  type: array
+                  items: { type: string }
+                  description: "Optional container args."
+                artifact:
+                  type: object
+                  description: "The model artifact to score with (injected as ARTIFACT_BUCKET/ARTIFACT_KEY). Optional if the model is baked into the image."
+                  properties:
+                    bucket: { type: string }
+                    key:    { type: string, description: "Object key of the model artifact." }
+                input:
+                  type: object
+                  required: [bucket]
+                  description: "The dataset to score (injected as INPUT_BUCKET/INPUT_PREFIX)."
+                  properties:
+                    bucket: { type: string }
+                    prefix: { type: string, description: "Key prefix of the input records." }
+                output:
+                  type: object
+                  required: [bucket]
+                  description: "Where predictions are written (injected as OUTPUT_BUCKET/OUTPUT_PREFIX). The bucket is created on demand."
+                  properties:
+                    bucket: { type: string }
+                    prefix: { type: string, description: "Key prefix for the predictions." }
+                modelPackage:
+                  type: string
+                  description: "Provenance: the ModelPackage this job scores with (informational)."
+                gpu:
+                  type: integer
+                  default: 0
+                  description: "GPUs to request. 0 (default) runs CPU-only; >0 schedules on a GPU node and sets nvidia.com/gpu."
+                gpuTier:
+                  type: string
+                  enum: [smallgpu, largegpu]
+                  default: smallgpu
+                  description: "GPU class when gpu>0. Ignored when gpu=0."
+                cpu:
+                  type: string
+                  description: "CPU request/limit (e.g. \"2\")."
+                memory:
+                  type: string
+                  description: "Memory request/limit (e.g. \"4Gi\")."
+                env:
+                  type: array
+                  description: "Environment variables for the inference container."
+                  items:
+                    type: object
+                    properties:
+                      name:  { type: string }
+                      value: { type: string }
+                secrets:
+                  type: array
+                  items: { type: string }
+                  description: "Extra secrets to inject with envFrom."
+                backoffLimit:
+                  type: integer
+                  default: 0
+                  description: "Pod retries before the job is marked Failed. Defaults to 0."
+                maxRuntimeSeconds:
+                  type: integer
+                  description: "Hard wall-clock cap (Job activeDeadlineSeconds). Unset means no cap."
+            status:
+              type: object
+              properties:
+                jobName: { type: string }
