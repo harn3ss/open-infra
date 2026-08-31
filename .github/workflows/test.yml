@@ -17,6 +17,7 @@ on:
       - "statemachine/**"
       - "hpo/**"
       - "featurestore/**"
+      - "cfn/**"
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
@@ -33,6 +34,7 @@ on:
       - "statemachine/**"
       - "hpo/**"
       - "featurestore/**"
+      - "cfn/**"
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
@@ -66,6 +68,7 @@ jobs:
           - statemachine # the ASL workflow engine (parse, JSONPath, choice, retry/catch)
           - hpo # the hyperparameter-tuning engine (grid search, metric extraction)
           - featurestore # the online feature store API (RESP client, put/get)
+          - cfn # the CloudFormation engine's plan/dry-run (mapping table + intrinsics + ordering)
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
