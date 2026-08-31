@@ -37,17 +37,49 @@ spec:
           properties:
             spec:
               type: object
-              required: [model]
+              # Exactly one of `model` (a catalog model on Ollama) or `serve` (a custom
+              # trained artifact) — the composition rejects a Model with neither.
               properties:
                 model:
                   type: string
-                  description: "The model to serve, chosen from a curated catalog (allowlist). Each entry maps to a resource tier that sets CPU/RAM and GPU placement: qwen2.5:0.5b and llama3.2:1b run CPU-only; llama3.2:3b and llama3.1:8b request a small GPU (A2000 class); mixtral:8x7b requires a large GPU (3090 class)."
+                  description: "The model to serve, chosen from a curated catalog (allowlist). Each entry maps to a resource tier that sets CPU/RAM and GPU placement: qwen2.5:0.5b and llama3.2:1b run CPU-only; llama3.2:3b and llama3.1:8b request a small GPU (A2000 class); mixtral:8x7b requires a large GPU (3090 class). Omit when using `serve`."
                   enum:
                     - qwen2.5:0.5b     # nano  · CPU-only · ultra-fast, tiny
                     - llama3.2:1b      # nano  · CPU-only
                     - llama3.2:3b      # small · GPU (A2000 class)
                     - llama3.1:8b      # standard · GPU (A2000 class)
                     - mixtral:8x7b     # large · requires a large GPU (3090 class)
+                serve:
+                  type: object
+                  description: >-
+                    Serve a custom trained model artifact instead of a catalog model — the
+                    train->serve path (typically a kind: ModelPackage you promote here). The
+                    image must load the artifact and serve HTTP on `port`; the artifact
+                    location and S3-compatible credentials are injected (ARTIFACT_BUCKET /
+                    ARTIFACT_KEY + AWS_ENDPOINT_URL / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+                    Set this OR `model`.
+                  properties:
+                    image:   { type: string, description: "Serving container image that loads the artifact and serves HTTP." }
+                    port:    { type: integer, default: 8080, description: "Port the serving container listens on (the key-gated proxy forwards to it)." }
+                    artifact:
+                      type: object
+                      description: "The trained model artifact in the object store."
+                      properties:
+                        bucket: { type: string }
+                        key:    { type: string, description: "Object key (or prefix) of the artifact." }
+                    gpu:     { type: integer, default: 0, description: "GPUs for serving (0 = CPU-only)." }
+                    gpuTier: { type: string, enum: [smallgpu, largegpu], default: smallgpu, description: "GPU class when gpu>0." }
+                    cpu:     { type: string, description: "CPU request/limit (e.g. \"2\")." }
+                    memory:  { type: string, description: "Memory request/limit (e.g. \"8Gi\")." }
+                    modelPackage: { type: string, description: "Provenance: the ModelPackage this endpoint serves (informational)." }
+                    env:
+                      type: array
+                      description: "Extra environment variables for the serving container."
+                      items:
+                        type: object
+                        properties:
+                          name:  { type: string }
+                          value: { type: string }
                 highAvailability: { type: boolean, default: false, description: "Run two replicas spread across separate nodes (pod anti-affinity), load-balanced so the endpoint survives a single node loss. If too few qualifying nodes are available the second replica stays Pending, degrading gracefully to one. Default false = a single replica." }
                 domain:      { type: string, description: "Hostname to expose the key-gated inference endpoint on externally — open-infra provisions an Ingress and a cert-manager TLS certificate for it (e.g. llama.example.com)." }
                 storageSize: { type: string, default: "20Gi", description: "Size limit for the ephemeral weight cache (an emptyDir). Weights are re-pulled each time a fresh pod starts, so this is scratch space, not persistent storage. Default 20Gi." }

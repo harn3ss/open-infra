@@ -1,0 +1,36 @@
+# The composition for kind: ModelPackage. A ModelPackage is a registry RECORD, not a
+# workload — it carries no running resources of its own; a trained artifact is served
+# only when it is promoted to a kind: Model (spec.serve). So this emits no child
+# resources; it just mirrors the approval status and marks the claim Ready.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: modelpackage
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XModelPackage
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            apiVersion: openinfra.dev/v1
+            kind: XModelPackage
+            status:
+              approvalStatus: {{ $spec.approvalStatus | default "PendingManualApproval" }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
