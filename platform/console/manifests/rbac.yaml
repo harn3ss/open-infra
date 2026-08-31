@@ -141,6 +141,7 @@ rules:
       - tuningjobs
       - processingjobs
       - modelmonitors
+      - featuregroups
       - certificateauthorities
       - dataclassifications
       - encryptionkeys
