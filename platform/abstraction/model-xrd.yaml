@@ -60,6 +60,14 @@ spec:
                     Set this OR `model`.
                   properties:
                     image:   { type: string, description: "Serving container image that loads the artifact and serves HTTP." }
+                    command:
+                      type: array
+                      items: { type: string }
+                      description: "Optional entrypoint override for the serving container."
+                    args:
+                      type: array
+                      items: { type: string }
+                      description: "Optional args for the serving container."
                     port:    { type: integer, default: 8000, description: "Port the serving container listens on; the key-gated proxy forwards to it. Must NOT be 8080 (reserved for the proxy sidecar)." }
                     artifact:
                       type: object
