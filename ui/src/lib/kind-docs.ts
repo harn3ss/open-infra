@@ -22,6 +22,7 @@ const KIND_DOC_FILE: Record<string, string> = {
   TuningJob: "tuning-jobs.md",
   ProcessingJob: "processing-jobs.md",
   ModelMonitor: "model-monitor.md",
+  FeatureGroup: "feature-store.md",
   GraphQLApi: "aws-shim.md",
   Query: "query.md",
   Stream: "streaming.md",

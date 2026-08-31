@@ -30,6 +30,7 @@ import {
   Clock,
   KeyRound,
   Server,
+  Table2,
   Tags,
   Workflow,
   FileText,
@@ -78,6 +79,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Batch Transform", to: "/batch-transform", icon: Layers, matchPrefix: true, section: "Compute" },
   { label: "Tuning Jobs", to: "/tuning", icon: Target, matchPrefix: true, section: "Compute" },
   { label: "Processing Jobs", to: "/processing", icon: FlaskConical, matchPrefix: true, section: "Compute" },
+  { label: "Feature Store", to: "/feature-store", icon: Table2, matchPrefix: true, section: "Compute" },
   { label: "State Machines", to: "/statemachines", icon: Route, matchPrefix: true, section: "Compute" },
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },

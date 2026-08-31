@@ -46,6 +46,14 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: FeatureGroup` — online feature store (SageMaker Feature Store), experimental.** A low-latency
+  online store for real-time inference: each group provisions a per-group Valkey and a small first-party
+  API service exposing PutRecord (`POST /records`) and GetRecord (`GET /records/{id}`), so a model endpoint
+  looks up the latest features for a record id in milliseconds. Values keep their JSON types; optional
+  per-record TTL. From the console (Compute → Feature Store) and Terraform. v1 is online-only; an offline
+  (object-store history, for training) store is a planned follow-up. See
+  [`docs/feature-store.md`](docs/feature-store.md).
+
 - **`kind: ModelMonitor` — scheduled drift monitoring (SageMaker Model Monitor), experimental.** A CronJob
   that, on a schedule, compares recent data against a baseline dataset, computes per-numeric-feature mean
   drift, writes a report (report-<ts>.json + latest.json) to the object store, and flags features that
