@@ -46,6 +46,15 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: TuningJob` — hyperparameter tuning (SageMaker Automatic Model Tuning), experimental.** A
+  grid-search sweep: given a base training spec, a search space, and an objective, it runs a
+  `kind: TrainingJob` per hyperparameter combination (up to `maxParallel` at a time), reads each trial's
+  reported metric from its logs (`OPENINFRA_METRIC=<value>` or a custom `metricRegex`), and records the
+  best trial and hyperparameters in status. Each trial is a real Training Job, so tuning reuses the whole
+  training data plane. Like `kind: Execution` it is a controller-owned run (started from the console or
+  kubectl, not Terraform); deleting it garbage-collects its trials. v1 is grid search only. See
+  [`docs/tuning-jobs.md`](docs/tuning-jobs.md).
+
 - **`kind: BatchTransform` — offline batch inference (SageMaker Batch Transform), experimental.** A run-once
   job that loads a model, scores a whole input dataset, and writes predictions to the object store, then
   exits — the offline counterpart to `kind: Model` (a live endpoint). Same run-once, GPU-capable Job +

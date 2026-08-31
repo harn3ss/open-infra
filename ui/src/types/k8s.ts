@@ -787,6 +787,50 @@ export type BatchTransform = K8sObject<BatchTransformSpec, BatchTransformStatus>
 export const BATCHTRANSFORMS_PLURAL = "batchtransforms";
 export const BATCHTRANSFORMS_CRD_NAME = "batchtransforms.openinfra.dev";
 
+/* ------------------------ open-infra TuningJob CRD ------------------------ */
+// Hyperparameter tuning (SageMaker Automatic Model Tuning): a grid-search sweep that
+// runs a TrainingJob per hyperparameter combination and records the best.
+export interface TuningTrial {
+  name: string;
+  parameters?: Record<string, string>;
+  status?: string; // Pending | Running | Succeeded | Failed
+  metric?: string;
+}
+export interface TuningJobSpec {
+  training: {
+    image: string;
+    command?: string[];
+    args?: string[];
+    gpu?: number;
+    gpuTier?: "smallgpu" | "largegpu";
+    cpu?: string;
+    memory?: string;
+    dataset?: { bucket?: string; prefix?: string };
+    output?: { bucket?: string; prefix?: string };
+    env?: { name: string; value: string }[];
+    secrets?: string[];
+    maxRuntimeSeconds?: number;
+  };
+  parameters: { name: string; values: string[] }[];
+  objective?: { metric?: string; goal?: "Minimize" | "Maximize" };
+  metricRegex?: string;
+  maxParallel?: number;
+  maxTrials?: number;
+}
+export interface TuningJobStatus {
+  phase?: string;
+  bestTrial?: string;
+  bestValue?: string;
+  bestParameters?: string;
+  trialsTotal?: number;
+  trialsComplete?: number;
+  trials?: TuningTrial[];
+  conditions?: Condition[];
+}
+export type TuningJob = K8sObject<TuningJobSpec, TuningJobStatus>;
+export const TUNINGJOBS_PLURAL = "tuningjobs";
+export const TUNINGJOBS_CRD_NAME = "tuningjobs.openinfra.dev";
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;
