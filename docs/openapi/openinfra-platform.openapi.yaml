@@ -4178,8 +4178,9 @@ components:
                   description: Serving container image that loads the artifact and serves HTTP.
                 port:
                   type: integer
-                  default: 8080
-                  description: Port the serving container listens on (the key-gated proxy forwards to it).
+                  default: 8000
+                  description: Port the serving container listens on; the key-gated proxy forwards to it. Must NOT be 8080
+                    (reserved for the proxy sidecar).
                 artifact:
                   type: object
                   description: The trained model artifact in the object store.
