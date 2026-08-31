@@ -117,15 +117,16 @@ rules:
       - modelpackages
       - batchtransforms
       - processingjobs
+      - modelmonitors
     verbs: [get, list, watch, create, update, patch, delete]
 
   # Knative Services for the kind: Function (serverless) abstraction.
   - apiGroups: [serving.knative.dev]
     resources: [services]
     verbs: [get, list, watch, create, update, patch, delete]
-  # Jobs: the Composition runs an idempotent `mc` job to create MinIO buckets.
+  # Jobs + CronJobs: bucket-setup jobs, and the kind: ModelMonitor scheduled CronJob.
   - apiGroups: [batch]
-    resources: [jobs]
+    resources: [jobs, cronjobs]
     verbs: [get, list, watch, create, update, patch, delete]
   # VirtualMachines for the kind: VirtualMachine (EC2) abstraction. KubeVirt's own
   # controller creates the backing DataVolume/VMI from dataVolumeTemplates, so the

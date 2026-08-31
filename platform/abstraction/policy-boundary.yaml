@@ -41,6 +41,7 @@ boundary:
   - modelpackages
   - batchtransforms
   - processingjobs
+  - modelmonitors
 
 # Kinds a Policy may NOT grant on, each with the reason it is excluded. Exhaustive on
 # purpose: every XRD must appear in exactly one of these two lists, so a new kind cannot be
