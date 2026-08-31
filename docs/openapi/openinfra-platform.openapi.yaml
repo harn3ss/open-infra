@@ -4304,8 +4304,9 @@ components:
                 \ spec.serve uses to promote it."
             port:
               type: integer
-              default: 8080
-              description: Port the serving container listens on.
+              default: 8000
+              description: Port the serving container listens on (becomes serve.port when promoted; must not be 8080, reserved
+                for the endpoint proxy).
             framework:
               type: string
               description: Optional framework label (e.g. pytorch, tensorflow, sklearn).

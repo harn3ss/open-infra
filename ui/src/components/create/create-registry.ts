@@ -117,10 +117,22 @@ export const FUNCTION_CREATE: CreateKindSpec = {
 export const MODEL_CREATE: CreateKindSpec = {
   kind: "Model",
   crdName: "models.openinfra.dev",
-  description: "A served model endpoint (Bedrock-style) — pick a model; open-infra runs it with an API key.",
+  description: "A served model endpoint (Bedrock-style) — pick a catalog model, OR serve a custom trained artifact via `serve` (usually promoted from a Model Package).",
   sections: [
     { title: "Model", fields: ["model", "storageSize"] },
     { title: "Serving", fields: ["highAvailability", "expose", "domain"], advanced: true },
+    { title: "Custom serving (train→serve)", fields: ["serve"], advanced: true },
+  ],
+};
+
+export const MODELPACKAGE_CREATE: CreateKindSpec = {
+  kind: "ModelPackage",
+  crdName: "modelpackages.openinfra.dev",
+  description: "Register a trained model in the registry — a versioned, approvable record pointing at the artifact and the container that serves it. Promote an Approved package to a served Model.",
+  sections: [
+    { title: "Model package", fields: ["modelName", "version", "framework"] },
+    { title: "Artifact & serving", fields: ["artifact", "image", "port"] },
+    { title: "Metadata & approval", fields: ["metrics", "description", "approvalStatus"], advanced: true },
   ],
 };
 

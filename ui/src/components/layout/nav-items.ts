@@ -15,6 +15,7 @@ import {
   LineChart,
   Monitor,
   Network,
+  Package,
   Radio,
   Route,
   Search,
@@ -68,6 +69,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Virtual Machines", to: "/vms", icon: Monitor, matchPrefix: true, section: "Compute" },
   { label: "Models", to: "/models", icon: BrainCircuit, matchPrefix: true, section: "Compute" },
   { label: "Training Jobs", to: "/trainingjobs", icon: BrainCog, matchPrefix: true, section: "Compute" },
+  { label: "Model Registry", to: "/model-registry", icon: Package, matchPrefix: true, section: "Compute" },
   { label: "State Machines", to: "/statemachines", icon: Route, matchPrefix: true, section: "Compute" },
 
   { label: "Databases", to: "/databases", icon: Database, matchPrefix: true, section: "Data" },
