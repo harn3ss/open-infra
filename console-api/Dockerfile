@@ -67,8 +67,9 @@ ARG OPENINFRA_FIPS=true   # amd64 default; build-arm64 sets false via the label
 LABEL openinfra.dev/fips=${OPENINFRA_FIPS}
 
 # wget (busybox) is used by the healthcheck; ca-certificates lets the BFF verify
-# the API server / Grafana TLS chains when needed.
-RUN apk add --no-cache ca-certificates
+# the API server / Grafana TLS chains when needed. `apk upgrade` first so a rebuild
+# picks up base-image security patches (e.g. libssl3/libcrypto3 CVE fixes).
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates
 
 # Run as a non-root, non-privileged user. 65532 is the conventional "nonroot"
 # uid (matches distroless), avoiding any reliance on a named account.
