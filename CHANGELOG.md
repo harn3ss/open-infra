@@ -6,6 +6,8 @@ the product's public contract.
 
 ## Unreleased
 
+## v2.7.0 — 2026-08-31
+
 ### Security & compliance
 - **Air-gap support (opt-in, off by default).** A two-phase, reversible air-gapped posture:
   front-load an in-cluster, PVC-backed registry mirror plus a prefetch that derives the image set from
