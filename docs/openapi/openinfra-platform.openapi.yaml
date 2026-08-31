@@ -4176,6 +4176,16 @@ components:
                 image:
                   type: string
                   description: Serving container image that loads the artifact and serves HTTP.
+                command:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional entrypoint override for the serving container.
+                args:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional args for the serving container.
                 port:
                   type: integer
                   default: 8000

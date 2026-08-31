@@ -283,6 +283,12 @@ spec:
                         containers:
                           - name: serve
                             image: {{ $serve.image }}
+                            {{- if $serve.command }}
+                            command: {{ $serve.command | toJson }}
+                            {{- end }}
+                            {{- if $serve.args }}
+                            args: {{ $serve.args | toJson }}
+                            {{- end }}
                             ports: [ { containerPort: {{ $upstream }} } ]
                             env:
                               {{- if $art.bucket }}
