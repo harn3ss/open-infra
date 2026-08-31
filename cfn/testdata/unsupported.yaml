@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Every kind of thing the engine must refuse — a gated type, an unsupported type, and an unsupported intrinsic. Nothing here should provision.
+
+Resources:
+  # gated: no DynamoDB data layer yet.
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: sessions
+      BillingMode: PAY_PER_REQUEST
+
+  # unsupported: no managed user pool.
+  Users:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: app-users
+
+  # supported type, but pulls a value from another stack — an unsupported intrinsic.
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: consumer
+      Role: !ImportValue shared-role-arn
+      Runtime: provided.al2
+      Handler: bootstrap
