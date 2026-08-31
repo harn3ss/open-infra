@@ -1,0 +1,173 @@
+# The compiler for kind: ModelMonitor -> a scheduled drift-monitoring CronJob.
+# It renders a bucket-setup Job (ensures the baseline/current/output buckets exist +
+# writes a <name>-minio creds secret) and a batch/v1 CronJob that, on the schedule, runs
+# open-infra's BUILT-IN tabular drift check: it loads the baseline and the recent data
+# from the object store, computes per-numeric-feature mean drift, writes a report
+# (report-<ts>.json + latest.json), and flags features that drift beyond the threshold.
+# The monitor logic is baked in here (python:3.11-slim + inline script) — no first-party
+# image and no monitoring container for the user to write.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: modelmonitor
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XModelMonitor
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $cron := printf "%s-monitor" $name }}
+            {{- $base := $spec.baseline }}
+            {{- $cur := $spec.current }}
+            {{- $out := $spec.output }}
+            {{- $features := join "," ($spec.features | default (list)) }}
+            {{- $threshold := $spec.threshold | default 0.2 }}
+            {{- $buckets := list $base.bucket $cur.bucket $out.bucket }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-mon-bucket-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'for b in {{ range $buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: monitor
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: CronJob
+                  metadata:
+                    name: {{ $cron }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/modelmonitor: {{ $name }} }
+                  spec:
+                    schedule: {{ $spec.schedule | default "0 * * * *" | quote }}
+                    concurrencyPolicy: Forbid
+                    successfulJobsHistoryLimit: 3
+                    failedJobsHistoryLimit: 3
+                    jobTemplate:
+                      spec:
+                        backoffLimit: 1
+                        template:
+                          metadata: { labels: { openinfra.dev/modelmonitor: {{ $name }} } }
+                          spec:
+                            restartPolicy: Never
+                            containers:
+                              - name: monitor
+                                image: python:3.11-slim
+                                env:
+                                  - { name: BASELINE_BUCKET, value: {{ $base.bucket | quote }} }
+                                  - { name: BASELINE_KEY, value: {{ $base.key | quote }} }
+                                  - { name: CURRENT_BUCKET, value: {{ $cur.bucket | quote }} }
+                                  - { name: CURRENT_PREFIX, value: {{ $cur.prefix | default "" | quote }} }
+                                  - { name: OUTPUT_BUCKET, value: {{ $out.bucket | quote }} }
+                                  - { name: OUTPUT_PREFIX, value: {{ $out.prefix | default "" | quote }} }
+                                  - { name: FEATURES, value: {{ $features | quote }} }
+                                  - { name: THRESHOLD, value: "{{ $threshold }}" }
+                                  - { name: AWS_ENDPOINT_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+                                  - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                                  - name: AWS_ACCESS_KEY_ID
+                                    valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } }
+                                  - name: AWS_SECRET_ACCESS_KEY
+                                    valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } }
+                                command: ["/bin/sh", "-lc"]
+                                args:
+                                  - |
+                                    pip install -q boto3 2>/dev/null
+                                    python - <<'PY'
+                                    import os, json, time, boto3
+                                    s3 = boto3.client("s3", endpoint_url=os.environ["AWS_ENDPOINT_URL"])
+                                    def load_obj(b, k):
+                                        body = s3.get_object(Bucket=b, Key=k)["Body"].read().decode()
+                                        return [json.loads(l) for l in body.splitlines() if l.strip()]
+                                    def load_prefix(b, p):
+                                        recs = []
+                                        for o in s3.list_objects_v2(Bucket=b, Prefix=p).get("Contents", []):
+                                            recs += load_obj(b, o["Key"])
+                                        return recs
+                                    base = load_obj(os.environ["BASELINE_BUCKET"], os.environ["BASELINE_KEY"])
+                                    cur = load_prefix(os.environ["CURRENT_BUCKET"], os.environ.get("CURRENT_PREFIX", ""))
+                                    def means(recs):
+                                        s, c = {}, {}
+                                        for r in recs:
+                                            for k, v in r.items():
+                                                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                                                    s[k] = s.get(k, 0) + v; c[k] = c.get(k, 0) + 1
+                                        return {k: s[k] / c[k] for k in s if c[k] > 0}
+                                    bm, cm = means(base), means(cur)
+                                    thr = float(os.environ.get("THRESHOLD", "0.2"))
+                                    feats = [f for f in os.environ.get("FEATURES", "").split(",") if f] or sorted(set(bm) & set(cm))
+                                    rep = {"time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "baselineCount": len(base), "currentCount": len(cur), "threshold": thr, "features": {}}
+                                    drifted = []
+                                    for f in feats:
+                                        if f not in bm or f not in cm: continue
+                                        b, c = bm[f], cm[f]; d = abs(c - b) / (abs(b) + 1e-9); viol = d > thr
+                                        rep["features"][f] = {"baselineMean": b, "currentMean": c, "drift": d, "violation": viol}
+                                        if viol: drifted.append(f)
+                                    rep["violation"] = len(drifted) > 0; rep["driftedFeatures"] = drifted
+                                    ob = os.environ["OUTPUT_BUCKET"]; op = os.environ.get("OUTPUT_PREFIX", "")
+                                    body = json.dumps(rep, indent=2).encode()
+                                    s3.put_object(Bucket=ob, Key=op + "report-" + rep["time"].replace(":", "") + ".json", Body=body)
+                                    s3.put_object(Bucket=ob, Key=op + "latest.json", Body=body)
+                                    print("OPENINFRA_MONITOR violation=%s drifted=%s" % (rep["violation"], drifted), flush=True)
+                                    PY
+                                resources:
+                                  requests: { cpu: 100m, memory: 256Mi }
+                                  limits: { cpu: "1", memory: 512Mi }
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XModelMonitor
+            status:
+              cronJob: {{ $cron }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

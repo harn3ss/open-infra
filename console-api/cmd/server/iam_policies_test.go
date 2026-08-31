@@ -55,7 +55,7 @@ func TestPolicyResourcesMatchBoundary(t *testing.T) {
 		"applications", "functions", "models", "virtualmachines", "vmimages", "volumes",
 		"fileshares", "directories", "migrations", "replications", "dataflows", "streams",
 		"securitygroups", "faultinjections", "queries", "httpapis", "graphqlapis",
-		"databaseproxies", "statemachines", "trainingjobs", "modelpackages", "batchtransforms", "processingjobs",
+		"databaseproxies", "statemachines", "trainingjobs", "modelpackages", "batchtransforms", "processingjobs", "modelmonitors",
 	}
 	if len(policyResources) != len(want) {
 		t.Fatalf("policyResources has %d entries, want %d — mirror the change in "+
