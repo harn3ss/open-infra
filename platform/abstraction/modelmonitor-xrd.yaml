@@ -1,0 +1,81 @@
+# open-infra's "SageMaker Model Monitor": kind: ModelMonitor — scheduled data-drift
+# monitoring for a deployed model. On a cron schedule it compares recent data against a
+# baseline dataset, computes per-feature drift, writes a report to the object store, and
+# flags features that drift beyond a threshold. Built-in: no monitoring container to
+# write — it runs open-infra's own tabular drift check over JSONL records.
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xmodelmonitors.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XModelMonitor
+    plural: xmodelmonitors
+  claimNames:
+    kind: ModelMonitor       # what users write in infra.yaml
+    plural: modelmonitors
+  defaultCompositionRef:
+    name: modelmonitor
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [baseline, current, output]
+              properties:
+                schedule:
+                  type: string
+                  default: "0 * * * *"
+                  description: "Cron schedule for the monitoring run (default hourly)."
+                baseline:
+                  type: object
+                  required: [bucket, key]
+                  description: "The reference dataset (JSONL of feature records) drift is measured against."
+                  properties:
+                    bucket: { type: string }
+                    key:    { type: string, description: "Object key of the baseline JSONL." }
+                current:
+                  type: object
+                  required: [bucket]
+                  description: "Where recent data/predictions to check live (JSONL under this prefix)."
+                  properties:
+                    bucket: { type: string }
+                    prefix: { type: string }
+                output:
+                  type: object
+                  required: [bucket]
+                  description: "Where drift reports are written (report-<timestamp>.json + latest.json). Bucket created on demand."
+                  properties:
+                    bucket: { type: string }
+                    prefix: { type: string }
+                features:
+                  type: array
+                  items: { type: string }
+                  description: "Numeric feature names to monitor. Empty = every numeric field present in both datasets."
+                threshold:
+                  type: number
+                  default: 0.2
+                  description: "Relative mean-shift threshold. A feature drifts when |current_mean - baseline_mean| / (|baseline_mean| + 1e-9) exceeds this (default 0.2 = 20%)."
+                modelRef:
+                  type: string
+                  description: "The kind: Model endpoint this monitors (informational)."
+            status:
+              type: object
+              properties:
+                cronJob: { type: string }
