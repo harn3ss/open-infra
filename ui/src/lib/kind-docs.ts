@@ -21,6 +21,7 @@ const KIND_DOC_FILE: Record<string, string> = {
   BatchTransform: "batch-transform.md",
   TuningJob: "tuning-jobs.md",
   ProcessingJob: "processing-jobs.md",
+  ModelMonitor: "model-monitor.md",
   GraphQLApi: "aws-shim.md",
   Query: "query.md",
   Stream: "streaming.md",

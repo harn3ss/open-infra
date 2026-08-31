@@ -31,6 +31,7 @@ import {
   BATCHTRANSFORMS_PLURAL,
   TUNINGJOBS_PLURAL,
   PROCESSINGJOBS_PLURAL,
+  MODELMONITORS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -56,9 +57,10 @@ export const appsPaths = {
   deployments: (ns?: string) => `/apis/apps/v1${nsSegment(ns)}/deployments`,
 };
 
-// batch/v1 Jobs — read-only, to surface a Migration's live run status.
+// batch/v1 Jobs + CronJobs — read-only, to surface run/schedule status.
 export const batchPaths = {
   jobs: (ns?: string) => `/apis/batch/v1${nsSegment(ns)}/jobs`,
+  cronjobs: (ns?: string) => `/apis/batch/v1${nsSegment(ns)}/cronjobs`,
 };
 
 export const networkingPaths = {
@@ -142,6 +144,9 @@ export const openinfraPaths = {
   processingjobs: (ns?: string) => `${oiGV}${nsSegment(ns)}/${PROCESSINGJOBS_PLURAL}`,
   processingjob: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${PROCESSINGJOBS_PLURAL}/${name}`,
+  modelmonitors: (ns?: string) => `${oiGV}${nsSegment(ns)}/${MODELMONITORS_PLURAL}`,
+  modelmonitor: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${MODELMONITORS_PLURAL}/${name}`,
   // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
   // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
   certificateauthorities: (ns?: string) =>
