@@ -17,6 +17,7 @@ const KIND_DOC_FILE: Record<string, string> = {
   StateMachine: "state-machines.md",
   Model: "gpu.md",
   TrainingJob: "training-jobs.md",
+  ModelPackage: "model-registry.md",
   GraphQLApi: "aws-shim.md",
   Query: "query.md",
   Stream: "streaming.md",
