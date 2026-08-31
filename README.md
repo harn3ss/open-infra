@@ -67,6 +67,7 @@ CNCF projects — not a reinvention of databases or storage.
 | AppSync | resolver-first GraphQL (`kind: GraphQLApi`) | open-appsync — VTL-faithful engine (experimental) |
 | Bedrock | managed inference (`kind: Model`) | Ollama on GPU + NVIDIA device plugin |
 | SageMaker Training | model training (`kind: TrainingJob`) | run-once GPU batch Job → artifacts to object store (experimental) |
+| SageMaker Model Registry | model registry + serving (`kind: ModelPackage` → `kind: Model` `serve`) | versioned, approvable artifacts promoted to a key-gated endpoint (experimental) |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
 | Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |

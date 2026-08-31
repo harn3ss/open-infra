@@ -46,6 +46,14 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: ModelPackage` — model registry + train→serve loop (SageMaker Model Registry), experimental.** A
+  versioned, approvable registry record of a trained artifact (modelName group + version + artifact + serving
+  image + metrics), with an approval gate (PendingManualApproval → Approved). `kind: Model` gains a `serve`
+  path — serve an arbitrary trained artifact (BYO serving container + object-store artifact) behind the same
+  key-gated endpoint, instead of only the Ollama catalog — so a TrainingJob's output can be registered,
+  approved, and promoted to a served endpoint. From the console (Compute → Model Registry: approve + Deploy)
+  and Terraform. See [`docs/model-registry.md`](docs/model-registry.md).
+
 - **`kind: TrainingJob` — GPU model training (SageMaker Training Jobs equivalent), experimental.** The
   training-loop counterpart to `kind: Model` (inference): a run-once batch Job that runs your training
   container to completion on a GPU node of the chosen tier (`smallgpu` / `largegpu`), with
