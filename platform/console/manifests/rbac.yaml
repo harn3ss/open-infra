@@ -136,6 +136,7 @@ rules:
       - statemachines
       - executions
       - trainingjobs
+      - modelpackages
       - certificateauthorities
       - dataclassifications
       - encryptionkeys
