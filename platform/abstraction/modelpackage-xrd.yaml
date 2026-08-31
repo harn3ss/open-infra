@@ -1,0 +1,80 @@
+# open-infra's "SageMaker Model Registry": kind: ModelPackage — a versioned,
+# approvable record of a trained model artifact. It ties a trained artifact (in the
+# object store) to the serving container that loads it, plus optional metrics, and an
+# approval gate (PendingManualApproval -> Approved) that governs promotion to a served
+# endpoint. Promote an Approved package by creating a kind: Model with spec.serve.
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xmodelpackages.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XModelPackage
+    plural: xmodelpackages
+  claimNames:
+    kind: ModelPackage       # what users write in infra.yaml
+    plural: modelpackages
+  defaultCompositionRef:
+    name: modelpackage
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [modelName, image, artifact]
+              properties:
+                modelName:
+                  type: string
+                  description: "The model group/family this is a version of (e.g. fraud-detector). Group versions by this name."
+                version:
+                  type: string
+                  default: "1"
+                  description: "Version label within the model group (e.g. \"1\", \"2\", or a git sha)."
+                artifact:
+                  type: object
+                  required: [bucket]
+                  description: "The trained model artifact in the object store."
+                  properties:
+                    bucket: { type: string }
+                    key:    { type: string, description: "Object key (or prefix) of the artifact." }
+                image:
+                  type: string
+                  description: "The serving container image that loads this artifact and serves HTTP — what a kind: Model spec.serve uses to promote it."
+                port:
+                  type: integer
+                  default: 8080
+                  description: "Port the serving container listens on."
+                framework:
+                  type: string
+                  description: "Optional framework label (e.g. pytorch, tensorflow, sklearn)."
+                metrics:
+                  type: string
+                  description: "Optional evaluation metrics as a JSON string (e.g. {\"accuracy\":0.92})."
+                description:
+                  type: string
+                  description: "Optional human description of this model version."
+                approvalStatus:
+                  type: string
+                  enum: [PendingManualApproval, Approved, Rejected]
+                  default: PendingManualApproval
+                  description: "Approval gate (like SageMaker): only an Approved package should be promoted to a served endpoint. Flip it from the console (approve/reject) or by editing the resource."
+            status:
+              type: object
+              properties:
+                approvalStatus: { type: string }
