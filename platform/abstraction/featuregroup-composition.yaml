@@ -1,0 +1,166 @@
+# The compiler for kind: FeatureGroup -> a per-group online feature store.
+# It renders a small Valkey (the low-latency key/value store) + the open-infra-featurestore
+# API service (PutRecord/GetRecord) in front of it, + a Service consumers call. One Valkey
+# and one API service per FeatureGroup. The online store is in-memory (ephemeral) in v1.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: featuregroup
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XFeatureGroup
+  mode: Pipeline
+  pipeline:
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $valkey := printf "%s-valkey" $name }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- $annos := $xr.metadata.annotations | default dict }}
+            {{- $reqArch := index $annos "openinfra.dev/arch" | default "" }}
+            {{- if eq $reqArch "arm64" }}{{- $arch = "-arm64" }}{{- else if eq $reqArch "amd64" }}{{- $arch = "" }}{{- end }}
+            {{- $nodeArch := "amd64" }}{{- if eq $arch "-arm64" }}{{- $nodeArch = "arm64" }}{{- end }}
+            {{- $img := printf "ghcr.io/harn3ss/open-infra-featurestore:latest%s" $arch }}
+            ---
+            # --- Valkey: the online key/value store (ephemeral in v1). ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: valkey
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $valkey }}
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $valkey }} }
+                  spec:
+                    replicas: 1
+                    strategy: { type: Recreate }
+                    selector: { matchLabels: { app: {{ $valkey }} } }
+                    template:
+                      metadata: { labels: { app: {{ $valkey }} } }
+                      spec:
+                        securityContext: { runAsNonRoot: true, runAsUser: 999, seccompProfile: { type: RuntimeDefault } }
+                        containers:
+                          - name: valkey
+                            image: valkey/valkey:8-alpine
+                            args: ["--save", "", "--appendonly", "no"]
+                            ports: [ { containerPort: 6379 } ]
+                            securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+                            readinessProbe: { tcpSocket: { port: 6379 }, initialDelaySeconds: 3, periodSeconds: 10 }
+                            resources:
+                              requests: { cpu: 25m, memory: 64Mi }
+                              limits: { cpu: 500m, memory: 512Mi }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: valkey-service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata: { name: {{ $valkey }}, namespace: {{ $ns }} }
+                  spec:
+                    selector: { app: {{ $valkey }} }
+                    ports: [ { port: 6379, targetPort: 6379 } ]
+            ---
+            # --- Feature-store API: PutRecord / GetRecord in front of Valkey. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: api
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/featuregroup: {{ $name }} }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+                    template:
+                      metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
+                      spec:
+                        nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
+                        securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+                        containers:
+                          - name: featurestore
+                            image: {{ $img }}
+                            env:
+                              - { name: FEATURE_GROUP, value: "{{ $name }}" }
+                              - { name: RECORD_IDENTIFIER, value: "{{ $spec.recordIdentifier }}" }
+                              - { name: EVENT_TIME, value: "{{ $spec.eventTime | default "" }}" }
+                              - { name: VALKEY_ADDR, value: "{{ $valkey }}.{{ $ns }}.svc.cluster.local:6379" }
+                              {{- if $spec.ttlSeconds }}
+                              - { name: TTL_SECONDS, value: "{{ $spec.ttlSeconds }}" }
+                              {{- end }}
+                              - { name: PORT, value: "8080" }
+                            ports: [ { containerPort: 8080 } ]
+                            securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+                            readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 3, periodSeconds: 10 }
+                            resources:
+                              requests: { cpu: 25m, memory: 32Mi }
+                              limits: { cpu: 500m, memory: 128Mi }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: api-service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata: { name: {{ $name }}, namespace: {{ $ns }} }
+                  spec:
+                    selector: { app.kubernetes.io/name: {{ $name }} }
+                    ports: [ { port: 8080, targetPort: 8080 } ]
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XFeatureGroup
+            status:
+              endpoint: http://{{ $name }}.{{ $ns }}.svc.cluster.local:8080
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

@@ -1,0 +1,65 @@
+# open-infra's "SageMaker Feature Store": kind: FeatureGroup — a low-latency ONLINE
+# feature store for real-time inference. It provisions a per-group Valkey plus a small
+# API service exposing PutRecord (POST /records) and GetRecord (GET /records/{id}), so a
+# model endpoint can look up the latest features for a record id in milliseconds.
+#
+# v1 is the online store only. An OFFLINE store (full history in the object store, for
+# training) is a planned follow-up.
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xfeaturegroups.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XFeatureGroup
+    plural: xfeaturegroups
+  claimNames:
+    kind: FeatureGroup       # what users write in infra.yaml
+    plural: featuregroups
+  defaultCompositionRef:
+    name: featuregroup
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [recordIdentifier]
+              properties:
+                recordIdentifier:
+                  type: string
+                  description: "The feature that uniquely identifies a record (the primary key), e.g. customer_id. Every PutRecord must include it; GetRecord looks up by it."
+                eventTime:
+                  type: string
+                  description: "The feature that carries the record's event time (e.g. ts). Stored with the record; the latest write wins in the online store."
+                features:
+                  type: array
+                  description: "The feature schema (advisory — the online store is schemaless key/value, but this documents the intended features)."
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name: { type: string }
+                      type: { type: string, enum: [string, integral, fractional], description: "Feature value type." }
+                ttlSeconds:
+                  type: integer
+                  description: "Optional per-record TTL in the online store (records expire after this many seconds since the last write). Unset = no expiry."
+            status:
+              type: object
+              properties:
+                endpoint: { type: string, description: "The in-cluster feature-store API URL (PutRecord/GetRecord)." }
