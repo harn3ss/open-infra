@@ -29,6 +29,7 @@ import {
   TRAININGJOBS_PLURAL,
   MODELPACKAGES_PLURAL,
   BATCHTRANSFORMS_PLURAL,
+  TUNINGJOBS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -134,6 +135,9 @@ export const openinfraPaths = {
   batchtransforms: (ns?: string) => `${oiGV}${nsSegment(ns)}/${BATCHTRANSFORMS_PLURAL}`,
   batchtransform: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${BATCHTRANSFORMS_PLURAL}/${name}`,
+  tuningjobs: (ns?: string) => `${oiGV}${nsSegment(ns)}/${TUNINGJOBS_PLURAL}`,
+  tuningjob: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${TUNINGJOBS_PLURAL}/${name}`,
   // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
   // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
   certificateauthorities: (ns?: string) =>

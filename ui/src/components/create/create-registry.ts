@@ -151,6 +151,18 @@ export const TRAININGJOB_CREATE: CreateKindSpec = {
   uiSchema: { image: { "ui:placeholder": "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime" } },
 };
 
+export const TUNINGJOB_CREATE: CreateKindSpec = {
+  kind: "TuningJob",
+  crdName: "tuningjobs.openinfra.dev",
+  description:
+    "Hyperparameter tuning (SageMaker-style) — grid-search a training job over a parameter space and keep the best. Each trial runs as a Training Job.",
+  sections: [
+    { title: "Training template", fields: ["training"] },
+    { title: "Search space", fields: ["parameters"] },
+    { title: "Objective & limits", fields: ["objective", "maxParallel", "maxTrials", "metricRegex"], advanced: true },
+  ],
+};
+
 export const BATCHTRANSFORM_CREATE: CreateKindSpec = {
   kind: "BatchTransform",
   crdName: "batchtransforms.openinfra.dev",
