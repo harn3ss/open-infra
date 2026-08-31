@@ -31,6 +31,8 @@ RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@
 FROM alpine:3.24
 # not a Go build — carries no image-level FIPS claim
 LABEL openinfra.dev/fips=false
+# `apk upgrade` so a rebuild picks up base-image security patches (libssl3/libcrypto3).
+RUN apk upgrade --no-cache
 COPY --from=build /mc /usr/bin/mc
 RUN chmod 0755 /usr/bin/mc && /usr/bin/mc --version
 USER 65532:65532
