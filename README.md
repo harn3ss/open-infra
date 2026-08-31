@@ -71,6 +71,7 @@ CNCF projects — not a reinvention of databases or storage.
 | SageMaker Batch Transform | offline batch inference (`kind: BatchTransform`) | run-once GPU-capable job scores a dataset → predictions to object store (experimental) |
 | SageMaker Automatic Model Tuning | hyperparameter tuning (`kind: TuningJob`) | grid-search sweep runs a Training Job per combination, keeps the best (experimental) |
 | SageMaker Processing | data processing (`kind: ProcessingJob`) | run-once GPU-capable job, N named inputs/outputs in the object store (experimental) |
+| SageMaker Model Monitor | drift monitoring (`kind: ModelMonitor`) | scheduled CronJob, built-in tabular drift check → report to object store (experimental) |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
 | Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |

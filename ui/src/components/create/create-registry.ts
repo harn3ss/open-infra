@@ -176,6 +176,18 @@ export const PROCESSINGJOB_CREATE: CreateKindSpec = {
   ],
 };
 
+export const MODELMONITOR_CREATE: CreateKindSpec = {
+  kind: "ModelMonitor",
+  crdName: "modelmonitors.openinfra.dev",
+  description:
+    "Scheduled drift monitoring (SageMaker-style) — on a cron schedule, compare recent data to a baseline, flag features that drift, and write a report. The drift check is built in.",
+  sections: [
+    { title: "Monitor", fields: ["schedule", "modelRef", "threshold"] },
+    { title: "Data", fields: ["baseline", "current", "output"] },
+    { title: "Features", fields: ["features"], advanced: true },
+  ],
+};
+
 export const BATCHTRANSFORM_CREATE: CreateKindSpec = {
   kind: "BatchTransform",
   crdName: "batchtransforms.openinfra.dev",
