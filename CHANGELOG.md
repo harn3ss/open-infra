@@ -46,6 +46,14 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: ProcessingJob` — general data processing (SageMaker Processing), experimental.** A run-once,
+  GPU-capable job with N named inputs and outputs in the object store — for preprocessing, feature
+  engineering, dataset validation, or model evaluation. Each channel is injected as
+  INPUT_<NAME>_BUCKET/PREFIX and OUTPUT_<NAME>_BUCKET/PREFIX + S3 creds (with INPUTS/OUTPUTS listing the
+  channels). More general than `kind: BatchTransform` (single-model inference); completes the SageMaker
+  jobs family (Training/Processing/Transform/Tuning). From the console (Compute → Processing Jobs) and
+  Terraform. See [`docs/processing-jobs.md`](docs/processing-jobs.md).
+
 - **`kind: TuningJob` — hyperparameter tuning (SageMaker Automatic Model Tuning), experimental.** A
   grid-search sweep: given a base training spec, a search space, and an objective, it runs a
   `kind: TrainingJob` per hyperparameter combination (up to `maxParallel` at a time), reads each trial's

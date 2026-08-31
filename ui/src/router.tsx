@@ -37,6 +37,9 @@ import { CreateBatchTransformPage } from "@/features/batchtransforms/create-batc
 import { TuningJobsPage } from "@/features/tuningjobs/tuningjobs-page";
 import { TuningJobDetailPage } from "@/features/tuningjobs/tuningjob-detail-page";
 import { CreateTuningJobPage } from "@/features/tuningjobs/create-tuningjob-page";
+import { ProcessingJobsPage } from "@/features/processingjobs/processingjobs-page";
+import { ProcessingJobDetailPage } from "@/features/processingjobs/processingjob-detail-page";
+import { CreateProcessingJobPage } from "@/features/processingjobs/create-processingjob-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -222,6 +225,11 @@ const batchtransformDetailRoute = createRoute({ getParentRoute: () => rootRoute,
 const tuningjobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tuning", component: TuningJobsPage });
 const tuningjobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tuning/new", component: CreateTuningJobPage });
 const tuningjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/tuning/$namespace/$name", component: TuningJobDetailPage });
+
+// kind: ProcessingJob (#27) — data processing: list, static /new (before detail), detail.
+const processingjobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/processing", component: ProcessingJobsPage });
+const processingjobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/processing/new", component: CreateProcessingJobPage });
+const processingjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/processing/$namespace/$name", component: ProcessingJobDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -611,6 +619,9 @@ const routeTree = rootRoute.addChildren([
   tuningjobsRoute,
   tuningjobCreateRoute,
   tuningjobDetailRoute,
+  processingjobsRoute,
+  processingjobCreateRoute,
+  processingjobDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
