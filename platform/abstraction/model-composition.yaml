@@ -50,7 +50,10 @@ spec:
                   "llama3.2:3b"  (dict "tier" "smallgpu" "cpu" "4" "memory" "8Gi")
                   "llama3.1:8b"  (dict "tier" "smallgpu" "cpu" "4" "memory" "12Gi")
                   "mixtral:8x7b" (dict "tier" "largegpu" "cpu" "8" "memory" "16Gi") }}
-            {{- $profile := (index $catalog $spec.model) | default (dict "tier" "cpu" "cpu" "2" "memory" "4Gi") }}
+            {{- /* Catalog lookup only applies to the Ollama path; `index` with a nil key
+                   (the serve path has no $spec.model) is a fatal error, so guard it. */}}
+            {{- $profile := (dict "tier" "cpu" "cpu" "2" "memory" "4Gi") }}
+            {{- if $spec.model }}{{- $profile = (index $catalog $spec.model) | default $profile }}{{- end }}
             {{- $tier := $profile.tier }}
             {{- $useGpu := ne $tier "cpu" }}
             {{- $replicas := 1 }}{{- if $spec.highAvailability }}{{- $replicas = 2 }}{{- end }}
