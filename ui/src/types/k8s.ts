@@ -880,6 +880,22 @@ export type ModelMonitor = K8sObject<ModelMonitorSpec, ModelMonitorStatus>;
 export const MODELMONITORS_PLURAL = "modelmonitors";
 export const MODELMONITORS_CRD_NAME = "modelmonitors.openinfra.dev";
 
+/* ---------------------- open-infra FeatureGroup CRD ----------------------- */
+// Online feature store (SageMaker Feature Store): per-group Valkey + a PutRecord/GetRecord API.
+export interface FeatureGroupSpec {
+  recordIdentifier: string;
+  eventTime?: string;
+  features?: { name: string; type?: "string" | "integral" | "fractional" }[];
+  ttlSeconds?: number;
+}
+export interface FeatureGroupStatus {
+  endpoint?: string;
+  conditions?: Condition[];
+}
+export type FeatureGroup = K8sObject<FeatureGroupSpec, FeatureGroupStatus>;
+export const FEATUREGROUPS_PLURAL = "featuregroups";
+export const FEATUREGROUPS_CRD_NAME = "featuregroups.openinfra.dev";
+
 /* batch/v1 CronJob — read-only, to surface a ModelMonitor's schedule status. */
 export interface CronJobStatus {
   lastScheduleTime?: string;

@@ -188,6 +188,18 @@ export const MODELMONITOR_CREATE: CreateKindSpec = {
   ],
 };
 
+export const FEATUREGROUP_CREATE: CreateKindSpec = {
+  kind: "FeatureGroup",
+  crdName: "featuregroups.openinfra.dev",
+  description:
+    "An online feature store (SageMaker-style) — low-latency PutRecord/GetRecord for real-time inference. Give it the record identifier and (optionally) a feature schema.",
+  sections: [
+    { title: "Feature group", fields: ["recordIdentifier", "eventTime"] },
+    { title: "Schema", fields: ["features"] },
+    { title: "Online store", fields: ["ttlSeconds"], advanced: true },
+  ],
+};
+
 export const BATCHTRANSFORM_CREATE: CreateKindSpec = {
   kind: "BatchTransform",
   crdName: "batchtransforms.openinfra.dev",
