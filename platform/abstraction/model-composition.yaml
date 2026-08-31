@@ -54,6 +54,15 @@ spec:
             {{- $tier := $profile.tier }}
             {{- $useGpu := ne $tier "cpu" }}
             {{- $replicas := 1 }}{{- if $spec.highAvailability }}{{- $replicas = 2 }}{{- end }}
+            {{- /* serve: a custom trained-artifact endpoint (train->serve) instead of the Ollama
+                   catalog. When set, the Ollama deployment is replaced by the user's serving
+                   container + a bucket-setup for artifact creds; the key-gated proxy/Service/secret
+                   are shared. GPU placement then comes from serve.gpu/gpuTier. */}}
+            {{- $serve := $spec.serve | default dict }}
+            {{- $isServe := and (hasKey $spec "serve") (hasKey $serve "image") }}
+            {{- if $isServe }}{{- $tier = ($serve.gpuTier | default "smallgpu") }}{{- $useGpu = gt (int ($serve.gpu | default 0)) 0 }}{{- end }}
+            {{- $upstream := 11434 }}{{- if $isServe }}{{- $upstream = (int ($serve.port | default 8080)) }}{{- end }}
+            {{- $art := $serve.artifact | default dict }}
             ---
             # --- Auth-proxy config (Secret so the key isn't in a plaintext CM).
             #     nginx $variables below are literal (not Go-template actions). ---
@@ -74,13 +83,14 @@ spec:
                         listen 8080;
                         location / {
                           if ($http_authorization != "Bearer {{ $key }}") { return 401; }
-                          proxy_pass http://127.0.0.1:11434;
+                          proxy_pass http://127.0.0.1:{{ $upstream }};
                           proxy_http_version 1.1;
                           proxy_set_header Host $host;
                           proxy_buffering off;
                           proxy_read_timeout 600s;
                         }
                       }
+            {{- if not $isServe }}
             ---
             # --- Deployment: Ollama + nginx auth sidecar. Resources, GPU class, and
             #     replica count all come from the catalog profile + highAvailability.
@@ -184,6 +194,132 @@ spec:
                             emptyDir: { sizeLimit: {{ $size }} }
                           - name: proxy-conf
                             secret: { secretName: {{ $name }}-proxy-conf }
+            {{- end }}
+            {{- if $isServe }}
+            {{- if $art.bucket }}
+            ---
+            # --- serve: ensure the artifact bucket exists + write the S3 creds secret
+            #     (<name>-minio), the same pre-defined openinfra-bucket-setup identity used
+            #     by kind: Application / kind: TrainingJob. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: serve-bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-model-bucket-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://{{ $art.bucket }}" 2>/dev/null || true; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+            {{- end }}
+            ---
+            # --- Deployment: the custom serving container + the same nginx key-gate
+            #     sidecar. The serving image loads the artifact (ARTIFACT_BUCKET/ARTIFACT_KEY
+            #     + S3 creds injected) and serves HTTP on serve.port. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: serve-deployment
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                  spec:
+                    replicas: {{ $replicas }}
+                    selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
+                    strategy: { type: Recreate }
+                    template:
+                      metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
+                      spec:
+                        {{- if $useGpu }}
+                        runtimeClassName: nvidia
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - key: openinfra.dev/gpu-tier
+                                      operator: In
+                                      {{- if eq $tier "largegpu" }}
+                                      values: [large]
+                                      {{- else }}
+                                      values: [small, large]
+                                      {{- end }}
+                            {{- if eq $tier "smallgpu" }}
+                            preferredDuringSchedulingIgnoredDuringExecution:
+                              - weight: 100
+                                preference:
+                                  matchExpressions:
+                                    - { key: openinfra.dev/gpu-tier, operator: In, values: [small] }
+                            {{- end }}
+                        {{- end }}
+                        containers:
+                          - name: serve
+                            image: {{ $serve.image }}
+                            ports: [ { containerPort: {{ $upstream }} } ]
+                            env:
+                              {{- if $art.bucket }}
+                              - { name: AWS_ENDPOINT_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+                              - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                              - { name: ARTIFACT_BUCKET, value: {{ $art.bucket | quote }} }
+                              - { name: ARTIFACT_KEY, value: {{ $art.key | default "" | quote }} }
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } }
+                              {{- end }}
+                              - { name: PORT, value: "{{ $upstream }}" }
+                              {{- range $e := ($serve.env | default (list)) }}
+                              - { name: {{ $e.name | quote }}, value: {{ $e.value | quote }} }
+                              {{- end }}
+                            resources:
+                              requests: { cpu: 250m, memory: 512Mi }
+                              limits:
+                                cpu: "{{ $serve.cpu | default "2" }}"
+                                memory: {{ $serve.memory | default "4Gi" | quote }}
+                                {{- if $useGpu }}
+                                nvidia.com/gpu: {{ $serve.gpu | default 1 }}
+                                {{- end }}
+                          - name: auth
+                            image: nginx:1.27-alpine
+                            ports: [ { containerPort: 8080 } ]
+                            resources:
+                              requests: { cpu: 25m, memory: 32Mi }
+                              limits: { cpu: 200m, memory: 128Mi }
+                            volumeMounts:
+                              - { name: proxy-conf, mountPath: /etc/nginx/conf.d }
+                            readinessProbe: { tcpSocket: { port: 8080 } }
+                        volumes:
+                          - name: proxy-conf
+                            secret: { secretName: {{ $name }}-proxy-conf }
+            {{- end }}
             ---
             # --- Service: the key-gated endpoint (port 80 -> nginx 8080) ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -237,10 +373,16 @@ spec:
                   kind: Secret
                   metadata: { name: {{ $name }}-model, namespace: {{ $ns }} }
                   stringData:
+                    {{- if $isServe }}
+                    MODEL: "{{ $serve.modelPackage | default $name }}"
+                    ENDPOINT: "http://{{ $svc }}"
+                    API_KEY: "{{ $key }}"
+                    {{- else }}
                     MODEL: "{{ $spec.model }}"
                     OPENAI_BASE_URL: "http://{{ $svc }}/v1"
                     OPENAI_API_KEY: "{{ $key }}"
                     ENDPOINT: "http://{{ $svc }}"
+                    {{- end }}
             {{- if $spec.domain }}
             ---
             # --- Ingress (external) + TLS via cert-manager ---

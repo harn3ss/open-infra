@@ -50,6 +50,7 @@ data:
     Group:                {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration (RBAC via provider-kubernetes), no arm64-node data plane"}
     HttpApi:              {amd64: supported, arm64: supported, note: "arm64 RUN-VERIFIED 2026-08-29 (survey-2026-08-29): live HttpApi rendered a Traefik Ingress and zero pods — pure orchestration; Traefik (k3s arm64) + provider-kubernetes both arm64"}
     Model:                {amd64: supported, arm64: untested, note: "heavy inference data plane not exercised on arm64 (effort cap) — see survey-2026-08-30"}
+    ModelPackage:         {amd64: supported, arm64: supported, note: "registry record only (no workload of its own — composition emits nothing); the served endpoint is a kind: Model. Pure central orchestration, arch-agnostic"}
     Policy:               {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration, no arm64-node data plane"}
     Role:                 {amd64: supported, arm64: untested, note: "CR reconciles Synced=True in the mixed cluster (2026-08-30); pure central orchestration, no arm64-node data plane"}
     SecurityGroup:        {amd64: supported, arm64: untested, note: "renders a CiliumNetworkPolicy (central orchestration); enforcement is by the native-arm64 Cilium agent (confirmed Running on lima-openinfra-arm64), but SG-specific enforcement not directly exercised on arm64 — see survey-2026-08-30"}
