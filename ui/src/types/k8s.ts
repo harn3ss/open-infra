@@ -861,6 +861,33 @@ export type ProcessingJob = K8sObject<ProcessingJobSpec, ProcessingJobStatus>;
 export const PROCESSINGJOBS_PLURAL = "processingjobs";
 export const PROCESSINGJOBS_CRD_NAME = "processingjobs.openinfra.dev";
 
+/* ---------------------- open-infra ModelMonitor CRD ----------------------- */
+// Scheduled data-drift monitoring (SageMaker Model Monitor).
+export interface ModelMonitorSpec {
+  schedule?: string;
+  baseline: { bucket?: string; key?: string };
+  current: { bucket?: string; prefix?: string };
+  output: { bucket?: string; prefix?: string };
+  features?: string[];
+  threshold?: number;
+  modelRef?: string;
+}
+export interface ModelMonitorStatus {
+  cronJob?: string;
+  conditions?: Condition[];
+}
+export type ModelMonitor = K8sObject<ModelMonitorSpec, ModelMonitorStatus>;
+export const MODELMONITORS_PLURAL = "modelmonitors";
+export const MODELMONITORS_CRD_NAME = "modelmonitors.openinfra.dev";
+
+/* batch/v1 CronJob — read-only, to surface a ModelMonitor's schedule status. */
+export interface CronJobStatus {
+  lastScheduleTime?: string;
+  lastSuccessfulTime?: string;
+  active?: { name?: string }[];
+}
+export type CronJob = K8sObject<{ schedule?: string; suspend?: boolean }, CronJobStatus>;
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;

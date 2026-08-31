@@ -46,6 +46,14 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: ModelMonitor` — scheduled drift monitoring (SageMaker Model Monitor), experimental.** A CronJob
+  that, on a schedule, compares recent data against a baseline dataset, computes per-numeric-feature mean
+  drift, writes a report (report-<ts>.json + latest.json) to the object store, and flags features that
+  drift beyond a threshold. The drift check is **built in** (an inline check on a stock python image) — no
+  monitoring container to write and no first-party image. From the console (Compute → Model Monitor) and
+  Terraform (the float `threshold` is a stated gap until the provider gains a float type). v1 is a tabular
+  mean-shift data-quality monitor. See [`docs/model-monitor.md`](docs/model-monitor.md).
+
 - **`kind: ProcessingJob` — general data processing (SageMaker Processing), experimental.** A run-once,
   GPU-capable job with N named inputs and outputs in the object store — for preprocessing, feature
   engineering, dataset validation, or model evaluation. Each channel is injected as
