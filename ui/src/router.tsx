@@ -43,6 +43,9 @@ import { CreateProcessingJobPage } from "@/features/processingjobs/create-proces
 import { ModelMonitorsPage } from "@/features/modelmonitors/modelmonitors-page";
 import { ModelMonitorDetailPage } from "@/features/modelmonitors/modelmonitor-detail-page";
 import { CreateModelMonitorPage } from "@/features/modelmonitors/create-modelmonitor-page";
+import { FeatureGroupsPage } from "@/features/featuregroups/featuregroups-page";
+import { FeatureGroupDetailPage } from "@/features/featuregroups/featuregroup-detail-page";
+import { CreateFeatureGroupPage } from "@/features/featuregroups/create-featuregroup-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -238,6 +241,11 @@ const processingjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, 
 const modelmonitorsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-monitor", component: ModelMonitorsPage });
 const modelmonitorCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-monitor/new", component: CreateModelMonitorPage });
 const modelmonitorDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-monitor/$namespace/$name", component: ModelMonitorDetailPage });
+
+// kind: FeatureGroup (#27) — online feature store: list, static /new (before detail), detail.
+const featuregroupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/feature-store", component: FeatureGroupsPage });
+const featuregroupCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/feature-store/new", component: CreateFeatureGroupPage });
+const featuregroupDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/feature-store/$namespace/$name", component: FeatureGroupDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -633,6 +641,9 @@ const routeTree = rootRoute.addChildren([
   modelmonitorsRoute,
   modelmonitorCreateRoute,
   modelmonitorDetailRoute,
+  featuregroupsRoute,
+  featuregroupCreateRoute,
+  featuregroupDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
