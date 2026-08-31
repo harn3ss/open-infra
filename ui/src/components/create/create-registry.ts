@@ -151,6 +151,19 @@ export const TRAININGJOB_CREATE: CreateKindSpec = {
   uiSchema: { image: { "ui:placeholder": "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime" } },
 };
 
+export const BATCHTRANSFORM_CREATE: CreateKindSpec = {
+  kind: "BatchTransform",
+  crdName: "batchtransforms.openinfra.dev",
+  description:
+    "Offline batch inference (SageMaker-style) — a run-once job that loads a model, scores an input dataset, and writes predictions to the object store.",
+  sections: [
+    { title: "Batch transform", fields: ["image", "gpu", "gpuTier"] },
+    { title: "Data", fields: ["input", "output", "artifact"] },
+    { title: "Command", fields: ["command", "args"], advanced: true },
+    { title: "Config", fields: ["env", "secrets", "cpu", "memory", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
+  ],
+};
+
 export const GRAPHQLAPI_CREATE: CreateKindSpec = {
   kind: "GraphQLApi",
   crdName: "graphqlapis.openinfra.dev",
