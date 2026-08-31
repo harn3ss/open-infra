@@ -46,6 +46,13 @@ the product's public contract.
 
 ### Compute & networking
 
+- **`kind: BatchTransform` — offline batch inference (SageMaker Batch Transform), experimental.** A run-once
+  job that loads a model, scores a whole input dataset, and writes predictions to the object store, then
+  exits — the offline counterpart to `kind: Model` (a live endpoint). Same run-once, GPU-capable Job +
+  object-store wiring as `kind: TrainingJob` (INPUT_/OUTPUT_/ARTIFACT_ + S3 creds injected); `gpu: 0`
+  (default) runs CPU-only. From the console (Compute → Batch Transform) and Terraform. See
+  [`docs/batch-transform.md`](docs/batch-transform.md).
+
 - **`kind: ModelPackage` — model registry + train→serve loop (SageMaker Model Registry), experimental.** A
   versioned, approvable registry record of a trained artifact (modelName group + version + artifact + serving
   image + metrics), with an approval gate (PendingManualApproval → Approved). `kind: Model` gains a `serve`

@@ -31,6 +31,9 @@ import { CreateTrainingJobPage } from "@/features/trainingjobs/create-trainingjo
 import { ModelPackagesPage } from "@/features/modelpackages/modelpackages-page";
 import { ModelPackageDetailPage } from "@/features/modelpackages/modelpackage-detail-page";
 import { CreateModelPackagePage } from "@/features/modelpackages/create-modelpackage-page";
+import { BatchTransformsPage } from "@/features/batchtransforms/batchtransforms-page";
+import { BatchTransformDetailPage } from "@/features/batchtransforms/batchtransform-detail-page";
+import { CreateBatchTransformPage } from "@/features/batchtransforms/create-batchtransform-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -206,6 +209,11 @@ const trainingjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, pa
 const modelpackagesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-registry", component: ModelPackagesPage });
 const modelpackageCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-registry/new", component: CreateModelPackagePage });
 const modelpackageDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-registry/$namespace/$name", component: ModelPackageDetailPage });
+
+// kind: BatchTransform (#27) — offline batch inference: list, static /new (before detail), detail.
+const batchtransformsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/batch-transform", component: BatchTransformsPage });
+const batchtransformCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/batch-transform/new", component: CreateBatchTransformPage });
+const batchtransformDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/batch-transform/$namespace/$name", component: BatchTransformDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -589,6 +597,9 @@ const routeTree = rootRoute.addChildren([
   modelpackagesRoute,
   modelpackageCreateRoute,
   modelpackageDetailRoute,
+  batchtransformsRoute,
+  batchtransformCreateRoute,
+  batchtransformDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
