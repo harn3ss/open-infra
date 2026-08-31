@@ -138,6 +138,7 @@ rules:
       - trainingjobs
       - modelpackages
       - batchtransforms
+      - tuningjobs
       - certificateauthorities
       - dataclassifications
       - encryptionkeys
