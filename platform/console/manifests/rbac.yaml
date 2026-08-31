@@ -137,6 +137,7 @@ rules:
       - executions
       - trainingjobs
       - modelpackages
+      - batchtransforms
       - certificateauthorities
       - dataclassifications
       - encryptionkeys
