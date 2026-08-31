@@ -17,6 +17,7 @@ on:
       - "console-api/**"
       - "apply-sink/**"
       - "statemachine/**"
+      - "hpo/**"
       - "mc/**"
       - "open-appsync/**"
       - "tds-proxy/**"
@@ -52,6 +53,7 @@ jobs:
           - { image: open-infra-ca-issuer,     context: console-api,   file: console-api/Dockerfile.ca-issuer }
           - { image: open-infra-apply-sink,    context: apply-sink,    file: apply-sink/Dockerfile }
           - { image: open-infra-statemachine,  context: statemachine,  file: statemachine/Dockerfile }
+          - { image: open-infra-hpo,           context: hpo,           file: hpo/Dockerfile }
           - { image: open-infra-open-appsync,  context: open-appsync,  file: open-appsync/Dockerfile }
           - { image: open-infra-tds-proxy,     context: tds-proxy,     file: tds-proxy/Dockerfile }
           - { image: open-infra-query,         context: query,         file: query/Dockerfile }
