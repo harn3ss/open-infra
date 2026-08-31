@@ -14,7 +14,8 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/tds-proxy .
 FROM alpine:3.24 AS runtime
 ARG OPENINFRA_FIPS=true   # amd64 default; build-arm64 sets false via the label
 LABEL openinfra.dev/fips=${OPENINFRA_FIPS}
-RUN apk add --no-cache ca-certificates
+# `apk upgrade` first so a rebuild picks up base-image security patches (libssl3/libcrypto3).
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates
 USER 65532:65532
 COPY --from=build /out/tds-proxy /usr/local/bin/tds-proxy
 EXPOSE 1433 9114
