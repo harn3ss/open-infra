@@ -40,6 +40,9 @@ import { CreateTuningJobPage } from "@/features/tuningjobs/create-tuningjob-page
 import { ProcessingJobsPage } from "@/features/processingjobs/processingjobs-page";
 import { ProcessingJobDetailPage } from "@/features/processingjobs/processingjob-detail-page";
 import { CreateProcessingJobPage } from "@/features/processingjobs/create-processingjob-page";
+import { ModelMonitorsPage } from "@/features/modelmonitors/modelmonitors-page";
+import { ModelMonitorDetailPage } from "@/features/modelmonitors/modelmonitor-detail-page";
+import { CreateModelMonitorPage } from "@/features/modelmonitors/create-modelmonitor-page";
 import { CreateModelPage } from "@/features/models/create-model-page";
 import { CreateGraphqlApiPage } from "@/features/graphql/create-graphqlapi-page";
 import { CreateVolumePage } from "@/features/volumes/create-volume-page";
@@ -230,6 +233,11 @@ const tuningjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path
 const processingjobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/processing", component: ProcessingJobsPage });
 const processingjobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/processing/new", component: CreateProcessingJobPage });
 const processingjobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/processing/$namespace/$name", component: ProcessingJobDetailPage });
+
+// kind: ModelMonitor (#27) — drift monitoring: list, static /new (before detail), detail.
+const modelmonitorsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-monitor", component: ModelMonitorsPage });
+const modelmonitorCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-monitor/new", component: CreateModelMonitorPage });
+const modelmonitorDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/model-monitor/$namespace/$name", component: ModelMonitorDetailPage });
 
 const vmImagesRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -622,6 +630,9 @@ const routeTree = rootRoute.addChildren([
   processingjobsRoute,
   processingjobCreateRoute,
   processingjobDetailRoute,
+  modelmonitorsRoute,
+  modelmonitorCreateRoute,
+  modelmonitorDetailRoute,
   volumesRoute,
   volumeDetailRoute,
   fileSharesRoute,
