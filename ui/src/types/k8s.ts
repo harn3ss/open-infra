@@ -831,6 +831,36 @@ export type TuningJob = K8sObject<TuningJobSpec, TuningJobStatus>;
 export const TUNINGJOBS_PLURAL = "tuningjobs";
 export const TUNINGJOBS_CRD_NAME = "tuningjobs.openinfra.dev";
 
+/* ---------------------- open-infra ProcessingJob CRD ---------------------- */
+// A run-once data-processing Job (SageMaker Processing) with N named inputs/outputs.
+export interface ProcessingChannel {
+  name: string;
+  bucket?: string;
+  prefix?: string;
+}
+export interface ProcessingJobSpec {
+  image: string;
+  command?: string[];
+  args?: string[];
+  inputs?: ProcessingChannel[];
+  outputs?: ProcessingChannel[];
+  gpu?: number;
+  gpuTier?: "smallgpu" | "largegpu";
+  cpu?: string;
+  memory?: string;
+  env?: { name: string; value: string }[];
+  secrets?: string[];
+  backoffLimit?: number;
+  maxRuntimeSeconds?: number;
+}
+export interface ProcessingJobStatus {
+  jobName?: string;
+  conditions?: Condition[];
+}
+export type ProcessingJob = K8sObject<ProcessingJobSpec, ProcessingJobStatus>;
+export const PROCESSINGJOBS_PLURAL = "processingjobs";
+export const PROCESSINGJOBS_CRD_NAME = "processingjobs.openinfra.dev";
+
 /* batch/v1 Job — read (only) to surface a Migration's live run status. */
 export interface JobStatus {
   active?: number;
