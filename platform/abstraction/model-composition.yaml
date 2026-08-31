@@ -61,7 +61,7 @@ spec:
             {{- $serve := $spec.serve | default dict }}
             {{- $isServe := and (hasKey $spec "serve") (hasKey $serve "image") }}
             {{- if $isServe }}{{- $tier = ($serve.gpuTier | default "smallgpu") }}{{- $useGpu = gt (int ($serve.gpu | default 0)) 0 }}{{- end }}
-            {{- $upstream := 11434 }}{{- if $isServe }}{{- $upstream = (int ($serve.port | default 8080)) }}{{- end }}
+            {{- $upstream := 11434 }}{{- if $isServe }}{{- $upstream = (int ($serve.port | default 8000)) }}{{- end }}
             {{- $art := $serve.artifact | default dict }}
             ---
             # --- Auth-proxy config (Secret so the key isn't in a plaintext CM).
