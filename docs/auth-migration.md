@@ -44,13 +44,20 @@ move from `@aws_cognito_user_pools` to `@aws_oidc`, and group membership comes f
 claims. This removes the Cognito dependency entirely, at the cost of standing up and operating an
 IdP — which is identity-provider work open-infra does not do for you.
 
-## Explicitly out of scope
+## Issuing tokens: `kind: UserPool` (experimental)
 
-**User-pool management** — creating pools, sign-up/sign-in/forgot-password flows, a hosted login
-UI, or programmatic user CRUD against a managed pool — is **not** in scope. open-infra consumes
-the tokens a pool issues; it is not a Cognito replacement. If an application genuinely requires
-managed sign-up/sign-in hosted by open-infra, that is a separate, scoped build to be filed on its
-own — not smuggled in here.
+Beyond consuming tokens, open-infra can now **issue** them. `kind: UserPool` provisions a managed
+OIDC identity provider (Keycloak) — a realm is the pool, a client is an app client — with sign-up /
+sign-in, a hosted login UI, and OIDC JWT issuance: the open-source path to an AWS Cognito User Pool.
+It emits a connection secret (`ISSUER_URL` / `REALM` / `CLIENT_ID` / `CLIENT_SECRET` / `ADMIN_*`);
+pointing a consumer's OIDC issuer (e.g. the AWS-shim's `OIDC_ISSUER`) at that `ISSUER_URL` makes the
+`@aws_oidc` / `@aws_cognito_user_pools` enforcement above verify its tokens — the loop closes with no
+code change.
+
+This is **experimental**: the first slice runs Keycloak in dev mode on an embedded database
+persisted to a PVC — a real, functional issuer, not yet a hardened multi-replica, Postgres-backed
+deployment. Programmatic user CRUD (a self-service management API) and a themed login UI are not yet
+built. Prefer an external IdP where a hardened, HA identity provider is required.
 
 ## Honest status
 
