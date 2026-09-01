@@ -190,8 +190,9 @@ Change set for "tickets":
 
 The diff is between the new template and the specs recorded when the stack was last
 applied — the CloudFormation model (diff against the current stack), not against live
-cluster drift, which is a later phase. `cfn update` then applies it: Adds and Modifies in
-dependency order (each readiness-gated), then Removes in reverse dependency order.
+cluster drift (that is `cfn drift`, below). `cfn update` then applies it: Adds and
+Modifies in dependency order (each readiness-gated), then Removes in reverse dependency
+order.
 
 Update is fail-closed and rolls back to the **exact** prior stack. If any step fails,
 everything the update added is deleted and every resource the prior stack had is
@@ -222,14 +223,37 @@ honors CloudFormation's `DeletionPolicy`:
 Deletes are not reversible, so `destroy` does not roll back: if a delete fails, the stack
 is left `DELETE_FAILED` with the resources that remain, and it stops.
 
+## Detecting drift
+
+`cfn drift` compares the recorded stack against what is actually running and reports any
+resource that changed or was deleted out of band:
+
+```console
+$ cfn drift -namespace my-app -stack-name tickets
+Stack "tickets" has DRIFTED from the cluster:
+  ~ PrimaryKey   EncryptionKey/primarykey changed on the cluster: description
+  - BackupKey    EncryptionKey/backupkey deleted out of band
+  = ArchiveKey   EncryptionKey/archivekey in sync
+
+Drift is reported, not reconciled — resolve it by updating the stack or the cluster deliberately.
+```
+
+It compares only the fields the stack **declares** — a default the CRD or composition
+filled in that the stack never set is not drift, so it does not drown real drift in noise.
+Drift is **surfaced, never reconciled**: a stack record that says one thing while the
+cluster runs another is exactly the disagreement open-infra exists to catch, so `cfn drift`
+names it and stops. It exits 0 when in sync and 1 when drift is found, so it drops into a
+check. It is read-only.
+
 ## What this does not do yet
 
-- `deploy`/`update`/`destroy` create, change, and tear down a stack. `cfn` does not yet
-  **drift-check** a stack against the live cluster — comparing what the stack record says
-  against what is actually running. That is the last phase.
-- `PROVISIONABLE` at plan time means the template maps cleanly onto kinds — not that every
-  property will translate at create time (see above), and not a guarantee of a running
-  stack. Treat plan as a compatibility check.
-- The mapping and translator tables are the honest surface of what the engine covers. They
-  grow the same way every capability here graduates: a type is added only once it has a
-  backing kind and a faithful mapping.
+- The stateful lifecycle is complete — `plan`, `deploy`, `changeset`, `update`, `destroy`,
+  and `drift`. What bounds the engine now is **coverage, not lifecycle**:
+  - `PROVISIONABLE` at plan time means the template maps cleanly onto kinds — not that
+    every property will translate at create time (see *Create fidelity* above), and not a
+    guarantee of a running stack. Treat plan as a compatibility check.
+  - The set of types with a create translator is small and grows deliberately: a type is
+    added only once it has a backing kind and a faithful mapping. Change sets, nested
+    stacks, and cross-stack references beyond the committed tables are out of scope.
+- The mapping and translator tables are the honest surface of what the engine covers — the
+  claim is exactly those tables, not full CloudFormation compatibility.
