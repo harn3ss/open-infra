@@ -1,0 +1,67 @@
+# The compiler for kind: Parameter. It renders a non-sensitive spec-mirror ConfigMap
+# in the console namespace (path/type/tier metadata — the value is NEVER mirrored
+# here) so the console can list parameters by label without CRD access, and echoes
+# the path in status. The value is read directly from the CR by parameter-reconciler,
+# which writes it to Vault KV-v2 and materializes the per-namespace Secret.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: parameter
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XParameter
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            ---
+            # Non-sensitive spec mirror the console reads (label-selected). The value is
+            # intentionally absent — it lives in the CR and, materialized, in the namespace Secret.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: parameter-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-parameter-{{ $name }}
+                    namespace: open-infra-console
+                    labels:
+                      openinfra.dev/parameter: {{ $name }}
+                      openinfra.dev/parameter-namespace: {{ $ns }}
+                  data:
+                    name: {{ $name | quote }}
+                    path: {{ $spec.path | quote }}
+                    type: "{{ $spec.type | default "String" }}"
+                    tier: "{{ $spec.tier | default "Standard" }}"
+                    namespace: {{ $ns | quote }}
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XParameter
+            status:
+              ready: true
+              path: {{ $spec.path | quote }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

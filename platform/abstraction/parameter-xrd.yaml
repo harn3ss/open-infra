@@ -1,0 +1,63 @@
+# kind: Parameter — a hierarchical, optionally-encrypted parameter (AWS SSM Parameter
+# Store equivalent). One claim -> a value stored under a path in Vault's KV-v2
+# `params` mount and materialized (with every other Parameter in the namespace) into
+# a per-namespace `openinfra-parameters` Secret that apps read at boot via envFrom.
+#
+# Hierarchy is the path convention (/app/db/host); the flattened env key is the path
+# upper-cased with / and - turned into _ (e.g. /app/db/host -> APP_DB_HOST). Consume
+# it by adding `openinfra-parameters` to an Application/Function `spec.secrets`.
+#
+# OPT-IN: this kind and its Vault backend ride the `encryption` component (off by
+# default). A reconciler (parameter-reconciler.yaml) writes the KV tree and
+# materializes the Secret; see platform/security/vault.yaml and docs/parameters.md.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xparameters.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XParameter, plural: xparameters }
+  claimNames: { kind: Parameter, plural: parameters }
+  defaultCompositionRef: { name: parameter }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [path, value]
+              properties:
+                path:
+                  type: string
+                  description: "Hierarchical parameter path, e.g. /app/db/host. Flattened to an env key (upper-case, / and - -> _) in the namespace's materialized Secret."
+                  pattern: '^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$'
+                value:
+                  type: string
+                  description: "The parameter value. For a SecureString this is held in Vault (KV-v2, encrypted at rest) and delivered via the namespace Secret."
+                type:
+                  type: string
+                  default: String
+                  enum: [String, SecureString]
+                  description: "String (plain) or SecureString (sensitive). Both are stored in Vault and materialized into a Kubernetes Secret; the type is advisory metadata for the console."
+                tier:
+                  type: string
+                  default: Standard
+                  enum: [Standard, Advanced]
+                  description: "Parameter tier (metadata; mirrors SSM Standard/Advanced)."
+            status:
+              type: object
+              properties:
+                path: { type: string }
+                ready: { type: boolean }
