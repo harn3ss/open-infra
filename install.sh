@@ -141,6 +141,10 @@ incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateautho
 # (reuses its Vault + the minio-kes k8s-auth identity). Ships KES + certs; it does NOT touch the live
 # MinIO — turning SSE-KMS on for the platform MinIO is a deliberate, snapshot-first step (docs/encryption.md).
 incl objectEncryption "security/minio-kes.yaml"
+# Transactional email: kind: EmailSender (its XRD/composition) + the shared in-cluster SMTP relay.
+# OFF unless components.mail: true. Reliable internet delivery needs a smarthost/SPF/DKIM — an
+# operator concern; see docs/email.md.
+incl mail "abstraction/emailsender-xrd.yaml,abstraction/emailsender-composition.yaml,mail/relay.yaml"
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
 incl attestation "security/compliance-attest.yaml"

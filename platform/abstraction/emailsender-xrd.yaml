@@ -1,0 +1,54 @@
+# kind: EmailSender — transactional email sending (AWS SES-shaped). One claim -> a
+# sending identity (a From address) and a <name>-smtp connection secret
+# (SMTP_HOST/PORT/FROM/FROM_NAME) injected into apps via the existing spec.secrets
+# -> envFrom, exactly like the <name>-minio bucket credential convention.
+#
+# The secret points at the in-cluster SMTP relay (platform/mail/), a shared
+# singleton. Apps send with any SMTP client; the relay forwards outbound.
+#
+# OPT-IN: this kind and the relay ride the `mail` component (off by default). Real
+# internet deliverability depends on the relay's upstream (a smarthost, or direct
+# MX) plus SPF/DKIM/DMARC on the sending domain — an operator concern, see
+# docs/email.md. EXPERIMENTAL.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xemailsenders.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XEmailSender, plural: xemailsenders }
+  claimNames: { kind: EmailSender, plural: emailsenders }
+  defaultCompositionRef: { name: emailsender }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [fromAddress]
+              properties:
+                fromAddress:
+                  type: string
+                  description: "The sending identity — the From address, e.g. noreply@example.com. Delivered as SMTP_FROM in the connection secret."
+                  pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+                fromName:
+                  type: string
+                  description: "Optional display name for the From header, e.g. \"Acme Notifications\"."
+            status:
+              type: object
+              properties:
+                fromAddress: { type: string }
+                connectionSecret: { type: string }
+                ready: { type: boolean }

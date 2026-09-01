@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Messaging
+- **`kind: EmailSender` (opt-in, experimental).** Transactional email — the AWS SES-shaped primitive.
+  A claim provisions a sending identity (a From address) and emits a `<name>-smtp` connection secret
+  (`SMTP_HOST` / `SMTP_PORT` / `SMTP_FROM` / `SMTP_FROM_NAME`) that apps consume via `spec.secrets` →
+  `envFrom`, like the `<name>-minio` convention. Backed by a shared in-cluster SMTP relay, both riding
+  the `mail` component. Honest about the hard part: reliable internet delivery needs a smarthost plus
+  SPF/DKIM/DMARC on the sending domain (operator-configured), so the relay forwards to an optional
+  `RELAYHOST` and defaults to best-effort direct delivery. An AWS-SDK SES shim verb is a documented
+  follow-on. See [`docs/email.md`](docs/email.md).
+
 ### Configuration
 - **`kind: Parameter` (opt-in, experimental).** A hierarchical, optionally-encrypted parameter store —
   the AWS SSM Parameter Store equivalent. Each value is held in Vault's KV-v2 `params` mount under its
