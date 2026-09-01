@@ -13,9 +13,10 @@ provision the supported ones as a live, tracked stack. This is the `cfn` engine.
   be Added, Modified, Removed, or left Unchanged.
 - **`cfn update`** applies that change set, rolling back to the exact prior stack if any
   step fails.
+- **`cfn destroy`** tears a stack down in reverse dependency order, honoring
+  `DeletionPolicy`.
 
-`cfn` does not yet delete or drift-check a stack; those are later phases, each gated
-behind the one before it.
+`cfn` does not yet drift-check a stack against the live cluster; that is the last phase.
 
 ## The cardinal rule
 
@@ -198,10 +199,34 @@ re-applied — restoring modified specs and re-creating removed ones — so a fa
 leaves the stack exactly as it was, with no orphans and no half-applied change. The stack
 ends `UPDATE_COMPLETE` or `UPDATE_ROLLBACK_COMPLETE`.
 
+## Tearing down a stack
+
+```console
+$ cfn destroy -namespace my-app -stack-name tickets
+Destroying stack "tickets" in namespace "my-app"…
+
+Stack "tickets" is DELETE_COMPLETE.
+```
+
+`destroy` deletes the stack's resources in reverse dependency order (the reverse of how
+they were created), waits for each to actually be gone, then removes the stack record. It
+honors CloudFormation's `DeletionPolicy`:
+
+- **`Delete`** (the default) — the resource is deleted.
+- **`Retain`** — the resource is left in the cluster and reported as now unmanaged; the
+  stack record is still removed.
+- **`Snapshot`** — refused. open-infra has no generic pre-delete snapshot for an arbitrary
+  kind, and deleting a resource that asked to be snapshotted first would be silent data
+  loss, so `destroy` fails loud and deletes nothing rather than honor it dishonestly.
+
+Deletes are not reversible, so `destroy` does not roll back: if a delete fails, the stack
+is left `DELETE_FAILED` with the resources that remain, and it stops.
+
 ## What this does not do yet
 
-- `deploy`/`update` create and change a stack. `cfn` does not yet **delete** a stack or
-  **drift-check** one against the live cluster. Those are the remaining phases.
+- `deploy`/`update`/`destroy` create, change, and tear down a stack. `cfn` does not yet
+  **drift-check** a stack against the live cluster — comparing what the stack record says
+  against what is actually running. That is the last phase.
 - `PROVISIONABLE` at plan time means the template maps cleanly onto kinds — not that every
   property will translate at create time (see above), and not a guarantee of a running
   stack. Treat plan as a compatibility check.

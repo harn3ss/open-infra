@@ -31,10 +31,11 @@ type Parameter struct {
 }
 
 type Resource struct {
-	Type       string
-	Properties map[string]any
-	DependsOn  []string
-	Condition  string
+	Type           string
+	Properties     map[string]any
+	DependsOn      []string
+	Condition      string
+	DeletionPolicy string // Delete (default) | Retain | Snapshot
 }
 
 // Parse reads a CloudFormation template from JSON or YAML bytes.
@@ -96,6 +97,9 @@ func Parse(data []byte) (*Template, error) {
 		}
 		if cond, ok := rm["Condition"].(string); ok {
 			r.Condition = cond
+		}
+		if dp, ok := rm["DeletionPolicy"].(string); ok {
+			r.DeletionPolicy = dp
 		}
 		switch d := rm["DependsOn"].(type) {
 		case string:
