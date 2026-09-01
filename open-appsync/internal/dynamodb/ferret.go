@@ -85,8 +85,56 @@ func (s *FerretStore) Execute(ctx context.Context, op runtime.Operation) (any, e
 		}
 		return map[string]any{"items": items, "scannedCount": float64(len(items))}, cur.Err()
 
+	case "UpdateItem":
+		key := plainMap(fromDynamoDB(op["key"]))
+		id := keyString(key)
+		var doc bson.M
+		item := map[string]any{}
+		switch err := s.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&doc); err {
+		case nil:
+			item = docToItem(doc)
+		case mongo.ErrNoDocuments:
+			// Absent: leave item empty so the condition sees the true prior state
+			// (attribute_exists(id) is false). updateItem re-asserts the key after the update.
+		default:
+			return nil, err
+		}
+		newItem, err := updateItem(item, key, op)
+		if err != nil {
+			return nil, err
+		}
+		ndoc := bson.M{"_id": id}
+		for k, v := range newItem {
+			ndoc[k] = v
+		}
+		if _, err := s.coll.ReplaceOne(ctx, bson.M{"_id": id}, ndoc, options.Replace().SetUpsert(true)); err != nil {
+			return nil, err
+		}
+		return newItem, nil
+
+	case "Query":
+		// Fetch candidates and run the SAME query logic MemStore does, so the result is identical
+		// across stores. (Correctness over index-pushdown — Query is not indexed here.)
+		cur, err := s.coll.Find(ctx, bson.M{})
+		if err != nil {
+			return nil, err
+		}
+		defer cur.Close(ctx)
+		var candidates []map[string]any
+		for cur.Next(ctx) {
+			var doc bson.M
+			if err := cur.Decode(&doc); err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, docToItem(doc))
+		}
+		if err := cur.Err(); err != nil {
+			return nil, err
+		}
+		return runQuery(candidates, op)
+
 	default:
-		return nil, fmt.Errorf("dynamodb(ferret): operation %q not implemented (slice 1: GetItem/PutItem/DeleteItem/Scan)", op["operation"])
+		return nil, fmt.Errorf("dynamodb(ferret): operation %q not implemented (supported: GetItem, PutItem, DeleteItem, Scan, UpdateItem, Query)", op["operation"])
 	}
 }
 

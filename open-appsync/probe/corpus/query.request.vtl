@@ -1,0 +1,11 @@
+{
+  "version": "2018-05-29",
+  "operation": "Query",
+  "query": {
+    "expression": "room = :room",
+    "expressionValues": {
+      ":room": $util.dynamodb.toDynamoDBJson($ctx.args.room)
+    }
+  },
+  "scanIndexForward": true
+}

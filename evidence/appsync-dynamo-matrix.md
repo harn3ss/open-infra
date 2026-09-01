@@ -14,6 +14,13 @@ code-refused is `not-run`.
 
 **Date:** 2026-08-31.
 
+> **Update 2026-08-31 — UpdateItem and Query implemented.** The gating gap this matrix
+> identified (UpdateItem + Query) has since been built as a faithful common subset and observed
+> live (unit tests, a full VTL resolver round-trip, and a durable FerretDB round-trip). The rows
+> below are updated in place; the operations that remain unsupported still fail loud. A
+> create/read/update/delete/list app now ports; the remaining gaps are the less-common forms
+> named in the table.
+
 ## How the supported rows were observed (live, this date)
 
 - **Durable store, real FerretDB:** stood up `ghcr.io/ferretdb/postgres-documentdb:17` +
@@ -36,13 +43,15 @@ what exists (`open-appsync/internal/dynamodb/`). So the supported set is exactly
 |---|---|---|
 | **GetItem** | observed-correct | FerretStore round-trip + resolver probe (above); `dynamodb.go` / `ferret.go` GetItem |
 | **PutItem** (plain) | observed-correct | FerretStore round-trip + resolver probe; `ferret.go` PutItem (upsert) |
-| PutItem **with condition expression** | not-supported | store does an unconditional upsert; no condition evaluation in the op handler |
+| PutItem **with condition expression** | not-supported | store does an unconditional upsert; no condition evaluation in PutItem |
 | **DeleteItem** (plain) | observed-correct | FerretStore round-trip; `ferret.go` DeleteItem (`FindOneAndDelete`) |
 | DeleteItem **with condition** | not-supported | plain delete by key; no condition evaluation |
-| **UpdateItem** (SET/ADD/REMOVE, ±condition) | **not-supported** | falls to the default branch — explicit `operation "UpdateItem" not implemented (slice 1: GetItem/PutItem/DeleteItem/Scan)` |
-| **Query** (key-condition) | **not-supported** | no `case "Query"` in the store; default not-implemented branch |
-| Query on a **Global Secondary Index** | **not-supported** | no index concept; GetItem addresses only the primary key (serialized to `_id`) |
-| Query **with filter expression** | **not-supported** | Query itself is absent |
+| **UpdateItem** — SET (assign, +/- arithmetic, if_not_exists, list_append), REMOVE, ADD (numeric/set), ±condition | **observed-correct** (#58) | unit tests + resolver round-trip + durable FerretDB (`expr.go`, `TestFerretStore_UpdateAndQuery`) |
+| UpdateItem — DELETE action, nested attribute paths | not-supported | fails loud (`unsupported update action` / unsupported path) |
+| **Query** — key-condition (`=`, `<`, `<=`, `>`, `>=`, `begins_with`, `BETWEEN`) | **observed-correct** (#58) | unit tests + resolver round-trip + durable FerretDB |
+| Query on a **Global Secondary Index** | **observed-correct** (#58) | index is metadata; the key-condition matches the GSI's attributes directly (`TestQuery_ByGSIAttributes`) |
+| Query **with filter expression** (`= <> < <= > >=`, `AND`/`OR`/`NOT`, begins_with, contains, attribute_exists/_not_exists) | **observed-correct** (#58) | `TestQuery_DescendingBeginsWithAndFilter` |
+| Query — sort order (scanIndexForward) + pagination (limit/nextToken) | **observed-correct** (#58) | `TestQuery_PartitionAndSort`, `TestQuery_Pagination` |
 | **Scan** (full) | implemented; **live round-trip not-run** | code path exists (`Find(bson.M{})`, full scan) but no live Scan was run this date |
 | Scan **with filter expression** | not-supported | Scan issues an empty filter; any filter is ignored |
 | **BatchGetItem** | not-supported | default not-implemented branch |
@@ -56,21 +65,23 @@ what exists (`open-appsync/internal/dynamodb/`). So the supported set is exactly
 The exact operations such an app needs require its own resolvers (not available
 here), so this is the general assessment for a typical DynamoDB-behind-AppSync CRUD app:
 
-- A basic **create/read/delete-by-key** app is covered: PutItem, GetItem, DeleteItem all
-  round-trip correctly, live.
-- **Two operations most such apps rely on are not supported, and this is the gating gap:**
-  - **UpdateItem** — partial-attribute updates (SET/ADD/REMOVE) and conditional writes. Today an
-    update must be modeled as read-modify-PutItem in the resolver, and there is **no** conditional
-    write (no optimistic-concurrency guard).
-  - **Query** — listing items by partition key, by a GSI, or with a filter. This is the primary
-    read pattern for list/collection views; only GetItem-by-key and full Scan exist.
-- Condition expressions, GSIs, batch/transactional writes, and TTL are also absent.
+- A **create / read / update / delete / list** app is now covered (the gating gap this matrix
+  first identified, UpdateItem + Query, was built — see the Update note at the top):
+  - **UpdateItem** — partial-attribute updates (SET assign / +/- arithmetic / if_not_exists /
+    list_append, REMOVE, ADD) and **conditional writes** (an optimistic-concurrency guard via a
+    `condition` expression), observed live.
+  - **Query** — by partition key, with a sort-key condition (`=`/comparison/`begins_with`/
+    `BETWEEN`), by a GSI's attributes, with a filter expression, sorted (scanIndexForward), and
+    paginated (limit/nextToken), observed live.
+- **Still not supported (fail-loud, never silent):** condition expressions on PutItem/DeleteItem,
+  the UpdateItem DELETE action, nested attribute paths, batch/transactional writes, TTL, and
+  change streams.
 
-**Bottom line:** the Dynamo-shaped data source is a faithful **primary-key document store for
-Get/Put/Delete**, not a DynamoDB replacement. An app that only creates, reads, and deletes items
-by key ports as-is; an app that uses UpdateItem, Query, GSIs, conditions, batches, transactions,
-or TTL does **not**, and the specific missing operations are named above. Closing the subset the
-the app actually needs is separate work, gated on this characterization.
+**Bottom line:** the Dynamo-shaped data source now covers the common CRUD + list surface —
+Get/Put/Delete/Update/Query with conditions, GSIs, filters, sorting, and pagination — observed
+live against real FerretDB and through a VTL resolver. It is still **not** a full DynamoDB
+replacement: batch/transactional writes, TTL, change streams, and Put/Delete condition
+expressions are absent and refused loudly, not silently approximated.
 
 ## Honest-unknown / not-run this date
 

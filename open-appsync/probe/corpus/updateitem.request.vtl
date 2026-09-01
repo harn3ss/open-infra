@@ -1,0 +1,18 @@
+{
+  "version": "2018-05-29",
+  "operation": "UpdateItem",
+  "key": {
+    "id": $util.dynamodb.toDynamoDBJson($ctx.args.id)
+  },
+  "update": {
+    "expression": "SET #b = :body ADD version :one",
+    "expressionNames": { "#b": "body" },
+    "expressionValues": {
+      ":body": $util.dynamodb.toDynamoDBJson($ctx.args.body),
+      ":one": $util.dynamodb.toDynamoDBJson(1)
+    }
+  },
+  "condition": {
+    "expression": "attribute_exists(id)"
+  }
+}
