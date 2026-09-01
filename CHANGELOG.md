@@ -6,6 +6,18 @@ the product's public contract.
 
 ## Unreleased
 
+### Identity
+- **`kind: UserPool` (experimental).** A managed, customer-facing OIDC identity provider — the
+  token-*issuing* counterpart to the platform's own IAM, and the open-source path to an AWS Cognito
+  User Pool. It deploys Keycloak (a realm is the pool, a client is an app client), serves sign-up /
+  sign-in and OIDC discovery, and emits a connection secret (`ISSUER_URL` / `REALM` / `CLIENT_ID` /
+  `CLIENT_SECRET` / `ADMIN_*`). Because open-infra already *consumes* OIDC/Cognito JWTs, pointing a
+  consumer's `OIDC_ISSUER` at a pool's `ISSUER_URL` makes `@aws_oidc` / `@aws_cognito_user_pools`
+  enforcement verify its tokens with no code change. Admin-gated (not grantable by a `kind: Policy`).
+  Experimental: the first slice runs Keycloak in dev mode on an embedded database persisted to a
+  PVC — a real issuer, not yet a hardened, HA, Postgres-backed deployment. See
+  [`docs/auth-migration.md`](docs/auth-migration.md).
+
 ### AWS compatibility
 - **CloudFormation engine (`cfn`).** Read a CloudFormation template — or CDK's synthesized
   output, which is CloudFormation JSON — and provision the corresponding open-infra resources.
