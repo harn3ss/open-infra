@@ -144,6 +144,7 @@ rules:
       - featuregroups
       - staticsites
       - parameters
+      - emailsenders
       - certificateauthorities
       - dataclassifications
       - encryptionkeys

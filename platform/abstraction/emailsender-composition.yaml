@@ -1,0 +1,71 @@
+# The compiler for kind: EmailSender. It emits a <name>-smtp connection secret
+# (SMTP_HOST/PORT/FROM/FROM_NAME) into the app namespace, pointing at the shared
+# in-cluster SMTP relay (platform/mail/), and echoes status. Apps consume it via
+# the existing spec.secrets -> envFrom, exactly like the <name>-minio convention —
+# no app-composition change.
+#
+# The relay accepts submission from in-cluster senders; no per-sender credential is
+# minted in this slice (the relay is network-guarded, not internet-exposed). A
+# per-identity SMTP AUTH credential is a follow-on.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: emailsender
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XEmailSender
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $from := $spec.fromAddress }}
+            {{- $fromName := $spec.fromName | default "" }}
+            ---
+            # Connection secret: how an app talks to the relay. Injected via spec.secrets -> envFrom.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: smtp-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-smtp
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/emailsender: {{ $name }}
+                  stringData:
+                    SMTP_HOST: smtp-relay.mail.svc.cluster.local
+                    SMTP_PORT: "587"
+                    SMTP_FROM: {{ $from | quote }}
+                    SMTP_FROM_NAME: {{ $fromName | quote }}
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XEmailSender
+            status:
+              ready: true
+              fromAddress: {{ $from | quote }}
+              connectionSecret: {{ $name }}-smtp
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
