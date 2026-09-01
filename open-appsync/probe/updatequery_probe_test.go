@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
+	"github.com/harn3ss/open-infra/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 

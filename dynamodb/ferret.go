@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -24,7 +23,7 @@ type FerretStore struct{ coll *mongo.Collection }
 // NewFerretStore binds a Store to a Mongo/FerretDB collection (one per data-source table).
 func NewFerretStore(coll *mongo.Collection) *FerretStore { return &FerretStore{coll: coll} }
 
-func (s *FerretStore) Execute(ctx context.Context, op runtime.Operation) (any, error) {
+func (s *FerretStore) Execute(ctx context.Context, op Operation) (any, error) {
 	switch operation, _ := op["operation"].(string); operation {
 	case "GetItem":
 		id := keyString(plainMap(fromDynamoDB(op["key"])))

@@ -3,8 +3,6 @@ package dynamodb
 import (
 	"context"
 	"testing"
-
-	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
 // typed values as a VTL request template emits them ($util.dynamodb.toDynamoDBJson).
@@ -18,7 +16,7 @@ func put(t *testing.T, st *MemStore, id string, attrs map[string]any) {
 	for k, v := range attrs {
 		typed[k] = v
 	}
-	_, err := st.Execute(context.Background(), runtime.Operation{
+	_, err := st.Execute(context.Background(), Operation{
 		"operation": "PutItem", "key": key(id), "attributeValues": typed,
 	})
 	if err != nil {
@@ -30,7 +28,7 @@ func TestUpdateItem_SetRemoveArithmetic(t *testing.T) {
 	st := NewMemStore()
 	put(t, st, "u1", map[string]any{"name": s("Alice"), "version": n("1"), "stale": s("x")})
 
-	res, err := st.Execute(context.Background(), runtime.Operation{
+	res, err := st.Execute(context.Background(), Operation{
 		"operation": "UpdateItem",
 		"key":       key("u1"),
 		"update": map[string]any{
@@ -57,7 +55,7 @@ func TestUpdateItem_SetRemoveArithmetic(t *testing.T) {
 func TestUpdateItem_IfNotExistsAndAdd(t *testing.T) {
 	st := NewMemStore()
 	// update a non-existent item: create-if-absent + if_not_exists default + ADD from zero.
-	res, err := st.Execute(context.Background(), runtime.Operation{
+	res, err := st.Execute(context.Background(), Operation{
 		"operation": "UpdateItem",
 		"key":       key("counter"),
 		"update": map[string]any{
@@ -84,7 +82,7 @@ func TestUpdateItem_ConditionFailIsLoud(t *testing.T) {
 	st := NewMemStore()
 	put(t, st, "u1", map[string]any{"version": n("1")})
 	// optimistic-concurrency guard that fails.
-	_, err := st.Execute(context.Background(), runtime.Operation{
+	_, err := st.Execute(context.Background(), Operation{
 		"operation": "UpdateItem",
 		"key":       key("u1"),
 		"update":    map[string]any{"expression": "SET x = :x", "expressionValues": map[string]any{":x": n("9")}},
@@ -94,7 +92,7 @@ func TestUpdateItem_ConditionFailIsLoud(t *testing.T) {
 		t.Fatal("a failed condition must error (ConditionalCheckFailed), not silently apply")
 	}
 	// attribute_not_exists on an existing item also fails.
-	_, err = st.Execute(context.Background(), runtime.Operation{
+	_, err = st.Execute(context.Background(), Operation{
 		"operation": "UpdateItem", "key": key("u1"),
 		"update":    map[string]any{"expression": "SET x = :x", "expressionValues": map[string]any{":x": n("9")}},
 		"condition": map[string]any{"expression": "attribute_not_exists(id)"},
@@ -107,7 +105,7 @@ func TestUpdateItem_ConditionFailIsLoud(t *testing.T) {
 func TestUpdateItem_UnsupportedActionFailsLoud(t *testing.T) {
 	st := NewMemStore()
 	put(t, st, "u1", map[string]any{"tags": map[string]any{"SS": []any{"a"}}})
-	_, err := st.Execute(context.Background(), runtime.Operation{
+	_, err := st.Execute(context.Background(), Operation{
 		"operation": "UpdateItem", "key": key("u1"),
 		"update": map[string]any{"expression": "DELETE tags :t", "expressionValues": map[string]any{":t": map[string]any{"SS": []any{"a"}}}},
 	})
@@ -128,7 +126,7 @@ func TestQuery_PartitionAndSort(t *testing.T) {
 	seed("4", "random", "150")
 
 	// key-condition: room = :r AND ts BETWEEN :lo AND :hi, ascending.
-	res, err := st.Execute(context.Background(), runtime.Operation{
+	res, err := st.Execute(context.Background(), Operation{
 		"operation": "Query",
 		"query": map[string]any{
 			"expression":       "room = :r AND ts BETWEEN :lo AND :hi",
@@ -154,7 +152,7 @@ func TestQuery_DescendingBeginsWithAndFilter(t *testing.T) {
 	put(t, st, "2", map[string]any{"room": s("g"), "ts": n("2"), "kind": s("chat"), "flag": s("drop")})
 	put(t, st, "3", map[string]any{"room": s("g"), "ts": n("3"), "kind": s("sys"), "flag": s("keep")})
 
-	res, err := st.Execute(context.Background(), runtime.Operation{
+	res, err := st.Execute(context.Background(), Operation{
 		"operation": "Query",
 		"query": map[string]any{
 			"expression":       "room = :r",
@@ -182,7 +180,7 @@ func TestQuery_Pagination(t *testing.T) {
 		put(t, st, ts, map[string]any{"room": s("g"), "ts": n(ts)})
 	}
 	q := func(token any) map[string]any {
-		op := runtime.Operation{
+		op := Operation{
 			"operation": "Query",
 			"query":     map[string]any{"expression": "room = :r", "expressionValues": map[string]any{":r": s("g")}},
 			"limit":     float64(2),
@@ -218,7 +216,7 @@ func TestQuery_ByGSIAttributes(t *testing.T) {
 	st := NewMemStore()
 	put(t, st, "u1", map[string]any{"email": s("a@x.com"), "name": s("A")})
 	put(t, st, "u2", map[string]any{"email": s("b@x.com"), "name": s("B")})
-	res, err := st.Execute(context.Background(), runtime.Operation{
+	res, err := st.Execute(context.Background(), Operation{
 		"operation": "Query",
 		"index":     "by-email",
 		"query":     map[string]any{"expression": "email = :e", "expressionValues": map[string]any{":e": s("b@x.com")}},
