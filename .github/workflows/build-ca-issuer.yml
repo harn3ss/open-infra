@@ -11,6 +11,7 @@ on:
     branches: [main]
     paths:
       - "console-api/**"
+      - "dynamodb/**"
       - ".github/workflows/build-ca-issuer.yml"
   workflow_dispatch: {}
 
@@ -58,7 +59,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Context is the console-api module.
-          context: console-api
+          context: .
           file: console-api/Dockerfile.ca-issuer
           push: true
           tags: ${{ steps.meta.outputs.tags }}

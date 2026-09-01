@@ -37,8 +37,13 @@ ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-ar
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
 
+# The shared dynamodb module is required via a local replace (../dynamodb); it
+# must sit beside console-api in the build (hence the repo-root context).
+COPY dynamodb/ dynamodb/
+
 # Module graph first for layer caching (re-downloads only when go.mod/sum change).
-COPY console-api/go.mod console-api/go.sum ./
+COPY console-api/go.mod console-api/go.sum console-api/
+WORKDIR /src/console-api
 RUN go mod download
 
 # BFF source.

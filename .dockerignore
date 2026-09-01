@@ -1,0 +1,15 @@
+# The Docker build context is the repository ROOT for every image: each Go
+# service is its own module but requires the shared `dynamodb/` module via a
+# local `replace`, so that sibling must be visible in the build. Keep the
+# context lean — exclude version control, agent worktrees, and node_modules
+# (re-installed inside the image) — but never anything a Dockerfile COPYs
+# (dynamodb/, console-api/, open-appsync/, ui/ … all stay).
+.git
+.github
+.claude
+**/node_modules
+ui/dist
+
+# Stray local build artifacts (binaries built by hand next to the source).
+console-api/aws-shim
+console-api/console-api

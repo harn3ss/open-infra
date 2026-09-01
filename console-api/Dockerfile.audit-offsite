@@ -4,14 +4,17 @@
 # It lives in the console-api Go module so it shares internal/auditchain with the console's
 # integrity endpoint — ONE chain implementation, verified identically on both sides. This image
 # builds only ./cmd/audit-offsite: a small static binary on distroless, like aws-shim/apply-sink.
-# Build context is console-api/.
+# Build context is the repo ROOT — console-api requires the shared dynamodb module via a local
+# replace (../dynamodb), so that sibling is copied in beside it.
 FROM golang:1.26 AS build
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY dynamodb/ dynamodb/
+COPY console-api/go.mod console-api/go.sum console-api/
+WORKDIR /src/console-api
 RUN go mod download
-COPY . .
+COPY console-api/ ./
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /audit-offsite ./cmd/audit-offsite
 
