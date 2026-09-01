@@ -31,6 +31,8 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -75,6 +77,21 @@ func run(logger *slog.Logger) error {
 	mc, err := newMinioClient()
 	if err != nil {
 		return err
+	}
+
+	// FerretDB (Mongo wire) backs the DynamoDB front door. Optional: if MONGO_URI is unset the
+	// dynamodb handler still registers but answers an honest 501 (data layer not configured), so
+	// nothing else about the shim is affected.
+	var mongoDB *mongo.Database
+	if uri := getenv("MONGO_URI", ""); uri != "" {
+		mctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		client, cerr := mongo.Connect(mctx, options.Client().ApplyURI(uri))
+		cancel()
+		if cerr != nil {
+			return cerr
+		}
+		mongoDB = client.Database(getenv("MONGO_DB", "open_infra_dynamodb"))
+		logger.Info("connected to FerretDB for the DynamoDB front door", slog.String("db", mongoDB.Name()))
 	}
 
 	auth := &authenticator{
@@ -150,7 +167,7 @@ func run(logger *slog.Logger) error {
 		"sts":      &stsHandler{account: account, logger: logger},
 		"lambda":   newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger),
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
-		"dynamodb": newDynamoHandler(cs, authzNS, logger),
+		"dynamodb": newDynamoHandler(cs, authzNS, mongoDB, logger),
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
