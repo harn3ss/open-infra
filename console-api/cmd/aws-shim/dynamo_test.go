@@ -33,7 +33,7 @@ func decodeDynamoErr(t *testing.T, w *httptest.ResponseRecorder) map[string]stri
 
 // A recognized, authorized operation returns an honest 501 in DynamoDB's own dialect — never a fake.
 func TestDynamo_RecognizedOpIsHonest501(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(true), "default", discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", nil, discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("DynamoDB_20120810.GetItem", `{"TableName":"t","Key":{"id":{"S":"1"}}}`),
 		iam.Claims{Sub: "tester"}, "req-1")
@@ -48,7 +48,7 @@ func TestDynamo_RecognizedOpIsHonest501(t *testing.T) {
 }
 
 func TestDynamo_MissingTarget(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(true), "default", discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", nil, discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("", `{}`), iam.Claims{Sub: "tester"}, "r")
 	if w.Code != http.StatusBadRequest || !strings.Contains(decodeDynamoErr(t, w)["__type"], "MissingAction") {
@@ -57,7 +57,7 @@ func TestDynamo_MissingTarget(t *testing.T) {
 }
 
 func TestDynamo_UnknownOp(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(true), "default", discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", nil, discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("DynamoDB_20120810.Frobnicate", `{}`), iam.Claims{Sub: "tester"}, "r")
 	if w.Code != http.StatusBadRequest || !strings.Contains(decodeDynamoErr(t, w)["__type"], "UnknownOperation") {
@@ -68,7 +68,7 @@ func TestDynamo_UnknownOp(t *testing.T) {
 // Authorization is fail-closed and precedes the not-implemented answer: a denied caller gets 403,
 // not 501 (you learn you lack permission before you learn the op isn't built).
 func TestDynamo_DeniedBeforeNotImplemented(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(false), "default", discardLogger())
+	h := newDynamoHandler(csWithSAR(false), "default", nil, discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("DynamoDB_20120810.PutItem", `{"TableName":"t","Item":{}}`),
 		iam.Claims{Sub: "nobody"}, "r")
@@ -90,5 +90,37 @@ func TestDynamo_VerbForOp(t *testing.T) {
 	}
 	if _, known := verbForOp("Frobnicate"); known {
 		t.Error("an unknown op must not map to a verb")
+	}
+}
+
+func TestOpFromTarget(t *testing.T) {
+	cases := map[string]string{
+		"DynamoDB_20120810.GetItem": "GetItem",
+		"DynamoDB_20120810.PutItem": "PutItem",
+		"GetItem":                   "GetItem",
+		"":                          "",
+	}
+	for in, want := range cases {
+		if got := opFromTarget(in); got != want {
+			t.Errorf("opFromTarget(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestKeyAttrsFromSchema(t *testing.T) {
+	hashOnly := []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}}
+	if got := keyAttrsFromSchema(hashOnly); len(got) != 1 || got[0] != "id" {
+		t.Errorf("hash-only = %v, want [id]", got)
+	}
+	// RANGE must follow HASH regardless of declaration order.
+	composite := []any{
+		map[string]any{"AttributeName": "ts", "KeyType": "RANGE"},
+		map[string]any{"AttributeName": "room", "KeyType": "HASH"},
+	}
+	if got := keyAttrsFromSchema(composite); len(got) != 2 || got[0] != "room" || got[1] != "ts" {
+		t.Errorf("composite = %v, want [room ts]", got)
+	}
+	if got := keyAttrsFromSchema([]any{map[string]any{"AttributeName": "x", "KeyType": "RANGE"}}); got != nil {
+		t.Errorf("a schema with no HASH must be nil, got %v", got)
 	}
 }
