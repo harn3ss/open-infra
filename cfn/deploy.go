@@ -42,6 +42,8 @@ type Applier interface {
 	WaitGone(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error
 	// GetStack reads a persisted stack record, if one exists (found=false when absent).
 	GetStack(ctx context.Context, stackName string) (rec *StackRecord, found bool, err error)
+	// GetSpec reads a live resource's .spec (found=false when the object is absent).
+	GetSpec(ctx context.Context, apiVersion, kind, name string) (spec map[string]any, found bool, err error)
 }
 
 type StackResource struct {

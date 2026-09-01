@@ -92,6 +92,24 @@ func (k kubectlApplier) WaitGone(ctx context.Context, apiVersion, kind, name str
 	}
 }
 
+// GetSpec reads a live resource's .spec for drift comparison.
+func (k kubectlApplier) GetSpec(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
+	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "-o", "json")
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "not found") {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var obj struct {
+		Spec map[string]any `json:"spec"`
+	}
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		return nil, false, fmt.Errorf("could not read %s/%s spec: %w", kind, name, err)
+	}
+	return obj.Spec, true, nil
+}
+
 // GetStack reads the persisted stack record ConfigMap.
 func (k kubectlApplier) GetStack(ctx context.Context, stackName string) (*StackRecord, bool, error) {
 	out, err := k.runOut(ctx, "get", "configmap", "cfn-stack-"+stackName, "-o", `jsonpath={.data.stack\.json}`)
