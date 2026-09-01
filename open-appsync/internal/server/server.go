@@ -19,11 +19,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/awsscalars"
 	"github.com/harn3ss/open-infra/open-appsync/internal/cache"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
-	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/eventbridgesource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"

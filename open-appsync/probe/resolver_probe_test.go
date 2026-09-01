@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/harn3ss/open-infra/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
-	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 	"github.com/harn3ss/open-infra/open-appsync/internal/vtlruntime"
