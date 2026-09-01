@@ -1,0 +1,17 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "A supported-only stack the engine can create live — two KMS keys with a dependency, each backed by a Vault Transit key (kind EncryptionKey)."
+
+Resources:
+  PrimaryKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: primary application data key
+      EnableKeyRotation: true
+      KeySpec: SYMMETRIC_DEFAULT
+
+  BackupKey:
+    Type: AWS::KMS::Key
+    DependsOn: PrimaryKey
+    Properties:
+      Description: backup data key
+      EnableKeyRotation: true
