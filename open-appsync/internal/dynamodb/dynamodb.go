@@ -134,8 +134,30 @@ func (s *MemStore) Execute(_ context.Context, op runtime.Operation) (any, error)
 			list = append(list, s.items[k])
 		}
 		return map[string]any{"items": list, "scannedCount": float64(len(list))}, nil
+	case "UpdateItem":
+		key := plainMap(fromDynamoDB(op["key"]))
+		ks := keyString(key)
+		item := s.items[ks]
+		if item == nil {
+			// Absent item: the condition is evaluated against the EMPTY prior state (so
+			// attribute_exists(id) is correctly false). updateItem re-asserts the key after the
+			// update, giving DynamoDB's create-if-absent behavior when there is no failing condition.
+			item = map[string]any{}
+		}
+		newItem, err := updateItem(item, key, op)
+		if err != nil {
+			return nil, err
+		}
+		s.items[ks] = newItem
+		return newItem, nil
+	case "Query":
+		candidates := make([]map[string]any, 0, len(s.items))
+		for _, k := range s.sortedKeys() {
+			candidates = append(candidates, s.items[k])
+		}
+		return runQuery(candidates, op)
 	default:
-		return nil, fmt.Errorf("dynamodb: operation %q not implemented (slice 1: GetItem/PutItem/DeleteItem/Scan)", operation)
+		return nil, fmt.Errorf("dynamodb: operation %q not implemented (supported: GetItem, PutItem, DeleteItem, Scan, UpdateItem, Query)", operation)
 	}
 }
 
