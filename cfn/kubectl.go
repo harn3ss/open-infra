@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -67,6 +68,25 @@ func (k kubectlApplier) WaitReady(ctx context.Context, apiVersion, kind, name st
 		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+// GetStack reads the persisted stack record ConfigMap.
+func (k kubectlApplier) GetStack(ctx context.Context, stackName string) (*StackRecord, bool, error) {
+	out, err := k.runOut(ctx, "get", "configmap", "cfn-stack-"+stackName, "-o", `jsonpath={.data.stack\.json}`)
+	if err != nil {
+		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "not found") {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, false, nil
+	}
+	var rec StackRecord
+	if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		return nil, false, fmt.Errorf("stack record is corrupt: %w", err)
+	}
+	return &rec, true, nil
 }
 
 // runOut runs kubectl and returns stdout (for reads).

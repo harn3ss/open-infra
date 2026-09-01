@@ -1,0 +1,17 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "kms-stack, updated — PrimaryKey's description changed, ArchiveKey added, BackupKey removed."
+
+Resources:
+  PrimaryKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: primary application data key (rotated quarterly)
+      EnableKeyRotation: true
+      KeySpec: SYMMETRIC_DEFAULT
+
+  ArchiveKey:
+    Type: AWS::KMS::Key
+    DependsOn: PrimaryKey
+    Properties:
+      Description: long-term archive key
+      EnableKeyRotation: true

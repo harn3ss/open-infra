@@ -9,9 +9,13 @@ provision the supported ones as a live, tracked stack. This is the `cfn` engine.
   It provisions nothing.
 - **`cfn deploy`** provisions a stack live: it applies the resources in dependency order,
   records the stack, and rolls back on failure — fail-closed, never a partial stack.
+- **`cfn changeset`** (read-only) diffs a template against the current stack — what would
+  be Added, Modified, Removed, or left Unchanged.
+- **`cfn update`** applies that change set, rolling back to the exact prior stack if any
+  step fails.
 
-`deploy` does not yet update, delete, or drift-check a stack; those are later phases,
-each gated behind the one before it.
+`cfn` does not yet delete or drift-check a stack; those are later phases, each gated
+behind the one before it.
 
 ## The cardinal rule
 
@@ -171,10 +175,33 @@ Today's create translators (live-verified on the cluster):
 | `AWS::KMS::Key` | `kind: EncryptionKey` | Description, `EnableKeyRotation`→rotation, `KeySpec`→key type; `KeyPolicy` is a caveat (access is via open-infra IAM). |
 | `AWS::Lambda::Function` (`PackageType: Image` only) | `kind: Function` | `Code.ImageUri`→image, `Environment`→env, `MemorySize`→memory, `Timeout`→timeout; a zip/Runtime Lambda has no image and is refused; `Role` is a caveat. |
 
+## Updating a stack
+
+`cfn changeset` shows what an update would do, without touching anything:
+
+```console
+$ cfn changeset -namespace my-app -stack-name tickets kms-stack-v2.yaml
+Change set for "tickets":
+  ~ Modify   PrimaryKey   EncryptionKey/primarykey
+  + Add      ArchiveKey   EncryptionKey/archivekey
+  - Remove   BackupKey    EncryptionKey/backupkey
+```
+
+The diff is between the new template and the specs recorded when the stack was last
+applied — the CloudFormation model (diff against the current stack), not against live
+cluster drift, which is a later phase. `cfn update` then applies it: Adds and Modifies in
+dependency order (each readiness-gated), then Removes in reverse dependency order.
+
+Update is fail-closed and rolls back to the **exact** prior stack. If any step fails,
+everything the update added is deleted and every resource the prior stack had is
+re-applied — restoring modified specs and re-creating removed ones — so a failed update
+leaves the stack exactly as it was, with no orphans and no half-applied change. The stack
+ends `UPDATE_COMPLETE` or `UPDATE_ROLLBACK_COMPLETE`.
+
 ## What this does not do yet
 
-- `deploy` creates. It does not yet **update** a stack, produce **change sets**, **delete**
-  a stack, or **drift-check** one against the live cluster. Those are the remaining phases.
+- `deploy`/`update` create and change a stack. `cfn` does not yet **delete** a stack or
+  **drift-check** one against the live cluster. Those are the remaining phases.
 - `PROVISIONABLE` at plan time means the template maps cleanly onto kinds — not that every
   property will translate at create time (see above), and not a guarantee of a running
   stack. Treat plan as a compatibility check.
