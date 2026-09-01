@@ -6,7 +6,7 @@ info:
   description: "The declarative resource API a GovStack building block provisions infrastructure through. Every path is a\
     \ standard Kubernetes resource endpoint under the openinfra.dev group; the schemas are GENERATED from platform/abstraction/*-xrd.yaml\
     \ (the CRD source of truth), so this spec can never drift from the running API. GENERATED \u2014 do not hand-edit."
-  x-openinfra-kinds: 35
+  x-openinfra-kinds: 36
 servers:
 - url: /apis/openinfra.dev/v1
   description: Kubernetes API server (openinfra.dev group)
@@ -39,6 +39,7 @@ tags:
 - name: Role
 - name: SecurityGroup
 - name: StateMachine
+- name: StaticSite
 - name: Stream
 - name: TrainingJob
 - name: User
@@ -2399,11 +2400,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/streams:
+  /namespaces/{namespace}/staticsites:
     get:
       tags:
-      - Stream
-      summary: List Stream resources
+      - StaticSite
+      summary: List StaticSite resources
       parameters:
       - &id085
         name: namespace
@@ -2422,11 +2423,11 @@ paths:
                   items:
                     type: array
                     items: &id086
-                      $ref: '#/components/schemas/Stream'
+                      $ref: '#/components/schemas/StaticSite'
     post:
       tags:
-      - Stream
-      summary: Create a Stream
+      - StaticSite
+      summary: Create a StaticSite
       parameters:
       - *id085
       requestBody:
@@ -2446,11 +2447,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/streams/{name}:
+  /namespaces/{namespace}/staticsites/{name}:
     get:
       tags:
-      - Stream
-      summary: Get a Stream
+      - StaticSite
+      summary: Get a StaticSite
       parameters:
       - *id085
       - &id087
@@ -2473,8 +2474,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Stream
-      summary: Delete a Stream
+      - StaticSite
+      summary: Delete a StaticSite
       parameters:
       - *id085
       - *id087
@@ -2483,11 +2484,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/trainingjobs:
+  /namespaces/{namespace}/streams:
     get:
       tags:
-      - TrainingJob
-      summary: List TrainingJob resources
+      - Stream
+      summary: List Stream resources
       parameters:
       - &id088
         name: namespace
@@ -2506,11 +2507,11 @@ paths:
                   items:
                     type: array
                     items: &id089
-                      $ref: '#/components/schemas/TrainingJob'
+                      $ref: '#/components/schemas/Stream'
     post:
       tags:
-      - TrainingJob
-      summary: Create a TrainingJob
+      - Stream
+      summary: Create a Stream
       parameters:
       - *id088
       requestBody:
@@ -2530,11 +2531,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/trainingjobs/{name}:
+  /namespaces/{namespace}/streams/{name}:
     get:
       tags:
-      - TrainingJob
-      summary: Get a TrainingJob
+      - Stream
+      summary: Get a Stream
       parameters:
       - *id088
       - &id090
@@ -2557,8 +2558,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - TrainingJob
-      summary: Delete a TrainingJob
+      - Stream
+      summary: Delete a Stream
       parameters:
       - *id088
       - *id090
@@ -2567,11 +2568,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/users:
+  /namespaces/{namespace}/trainingjobs:
     get:
       tags:
-      - User
-      summary: List User resources
+      - TrainingJob
+      summary: List TrainingJob resources
       parameters:
       - &id091
         name: namespace
@@ -2590,11 +2591,11 @@ paths:
                   items:
                     type: array
                     items: &id092
-                      $ref: '#/components/schemas/User'
+                      $ref: '#/components/schemas/TrainingJob'
     post:
       tags:
-      - User
-      summary: Create a User
+      - TrainingJob
+      summary: Create a TrainingJob
       parameters:
       - *id091
       requestBody:
@@ -2614,11 +2615,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/users/{name}:
+  /namespaces/{namespace}/trainingjobs/{name}:
     get:
       tags:
-      - User
-      summary: Get a User
+      - TrainingJob
+      summary: Get a TrainingJob
       parameters:
       - *id091
       - &id093
@@ -2641,8 +2642,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - User
-      summary: Delete a User
+      - TrainingJob
+      summary: Delete a TrainingJob
       parameters:
       - *id091
       - *id093
@@ -2651,11 +2652,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/userpools:
+  /namespaces/{namespace}/users:
     get:
       tags:
-      - UserPool
-      summary: List UserPool resources
+      - User
+      summary: List User resources
       parameters:
       - &id094
         name: namespace
@@ -2674,11 +2675,11 @@ paths:
                   items:
                     type: array
                     items: &id095
-                      $ref: '#/components/schemas/UserPool'
+                      $ref: '#/components/schemas/User'
     post:
       tags:
-      - UserPool
-      summary: Create a UserPool
+      - User
+      summary: Create a User
       parameters:
       - *id094
       requestBody:
@@ -2698,11 +2699,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/userpools/{name}:
+  /namespaces/{namespace}/users/{name}:
     get:
       tags:
-      - UserPool
-      summary: Get a UserPool
+      - User
+      summary: Get a User
       parameters:
       - *id094
       - &id096
@@ -2725,8 +2726,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - UserPool
-      summary: Delete a UserPool
+      - User
+      summary: Delete a User
       parameters:
       - *id094
       - *id096
@@ -2735,11 +2736,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/virtualmachines:
+  /namespaces/{namespace}/userpools:
     get:
       tags:
-      - VirtualMachine
-      summary: List VirtualMachine resources
+      - UserPool
+      summary: List UserPool resources
       parameters:
       - &id097
         name: namespace
@@ -2758,11 +2759,11 @@ paths:
                   items:
                     type: array
                     items: &id098
-                      $ref: '#/components/schemas/VirtualMachine'
+                      $ref: '#/components/schemas/UserPool'
     post:
       tags:
-      - VirtualMachine
-      summary: Create a VirtualMachine
+      - UserPool
+      summary: Create a UserPool
       parameters:
       - *id097
       requestBody:
@@ -2782,11 +2783,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/virtualmachines/{name}:
+  /namespaces/{namespace}/userpools/{name}:
     get:
       tags:
-      - VirtualMachine
-      summary: Get a VirtualMachine
+      - UserPool
+      summary: Get a UserPool
       parameters:
       - *id097
       - &id099
@@ -2809,8 +2810,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VirtualMachine
-      summary: Delete a VirtualMachine
+      - UserPool
+      summary: Delete a UserPool
       parameters:
       - *id097
       - *id099
@@ -2819,11 +2820,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/vmimages:
+  /namespaces/{namespace}/virtualmachines:
     get:
       tags:
-      - VmImage
-      summary: List VmImage resources
+      - VirtualMachine
+      summary: List VirtualMachine resources
       parameters:
       - &id100
         name: namespace
@@ -2842,11 +2843,11 @@ paths:
                   items:
                     type: array
                     items: &id101
-                      $ref: '#/components/schemas/VmImage'
+                      $ref: '#/components/schemas/VirtualMachine'
     post:
       tags:
-      - VmImage
-      summary: Create a VmImage
+      - VirtualMachine
+      summary: Create a VirtualMachine
       parameters:
       - *id100
       requestBody:
@@ -2866,11 +2867,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/vmimages/{name}:
+  /namespaces/{namespace}/virtualmachines/{name}:
     get:
       tags:
-      - VmImage
-      summary: Get a VmImage
+      - VirtualMachine
+      summary: Get a VirtualMachine
       parameters:
       - *id100
       - &id102
@@ -2893,8 +2894,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VmImage
-      summary: Delete a VmImage
+      - VirtualMachine
+      summary: Delete a VirtualMachine
       parameters:
       - *id100
       - *id102
@@ -2903,11 +2904,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/volumes:
+  /namespaces/{namespace}/vmimages:
     get:
       tags:
-      - Volume
-      summary: List Volume resources
+      - VmImage
+      summary: List VmImage resources
       parameters:
       - &id103
         name: namespace
@@ -2926,11 +2927,11 @@ paths:
                   items:
                     type: array
                     items: &id104
-                      $ref: '#/components/schemas/Volume'
+                      $ref: '#/components/schemas/VmImage'
     post:
       tags:
-      - Volume
-      summary: Create a Volume
+      - VmImage
+      summary: Create a VmImage
       parameters:
       - *id103
       requestBody:
@@ -2950,11 +2951,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/volumes/{name}:
+  /namespaces/{namespace}/vmimages/{name}:
     get:
       tags:
-      - Volume
-      summary: Get a Volume
+      - VmImage
+      summary: Get a VmImage
       parameters:
       - *id103
       - &id105
@@ -2977,11 +2978,95 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Volume
-      summary: Delete a Volume
+      - VmImage
+      summary: Delete a VmImage
       parameters:
       - *id103
       - *id105
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Not found
+  /namespaces/{namespace}/volumes:
+    get:
+      tags:
+      - Volume
+      summary: List Volume resources
+      parameters:
+      - &id106
+        name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: &id107
+                      $ref: '#/components/schemas/Volume'
+    post:
+      tags:
+      - Volume
+      summary: Create a Volume
+      parameters:
+      - *id106
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: *id107
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: *id107
+        '409':
+          description: Already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+  /namespaces/{namespace}/volumes/{name}:
+    get:
+      tags:
+      - Volume
+      summary: Get a Volume
+      parameters:
+      - *id106
+      - &id108
+        name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: *id107
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+    delete:
+      tags:
+      - Volume
+      summary: Delete a Volume
+      parameters:
+      - *id106
+      - *id108
       responses:
         '200':
           description: Deleted
@@ -5256,7 +5341,7 @@ components:
           - siteB
           - tables
           properties:
-            siteA: &id106
+            siteA: &id109
               type: object
               description: "One endpoint of the replication pair. Both sites are simultaneously source and target \u2014 changes\
                 \ captured here are applied to the peer and vice-versa. The two sites may run different engines (e.g. sqlserver\
@@ -5318,7 +5403,7 @@ components:
                   default: false
                   description: Connect to this site's database over TLS (default false). Applied for Postgres (sslmode=require)
                     and SQL Server (encrypt=true).
-            siteB: *id106
+            siteB: *id109
             tables:
               type: array
               items:
@@ -5525,6 +5610,64 @@ components:
           properties:
             controller:
               type: string
+    StaticSite:
+      type: object
+      description: 'open-infra kind: StaticSite.'
+      required:
+      - spec
+      properties:
+        apiVersion:
+          type: string
+          enum:
+          - openinfra.dev/v1
+        kind:
+          type: string
+          enum:
+          - StaticSite
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          type: object
+          required:
+          - domain
+          properties:
+            domain:
+              type: string
+              description: Hostname the site is served on, e.g. app.example.com.
+            bucket:
+              type: string
+              description: MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio
+                connection secret (endpoint + credentials) for uploads.
+              pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
+            tls:
+              type: boolean
+              default: true
+              description: Terminate TLS via cert-manager (openinfra-issuer). Set false for plain HTTP.
+            spa:
+              type: boolean
+              default: true
+              description: 'Single-page-app history fallback: serve index.html for unknown paths so client-side routing works.
+                Turn off for a plain multi-file site.'
+            indexDocument:
+              type: string
+              default: index.html
+              description: The index/entry document served at / and (when spa) for unmatched routes.
+            errorDocument:
+              type: string
+              description: Document served for 404s when spa is false (e.g. 404.html). Ignored when spa is true.
+            syncIntervalSeconds:
+              type: integer
+              default: 30
+              description: How often the server re-syncs the bucket to pick up new uploads.
+        status:
+          type: object
+          properties:
+            url:
+              type: string
+            bucket:
+              type: string
+            ready:
+              type: boolean
     Stream:
       type: object
       description: 'open-infra kind: Stream.'

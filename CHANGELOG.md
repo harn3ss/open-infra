@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Compute & hosting
+- **`kind: StaticSite`.** Static frontend hosting for a built SPA — the S3-static-website + CDN-origin
+  primitive. One claim provisions a MinIO bucket for the assets (with a `<name>-minio` upload secret),
+  an nginx server that continuously syncs the bucket and serves it with single-page-app
+  history-fallback, and a Traefik Ingress with cert-manager TLS. Upload your `dist/` to the bucket and
+  it goes live; the server re-syncs on an interval. Per-PR preview environments are documented as a CI
+  recipe (render one `StaticSite` per pull request, tear it down on close) rather than a controller.
+  See [`docs/static-sites.md`](docs/static-sites.md).
+
 ### Security
 - **In-cluster WAF for `kind: HttpApi` (opt-in, experimental).** `spec.waf: true` attaches a
   per-API Traefik Coraza / OWASP Core Rule Set middleware to the API's Ingress — an L7 web
