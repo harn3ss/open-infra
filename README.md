@@ -77,7 +77,7 @@ CNCF projects — not a reinvention of databases or storage.
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
 | Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |
 | IAM | users, groups, policies, roles (`kind: User`/`Group`/`Policy`/`Role`) | k8s RBAC + impersonation, with a permission boundary |
-| CloudFormation | the manifest | `infra.yaml` → Crossplane |
+| CloudFormation / CDK | a stack template | `infra.yaml` → Crossplane, **or** the `cfn` engine that ingests a template ([`docs/cloudformation.md`](docs/cloudformation.md)) |
 | Terraform / OpenTofu | infra as HCL | [`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest) provider |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | CloudTrail | audit trail | k8s API-server audit log → Loki, with a console **Audit** view (every action attributed to a person) |

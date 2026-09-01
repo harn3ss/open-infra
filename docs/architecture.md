@@ -51,7 +51,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
 | EC2 (full VMs) | virtual machines | **KubeVirt + CDI** | `kind: VirtualMachine`; Linux + Windows, VNC, hotplug disks |
 | ECR | registry | **GHCR** | Harbor (offline/self-host) planned |
-| CloudFormation/CDK | the manifest | **infra.yaml → Crossplane** | the heart of the product |
+| CloudFormation/CDK | a stack template | **infra.yaml → Crossplane**, or the **`cfn` engine** | write kinds directly (the heart of the product), or ingest a CloudFormation/CDK template with `cfn` (plan/deploy/update/destroy/drift) — to the extent of its committed mapping table, not full parity; see [cloudformation.md](cloudformation.md) |
 | AWS Terraform provider | infra as HCL | **`harn3ss/openinfra`** on the Terraform Registry | every kind as a typed resource + a data source, so open-infra can sit in a plan alongside DNS/TLS/cloud accounts — see [terraform.md](terraform.md) |
 | CloudTrail | audit trail | **API-server audit log** → **Loki** → console **Audit** view | every mutation + authorization recorded with `impersonatedUser`, so console, `kubectl`, Terraform and Argo are all attributed; promtail ships it (mutations only) and the console Audit page renders it, merged with the BFF’s own IAM logs. Policy in `platform/security/apiserver/` |
 | CloudWatch | metrics/logs/alerts | **kube-prometheus-stack** + **Loki** | Grafana = the console |
