@@ -1,0 +1,83 @@
+# open-infra's "User Pool": kind: UserPool — a managed, customer-facing identity
+# provider that ISSUES tokens (sign-up / sign-in / a hosted login UI / OIDC JWTs),
+# the counterpart to the platform's own IAM (kind: User/Group, which governs who may
+# operate the platform). One claim -> a Keycloak identity provider, an in-cluster
+# OIDC issuer, an optional hosted-login URL, and a connection secret
+# (ISSUER_URL / CLIENT_ID / CLIENT_SECRET / ADMIN_USER / ADMIN_PASSWORD).
+#
+# This is the open-source path to an AWS Cognito User Pool: a real OIDC provider
+# (Keycloak) with no per-user licensing. A realm is the pool; a client is an app
+# client. open-infra already CONSUMES the tokens a pool issues (the aws-shim OIDC
+# authenticator and open-appsync's @aws_oidc / @aws_cognito_user_pools enforcement),
+# so pointing OIDC_ISSUER at this pool's discovery URL closes the loop.
+#
+# EXPERIMENTAL: the M slice runs Keycloak in dev mode on an embedded database
+# persisted to a PVC — a real, functional issuer, not yet a hardened multi-replica
+# deployment (that is the documented Postgres-backed path). KEEP THIS SCHEMA STABLE
+# — it is part of the product's contract.
+#
+# UserPool is an identity resource: it is admin-gated (policy-boundary `excluded`),
+# not a data-plane permission a kind: Policy can grant.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xuserpools.openinfra.dev
+  annotations:
+    # Chaos topology tags (consumed by tools/chainforge): role "none" = not a chaos
+    # data-node, so no chaos/grammar.json entry is required.
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XUserPool
+    plural: xuserpools
+  claimNames:
+    kind: UserPool    # what users write
+    plural: userpools
+  defaultCompositionRef:
+    name: userpool
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                storageClass:
+                  type: string
+                  description: "StorageClass for the pool's persistent volume. Defaults to 'longhorn'. Set to your cluster's StorageClass on substrates that do not ship Longhorn (e.g. RKE2 with local-path)."
+                realm:
+                  type: string
+                  description: "The realm to create — the pool itself (Cognito user pool equivalent). Lowercase DNS-label form. Defaults to the resource name if omitted."
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                clientId:
+                  type: string
+                  description: "The OIDC client (app client) created in the realm. Its client secret is emitted in the connection secret. Defaults to 'openinfra'."
+                  pattern: '^[a-zA-Z0-9._-]+$'
+                hostname:
+                  type: string
+                  description: "External hostname for the hosted login/admin UI, exposed over an Ingress with TLS. If omitted, the pool is reachable in-cluster only (the OIDC issuer that consumers point OIDC_ISSUER at)."
+                registrationAllowed:
+                  type: boolean
+                  default: true
+                  description: "Allow self-service sign-up in the hosted login UI (a Cognito-style open user pool). Turn off for an invite-only / admin-provisioned pool."
+                size:
+                  type: string
+                  default: "2Gi"
+                  description: "Storage for the pool's database (persisted across restarts)."
+            status:
+              type: object
+              properties:
+                issuer: { type: string }
+                realm: { type: string }
+                ready: { type: boolean }
