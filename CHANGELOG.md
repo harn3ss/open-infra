@@ -27,10 +27,12 @@ the product's public contract.
 - **DynamoDB front door in the AWS shim.** Point a DynamoDB SDK client at the shim and it speaks
   the DynamoDB wire protocol (AWS JSON 1.0, `X-Amz-Target`) directly against a FerretDB-backed
   store: `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query`, `UpdateItem`,
-  and `Scan`, sharing the same expression evaluator as the AppSync data source. Every call is
-  authorized through the platform's own IAM (SigV4 → `SubjectAccessReview`), and the operations
-  outside the built slice — batch, transactional, TTL, and streams — return an honest `501`. Opt-in,
-  off by default. See [`docs/aws-shim.md`](docs/aws-shim.md).
+  `Scan`, and the batch item APIs `BatchGetItem` / `BatchWriteItem` (non-transactional and capped at
+  DynamoDB's 100/25 limits, like the real service), sharing the same expression evaluator as the
+  AppSync data source. Every call is authorized through the platform's own IAM (SigV4 →
+  `SubjectAccessReview`), and the operations outside the built slice — transactional writes,
+  projection expressions, TTL, and streams — return an honest `501` rather than a silent
+  approximation. Opt-in, off by default. See [`docs/aws-shim.md`](docs/aws-shim.md).
 
 ## v2.7.0 — 2026-08-31
 

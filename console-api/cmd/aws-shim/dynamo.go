@@ -5,9 +5,11 @@
 // SubjectAccessReview every other front door uses (one policy world), executes the supported
 // operations against the shared Dynamo-shaped store over FerretDB, and speaks DynamoDB's own
 // dialect. Supported today: CreateTable, DescribeTable, GetItem, PutItem, DeleteItem, Query
-// (key-condition + filter + sort + pagination), UpdateItem (update + condition expressions), and
-// full Scan. Everything else — Batch*, Transact*, Scan-with-filter, TTL, streams — returns an
-// honest 501 NotImplementedException, the shim's per-op graduation, never a silent fake.
+// (key-condition + filter + sort + pagination), UpdateItem (update + condition expressions),
+// full Scan, and the batch item APIs BatchGetItem / BatchWriteItem (capped at DynamoDB's 100/25
+// limits, non-transactional like the real service). Everything else — Transact*, ListTables,
+// DeleteTable, Scan-with-filter, projection expressions, TTL, streams — returns an honest 501
+// NotImplementedException, the shim's per-op graduation, never a silent fake.
 //
 // The store executor is the SHARED module github.com/harn3ss/open-infra/dynamodb — the same code
 // the open-appsync engine runs, so a resolver and a raw SDK call see identical semantics.
@@ -126,6 +128,10 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		h.updateItem(ctx, w, requestID, table, body)
 	case "Scan":
 		h.scan(ctx, w, requestID, table, body)
+	case "BatchGetItem":
+		h.batchGetItem(ctx, w, requestID, body)
+	case "BatchWriteItem":
+		h.batchWriteItem(ctx, w, requestID, body)
 	default:
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"DynamoDB "+op+" is recognized but not yet implemented by the open-infra shim.")
@@ -178,6 +184,9 @@ func (h *dynamoHandler) getItem(ctx context.Context, w http.ResponseWriter, requ
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "GetItem requires a Key.")
 		return
 	}
+	if h.refuseProjection(w, requestID, body) {
+		return
+	}
 	res, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "GetItem", "key": key})
 	if err != nil {
 		h.internal(w, requestID, err)
@@ -203,15 +212,11 @@ func (h *dynamoHandler) putItem(ctx context.Context, w http.ResponseWriter, requ
 			"Cannot do operations on a non-existent table")
 		return
 	}
-	key := map[string]any{}
-	for _, ka := range keyAttrs {
-		v, present := item[ka]
-		if !present {
-			writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
-				"One of the required keys was not given a value: "+ka)
-			return
-		}
-		key[ka] = v
+	key, missing := keyFromItem(item, keyAttrs)
+	if missing != "" {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"One of the required keys was not given a value: "+missing)
+		return
 	}
 	if _, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "PutItem", "key": key, "attributeValues": item}); err != nil {
 		h.internal(w, requestID, err)
@@ -237,6 +242,9 @@ func (h *dynamoHandler) query(ctx context.Context, w http.ResponseWriter, reques
 	kce, _ := body["KeyConditionExpression"].(string)
 	if kce == "" {
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "Query requires a KeyConditionExpression.")
+		return
+	}
+	if h.refuseProjection(w, requestID, body) {
 		return
 	}
 	names, values := body["ExpressionAttributeNames"], body["ExpressionAttributeValues"]
@@ -267,6 +275,9 @@ func (h *dynamoHandler) scan(ctx context.Context, w http.ResponseWriter, request
 	if fe, ok := body["FilterExpression"].(string); ok && fe != "" {
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"Scan with a FilterExpression is not yet supported by the open-infra shim.")
+		return
+	}
+	if h.refuseProjection(w, requestID, body) {
 		return
 	}
 	res, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "Scan"})
@@ -306,6 +317,126 @@ func (h *dynamoHandler) updateItem(ctx context.Context, w http.ResponseWriter, r
 		}
 	}
 	writeDynamoJSON(w, requestID, map[string]any{})
+}
+
+// batchGetItem fetches many items across one or more tables in a single call. Like the real
+// service it is NOT transactional and is capped at 100 keys; a missing key is simply absent from
+// the response (not an error). ProjectionExpression is refused loudly rather than silently ignored.
+func (h *dynamoHandler) batchGetItem(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	reqItems, ok := body["RequestItems"].(map[string]any)
+	if !ok || len(reqItems) == 0 {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "BatchGetItem requires a non-empty RequestItems.")
+		return
+	}
+	total := 0
+	for _, spec := range reqItems {
+		sm, _ := spec.(map[string]any)
+		if h.refuseProjection(w, requestID, sm) {
+			return
+		}
+		keys, _ := sm["Keys"].([]any)
+		total += len(keys)
+	}
+	if total > 100 {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"Too many items requested for the BatchGetItem call (the limit is 100).")
+		return
+	}
+	responses := map[string]any{}
+	for table, spec := range reqItems {
+		sm, _ := spec.(map[string]any)
+		keys, _ := sm["Keys"].([]any)
+		out := make([]any, 0, len(keys))
+		for _, k := range keys {
+			km, ok := k.(map[string]any)
+			if !ok {
+				continue
+			}
+			res, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "GetItem", "key": km})
+			if err != nil {
+				h.internal(w, requestID, err)
+				return
+			}
+			if item, ok := res.(map[string]any); ok && item != nil {
+				out = append(out, dynamodb.ToItem(item))
+			}
+		}
+		responses[table] = out
+	}
+	// The store applies every read synchronously, so nothing is ever left unprocessed.
+	writeDynamoJSON(w, requestID, map[string]any{"Responses": responses, "UnprocessedKeys": map[string]any{}})
+}
+
+// batchWriteItem applies many Put/Delete requests across one or more tables in a single call. Like
+// the real service it is NOT transactional, is capped at 25 requests, and — unlike PutItem — does
+// not honor condition expressions (DynamoDB forbids conditions on batch writes).
+func (h *dynamoHandler) batchWriteItem(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	reqItems, ok := body["RequestItems"].(map[string]any)
+	if !ok || len(reqItems) == 0 {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "BatchWriteItem requires a non-empty RequestItems.")
+		return
+	}
+	total := 0
+	for _, reqs := range reqItems {
+		rl, _ := reqs.([]any)
+		total += len(rl)
+	}
+	if total == 0 || total > 25 {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"BatchWriteItem requires between 1 and 25 write requests.")
+		return
+	}
+	for table, reqs := range reqItems {
+		keyAttrs, ok := h.tableKeyAttrs(ctx, table)
+		if !ok {
+			writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
+				"Cannot do operations on a non-existent table: "+table)
+			return
+		}
+		rl, _ := reqs.([]any)
+		for _, r := range rl {
+			rm, ok := r.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch {
+			case rm["PutRequest"] != nil:
+				pr, _ := rm["PutRequest"].(map[string]any)
+				item, ok := pr["Item"].(map[string]any)
+				if !ok {
+					writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "a PutRequest requires an Item.")
+					return
+				}
+				key, missing := keyFromItem(item, keyAttrs)
+				if missing != "" {
+					writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+						"One of the required keys was not given a value: "+missing)
+					return
+				}
+				if _, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "PutItem", "key": key, "attributeValues": item}); err != nil {
+					h.internal(w, requestID, err)
+					return
+				}
+			case rm["DeleteRequest"] != nil:
+				dr, _ := rm["DeleteRequest"].(map[string]any)
+				key, ok := dr["Key"].(map[string]any)
+				if !ok {
+					writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "a DeleteRequest requires a Key.")
+					return
+				}
+				if _, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "DeleteItem", "key": key}); err != nil {
+					h.internal(w, requestID, err)
+					return
+				}
+			default:
+				writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+					"each write request must carry exactly one PutRequest or DeleteRequest.")
+				return
+			}
+		}
+	}
+	// Every write is applied synchronously, so nothing is ever left unprocessed.
+	writeDynamoJSON(w, requestID, map[string]any{"UnprocessedItems": map[string]any{}})
 }
 
 // writeItemsResult re-dresses a store Query/Scan result ({items, scannedCount, count, nextToken})
@@ -386,6 +517,32 @@ func (h *dynamoHandler) mapStoreError(w http.ResponseWriter, requestID string, e
 
 func (h *dynamoHandler) store(table string) *dynamodb.FerretStore {
 	return dynamodb.NewFerretStore(h.db.Collection(table))
+}
+
+// keyFromItem extracts a table's primary key from a full item per its key schema. It returns the
+// name of the first missing key attribute (empty when the key is complete) so the caller can raise
+// the DynamoDB-shaped validation error.
+func keyFromItem(item map[string]any, keyAttrs []string) (key map[string]any, missing string) {
+	key = map[string]any{}
+	for _, ka := range keyAttrs {
+		v, present := item[ka]
+		if !present {
+			return nil, ka
+		}
+		key[ka] = v
+	}
+	return key, ""
+}
+
+// refuseProjection rejects a ProjectionExpression loudly (501) instead of silently returning the
+// full item — a projection that is ignored is a silent fake, which this front door never ships.
+func (h *dynamoHandler) refuseProjection(w http.ResponseWriter, requestID string, body map[string]any) bool {
+	if pe, _ := body["ProjectionExpression"].(string); pe != "" {
+		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
+			"ProjectionExpression is not yet supported by the open-infra shim; it would be silently ignored, so it is refused.")
+		return true
+	}
+	return false
 }
 
 func (h *dynamoHandler) registry() *mongo.Collection { return h.db.Collection(tableRegistry) }
