@@ -40,6 +40,8 @@ func main() {
 		os.Exit(runChangeSet(os.Args[2:]))
 	case "update":
 		os.Exit(runUpdate(os.Args[2:]))
+	case "destroy":
+		os.Exit(runDestroy(os.Args[2:]))
 	case "-h", "--help", "help":
 		usage()
 		os.Exit(0)
@@ -58,6 +60,7 @@ Usage:
   cfn deploy     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
   cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] <template>
   cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
+  cfn destroy    -namespace NS -stack-name NAME [-no-wait] [-timeout SECS]
 
 plan      (read-only) reports whether open-infra can provision a template, with caveats, or
           not — and exactly why. Provisions nothing.
@@ -67,6 +70,8 @@ deploy    provisions a stack live, fail-closed: it refuses unless the whole temp
 changeset (read-only) diffs a template against the current stack — what would be Added,
           Modified, Removed, or left Unchanged.
 update    applies that change set, rolling back to the exact prior stack if any step fails.
+destroy   tears a stack down in reverse dependency order, honoring DeletionPolicy (Retain
+          keeps a resource; Snapshot is refused), then removes the stack record.
 `)
 }
 
@@ -350,6 +355,75 @@ func runUpdate(args []string) int {
 		return 1
 	}
 	fmt.Printf("\nStack %q is %s (%d resources).\n", rec.Name, rec.Status, len(rec.Resources))
+	return 0
+}
+
+func runDestroy(args []string) int {
+	opts := DeployOptions{Params: map[string]string{}, Wait: true, Timeout: 180 * time.Second}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, bool) {
+			i++
+			if i >= len(args) {
+				return "", false
+			}
+			return args[i], true
+		}
+		switch {
+		case a == "-namespace" || a == "-n":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -namespace needs a value")
+				return 2
+			}
+			opts.Namespace = v
+		case a == "-stack-name":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -stack-name needs a value")
+				return 2
+			}
+			opts.StackName = v
+		case a == "-no-wait":
+			opts.Wait = false
+		case a == "-timeout":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -timeout needs seconds")
+				return 2
+			}
+			secs, err := strconv.Atoi(v)
+			if err != nil || secs <= 0 {
+				fmt.Fprintf(os.Stderr, "cfn: bad -timeout %q\n", v)
+				return 2
+			}
+			opts.Timeout = time.Duration(secs) * time.Second
+		default:
+			fmt.Fprintf(os.Stderr, "cfn: unexpected argument %q (destroy takes no template)\n", a)
+			return 2
+		}
+	}
+	if opts.Namespace == "" || opts.StackName == "" {
+		fmt.Fprintln(os.Stderr, "cfn: destroy requires -namespace and -stack-name")
+		return 2
+	}
+	fmt.Printf("Destroying stack %q in namespace %q…\n", opts.StackName, opts.Namespace)
+	rec, err := Destroy(context.Background(), opts, kubectlApplier{namespace: opts.Namespace})
+	if err != nil {
+		if rec != nil {
+			printStack(rec)
+		}
+		fmt.Fprintf(os.Stderr, "\ncfn: %v\n", err)
+		return 1
+	}
+	if len(rec.Resources) > 0 {
+		fmt.Printf("\nStack %q is DELETE_COMPLETE. Retained (now unmanaged):\n", rec.Name)
+		for _, r := range rec.Resources {
+			fmt.Printf("  %-20s %s/%s\n", r.LogicalID, r.Kind, r.Name)
+		}
+	} else {
+		fmt.Printf("\nStack %q is DELETE_COMPLETE.\n", rec.Name)
+	}
 	return 0
 }
 

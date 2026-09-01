@@ -38,16 +38,19 @@ type Applier interface {
 	Apply(ctx context.Context, manifestYAML []byte) error
 	Delete(ctx context.Context, apiVersion, kind, name string) error
 	WaitReady(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error
+	// WaitGone blocks until the resource no longer exists (for teardown).
+	WaitGone(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error
 	// GetStack reads a persisted stack record, if one exists (found=false when absent).
 	GetStack(ctx context.Context, stackName string) (rec *StackRecord, found bool, err error)
 }
 
 type StackResource struct {
-	LogicalID  string         `json:"logicalId"`
-	APIVersion string         `json:"apiVersion"`
-	Kind       string         `json:"kind"`
-	Name       string         `json:"name"`
-	Spec       map[string]any `json:"spec,omitempty"` // the applied spec — enables diff (update) and faithful rollback
+	LogicalID      string         `json:"logicalId"`
+	APIVersion     string         `json:"apiVersion"`
+	Kind           string         `json:"kind"`
+	Name           string         `json:"name"`
+	DeletionPolicy string         `json:"deletionPolicy,omitempty"` // Delete (default) | Retain | Snapshot
+	Spec           map[string]any `json:"spec,omitempty"`           // the applied spec — enables diff (update) and faithful rollback
 }
 
 // builtResource is one translated, ready-to-apply resource plus its identity/spec record.
@@ -118,7 +121,8 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 			return nil, err
 		}
 		byID[id] = builtResource{
-			res: StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec},
+			res: StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name,
+				DeletionPolicy: res.DeletionPolicy, Spec: m.Spec},
 			yml: yml, cav: m.Caveats,
 		}
 	}
