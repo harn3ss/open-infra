@@ -14,11 +14,12 @@ import (
 // specific apply or readiness wait — so ordering, state, and rollback are tested with no
 // cluster.
 type fakeApplier struct {
-	applied  []string     // "Kind/name" in apply order (ConfigMap included)
-	deleted  []string     // "Kind/name" in delete order
-	failOn   string       // fail Apply for this "Kind/name"
-	notReady string       // fail WaitReady for this name
-	stored   *StackRecord // the persisted stack record (a mini cluster for update tests)
+	applied    []string     // "Kind/name" in apply order (ConfigMap included)
+	deleted    []string     // "Kind/name" in delete order
+	failOn     string       // fail Apply for this "Kind/name"
+	failDelete string       // fail Delete for this "Kind/name"
+	notReady   string       // fail WaitReady for this name
+	stored     *StackRecord // the persisted stack record (a mini cluster for update tests)
 }
 
 func idOf(y []byte) string {
@@ -51,7 +52,14 @@ func (f *fakeApplier) Apply(_ context.Context, y []byte) error {
 }
 
 func (f *fakeApplier) Delete(_ context.Context, apiVersion, kind, name string) error {
+	if kind+"/"+name == f.failDelete {
+		return errFake("delete refused for " + kind + "/" + name)
+	}
 	f.deleted = append(f.deleted, kind+"/"+name)
+	// Deleting the stack record ConfigMap clears the stored record.
+	if kind == "ConfigMap" && strings.HasPrefix(name, "cfn-stack-") {
+		f.stored = nil
+	}
 	return nil
 }
 
@@ -59,6 +67,10 @@ func (f *fakeApplier) WaitReady(_ context.Context, _, _, name string, _ time.Dur
 	if name == f.notReady {
 		return errFake(name + " never became Ready")
 	}
+	return nil
+}
+
+func (f *fakeApplier) WaitGone(_ context.Context, _, _, _ string, _ time.Duration) error {
 	return nil
 }
 
