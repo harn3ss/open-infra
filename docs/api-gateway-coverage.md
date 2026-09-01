@@ -29,6 +29,7 @@ APISIX / Envoy Gateway), no dedicated gateway pod — it is pure orchestration o
 | Authorizers — JWT / Lambda / IAM / Cognito | **Gap (absent)** | no auth of any kind on the rendered Ingress |
 | Usage plans / API keys | **Gap (absent)** | — |
 | Rate limiting / throttling | **Gap (absent)** | no Traefik rate-limit middleware emitted |
+| **WAF (L7)** | **Partial (opt-in, experimental)** | `spec.waf: true` attaches a Traefik Coraza / OWASP CRS middleware to the Ingress. Off by default; requires the `coraza` Traefik plugin enabled on the cluster (see below) |
 | Request/response mapping (VTL) | **Gap (absent)** | L7 path proxy only; no transformation layer |
 | CORS | **Gap (absent)** | — |
 | Custom domain | **Partial** | one Ingress host + TLS; no APIGW base-path mapping / multi-domain |
@@ -46,3 +47,40 @@ this real backend."
 The specific REST-v1 surface that is missing — HTTP methods, stages, deployments, all authorizer
 types, usage plans/API keys/throttling, VTL mapping templates, and CORS — is filed as a scoped
 follow-on so it is tracked rather than silently absent.
+
+## In-cluster WAF (`spec.waf`)
+
+`kind: HttpApi` can attach an in-cluster L7 web application firewall to its Ingress with
+`spec.waf: true`. It renders a per-API Traefik [Coraza](https://coraza.io) middleware running the
+OWASP Core Rule Set (ModSecurity-compatible), referenced from the Ingress via
+`traefik.ingress.kubernetes.io/router.middlewares`. It is **off by default** and **experimental**.
+
+**Positioning — defense-in-depth, not a CDN replacement.** The strongest edge WAF/DDoS story remains
+a CDN in front (open-infra's documented path is BYO-Cloudflare, which provides edge TLS, WAF, and
+rate limiting). In-cluster Coraza is for apps that are *not* fronted by such a CDN, or as a second
+layer behind one — it inspects L7 requests at the Ingress, which a network SecurityGroup (an L3/L4
+Cilium policy) cannot do.
+
+**Prerequisite — enable the Coraza Traefik plugin.** The middleware only functions once the `coraza`
+plugin is loaded into Traefik's static configuration. On k3s, apply a `HelmChartConfig` (confirm the
+plugin module path and a current version against the plugin's releases before applying — a bad module
+reference will fail Traefik startup):
+
+```yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    experimental:
+      plugins:
+        coraza:
+          moduleName: github.com/coreruleset/coraza-http-wasm-traefik
+          version: <a released version>
+```
+
+This is an operator step (it restarts Traefik) and is intentionally **not** shipped as a live
+manifest — a wrong module reference would take down cluster ingress. Until the plugin is enabled,
+setting `spec.waf: true` renders a middleware Traefik cannot resolve, so keep it off until then.
