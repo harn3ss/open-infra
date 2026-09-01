@@ -1,0 +1,78 @@
+# The shared in-cluster SMTP relay for kind: EmailSender — a singleton (like MinIO
+# or NATS). Apps submit mail to smtp-relay.mail.svc:587; the relay forwards it
+# outbound. Part of the OPT-IN `mail` component.
+#
+# EXPERIMENTAL, and honest about the hard part: reliable internet delivery from a
+# cluster is NOT automatic. Direct MX delivery from a cluster IP is usually blocked
+# (port 25) or dropped (no rDNS/SPF/DKIM). The realistic production path is a
+# smarthost — set RELAYHOST (and its credentials) in the smtp-relay-config Secret to
+# forward through SES/SendGrid/Mailgun/your MTA. Empty by default (best-effort
+# direct delivery). SPF/DKIM/DMARC on the sending domain are an operator concern.
+#
+# The relay is ClusterIP-only (never internet-exposed) and relays for in-cluster
+# senders (mynetworks), so no per-sender SMTP AUTH is minted in this slice.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mail
+  labels:
+    openinfra.dev/component: mail
+---
+# Operator-supplied relay configuration (smarthost + credentials). Ships empty;
+# set RELAYHOST=smtp.example.com:587, RELAYHOST_USERNAME, RELAYHOST_PASSWORD to
+# forward through an upstream provider. Consumed via envFrom below.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: smtp-relay-config
+  namespace: mail
+stringData:
+  RELAYHOST: ""
+  RELAYHOST_USERNAME: ""
+  RELAYHOST_PASSWORD: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smtp-relay
+  namespace: mail
+  labels: { app: smtp-relay }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: smtp-relay } }
+  template:
+    metadata: { labels: { app: smtp-relay } }
+    spec:
+      containers:
+        - name: postfix
+          # Postfix relay image, env-configured. Pin/confirm against the image's
+          # releases before relying on it for delivery.
+          image: boky/postfix:v4.3.1
+          env:
+            - { name: ALLOWED_SENDER_DOMAINS, value: "*" }
+            # Relay for in-cluster senders (broad private ranges; the Service is
+            # ClusterIP-only so this is not internet-open).
+            - { name: POSTFIX_mynetworks, value: "127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16" }
+            - { name: POSTFIX_myhostname, value: "smtp-relay.mail.svc.cluster.local" }
+          envFrom:
+            - secretRef: { name: smtp-relay-config }
+          ports:
+            - { name: submission, containerPort: 587 }
+            - { name: smtp, containerPort: 25 }
+          readinessProbe:
+            tcpSocket: { port: 587 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smtp-relay
+  namespace: mail
+  labels: { app: smtp-relay }
+spec:
+  type: ClusterIP
+  selector: { app: smtp-relay }
+  ports:
+    - { name: submission, port: 587, targetPort: 587 }
+    - { name: smtp, port: 25, targetPort: 25 }
