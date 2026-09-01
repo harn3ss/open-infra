@@ -14,12 +14,13 @@ import (
 // specific apply or readiness wait — so ordering, state, and rollback are tested with no
 // cluster.
 type fakeApplier struct {
-	applied    []string     // "Kind/name" in apply order (ConfigMap included)
-	deleted    []string     // "Kind/name" in delete order
-	failOn     string       // fail Apply for this "Kind/name"
-	failDelete string       // fail Delete for this "Kind/name"
-	notReady   string       // fail WaitReady for this name
-	stored     *StackRecord // the persisted stack record (a mini cluster for update tests)
+	applied    []string                  // "Kind/name" in apply order (ConfigMap included)
+	deleted    []string                  // "Kind/name" in delete order
+	failOn     string                    // fail Apply for this "Kind/name"
+	failDelete string                    // fail Delete for this "Kind/name"
+	notReady   string                    // fail WaitReady for this name
+	stored     *StackRecord              // the persisted stack record (a mini cluster for update tests)
+	liveSpecs  map[string]map[string]any // "Kind/name" -> live .spec (a mini cluster for drift tests)
 }
 
 func idOf(y []byte) string {
@@ -46,6 +47,16 @@ func (f *fakeApplier) Apply(_ context.Context, y []byte) error {
 		if json.Unmarshal([]byte(blob), &rec) == nil {
 			f.stored = &rec
 		}
+	} else {
+		// Record the applied spec as the "live" object, for drift tests.
+		var m map[string]any
+		_ = yaml.Unmarshal(y, &m)
+		if spec, ok := m["spec"].(map[string]any); ok {
+			if f.liveSpecs == nil {
+				f.liveSpecs = map[string]map[string]any{}
+			}
+			f.liveSpecs[id] = spec
+		}
 	}
 	f.applied = append(f.applied, id)
 	return nil
@@ -60,6 +71,7 @@ func (f *fakeApplier) Delete(_ context.Context, apiVersion, kind, name string) e
 	if kind == "ConfigMap" && strings.HasPrefix(name, "cfn-stack-") {
 		f.stored = nil
 	}
+	delete(f.liveSpecs, kind+"/"+name)
 	return nil
 }
 
@@ -80,6 +92,11 @@ func (f *fakeApplier) GetStack(_ context.Context, _ string) (*StackRecord, bool,
 	}
 	cp := *f.stored
 	return &cp, true, nil
+}
+
+func (f *fakeApplier) GetSpec(_ context.Context, _, kind, name string) (map[string]any, bool, error) {
+	spec, ok := f.liveSpecs[kind+"/"+name]
+	return spec, ok, nil
 }
 
 type errFake string

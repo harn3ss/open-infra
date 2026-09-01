@@ -42,6 +42,8 @@ func main() {
 		os.Exit(runUpdate(os.Args[2:]))
 	case "destroy":
 		os.Exit(runDestroy(os.Args[2:]))
+	case "drift":
+		os.Exit(runDrift(os.Args[2:]))
 	case "-h", "--help", "help":
 		usage()
 		os.Exit(0)
@@ -61,6 +63,7 @@ Usage:
   cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] <template>
   cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
   cfn destroy    -namespace NS -stack-name NAME [-no-wait] [-timeout SECS]
+  cfn drift      -namespace NS -stack-name NAME
 
 plan      (read-only) reports whether open-infra can provision a template, with caveats, or
           not — and exactly why. Provisions nothing.
@@ -72,6 +75,8 @@ changeset (read-only) diffs a template against the current stack — what would 
 update    applies that change set, rolling back to the exact prior stack if any step fails.
 destroy   tears a stack down in reverse dependency order, honoring DeletionPolicy (Retain
           keeps a resource; Snapshot is refused), then removes the stack record.
+drift     (read-only) compares the recorded stack against the live cluster and reports any
+          resource that was changed or deleted out of band. Exit 0 in sync, 1 if drifted.
 `)
 }
 
@@ -425,6 +430,75 @@ func runDestroy(args []string) int {
 		fmt.Printf("\nStack %q is DELETE_COMPLETE.\n", rec.Name)
 	}
 	return 0
+}
+
+func runDrift(args []string) int {
+	var namespace, stackName string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, bool) {
+			i++
+			if i >= len(args) {
+				return "", false
+			}
+			return args[i], true
+		}
+		switch {
+		case a == "-namespace" || a == "-n":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -namespace needs a value")
+				return 2
+			}
+			namespace = v
+		case a == "-stack-name":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -stack-name needs a value")
+				return 2
+			}
+			stackName = v
+		default:
+			fmt.Fprintf(os.Stderr, "cfn: unexpected argument %q (drift takes no template)\n", a)
+			return 2
+		}
+	}
+	if namespace == "" || stackName == "" {
+		fmt.Fprintln(os.Stderr, "cfn: drift requires -namespace and -stack-name")
+		return 2
+	}
+	opts := DeployOptions{Namespace: namespace, StackName: stackName}
+	report, err := DetectDrift(context.Background(), opts, kubectlApplier{namespace: namespace})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
+		return 2
+	}
+	printDrift(report)
+	if report.InSync {
+		return 0
+	}
+	return 1
+}
+
+func printDrift(r *DriftReport) {
+	if r.InSync {
+		fmt.Printf("Stack %q is IN SYNC with the cluster.\n", r.StackName)
+	} else {
+		fmt.Printf("Stack %q has DRIFTED from the cluster:\n", r.StackName)
+	}
+	for _, rd := range r.Resources {
+		switch rd.Status {
+		case InSync:
+			fmt.Printf("  = %-20s %s/%s in sync\n", rd.LogicalID, rd.Kind, rd.Name)
+		case Modified:
+			fmt.Printf("  ~ %-20s %s/%s changed on the cluster: %s\n", rd.LogicalID, rd.Kind, rd.Name, strings.Join(rd.DriftedFields, ", "))
+		case Deleted:
+			fmt.Printf("  - %-20s %s/%s deleted out of band\n", rd.LogicalID, rd.Kind, rd.Name)
+		}
+	}
+	if !r.InSync {
+		fmt.Println("\nDrift is reported, not reconciled — resolve it by updating the stack or the cluster deliberately.")
+	}
 }
 
 func printChangeSet(cs *ChangeSet) {
