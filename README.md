@@ -191,7 +191,8 @@ access key, enforces the **same** RBAC + permission boundary as the console (one
 a parallel auth), calls the real backend, and re-dresses the response in AWS's exact byte-shape.
 It fronts **S3** (over MinIO), **STS** `GetCallerIdentity`, **Lambda** `Invoke` (over Knative
 `Function`s), **AppSync** (over the open-appsync engine), and **DynamoDB** (create/read/update/
-delete/query/scan over FerretDB — batch, transactional, and TTL operations still return `501`).
+delete/query/scan and the batch item APIs over FerretDB — transactional and TTL operations still
+return `501`).
 **Every other service — Secrets Manager, Kinesis, and the rest — returns an honest `501`**, never
 a silent fake: it is a per-service front door that graduates one service (and one operation) at a
 time, not a blanket "repoint any call."
