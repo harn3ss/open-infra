@@ -85,7 +85,82 @@ func TestDynamo_FerretRoundTrip(t *testing.T) {
 	}
 
 	// An un-built operation is an honest 501, never a fake.
-	if w := call("Query", `{"TableName":"notes","KeyConditionExpression":"id = :id"}`); w.Code != http.StatusNotImplemented {
-		t.Errorf("Query should still be an honest 501, got %d", w.Code)
+	if w := call("BatchWriteItem", `{"RequestItems":{"notes":[]}}`); w.Code != http.StatusNotImplemented {
+		t.Errorf("BatchWriteItem should still be an honest 501, got %d", w.Code)
+	}
+}
+
+func TestDynamo_QueryUpdateScan(t *testing.T) {
+	uri := os.Getenv("FERRET_TEST_URI")
+	if uri == "" {
+		t.Skip("set FERRET_TEST_URI")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Disconnect(ctx)
+	db := client.Database("shim_dyn_qus_" + time.Now().Format("150405"))
+	defer db.Drop(ctx)
+	h := newDynamoHandler(csWithSAR(true), "default", db, discardLogger())
+	call := func(op, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.serve(w, dynamoReq("DynamoDB_20120810."+op, body), iam.Claims{Sub: "t"}, "r")
+		return w
+	}
+	must := func(op, body string) map[string]any {
+		w := call(op, body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", op, w.Code, w.Body.String())
+		}
+		var m map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &m)
+		return m
+	}
+
+	// A chat table: partition=room, sort=ts.
+	must("CreateTable", `{"TableName":"msgs","KeySchema":[{"AttributeName":"room","KeyType":"HASH"},{"AttributeName":"ts","KeyType":"RANGE"}]}`)
+	for _, m := range []string{
+		`{"room":{"S":"general"},"ts":{"N":"1"},"body":{"S":"a"}}`,
+		`{"room":{"S":"general"},"ts":{"N":"2"},"body":{"S":"b"}}`,
+		`{"room":{"S":"general"},"ts":{"N":"3"},"body":{"S":"c"}}`,
+		`{"room":{"S":"random"},"ts":{"N":"1"},"body":{"S":"z"}}`,
+	} {
+		must("PutItem", `{"TableName":"msgs","Item":`+m+`}`)
+	}
+
+	// Query by partition key.
+	q := must("Query", `{"TableName":"msgs","KeyConditionExpression":"room = :r","ExpressionAttributeValues":{":r":{"S":"general"}}}`)
+	if items, _ := q["Items"].([]any); len(items) != 3 {
+		t.Fatalf("Query general = %v items, want 3", q["Count"])
+	}
+	// Query with a sort-key BETWEEN.
+	q2 := must("Query", `{"TableName":"msgs","KeyConditionExpression":"room = :r AND ts BETWEEN :lo AND :hi","ExpressionAttributeValues":{":r":{"S":"general"},":lo":{"N":"1"},":hi":{"N":"2"}}}`)
+	if items, _ := q2["Items"].([]any); len(items) != 2 {
+		t.Fatalf("Query BETWEEN [1,2] = %v items, want 2", q2["Count"])
+	}
+
+	// UpdateItem: SET body + ADD version.
+	must("UpdateItem", `{"TableName":"msgs","Key":{"room":{"S":"general"},"ts":{"N":"2"}},"UpdateExpression":"SET body = :b ADD version :one","ExpressionAttributeValues":{":b":{"S":"edited"},":one":{"N":"1"}}}`)
+	got := must("GetItem", `{"TableName":"msgs","Key":{"room":{"S":"general"},"ts":{"N":"2"}}}`)
+	item, _ := got["Item"].(map[string]any)
+	if b, _ := item["body"].(map[string]any); b["S"] != "edited" {
+		t.Errorf("UpdateItem SET body = %v, want edited", item["body"])
+	}
+	if v, _ := item["version"].(map[string]any); v["N"] != "1" {
+		t.Errorf("UpdateItem ADD version = %v, want 1", item["version"])
+	}
+
+	// A failed condition is a real DynamoDB semantic: 400 ConditionalCheckFailed.
+	if w := call("UpdateItem", `{"TableName":"msgs","Key":{"room":{"S":"nope"},"ts":{"N":"9"}},"UpdateExpression":"SET body = :b","ConditionExpression":"attribute_exists(room)","ExpressionAttributeValues":{":b":{"S":"x"}}}`); w.Code != http.StatusBadRequest {
+		t.Errorf("a failed condition should be 400 ConditionalCheckFailed, got %d %s", w.Code, w.Body.String())
+	}
+
+	// Scan returns everything.
+	s := must("Scan", `{"TableName":"msgs"}`)
+	if items, _ := s["Items"].([]any); len(items) != 4 {
+		t.Fatalf("Scan = %v items, want 4", s["Count"])
 	}
 }
