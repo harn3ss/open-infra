@@ -85,8 +85,9 @@ func TestRouter_UnsupportedService(t *testing.T) {
 	const id, secret = "OIAKROUTER0000000000", "router-secret"
 	rt := newTestRouter(map[string]awsService{"s3": &recordingService{}})
 	w := httptest.NewRecorder()
-	// Signed for dynamodb, which is not fronted → 501 NotImplemented, and no handler reached.
-	rt.ServeHTTP(w, signedFor(t, "dynamodb", id, secret, "POST", "http://shim/"))
+	// Signed for kinesis, which is not fronted → 501 NotImplemented, and no handler reached.
+	// (dynamodb is now a registered handler — see dynamo_test.go — so it no longer takes this path.)
+	rt.ServeHTTP(w, signedFor(t, "kinesis", id, secret, "POST", "http://shim/"))
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("unsupported service: status=%d want 501", w.Code)
 	}
