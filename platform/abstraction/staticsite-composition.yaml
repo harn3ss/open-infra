@@ -1,0 +1,248 @@
+# The compiler for kind: StaticSite -> static frontend hosting. It renders a
+# bucket-setup Job (creates the MinIO bucket + a <name>-minio connection secret
+# for uploads), an nginx Deployment that syncs the bucket and serves it with SPA
+# history-fallback, a ClusterIP Service, and a Traefik Ingress with cert-manager
+# TLS. Upload a built dist/ to the bucket; the server picks it up on its next sync.
+#
+# Reuses the Application composition's bucket-setup Job pattern (aws-cli + kubectl
+# under the pre-defined openinfra-bucket-setup SA, so the provider needs no
+# RBAC-creation power) and the HttpApi Ingress/TLS block.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: staticsite
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XStaticSite
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $bucket := $spec.bucket | default (printf "%s-site" $name) }}
+            {{- $index := $spec.indexDocument | default "index.html" }}
+            {{- $error := $spec.errorDocument | default "" }}
+            {{- $interval := $spec.syncIntervalSeconds | default 30 }}
+            {{- $tls := true }}{{- if hasKey $spec "tls" }}{{- $tls = $spec.tls }}{{- end }}
+            {{- $spa := true }}{{- if hasKey $spec "spa" }}{{- $spa = $spec.spa }}{{- end }}
+            ---
+            # Bucket + connection secret: one Job (aws-cli + kubectl) creates the
+            # bucket and writes <name>-minio into the app namespace, in the minio ns
+            # under the openinfra-bucket-setup SA (root creds never leave minio).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-site-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://{{ $bucket }}" 2>/dev/null || true; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ $bucket }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+            ---
+            # nginx server config: SPA history-fallback (try_files -> index) or a
+            # plain multi-file site with an optional error document.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: nginx-config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-site-nginx
+                    namespace: {{ $ns }}
+                  data:
+                    default.conf: |
+                      server {
+                        listen 80;
+                        server_name _;
+                        root /usr/share/nginx/html;
+                        index {{ $index }};
+                        location / {
+                          {{- if $spa }}
+                          try_files $uri $uri/ /{{ $index }};
+                          {{- else }}
+                          try_files $uri $uri/ =404;
+                          {{- end }}
+                        }
+                        {{- if and (not $spa) $error }}
+                        error_page 404 /{{ $error }};
+                        {{- end }}
+                      }
+            ---
+            # The server: nginx serving a shared volume, kept in sync with the bucket
+            # by a sidecar (aws s3 sync loop) + an initContainer for the first fill.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: server
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $name }}-site
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-site, openinfra.dev/staticsite: "true" }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-site } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-site } }
+                      spec:
+                        initContainers:
+                          - name: sync-init
+                            image: alpine/k8s:1.30.0
+                            command: ["/bin/sh", "-c"]
+                            args: ['aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete || true']
+                            env:
+                              - name: MINIO_ENDPOINT
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } }
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } }
+                              - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+                            volumeMounts:
+                              - { name: web, mountPath: /web }
+                        containers:
+                          - name: nginx
+                            image: nginx:1.27-alpine
+                            ports:
+                              - { name: http, containerPort: 80 }
+                            readinessProbe:
+                              httpGet: { path: /, port: 80 }
+                              initialDelaySeconds: 5
+                              periodSeconds: 10
+                            volumeMounts:
+                              - { name: web, mountPath: /usr/share/nginx/html }
+                              - { name: nginx-config, mountPath: /etc/nginx/conf.d }
+                          - name: sync
+                            image: alpine/k8s:1.30.0
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - 'while true; do aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete 2>/dev/null || true; sleep {{ $interval }}; done'
+                            env:
+                              - name: MINIO_ENDPOINT
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } }
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } }
+                              - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+                            volumeMounts:
+                              - { name: web, mountPath: /web }
+                        volumes:
+                          - name: web
+                            emptyDir: {}
+                          - name: nginx-config
+                            configMap: { name: {{ $name }}-site-nginx }
+            ---
+            # Service: the site, in-cluster on port 80.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}-site
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/staticsite: "true" }
+                  spec:
+                    type: ClusterIP
+                    selector: { app: {{ $name }}-site }
+                    ports:
+                      - { name: http, port: 80, targetPort: 80 }
+            ---
+            # Ingress: the public front door, TLS via cert-manager (mirrors HttpApi).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ingress
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: staticsite-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/staticsite: {{ $name }}
+                    annotations:
+                      {{- if $tls }}
+                      cert-manager.io/cluster-issuer: openinfra-issuer
+                      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+                      {{- else }}
+                      traefik.ingress.kubernetes.io/router.entrypoints: web
+                      {{- end }}
+                  spec:
+                    ingressClassName: traefik
+                    rules:
+                      - host: {{ $spec.domain }}
+                        http:
+                          paths:
+                            - path: /
+                              pathType: Prefix
+                              backend:
+                                service:
+                                  name: {{ $name }}-site
+                                  port:
+                                    number: 80
+                    {{- if $tls }}
+                    tls:
+                      - hosts: [ {{ $spec.domain }} ]
+                        secretName: staticsite-{{ $name }}-tls
+                    {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

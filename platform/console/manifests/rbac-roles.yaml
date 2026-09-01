@@ -133,6 +133,7 @@ rules:
       - processingjobs
       - modelmonitors
       - featuregroups
+      - staticsites
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
     resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]
