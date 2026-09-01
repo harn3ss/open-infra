@@ -38,13 +38,23 @@ type Applier interface {
 	Apply(ctx context.Context, manifestYAML []byte) error
 	Delete(ctx context.Context, apiVersion, kind, name string) error
 	WaitReady(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error
+	// GetStack reads a persisted stack record, if one exists (found=false when absent).
+	GetStack(ctx context.Context, stackName string) (rec *StackRecord, found bool, err error)
 }
 
 type StackResource struct {
-	LogicalID  string `json:"logicalId"`
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Name       string `json:"name"`
+	LogicalID  string         `json:"logicalId"`
+	APIVersion string         `json:"apiVersion"`
+	Kind       string         `json:"kind"`
+	Name       string         `json:"name"`
+	Spec       map[string]any `json:"spec,omitempty"` // the applied spec — enables diff (update) and faithful rollback
+}
+
+// builtResource is one translated, ready-to-apply resource plus its identity/spec record.
+type builtResource struct {
+	res StackResource
+	yml []byte
+	cav []string
 }
 
 type StackRecord struct {
@@ -65,23 +75,18 @@ type DeployOptions struct {
 	Timeout   time.Duration
 }
 
-// Deploy runs the full fail-closed create. It returns the final stack record (whose Status is
-// CREATE_COMPLETE or CREATE_FAILED) and an error if the deploy did not fully succeed.
-func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
-	if opts.Namespace == "" {
-		return nil, fmt.Errorf("a target namespace is required (deploy never guesses one)")
-	}
-
-	// 1. Plan gate.
+// buildManifests runs the plan gate then the translate gate, returning every included
+// resource translated and ordered by dependency. It is the shared fail-closed front half of
+// deploy and update: a REJECTED plan, a type with no create translator, or any untranslatable
+// property returns an error and no manifests — there is no partial result.
+func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	plan, err := BuildPlan(data, opts.Params, opts.StackName)
 	if err != nil {
 		return nil, err
 	}
 	if plan.Verdict == Rejected {
-		return nil, fmt.Errorf("plan is REJECTED — refusing to deploy:\n  - %s", joinBlockers(plan.Blockers))
+		return nil, fmt.Errorf("plan is REJECTED — refusing:\n  - %s", joinBlockers(plan.Blockers))
 	}
-
-	// 2. Translate gate — build every manifest up front; refuse on any blocking finding.
 	t, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -89,13 +94,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	r := newResolver(t, resolveParams(t, opts.Params), pseudoParams(opts.StackName))
 	r.evalConditions()
 
-	type built struct {
-		res StackResource
-		yml []byte
-		cav []string
-	}
-	var order []built
-	byID := map[string]built{}
+	byID := map[string]builtResource{}
 	var findings []Finding
 	for _, id := range t.rawOrder {
 		res := t.Resources[id]
@@ -118,21 +117,36 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		if err != nil {
 			return nil, err
 		}
-		b := built{
-			res: StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name},
+		byID[id] = builtResource{
+			res: StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec},
 			yml: yml, cav: m.Caveats,
 		}
-		byID[id] = b
 	}
 	findings = append(findings, r.findings...)
 	if len(findings) > 0 {
-		return nil, fmt.Errorf("translate gate REJECTED — refusing to deploy (nothing applied):\n  - %s", joinFindings(findings))
+		return nil, fmt.Errorf("translate gate REJECTED — refusing (nothing applied):\n  - %s", joinFindings(findings))
 	}
-	// Order the built manifests by the plan's provisioning order.
+	var order []builtResource
 	for _, id := range plan.Order {
 		if b, ok := byID[id]; ok {
 			order = append(order, b)
 		}
+	}
+	return order, nil
+}
+
+// Deploy runs the full fail-closed create. It returns the final stack record (whose Status is
+// CREATE_COMPLETE or CREATE_FAILED) and an error if the deploy did not fully succeed.
+func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
+	if opts.Namespace == "" {
+		return nil, fmt.Errorf("a target namespace is required (deploy never guesses one)")
+	}
+
+	// 1+2. Plan gate + translate gate — build every manifest up front, in dependency order,
+	// refusing (nothing applied) on any blocker or untranslatable property.
+	order, err := buildManifests(data, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// 3. Persist the stack record (IN_PROGRESS), then apply in order.

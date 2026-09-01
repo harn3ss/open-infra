@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +14,11 @@ import (
 // specific apply or readiness wait — so ordering, state, and rollback are tested with no
 // cluster.
 type fakeApplier struct {
-	applied  []string // "Kind/name" in apply order (ConfigMap included)
-	deleted  []string // "Kind/name" in delete order
-	failOn   string   // fail Apply for this "Kind/name"
-	notReady string   // fail WaitReady for this name
+	applied  []string     // "Kind/name" in apply order (ConfigMap included)
+	deleted  []string     // "Kind/name" in delete order
+	failOn   string       // fail Apply for this "Kind/name"
+	notReady string       // fail WaitReady for this name
+	stored   *StackRecord // the persisted stack record (a mini cluster for update tests)
 }
 
 func idOf(y []byte) string {
@@ -33,6 +35,17 @@ func (f *fakeApplier) Apply(_ context.Context, y []byte) error {
 	if id == f.failOn {
 		return errFake("apply refused for " + id)
 	}
+	// Persist the stack record like a real cluster would, so GetStack reflects it.
+	if strings.HasPrefix(id, "ConfigMap/cfn-stack-") {
+		var m map[string]any
+		_ = yaml.Unmarshal(y, &m)
+		data, _ := m["data"].(map[string]any)
+		blob, _ := data["stack.json"].(string)
+		var rec StackRecord
+		if json.Unmarshal([]byte(blob), &rec) == nil {
+			f.stored = &rec
+		}
+	}
 	f.applied = append(f.applied, id)
 	return nil
 }
@@ -47,6 +60,14 @@ func (f *fakeApplier) WaitReady(_ context.Context, _, _, name string, _ time.Dur
 		return errFake(name + " never became Ready")
 	}
 	return nil
+}
+
+func (f *fakeApplier) GetStack(_ context.Context, _ string) (*StackRecord, bool, error) {
+	if f.stored == nil {
+		return nil, false, nil
+	}
+	cp := *f.stored
+	return &cp, true, nil
 }
 
 type errFake string
