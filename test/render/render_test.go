@@ -1402,6 +1402,9 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 		// A private CA is a trust-minting authority — issue/revoke is gated on `update` over
 		// certificateauthorities, so it stays admin-only, not a poweruser knob (like encryptionkeys).
 		"certificateauthorities": true,
+		// A UserPool is a customer-facing identity provider that issues tokens the platform trusts —
+		// admin-gated like certificateauthorities, not a poweruser knob (mirrors policy-boundary).
+		"userpools": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")

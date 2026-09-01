@@ -1,0 +1,266 @@
+# The compiler for kind: UserPool -> a managed OIDC identity provider (Keycloak),
+# the open-source path to an AWS Cognito User Pool. It renders a Keycloak
+# StatefulSet (dev-mode, embedded database persisted to a PVC), a realm imported
+# on first boot (the pool itself, with one OIDC client), a ClusterIP Service (the
+# in-cluster OIDC issuer), an optional TLS Ingress for the hosted login/admin UI,
+# and a connection Secret (ISSUER_URL/REALM/CLIENT_ID/CLIENT_SECRET/ADMIN_*).
+#
+# The consumption half already exists: point the aws-shim's OIDC_ISSUER (the
+# aws-shim-oidc ConfigMap) at this pool's ISSUER_URL and every @aws_oidc /
+# @aws_cognito_user_pools field enforces its tokens — no code change.
+#
+# Image + config grounded in upstream Keycloak:
+#   - quay.io/keycloak/keycloak — `start-dev --import-realm` reads realm JSON from
+#     /opt/keycloak/data/import and enables plain HTTP (TLS is terminated at the
+#     Ingress). Dev-mode + embedded DB is the EXPERIMENTAL M slice; the hardened
+#     path is KC_DB=postgres against a managed Database + multiple replicas.
+#   - /opt/keycloak/data holds the embedded DB; a stable PVC (StatefulSet
+#     volumeClaimTemplate) is what makes restarts non-destructive.
+#   - sslRequired "none" on the realm so the in-cluster HTTP issuer works; the
+#     browser-facing UI still rides TLS via the Ingress.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: userpool
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XUserPool
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- /* The realm IS the pool; default to the resource name. The OIDC client
+                   is the app client; default "openinfra". */}}
+            {{- $realm := $spec.realm | default $name }}
+            {{- $clientId := $spec.clientId | default "openinfra" }}
+            {{- $size := $spec.size | default "2Gi" }}
+            {{- $hostname := $spec.hostname | default "" }}
+            {{- /* registrationAllowed defaults true; respect an explicit false (Sprig's
+                   `default` treats false as empty, so branch on hasKey). */}}
+            {{- $reg := "true" }}
+            {{- if hasKey $spec "registrationAllowed" }}{{- if not $spec.registrationAllowed }}{{- $reg = "false" }}{{- end }}{{- end }}
+            {{- /* Stable per-pool admin password + client secret, derived from the
+                   composite UID (constant across reconciles), like the Directory
+                   admin password. */}}
+            {{- $uid := .observed.composite.resource.metadata.uid }}
+            {{- $adminPass := printf "Aa1!%s" (printf "%s-adminpass" $uid | sha256sum | trunc 16) }}
+            {{- $clientSecret := printf "%s-clientsecret" $uid | sha256sum | trunc 32 }}
+            {{- $issuer := printf "http://%s.%s.svc.cluster.local:8080/realms/%s" $name $ns $realm }}
+            ---
+            # Realm import: the pool (realm) + one OIDC client, imported on first boot.
+            # In a Secret (not a ConfigMap) because it carries the client secret.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: realm-import
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-realm-import
+                    namespace: {{ $ns }}
+                  stringData:
+                    {{ $realm }}-realm.json: |
+                      {
+                        "realm": "{{ $realm }}",
+                        "enabled": true,
+                        "registrationAllowed": {{ $reg }},
+                        "sslRequired": "none",
+                        "loginWithEmailAllowed": true,
+                        "clients": [
+                          {
+                            "clientId": "{{ $clientId }}",
+                            "enabled": true,
+                            "protocol": "openid-connect",
+                            "publicClient": false,
+                            "secret": "{{ $clientSecret }}",
+                            "standardFlowEnabled": true,
+                            "directAccessGrantsEnabled": true,
+                            "serviceAccountsEnabled": false,
+                            "redirectUris": ["*"],
+                            "webOrigins": ["*"]
+                          }
+                        ]
+                      }
+            ---
+            # Keycloak: the OIDC provider. StatefulSet so the embedded DB PVC is
+            # stable across restarts (populated => serve, never re-import). One
+            # replica for the M slice (HA is the Postgres-backed follow-on).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: keycloak
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: StatefulSet
+                  metadata:
+                    name: {{ $name }}-userpool
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $name }}-userpool, openinfra.dev/userpool: "true" }
+                  spec:
+                    serviceName: {{ $name }}
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $name }}-userpool } }
+                    template:
+                      metadata: { labels: { app: {{ $name }}-userpool } }
+                      spec:
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 1000
+                          fsGroup: 1000
+                        containers:
+                          - name: keycloak
+                            image: quay.io/keycloak/keycloak:26.0.7
+                            args: ["start-dev", "--import-realm"]
+                            env:
+                              - { name: KEYCLOAK_ADMIN, value: "admin" }
+                              - name: KEYCLOAK_ADMIN_PASSWORD
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $name }}-userpool, key: ADMIN_PASSWORD }
+                              - { name: KC_HTTP_ENABLED, value: "true" }
+                              - { name: KC_HOSTNAME_STRICT, value: "false" }
+                              - { name: KC_PROXY_HEADERS, value: "xforwarded" }
+                              - { name: KC_HEALTH_ENABLED, value: "true" }
+                              {{- if $hostname }}
+                              - { name: KC_HOSTNAME, value: "https://{{ $hostname }}" }
+                              {{- end }}
+                            ports:
+                              - { name: http, containerPort: 8080, protocol: TCP }
+                              - { name: management, containerPort: 9000, protocol: TCP }
+                            readinessProbe:
+                              httpGet: { path: /health/ready, port: 9000 }
+                              initialDelaySeconds: 45
+                              periodSeconds: 10
+                              failureThreshold: 30
+                            volumeMounts:
+                              - { name: data, mountPath: /opt/keycloak/data }
+                              # The realm-import JSON overlays the data dir's import/
+                              # subpath; Keycloak reads it once on --import-realm.
+                              - { name: import, mountPath: /opt/keycloak/data/import, readOnly: true }
+                        volumes:
+                          - name: import
+                            secret: { secretName: {{ $name }}-realm-import }
+                    volumeClaimTemplates:
+                      - metadata: { name: data }
+                        spec:
+                          accessModes: [ReadWriteOnce]
+                          storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                          resources:
+                            requests:
+                              storage: {{ $size }}
+            ---
+            # Service: the in-cluster OIDC issuer. ClusterIP on 8080 — consumers
+            # (the aws-shim, open-appsync) reach the discovery URL here.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/userpool: "true" }
+                  spec:
+                    type: ClusterIP
+                    selector: { app: {{ $name }}-userpool }
+                    ports:
+                      - { name: http, port: 8080, targetPort: 8080, protocol: TCP }
+            {{- if $hostname }}
+            ---
+            # Hosted login/admin UI: a TLS Ingress for browser access, mirroring the
+            # HttpApi/Application Ingress (cert-manager openinfra-issuer, Traefik
+            # websecure). The in-cluster issuer above stays the token authority.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ingress
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: userpool-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/userpool: {{ $name }}
+                    annotations:
+                      cert-manager.io/cluster-issuer: openinfra-issuer
+                      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+                  spec:
+                    ingressClassName: traefik
+                    rules:
+                      - host: {{ $hostname }}
+                        http:
+                          paths:
+                            - path: /
+                              pathType: Prefix
+                              backend:
+                                service:
+                                  name: {{ $name }}
+                                  port:
+                                    number: 8080
+                    tls:
+                      - hosts: [ {{ $hostname }} ]
+                        secretName: userpool-{{ $name }}-tls
+            {{- end }}
+            ---
+            # Connection secret: how consumers wire to the pool. ISSUER_URL is the
+            # in-cluster discovery base a consumer points OIDC_ISSUER at.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: conn-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata:
+                    name: {{ $name }}-userpool
+                    namespace: {{ $ns }}
+                  stringData:
+                    ISSUER_URL: {{ $issuer }}
+                    REALM: {{ $realm }}
+                    CLIENT_ID: {{ $clientId }}
+                    CLIENT_SECRET: {{ $clientSecret }}
+                    ADMIN_USER: admin
+                    ADMIN_PASSWORD: {{ $adminPass }}
+                    POOL_SERVICE: {{ $name }}.{{ $ns }}.svc.cluster.local
+                    {{- if $hostname }}
+                    PUBLIC_URL: https://{{ $hostname }}
+                    PUBLIC_ISSUER_URL: https://{{ $hostname }}/realms/{{ $realm }}
+                    {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
