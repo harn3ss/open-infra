@@ -4537,6 +4537,12 @@ components:
               type: boolean
               default: true
               description: Terminate TLS via cert-manager (openinfra-issuer). Set false for plain HTTP.
+            waf:
+              type: boolean
+              default: false
+              description: Attach an in-cluster L7 WAF (Traefik Coraza / OWASP CRS) to this API's Ingress. Defense-in-depth
+                for apps not fronted by a CDN WAF; requires the Coraza Traefik plugin to be enabled on the cluster (see docs/api-gateway-coverage.md).
+                Off by default.
             routes:
               type: array
               description: "Path \u2192 backend routes, evaluated in order (put more specific paths first)."
