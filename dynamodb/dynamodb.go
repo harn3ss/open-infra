@@ -4,7 +4,7 @@
 // stored typed item back to plain values before the response template runs, so this does too
 // (fromDynamoDB), and stores/operates in plain-value space.
 //
-// It provides two implementations of the neutral datasource.Store contract: MemStore (in-memory,
+// It provides two implementations of a neutral Store contract (Execute an Operation): MemStore (in-memory,
 // deterministic — the slice-1 probe runs against it) and FerretStore (the real DynamoDB→Mongo binding,
 // integration-tested). Both are DynamoDB-shaped; a non-DynamoDB source (e.g. internal/httpsource) is a
 // different Store with a different operation shape, which is the whole point of's neutrality.
@@ -17,17 +17,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
-	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 )
 
-// MemStore and FerretStore implement the neutral datasource.Store contract (the call-source seam;
-// that interface lives in internal/datasource, not here, so the contract is not DynamoDB-shaped).
-var (
-	_ datasource.Store = (*MemStore)(nil)
-	_ datasource.Store = (*FerretStore)(nil)
-)
+// Operation is the neutral, source-agnostic operation shape a store executes — the same shape a
+// VTL/JS request mapping template renders ({"operation":"GetItem", "key":{…}, …}). It is a plain
+// map alias so this package (a standalone module, shared by the AppSync engine and the aws-shim's
+// DynamoDB front door) owes nothing to either caller's types; a caller's own Operation alias over
+// map[string]any satisfies a store's Execute signature structurally.
+type Operation = map[string]any
 
 // fromDynamoDB is the inverse of $util.dynamodb.toDynamoDBJson: a DynamoDB-typed value → a plain
 // value. AppSync applies this to the stored item before the response template sees it.
@@ -99,7 +96,7 @@ type MemStore struct {
 
 func NewMemStore() *MemStore { return &MemStore{items: map[string]map[string]any{}} }
 
-func (s *MemStore) Execute(_ context.Context, op runtime.Operation) (any, error) {
+func (s *MemStore) Execute(_ context.Context, op Operation) (any, error) {
 	operation, _ := op["operation"].(string)
 	switch operation {
 	case "GetItem":

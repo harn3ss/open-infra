@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/harn3ss/open-infra/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
-	"github.com/harn3ss/open-infra/open-appsync/internal/dynamodb"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
