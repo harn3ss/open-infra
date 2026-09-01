@@ -1,14 +1,17 @@
 # CloudFormation templates — `cfn plan`
 
 open-infra can read an AWS CloudFormation template and tell you, resource by resource,
-whether it can provision it on open-infra — and exactly what it cannot. This is the
-`cfn` engine.
+whether it can provision it on open-infra — and exactly what it cannot. It can then
+provision the supported ones as a live, tracked stack. This is the `cfn` engine.
 
-Today the engine is **read-only**: `cfn plan` is a dry-run. It parses a template,
-maps every resource onto an open-infra kind, resolves the intrinsic functions and the
-dependency order, and prints a verdict. It does **not** yet create, update, or delete a
-real stack — stateful deployment is a later phase, deliberately gated behind this
-dry-run so the mapping is trustworthy before anything is provisioned.
+- **`cfn plan`** (read-only) parses a template, maps every resource onto an open-infra
+  kind, resolves the intrinsic functions and the dependency order, and prints a verdict.
+  It provisions nothing.
+- **`cfn deploy`** provisions a stack live: it applies the resources in dependency order,
+  records the stack, and rolls back on failure — fail-closed, never a partial stack.
+
+`deploy` does not yet update, delete, or drift-check a stack; those are later phases,
+each gated behind the one before it.
 
 ## The cardinal rule
 
@@ -114,14 +117,67 @@ Refused (each records a blocker): `Fn::ImportValue`, `Fn::GetAZs`, `Fn::Cidr`,
 relies on one of these is `REJECTED` rather than provisioned with the value quietly
 wrong.
 
+## Deploying a stack
+
+```console
+$ cfn deploy -namespace my-app -stack-name tickets kms-stack.yaml
+Deploying stack "tickets" into namespace "my-app"…
+
+Stack tickets [CREATE_COMPLETE]
+  PrimaryKey   openinfra.dev/v1/EncryptionKey -> primarykey
+  BackupKey    openinfra.dev/v1/EncryptionKey -> backupkey
+
+Stack "tickets" is CREATE_COMPLETE (2 resources).
+```
+
+`deploy` is fail-closed by construction:
+
+1. **Plan gate** — it runs the same `plan`. A `REJECTED` template is refused before
+   anything is applied.
+2. **Translate gate** — every included resource must have a create translator *and* every
+   one of its properties must translate. A single property the engine cannot honor refuses
+   the whole deploy. Nothing is applied until everything translates — there is no partial
+   stack.
+3. **Ordered apply** — resources are created in dependency order, each recorded in a
+   persisted stack record (a `cfn-stack-<name>` ConfigMap) and labeled with its stack, and
+   each waited for until it is ready.
+4. **Rollback** — if any create or readiness wait fails, everything created in that deploy
+   is deleted in reverse order and the stack is marked `CREATE_FAILED`. A failed create
+   leaves no orphans.
+
+A target `-namespace` and a `-stack-name` are required; `deploy` never guesses a
+namespace. Use `-no-wait` to skip the readiness gate, `-timeout SECS` to bound it.
+
+### Create fidelity is narrower than the plan mapping
+
+The plan table above answers "is there a backing kind?". Creating a resource asks a
+harder question: does every *property* translate faithfully? Often it does not, and where
+it does not the engine refuses rather than guess. A resource type that plans as
+`supported` is therefore not automatically create-able. Concretely, at create time:
+
+- The set of types with a create translator is a subset of the plan-supported types. A
+  supported type without a translator is refused at deploy with "no create translator".
+- AWS resource *content* frequently has no faithful open-infra form — IAM's
+  `service:Action` permission namespace is a different universe from open-infra's
+  `kind:verb` RBAC, KMS key policies have no per-key equivalent, and a `Fn::GetAtt` to
+  another resource's ARN has no value here. Each of these blocks the deploy loudly.
+- Where a property maps but loses something (a KMS `KeyPolicy`, a Lambda `Role`), the loss
+  is printed as a **caveat**, never silently dropped.
+
+Today's create translators (live-verified on the cluster):
+
+| CloudFormation | open-infra | Notes |
+|---|---|---|
+| `AWS::KMS::Key` | `kind: EncryptionKey` | Description, `EnableKeyRotation`→rotation, `KeySpec`→key type; `KeyPolicy` is a caveat (access is via open-infra IAM). |
+| `AWS::Lambda::Function` (`PackageType: Image` only) | `kind: Function` | `Code.ImageUri`→image, `Environment`→env, `MemorySize`→memory, `Timeout`→timeout; a zip/Runtime Lambda has no image and is refused; `Role` is a caveat. |
+
 ## What this does not do yet
 
-- It does not deploy. There is no create/update/delete of a live stack, no change sets,
-  no drift detection, no rollback. `cfn plan` reads and reports; it never touches the
-  cluster.
-- `PROVISIONABLE` means the template maps cleanly onto kinds — not that the mapped stack
-  has been provisioned and verified end to end. Treat it as a compatibility check, not a
-  guarantee of a running stack.
-- The mapping table is the honest surface of what the engine covers. It will grow the
-  same way every capability here graduates: a type is added only once it has a backing
-  kind and a faithful mapping.
+- `deploy` creates. It does not yet **update** a stack, produce **change sets**, **delete**
+  a stack, or **drift-check** one against the live cluster. Those are the remaining phases.
+- `PROVISIONABLE` at plan time means the template maps cleanly onto kinds — not that every
+  property will translate at create time (see above), and not a guarantee of a running
+  stack. Treat plan as a compatibility check.
+- The mapping and translator tables are the honest surface of what the engine covers. They
+  grow the same way every capability here graduates: a type is added only once it has a
+  backing kind and a faithful mapping.
