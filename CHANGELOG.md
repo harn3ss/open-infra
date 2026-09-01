@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Configuration
+- **`kind: Parameter` (opt-in, experimental).** A hierarchical, optionally-encrypted parameter store —
+  the AWS SSM Parameter Store equivalent. Each value is held in Vault's KV-v2 `params` mount under its
+  path and materialized (with the rest of the namespace's parameters) into a per-namespace
+  `openinfra-parameters` Secret, flattened to `UPPER_SNAKE` env keys (`/app/db/host` → `APP_DB_HOST`),
+  which apps read via the existing `spec.secrets` → `envFrom`. A least-privilege reconciler (Vault
+  Kubernetes-auth, scoped to the `params/*` mount) writes the tree and rebuilds the Secret. Rides the
+  `encryption` component. See [`docs/parameters.md`](docs/parameters.md).
+
 ### Compute & hosting
 - **`kind: StaticSite`.** Static frontend hosting for a built SPA — the S3-static-website + CDN-origin
   primitive. One claim provisions a MinIO bucket for the assets (with a `<name>-minio` upload secret),
