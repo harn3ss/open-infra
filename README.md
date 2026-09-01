@@ -185,11 +185,17 @@ same plan to cover your DNS, TLS and cloud accounts. See
 
 Most of open-infra is *concept* parity — a native surface that feels like AWS. For apps that must
 speak the AWS **wire protocol** unchanged, an experimental, opt-in **AWS-SDK shim** presents an
-AWS-shaped front door: point any AWS SDK at it (one env var) and it verifies the request's SigV4
-signature against an open-infra access key, enforces the **same** RBAC + permission boundary as the
-console (one policy world — not a parallel auth), calls the real backend, and re-dresses the
-response in AWS's exact byte-shape. It is **not** an emulator — it fronts durable backends, not
-fakes, so unlike LocalStack/Floci its fidelity isn't bounded by what a mock chose to implement.
+AWS-shaped front door for a **specific, growing set of services** — not the whole AWS API. Point an
+AWS SDK at it (one env var) and it verifies the request's SigV4 signature against an open-infra
+access key, enforces the **same** RBAC + permission boundary as the console (one policy world — not
+a parallel auth), calls the real backend, and re-dresses the response in AWS's exact byte-shape.
+It fronts **S3** (over MinIO), **STS** `GetCallerIdentity`, **Lambda** `Invoke` (over Knative
+`Function`s), and **AppSync** (over the open-appsync engine). **Every other service — including
+DynamoDB, Secrets Manager, and Kinesis — returns an honest `501`**, never a silent fake: it is a
+per-service front door that graduates one service at a time, not a blanket "repoint any call."
+It is **not** an emulator — the services it does front hit durable backends, not fakes, so unlike
+LocalStack its fidelity isn't bounded by what a mock chose to implement. Coverage table and the
+graduation ladder: [`docs/aws-shim.md`](docs/aws-shim.md).
 
 ```sh
 # An unmodified AWS SDK / CLI, aimed at open-infra — one env var.
