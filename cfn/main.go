@@ -17,10 +17,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -31,6 +34,8 @@ func main() {
 	switch os.Args[1] {
 	case "plan":
 		os.Exit(runPlan(os.Args[2:]))
+	case "deploy":
+		os.Exit(runDeploy(os.Args[2:]))
 	case "-h", "--help", "help":
 		usage()
 		os.Exit(0)
@@ -42,13 +47,17 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `cfn — open-infra CloudFormation engine (Phase 1, read-only)
+	fmt.Fprint(os.Stderr, `cfn — open-infra CloudFormation engine
 
 Usage:
-  cfn plan [-param K=V ...] [-stack-name NAME] [-json] <template>
+  cfn plan   [-param K=V ...] [-stack-name NAME] [-json] <template>
+  cfn deploy  -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
 
-Reads a CloudFormation template (JSON or YAML) and reports whether open-infra can
-provision it, with caveats, or not — and exactly why. It provisions nothing.
+plan   (read-only) reports whether open-infra can provision a template, with caveats, or
+       not — and exactly why. Provisions nothing.
+deploy (stateful, Phase 2) provisions a stack live, fail-closed: it refuses unless the whole
+       template maps and every property translates, applies in dependency order, records the
+       stack, and rolls back on failure leaving no orphans.
 `)
 }
 
@@ -179,5 +188,102 @@ func statusMark(s Status) string {
 		return "[gate]"
 	default:
 		return "[no  ]"
+	}
+}
+
+func runDeploy(args []string) int {
+	opts := DeployOptions{Params: map[string]string{}, Wait: true, Timeout: 180 * time.Second}
+	var files []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, bool) {
+			i++
+			if i >= len(args) {
+				return "", false
+			}
+			return args[i], true
+		}
+		switch {
+		case a == "-namespace" || a == "-n":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -namespace needs a value")
+				return 2
+			}
+			opts.Namespace = v
+		case a == "-stack-name":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -stack-name needs a value")
+				return 2
+			}
+			opts.StackName = v
+		case a == "-param":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -param needs K=V")
+				return 2
+			}
+			k, val, ok := strings.Cut(v, "=")
+			if !ok {
+				fmt.Fprintf(os.Stderr, "cfn: bad -param %q (want K=V)\n", v)
+				return 2
+			}
+			opts.Params[k] = val
+		case a == "-no-wait":
+			opts.Wait = false
+		case a == "-timeout":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -timeout needs seconds")
+				return 2
+			}
+			secs, err := strconv.Atoi(v)
+			if err != nil || secs <= 0 {
+				fmt.Fprintf(os.Stderr, "cfn: bad -timeout %q\n", v)
+				return 2
+			}
+			opts.Timeout = time.Duration(secs) * time.Second
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(os.Stderr, "cfn: unknown flag %q\n", a)
+			return 2
+		default:
+			files = append(files, a)
+		}
+	}
+	if opts.Namespace == "" || opts.StackName == "" {
+		fmt.Fprintln(os.Stderr, "cfn: deploy requires -namespace and -stack-name")
+		return 2
+	}
+	if len(files) != 1 {
+		fmt.Fprintln(os.Stderr, "cfn: expected exactly one template file")
+		return 2
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
+		return 2
+	}
+
+	fmt.Printf("Deploying stack %q into namespace %q…\n", opts.StackName, opts.Namespace)
+	rec, err := Deploy(context.Background(), data, opts, kubectlApplier{namespace: opts.Namespace})
+	if rec != nil {
+		printStack(rec)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\ncfn: %v\n", err)
+		return 1
+	}
+	fmt.Printf("\nStack %q is %s (%d resources).\n", rec.Name, rec.Status, len(rec.Resources))
+	return 0
+}
+
+func printStack(rec *StackRecord) {
+	fmt.Printf("\nStack %s [%s]\n", rec.Name, rec.Status)
+	for _, r := range rec.Resources {
+		fmt.Printf("  %-20s %s/%s -> %s\n", r.LogicalID, r.APIVersion, r.Kind, r.Name)
+	}
+	if rec.Message != "" {
+		fmt.Printf("  message: %s\n", rec.Message)
 	}
 }
