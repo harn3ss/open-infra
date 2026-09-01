@@ -62,8 +62,7 @@ what exists (`open-appsync/internal/dynamodb/`). So the supported set is exactly
 
 ## The subset a migrating app is likely to need — and the gap
 
-The exact operations such an app needs require its own resolvers (not available
-here), so this is the general assessment for a typical DynamoDB-behind-AppSync CRUD app:
+This is the general assessment for a typical DynamoDB-behind-AppSync CRUD app:
 
 - A **create / read / update / delete / list** app is now covered (the gating gap this matrix
   first identified, UpdateItem + Query, was built — see the Update note at the top):
