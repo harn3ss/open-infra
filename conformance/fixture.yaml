@@ -1,0 +1,109 @@
+# Behavioural conformance fixture for the profile-fidelity gate.
+#
+# A representative AppSync app the conformance runner deploys into a namespace and runs the SAME
+# assertions against on every profile. A profile that behaves differently here than another FAILS the
+# gate. This fixture MUST NOT vary by profile.
+#
+# Data source is `memory` on purpose: the gate tests behaviour (resolvers, auth, subscriptions), not
+# store durability — the Dynamo-shaped store's own fidelity is covered by the data-layer
+# characterization and the durable FerretDB round-trips. Keeping the gate store-free makes it fast and
+# self-contained.
+#
+# NOTE: field-level authorization requirements (a per-field `auth:` SubjectAccessReview) are
+# deliberately NOT used here yet — that path is broken live (the engine pod cannot create SARs; see the
+# filed finding), so the gate would be unable to run at all. The runner records the reader-denied-write
+# authorization negative as not-run/blocked until that bug is fixed. The fail-closed unauthenticated
+# negative (no API key -> denied) IS exercised and must hold on every profile.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: conformance-appsync
+  labels: { openinfra.dev/conformance: "true" }
+---
+# The API key IS the identity. One key is enough for the behavioural + fail-closed-auth rows.
+apiVersion: v1
+kind: Secret
+metadata: { name: conf-apikeys, namespace: conformance-appsync }
+stringData:
+  apikeys.json: |
+    [ {"key":"conf-key","username":"conformance","groups":["conformance"]} ]
+---
+apiVersion: openinfra.dev/v1
+kind: GraphQLApi
+metadata: { name: conformance, namespace: conformance-appsync }
+spec:
+  apiKeysSecret: conf-apikeys
+  dataSources:
+    - { name: notes, type: memory }
+  schema: |
+    "A note in a room."
+    type Note { id: ID! room: String! title: String body: String version: Int }
+    type NoteList { items: [Note] nextToken: String }
+    input CreateNoteInput { room: String! title: String! body: String }
+    input UpdateNoteInput { id: ID! body: String }
+    type Query {
+      getNote(id: ID!): Note @aws_api_key
+      listNotes(room: String!): NoteList @aws_api_key
+    }
+    type Mutation {
+      createNote(input: CreateNoteInput!): Note @aws_api_key
+      updateNote(input: UpdateNoteInput!): Note @aws_api_key
+      deleteNote(id: ID!): Note @aws_api_key
+    }
+    type Subscription {
+      onCreateNote: Note @aws_subscribe(mutations: ["createNote"])
+    }
+  resolvers:
+    - type: Query
+      field: getNote
+      dataSource: notes
+      runtime: appsync-vtl
+      request: |
+        { "version":"2018-05-29", "operation":"GetItem", "key": { "id": $util.dynamodb.toDynamoDBJson($ctx.args.id) } }
+      response: |
+        $util.toJson($ctx.result)
+    - type: Query
+      field: listNotes
+      dataSource: notes
+      runtime: appsync-vtl
+      request: |
+        { "version":"2018-05-29", "operation":"Query",
+          "query": { "expression":"room = :room", "expressionValues": { ":room": $util.dynamodb.toDynamoDBJson($ctx.args.room) } } }
+      response: |
+        $util.toJson($ctx.result)
+    - type: Mutation
+      field: createNote
+      dataSource: notes
+      runtime: appsync-vtl
+      request: |
+        { "version":"2018-05-29", "operation":"PutItem",
+          "key": { "id": $util.dynamodb.toDynamoDBJson($util.autoId()) },
+          "attributeValues": $util.dynamodb.toMapValuesJson($ctx.args.input) }
+      response: |
+        $util.toJson($ctx.result)
+    - type: Mutation
+      field: updateNote
+      dataSource: notes
+      runtime: appsync-vtl
+      request: |
+        { "version":"2018-05-29", "operation":"UpdateItem",
+          "key": { "id": $util.dynamodb.toDynamoDBJson($ctx.args.input.id) },
+          "update": { "expression":"SET body = :body ADD version :one",
+            "expressionValues": { ":body": $util.dynamodb.toDynamoDBJson($ctx.args.input.body), ":one": $util.dynamodb.toDynamoDBJson(1) } },
+          "condition": { "expression":"attribute_exists(id)" } }
+      response: |
+        $util.toJson($ctx.result)
+    - type: Mutation
+      field: deleteNote
+      dataSource: notes
+      runtime: appsync-vtl
+      request: |
+        { "version":"2018-05-29", "operation":"DeleteItem", "key": { "id": $util.dynamodb.toDynamoDBJson($ctx.args.id) } }
+      response: |
+        $util.toJson($ctx.result)
+  subscriptions:
+    - field: onCreateNote
+      runtime: appsync-vtl
+      triggeredBy: [createNote]
+      response: |
+        $util.toJson($ctx.result)
