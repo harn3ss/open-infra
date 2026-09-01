@@ -36,6 +36,10 @@ func main() {
 		os.Exit(runPlan(os.Args[2:]))
 	case "deploy":
 		os.Exit(runDeploy(os.Args[2:]))
+	case "changeset":
+		os.Exit(runChangeSet(os.Args[2:]))
+	case "update":
+		os.Exit(runUpdate(os.Args[2:]))
 	case "-h", "--help", "help":
 		usage()
 		os.Exit(0)
@@ -50,14 +54,19 @@ func usage() {
 	fmt.Fprint(os.Stderr, `cfn — open-infra CloudFormation engine
 
 Usage:
-  cfn plan   [-param K=V ...] [-stack-name NAME] [-json] <template>
-  cfn deploy  -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
+  cfn plan      [-param K=V ...] [-stack-name NAME] [-json] <template>
+  cfn deploy     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
+  cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] <template>
+  cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
 
-plan   (read-only) reports whether open-infra can provision a template, with caveats, or
-       not — and exactly why. Provisions nothing.
-deploy (stateful, Phase 2) provisions a stack live, fail-closed: it refuses unless the whole
-       template maps and every property translates, applies in dependency order, records the
-       stack, and rolls back on failure leaving no orphans.
+plan      (read-only) reports whether open-infra can provision a template, with caveats, or
+          not — and exactly why. Provisions nothing.
+deploy    provisions a stack live, fail-closed: it refuses unless the whole template maps and
+          every property translates, applies in dependency order, records the stack, and rolls
+          back on failure leaving no orphans.
+changeset (read-only) diffs a template against the current stack — what would be Added,
+          Modified, Removed, or left Unchanged.
+update    applies that change set, rolling back to the exact prior stack if any step fails.
 `)
 }
 
@@ -191,7 +200,9 @@ func statusMark(s Status) string {
 	}
 }
 
-func runDeploy(args []string) int {
+// parseStackFlags parses the flags shared by deploy/update/changeset, returning the options,
+// the single template file, and a non-negative exit code on error (-1 = ok).
+func parseStackFlags(cmd string, args []string) (DeployOptions, string, int) {
 	opts := DeployOptions{Params: map[string]string{}, Wait: true, Timeout: 180 * time.Second}
 	var files []string
 	for i := 0; i < len(args); i++ {
@@ -208,26 +219,26 @@ func runDeploy(args []string) int {
 			v, ok := next()
 			if !ok {
 				fmt.Fprintln(os.Stderr, "cfn: -namespace needs a value")
-				return 2
+				return opts, "", 2
 			}
 			opts.Namespace = v
 		case a == "-stack-name":
 			v, ok := next()
 			if !ok {
 				fmt.Fprintln(os.Stderr, "cfn: -stack-name needs a value")
-				return 2
+				return opts, "", 2
 			}
 			opts.StackName = v
 		case a == "-param":
 			v, ok := next()
 			if !ok {
 				fmt.Fprintln(os.Stderr, "cfn: -param needs K=V")
-				return 2
+				return opts, "", 2
 			}
 			k, val, ok := strings.Cut(v, "=")
 			if !ok {
 				fmt.Fprintf(os.Stderr, "cfn: bad -param %q (want K=V)\n", v)
-				return 2
+				return opts, "", 2
 			}
 			opts.Params[k] = val
 		case a == "-no-wait":
@@ -236,35 +247,42 @@ func runDeploy(args []string) int {
 			v, ok := next()
 			if !ok {
 				fmt.Fprintln(os.Stderr, "cfn: -timeout needs seconds")
-				return 2
+				return opts, "", 2
 			}
 			secs, err := strconv.Atoi(v)
 			if err != nil || secs <= 0 {
 				fmt.Fprintf(os.Stderr, "cfn: bad -timeout %q\n", v)
-				return 2
+				return opts, "", 2
 			}
 			opts.Timeout = time.Duration(secs) * time.Second
 		case strings.HasPrefix(a, "-"):
 			fmt.Fprintf(os.Stderr, "cfn: unknown flag %q\n", a)
-			return 2
+			return opts, "", 2
 		default:
 			files = append(files, a)
 		}
 	}
 	if opts.Namespace == "" || opts.StackName == "" {
-		fmt.Fprintln(os.Stderr, "cfn: deploy requires -namespace and -stack-name")
-		return 2
+		fmt.Fprintf(os.Stderr, "cfn: %s requires -namespace and -stack-name\n", cmd)
+		return opts, "", 2
 	}
 	if len(files) != 1 {
 		fmt.Fprintln(os.Stderr, "cfn: expected exactly one template file")
-		return 2
+		return opts, "", 2
 	}
-	data, err := os.ReadFile(files[0])
+	return opts, files[0], -1
+}
+
+func runDeploy(args []string) int {
+	opts, file, code := parseStackFlags("deploy", args)
+	if code >= 0 {
+		return code
+	}
+	data, err := os.ReadFile(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
 	}
-
 	fmt.Printf("Deploying stack %q into namespace %q…\n", opts.StackName, opts.Namespace)
 	rec, err := Deploy(context.Background(), data, opts, kubectlApplier{namespace: opts.Namespace})
 	if rec != nil {
@@ -276,6 +294,81 @@ func runDeploy(args []string) int {
 	}
 	fmt.Printf("\nStack %q is %s (%d resources).\n", rec.Name, rec.Status, len(rec.Resources))
 	return 0
+}
+
+func runChangeSet(args []string) int {
+	opts, file, code := parseStackFlags("changeset", args)
+	if code >= 0 {
+		return code
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
+		return 2
+	}
+	cs, _, _, err := BuildChangeSet(context.Background(), data, opts, kubectlApplier{namespace: opts.Namespace})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
+		return 1
+	}
+	printChangeSet(cs)
+	return 0
+}
+
+func runUpdate(args []string) int {
+	opts, file, code := parseStackFlags("update", args)
+	if code >= 0 {
+		return code
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
+		return 2
+	}
+	ap := kubectlApplier{namespace: opts.Namespace}
+	cs, _, _, err := BuildChangeSet(context.Background(), data, opts, ap)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
+		return 1
+	}
+	printChangeSet(cs)
+	if !cs.Exists {
+		fmt.Fprintf(os.Stderr, "\ncfn: no stack %q to update — use deploy\n", opts.StackName)
+		return 1
+	}
+	if !cs.hasChanges() {
+		fmt.Println("\nNo changes — stack is already up to date.")
+		return 0
+	}
+	fmt.Printf("\nApplying update to stack %q…\n", opts.StackName)
+	rec, err := Update(context.Background(), data, opts, ap)
+	if rec != nil {
+		printStack(rec)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\ncfn: %v\n", err)
+		return 1
+	}
+	fmt.Printf("\nStack %q is %s (%d resources).\n", rec.Name, rec.Status, len(rec.Resources))
+	return 0
+}
+
+func printChangeSet(cs *ChangeSet) {
+	if !cs.Exists {
+		fmt.Printf("Change set for %q (new stack — every resource is an Add):\n", cs.StackName)
+	} else {
+		fmt.Printf("Change set for %q:\n", cs.StackName)
+	}
+	for _, c := range cs.Changes {
+		mark := map[ChangeAction]string{Add: "+ ", Modify: "~ ", Remove: "- ", Unchanged: "  "}[c.Action]
+		fmt.Printf("  %s%-8s %-20s %s/%s\n", mark, c.Action, c.LogicalID, c.Kind, c.Name)
+		for _, cav := range c.Caveats {
+			fmt.Printf("        caveat: %s\n", cav)
+		}
+	}
+	if !cs.hasChanges() {
+		fmt.Println("  (no changes)")
+	}
 }
 
 func printStack(rec *StackRecord) {
