@@ -197,7 +197,20 @@ spec:
                 bound_service_account_namespaces=minio \
                 token_policies=minio-kes token_ttl=20m
 
-              echo "Transit ready; reconciler + destroyer + minio-kes authenticate via Kubernetes auth (no stored secrets)."
+              echo "enabling the Parameter store (SSM-equivalent) KV-v2 mount + reconciler identity (#72)…"
+              # kind: Parameter values live here as a hierarchical KV-v2 tree (params/<ns>/<path>).
+              # The parameter-reconciler both writes this tree and materializes the per-namespace
+              # openinfra-parameters Secret; its policy is scoped to the params mount only.
+              vault secrets enable -path=params -version=2 kv 2>/dev/null || echo "  params KV already enabled"
+              vault policy write parameter-reconciler - <<'POLICY'
+              path "params/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+              POLICY
+              vault write auth/kubernetes/role/parameter-reconciler \
+                bound_service_account_names=parameter-reconciler \
+                bound_service_account_namespaces=crossplane-system \
+                token_policies=parameter-reconciler token_ttl=20m
+
+              echo "Transit ready; reconciler + destroyer + minio-kes + parameter-reconciler authenticate via Kubernetes auth (no stored secrets)."
 
               # ── kind: CertificateAuthority — PKI engines + least-priv provisioner/issuer split ──
               # Same discipline as Transit above: two identities, each bound to its OWN ServiceAccount
