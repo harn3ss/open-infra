@@ -11,6 +11,7 @@ on:
     branches: [main]
     paths:
       - "console-api/**"
+      - "dynamodb/**"
       - ".github/workflows/build-attest.yml"
   workflow_dispatch: {}
 
@@ -58,7 +59,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Context is the console-api module (shares internal/auditchain).
-          context: console-api
+          context: .
           file: console-api/Dockerfile.attest
           push: true
           tags: ${{ steps.meta.outputs.tags }}

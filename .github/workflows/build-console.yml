@@ -12,6 +12,7 @@ on:
     paths:
       - "ui/**"
       - "console-api/**"
+      - "dynamodb/**"
       - ".github/workflows/build-console.yml"
   workflow_dispatch: {}
 

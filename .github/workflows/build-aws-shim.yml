@@ -12,6 +12,7 @@ on:
     branches: [main]
     paths:
       - "console-api/**"
+      - "dynamodb/**"
       - ".github/workflows/build-aws-shim.yml"
   workflow_dispatch: {}
 
@@ -59,7 +60,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Context is the console-api module (the shim shares internal/iam); no SPA needed.
-          context: console-api
+          context: .
           file: console-api/Dockerfile.aws-shim
           push: true
           tags: ${{ steps.meta.outputs.tags }}
