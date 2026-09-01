@@ -4,10 +4,10 @@
 // them through the shared SigV4 path, authorizes them with the same impersonated
 // SubjectAccessReview every other front door uses (one policy world), executes the supported
 // operations against the shared Dynamo-shaped store over FerretDB, and speaks DynamoDB's own
-// dialect. Supported today: CreateTable, DescribeTable, GetItem, PutItem, DeleteItem. Every other
-// operation returns an honest 501 NotImplementedException — the shim's per-op graduation, never a
-// silent fake. Query / UpdateItem / Scan / Batch* graduate next (the store already implements the
-// executors; the wire adapter is what remains).
+// dialect. Supported today: CreateTable, DescribeTable, GetItem, PutItem, DeleteItem, Query
+// (key-condition + filter + sort + pagination), UpdateItem (update + condition expressions), and
+// full Scan. Everything else — Batch*, Transact*, Scan-with-filter, TTL, streams — returns an
+// honest 501 NotImplementedException, the shim's per-op graduation, never a silent fake.
 //
 // The store executor is the SHARED module github.com/harn3ss/open-infra/dynamodb — the same code
 // the open-appsync engine runs, so a resolver and a raw SDK call see identical semantics.
@@ -120,6 +120,12 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		h.putItem(ctx, w, requestID, table, body)
 	case "DeleteItem":
 		h.deleteItem(ctx, w, requestID, table, body)
+	case "Query":
+		h.query(ctx, w, requestID, table, body)
+	case "UpdateItem":
+		h.updateItem(ctx, w, requestID, table, body)
+	case "Scan":
+		h.scan(ctx, w, requestID, table, body)
 	default:
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"DynamoDB "+op+" is recognized but not yet implemented by the open-infra shim.")
@@ -225,6 +231,155 @@ func (h *dynamoHandler) deleteItem(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 	writeDynamoJSON(w, requestID, map[string]any{}) // returns {} without ReturnValues
+}
+
+func (h *dynamoHandler) query(ctx context.Context, w http.ResponseWriter, requestID, table string, body map[string]any) {
+	kce, _ := body["KeyConditionExpression"].(string)
+	if kce == "" {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "Query requires a KeyConditionExpression.")
+		return
+	}
+	names, values := body["ExpressionAttributeNames"], body["ExpressionAttributeValues"]
+	op := dynamodb.Operation{"operation": "Query", "query": exprBlock(kce, names, values)}
+	if fe, ok := body["FilterExpression"].(string); ok && fe != "" {
+		op["filter"] = exprBlock(fe, names, values)
+	}
+	if v, ok := body["ScanIndexForward"].(bool); ok {
+		op["scanIndexForward"] = v
+	}
+	if lim, ok := body["Limit"].(float64); ok {
+		op["limit"] = lim
+	}
+	if tok := startToken(body["ExclusiveStartKey"]); tok != "" {
+		op["nextToken"] = tok
+	}
+	res, err := h.store(table).Execute(ctx, op)
+	if err != nil {
+		h.mapStoreError(w, requestID, err)
+		return
+	}
+	h.writeItemsResult(w, requestID, res)
+}
+
+func (h *dynamoHandler) scan(ctx context.Context, w http.ResponseWriter, requestID, table string, body map[string]any) {
+	// The store's Scan is a full scan; a filter expression on Scan is not supported yet — refuse
+	// loudly rather than silently returning unfiltered results.
+	if fe, ok := body["FilterExpression"].(string); ok && fe != "" {
+		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
+			"Scan with a FilterExpression is not yet supported by the open-infra shim.")
+		return
+	}
+	res, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "Scan"})
+	if err != nil {
+		h.mapStoreError(w, requestID, err)
+		return
+	}
+	h.writeItemsResult(w, requestID, res)
+}
+
+func (h *dynamoHandler) updateItem(ctx context.Context, w http.ResponseWriter, requestID, table string, body map[string]any) {
+	key, ok := body["Key"].(map[string]any)
+	if !ok {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "UpdateItem requires a Key.")
+		return
+	}
+	ue, _ := body["UpdateExpression"].(string)
+	if ue == "" {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "UpdateItem requires an UpdateExpression.")
+		return
+	}
+	names, values := body["ExpressionAttributeNames"], body["ExpressionAttributeValues"]
+	op := dynamodb.Operation{"operation": "UpdateItem", "key": key, "update": exprBlock(ue, names, values)}
+	if ce, ok := body["ConditionExpression"].(string); ok && ce != "" {
+		op["condition"] = exprBlock(ce, names, values)
+	}
+	res, err := h.store(table).Execute(ctx, op)
+	if err != nil {
+		h.mapStoreError(w, requestID, err)
+		return
+	}
+	// ReturnValues: NONE (default) → {}; ALL_NEW / UPDATED_NEW → the updated item.
+	if rv, _ := body["ReturnValues"].(string); rv == "ALL_NEW" || rv == "UPDATED_NEW" {
+		if item, ok := res.(map[string]any); ok {
+			writeDynamoJSON(w, requestID, map[string]any{"Attributes": dynamodb.ToItem(item)})
+			return
+		}
+	}
+	writeDynamoJSON(w, requestID, map[string]any{})
+}
+
+// writeItemsResult re-dresses a store Query/Scan result ({items, scannedCount, count, nextToken})
+// as the DynamoDB wire shape ({Items, Count, ScannedCount, LastEvaluatedKey}). The continuation
+// cursor is opaque — carried in a synthetic LastEvaluatedKey the client echoes back as
+// ExclusiveStartKey — since the store paginates by offset, not by the last item's key.
+func (h *dynamoHandler) writeItemsResult(w http.ResponseWriter, requestID string, res any) {
+	m, _ := res.(map[string]any)
+	src, _ := m["items"].([]any)
+	items := make([]any, 0, len(src))
+	for _, it := range src {
+		if im, ok := it.(map[string]any); ok {
+			items = append(items, dynamodb.ToItem(im))
+		}
+	}
+	resp := map[string]any{
+		"Items":        items,
+		"Count":        numOr(m["count"], len(items)),
+		"ScannedCount": numOr(m["scannedCount"], len(items)),
+	}
+	if tok, ok := m["nextToken"].(string); ok && tok != "" {
+		resp["LastEvaluatedKey"] = map[string]any{"__token": map[string]any{"S": tok}}
+	}
+	writeDynamoJSON(w, requestID, resp)
+}
+
+// exprBlock builds the store's per-block expression shape from the wire's flat expression +
+// (shared) attribute-name/value maps.
+func exprBlock(expr string, names, values any) map[string]any {
+	b := map[string]any{"expression": expr}
+	if names != nil {
+		b["expressionNames"] = names
+	}
+	if values != nil {
+		b["expressionValues"] = values
+	}
+	return b
+}
+
+// startToken pulls the opaque continuation offset out of an ExclusiveStartKey the shim minted.
+func startToken(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	t, ok := m["__token"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	s, _ := t["S"].(string)
+	return s
+}
+
+func numOr(v any, def int) float64 {
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return float64(def)
+}
+
+// mapStoreError translates a store error into the DynamoDB dialect: a failed condition is a real
+// DynamoDB semantic (400), an expression form the store does not implement is an honest 501, and
+// anything else is an internal error.
+func (h *dynamoHandler) mapStoreError(w http.ResponseWriter, requestID string, err error) {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "ConditionalCheck"):
+		writeDynamoError(w, http.StatusBadRequest, "ConditionalCheckFailedException", requestID,
+			"The conditional request failed")
+	case strings.Contains(msg, "not implemented"), strings.Contains(msg, "unsupported"), strings.Contains(msg, "not translatable"):
+		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID, msg)
+	default:
+		h.internal(w, requestID, err)
+	}
 }
 
 // --- helpers ---
