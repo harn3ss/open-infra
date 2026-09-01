@@ -75,9 +75,14 @@ not an open-infra responsibility.
 Recorded honestly so no one reads this as "ready":
 
 - **The DynamoDB data layer** — the biggest technical risk. open-infra has no managed DynamoDB
-  table kind today; AppSync resolvers can target a Dynamo-shaped data source whose coverage is
-  a documented subset (Get/Put/Delete/Scan — see the data-layer characterization), and closing
-  the remaining gaps is separate work. Until that lands, a DynamoDB-backed app does not fully port.
+  table kind today; AppSync resolvers can target a Dynamo-shaped data source whose coverage is a
+  documented subset — GetItem, PutItem, DeleteItem, UpdateItem, Query, and Scan (create / read /
+  update / delete / list), with the less-common forms (batch and transactional writes, TTL,
+  condition expressions on Put/Delete) refused loudly. There is still no standalone table kind.
 - **Cognito user-pool management** — open-infra consumes Cognito/OIDC JWTs but does not host or
   manage a user pool; the auth-migration path (external IdP vs open-infra IAM + OIDC) is covered
-  in its own note.
+  in [`docs/auth-migration.md`](auth-migration.md).
+- **API Gateway REST** — `kind: HttpApi` covers routing paths to backends but not REST-v1 stages,
+  deployments, authorizers, or usage plans; see [`docs/api-gateway-coverage.md`](api-gateway-coverage.md).
+- **Distributed tracing (X-Ray)** — not shipped; metrics + logs only. See
+  [`docs/tracing.md`](tracing.md).
