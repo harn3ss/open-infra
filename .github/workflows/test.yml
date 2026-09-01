@@ -18,6 +18,7 @@ on:
       - "hpo/**"
       - "featurestore/**"
       - "cfn/**"
+      - "dynamodb/**"
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
@@ -35,6 +36,7 @@ on:
       - "hpo/**"
       - "featurestore/**"
       - "cfn/**"
+      - "dynamodb/**"
       - "console-api/**"
       - "test/**"
       - "platform/abstraction/**"
@@ -69,6 +71,7 @@ jobs:
           - hpo # the hyperparameter-tuning engine (grid search, metric extraction)
           - featurestore # the online feature store API (RESP client, put/get)
           - cfn # the CloudFormation engine's plan/dry-run (mapping table + intrinsics + ordering)
+          - dynamodb # the shared Dynamo-shaped store (executor + expression evaluator), used by open-appsync + the aws-shim
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
