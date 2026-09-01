@@ -31,6 +31,8 @@ spec:
                    key is absent (the XRD default sets it, so absence is only the bare-template case). */ -}}
             {{- $tls := true }}
             {{- if hasKey $spec "tls" }}{{- $tls = $spec.tls }}{{- end }}
+            {{- $waf := false }}
+            {{- if hasKey $spec "waf" }}{{- $waf = $spec.waf }}{{- end }}
             ---
             # --- The API Gateway front door: one Traefik Ingress, one path per route ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -55,6 +57,9 @@ spec:
                       {{- else }}
                       traefik.ingress.kubernetes.io/router.entrypoints: web
                       {{- end }}
+                      {{- if $waf }}
+                      traefik.ingress.kubernetes.io/router.middlewares: {{ $ns }}-httpapi-{{ $name }}-waf@kubernetescrd
+                      {{- end }}
                   spec:
                     ingressClassName: traefik
                     rules:
@@ -75,5 +80,33 @@ spec:
                       - hosts: [ {{ $spec.domain }} ]
                         secretName: httpapi-{{ $name }}-tls
                     {{- end }}
+            {{- if $waf }}
+            ---
+            # In-cluster L7 WAF: a per-API Traefik Coraza (OWASP CRS) middleware in this
+            # namespace, referenced by the Ingress's router.middlewares annotation above.
+            # Requires the `coraza` Traefik plugin enabled on the cluster (see
+            # platform/networking/traefik-coraza.yaml + docs/api-gateway-coverage.md).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: waf-middleware
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: traefik.io/v1alpha1
+                  kind: Middleware
+                  metadata:
+                    name: httpapi-{{ $name }}-waf
+                    namespace: {{ $ns }}
+                  spec:
+                    plugin:
+                      coraza:
+                        directives:
+                          - "SecRuleEngine On"
+                          - "Include @coraza.conf-recommended"
+                          - "Include @crs-setup.conf.example"
+                          - "Include @owasp_crs/*.conf"
+            {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }

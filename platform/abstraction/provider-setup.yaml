@@ -146,6 +146,10 @@ rules:
   - apiGroups: [cert-manager.io]
     resources: [certificates]
     verbs: [get, list, watch, create, update, patch, delete]
+  # Traefik Middlewares for kind: HttpApi spec.waf (the in-cluster Coraza WAF).
+  - apiGroups: [traefik.io]
+    resources: [middlewares]
+    verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

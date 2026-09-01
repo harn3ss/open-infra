@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Security
+- **In-cluster WAF for `kind: HttpApi` (opt-in, experimental).** `spec.waf: true` attaches a
+  per-API Traefik Coraza / OWASP Core Rule Set middleware to the API's Ingress — an L7 web
+  application firewall, which a network `kind: SecurityGroup` (L3/L4) cannot provide. Off by
+  default; positioned as defense-in-depth for apps not fronted by a CDN WAF (the documented edge
+  path stays BYO-Cloudflare). It requires the `coraza` Traefik plugin to be enabled on the cluster,
+  an operator step documented in [`docs/api-gateway-coverage.md`](docs/api-gateway-coverage.md)
+  rather than shipped live (a bad plugin reference would fail Traefik startup).
+
 ### Identity
 - **`kind: UserPool` (experimental).** A managed, customer-facing OIDC identity provider — the
   token-*issuing* counterpart to the platform's own IAM, and the open-source path to an AWS Cognito
