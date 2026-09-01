@@ -70,16 +70,17 @@ func (k kubectlApplier) WaitReady(ctx context.Context, apiVersion, kind, name st
 	}
 }
 
-// WaitGone polls until the resource is fully removed from the cluster (a kubectl get returns
-// NotFound), so a DELETE_COMPLETE means the object is actually gone, not merely marked for
-// deletion behind a finalizer.
+// WaitGone polls until the resource is fully removed from the cluster, so a DELETE_COMPLETE
+// means the object is actually gone, not merely marked for deletion behind a finalizer.
+// Absence is signalled by `--ignore-not-found`: a missing object exits 0 with empty stdout, so
+// we never parse kubectl's error text (whose wording is not a stable contract) to decide "gone".
 func (k kubectlApplier) WaitGone(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error {
 	res := resourceArg(apiVersion, kind) + "/" + name
 	deadline := time.Now().Add(timeout)
 	for {
-		_, err := k.runOut(ctx, "get", res, "-o", "name")
-		if err != nil && (strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "not found")) {
-			return nil
+		out, err := k.runOut(ctx, "get", res, "--ignore-not-found", "-o", "name")
+		if err == nil && strings.TrimSpace(out) == "" {
+			return nil // gone
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%s still present after %s", res, timeout)
@@ -92,14 +93,15 @@ func (k kubectlApplier) WaitGone(ctx context.Context, apiVersion, kind, name str
 	}
 }
 
-// GetSpec reads a live resource's .spec for drift comparison.
+// GetSpec reads a live resource's .spec for drift comparison. Uses `--ignore-not-found`, so an
+// absent object is an empty result, not an error to string-match.
 func (k kubectlApplier) GetSpec(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
-	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "-o", "json")
+	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "--ignore-not-found", "-o", "json")
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "not found") {
-			return nil, false, nil
-		}
 		return nil, false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, false, nil // not found
 	}
 	var obj struct {
 		Spec map[string]any `json:"spec"`
@@ -110,13 +112,11 @@ func (k kubectlApplier) GetSpec(ctx context.Context, apiVersion, kind, name stri
 	return obj.Spec, true, nil
 }
 
-// GetStack reads the persisted stack record ConfigMap.
+// GetStack reads the persisted stack record ConfigMap. Uses `--ignore-not-found`, so a
+// missing record is an empty result, not an error to string-match.
 func (k kubectlApplier) GetStack(ctx context.Context, stackName string) (*StackRecord, bool, error) {
-	out, err := k.runOut(ctx, "get", "configmap", "cfn-stack-"+stackName, "-o", `jsonpath={.data.stack\.json}`)
+	out, err := k.runOut(ctx, "get", "configmap", "cfn-stack-"+stackName, "--ignore-not-found", "-o", `jsonpath={.data.stack\.json}`)
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") || strings.Contains(err.Error(), "not found") {
-			return nil, false, nil
-		}
 		return nil, false, err
 	}
 	if strings.TrimSpace(out) == "" {
