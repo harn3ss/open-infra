@@ -6,7 +6,7 @@ info:
   description: "The declarative resource API a GovStack building block provisions infrastructure through. Every path is a\
     \ standard Kubernetes resource endpoint under the openinfra.dev group; the schemas are GENERATED from platform/abstraction/*-xrd.yaml\
     \ (the CRD source of truth), so this spec can never drift from the running API. GENERATED \u2014 do not hand-edit."
-  x-openinfra-kinds: 34
+  x-openinfra-kinds: 35
 servers:
 - url: /apis/openinfra.dev/v1
   description: Kubernetes API server (openinfra.dev group)
@@ -42,6 +42,7 @@ tags:
 - name: Stream
 - name: TrainingJob
 - name: User
+- name: UserPool
 - name: VirtualMachine
 - name: VmImage
 - name: Volume
@@ -2650,11 +2651,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/virtualmachines:
+  /namespaces/{namespace}/userpools:
     get:
       tags:
-      - VirtualMachine
-      summary: List VirtualMachine resources
+      - UserPool
+      summary: List UserPool resources
       parameters:
       - &id094
         name: namespace
@@ -2673,11 +2674,11 @@ paths:
                   items:
                     type: array
                     items: &id095
-                      $ref: '#/components/schemas/VirtualMachine'
+                      $ref: '#/components/schemas/UserPool'
     post:
       tags:
-      - VirtualMachine
-      summary: Create a VirtualMachine
+      - UserPool
+      summary: Create a UserPool
       parameters:
       - *id094
       requestBody:
@@ -2697,11 +2698,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/virtualmachines/{name}:
+  /namespaces/{namespace}/userpools/{name}:
     get:
       tags:
-      - VirtualMachine
-      summary: Get a VirtualMachine
+      - UserPool
+      summary: Get a UserPool
       parameters:
       - *id094
       - &id096
@@ -2724,8 +2725,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VirtualMachine
-      summary: Delete a VirtualMachine
+      - UserPool
+      summary: Delete a UserPool
       parameters:
       - *id094
       - *id096
@@ -2734,11 +2735,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/vmimages:
+  /namespaces/{namespace}/virtualmachines:
     get:
       tags:
-      - VmImage
-      summary: List VmImage resources
+      - VirtualMachine
+      summary: List VirtualMachine resources
       parameters:
       - &id097
         name: namespace
@@ -2757,11 +2758,11 @@ paths:
                   items:
                     type: array
                     items: &id098
-                      $ref: '#/components/schemas/VmImage'
+                      $ref: '#/components/schemas/VirtualMachine'
     post:
       tags:
-      - VmImage
-      summary: Create a VmImage
+      - VirtualMachine
+      summary: Create a VirtualMachine
       parameters:
       - *id097
       requestBody:
@@ -2781,11 +2782,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/vmimages/{name}:
+  /namespaces/{namespace}/virtualmachines/{name}:
     get:
       tags:
-      - VmImage
-      summary: Get a VmImage
+      - VirtualMachine
+      summary: Get a VirtualMachine
       parameters:
       - *id097
       - &id099
@@ -2808,8 +2809,8 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - VmImage
-      summary: Delete a VmImage
+      - VirtualMachine
+      summary: Delete a VirtualMachine
       parameters:
       - *id097
       - *id099
@@ -2818,11 +2819,11 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /namespaces/{namespace}/volumes:
+  /namespaces/{namespace}/vmimages:
     get:
       tags:
-      - Volume
-      summary: List Volume resources
+      - VmImage
+      summary: List VmImage resources
       parameters:
       - &id100
         name: namespace
@@ -2841,11 +2842,11 @@ paths:
                   items:
                     type: array
                     items: &id101
-                      $ref: '#/components/schemas/Volume'
+                      $ref: '#/components/schemas/VmImage'
     post:
       tags:
-      - Volume
-      summary: Create a Volume
+      - VmImage
+      summary: Create a VmImage
       parameters:
       - *id100
       requestBody:
@@ -2865,11 +2866,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Status'
-  /namespaces/{namespace}/volumes/{name}:
+  /namespaces/{namespace}/vmimages/{name}:
     get:
       tags:
-      - Volume
-      summary: Get a Volume
+      - VmImage
+      summary: Get a VmImage
       parameters:
       - *id100
       - &id102
@@ -2892,11 +2893,95 @@ paths:
                 $ref: '#/components/schemas/Status'
     delete:
       tags:
-      - Volume
-      summary: Delete a Volume
+      - VmImage
+      summary: Delete a VmImage
       parameters:
       - *id100
       - *id102
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Not found
+  /namespaces/{namespace}/volumes:
+    get:
+      tags:
+      - Volume
+      summary: List Volume resources
+      parameters:
+      - &id103
+        name: namespace
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: &id104
+                      $ref: '#/components/schemas/Volume'
+    post:
+      tags:
+      - Volume
+      summary: Create a Volume
+      parameters:
+      - *id103
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: *id104
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: *id104
+        '409':
+          description: Already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+  /namespaces/{namespace}/volumes/{name}:
+    get:
+      tags:
+      - Volume
+      summary: Get a Volume
+      parameters:
+      - *id103
+      - &id105
+        name: name
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: *id104
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+    delete:
+      tags:
+      - Volume
+      summary: Delete a Volume
+      parameters:
+      - *id103
+      - *id105
       responses:
         '200':
           description: Deleted
@@ -5165,7 +5250,7 @@ components:
           - siteB
           - tables
           properties:
-            siteA: &id103
+            siteA: &id106
               type: object
               description: "One endpoint of the replication pair. Both sites are simultaneously source and target \u2014 changes\
                 \ captured here are applied to the peer and vice-versa. The two sites may run different engines (e.g. sqlserver\
@@ -5227,7 +5312,7 @@ components:
                   default: false
                   description: Connect to this site's database over TLS (default false). Applied for Postgres (sslmode=require)
                     and SQL Server (encrypt=true).
-            siteB: *id103
+            siteB: *id106
             tables:
               type: array
               items:
@@ -5707,6 +5792,61 @@ components:
               type: array
               items:
                 type: string
+    UserPool:
+      type: object
+      description: 'open-infra kind: UserPool.'
+      required:
+      - spec
+      properties:
+        apiVersion:
+          type: string
+          enum:
+          - openinfra.dev/v1
+        kind:
+          type: string
+          enum:
+          - UserPool
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          type: object
+          properties:
+            storageClass:
+              type: string
+              description: StorageClass for the pool's persistent volume. Defaults to 'longhorn'. Set to your cluster's StorageClass
+                on substrates that do not ship Longhorn (e.g. RKE2 with local-path).
+            realm:
+              type: string
+              description: "The realm to create \u2014 the pool itself (Cognito user pool equivalent). Lowercase DNS-label\
+                \ form. Defaults to the resource name if omitted."
+              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+            clientId:
+              type: string
+              description: The OIDC client (app client) created in the realm. Its client secret is emitted in the connection
+                secret. Defaults to 'openinfra'.
+              pattern: ^[a-zA-Z0-9._-]+$
+            hostname:
+              type: string
+              description: External hostname for the hosted login/admin UI, exposed over an Ingress with TLS. If omitted,
+                the pool is reachable in-cluster only (the OIDC issuer that consumers point OIDC_ISSUER at).
+            registrationAllowed:
+              type: boolean
+              default: true
+              description: Allow self-service sign-up in the hosted login UI (a Cognito-style open user pool). Turn off for
+                an invite-only / admin-provisioned pool.
+            size:
+              type: string
+              default: 2Gi
+              description: Storage for the pool's database (persisted across restarts).
+        status:
+          type: object
+          properties:
+            issuer:
+              type: string
+            realm:
+              type: string
+            ready:
+              type: boolean
     VirtualMachine:
       type: object
       description: 'open-infra kind: VirtualMachine.'
