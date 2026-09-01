@@ -134,6 +134,7 @@ rules:
       - modelmonitors
       - featuregroups
       - staticsites
+      - parameters
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
     resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]
