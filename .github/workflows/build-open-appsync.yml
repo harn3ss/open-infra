@@ -11,6 +11,7 @@ on:
     branches: [main]
     paths:
       - "open-appsync/**"
+      - "dynamodb/**"
       - ".github/workflows/build-open-appsync.yml"
   workflow_dispatch: {}
 
@@ -57,7 +58,7 @@ jobs:
         id: build
         uses: docker/build-push-action@v7
         with:
-          context: open-appsync
+          context: .
           file: open-appsync/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}

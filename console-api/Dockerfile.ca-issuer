@@ -2,14 +2,17 @@
 # authenticates to Vault with its OWN ServiceAccount (Kubernetes auth) and issues/revokes leaf certs on
 # the per-CA pki-<name> mounts under a least-privilege, issue-only policy; it never logs or persists a
 # returned private key. Small static binary on distroless, like attest/audit-offsite/aws-shim.
-# Build context is console-api/.
+# Build context is the repo ROOT — console-api requires the shared dynamodb module via a local
+# replace (../dynamodb), so that sibling is copied in beside it.
 FROM golang:1.26 AS build
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY dynamodb/ dynamodb/
+COPY console-api/go.mod console-api/go.sum console-api/
+WORKDIR /src/console-api
 RUN go mod download
-COPY . .
+COPY console-api/ ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ca-issuer ./cmd/ca-issuer
 
 FROM gcr.io/distroless/static-debian12

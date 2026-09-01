@@ -12,6 +12,7 @@ on:
     branches: [main]
     paths:
       - "console-api/**"
+      - "dynamodb/**"
       - ".github/workflows/build-audit-offsite.yml"
   workflow_dispatch: {}
 
@@ -59,7 +60,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           # Context is the console-api module (shares internal/auditchain).
-          context: console-api
+          context: .
           file: console-api/Dockerfile.audit-offsite
           push: true
           tags: ${{ steps.meta.outputs.tags }}
