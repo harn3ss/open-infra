@@ -146,10 +146,11 @@ func run(logger *slog.Logger) error {
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
-		"s3":      &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
-		"sts":     &stsHandler{account: account, logger: logger},
-		"lambda":  newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger),
-		"appsync": newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
+		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
+		"sts":      &stsHandler{account: account, logger: logger},
+		"lambda":   newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger),
+		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
+		"dynamodb": newDynamoHandler(cs, authzNS, logger),
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
