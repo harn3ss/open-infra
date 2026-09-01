@@ -1,5 +1,5 @@
 // DynamoDB expression evaluation for UpdateItem and Query — the operations the capability
-// characterization (evidence/appsync-dynamo-matrix.md) named as the gating gap over the slice-1
+// matrix (evidence/appsync-dynamo-matrix.md) named as the gating gap over the slice-1
 // Get/Put/Delete/Scan store.
 //
 // This is deliberately a FAITHFUL COMMON SUBSET, not a DynamoDB parity engine. It evaluates the
