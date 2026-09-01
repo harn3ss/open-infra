@@ -4,6 +4,9 @@ open-infra can read an AWS CloudFormation template and tell you, resource by res
 whether it can provision it on open-infra — and exactly what it cannot. It can then
 provision the supported ones as a live, tracked stack. This is the `cfn` engine.
 
+For the broader migration picture — CDK, Amplify hosting, and what is deliberately
+out of scope — see [`docs/aws-migration.md`](aws-migration.md).
+
 - **`cfn plan`** (read-only) parses a template, maps every resource onto an open-infra
   kind, resolves the intrinsic functions and the dependency order, and prints a verdict.
   It provisions nothing.
