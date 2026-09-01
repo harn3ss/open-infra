@@ -14,12 +14,14 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > **Status: experimental, opt-in, OFF by default.** The shim is a router with pluggable per-service
 > handlers — one front door, many domain experts. Fronted today: **S3** (over MinIO, proven
 > byte-faithful), **STS** GetCallerIdentity (identity reflection), **Lambda** Invoke (over
-> `kind: Function`/Knative), and **AppSync** (GraphQL, over the **open-appsync** engine — a
-> resolver-first, VTL-faithful engine on its own graduation ladder; slice 1 runs live, experimental). It is one optional
+> `kind: Function`/Knative), **AppSync** (GraphQL, over the **open-appsync** engine — a
+> resolver-first, VTL-faithful engine on its own graduation ladder; slice 1 runs live, experimental),
+> and **DynamoDB** (a core-operation slice — create/read/update/delete/query/scan — over FerretDB;
+> batch, transactional, and TTL operations still return `501`). It is one optional
 > AWS-shaped surface over the platform, never a core
 > dependency. Breadth is a roadmap of *earned* graduations — each service built, probed, and
 > counted the same gated way — never a claim of coverage. Services whose backend speaks a different
-> wire protocol (e.g. DynamoDB→Mongo) are real translation work and return an honest `501` until
+> wire protocol are real translation work and return an honest `501` until
 > built, not a hand-wavy stub.
 
 ## Enabling it
@@ -107,7 +109,8 @@ error dialect.
 | **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
 | **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse + `Event` async + `DryRun`) | **Built + unit-tested** — live proof pending a deployed Function |
 | **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); runtime **behavior-faithful** (goldens captured from a live AWS AppSync account, CI-green), broader parity experimental. Needs `components.openAppsync` |
-| DynamoDB, Secrets Manager, Kinesis, IAM, Bedrock, … | Postgres/FerretDB, Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
+| **DynamoDB** | FerretDB (Mongo-wire) | `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort + pagination), `UpdateItem` (update + condition expressions), `Scan` | **Core slice runs live** — full wire path (AWS JSON 1.0 + `X-Amz-Target` → shared store over FerretDB → typed attribute-values) exercised by a live round-trip (`dynamo_integration_test.go`, `-tags integration`). `BatchGetItem`/`BatchWriteItem`, `TransactGet`/`TransactWrite`, TTL, and streams return an honest `501`. Needs `MONGO_URI` |
+| Secrets Manager, Kinesis, IAM, Bedrock, … | Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
 
 Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters
 do — built → exercised → proven by a probe → counted. The shim never claims a service it hasn't

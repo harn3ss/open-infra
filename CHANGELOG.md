@@ -24,6 +24,13 @@ the product's public contract.
   conditions, a secondary index, filter expressions, sort order, and pagination) are supported as
   a faithful common subset; forms outside it — batch and transactional writes, TTL, and the like —
   fail loud rather than approximate. See [`docs/aws-migration.md`](docs/aws-migration.md).
+- **DynamoDB front door in the AWS shim.** Point a DynamoDB SDK client at the shim and it speaks
+  the DynamoDB wire protocol (AWS JSON 1.0, `X-Amz-Target`) directly against a FerretDB-backed
+  store: `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query`, `UpdateItem`,
+  and `Scan`, sharing the same expression evaluator as the AppSync data source. Every call is
+  authorized through the platform's own IAM (SigV4 → `SubjectAccessReview`), and the operations
+  outside the built slice — batch, transactional, TTL, and streams — return an honest `501`. Opt-in,
+  off by default. See [`docs/aws-shim.md`](docs/aws-shim.md).
 
 ## v2.7.0 — 2026-08-31
 
