@@ -6,6 +6,25 @@ the product's public contract.
 
 ## Unreleased
 
+### AWS compatibility
+- **CloudFormation engine (`cfn`).** Read a CloudFormation template — or CDK's synthesized
+  output, which is CloudFormation JSON — and provision the corresponding open-infra resources.
+  `cfn plan` is a read-only dry-run that maps each resource onto a kind and reports what it can
+  and cannot provision; `cfn deploy` creates a stack fail-closed and dependency-ordered, rolling
+  back with no orphans on failure; `cfn changeset` / `cfn update` diff and apply a change,
+  rolling back to the exact prior stack if any step fails; `cfn destroy` tears a stack down in
+  reverse order honoring `DeletionPolicy`; `cfn drift` reports resources changed or deleted out
+  of band without reconciling them. It never silently drops or approximates — an unsupported
+  resource type, intrinsic function, or property is refused with an exact reason. The claim is
+  exactly the committed mapping and translator tables, **not** full CloudFormation compatibility.
+  See [`docs/cloudformation.md`](docs/cloudformation.md).
+- **DynamoDB `UpdateItem` and `Query`** on the AppSync engine's Dynamo-shaped data source,
+  alongside the existing `GetItem`/`PutItem`/`DeleteItem`/`Scan`. UpdateItem (SET with arithmetic
+  / `if_not_exists` / `list_append`, REMOVE, ADD, and condition expressions) and Query (key
+  conditions, a secondary index, filter expressions, sort order, and pagination) are supported as
+  a faithful common subset; forms outside it — batch and transactional writes, TTL, and the like —
+  fail loud rather than approximate. See [`docs/aws-migration.md`](docs/aws-migration.md).
+
 ## v2.7.0 — 2026-08-31
 
 ### Security & compliance
