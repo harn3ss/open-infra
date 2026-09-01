@@ -55,7 +55,6 @@ own — not smuggled in here.
 ## Honest status
 
 The JWT-consumption and group-mapping mechanics above are verified by the engine's test suite and
-its live slice-1 runs. The end-to-end observation *against a representative app*
-(its exact pool, its exact directives, all three auth modes in one flow) belongs to the
-readiness sweep and is tracked there — this note defines the path and the boundary; that
-sweep is where it is watched working against the real app.
+its live slice-1 runs. The end-to-end observation against a representative app — its exact pool,
+its exact directives, all three auth modes in one flow — is a separate live-verification step;
+this note defines the path and the boundary, not that whole-flow observation.
