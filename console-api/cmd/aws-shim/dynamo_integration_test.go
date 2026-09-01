@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,8 +86,8 @@ func TestDynamo_FerretRoundTrip(t *testing.T) {
 	}
 
 	// An un-built operation is an honest 501, never a fake.
-	if w := call("BatchWriteItem", `{"RequestItems":{"notes":[]}}`); w.Code != http.StatusNotImplemented {
-		t.Errorf("BatchWriteItem should still be an honest 501, got %d", w.Code)
+	if w := call("ListTables", `{}`); w.Code != http.StatusNotImplemented {
+		t.Errorf("ListTables should still be an honest 501, got %d", w.Code)
 	}
 }
 
@@ -162,5 +163,80 @@ func TestDynamo_QueryUpdateScan(t *testing.T) {
 	s := must("Scan", `{"TableName":"msgs"}`)
 	if items, _ := s["Items"].([]any); len(items) != 4 {
 		t.Fatalf("Scan = %v items, want 4", s["Count"])
+	}
+}
+
+func TestDynamo_Batch(t *testing.T) {
+	uri := os.Getenv("FERRET_TEST_URI")
+	if uri == "" {
+		t.Skip("set FERRET_TEST_URI")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Disconnect(ctx)
+	db := client.Database("shim_dyn_batch_" + time.Now().Format("150405"))
+	defer db.Drop(ctx)
+	h := newDynamoHandler(csWithSAR(true), "default", db, discardLogger())
+	call := func(op, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.serve(w, dynamoReq("DynamoDB_20120810."+op, body), iam.Claims{Sub: "t"}, "r")
+		return w
+	}
+	must := func(op, body string) map[string]any {
+		w := call(op, body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", op, w.Code, w.Body.String())
+		}
+		var m map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &m)
+		return m
+	}
+
+	must("CreateTable", `{"TableName":"things","KeySchema":[{"AttributeName":"id","KeyType":"HASH"}]}`)
+
+	// BatchWriteItem: three puts in one call.
+	bw := must("BatchWriteItem", `{"RequestItems":{"things":[
+		{"PutRequest":{"Item":{"id":{"S":"1"},"v":{"N":"10"}}}},
+		{"PutRequest":{"Item":{"id":{"S":"2"},"v":{"N":"20"}}}},
+		{"PutRequest":{"Item":{"id":{"S":"3"},"v":{"N":"30"}}}}
+	]}}`)
+	if up, _ := bw["UnprocessedItems"].(map[string]any); len(up) != 0 {
+		t.Errorf("BatchWriteItem UnprocessedItems = %v, want empty", bw["UnprocessedItems"])
+	}
+
+	// BatchGetItem: fetch two that exist + one that does not; the miss is simply absent.
+	bg := must("BatchGetItem", `{"RequestItems":{"things":{"Keys":[
+		{"id":{"S":"1"}},{"id":{"S":"3"}},{"id":{"S":"404"}}
+	]}}}`)
+	resp, _ := bg["Responses"].(map[string]any)
+	got, _ := resp["things"].([]any)
+	if len(got) != 2 {
+		t.Fatalf("BatchGetItem returned %d items, want 2 (the missing key is absent, not an error)", len(got))
+	}
+
+	// BatchWriteItem again: a delete + a put in one call.
+	must("BatchWriteItem", `{"RequestItems":{"things":[
+		{"DeleteRequest":{"Key":{"id":{"S":"2"}}}},
+		{"PutRequest":{"Item":{"id":{"S":"4"},"v":{"N":"40"}}}}
+	]}}`)
+	// id 2 is gone, id 4 is present -> a full scan sees 1,3,4.
+	s := must("Scan", `{"TableName":"things"}`)
+	if items, _ := s["Items"].([]any); len(items) != 3 {
+		t.Fatalf("after batch delete+put, Scan = %v items, want 3", s["Count"])
+	}
+
+	// Fidelity guardrail: BatchWriteItem is capped at 25 requests.
+	over := `{"RequestItems":{"things":[` + strings.Repeat(`{"PutRequest":{"Item":{"id":{"S":"x"}}}},`, 25) + `{"PutRequest":{"Item":{"id":{"S":"x"}}}}]}}`
+	if w := call("BatchWriteItem", over); w.Code != http.StatusBadRequest {
+		t.Errorf("26 write requests should be a 400 ValidationException, got %d", w.Code)
+	}
+
+	// A ProjectionExpression is refused loudly, not silently ignored.
+	if w := call("GetItem", `{"TableName":"things","Key":{"id":{"S":"1"}},"ProjectionExpression":"v"}`); w.Code != http.StatusNotImplemented {
+		t.Errorf("GetItem with a ProjectionExpression should be an honest 501, got %d", w.Code)
 	}
 }
