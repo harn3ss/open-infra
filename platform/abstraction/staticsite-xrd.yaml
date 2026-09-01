@@ -1,0 +1,69 @@
+# kind: StaticSite — frontend static hosting for a built SPA (a dist/ tree), the
+# S3-static-website + CloudFront-origin-shaped primitive. One claim -> a MinIO
+# bucket (the artifact store), an nginx server that syncs the bucket and serves it
+# with SPA history-fallback, and a Traefik Ingress with cert-manager TLS.
+#
+# Upload your built assets to the bucket (the <name>-minio connection secret gives
+# the endpoint + credentials); the server picks them up. Client-side routes work:
+# unknown paths fall back to index.html when spec.spa is true.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xstaticsites.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XStaticSite, plural: xstaticsites }
+  claimNames: { kind: StaticSite, plural: staticsites }
+  defaultCompositionRef: { name: staticsite }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [domain]
+              properties:
+                domain:
+                  type: string
+                  description: "Hostname the site is served on, e.g. app.example.com."
+                bucket:
+                  type: string
+                  description: "MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio connection secret (endpoint + credentials) for uploads."
+                  pattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+                tls:
+                  type: boolean
+                  default: true
+                  description: "Terminate TLS via cert-manager (openinfra-issuer). Set false for plain HTTP."
+                spa:
+                  type: boolean
+                  default: true
+                  description: "Single-page-app history fallback: serve index.html for unknown paths so client-side routing works. Turn off for a plain multi-file site."
+                indexDocument:
+                  type: string
+                  default: "index.html"
+                  description: "The index/entry document served at / and (when spa) for unmatched routes."
+                errorDocument:
+                  type: string
+                  description: "Document served for 404s when spa is false (e.g. 404.html). Ignored when spa is true."
+                syncIntervalSeconds:
+                  type: integer
+                  default: 30
+                  description: "How often the server re-syncs the bucket to pick up new uploads."
+            status:
+              type: object
+              properties:
+                url: { type: string }
+                bucket: { type: string }
+                ready: { type: boolean }
