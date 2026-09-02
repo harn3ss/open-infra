@@ -1,0 +1,50 @@
+# Grafana Tempo — the distributed-tracing backend (polyhedron #67). Single-binary,
+# filesystem storage on a PVC (mirrors Loki), in the `monitoring` namespace next to
+# Prometheus / Loki / Grafana. It receives spans over OTLP (from the first-party Go
+# services — console-api/aws-shim, open-appsync) and Zipkin (from Knative
+# config-tracing, knative-serving.yaml), and Grafana queries it through the Tempo
+# datasource (kube-prometheus-stack.yaml additionalDataSources).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tempo
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: tempo
+    targetRevision: 1.14.0
+    helm:
+      values: |
+        tempo:
+          storage:
+            trace:
+              backend: local
+              local:
+                path: /var/tempo/traces
+              wal:
+                path: /var/tempo/wal
+          # Span ingestion: OTLP (grpc 4317 / http 4318) for the first-party services;
+          # Zipkin (9411) for Knative config-tracing's per-Function spans.
+          receivers:
+            otlp:
+              protocols:
+                grpc:
+                  endpoint: 0.0.0.0:4317
+                http:
+                  endpoint: 0.0.0.0:4318
+            zipkin:
+              endpoint: 0.0.0.0:9411
+          retention: 168h   # 7 days, matching Loki
+        persistence:
+          enabled: true
+          size: 10Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

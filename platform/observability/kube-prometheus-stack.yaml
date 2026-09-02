@@ -28,6 +28,18 @@ spec:
               url: http://loki.monitoring.svc.cluster.local:3100
               jsonData:
                 maxLines: 1000
+            # Tempo — distributed traces (#67). Trace-to-logs correlation points at the
+            # Loki datasource above (uid: loki) so a span links to its logs.
+            - name: Tempo
+              type: tempo
+              uid: tempo
+              access: proxy
+              # The Tempo single-binary chart serves its HTTP/query API on 3100 (the
+              # tempo-prom-metrics port), not 3200.
+              url: http://tempo.monitoring.svc.cluster.local:3100
+              jsonData:
+                tracesToLogsV2:
+                  datasourceUid: loki
           # Allow the open-infra console to embed dashboards (iframe, kiosk mode)
           # and serve them read-only without a login. Grafana is ClusterIP-only and the
           # console BFF fronts it under /grafana behind a session gate (requireSignedIn),
