@@ -1,9 +1,12 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BrainCog } from "lucide-react";
+import { BrainCog, Package } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
@@ -11,7 +14,7 @@ import { YamlViewer } from "@/components/common/yaml-viewer";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status-badge";
-import { k8sDelete, k8sGet } from "@/lib/api";
+import { ApiError, k8sDelete, k8sGet, registerTrainingJob } from "@/lib/api";
 import { openinfraPaths, batchPaths } from "@/lib/k8s-paths";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Job, TrainingJob } from "@/types/k8s";
@@ -49,12 +52,33 @@ export function TrainingJobDetailPage() {
     onSuccess: () => navigate({ to: "/trainingjobs" }),
   });
 
+  // Register-as-ModelPackage: the serving image can't be inferred (it isn't the training image),
+  // so the user supplies it here. The BFF SAR-gates the create; the package is born
+  // PendingManualApproval, so promotion to a served endpoint stays a separate, authorized step.
+  const [modelName, setModelName] = useState("");
+  const [servingImage, setServingImage] = useState("");
+  const [version, setVersion] = useState("");
+  const register = useMutation({
+    mutationFn: () =>
+      registerTrainingJob(namespace, name, {
+        modelName: modelName.trim(),
+        image: servingImage.trim(),
+        version: version.trim() || undefined,
+      }),
+    onSuccess: (pkg) => {
+      const mn = pkg?.metadata?.name;
+      if (mn) navigate({ to: "/model-registry/$namespace/$name", params: { namespace, name: mn } });
+    },
+  });
+
   if (isLoading) return <LoadingState label="Loading training job…" />;
   if (isError || !tj) return <ErrorState error={error} onRetry={refetch} />;
 
   const s = tj.spec;
   const gpu = s?.gpu ?? 1;
   const run = jobPhase(job);
+  const succeeded = run.label === "Succeeded";
+  const canRegister = succeeded && !!modelName.trim() && !!servingImage.trim() && !!s?.output?.bucket;
 
   return (
     <DetailShell
@@ -116,6 +140,54 @@ export function TrainingJobDetailPage() {
                 <code className="text-xs">{jobName}</code>
                 <span className="ml-2 text-xs text-muted-foreground">— view logs with <code>kubectl logs -n {namespace} job/{jobName}</code></span>
               </DetailRow>
+            </CardContent>
+          </Card>
+
+          {/* Register the finished artifact as a ModelPackage — the one manual hop in the
+              train→serve loop. Enabled once the run has Succeeded and there is an output bucket. */}
+          <Card className="mt-4">
+            <CardContent className="space-y-3 p-4">
+              <div className="flex items-center gap-2">
+                <Package className="size-4" />
+                <span className="text-sm font-medium">Register as Model Package</span>
+              </div>
+              {succeeded ? (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Publish this run's artifact to the Model Registry as <strong>PendingManualApproval</strong>.
+                    Serving it is still a separate step (approve, then deploy an endpoint), each authorized as you.
+                    The serving image serves HTTP and is <em>not</em> the training image.
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="mp-model">Model name</Label>
+                      <Input id="mp-model" placeholder="mnist" value={modelName} onChange={(e) => setModelName(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="mp-image">Serving image</Label>
+                      <Input id="mp-image" placeholder="registry/…/serve:1" value={servingImage} onChange={(e) => setServingImage(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="mp-version">Version <span className="text-muted-foreground">(optional)</span></Label>
+                      <Input id="mp-version" placeholder="auto" value={version} onChange={(e) => setVersion(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Button size="sm" disabled={!canRegister || register.isPending} onClick={() => register.mutate()}>
+                      <Package className="size-4" /> Register
+                    </Button>
+                    {register.isError ? (
+                      <span className="text-sm text-destructive">
+                        {register.error instanceof ApiError ? register.error.message : "Failed to register."}
+                      </span>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Available once the run has <strong>Succeeded</strong> and written an artifact to its output bucket.
+                </p>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

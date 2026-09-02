@@ -82,5 +82,8 @@ spec:
 - It runs **your** container; there is no first-party training image. open-infra
   provides the GPU placement, the object-store wiring, and the lifecycle.
 - Training vs serving: train with `kind: TrainingJob`, write the artifact to a bucket,
-  then serve it (e.g. from a `kind: Function` or `kind: Model`). open-infra does not
-  yet auto-register a trained artifact as a servable model — that hand-off is manual.
+  then **Register as Model Package** from the finished job's console page (or write the
+  `kind: ModelPackage` by hand) → approve → serve as a `kind: Model`. See
+  [Model Registry](model-registry.md). Registration is authorized as *you* (a
+  `SubjectAccessReview` for `create modelpackages`), not by an ambient controller: running a
+  training job does not by itself grant the right to publish a servable model.

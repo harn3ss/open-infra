@@ -291,6 +291,13 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(20*time.Second)).Post("/vm-snapshots/restore", handleVMSnapshotRestore(*client.Clientset, auth, logger))
 		api.With(middleware.Timeout(20*time.Second)).Delete("/vm-snapshots", handleVMSnapshotDelete(*client.Clientset, auth, logger))
 
+		// ML: register a finished TrainingJob as a ModelPackage — the one manual hop in the
+		// train→serve loop. Authorized AS the signed-in user (create modelpackages); the package
+		// is born PendingManualApproval, so serving still needs a human approval and a separately
+		// gated Deploy→Model. A train-capable, serve-incapable user cannot promote through it.
+		api.With(middleware.Timeout(20*time.Second)).
+			Post("/trainingjobs/{namespace}/{name}/register", handleTrainingJobRegister(*client.Clientset, auth, logger))
+
 		// IAM: manage kind: User / kind: Group from the console instead of kubectl.
 		// Every handler authorizes the signed-in user with a SubjectAccessReview against
 		// iam.openinfra.dev (see authz.go), so this is exactly as restricted as kubectl —
