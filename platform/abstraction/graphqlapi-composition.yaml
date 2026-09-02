@@ -51,6 +51,13 @@ spec:
             {{- $nodeArch := "amd64" }}{{- if eq $arch "-arm64" }}{{- $nodeArch = "arm64" }}{{- end }}
             {{- $image := $spec.image | default (printf "ghcr.io/harn3ss/open-infra-open-appsync:latest%s" $arch) }}
             {{- $replicas := $spec.replicas | default 1 }}
+            {{- /* Does any resolver or subscription require field-level auth? Only then does the
+                   engine need a ServiceAccount that can create SubjectAccessReviews — so an auth-less
+                   API keeps the immediate-start default SA, and only auth-using APIs take the
+                   reconciler-provisioned SA (see open-appsync-authz-reconciler). */}}
+            {{- $needsAuth := false }}
+            {{- range $r := ($spec.resolvers | default list) }}{{- if $r.auth }}{{- $needsAuth = true }}{{- end }}{{- end }}
+            {{- range $s := ($spec.subscriptions | default list) }}{{- if $s.auth }}{{- $needsAuth = true }}{{- end }}{{- end }}
             {{- /* Checksum over schema + every data source + every resolver, so ANY authoring change
                    rolls the pod (the reload mechanism, since the engine reads a directory once). */ -}}
             {{- $blob := $spec.schema | default "" }}
@@ -157,6 +164,14 @@ spec:
                           # Roll the pod whenever the authored config changes (the reload mechanism).
                           openinfra.dev/config-checksum: "{{ $checksum }}"
                       spec:
+                        {{- if $needsAuth }}
+                        # A resolver uses field-level auth: (a SubjectAccessReview against the API
+                        # server), which needs a SA that can create subjectaccessreviews. The
+                        # open-appsync-authz-reconciler provisions this SA + the auth-delegator
+                        # binding per namespace (the Crossplane provider cannot create SAs/RBAC — a
+                        # deliberate boundary), so the pod may briefly wait for the SA on first create.
+                        serviceAccountName: open-appsync
+                        {{- end }}
                         {{- /* Pin to a matching-arch node only for the default first-party image;
                                a user-supplied image carries its own arch. */}}
                         {{- if not $spec.image }}
