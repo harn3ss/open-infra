@@ -136,8 +136,8 @@ spec:
                             image: quay.io/keycloak/keycloak:26.0.7
                             args: ["start-dev", "--import-realm"]
                             env:
-                              - { name: KEYCLOAK_ADMIN, value: "admin" }
-                              - name: KEYCLOAK_ADMIN_PASSWORD
+                              - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: "admin" }
+                              - name: KC_BOOTSTRAP_ADMIN_PASSWORD
                                 valueFrom:
                                   secretKeyRef: { name: {{ $name }}-userpool, key: ADMIN_PASSWORD }
                               - { name: KC_HTTP_ENABLED, value: "true" }
