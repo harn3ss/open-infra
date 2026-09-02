@@ -70,6 +70,26 @@ So a Cognito+AppSync+DynamoDB app migrating in would: express its **backend** as
 static-hosting + CI. Nothing here implies Amplify parity; the frontend-hosting half is explicitly
 not an open-infra responsibility.
 
+## Terraform (via open-transform): the neutral-resource mapping
+
+Beyond CloudFormation, an AWS **Terraform** estate can be assessed for portability by
+[open-transform](https://github.com/harn3ss/open-transform) (`otf assess -target openinfra`),
+which reports what does and does not have an open-infra target. A feasibility pass over real
+AWS VPC/EKS modules surfaced four resource classes worth a **decided** disposition — recorded
+here so the answer is deliberate, not "unsupported":
+
+| AWS resource | open-infra | disposition |
+|---|---|---|
+| `aws_iam_role` | **`kind: Role`** | **Supported** — a Role is a named bundle of Policies compiled to an aggregated ClusterRole (see [iam.md](iam.md)). This is a first-class target; a migration should map to it. |
+| `aws_vpc` / `aws_subnet` | `kind: SecurityGroup` | **Deliberate non-goal** — Kubernetes is one flat pod network; isolation is by workload identity, not address range. Model it with Security Groups; do not recreate the VPC. Full rationale in [security-groups.md](security-groups.md#why-there-is-no-vpc-or-subnet-a-deliberate-non-goal). |
+| `aws_sqs_queue` | *(no standalone kind)* | **Acknowledged gap, deferred.** NATS JetStream is the messaging substrate, but it is exposed only through `kind: Stream` (which is **CDC-sourced** — it tails a database change log, not a standalone app-to-app queue) and `Function` triggers. A first-class SQS-shaped queue kind is not built (low frequency: one occurrence in the assessed estate); revisit if demand grows. |
+| `aws_s3_bucket` | *(sub-block, no kind)* | **Known** — buckets appear as fields inside other kinds (e.g. an `Application`'s `storage.buckets`), not as a standalone kind. Tracked separately. |
+
+The point of the disposition is that a report of "untranslatable" should carry the *right
+next step* — "map to `kind: Role`," "model isolation with Security Groups," — rather than a
+bare "unsupported." Mapping the neutral `role`/`queue` classes to these targets is
+open-transform's job, not the platform's.
+
 ## What still blocks a full AppSync-app migration
 
 Recorded honestly so no one reads this as "ready":
