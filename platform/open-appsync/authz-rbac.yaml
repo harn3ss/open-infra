@@ -1,0 +1,131 @@
+# Field-level authorization for open-appsync (polyhedron #68).
+#
+# The engine enforces a resolver's `auth:` by POSTing a SubjectAccessReview for the CALLER's identity
+# — which requires a ServiceAccount that can create subjectaccessreviews. Engine pods run
+# per-GraphQLApi in the USER's namespace, and the Crossplane provider deliberately cannot create
+# ServiceAccounts or RBAC (its permission boundary, provider-setup.yaml). So this RBAC is applied by
+# the ROOT app (which can), and a small reconciler provisions the per-namespace engine SA and keeps
+# ONE binding's subjects current — one entry per namespace that runs an auth-using GraphQLApi, plus
+# the singleton demo. Without an `auth:` requirement the composition keeps the immediate-start default
+# SA and none of this is on the critical path.
+#
+# Security note: the reconciler holds create/update on clusterrolebindings so it can OWN the authorizer
+# binding (a git-declared binding whose subjects grow per namespace would be reverted by ArgoCD's
+# self-heal — the grant-reconciler owns its bindings the same way, not from git). The escalation guard
+# bounds this: the reconciler possesses only { create subjectaccessreviews, create serviceaccounts,
+# manage this binding, read graphqlapis }, so even if its (short-lived, CronJob) token were stolen it
+# could bind only that low-risk set — never secrets, cluster-admin, or any higher role.
+#
+# Part of the OPT-IN openAppsync component; applied by the root app.
+---
+# (1) The capability engine SAs receive: create SubjectAccessReviews (delegated authorization).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-appsync-authorizer
+rules:
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+# (2) The reconciler's identity + least-privilege permissions.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: open-appsync-authz-reconciler
+  namespace: open-infra-open-appsync
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-appsync-authz-reconciler
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [graphqlapis]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, create, patch]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterrolebindings]
+    verbs: [get, create, update, patch]
+  # Possess the authorizer capability itself, so it may bind that ClusterRole without `escalate`.
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-appsync-authz-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-appsync-authz-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: open-appsync-authz-reconciler
+    namespace: open-infra-open-appsync
+---
+# (3) The reconciler: ensure the engine SA in each auth-using GraphQLApi namespace (+ the singleton),
+#     then set the authorizer binding's subjects to exactly those SAs (apply = create-or-update, so
+#     the binding is reconciler-owned and ArgoCD never reverts its subjects).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: open-appsync-authz-reconciler
+  namespace: open-infra-open-appsync
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: open-appsync-authz-reconciler
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          containers:
+            - name: reconcile
+              image: alpine/k8s:1.30.0
+              command: [/bin/sh, -ceu]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: SINGLETON_NS, value: open-infra-open-appsync }
+              args:
+                - |
+                  # Namespaces running an auth-using GraphQLApi (any resolver/subscription carrying an
+                  # auth: block), plus the singleton demo namespace.
+                  nss=$(kubectl get graphqlapis.openinfra.dev -A -o json | jq -r '
+                    [ .items[]
+                      | select( ( ([.spec.resolvers[]?.auth] + [.spec.subscriptions[]?.auth]) | map(select(. != null)) | length ) > 0 )
+                      | .metadata.namespace ] | unique | .[]')
+                  all=$(printf '%s\n%s\n' "$SINGLETON_NS" "$nss" | sort -u | grep -v '^$')
+
+                  # Ensure the engine ServiceAccount exists in each (idempotent apply).
+                  for ns in $all; do
+                    kubectl create serviceaccount open-appsync -n "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+                  done
+
+                  # Set the authorizer binding's subjects to exactly those SAs (create-or-update).
+                  subjects=$(printf '%s\n' $all | jq -R '{kind:"ServiceAccount", name:"open-appsync", namespace:.}' | jq -s .)
+                  jq -n --argjson subj "$subjects" '{
+                    apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
+                    metadata: { name: "open-appsync-authorizer", labels: { "app.kubernetes.io/managed-by": "open-appsync-authz-reconciler" } },
+                    roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "open-appsync-authorizer" },
+                    subjects: $subj
+                  }' | kubectl apply -f -
+                  echo "authz-reconciler: bound open-appsync SAs in: $(echo $all | tr '\n' ' ')"
+          volumes:
+            - { name: tmp, emptyDir: {} }

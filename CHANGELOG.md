@@ -35,6 +35,14 @@ the product's public contract.
   See [`docs/static-sites.md`](docs/static-sites.md).
 
 ### Security
+- **Field-level authorization in the AppSync engine now enforces (fix).** `open-appsync` authorizes a
+  resolver's `auth:` requirement by running a `SubjectAccessReview` for the caller against the platform's
+  RBAC — but the engine pod ran as the namespace `default` ServiceAccount, which cannot create
+  SubjectAccessReviews, so every `auth:`-guarded field failed closed for all callers. The engine now runs
+  under a dedicated ServiceAccount bound (via a small root-app-applied reconciler that also provisions it
+  per namespace) to a minimal `create subjectaccessreviews` ClusterRole. Only APIs that actually use
+  `auth:` take the dedicated SA; auth-less APIs are unchanged. The Crossplane provider still creates no
+  RBAC — that boundary is intact.
 - **In-cluster WAF for `kind: HttpApi` (opt-in, experimental).** `spec.waf: true` attaches a
   per-API Traefik Coraza / OWASP Core Rule Set middleware to the API's Ingress — an L7 web
   application firewall, which a network `kind: SecurityGroup` (L3/L4) cannot provide. Off by
