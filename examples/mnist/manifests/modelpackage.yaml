@@ -1,0 +1,20 @@
+# Step 2 — register (declarative form). The console's "Register as Model Package" button on
+# the finished TrainingJob does exactly this, authorized as you; this file is the equivalent
+# you can apply by hand. It records the artifact the training run wrote and the SERVING image
+# (which is NOT the training image). It is born PendingManualApproval — a record that runs
+# nothing until approved and promoted to a kind: Model.
+apiVersion: openinfra.dev/v1
+kind: ModelPackage
+metadata:
+  name: mnist-v1
+  namespace: ml-demo
+spec:
+  modelName: mnist
+  version: "1"
+  artifact:
+    bucket: models
+    key: mnist/v1/model.pt
+  image: ghcr.io/harn3ss/open-infra-mnist-serve:1   # built from ../serve
+  port: 8000
+  framework: pytorch
+  approvalStatus: PendingManualApproval   # flip to Approved (console Approve, or edit) before serving
