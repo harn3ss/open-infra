@@ -259,6 +259,8 @@ spec:
               containerPort: 4566
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
+            # Distributed tracing (#67): export spans to Tempo's OTLP receiver (http:// = insecure gRPC).
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://tempo.monitoring.svc.cluster.local:4317" }
             - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
             - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: aws-shim-minio, key: accessKey } } }
             - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: aws-shim-minio, key: secretKey } } }
