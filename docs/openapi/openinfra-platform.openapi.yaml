@@ -4836,6 +4836,43 @@ components:
               description: Attach an in-cluster L7 WAF (Traefik Coraza / OWASP CRS) to this API's Ingress. Defense-in-depth
                 for apps not fronted by a CDN WAF; requires the Coraza Traefik plugin to be enabled on the cluster (see docs/api-gateway-coverage.md).
                 Off by default.
+            cors:
+              type: object
+              description: Enable CORS on the API (an API Gateway CORS-equivalent, via a Traefik headers middleware). Presence
+                turns it on; all fields have sensible defaults.
+              properties:
+                allowOrigins:
+                  type: array
+                  items:
+                    type: string
+                  description: Allowed origins for Access-Control-Allow-Origin. Defaults to ["*"].
+                allowMethods:
+                  type: array
+                  items:
+                    type: string
+                  description: Allowed methods. Defaults to [GET, POST, PUT, PATCH, DELETE, OPTIONS].
+                allowHeaders:
+                  type: array
+                  items:
+                    type: string
+                  description: Allowed request headers. Defaults to ["*"].
+                allowCredentials:
+                  type: boolean
+                  description: 'Send Access-Control-Allow-Credentials: true. Defaults to false.'
+                maxAge:
+                  type: integer
+                  description: Preflight cache seconds (Access-Control-Max-Age). Defaults to 600.
+            rateLimit:
+              type: object
+              description: Throttle requests (an API Gateway usage-plan/throttle-equivalent, via a Traefik rateLimit middleware).
+                Presence turns it on.
+              properties:
+                average:
+                  type: integer
+                  description: Sustained requests per second allowed (token-bucket refill). Defaults to 100.
+                burst:
+                  type: integer
+                  description: Max burst above the average. Defaults to 50.
             routes:
               type: array
               description: "Path \u2192 backend routes, evaluated in order (put more specific paths first)."

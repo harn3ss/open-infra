@@ -53,6 +53,14 @@ the product's public contract.
   per namespace) to a minimal `create subjectaccessreviews` ClusterRole. Only APIs that actually use
   `auth:` take the dedicated SA; auth-less APIs are unchanged. The Crossplane provider still creates no
   RBAC — that boundary is intact.
+- **`kind: HttpApi` gains CORS and rate limiting.** `spec.cors` (origins / methods / headers /
+  credentials / max-age) renders a Traefik headers middleware — the API Gateway CORS-equivalent,
+  preflight included — and `spec.rateLimit` (`average` / `burst`) renders a Traefik rateLimit
+  middleware (a per-source token bucket, the usage-plan/throttle-equivalent). Both are built-in
+  Traefik middlewares (no plugin) and compose with the WAF into one ordered `router.middlewares`
+  chain (CORS → rate limit → WAF). Closes part of the API Gateway REST-v1 gap; stages, deployments,
+  authorizers, per-API-key usage plans, and VTL mapping remain out of scope. See
+  [`docs/api-gateway-coverage.md`](docs/api-gateway-coverage.md).
 - **In-cluster WAF for `kind: HttpApi` (opt-in, experimental).** `spec.waf: true` attaches a
   per-API Traefik Coraza / OWASP Core Rule Set middleware to the API's Ingress — an L7 web
   application firewall, which a network `kind: SecurityGroup` (L3/L4) cannot provide. Off by
