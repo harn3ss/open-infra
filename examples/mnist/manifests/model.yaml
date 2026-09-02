@@ -1,0 +1,17 @@
+# Step 3 — serve. Promote the Approved package to a served endpoint. The console's "Deploy
+# endpoint" button on an Approved ModelPackage creates this for you; this file is the
+# equivalent. The serving container loads the artifact (ARTIFACT_BUCKET/ARTIFACT_KEY injected)
+# and serves HTTP on serve.port behind a key-gated endpoint.
+apiVersion: openinfra.dev/v1
+kind: Model
+metadata:
+  name: mnist-serve
+  namespace: ml-demo
+spec:
+  serve:
+    image: ghcr.io/harn3ss/open-infra-mnist-serve:1
+    port: 8000
+    artifact:
+      bucket: models
+      key: mnist/v1/model.pt
+    modelPackage: mnist-v1        # provenance
