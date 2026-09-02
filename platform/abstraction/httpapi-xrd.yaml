@@ -79,6 +79,25 @@ spec:
                     burst:
                       type: integer
                       description: "Max burst above the average. Defaults to 50."
+                authorizer:
+                  type: object
+                  description: "A JWT authorizer (the API Gateway JWT-authorizer equivalent): validate a Bearer OIDC token against an issuer's JWKS before the request reaches a backend. Off unless set. Pair with a kind: UserPool as the issuer. Requires a JWT Traefik plugin enabled on the cluster (see docs/api-gateway-coverage.md), like the WAF — off until then."
+                  properties:
+                    jwt:
+                      type: object
+                      required: [issuer]
+                      properties:
+                        issuer:
+                          type: string
+                          description: "OIDC issuer URL (e.g. a UserPool's ISSUER_URL). Keys are fetched from <issuer>/.well-known/jwks.json."
+                        audience:
+                          type: array
+                          items: { type: string }
+                          description: "Accepted token audiences (the aud claim). Optional; when set, a token's aud must match."
+                        required:
+                          type: boolean
+                          default: true
+                          description: "Reject requests without a valid token (401). Set false to allow through and let the backend decide."
                 routes:
                   type: array
                   description: "Path → backend routes, evaluated in order (put more specific paths first)."
@@ -94,7 +113,13 @@ spec:
                         type: string
                         default: Prefix
                         enum: [Prefix, Exact, ImplementationSpecific]
-                        description: "Ingress path match type."
+                        description: "Path match type. Prefix and ImplementationSpecific match a path prefix; Exact matches the whole path."
+                      methods:
+                        type: array
+                        items:
+                          type: string
+                          enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+                        description: "HTTP methods this route accepts (the API Gateway per-method route equivalent). Omit to accept all methods. A request whose method isn't listed doesn't match this route."
                       backend:
                         type: object
                         required: [name]
