@@ -1,15 +1,15 @@
 {
-  "updated": "2026-09-01T13:32:41Z",
+  "updated": "2026-09-02T12:50:46Z",
   "runs": {
     "lottery": {
       "conclusion": "success",
-      "date": "2026-09-01",
-      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33513849041"
+      "date": "2026-09-02",
+      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33631901777"
     },
     "stress-mem": {
       "conclusion": "success",
-      "date": "2026-09-01",
-      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33513849041"
+      "date": "2026-09-02",
+      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33631901777"
     },
     "loss": {
       "conclusion": "success",
@@ -22,19 +22,19 @@
       "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33412646518"
     },
     "stress-cpu": {
-      "conclusion": "inconclusive",
-      "date": "2026-08-08",
-      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/31249761635"
+      "conclusion": "success",
+      "date": "2026-09-02",
+      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33631901777"
     },
     "partition": {
       "conclusion": "success",
-      "date": "2026-08-14",
-      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/31762875020"
+      "date": "2026-09-02",
+      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33631901777"
     },
     "capture-kill": {
       "conclusion": "success",
-      "date": "2026-08-29",
-      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33256043800"
+      "date": "2026-09-02",
+      "runUrl": "https://github.com/harn3ss/open-infra/actions/runs/33631901777"
     },
     "sink-kill": {
       "conclusion": "success",
