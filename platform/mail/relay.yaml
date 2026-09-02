@@ -47,7 +47,7 @@ spec:
         - name: postfix
           # Postfix relay image, env-configured. Pin/confirm against the image's
           # releases before relying on it for delivery.
-          image: boky/postfix:v4.3.1
+          image: boky/postfix:v5.1.0
           env:
             - { name: ALLOWED_SENDER_DOMAINS, value: "*" }
             # Relay for in-cluster senders (broad private ranges; the Service is
