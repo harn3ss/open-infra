@@ -22,8 +22,10 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/metrics"
 	"github.com/harn3ss/open-infra/open-appsync/internal/server"
 	"github.com/harn3ss/open-infra/open-appsync/internal/subscription"
+	"github.com/harn3ss/open-infra/open-appsync/internal/tracing"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 var version = "dev"
@@ -92,6 +94,15 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	// Distributed tracing (#67): opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (Tempo). W3C
+	// traceparent is honored either way, so a trace from the aws-shim stitches through.
+	shutdownTracing, err := tracing.Init(context.Background(), "open-appsync")
+	if err != nil {
+		logger.Warn("tracing init failed; continuing without traces", slog.String("error", err.Error()))
+	} else {
+		defer func() { _ = shutdownTracing(context.Background()) }()
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -126,7 +137,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	addr := getenv("LISTEN_ADDR", ":8080")
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: otelhttp.NewHandler(mux, "open-appsync"), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 
 	serverErr := make(chan error, 1)
 	go func() {
