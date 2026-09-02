@@ -23,10 +23,11 @@ CloudFormation." The honest boundaries:
 - **Ports with caveats (lossy)** — S3/SQS/SNS/RDS map through an `Application`'s sub-blocks,
   EC2 → `VirtualMachine`, EBS/EFS → `Volume`/`FileShare`. The caveats are printed, never hidden.
 - **Breaks / refused (fail-loud, never a silent partial)** — `AWS::DynamoDB::Table` is **gated**
-  (no managed data layer yet; see below), `AWS::Cognito::*` is unsupported (open-infra consumes
-  OIDC/JWT, it does not host a user pool — see [`docs/auth-migration.md`](auth-migration.md)),
-  nested stacks, Lambda-backed custom resources, and the general AWS resource catalog are
-  unsupported. Each produces a `REJECTED` verdict naming the reason.
+  (no standalone table *kind* for the engine to map onto — the shim has a DynamoDB front door, but
+  the engine maps to kinds; see below), `AWS::Cognito::*` is unsupported by the engine (it doesn't
+  map onto `kind: UserPool` yet, though open-infra now hosts a pool — see
+  [`docs/auth-migration.md`](auth-migration.md)), nested stacks, Lambda-backed custom resources, and
+  the general AWS resource catalog are unsupported. Each produces a `REJECTED` verdict naming the reason.
 - **Create fidelity is narrower than the mapping** — a resource type that *maps* does not always
   *create*, because AWS resource content often has no faithful open-infra form (IAM's
   `service:Action` permission namespace vs open-infra's `kind:verb` RBAC; KMS key policies; a
@@ -94,15 +95,21 @@ open-transform's job, not the platform's.
 
 Recorded honestly so no one reads this as "ready":
 
-- **The DynamoDB data layer** — the biggest technical risk. open-infra has no managed DynamoDB
-  table kind today; AppSync resolvers can target a Dynamo-shaped data source whose coverage is a
-  documented subset — GetItem, PutItem, DeleteItem, UpdateItem, Query, and Scan (create / read /
-  update / delete / list), with the less-common forms (batch and transactional writes, TTL,
-  condition expressions on Put/Delete) refused loudly. There is still no standalone table kind.
-- **Cognito user-pool management** — open-infra consumes Cognito/OIDC JWTs but does not host or
-  manage a user pool; the auth-migration path (external IdP vs open-infra IAM + OIDC) is covered
-  in [`docs/auth-migration.md`](auth-migration.md).
-- **API Gateway REST** — `kind: HttpApi` covers routing paths to backends but not REST-v1 stages,
-  deployments, authorizers, or usage plans; see [`docs/api-gateway-coverage.md`](api-gateway-coverage.md).
-- **Distributed tracing (X-Ray)** — not shipped; metrics + logs only. See
-  [`docs/tracing.md`](tracing.md).
+- **The DynamoDB data layer** — the aws-shim ships a **DynamoDB front door**: CreateTable,
+  GetItem / PutItem / DeleteItem / UpdateItem, Query, full Scan, and the batch item APIs
+  (BatchGetItem / BatchWriteItem) — see [`docs/aws-shim.md`](aws-shim.md). What remains: there is
+  **no standalone table *kind*** (a Dynamo table isn't yet a first-class declarative resource), and
+  the open-appsync *VTL-resolver* data-source path covers only single-item CRUD + Query/Scan (no
+  batch/transactional writes on that path). A Dynamo-backed app works against the shim surface, but
+  not yet as a declared table kind.
+- **Cognito self-service management** — open-infra now **hosts a user pool**
+  ([`kind: UserPool`](auth-migration.md) — Keycloak, hosted sign-up/sign-in UI, OIDC issuance), so
+  the identity-provider half is covered. What is still absent is a programmatic self-service
+  user-pool *management* API (user CRUD via an API); see [`docs/auth-migration.md`](auth-migration.md).
+- **API Gateway REST control plane** — `kind: HttpApi` covers routing paths, per-route methods,
+  CORS, throttling, and a JWT authorizer. What it does not model is the REST-v1 control plane —
+  stages, a deployment promote/rollback lifecycle, and per-API-key usage plans (deliberate
+  non-goals); see [`docs/api-gateway-coverage.md`](api-gateway-coverage.md).
+- **X-Ray-style trace fan-out** — distributed tracing ships (Grafana Tempo + the OTel SDK in the
+  first-party services, opt-in; see [`docs/tracing.md`](tracing.md)). Traces are captured — what is
+  not an X-Ray clone is automatic AWS-service-map discovery.

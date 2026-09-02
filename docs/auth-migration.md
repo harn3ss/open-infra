@@ -5,9 +5,12 @@ Cognito** (or another OIDC IdP). The boundary, stated plainly:
 
 - **Consume a JWT: yes.** open-infra's AppSync engine (open-appsync) verifies and enforces
   Cognito/OIDC bearer tokens on the request path, across all five AWS AppSync auth modes.
-- **Manage a user pool: no.** open-infra does **not** host or manage a Cognito-equivalent user
-  pool — no sign-up/sign-in flows, no hosted UI, no user-pool CRUD. Identity is supplied by an
-  external IdP; open-infra is a relying party, not an identity provider.
+- **Host a user pool: yes (`kind: UserPool`).** open-infra can now host a Cognito-equivalent
+  pool — a Keycloak-backed OIDC issuer with a hosted sign-up/sign-in UI that issues JWTs (see
+  *Issuing tokens: `kind: UserPool`* below). So it can be the relying party (consume tokens) **and**
+  the identity provider (issue them), or defer to an external IdP.
+- **Programmatic user-pool management: not yet.** There is no self-service management API for
+  user/attribute CRUD over the pool (Keycloak's own admin API aside) — that surface is a follow-on.
 
 ## What open-infra consumes today
 
