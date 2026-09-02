@@ -33,7 +33,9 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/crd"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/proxy"
+	"github.com/harn3ss/open-infra/console-api/internal/tracing"
 	"github.com/harn3ss/open-infra/console-api/internal/watch"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // version is the build version, overridden at link time via
@@ -88,11 +90,19 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("console auth", slog.String("mode", auth.mode))
 
+	// Distributed tracing (#67): opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (Tempo).
+	shutdownTracing, err := tracing.Init(context.Background(), "console-api")
+	if err != nil {
+		logger.Warn("tracing init failed; continuing without traces", slog.String("error", err.Error()))
+	} else {
+		defer func() { _ = shutdownTracing(context.Background()) }()
+	}
+
 	router := newRouter(client, auth, logger)
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: router,
+		Handler: otelhttp.NewHandler(router, "console-api"),
 		// Generous header timeout, but no global write timeout: /api/watch is a
 		// long-lived SSE stream and a WriteTimeout would sever it. Per-request
 		// deadlines for the short endpoints are enforced via context elsewhere.

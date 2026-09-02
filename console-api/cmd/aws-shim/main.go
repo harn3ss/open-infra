@@ -29,10 +29,12 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
+	"github.com/harn3ss/open-infra/console-api/internal/tracing"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -159,6 +161,15 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	// Distributed tracing (#67): opt-in via OTEL_EXPORTER_OTLP_ENDPOINT (Tempo). W3C
+	// traceparent propagation lets a shim request stitch through to open-appsync/etc.
+	shutdownTracing, err := tracing.Init(context.Background(), "aws-shim")
+	if err != nil {
+		logger.Warn("tracing init failed; continuing without traces", slog.String("error", err.Error()))
+	} else {
+		defer func() { _ = shutdownTracing(context.Background()) }()
+	}
+
 	// The service registry: one front door, many domain experts (keyed by the AWS service name the
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
@@ -173,7 +184,7 @@ func run(logger *slog.Logger) error {
 	addr := getenv("LISTEN_ADDR", ":4566")
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           router,
+		Handler:           otelhttp.NewHandler(router, "aws-shim"),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
