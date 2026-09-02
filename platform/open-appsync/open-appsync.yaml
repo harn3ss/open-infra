@@ -52,6 +52,15 @@ data:
   response.vtl: |
     $util.toJson($ctx.result)
 ---
+# Dedicated SA (not the namespace default). If this demo ever grows a resolver with an
+# auth: requirement, it is the subject the open-appsync-authz-reconciler binds to create
+# subjectaccessreviews — see platform/open-appsync/authz-rbac.yaml.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: open-appsync
+  namespace: open-infra-open-appsync
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,6 +75,7 @@ spec:
     metadata:
       labels: { app: open-appsync }
     spec:
+      serviceAccountName: open-appsync
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
