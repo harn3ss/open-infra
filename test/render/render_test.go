@@ -423,6 +423,10 @@ func TestGraphQLApi_RendersConfigAndEngine(t *testing.T) {
 	if strings.Contains(out, "MONGO_URI") {
 		t.Errorf("memory-only GraphQLApi must not set MONGO_URI; got:\n%s", grepCtx(out, "env:"))
 	}
+	// An auth-less API keeps the default SA (immediate start) — no dedicated SA reference (#68).
+	if strings.Contains(out, "serviceAccountName") {
+		t.Errorf("an auth-less GraphQLApi must not set serviceAccountName; got:\n%s", grepCtx(out, "serviceAccount"))
+	}
 	// The netpol must NOT carry a blanket same-namespace allow: a co-tenant pod could otherwise forge
 	// identity headers. The only namespaceSelectors are in the netpol, so the API's own namespace name
 	// appearing as a metadata.name selector would mean the same-ns peer is still present.
@@ -533,6 +537,11 @@ func TestGraphQLApi_FieldAuth(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("field-auth render missing %q; got:\n%s", want, grepCtx(out, "auth"))
 		}
+	}
+	// An auth-using API must run under the dedicated SA (the reconciler binds it to create SARs);
+	// without it every auth: field fails closed (#68).
+	if !strings.Contains(out, "serviceAccountName: open-appsync") {
+		t.Errorf("an auth-using GraphQLApi must set serviceAccountName: open-appsync; got:\n%s", grepCtx(out, "serviceAccount"))
 	}
 }
 
