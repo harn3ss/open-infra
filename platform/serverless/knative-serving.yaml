@@ -33,5 +33,13 @@ spec:
     features:
       kubernetes.podspec-runtimeclassname: enabled
       kubernetes.podspec-nodeselector: enabled
+    # Distributed tracing (#67): per-request spans through the activator + queue-proxy
+    # of every kind: Function, shipped to Tempo's Zipkin receiver. Rendered by the
+    # operator into the config-tracing ConfigMap (knative-serving ns).
+    tracing:
+      backend: zipkin
+      zipkin-endpoint: "http://tempo.monitoring.svc.cluster.local:9411/api/v2/spans"
+      debug: "false"
+      sample-rate: "0.1"
   high-availability:
     replicas: 1
