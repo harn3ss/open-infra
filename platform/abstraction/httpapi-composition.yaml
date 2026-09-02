@@ -33,6 +33,14 @@ spec:
             {{- if hasKey $spec "tls" }}{{- $tls = $spec.tls }}{{- end }}
             {{- $waf := false }}
             {{- if hasKey $spec "waf" }}{{- $waf = $spec.waf }}{{- end }}
+            {{- $cors := hasKey $spec "cors" }}
+            {{- $rateLimit := hasKey $spec "rateLimit" }}
+            {{- /* Compose the ordered Traefik middleware chain: CORS (answer preflight first),
+                   then the rate limit, then the WAF. Each is a per-API Middleware rendered below. */}}
+            {{- $mw := list }}
+            {{- if $cors }}{{- $mw = append $mw (printf "%s-httpapi-%s-cors@kubernetescrd" $ns $name) }}{{- end }}
+            {{- if $rateLimit }}{{- $mw = append $mw (printf "%s-httpapi-%s-ratelimit@kubernetescrd" $ns $name) }}{{- end }}
+            {{- if $waf }}{{- $mw = append $mw (printf "%s-httpapi-%s-waf@kubernetescrd" $ns $name) }}{{- end }}
             ---
             # --- The API Gateway front door: one Traefik Ingress, one path per route ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -57,8 +65,8 @@ spec:
                       {{- else }}
                       traefik.ingress.kubernetes.io/router.entrypoints: web
                       {{- end }}
-                      {{- if $waf }}
-                      traefik.ingress.kubernetes.io/router.middlewares: {{ $ns }}-httpapi-{{ $name }}-waf@kubernetescrd
+                      {{- if $mw }}
+                      traefik.ingress.kubernetes.io/router.middlewares: {{ join "," $mw }}
                       {{- end }}
                   spec:
                     ingressClassName: traefik
@@ -107,6 +115,55 @@ spec:
                           - "Include @coraza.conf-recommended"
                           - "Include @crs-setup.conf.example"
                           - "Include @owasp_crs/*.conf"
+            {{- end }}
+            {{- if $cors }}
+            ---
+            # CORS: a Traefik headers middleware (the API Gateway CORS-equivalent) — answers
+            # preflight and sets the Access-Control-* headers on responses. Built-in Traefik
+            # middleware, no plugin needed.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: cors-middleware
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: traefik.io/v1alpha1
+                  kind: Middleware
+                  metadata:
+                    name: httpapi-{{ $name }}-cors
+                    namespace: {{ $ns }}
+                  spec:
+                    headers:
+                      accessControlAllowOriginList: {{ $spec.cors.allowOrigins | default (list "*") | toJson }}
+                      accessControlAllowMethods: {{ $spec.cors.allowMethods | default (list "GET" "POST" "PUT" "PATCH" "DELETE" "OPTIONS") | toJson }}
+                      accessControlAllowHeaders: {{ $spec.cors.allowHeaders | default (list "*") | toJson }}
+                      accessControlMaxAge: {{ $spec.cors.maxAge | default 600 }}
+                      accessControlAllowCredentials: {{ $spec.cors.allowCredentials | default false }}
+                      addVaryHeader: true
+            {{- end }}
+            {{- if $rateLimit }}
+            ---
+            # Rate limit: a Traefik rateLimit middleware (the usage-plan / throttle-equivalent) —
+            # a per-source token bucket. Built-in, no plugin needed.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ratelimit-middleware
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: traefik.io/v1alpha1
+                  kind: Middleware
+                  metadata:
+                    name: httpapi-{{ $name }}-ratelimit
+                    namespace: {{ $ns }}
+                  spec:
+                    rateLimit:
+                      average: {{ $spec.rateLimit.average | default 100 }}
+                      burst: {{ $spec.rateLimit.burst | default 50 }}
             {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }

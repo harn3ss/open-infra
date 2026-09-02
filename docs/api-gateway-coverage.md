@@ -28,10 +28,10 @@ APISIX / Envoy Gateway), no dedicated gateway pod — it is pure orchestration o
 | **Deployments** (promote/rollback) | **Gap (absent)** | the composite renders a live Ingress directly; no deployment lifecycle |
 | Authorizers — JWT / Lambda / IAM / Cognito | **Gap (absent)** | no auth of any kind on the rendered Ingress |
 | Usage plans / API keys | **Gap (absent)** | — |
-| Rate limiting / throttling | **Gap (absent)** | no Traefik rate-limit middleware emitted |
+| Rate limiting / throttling | **Covered (basic)** | `spec.rateLimit` (`average`/`burst`) renders a Traefik rateLimit middleware — a per-source token bucket. Not per-API-key usage plans (there are no API keys yet) |
 | **WAF (L7)** | **Partial (opt-in, experimental)** | `spec.waf: true` attaches a Traefik Coraza / OWASP CRS middleware to the Ingress. Off by default; requires the `coraza` Traefik plugin enabled on the cluster (see below) |
 | Request/response mapping (VTL) | **Gap (absent)** | L7 path proxy only; no transformation layer |
-| CORS | **Gap (absent)** | — |
+| CORS | **Covered** | `spec.cors` (origins/methods/headers/credentials/max-age) renders a Traefik headers middleware — the API Gateway CORS-equivalent, preflight included |
 | Custom domain | **Partial** | one Ingress host + TLS; no APIGW base-path mapping / multi-domain |
 | Integrations | **Partial** | in-cluster `Function`/`Application` only; no Lambda-proxy / HTTP / AWS-service / VPC-link |
 
