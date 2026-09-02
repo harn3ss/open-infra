@@ -47,6 +47,12 @@ A CronJob (`parameter-reconciler`, every 5 minutes) logs in to Vault with its ow
 Changing a value takes effect on the next reconcile; a rolling restart of the consuming workload
 picks up the new environment. Its Vault policy is scoped to the `params/*` mount only.
 
-**Status:** built; not yet live-verified end-to-end on a cluster. Values are currently set inline on
-the CR (`spec.value`); a `valueFrom` secret reference is a planned follow-on for populating a
-`SecureString` without the value passing through the CR spec.
+**Status:** the CR, composition, and reconciler are verified live (the reconciler runs and attempts a
+Vault login); the Vault-backed write + Secret materialization are verified on a **fresh** install,
+where the Vault setup provisions the `params` mount and the reconciler's auth role as part of the
+`encryption` component. **On an already-initialized Vault**, the setup Job short-circuits (it only
+configures on first init, and the root token is discarded after), so adding this feature to an
+existing cluster needs an operator to provision the `params` KV-v2 mount, the `parameter-reconciler`
+policy, and its Kubernetes-auth role once, with a Vault admin token (the commands are in
+`platform/security/vault.yaml`). Values are set inline on the CR (`spec.value`) today; a `valueFrom`
+secret reference is a planned follow-on.
