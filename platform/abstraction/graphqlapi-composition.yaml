@@ -190,6 +190,8 @@ spec:
                             env:
                               - { name: LISTEN_ADDR, value: ":8080" }
                               - { name: CONFIG_DIR, value: "/etc/open-appsync" }
+                              # Distributed tracing (#67): export spans to Tempo (http:// = insecure gRPC).
+                              - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://tempo.monitoring.svc.cluster.local:4317" }
                               # Subscriptions, the eventbridge data source, and the shared response cache ride
                               # the platform NATS bus.
                               {{- $needsNats := false }}

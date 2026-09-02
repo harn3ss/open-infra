@@ -90,6 +90,8 @@ spec:
           env:
             - { name: LISTEN_ADDR, value: ":8080" }
             - { name: CONFIG_DIR, value: "/etc/open-appsync" }
+            # Distributed tracing (#67): export spans to Tempo (http:// = insecure gRPC).
+            - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://tempo.monitoring.svc.cluster.local:4317" }
             # For durable data, add: MONGO_URI (a FerretDB endpoint) + MONGO_DB, and switch the
             # config's data source type to "dynamodb" with a collection.
           volumeMounts:

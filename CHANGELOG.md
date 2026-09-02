@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Observability
+- **Distributed tracing (experimental).** open-infra now ships the AWS X-Ray-shaped signal to sit
+  alongside its metrics (Prometheus) and logs (Loki): a Grafana **Tempo** backend (OTLP + Zipkin
+  receivers, a Grafana datasource with trace-to-logs correlation), **Knative request tracing** wired
+  to Tempo (per-`Function` spans through the activator/queue-proxy), and OpenTelemetry instrumentation
+  of the first-party Go services (the console BFF, the aws-shim, and open-appsync) — an `otelhttp`
+  server handler plus W3C `traceparent` propagation, so a request stitches shim → engine end to end.
+  Service export is opt-in via `OTEL_EXPORTER_OTLP_ENDPOINT` (the manifests point it at Tempo; unset
+  it to disable). Traces are queryable in Grafana → Explore. See [`docs/tracing.md`](docs/tracing.md).
+
 ### Messaging
 - **`kind: EmailSender` (opt-in, experimental).** Transactional email — the AWS SES-shaped primitive.
   A claim provisions a sending identity (a From address) and emits a `<name>-smtp` connection secret

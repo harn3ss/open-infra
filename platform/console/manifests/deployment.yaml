@@ -75,6 +75,11 @@ spec:
               value: "local"
             - name: CLUSTER_NAME
               value: "open-infra"
+            # Distributed tracing (#67): export spans to Tempo's OTLP receiver. The
+            # http:// scheme selects an insecure in-cluster gRPC connection. Unset to
+            # disable tracing.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://tempo.monitoring.svc.cluster.local:4317"
             # Same-origin Grafana embedding: the BFF reverse-proxies /grafana/* to
             # the in-cluster Grafana (which serves_from_sub_path under /grafana),
             # and the SPA embeds dashboards at the relative /grafana. No CORS, no
