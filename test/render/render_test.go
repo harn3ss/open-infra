@@ -350,27 +350,26 @@ func TestDestruction_RendersMirrorAndPending(t *testing.T) {
 	}
 }
 
-func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
+func TestHttpApi_RendersIngressRouteWithRoutes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(true))
 
-	// One Traefik Ingress, in the claim namespace, on the declared host.
-	for _, want := range []string{"kind: Ingress", "ingressClassName: traefik",
-		"name: httpapi-storefront", "namespace: shop", "host: api.example.com"} {
+	// One Traefik IngressRoute (not a plain Ingress — that can't match methods), in the claim ns.
+	for _, want := range []string{"kind: IngressRoute", "name: httpapi-storefront", "namespace: shop"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("HttpApi ingress missing %q; got:\n%s", want, grepCtx(out, "Ingress"))
+			t.Errorf("HttpApi IngressRoute missing %q; got:\n%s", want, grepCtx(out, "IngressRoute"))
 		}
 	}
-	// Every declared route becomes a path → its backend Service (both Function and Application
-	// backends resolve to a Service named after the resource).
-	for _, want := range []string{"path: /", "path: /fn", "name: web", "name: hello"} {
+	// Every declared route becomes a Host+PathPrefix match → its backend Service (both Function
+	// and Application backends resolve to a Service named after the resource).
+	for _, want := range []string{"Host(`api.example.com`) && PathPrefix(`/`)", "PathPrefix(`/fn`)", "name: web", "name: hello"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("HttpApi ingress missing route %q; got:\n%s", want, grepCtx(out, "path"))
+			t.Errorf("HttpApi IngressRoute missing route %q; got:\n%s", want, grepCtx(out, "match"))
 		}
 	}
-	// TLS on → cert-manager issuer + websecure entrypoint + a tls block.
-	for _, want := range []string{"cert-manager.io/cluster-issuer: openinfra-issuer",
-		"entrypoints: websecure", "secretName: httpapi-storefront-tls"} {
+	// TLS on → cert-manager Certificate (openinfra-issuer) + websecure entrypoint + tls secret.
+	for _, want := range []string{"kind: Certificate", "name: openinfra-issuer",
+		"entryPoints: [ websecure ]", "secretName: httpapi-storefront-tls"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("HttpApi (tls) missing %q; got:\n%s", want, out)
 		}
@@ -380,12 +379,12 @@ func TestHttpApi_RendersIngressWithRoutes(t *testing.T) {
 func TestHttpApi_NoTLS(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
 	out := render(t, tmpl, httpApiCtx(false))
-	// TLS off → plain-HTTP entrypoint, and no cert-manager / tls block.
-	if !strings.Contains(out, "entrypoints: web") {
+	// TLS off → plain-HTTP entrypoint, and no Certificate / tls block.
+	if !strings.Contains(out, "entryPoints: [ web ]") {
 		t.Errorf("HttpApi (no tls) should use the web entrypoint; got:\n%s", out)
 	}
-	if strings.Contains(out, "cert-manager.io/cluster-issuer") || strings.Contains(out, "secretName: httpapi-") {
-		t.Errorf("HttpApi (no tls) must not emit cert-manager/tls; got:\n%s", out)
+	if strings.Contains(out, "kind: Certificate") || strings.Contains(out, "secretName: httpapi-") {
+		t.Errorf("HttpApi (no tls) must not emit a Certificate/tls; got:\n%s", out)
 	}
 }
 

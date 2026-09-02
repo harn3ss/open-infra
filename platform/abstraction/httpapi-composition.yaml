@@ -1,8 +1,13 @@
-# Composition for kind: HttpApi — renders one Traefik Ingress mapping the declared path routes onto
+# Composition for kind: HttpApi — renders a Traefik IngressRoute mapping the declared routes onto
 # their backend Services (a kind: Function's Knative Service or a kind: Application's Service, both
-# reachable as `service <name>:80` in the claim namespace). TLS is terminated by cert-manager via
-# the openinfra-issuer when spec.tls is true (the default). Mirrors the Application composition's
-# Ingress block; adds per-route paths.
+# reachable as `service <name>:80` in the claim namespace).
+#
+# It renders an IngressRoute (not a plain Ingress) because API Gateway routes discriminate by HTTP
+# method, which a k8s Ingress cannot express — Traefik's IngressRoute match rule can
+# (`Method(`GET`)`). TLS is issued by cert-manager (a Certificate → the `httpapi-<name>-tls`
+# secret the IngressRoute references), since the ingress-shim that auto-issues from an Ingress
+# annotation does not watch IngressRoutes. CORS / rate-limit / WAF / JWT-authorizer attach as an
+# ordered per-route middleware chain.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -35,63 +40,123 @@ spec:
             {{- if hasKey $spec "waf" }}{{- $waf = $spec.waf }}{{- end }}
             {{- $cors := hasKey $spec "cors" }}
             {{- $rateLimit := hasKey $spec "rateLimit" }}
-            {{- /* Compose the ordered Traefik middleware chain: CORS (answer preflight first),
-                   then the rate limit, then the WAF. Each is a per-API Middleware rendered below. */}}
-            {{- $mw := list }}
-            {{- if $cors }}{{- $mw = append $mw (printf "%s-httpapi-%s-cors@kubernetescrd" $ns $name) }}{{- end }}
-            {{- if $rateLimit }}{{- $mw = append $mw (printf "%s-httpapi-%s-ratelimit@kubernetescrd" $ns $name) }}{{- end }}
-            {{- if $waf }}{{- $mw = append $mw (printf "%s-httpapi-%s-waf@kubernetescrd" $ns $name) }}{{- end }}
+            {{- $authz := hasKey $spec "authorizer" }}
+            {{- /* The ordered middleware chain applied to every route, as {name,namespace} refs:
+                   CORS first (answer preflight before auth rejects the OPTIONS), then the JWT
+                   authorizer, then the rate limit, then the WAF. Each is a per-API Middleware
+                   rendered below. */}}
+            {{- $mwnames := list }}
+            {{- if $cors }}{{- $mwnames = append $mwnames (printf "httpapi-%s-cors" $name) }}{{- end }}
+            {{- if $authz }}{{- $mwnames = append $mwnames (printf "httpapi-%s-authorizer" $name) }}{{- end }}
+            {{- if $rateLimit }}{{- $mwnames = append $mwnames (printf "httpapi-%s-ratelimit" $name) }}{{- end }}
+            {{- if $waf }}{{- $mwnames = append $mwnames (printf "httpapi-%s-waf" $name) }}{{- end }}
+            {{- if $tls }}
             ---
-            # --- The API Gateway front door: one Traefik Ingress, one path per route ---
+            # --- TLS: cert-manager issues the cert into the secret the IngressRoute references.
+            # (An IngressRoute is not watched by the ingress-shim, so the cert is requested
+            # explicitly rather than via an Ingress annotation.) ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: ingress
+                gotemplating.fn.crossplane.io/composition-resource-name: certificate
             spec:
               forProvider:
                 manifest:
-                  apiVersion: networking.k8s.io/v1
-                  kind: Ingress
+                  apiVersion: cert-manager.io/v1
+                  kind: Certificate
+                  metadata:
+                    name: httpapi-{{ $name }}-tls
+                    namespace: {{ $ns }}
+                  spec:
+                    secretName: httpapi-{{ $name }}-tls
+                    issuerRef: { name: openinfra-issuer, kind: ClusterIssuer }
+                    dnsNames: [ {{ $spec.domain }} ]
+            {{- end }}
+            ---
+            # --- The API Gateway front door: one Traefik IngressRoute, one route per declared
+            # route (Host + path + optional method match), each carrying the middleware chain. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ingressroute
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: traefik.io/v1alpha1
+                  kind: IngressRoute
                   metadata:
                     name: httpapi-{{ $name }}
                     namespace: {{ $ns }}
                     labels:
                       openinfra.dev/httpapi: {{ $name }}
-                    annotations:
-                      {{- if $tls }}
-                      cert-manager.io/cluster-issuer: openinfra-issuer
-                      traefik.ingress.kubernetes.io/router.entrypoints: websecure
-                      {{- else }}
-                      traefik.ingress.kubernetes.io/router.entrypoints: web
-                      {{- end }}
-                      {{- if $mw }}
-                      traefik.ingress.kubernetes.io/router.middlewares: {{ join "," $mw }}
-                      {{- end }}
                   spec:
-                    ingressClassName: traefik
-                    rules:
-                      - host: {{ $spec.domain }}
-                        http:
-                          paths:
-                            {{- range $route := $spec.routes }}
-                            - path: {{ $route.path }}
-                              pathType: {{ $route.pathType | default "Prefix" }}
-                              backend:
-                                service:
-                                  name: {{ $route.backend.name }}
-                                  port:
-                                    number: {{ $route.backend.port | default 80 }}
-                            {{- end }}
+                    entryPoints: [ {{ if $tls }}websecure{{ else }}web{{ end }} ]
+                    routes:
+                      {{- range $route := $spec.routes }}
+                      {{- /* Build the match: Host && (PathPrefix|Path) && optional (Method || ...) */}}
+                      {{- $m := printf "Host(`%s`)" $spec.domain }}
+                      {{- $pt := $route.pathType | default "Prefix" }}
+                      {{- if eq $pt "Exact" }}{{- $m = printf "%s && Path(`%s`)" $m $route.path }}
+                      {{- else }}{{- $m = printf "%s && PathPrefix(`%s`)" $m $route.path }}{{- end }}
+                      {{- if $route.methods }}
+                      {{-   $mm := list }}
+                      {{-   range $meth := $route.methods }}{{- $mm = append $mm (printf "Method(`%s`)" $meth) }}{{- end }}
+                      {{-   $m = printf "%s && (%s)" $m (join " || " $mm) }}
+                      {{- end }}
+                      - kind: Rule
+                        match: {{ $m | quote }}
+                        services:
+                          - name: {{ $route.backend.name }}
+                            port: {{ $route.backend.port | default 80 }}
+                        {{- if $mwnames }}
+                        middlewares:
+                          {{- range $ref := $mwnames }}
+                          - name: {{ $ref }}
+                            namespace: {{ $ns }}
+                          {{- end }}
+                        {{- end }}
+                      {{- end }}
                     {{- if $tls }}
                     tls:
-                      - hosts: [ {{ $spec.domain }} ]
-                        secretName: httpapi-{{ $name }}-tls
+                      secretName: httpapi-{{ $name }}-tls
                     {{- end }}
+            {{- if $authz }}
+            ---
+            # JWT authorizer: a per-API Traefik JWT middleware that validates a Bearer OIDC token
+            # against the issuer's JWKS before the request reaches a backend (pair with a
+            # kind: UserPool as the issuer). Requires a JWT Traefik plugin enabled on the cluster
+            # (see docs/api-gateway-coverage.md) — off until then, exactly like the WAF. Confirm the
+            # plugin's config keys against the version you enable before trusting enforcement.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: authorizer-middleware
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: traefik.io/v1alpha1
+                  kind: Middleware
+                  metadata:
+                    name: httpapi-{{ $name }}-authorizer
+                    namespace: {{ $ns }}
+                  spec:
+                    plugin:
+                      jwt:
+                        Keys: [ "{{ $spec.authorizer.jwt.issuer }}/.well-known/jwks.json" ]
+                        Issuers: [ "{{ $spec.authorizer.jwt.issuer }}" ]
+                        {{- if $spec.authorizer.jwt.audience }}
+                        Audiences: {{ $spec.authorizer.jwt.audience | toJson }}
+                        {{- end }}
+                        Required: {{ $spec.authorizer.jwt.required | default true }}
+                        ForwardToken: true
+            {{- end }}
             {{- if $waf }}
             ---
             # In-cluster L7 WAF: a per-API Traefik Coraza (OWASP CRS) middleware in this
-            # namespace, referenced by the Ingress's router.middlewares annotation above.
+            # namespace, referenced by the IngressRoute's route middlewares above.
             # Requires the `coraza` Traefik plugin enabled on the cluster (see
             # platform/networking/traefik-coraza.yaml + docs/api-gateway-coverage.md).
             apiVersion: kubernetes.crossplane.io/v1alpha2
