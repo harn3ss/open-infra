@@ -105,9 +105,12 @@ part of another kind rather than on its own. The caveat is always printed.
 
 ### Gated and unsupported
 
-`AWS::DynamoDB::Table` is **gated** — it is refused today, pending a decision on a
-wide-column/key-value data layer. `AWS::Cognito::*` (open-infra consumes OIDC/JWT
-identity rather than hosting a user pool), `AWS::CloudFormation::Stack` (nested stacks),
+`AWS::DynamoDB::Table` is **gated** — the engine maps to open-infra kinds, and there is
+no standalone Dynamo table *kind* to map onto (the aws-shim has a DynamoDB front door,
+but that is a runtime API, not a declarative kind). `AWS::Cognito::*` is unsupported
+because the engine has no mapping onto `kind: UserPool` yet (open-infra *does* now host a
+user pool — see [`docs/auth-migration.md`](auth-migration.md) — the engine just doesn't
+target it). `AWS::CloudFormation::Stack` (nested stacks),
 `AWS::CloudFormation::CustomResource`, `AWS::ECS::*`, and every `Custom::*` type are
 **unsupported** for now. All of these produce a `REJECTED` verdict with the reason
 stated.
