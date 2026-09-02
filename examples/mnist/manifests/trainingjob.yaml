@@ -1,0 +1,20 @@
+# Step 1 — train. A seeded MNIST run on the 3090 (gpuTier: largegpu). It writes
+# model.pt + metrics.json to s3://models/mnist/v1/ and runs to completion.
+apiVersion: openinfra.dev/v1
+kind: TrainingJob
+metadata:
+  name: mnist
+  namespace: ml-demo
+spec:
+  image: ghcr.io/harn3ss/open-infra-mnist-train:1   # built from ../train
+  gpu: 1
+  gpuTier: largegpu            # the 3090; use smallgpu (A2000) or gpu: 0 for CPU-only
+  cpu: "4"
+  memory: "8Gi"
+  maxRuntimeSeconds: 1800
+  env:
+    - { name: EPOCHS, value: "5" }
+    - { name: SEED, value: "42" }
+  output:
+    bucket: models
+    prefix: mnist/v1/
