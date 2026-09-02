@@ -31,6 +31,18 @@ spec:
 
 A ModelPackage is a **record** — it runs nothing on its own.
 
+**From the console (one click).** On a finished `kind: TrainingJob`'s detail page,
+**Register as Model Package** does the above for you: it copies the run's output bucket/key
+into a new package, and you supply the serving image (which is *not* the training image) and,
+optionally, a version. The package is created `PendingManualApproval`.
+
+This registration is authorized **as you**, not by a background controller: the console
+(BFF) runs a `SubjectAccessReview` for your own `create modelpackages` right before it creates
+anything, and fails closed. That is deliberate — the identity that may *run* a training job is
+not automatically the identity that may *publish a servable model*. Registration never
+approves, and promoting to a served `kind: Model` is a second, separately authorized step, so a
+user who can train but not serve cannot reach an endpoint through this path.
+
 ## 2. Approve it
 
 A package starts `PendingManualApproval`. Only an **Approved** package should be

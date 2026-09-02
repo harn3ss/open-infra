@@ -4,7 +4,7 @@
  * and proxies. In dev, vite proxies /api to the BFF (see vite.config.ts).
  */
 
-import type { K8sList, K8sObject } from "@/types/k8s";
+import type { K8sList, K8sObject, ModelPackage } from "@/types/k8s";
 
 /** Runtime config served by the BFF; fetched once before the app renders. */
 export interface AppConfig {
@@ -453,6 +453,33 @@ export function modelChat(
       method: "POST",
       body: JSON.stringify({ messages, stream: false }),
     },
+  );
+}
+
+/** Fields the user supplies to register a finished TrainingJob as a ModelPackage. */
+export interface RegisterModelRequest {
+  modelName: string;
+  version?: string;
+  /** The SERVING container image (not the training image — it can't be inferred). */
+  image: string;
+  port?: number;
+  framework?: string;
+  description?: string;
+}
+
+// registerTrainingJob promotes a finished TrainingJob to a ModelPackage via the BFF's native
+// endpoint (NOT the k8s proxy): the BFF authorizes the signed-in user with a SubjectAccessReview
+// (create modelpackages), reads the job's artifact location server-side, and creates the package
+// as PendingManualApproval. A train-capable, serve-incapable user is denied here — so this cannot
+// be a back door around Model-creation authz.
+export function registerTrainingJob(
+  namespace: string,
+  name: string,
+  req: RegisterModelRequest,
+): Promise<ModelPackage> {
+  return request<ModelPackage>(
+    `/trainingjobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/register`,
+    { method: "POST", body: JSON.stringify(req) },
   );
 }
 
