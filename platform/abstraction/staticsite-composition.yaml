@@ -153,8 +153,11 @@ spec:
                             image: nginx:1.27-alpine
                             ports:
                               - { name: http, containerPort: 80 }
+                            # TCP, not httpGet /: nginx is ready to serve as soon as it is
+                            # listening — an as-yet-empty bucket (content not uploaded) returns 404
+                            # on /, which would keep the pod permanently NotReady and endpoint-less.
                             readinessProbe:
-                              httpGet: { path: /, port: 80 }
+                              tcpSocket: { port: 80 }
                               initialDelaySeconds: 5
                               periodSeconds: 10
                             volumeMounts:
