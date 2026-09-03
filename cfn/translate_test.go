@@ -94,3 +94,84 @@ func TestTranslate_Lambda_CrossRefEnvBlocks(t *testing.T) {
 		t.Fatalf("a cross-resource env value must block, findings: %s", findingsText(fs))
 	}
 }
+
+// A state machine whose ASL already uses open-infra's "function:<name>" Resource convention
+// translates faithfully — the definition maps byte-for-byte.
+func TestTranslate_StateMachine_Faithful(t *testing.T) {
+	def := `{"StartAt":"Go","States":{"Go":{"Type":"Task","Resource":"function:validate","End":true}}}`
+	m, fs := translateStateMachine("Flow", map[string]any{
+		"DefinitionString": def,
+		"RoleArn":          "arn:aws:iam::x:role/sfn",
+		"StateMachineType": "STANDARD",
+	})
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "StateMachine" || m.Spec["definition"] != def {
+		t.Fatalf("definition should map byte-for-byte: %#v", m.Spec)
+	}
+	if len(m.Caveats) == 0 || !strings.Contains(m.Caveats[0], "RoleArn") {
+		t.Fatalf("RoleArn should surface a caveat: %v", m.Caveats)
+	}
+}
+
+// The fidelity boundary: an ASL with AWS Lambda ARNs can't run on open-infra and must be
+// refused (not deployed to fail at execution).
+func TestTranslate_StateMachine_AWSArnRefused(t *testing.T) {
+	def := `{"StartAt":"Go","States":{"Go":{"Type":"Task","Resource":"arn:aws:lambda:us-east-1:1:function:v","End":true}}}`
+	_, fs := translateStateMachine("Flow", map[string]any{"DefinitionString": def})
+	if !strings.Contains(findingsText(fs), "arn:aws") {
+		t.Fatalf("an AWS-ARN Task Resource must be refused, findings: %s", findingsText(fs))
+	}
+}
+
+// A definition carrying an unresolved cross-resource ref (a sibling Lambda's Arn) blocks.
+func TestTranslate_StateMachine_UnresolvedRefBlocks(t *testing.T) {
+	_, fs := translateStateMachine("Flow", map[string]any{
+		"DefinitionString": `{"StartAt":"Go","States":{"Go":{"Resource":"<Lambda.Arn>"}}}`,
+	})
+	if findingsText(fs) == "" {
+		t.Fatalf("an unresolved cross-resource definition must block")
+	}
+}
+
+func TestTranslate_StateMachine_ExpressRefused(t *testing.T) {
+	_, fs := translateStateMachine("Flow", map[string]any{
+		"DefinitionString": `{"StartAt":"Go","States":{}}`,
+		"StateMachineType": "EXPRESS",
+	})
+	if !strings.Contains(findingsText(fs), "EXPRESS") {
+		t.Fatalf("EXPRESS should be refused, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_Volume_Faithful(t *testing.T) {
+	m, fs := translateVolume("Data", map[string]any{
+		"Size":               float64(20),
+		"MultiAttachEnabled": true,
+		"VolumeType":         "gp3",
+		"AvailabilityZone":   "us-east-1a",
+	})
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "Volume" || m.Spec["size"] != "20Gi" || m.Spec["shared"] != true {
+		t.Fatalf("volume spec not faithful: %#v", m.Spec)
+	}
+	// VolumeType + AZ have no counterpart — declared caveats, not silent drops.
+	caveats := strings.Join(m.Caveats, " ")
+	if !strings.Contains(caveats, "VolumeType") || !strings.Contains(caveats, "AvailabilityZone") {
+		t.Fatalf("VolumeType/AZ should surface caveats: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_Volume_EncryptionAndSnapshotBlock(t *testing.T) {
+	_, fs := translateVolume("Data", map[string]any{"Size": float64(10), "Encrypted": true})
+	if !strings.Contains(findingsText(fs), "Encrypted") {
+		t.Fatalf("an encrypted volume must block, findings: %s", findingsText(fs))
+	}
+	_, fs2 := translateVolume("Data", map[string]any{"Size": float64(10), "SnapshotId": "snap-123"})
+	if !strings.Contains(findingsText(fs2), "SnapshotId") {
+		t.Fatalf("a SnapshotId must block, findings: %s", findingsText(fs2))
+	}
+}
