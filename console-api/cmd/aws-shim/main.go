@@ -199,6 +199,10 @@ func run(logger *slog.Logger) error {
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
 	dynamoH := newDynamoHandler(cs, authzNS, mongoDB, pg, getenv("MONGO_DB", "open_infra_dynamodb"), logger)
 	dynamoH.startTTLReaper(context.Background(), 60*time.Second) // no-op when the data layer is unset
+	// Register declared kind: Table resources (spec-mirror ConfigMaps) into the table registry, so a
+	// cfn-deployed / GitOps-applied table is usable without a runtime CreateTable. No-op when the
+	// data layer is unset. TABLE_CONFIG_NAMESPACE is where the Table composition writes its mirrors.
+	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-console"), 30*time.Second)
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
 		"sts":      &stsHandler{account: account, logger: logger},

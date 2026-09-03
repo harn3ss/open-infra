@@ -1,0 +1,72 @@
+# The compiler for kind: Table. It renders a spec-mirror ConfigMap in the console namespace,
+# labeled openinfra.dev/dynamo-table, holding the table's name + ordered key attributes (+ an
+# optional TTL attribute). The aws-shim reads these ConfigMaps and registers each table in its
+# FerretDB registry (the same entry a runtime CreateTable writes) — so a declared table is
+# usable (PutItem/GetItem/…) without a manual CreateTable call. The shim is the reconciler
+# because it is the one process that holds the FerretDB creds and owns the registry contract;
+# see console-api/cmd/aws-shim/dynamo_tables.go and docs/aws-shim.md.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: table
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XTable
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $table := $spec.tableName | default $name }}
+            {{- $keyAttrs := list $spec.hashKey.name }}
+            {{- if $spec.rangeKey }}{{- $keyAttrs = append $keyAttrs $spec.rangeKey.name }}{{- end }}
+            ---
+            # Spec mirror the aws-shim reads (label-selected) to register the table's registry entry.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: table-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-dynamo-table-{{ $name }}
+                    namespace: open-infra-console
+                    labels:
+                      openinfra.dev/dynamo-table: {{ $name }}
+                      openinfra.dev/table-namespace: {{ $ns }}
+                  data:
+                    tableName: {{ $table | quote }}
+                    keyAttrs: {{ $keyAttrs | toJson | quote }}
+                    billingMode: "{{ $spec.billingMode | default "PAY_PER_REQUEST" }}"
+                    {{- if $spec.ttlAttribute }}
+                    ttlAttribute: {{ $spec.ttlAttribute | quote }}
+                    {{- end }}
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XTable
+            status:
+              ready: true
+              tableName: {{ $table | quote }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
