@@ -1,14 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Every kind of thing the engine must refuse — a gated type, an unsupported type, and an unsupported intrinsic. Nothing here should provision.
+Description: Things the engine must refuse — an unsupported type and an unsupported intrinsic. Nothing here should provision.
 
 Resources:
-  # gated: no DynamoDB data layer yet.
-  Table:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: sessions
-      BillingMode: PAY_PER_REQUEST
-
   # unsupported: custom resources are out of scope for v1.
   Users:
     Type: AWS::CloudFormation::CustomResource
