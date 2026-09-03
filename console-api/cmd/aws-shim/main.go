@@ -14,9 +14,11 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -30,6 +32,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/tracing"
+	_ "github.com/lib/pq" // database/sql driver for the documentdb Postgres (DynamoDB transactions)
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -94,6 +97,27 @@ func run(logger *slog.Logger) error {
 		}
 		mongoDB = client.Database(getenv("MONGO_DB", "open_infra_dynamodb"))
 		logger.Info("connected to FerretDB for the DynamoDB front door", slog.String("db", mongoDB.Name()))
+	}
+
+	// The Postgres (documentdb extension) behind the SAME FerretDB, used only for atomic
+	// multi-item transactions (TransactWriteItems/TransactGetItems). FerretDB has no Mongo
+	// transactions, but the documentdb_api functions the mongo path also uses ARE transactional
+	// under a Postgres BEGIN/COMMIT, and writes through them are read-consistent over the mongo
+	// wire. Optional: unset -> Transact* answers an honest 501.
+	var pg *sql.DB
+	if pgURI := getenv("MONGO_PG_URI", ""); pgURI != "" {
+		db, perr := sql.Open("postgres", pgURI)
+		if perr != nil {
+			return perr
+		}
+		pctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		perr = db.PingContext(pctx)
+		cancel()
+		if perr != nil {
+			return fmt.Errorf("MONGO_PG_URI set but the documentdb Postgres is unreachable: %w", perr)
+		}
+		pg = db
+		logger.Info("connected to the documentdb Postgres for DynamoDB transactions")
 	}
 
 	auth := &authenticator{
@@ -173,12 +197,14 @@ func run(logger *slog.Logger) error {
 	// The service registry: one front door, many domain experts (keyed by the AWS service name the
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
+	dynamoH := newDynamoHandler(cs, authzNS, mongoDB, pg, getenv("MONGO_DB", "open_infra_dynamodb"), logger)
+	dynamoH.startTTLReaper(context.Background(), 60*time.Second) // no-op when the data layer is unset
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
 		"sts":      &stsHandler{account: account, logger: logger},
 		"lambda":   newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger),
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
-		"dynamodb": newDynamoHandler(cs, authzNS, mongoDB, logger),
+		"dynamodb": dynamoH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")

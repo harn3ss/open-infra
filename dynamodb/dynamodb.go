@@ -182,3 +182,25 @@ func keyString(key map[string]any) string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// PutDoc builds the stored document for a Put from DynamoDB-typed key + item attributes: the
+// `_id` (the primary key rendered deterministically) plus every attribute. It is the SINGLE
+// source of truth for how an item is stored, shared by the mongo FerretStore path and the
+// aws-shim's transactional (Postgres/documentdb_api) path so the two can never drift — a doc
+// written by one is read identically by the other.
+func PutDoc(keyAV, itemAV any) (id string, doc map[string]any) {
+	key := plainMap(fromDynamoDB(keyAV))
+	doc = map[string]any{}
+	for k, v := range plainMap(fromDynamoDB(itemAV)) {
+		doc[k] = v
+	}
+	for k, v := range key {
+		doc[k] = v
+	}
+	id = keyString(key)
+	doc["_id"] = id
+	return id, doc
+}
+
+// KeyID renders a DynamoDB-typed key to the `_id` string PutDoc uses — for Delete/Get by key.
+func KeyID(keyAV any) string { return keyString(plainMap(fromDynamoDB(keyAV))) }

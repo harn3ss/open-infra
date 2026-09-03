@@ -36,7 +36,7 @@ func TestDynamo_FerretRoundTrip(t *testing.T) {
 	db := client.Database("shim_dynamo_" + time.Now().Format("150405"))
 	defer db.Drop(ctx)
 
-	h := newDynamoHandler(csWithSAR(true), "default", db, discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", db, nil, "", discardLogger())
 	claims := iam.Claims{Sub: "tester"}
 	call := func(op, body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -105,7 +105,7 @@ func TestDynamo_QueryUpdateScan(t *testing.T) {
 	defer client.Disconnect(ctx)
 	db := client.Database("shim_dyn_qus_" + time.Now().Format("150405"))
 	defer db.Drop(ctx)
-	h := newDynamoHandler(csWithSAR(true), "default", db, discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", db, nil, "", discardLogger())
 	call := func(op, body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		h.serve(w, dynamoReq("DynamoDB_20120810."+op, body), iam.Claims{Sub: "t"}, "r")
@@ -180,7 +180,7 @@ func TestDynamo_Batch(t *testing.T) {
 	defer client.Disconnect(ctx)
 	db := client.Database("shim_dyn_batch_" + time.Now().Format("150405"))
 	defer db.Drop(ctx)
-	h := newDynamoHandler(csWithSAR(true), "default", db, discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", db, nil, "", discardLogger())
 	call := func(op, body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		h.serve(w, dynamoReq("DynamoDB_20120810."+op, body), iam.Claims{Sub: "t"}, "r")
