@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "A supported-only stack exercising the Volume + StateMachine create translators. The state machine uses open-infra's function:<name> Task convention (an AWS Lambda ARN would be refused, by design)."
+Resources:
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      Size: 5
+      AvailabilityZone: us-east-1a     # inert caveat (one flat cluster)
+      VolumeType: gp3                  # inert caveat (Longhorn)
+  OrderFlow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineType: STANDARD
+      RoleArn: arn:aws:iam::123456789012:role/sfn   # dropped caveat (no assumed role)
+      DefinitionString: |
+        {
+          "Comment": "A minimal workflow that succeeds",
+          "StartAt": "Done",
+          "States": {
+            "Done": { "Type": "Pass", "End": true }
+          }
+        }
