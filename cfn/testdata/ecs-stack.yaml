@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "An ECS service + task definition collating into one kind: Application."
+Resources:
+  AppCluster:
+    Type: AWS::ECS::Cluster
+  AppTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: "256"
+      Memory: "512"
+      ContainerDefinitions:
+        - Name: web
+          Image: ghcr.io/harn3ss/hello-web:latest
+          PortMappings: [{ ContainerPort: 8080 }]
+          Environment: [{ Name: GREETING, Value: hello-from-ecs }]
+  AppService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref AppCluster
+      TaskDefinition: !Ref AppTask
+      DesiredCount: 2
+      LaunchType: FARGATE
