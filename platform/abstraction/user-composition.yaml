@@ -74,7 +74,7 @@ spec:
             kind: XUser
             status:
               ready: {{ not $disabled }}
-              groups:
-                {{- range $g := $groups }}
-                - {{ $g }}
-                {{- end }}
+              # toJson always emits a valid array ([] when empty). A bare range left this `null`
+              # for a group-less user, which fails the XRD's array schema and made the ENTIRE
+              # status-apply error out — so status.ready never landed. (polyhedron#102)
+              groups: {{ $groups | toJson }}
