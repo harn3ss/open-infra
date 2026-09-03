@@ -176,6 +176,40 @@ func TestTranslate_Volume_EncryptionAndSnapshotBlock(t *testing.T) {
 	}
 }
 
+// An IAM user that gets its permissions from group membership (the AWS best practice) maps: the
+// identity + groups translate. (kind: User reports readiness after polyhedron#102.)
+func TestTranslate_IAMUser_Faithful(t *testing.T) {
+	m, fs := translateIAMUser("Alice", map[string]any{
+		"UserName": "alice",
+		"Groups":   []any{"engineers", "oncall"},
+	})
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "User" || m.Spec["displayName"] != "alice" || m.Spec["source"] != "local" {
+		t.Fatalf("user spec not faithful: %#v", m.Spec)
+	}
+	// IAM kinds live under iam.openinfra.dev, not openinfra.dev — getting this wrong fails apply.
+	if m.APIVersion != "iam.openinfra.dev/v1" {
+		t.Fatalf("User must be iam.openinfra.dev/v1, got %s", m.APIVersion)
+	}
+	if groups, _ := m.Spec["groups"].([]any); len(groups) != 2 {
+		t.Fatalf("groups should map: %#v", m.Spec["groups"])
+	}
+}
+
+// An IAM user's attached policies are the permission model, which has no faithful RBAC form —
+// dropping them would silently strip permissions, so they block.
+func TestTranslate_IAMUser_PoliciesBlock(t *testing.T) {
+	_, fs := translateIAMUser("Alice", map[string]any{
+		"UserName":          "alice",
+		"ManagedPolicyArns": []any{"arn:aws:iam::aws:policy/AdministratorAccess"},
+	})
+	if !strings.Contains(findingsText(fs), "ManagedPolicyArns") {
+		t.Fatalf("attached policies must block, findings: %s", findingsText(fs))
+	}
+}
+
 // A basic Cognito pool maps to a hosted OIDC pool (Keycloak realm).
 func TestTranslate_CognitoUserPool_Faithful(t *testing.T) {
 	m, fs := translateCognitoUserPool("Pool", map[string]any{

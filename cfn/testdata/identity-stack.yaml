@@ -1,6 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "A Cognito user pool the engine can create — a hosted OIDC pool (a Keycloak realm). Cognito-specific config (MFA enforcement, Lambda triggers) is refused rather than silently dropped."
+Description: "Identity resources the engine can create: an IAM user (identity only — permissions come from group membership) and a Cognito user pool (a hosted OIDC pool / Keycloak realm)."
 Resources:
+  AppUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: appuser
   AppPool:
     Type: AWS::Cognito::UserPool
     Properties:

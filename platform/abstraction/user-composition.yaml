@@ -41,7 +41,35 @@ spec:
             {{- $groups := $spec.groups | default list }}
             {{- $disabled := $spec.disabled | default false }}
             ---
-            # No RBAC is emitted here on purpose — see the header. Status only.
+            # A label-selected spec-mirror ConfigMap the console can read without CRD access —
+            # AND it makes this pipeline emit a composed resource, which is what lets the
+            # go-templating function actually apply the composite status below. A status-only
+            # composition (no composed resources) never gets its status written, so the User's
+            # `status.ready` never lands and nothing that gates on readiness (the cfn engine,
+            # tooling) ever proceeds. Mirrors the EncryptionKey composition. (polyhedron#102)
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: user-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-user-{{ $name }}
+                    namespace: open-infra-console
+                    labels:
+                      openinfra.dev/user: {{ $name }}
+                  data:
+                    name: {{ $name | quote }}
+                    displayName: {{ $spec.displayName | default "" | quote }}
+                    source: {{ $spec.source | default "local" | quote }}
+                    disabled: "{{ $disabled }}"
+                    groups: {{ $groups | toJson | quote }}
+            ---
+            # No RBAC is emitted here on purpose — see the header. Identity + status only.
             apiVersion: iam.openinfra.dev/v1
             kind: XUser
             status:
