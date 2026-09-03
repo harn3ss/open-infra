@@ -41,6 +41,7 @@ var translators = map[string]translator{
 	"AWS::Lambda::Function":            translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine": translateStateMachine,
 	"AWS::EC2::Volume":                 translateVolume,
+	"AWS::IAM::User":                   translateIAMUser,
 	"AWS::Cognito::UserPool":           translateCognitoUserPool,
 }
 
@@ -236,6 +237,53 @@ func translateVolume(id string, props map[string]any) (*Manifest, []Finding) {
 		if _, ok := props[p]; ok {
 			m.Caveats = append(m.Caveats, p+" dropped — open-infra volumes are Longhorn on one flat cluster (no AZ / EBS volume-type / provisioned IOPS)")
 		}
+	}
+	return m, f
+}
+
+// ---- AWS::IAM::User -> kind: User ----
+//
+// The IDENTITY maps: an open-infra User is a named principal that gets its permissions from
+// group membership (a Group's ClusterRole), exactly the AWS best-practice shape (perms via
+// groups, not inline user policies). So UserName + Groups translate; the permission model does
+// NOT — an IAM user's ManagedPolicyArns / inline Policies / PermissionsBoundary are AWS policy
+// documents (service:Action over ARNs) with no faithful open-infra RBAC form, and dropping them
+// would silently strip the user's permissions. They BLOCK (attach permissions via open-infra
+// Groups instead).
+func translateIAMUser(id string, props map[string]any) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"UserName": true, "Groups": true, "ManagedPolicyArns": true, "Policies": true,
+		"PermissionsBoundary": true, "LoginProfile": true, "Path": true, "Tags": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	for _, p := range []string{"ManagedPolicyArns", "Policies", "PermissionsBoundary"} {
+		if _, ok := props[p]; ok {
+			f = append(f, Finding{"Resource " + id, p + " has no faithful open-infra form — AWS policy documents (service:Action over ARNs) don't map to k8s RBAC; grant permissions via open-infra Group membership (a Group's ClusterRole), not policies on the user"})
+		}
+	}
+
+	spec := map[string]any{"source": "local"}
+	if n, ok := concrete(props["UserName"]); ok && n != "" {
+		spec["displayName"] = n
+	}
+	if groups, ok := props["Groups"].([]any); ok && len(groups) > 0 {
+		var gs []any
+		for _, g := range groups {
+			gv, cok := concrete(g)
+			if !cok {
+				f = append(f, Finding{"Resource " + id, "a group membership references a cross-resource value with no concrete name"})
+				continue
+			}
+			gs = append(gs, gv)
+		}
+		spec["groups"] = gs
+	}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "User", Name: k8sName(id), Spec: spec}
+	m.Caveats = append(m.Caveats, "the user is created without a password (source: local) — set a password separately; group names must name existing open-infra Groups (the authority relocation: permissions come from a Group's ClusterRole)")
+	if _, ok := props["LoginProfile"]; ok {
+		m.Caveats = append(m.Caveats, "LoginProfile dropped — set the user's password via an open-infra password Secret, not an inline console password")
 	}
 	return m, f
 }
