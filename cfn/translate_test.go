@@ -20,7 +20,7 @@ func TestTranslate_KMSKey_Faithful(t *testing.T) {
 		"EnableKeyRotation": true,
 		"KeySpec":           "SYMMETRIC_DEFAULT",
 		"KeyPolicy":         map[string]any{"Version": "2012-10-17"},
-	})
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
@@ -37,7 +37,7 @@ func TestTranslate_KMSKey_Faithful(t *testing.T) {
 }
 
 func TestTranslate_KMSKey_UnknownPropertyBlocks(t *testing.T) {
-	_, fs := translateKMSKey("K", map[string]any{"MultiRegion": true})
+	_, fs := translateKMSKey("K", map[string]any{"MultiRegion": true}, nil)
 	if findingsText(fs) == "" || !strings.Contains(findingsText(fs), "MultiRegion") {
 		t.Fatalf("an unhandled property must block, findings: %s", findingsText(fs))
 	}
@@ -51,7 +51,7 @@ func TestTranslate_LambdaImage_Faithful(t *testing.T) {
 		"Timeout":     float64(30),
 		"Environment": map[string]any{"Variables": map[string]any{"LOG": "info", "TIER": "b"}},
 		"Role":        "arn:aws:iam::x:role/r",
-	})
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
@@ -75,7 +75,7 @@ func TestTranslate_LambdaZip_Refused(t *testing.T) {
 		"Runtime": "python3.12",
 		"Handler": "index.handler",
 		"Code":    map[string]any{"S3Bucket": "b", "S3Key": "k"},
-	})
+	}, nil)
 	txt := findingsText(fs)
 	if !strings.Contains(txt, "PackageType: Image") {
 		t.Fatalf("a zip Lambda must be refused (no image to run), findings: %s", txt)
@@ -89,7 +89,7 @@ func TestTranslate_Lambda_CrossRefEnvBlocks(t *testing.T) {
 		"PackageType": "Image",
 		"Code":        map[string]any{"ImageUri": "img:1"},
 		"Environment": map[string]any{"Variables": map[string]any{"BUCKET": "<ref:Assets>"}},
-	})
+	}, nil)
 	if !strings.Contains(findingsText(fs), "BUCKET") {
 		t.Fatalf("a cross-resource env value must block, findings: %s", findingsText(fs))
 	}
@@ -103,7 +103,7 @@ func TestTranslate_StateMachine_Faithful(t *testing.T) {
 		"DefinitionString": def,
 		"RoleArn":          "arn:aws:iam::x:role/sfn",
 		"StateMachineType": "STANDARD",
-	})
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
@@ -119,7 +119,7 @@ func TestTranslate_StateMachine_Faithful(t *testing.T) {
 // refused (not deployed to fail at execution).
 func TestTranslate_StateMachine_AWSArnRefused(t *testing.T) {
 	def := `{"StartAt":"Go","States":{"Go":{"Type":"Task","Resource":"arn:aws:lambda:us-east-1:1:function:v","End":true}}}`
-	_, fs := translateStateMachine("Flow", map[string]any{"DefinitionString": def})
+	_, fs := translateStateMachine("Flow", map[string]any{"DefinitionString": def}, nil)
 	if !strings.Contains(findingsText(fs), "arn:aws") {
 		t.Fatalf("an AWS-ARN Task Resource must be refused, findings: %s", findingsText(fs))
 	}
@@ -129,7 +129,7 @@ func TestTranslate_StateMachine_AWSArnRefused(t *testing.T) {
 func TestTranslate_StateMachine_UnresolvedRefBlocks(t *testing.T) {
 	_, fs := translateStateMachine("Flow", map[string]any{
 		"DefinitionString": `{"StartAt":"Go","States":{"Go":{"Resource":"<Lambda.Arn>"}}}`,
-	})
+	}, nil)
 	if findingsText(fs) == "" {
 		t.Fatalf("an unresolved cross-resource definition must block")
 	}
@@ -139,7 +139,7 @@ func TestTranslate_StateMachine_ExpressRefused(t *testing.T) {
 	_, fs := translateStateMachine("Flow", map[string]any{
 		"DefinitionString": `{"StartAt":"Go","States":{}}`,
 		"StateMachineType": "EXPRESS",
-	})
+	}, nil)
 	if !strings.Contains(findingsText(fs), "EXPRESS") {
 		t.Fatalf("EXPRESS should be refused, findings: %s", findingsText(fs))
 	}
@@ -151,7 +151,7 @@ func TestTranslate_Volume_Faithful(t *testing.T) {
 		"MultiAttachEnabled": true,
 		"VolumeType":         "gp3",
 		"AvailabilityZone":   "us-east-1a",
-	})
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
@@ -166,11 +166,11 @@ func TestTranslate_Volume_Faithful(t *testing.T) {
 }
 
 func TestTranslate_Volume_EncryptionAndSnapshotBlock(t *testing.T) {
-	_, fs := translateVolume("Data", map[string]any{"Size": float64(10), "Encrypted": true})
+	_, fs := translateVolume("Data", map[string]any{"Size": float64(10), "Encrypted": true}, nil)
 	if !strings.Contains(findingsText(fs), "Encrypted") {
 		t.Fatalf("an encrypted volume must block, findings: %s", findingsText(fs))
 	}
-	_, fs2 := translateVolume("Data", map[string]any{"Size": float64(10), "SnapshotId": "snap-123"})
+	_, fs2 := translateVolume("Data", map[string]any{"Size": float64(10), "SnapshotId": "snap-123"}, nil)
 	if !strings.Contains(findingsText(fs2), "SnapshotId") {
 		t.Fatalf("a SnapshotId must block, findings: %s", findingsText(fs2))
 	}
@@ -182,7 +182,7 @@ func TestTranslate_IAMUser_Faithful(t *testing.T) {
 	m, fs := translateIAMUser("Alice", map[string]any{
 		"UserName": "alice",
 		"Groups":   []any{"engineers", "oncall"},
-	})
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
@@ -204,7 +204,7 @@ func TestTranslate_IAMUser_PoliciesBlock(t *testing.T) {
 	_, fs := translateIAMUser("Alice", map[string]any{
 		"UserName":          "alice",
 		"ManagedPolicyArns": []any{"arn:aws:iam::aws:policy/AdministratorAccess"},
-	})
+	}, nil)
 	if !strings.Contains(findingsText(fs), "ManagedPolicyArns") {
 		t.Fatalf("attached policies must block, findings: %s", findingsText(fs))
 	}
@@ -216,7 +216,7 @@ func TestTranslate_CognitoUserPool_Faithful(t *testing.T) {
 		"UserPoolName":     "MyApp Users",
 		"MfaConfiguration": "OFF",
 		"Policies":         map[string]any{"PasswordPolicy": map[string]any{"MinimumLength": float64(8)}},
-	})
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
@@ -231,14 +231,122 @@ func TestTranslate_CognitoUserPool_Faithful(t *testing.T) {
 
 // MFA enforcement and Lambda triggers are behavior-bearing with no faithful mapping — they block.
 func TestTranslate_CognitoUserPool_MfaAndTriggersBlock(t *testing.T) {
-	_, fs := translateCognitoUserPool("Pool", map[string]any{"MfaConfiguration": "ON"})
+	_, fs := translateCognitoUserPool("Pool", map[string]any{"MfaConfiguration": "ON"}, nil)
 	if !strings.Contains(findingsText(fs), "MfaConfiguration") {
 		t.Fatalf("MFA ON must block, findings: %s", findingsText(fs))
 	}
 	_, fs2 := translateCognitoUserPool("Pool", map[string]any{
 		"LambdaConfig": map[string]any{"PreSignUp": "arn:aws:lambda:x"},
-	})
+	}, nil)
 	if !strings.Contains(findingsText(fs2), "LambdaConfig") {
 		t.Fatalf("Lambda triggers must block, findings: %s", findingsText(fs2))
+	}
+}
+
+// ecsCtx parses an ECS template and returns the stack context a collating translator needs.
+func ecsCtx(t *testing.T, tmpl string) *stackCtx {
+	tt, err := Parse([]byte(tmpl))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r := newResolver(tt, resolveParams(tt, nil), pseudoParams("s"))
+	r.evalConditions()
+	return &stackCtx{template: tt, resolver: r}
+}
+
+func ecsResolvedService(t *testing.T, ctx *stackCtx, id string) map[string]any {
+	res := ctx.template.Resources[id]
+	ctx.resolver.where = "Resource " + id
+	m, _ := ctx.resolver.resolve(res.Properties).(map[string]any)
+	return m
+}
+
+// An ECS Service + its referenced TaskDefinition collate into one Application.
+func TestTranslate_ECSService_Collates(t *testing.T) {
+	tmpl := `
+Resources:
+  Web:
+    Type: AWS::ECS::Cluster
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: "256"
+      ContainerDefinitions:
+        - Name: app
+          Image: registry/app:1
+          PortMappings: [{ ContainerPort: 8080 }]
+          Environment: [{ Name: TIER, Value: prod }]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref Web
+      TaskDefinition: !Ref Task
+      DesiredCount: 3
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "Application" || m.Spec["image"] != "registry/app:1" || m.Spec["port"] != 8080 {
+		t.Fatalf("collation not faithful: %#v", m.Spec)
+	}
+	sc, _ := m.Spec["scaling"].(map[string]any)
+	if sc["min"] != 3 || sc["max"] != 3 {
+		t.Fatalf("DesiredCount should map to a fixed replica count: %#v", m.Spec["scaling"])
+	}
+	if env, _ := m.Spec["env"].([]any); len(env) != 1 {
+		t.Fatalf("container env should map: %#v", m.Spec["env"])
+	}
+	if !strings.Contains(strings.Join(m.Caveats, " "), "Cpu") {
+		t.Fatalf("task Cpu should surface a caveat: %v", m.Caveats)
+	}
+	// The Cluster and a bare TaskDefinition are no-ops (nil manifest, no findings).
+	if mc, fc := translateECSCluster("Web", nil, ctx); mc != nil || len(fc) != 0 {
+		t.Fatalf("ECS Cluster should be a no-op, got %v / %v", mc, fc)
+	}
+	if mt, ft := translateECSTaskDefinition("Task", nil, ctx); mt != nil || len(ft) != 0 {
+		t.Fatalf("a bare TaskDefinition should be a no-op, got %v / %v", mt, ft)
+	}
+}
+
+// A multi-container task can't map (Application runs one container) — refuse.
+func TestTranslate_ECSService_MultiContainerRefused(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - { Name: app, Image: a:1 }
+        - { Name: sidecar, Image: b:1 }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties: { TaskDefinition: !Ref Task, DesiredCount: 1 }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if !strings.Contains(findingsText(fs), "one container") {
+		t.Fatalf("a multi-container task must refuse, findings: %s", findingsText(fs))
+	}
+}
+
+// A container Command override has no Application field — refuse rather than ignore.
+func TestTranslate_ECSService_CommandRefused(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - { Name: app, Image: a:1, Command: ["/bin/run"] }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties: { TaskDefinition: !Ref Task, DesiredCount: 1 }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if !strings.Contains(findingsText(fs), "Command") {
+		t.Fatalf("a Command override must refuse, findings: %s", findingsText(fs))
 	}
 }

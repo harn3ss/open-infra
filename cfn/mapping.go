@@ -68,9 +68,9 @@ var mappingTable = map[string]MapEntry{
 	"AWS::Cognito::UserPoolClient":        {Kind: "UserPool(client)", Status: Partial, Note: "the pool's app client is created with the UserPool; a standalone client resource has no separate kind"},
 	"AWS::CloudFormation::Stack":          {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
 	"AWS::CloudFormation::CustomResource": {Status: Unsupported, Note: "Lambda-backed custom resources are out of scope for v1"},
-	"AWS::ECS::Cluster":                   {Status: Unsupported, Note: "no container-orchestration service kind yet"},
-	"AWS::ECS::Service":                   {Status: Unsupported, Note: "no container-orchestration service kind yet"},
-	"AWS::ECS::TaskDefinition":            {Status: Unsupported, Note: "no container-orchestration service kind yet"},
+	"AWS::ECS::Service":                   {Kind: "Application", Status: Partial, Note: "a Service + its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer"},
+	"AWS::ECS::TaskDefinition":            {Kind: "Application (container)", Status: Partial, Note: "the container spec — collated into the referencing Service's Application; a bare TaskDefinition provisions nothing"},
+	"AWS::ECS::Cluster":                   {Kind: "(implicit)", Status: Partial, Note: "a grouping with no open-infra counterpart (the k3s cluster is the cluster) — provisions nothing"},
 }
 
 // Lookup returns the mapping entry for a CFN resource type. An unknown type — or any
