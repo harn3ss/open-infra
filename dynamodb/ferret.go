@@ -38,21 +38,17 @@ func (s *FerretStore) Execute(ctx context.Context, op Operation) (any, error) {
 		return docToItem(doc), nil
 
 	case "PutItem":
-		key := plainMap(fromDynamoDB(op["key"]))
-		item := map[string]any{}
-		for k, v := range plainMap(fromDynamoDB(op["attributeValues"])) {
-			item[k] = v
-		}
-		for k, v := range key {
-			item[k] = v
-		}
-		id := keyString(key)
-		doc := bson.M{"_id": id}
-		for k, v := range item {
-			doc[k] = v
-		}
+		// PutDoc is the shared source of truth for the stored shape (see dynamodb.go), so a doc
+		// written here reads identically to one written via the shim's transactional path.
+		id, doc := PutDoc(op["key"], op["attributeValues"])
 		if _, err := s.coll.ReplaceOne(ctx, bson.M{"_id": id}, doc, options.Replace().SetUpsert(true)); err != nil {
 			return nil, err
+		}
+		item := map[string]any{}
+		for k, v := range doc {
+			if k != "_id" {
+				item[k] = v
+			}
 		}
 		return item, nil
 

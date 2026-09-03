@@ -33,7 +33,7 @@ func decodeDynamoErr(t *testing.T, w *httptest.ResponseRecorder) map[string]stri
 
 // A recognized, authorized operation returns an honest 501 in DynamoDB's own dialect — never a fake.
 func TestDynamo_RecognizedOpIsHonest501(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(true), "default", nil, discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", nil, nil, "", discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("DynamoDB_20120810.GetItem", `{"TableName":"t","Key":{"id":{"S":"1"}}}`),
 		iam.Claims{Sub: "tester"}, "req-1")
@@ -48,7 +48,7 @@ func TestDynamo_RecognizedOpIsHonest501(t *testing.T) {
 }
 
 func TestDynamo_MissingTarget(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(true), "default", nil, discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", nil, nil, "", discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("", `{}`), iam.Claims{Sub: "tester"}, "r")
 	if w.Code != http.StatusBadRequest || !strings.Contains(decodeDynamoErr(t, w)["__type"], "MissingAction") {
@@ -57,7 +57,7 @@ func TestDynamo_MissingTarget(t *testing.T) {
 }
 
 func TestDynamo_UnknownOp(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(true), "default", nil, discardLogger())
+	h := newDynamoHandler(csWithSAR(true), "default", nil, nil, "", discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("DynamoDB_20120810.Frobnicate", `{}`), iam.Claims{Sub: "tester"}, "r")
 	if w.Code != http.StatusBadRequest || !strings.Contains(decodeDynamoErr(t, w)["__type"], "UnknownOperation") {
@@ -68,7 +68,7 @@ func TestDynamo_UnknownOp(t *testing.T) {
 // Authorization is fail-closed and precedes the not-implemented answer: a denied caller gets 403,
 // not 501 (you learn you lack permission before you learn the op isn't built).
 func TestDynamo_DeniedBeforeNotImplemented(t *testing.T) {
-	h := newDynamoHandler(csWithSAR(false), "default", nil, discardLogger())
+	h := newDynamoHandler(csWithSAR(false), "default", nil, nil, "", discardLogger())
 	w := httptest.NewRecorder()
 	h.serve(w, dynamoReq("DynamoDB_20120810.PutItem", `{"TableName":"t","Item":{}}`),
 		iam.Claims{Sub: "nobody"}, "r")

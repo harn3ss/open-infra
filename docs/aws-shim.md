@@ -16,8 +16,8 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > byte-faithful), **STS** GetCallerIdentity (identity reflection), **Lambda** Invoke (over
 > `kind: Function`/Knative), **AppSync** (GraphQL, over the **open-appsync** engine — a
 > resolver-first, VTL-faithful engine on its own graduation ladder; slice 1 runs live, experimental),
-> and **DynamoDB** (a core-operation slice — create/read/update/delete/query/scan plus the batch
-> item APIs — over FerretDB; transactional and TTL operations still return `501`). It is one optional
+> and **DynamoDB** (create/read/update/delete/query/scan, the batch item APIs, **atomic
+> `TransactWriteItems`**, and **TTL** — over FerretDB). It is one optional
 > AWS-shaped surface over the platform, never a core
 > dependency. Breadth is a roadmap of *earned* graduations — each service built, probed, and
 > counted the same gated way — never a claim of coverage. Services whose backend speaks a different
@@ -109,7 +109,7 @@ error dialect.
 | **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
 | **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse + `Event` async + `DryRun`) | **Built + unit-tested** — live proof pending a deployed Function |
 | **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); runtime **behavior-faithful** (goldens captured from a live AWS AppSync account, CI-green), broader parity experimental. Needs `components.openAppsync` |
-| **DynamoDB** | FerretDB (Mongo-wire) | `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort + pagination), `UpdateItem` (update + condition expressions), `Scan`, `BatchGetItem`, `BatchWriteItem` (non-transactional, capped at DynamoDB's 100/25 limits) | **Core slice runs live** — full wire path (AWS JSON 1.0 + `X-Amz-Target` → shared store over FerretDB → typed attribute-values) exercised by a live round-trip (`dynamo_integration_test.go`, `-tags integration`). `TransactGet`/`TransactWrite`, `ProjectionExpression`, `ListTables`, `DeleteTable`, TTL, and streams return an honest `501`. Needs `MONGO_URI` |
+| **DynamoDB** | FerretDB (Mongo-wire) + its documentdb Postgres (transactions) | `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort + pagination), `UpdateItem` (update + condition expressions), `Scan`, `BatchGetItem`, `BatchWriteItem` (capped at DynamoDB's 100/25 limits), **`TransactWriteItems`** (atomic Put+Delete), **`UpdateTimeToLive`/`DescribeTimeToLive`** (TTL) | **Runs live** — full wire path exercised by live round-trips (`dynamo_integration_test.go`, `dynamo_transact_integration_test.go`, `-tags integration`). **Transactions:** FerretDB has no Mongo transactions, so `TransactWriteItems` drops to the documentdb Postgres *behind* FerretDB — one `BEGIN/COMMIT` over the same `documentdb_api` calls, read-consistent over the mongo wire (needs `MONGO_PG_URI`). **TTL:** a background reaper sweeps expired items (DynamoDB TTL is epoch-number, which a Mongo Date-only TTL index can't act on). Still `501`, refused loudly not faked: `TransactGetItems` (a consistent snapshot), `Update`/`ConditionExpression` *inside* a transaction, `ProjectionExpression`, `ListTables`, `DeleteTable`, streams. Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions) |
 | Secrets Manager, Kinesis, IAM, Bedrock, … | Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
 
 Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters

@@ -18,6 +18,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -40,11 +41,13 @@ type dynamoHandler struct {
 	cs      kubernetes.Interface
 	authzNS string
 	db      *mongo.Database // FerretDB; nil when MONGO_URI is unset (data layer not configured)
+	pg      *sql.DB         // the documentdb Postgres behind FerretDB; nil disables Transact* (honest 501)
+	dbName  string          // the documentdb database name (== the mongo DB name) for documentdb_api calls
 	logger  *slog.Logger
 }
 
-func newDynamoHandler(cs kubernetes.Interface, authzNS string, db *mongo.Database, logger *slog.Logger) *dynamoHandler {
-	return &dynamoHandler{cs: cs, authzNS: authzNS, db: db, logger: logger}
+func newDynamoHandler(cs kubernetes.Interface, authzNS string, db *mongo.Database, pg *sql.DB, dbName string, logger *slog.Logger) *dynamoHandler {
+	return &dynamoHandler{cs: cs, authzNS: authzNS, db: db, pg: pg, dbName: dbName, logger: logger}
 }
 
 const dynamoErrType = "com.amazonaws.dynamodb.v20120810#"
@@ -72,9 +75,9 @@ func (h *dynamoHandler) authFailure(w http.ResponseWriter, _ *http.Request, requ
 // same table-agnostic coarseness S3 carries in v1.
 func verbForOp(op string) (verb string, known bool) {
 	switch op {
-	case "GetItem", "Query", "Scan", "BatchGetItem", "DescribeTable", "ListTables":
+	case "GetItem", "Query", "Scan", "BatchGetItem", "TransactGetItems", "DescribeTable", "DescribeTimeToLive", "ListTables":
 		return "get", true
-	case "PutItem", "UpdateItem", "BatchWriteItem", "CreateTable":
+	case "PutItem", "UpdateItem", "BatchWriteItem", "TransactWriteItems", "CreateTable", "UpdateTimeToLive":
 		return "create", true
 	case "DeleteItem", "DeleteTable":
 		return "delete", true
@@ -132,6 +135,14 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		h.batchGetItem(ctx, w, requestID, body)
 	case "BatchWriteItem":
 		h.batchWriteItem(ctx, w, requestID, body)
+	case "TransactWriteItems":
+		h.transactWriteItems(ctx, w, requestID, body)
+	case "TransactGetItems":
+		h.transactGetItems(ctx, w, requestID, body)
+	case "UpdateTimeToLive":
+		h.updateTimeToLive(ctx, w, requestID, table, body)
+	case "DescribeTimeToLive":
+		h.describeTimeToLive(ctx, w, requestID, table)
 	default:
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"DynamoDB "+op+" is recognized but not yet implemented by the open-infra shim.")
