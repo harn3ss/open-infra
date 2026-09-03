@@ -102,18 +102,22 @@ part of another kind rather than on its own. The caveat is always printed.
 | `AWS::EC2::Volume` | `kind: Volume` | Longhorn block volume |
 | `AWS::EFS::FileSystem` | `kind: FileShare` | SMB share on Longhorn |
 | `AWS::AppSync::DataSource` / `Resolver` / `FunctionConfiguration` / `GraphQLSchema` | part of `kind: GraphQLApi` | sub-parts of one API's spec, not standalone resources |
+| `AWS::DynamoDB::Table` | `kind: Table` | registers name + key schema (+ TTL) on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, secondary indexes, streams, or per-table SSE — those **block** |
+| `AWS::Cognito::UserPool` / `UserPoolClient` | `kind: UserPool` | a hosted OIDC pool (Keycloak realm); MFA, Lambda triggers, and schema do not transfer |
+| `AWS::ECS::Service` (+ its `TaskDefinition`) | `kind: Application` | a Service and its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer |
 
-### Gated and unsupported
+### Unsupported
 
-`AWS::DynamoDB::Table` is **gated** — the engine maps to open-infra kinds, and there is
-no standalone Dynamo table *kind* to map onto (the aws-shim has a DynamoDB front door,
-but that is a runtime API, not a declarative kind). `AWS::Cognito::*` is unsupported
-because the engine has no mapping onto `kind: UserPool` yet (open-infra *does* now host a
-user pool — see [`docs/auth-migration.md`](auth-migration.md) — the engine just doesn't
-target it). `AWS::CloudFormation::Stack` (nested stacks),
-`AWS::CloudFormation::CustomResource`, `AWS::ECS::*`, and every `Custom::*` type are
-**unsupported** for now. All of these produce a `REJECTED` verdict with the reason
-stated.
+`AWS::CloudFormation::Stack` (nested stacks), `AWS::CloudFormation::CustomResource`, and
+every `Custom::*` type are **unsupported** for now, and produce a `REJECTED` verdict with
+the reason stated.
+
+> `AWS::DynamoDB::Table` graduated from gated to **partial** once the aws-shim's DynamoDB
+> data layer gained atomic transactions + TTL and a declarative `kind: Table`. `kind: Table`
+> registers the table's name + key schema (immutable, exactly as in DynamoDB) with the shim,
+> so items are writable without a runtime `CreateTable`. It is a thin front onto a data-plane
+> capability, not a standalone managed database — reach for `kind: Application`'s `database`
+> when you need capacity, indexes, or streams.
 
 ## Intrinsic functions
 

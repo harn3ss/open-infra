@@ -101,16 +101,13 @@ func TestPlan_Unsupported_Rejected(t *testing.T) {
 		t.Fatalf("verdict = %s, want REJECTED", p.Verdict)
 	}
 	b := blockersJoined(p)
-	for _, want := range []string{"DynamoDB", "CustomResource", "ImportValue"} {
+	for _, want := range []string{"CustomResource", "ImportValue"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("blockers missing %q:\n%s", want, b)
 		}
 	}
-	// gated type must be flagged gated, not silently dropped or treated as supported.
+	// an unsupported type must be flagged unsupported, not silently dropped or treated as supported.
 	for _, r := range p.Resources {
-		if r.LogicalID == "Table" && r.Status != Gated {
-			t.Errorf("Table should be gated, got %s", r.Status)
-		}
 		if r.LogicalID == "Users" && r.Status != Unsupported {
 			t.Errorf("Users should be unsupported, got %s", r.Status)
 		}

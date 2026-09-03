@@ -1,0 +1,81 @@
+# kind: Table — a DynamoDB-shaped key/value table (AWS DynamoDB equivalent). One claim ->
+# a registered table on the aws-shim's DynamoDB data layer (FerretDB): its name and key
+# schema are recorded so items can be written (PutItem) without a runtime CreateTable, and
+# a TTL attribute (if declared) is enforced by the shim's reaper.
+#
+# This is a THIN declarative front, not a standalone managed database. A Table functions only
+# where the aws-shim DynamoDB front door is enabled (the `awsShim` component, opt-in / off by
+# default) — the shim is the one process that holds the FerretDB creds and owns the table
+# registry, so it reconciles declared tables (see the composition + docs/aws-shim.md). The key
+# schema is IMMUTABLE, exactly as in DynamoDB — you cannot change a table's hash/range key after
+# it is created; delete and recreate instead.
+#
+# NOT modelled (blocked at the CFN translator, absent here): read/write capacity, secondary
+# indexes (the store scans; it has no GSIs), streams, per-table SSE. Reach for a real managed
+# database (kind: Application.database) when you need those.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xtables.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XTable, plural: xtables }
+  claimNames: { kind: Table, plural: tables }
+  defaultCompositionRef: { name: table }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [hashKey]
+              properties:
+                tableName:
+                  type: string
+                  description: "The DynamoDB table name clients address (the X-Amz-Target TableName). Defaults to the claim name. Immutable."
+                  pattern: '^[A-Za-z0-9_.-]{3,255}$'
+                hashKey:
+                  type: object
+                  description: "The partition (HASH) key. Immutable, as in DynamoDB."
+                  required: [name, type]
+                  properties:
+                    name: { type: string, description: "Attribute name of the partition key." }
+                    type:
+                      type: string
+                      enum: ["S", "N", "B"]
+                      description: 'Scalar key type: S (string), N (number), or B (binary). Quote the value in YAML (type: "N") — an unquoted N is YAML''s boolean false.'
+                rangeKey:
+                  type: object
+                  description: "The optional sort (RANGE) key. Immutable, as in DynamoDB."
+                  required: [name, type]
+                  properties:
+                    name: { type: string, description: "Attribute name of the sort key." }
+                    type:
+                      type: string
+                      enum: ["S", "N", "B"]
+                      description: 'Scalar key type: S (string), N (number), or B (binary). Quote the value in YAML (type: "N") — an unquoted N is YAML''s boolean false.'
+                billingMode:
+                  type: string
+                  default: PAY_PER_REQUEST
+                  enum: [PAY_PER_REQUEST, PROVISIONED]
+                  description: "Advisory metadata only — the FerretDB-backed store has no capacity/billing model; mirrors DynamoDB's field so a CloudFormation table round-trips."
+                ttlAttribute:
+                  type: string
+                  description: "Optional. Enables Time-To-Live on this numeric (epoch-seconds) attribute; the shim's reaper deletes items whose value is at or before now."
+            status:
+              type: object
+              properties:
+                tableName: { type: string }
+                ready: { type: boolean }

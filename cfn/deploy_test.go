@@ -189,6 +189,41 @@ Resources:
 	}
 }
 
+// A DynamoDB table deploys to a kind: Table with a faithful key schema + TTL.
+func TestDeploy_DynamoDBTable(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Sessions:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: sessions
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification: { Enabled: true, AttributeName: exp }
+`)
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Table/sessions" {
+		t.Fatalf("applied = %v, want [Table/sessions]", got)
+	}
+	spec := f.liveSpecs["Table/sessions"]
+	if spec["tableName"] != "sessions" || spec["ttlAttribute"] != "exp" {
+		t.Fatalf("table spec not faithful: %#v", spec)
+	}
+	if hk, _ := spec["hashKey"].(map[string]any); hk["name"] != "pk" || hk["type"] != "S" {
+		t.Fatalf("hashKey not faithful: %#v", spec["hashKey"])
+	}
+}
+
 // No orphans: if a create fails midway, everything created THIS deploy is deleted.
 func TestDeploy_Rollback_NoOrphans(t *testing.T) {
 	tmpl := []byte(`

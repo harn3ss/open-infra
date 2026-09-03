@@ -350,3 +350,75 @@ Resources:
 		t.Fatalf("a Command override must refuse, findings: %s", findingsText(fs))
 	}
 }
+
+// ---- AWS::DynamoDB::Table ----
+
+func TestTranslate_DynamoDBTable_Faithful(t *testing.T) {
+	m, fs := translateDynamoDBTable("Sessions", map[string]any{
+		"TableName": "sessions",
+		"AttributeDefinitions": []any{
+			map[string]any{"AttributeName": "pk", "AttributeType": "S"},
+			map[string]any{"AttributeName": "sk", "AttributeType": "N"},
+		},
+		"KeySchema": []any{
+			map[string]any{"AttributeName": "pk", "KeyType": "HASH"},
+			map[string]any{"AttributeName": "sk", "KeyType": "RANGE"},
+		},
+		"BillingMode":             "PAY_PER_REQUEST",
+		"TimeToLiveSpecification": map[string]any{"Enabled": true, "AttributeName": "exp"},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "Table" || m.Name != "sessions" || m.APIVersion != "openinfra.dev/v1" {
+		t.Fatalf("bad manifest head: %+v", m)
+	}
+	if m.Spec["tableName"] != "sessions" || m.Spec["ttlAttribute"] != "exp" || m.Spec["billingMode"] != "PAY_PER_REQUEST" {
+		t.Fatalf("spec not faithful: %#v", m.Spec)
+	}
+	hk, _ := m.Spec["hashKey"].(map[string]any)
+	rk, _ := m.Spec["rangeKey"].(map[string]any)
+	if hk["name"] != "pk" || hk["type"] != "S" || rk["name"] != "sk" || rk["type"] != "N" {
+		t.Fatalf("key schema not faithful: hash=%#v range=%#v", hk, rk)
+	}
+	// The opt-in / data-plane caveat must always be surfaced.
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "aws-shim DynamoDB front door is enabled") {
+		t.Fatalf("the opt-in caveat must be declared, caveats: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_DynamoDBTable_SecondaryIndexBlocks(t *testing.T) {
+	_, fs := translateDynamoDBTable("T", map[string]any{
+		"AttributeDefinitions":   []any{map[string]any{"AttributeName": "id", "AttributeType": "S"}},
+		"KeySchema":              []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
+		"GlobalSecondaryIndexes": []any{map[string]any{"IndexName": "byX"}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "GlobalSecondaryIndexes") {
+		t.Fatalf("a GSI is behavior-bearing and must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_DynamoDBTable_MissingKeyTypeBlocks(t *testing.T) {
+	// KeySchema names a key attribute that AttributeDefinitions never types — unguessable, blocks.
+	_, fs := translateDynamoDBTable("T", map[string]any{
+		"AttributeDefinitions": []any{map[string]any{"AttributeName": "other", "AttributeType": "S"}},
+		"KeySchema":            []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "no matching AttributeDefinitions") {
+		t.Fatalf("an untyped key attribute must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_DynamoDBTable_ProvisionedThroughputIsCaveatNotBlock(t *testing.T) {
+	m, fs := translateDynamoDBTable("T", map[string]any{
+		"AttributeDefinitions":  []any{map[string]any{"AttributeName": "id", "AttributeType": "S"}},
+		"KeySchema":             []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
+		"ProvisionedThroughput": map[string]any{"ReadCapacityUnits": float64(5), "WriteCapacityUnits": float64(5)},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("throughput must not block (it is inert here), findings: %s", findingsText(fs))
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "ProvisionedThroughput") {
+		t.Fatalf("ProvisionedThroughput must be a declared caveat, caveats: %v", m.Caveats)
+	}
+}

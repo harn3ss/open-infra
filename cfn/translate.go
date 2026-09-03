@@ -86,6 +86,7 @@ var translators = map[string]translator{
 	"AWS::Lambda::Function":            translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine": translateStateMachine,
 	"AWS::EC2::Volume":                 translateVolume,
+	"AWS::DynamoDB::Table":             translateDynamoDBTable,
 	"AWS::IAM::User":                   translateIAMUser,
 	"AWS::Cognito::UserPool":           translateCognitoUserPool,
 	"AWS::ECS::Service":                translateECSService,
@@ -287,6 +288,126 @@ func translateVolume(id string, props map[string]any, _ *stackCtx) (*Manifest, [
 		}
 	}
 	return m, f
+}
+
+// ---- AWS::DynamoDB::Table -> kind: Table ----
+//
+// open-infra's Table is a thin declarative front for the aws-shim's DynamoDB data layer
+// (FerretDB): it registers a table's name + key schema so items are writable without a runtime
+// CreateTable, and (a #104-added TTL) a TTL attribute the shim's reaper enforces. So the KEY
+// SCHEMA maps faithfully — the partition/sort key and their scalar types (S/N/B) — and TTL maps.
+// What does NOT map is everything DynamoDB provisions that the FerretDB-backed store does not
+// model: read/write capacity (ProvisionedThroughput), secondary indexes (the store scans; it has
+// no GSIs/LSIs), streams, per-table SSE, and PITR/import/restore. Those are behavior-bearing, so
+// they BLOCK — a table that silently lacked its GSIs or stream is the worst shape (looks created,
+// wrong at query time). BillingMode is advisory metadata (there is no capacity behind the store),
+// so it and ProvisionedThroughput are declared caveats rather than blockers.
+func translateDynamoDBTable(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	// Only the properties we can honor are `known`; the long tail (GlobalSecondaryIndexes,
+	// LocalSecondaryIndexes, StreamSpecification, SSESpecification, KinesisStreamSpecification,
+	// PointInTimeRecoverySpecification, ImportSourceSpecification, …) is deliberately absent, so
+	// blockUnknownProps refuses it — fail-closed, never a silent drop.
+	known := map[string]bool{
+		"TableName": true, "KeySchema": true, "AttributeDefinitions": true,
+		"BillingMode": true, "ProvisionedThroughput": true, "TimeToLiveSpecification": true,
+		"Tags": true, "DeletionProtectionEnabled": true, "TableClass": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	// AttributeDefinitions gives each key attribute its scalar type.
+	attrType := map[string]string{}
+	if defs, ok := props["AttributeDefinitions"].([]any); ok {
+		for _, d := range defs {
+			dm, ok := d.(map[string]any)
+			if !ok {
+				continue
+			}
+			n, _ := concrete(dm["AttributeName"])
+			t, _ := concrete(dm["AttributeType"])
+			if n != "" && t != "" {
+				attrType[n] = t
+			}
+		}
+	}
+
+	spec := map[string]any{}
+	if tn, ok := concrete(props["TableName"]); ok && tn != "" {
+		spec["tableName"] = tn
+	}
+
+	// KeySchema -> hashKey / rangeKey, joined with AttributeDefinitions for the type.
+	hashName, rangeName := "", ""
+	if ks, ok := props["KeySchema"].([]any); ok {
+		for _, e := range ks {
+			em, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			an, _ := concrete(em["AttributeName"])
+			switch em["KeyType"] {
+			case "HASH":
+				hashName = an
+			case "RANGE":
+				rangeName = an
+			}
+		}
+	}
+	if hashName == "" {
+		f = append(f, Finding{"Resource " + id, "a Table requires a KeySchema with a HASH (partition) key"})
+	} else {
+		spec["hashKey"] = dynamoKeyAttr(id, hashName, attrType, &f)
+	}
+	if rangeName != "" {
+		spec["rangeKey"] = dynamoKeyAttr(id, rangeName, attrType, &f)
+	}
+
+	if bm, ok := concrete(props["BillingMode"]); ok && bm != "" {
+		spec["billingMode"] = bm
+	}
+
+	// TTL maps to the shim's reaper (#104). Enabled without an attribute is a malformed request.
+	if ttl, ok := props["TimeToLiveSpecification"].(map[string]any); ok {
+		enabled, _ := ttl["Enabled"].(bool)
+		attr, _ := concrete(ttl["AttributeName"])
+		if enabled {
+			if attr == "" {
+				f = append(f, Finding{"Resource " + id, "TimeToLiveSpecification is Enabled but names no AttributeName"})
+			} else {
+				spec["ttlAttribute"] = attr
+			}
+		}
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Table", Name: k8sName(id), Spec: spec}
+	if _, ok := props["ProvisionedThroughput"]; ok {
+		m.Caveats = append(m.Caveats, "ProvisionedThroughput dropped — the FerretDB-backed store has no read/write capacity model to provision")
+	}
+	if _, ok := props["BillingMode"]; ok {
+		m.Caveats = append(m.Caveats, "BillingMode is advisory only — there is no capacity/billing behind the store")
+	}
+	for _, p := range []string{"Tags", "DeletionProtectionEnabled", "TableClass"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent for the FerretDB-backed store")
+		}
+	}
+	m.Caveats = append(m.Caveats, "the table functions only where the aws-shim DynamoDB front door is enabled (opt-in, off by default) — this registers the table's name + key schema, it does not stand up a separate managed service")
+	return m, f
+}
+
+// dynamoKeyAttr builds a {name,type} key attribute, joining the KeySchema name to its
+// AttributeDefinitions scalar type. A key with no matching definition, or a non-scalar type,
+// blocks — the store keys items by these attributes, so an unknown key type is not guessable.
+func dynamoKeyAttr(id, name string, attrType map[string]string, f *[]Finding) map[string]any {
+	t := attrType[name]
+	switch t {
+	case "S", "N", "B":
+	case "":
+		*f = append(*f, Finding{"Resource " + id, "key attribute " + name + " has no matching AttributeDefinitions entry giving its type (S/N/B)"})
+	default:
+		*f = append(*f, Finding{"Resource " + id, "key attribute " + name + " has non-scalar type " + t + " — a DynamoDB key must be S, N, or B"})
+	}
+	return map[string]any{"name": name, "type": t}
 }
 
 // ---- AWS::IAM::User -> kind: User ----
