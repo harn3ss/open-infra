@@ -175,3 +175,36 @@ func TestTranslate_Volume_EncryptionAndSnapshotBlock(t *testing.T) {
 		t.Fatalf("a SnapshotId must block, findings: %s", findingsText(fs2))
 	}
 }
+
+// A basic Cognito pool maps to a hosted OIDC pool (Keycloak realm).
+func TestTranslate_CognitoUserPool_Faithful(t *testing.T) {
+	m, fs := translateCognitoUserPool("Pool", map[string]any{
+		"UserPoolName":     "MyApp Users",
+		"MfaConfiguration": "OFF",
+		"Policies":         map[string]any{"PasswordPolicy": map[string]any{"MinimumLength": float64(8)}},
+	})
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "UserPool" || m.Spec["realm"] != "myapp-users" {
+		t.Fatalf("pool spec not faithful: %#v", m.Spec)
+	}
+	// The Cognito password policy is a declared caveat (the realm applies its own).
+	if len(m.Caveats) == 0 || !strings.Contains(strings.Join(m.Caveats, " "), "Policies") {
+		t.Fatalf("Policies should surface a caveat: %v", m.Caveats)
+	}
+}
+
+// MFA enforcement and Lambda triggers are behavior-bearing with no faithful mapping — they block.
+func TestTranslate_CognitoUserPool_MfaAndTriggersBlock(t *testing.T) {
+	_, fs := translateCognitoUserPool("Pool", map[string]any{"MfaConfiguration": "ON"})
+	if !strings.Contains(findingsText(fs), "MfaConfiguration") {
+		t.Fatalf("MFA ON must block, findings: %s", findingsText(fs))
+	}
+	_, fs2 := translateCognitoUserPool("Pool", map[string]any{
+		"LambdaConfig": map[string]any{"PreSignUp": "arn:aws:lambda:x"},
+	})
+	if !strings.Contains(findingsText(fs2), "LambdaConfig") {
+		t.Fatalf("Lambda triggers must block, findings: %s", findingsText(fs2))
+	}
+}

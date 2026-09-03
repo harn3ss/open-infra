@@ -11,9 +11,9 @@ Resources:
 
   # unsupported: no managed user pool.
   Users:
-    Type: AWS::Cognito::UserPool
+    Type: AWS::ECS::Service
     Properties:
-      UserPoolName: app-users
+      ServiceName: app-svc
 
   # supported type, but pulls a value from another stack — an unsupported intrinsic.
   Fn:

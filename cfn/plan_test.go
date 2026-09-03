@@ -101,7 +101,7 @@ func TestPlan_Unsupported_Rejected(t *testing.T) {
 		t.Fatalf("verdict = %s, want REJECTED", p.Verdict)
 	}
 	b := blockersJoined(p)
-	for _, want := range []string{"DynamoDB", "Cognito", "ImportValue"} {
+	for _, want := range []string{"DynamoDB", "ECS", "ImportValue"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("blockers missing %q:\n%s", want, b)
 		}

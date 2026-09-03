@@ -64,8 +64,8 @@ var mappingTable = map[string]MapEntry{
 	"AWS::DynamoDB::Table": {Status: Gated, Note: "no DynamoDB-equivalent data layer yet — gated on the wide-column/KV data-layer decision"},
 
 	// --- unsupported: explicitly out of scope for v1 ---
-	"AWS::Cognito::UserPool":              {Status: Unsupported, Note: "no managed user pool — open-infra consumes OIDC/JWT identity only"},
-	"AWS::Cognito::UserPoolClient":        {Status: Unsupported, Note: "OIDC/JWT consumption only; no managed user pool"},
+	"AWS::Cognito::UserPool":              {Kind: "UserPool", Status: Partial, Note: "a hosted OIDC pool (Keycloak realm); Cognito-specific config (MFA, Lambda triggers, schema) does not transfer"},
+	"AWS::Cognito::UserPoolClient":        {Kind: "UserPool(client)", Status: Partial, Note: "the pool's app client is created with the UserPool; a standalone client resource has no separate kind"},
 	"AWS::CloudFormation::Stack":          {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
 	"AWS::CloudFormation::CustomResource": {Status: Unsupported, Note: "Lambda-backed custom resources are out of scope for v1"},
 	"AWS::ECS::Cluster":                   {Status: Unsupported, Note: "no container-orchestration service kind yet"},
