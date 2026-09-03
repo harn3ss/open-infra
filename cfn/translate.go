@@ -41,6 +41,7 @@ var translators = map[string]translator{
 	"AWS::Lambda::Function":            translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine": translateStateMachine,
 	"AWS::EC2::Volume":                 translateVolume,
+	"AWS::Cognito::UserPool":           translateCognitoUserPool,
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).
@@ -234,6 +235,48 @@ func translateVolume(id string, props map[string]any) (*Manifest, []Finding) {
 	for _, p := range []string{"AvailabilityZone", "VolumeType", "Iops", "Throughput"} {
 		if _, ok := props[p]; ok {
 			m.Caveats = append(m.Caveats, p+" dropped — open-infra volumes are Longhorn on one flat cluster (no AZ / EBS volume-type / provisioned IOPS)")
+		}
+	}
+	return m, f
+}
+
+// ---- AWS::Cognito::UserPool -> kind: UserPool ----
+//
+// open-infra now hosts a pool (a Keycloak realm that issues OIDC tokens), so the CORE of a
+// Cognito user pool maps: UserPoolName -> the realm. What does NOT transfer is Cognito-specific
+// behavior. MFA enforcement and Lambda triggers are behavior-bearing and have no Keycloak-realm
+// equivalent here, so they BLOCK (dropping them would silently weaken or change auth). The
+// realm's own defaults cover password policy / schema / verification, so those are declared
+// caveats (the pool still enforces a policy — just the realm's, not Cognito's exact rules).
+func translateCognitoUserPool(id string, props map[string]any) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"UserPoolName": true, "MfaConfiguration": true, "Policies": true, "Schema": true,
+		"LambdaConfig": true, "AutoVerifiedAttributes": true, "AliasAttributes": true,
+		"UsernameAttributes": true, "EmailConfiguration": true, "SmsConfiguration": true,
+		"AdminCreateUserConfig": true, "AccountRecoverySetting": true, "DeviceConfiguration": true,
+		"UserPoolTags": true, "UsernameConfiguration": true, "VerificationMessageTemplate": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	if mfa, ok := concrete(props["MfaConfiguration"]); ok && mfa != "" && mfa != "OFF" {
+		f = append(f, Finding{"Resource " + id, "MfaConfiguration " + mfa + " is not translatable — per-pool MFA enforcement has no faithful mapping; the realm's MFA is configured separately (refusing rather than silently not enforcing MFA)"})
+	}
+	if _, ok := props["LambdaConfig"]; ok {
+		f = append(f, Finding{"Resource " + id, "LambdaConfig (pool triggers: PreSignUp/PostConfirmation/…) has no Keycloak-realm equivalent — refusing rather than silently dropping a custom auth flow"})
+	}
+
+	spec := map[string]any{}
+	if n, ok := concrete(props["UserPoolName"]); ok && n != "" {
+		spec["realm"] = k8sName(n)
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "UserPool", Name: k8sName(id), Spec: spec}
+	for _, p := range []string{"Policies", "Schema", "AutoVerifiedAttributes", "AliasAttributes",
+		"UsernameAttributes", "EmailConfiguration", "SmsConfiguration", "AdminCreateUserConfig",
+		"AccountRecoverySetting", "DeviceConfiguration", "UserPoolTags", "UsernameConfiguration",
+		"VerificationMessageTemplate"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — the pool applies the realm's own defaults, not Cognito's exact configuration")
 		}
 	}
 	return m, f
