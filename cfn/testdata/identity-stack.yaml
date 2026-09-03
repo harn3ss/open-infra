@@ -1,0 +1,8 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "A Cognito user pool the engine can create — a hosted OIDC pool (a Keycloak realm). Cognito-specific config (MFA enforcement, Lambda triggers) is refused rather than silently dropped."
+Resources:
+  AppPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: app-pool
+      MfaConfiguration: "OFF"
