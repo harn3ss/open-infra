@@ -98,6 +98,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	r := newResolver(t, resolveParams(t, opts.Params), pseudoParams(opts.StackName))
 	r.evalConditions()
+	ctx := &stackCtx{template: t, resolver: r}
 
 	byID := map[string]builtResource{}
 	var findings []Finding
@@ -113,10 +114,13 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 		}
 		r.where = "Resource " + id
 		resolved, _ := r.resolve(res.Properties).(map[string]any)
-		m, fs := translators[res.Type](id, resolved)
+		m, fs := translators[res.Type](id, resolved, ctx)
 		if len(fs) > 0 {
 			findings = append(findings, fs...)
 			continue
+		}
+		if m == nil {
+			continue // a no-op resource (e.g. an ECS Cluster, or a TaskDefinition a Service composes)
 		}
 		yml, err := renderManifest(m, opts)
 		if err != nil {
