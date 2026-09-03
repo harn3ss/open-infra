@@ -21,13 +21,13 @@ CloudFormation." The honest boundaries:
 - **Ports cleanly** — Lambda (container-image) → `Function`, Step Functions → `StateMachine`,
   AppSync → `GraphQLApi`, IAM Role/Policy/User/Group → the IAM kinds, KMS → `EncryptionKey`.
 - **Ports with caveats (lossy)** — S3/SQS/SNS/RDS map through an `Application`'s sub-blocks,
-  EC2 → `VirtualMachine`, EBS/EFS → `Volume`/`FileShare`. The caveats are printed, never hidden.
-- **Breaks / refused (fail-loud, never a silent partial)** — `AWS::DynamoDB::Table` is **gated**
-  (no standalone table *kind* for the engine to map onto — the shim has a DynamoDB front door, but
-  the engine maps to kinds; see below), `AWS::Cognito::*` is unsupported by the engine (it doesn't
-  map onto `kind: UserPool` yet, though open-infra now hosts a pool — see
-  [`docs/auth-migration.md`](auth-migration.md)), nested stacks, Lambda-backed custom resources, and
-  the general AWS resource catalog are unsupported. Each produces a `REJECTED` verdict naming the reason.
+  EC2 → `VirtualMachine`, EBS/EFS → `Volume`/`FileShare`, DynamoDB → `kind: Table` (name + key
+  schema on the aws-shim's data layer; functions only where the shim's DynamoDB front door is
+  enabled — no capacity/indexes/streams), Cognito → `kind: UserPool`, ECS → `kind: Application`.
+  The caveats are printed, never hidden.
+- **Breaks / refused (fail-loud, never a silent partial)** — nested stacks, Lambda-backed custom
+  resources, and the general AWS resource catalog are unsupported. Each produces a `REJECTED`
+  verdict naming the reason.
 - **Create fidelity is narrower than the mapping** — a resource type that *maps* does not always
   *create*, because AWS resource content often has no faithful open-infra form (IAM's
   `service:Action` permission namespace vs open-infra's `kind:verb` RBAC; KMS key policies; a
