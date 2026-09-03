@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -36,8 +37,10 @@ type translator func(logicalID string, props map[string]any) (*Manifest, []Findi
 // translators is the create-fidelity registry. A CFN type is create-provisionable only if it
 // appears here AND its translator accepts every property. Grow it the gated way.
 var translators = map[string]translator{
-	"AWS::KMS::Key":         translateKMSKey,
-	"AWS::Lambda::Function": translateLambdaFunction,
+	"AWS::KMS::Key":                    translateKMSKey,
+	"AWS::Lambda::Function":            translateLambdaFunction,
+	"AWS::StepFunctions::StateMachine": translateStateMachine,
+	"AWS::EC2::Volume":                 translateVolume,
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).
@@ -118,6 +121,120 @@ func translateLambdaFunction(id string, props map[string]any) (*Manifest, []Find
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Function", Name: k8sName(id), Spec: spec}
 	if _, ok := props["Role"]; ok {
 		m.Caveats = append(m.Caveats, "Lambda Role dropped — open-infra Functions connect via injected secrets/env, they do not assume an IAM role")
+	}
+	return m, f
+}
+
+// ---- AWS::StepFunctions::StateMachine -> kind: StateMachine ----
+//
+// open-infra's StateMachine runs the SAME Amazon States Language document you'd pass to
+// aws_sfn_state_machine.definition — so the definition maps byte-for-byte. The one boundary is
+// the Task "Resource" field: open-infra Tasks reference a Function as "function:<name>", whereas
+// AWS uses a Lambda ARN. A definition carrying an AWS ARN (or an unresolved cross-resource ref
+// to a sibling Lambda's Arn) is REFUSED rather than deployed-and-silently-broken — it would
+// create a state machine that looks fine and fails at execution, the worst shape.
+// Faithful: DefinitionString / Definition (-> definition), STANDARD type.
+// Declared caveats: RoleArn, StateMachineName, Tags, Logging/Tracing (open-infra has its own).
+func translateStateMachine(id string, props map[string]any) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"DefinitionString": true, "Definition": true, "RoleArn": true, "StateMachineName": true,
+		"StateMachineType": true, "LoggingConfiguration": true, "TracingConfiguration": true,
+		"Tags": true, "DefinitionS3Location": true, "DefinitionSubstitutions": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	if _, ok := props["DefinitionS3Location"]; ok {
+		f = append(f, Finding{"Resource " + id, "DefinitionS3Location is not translatable — the ASL must be inline (DefinitionString/Definition), not fetched from S3"})
+	}
+	if _, ok := props["DefinitionSubstitutions"]; ok {
+		f = append(f, Finding{"Resource " + id, "DefinitionSubstitutions is not applied — provide a fully-resolved ASL definition rather than one with ${} substitutions"})
+	}
+	if t, ok := concrete(props["StateMachineType"]); ok && t != "" && t != "STANDARD" {
+		f = append(f, Finding{"Resource " + id, "StateMachineType " + t + " is not supported — open-infra runs STANDARD-semantics workflows (EXPRESS has different execution/history semantics)"})
+	}
+
+	// Resolve the ASL definition from DefinitionString (a string) or Definition (an object).
+	var def string
+	if ds, ok := props["DefinitionString"]; ok {
+		s, cok := concrete(ds)
+		if !cok {
+			f = append(f, Finding{"Resource " + id, "the ASL definition references cross-resource values with no open-infra equivalent (e.g. a sibling Lambda's ARN) — remap Task Resources to \"function:<name>\" and inline the definition"})
+		}
+		def = s
+	} else if d, ok := props["Definition"].(map[string]any); ok {
+		b, err := json.Marshal(d)
+		if err != nil {
+			f = append(f, Finding{"Resource " + id, "Definition object is not serializable to ASL JSON"})
+		} else {
+			def = string(b)
+		}
+	} else {
+		f = append(f, Finding{"Resource " + id, "a state machine requires an inline ASL definition (DefinitionString or Definition)"})
+	}
+
+	// The fidelity boundary: an AWS ARN in the definition can't run on open-infra.
+	if def != "" && strings.Contains(def, "arn:aws:") {
+		f = append(f, Finding{"Resource " + id, "the ASL Task \"Resource\" fields are AWS ARNs (arn:aws:…) — open-infra Tasks reference a Function as \"function:<name>\"; remap them before deploying (refusing rather than deploying a workflow that fails at execution)"})
+	}
+
+	spec := map[string]any{}
+	if def != "" {
+		spec["definition"] = def
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "StateMachine", Name: k8sName(id), Spec: spec}
+	if _, ok := props["RoleArn"]; ok {
+		m.Caveats = append(m.Caveats, "RoleArn dropped — the open-infra StateMachine controller invokes Functions directly, it does not assume an IAM role")
+	}
+	if _, ok := props["LoggingConfiguration"]; ok {
+		m.Caveats = append(m.Caveats, "LoggingConfiguration dropped — execution logging is via open-infra's own observability (Loki), not per-machine config")
+	}
+	if _, ok := props["TracingConfiguration"]; ok {
+		m.Caveats = append(m.Caveats, "TracingConfiguration dropped — tracing is via open-infra's OTel/Tempo pipeline")
+	}
+	return m, f
+}
+
+// ---- AWS::EC2::Volume -> kind: Volume ----
+//
+// A Longhorn block volume. Size maps directly; MultiAttach maps to shared (RWX). AWS's
+// storage-class/perf knobs (VolumeType, Iops, Throughput) and AvailabilityZone have no
+// open-infra counterpart (one flat cluster, one storage class) and are inert caveats.
+// Encryption and restoring from an AWS SnapshotId are behavior-bearing with no faithful form
+// and block.
+func translateVolume(id string, props map[string]any) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"Size": true, "AvailabilityZone": true, "VolumeType": true, "Iops": true,
+		"Throughput": true, "Encrypted": true, "KmsKeyId": true, "SnapshotId": true,
+		"MultiAttachEnabled": true, "Tags": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	spec := map[string]any{}
+	if sz, ok := props["Size"]; ok {
+		spec["size"] = fmt.Sprintf("%dGi", toInt(sz))
+	} else {
+		f = append(f, Finding{"Resource " + id, "Size is required to create a Volume"})
+	}
+	if v, ok := props["MultiAttachEnabled"].(bool); ok && v {
+		spec["shared"] = true
+	}
+	if v, ok := props["Encrypted"].(bool); ok && v {
+		f = append(f, Finding{"Resource " + id, "Encrypted volumes are not translatable — open-infra Volumes have no per-volume encryption knob (refusing rather than dropping an encryption guarantee)"})
+	}
+	if _, ok := props["KmsKeyId"]; ok {
+		f = append(f, Finding{"Resource " + id, "KmsKeyId is not translatable — no per-volume KMS encryption"})
+	}
+	if _, ok := props["SnapshotId"]; ok {
+		f = append(f, Finding{"Resource " + id, "SnapshotId is not translatable — an AWS EBS snapshot id has no open-infra VolumeSnapshot equivalent to restore from"})
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: k8sName(id), Spec: spec}
+	for _, p := range []string{"AvailabilityZone", "VolumeType", "Iops", "Throughput"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — open-infra volumes are Longhorn on one flat cluster (no AZ / EBS volume-type / provisioned IOPS)")
+		}
 	}
 	return m, f
 }

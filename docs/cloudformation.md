@@ -181,6 +181,8 @@ Today's create translators (live-verified on the cluster):
 |---|---|---|
 | `AWS::KMS::Key` | `kind: EncryptionKey` | Description, `EnableKeyRotation`→rotation, `KeySpec`→key type; `KeyPolicy` is a caveat (access is via open-infra IAM). |
 | `AWS::Lambda::Function` (`PackageType: Image` only) | `kind: Function` | `Code.ImageUri`→image, `Environment`→env, `MemorySize`→memory, `Timeout`→timeout; a zip/Runtime Lambda has no image and is refused; `Role` is a caveat. |
+| `AWS::StepFunctions::StateMachine` | `kind: StateMachine` | The ASL `DefinitionString`/`Definition` maps byte-for-byte (open-infra runs the same Amazon States Language). `RoleArn`, `Logging`/`TracingConfiguration` are caveats. **Refused** (not silently broken): a definition whose Task `Resource` fields are AWS ARNs — open-infra Tasks reference a Function as `function:<name>`, so remap them first; also `EXPRESS` type, `DefinitionS3Location`, and `DefinitionSubstitutions`. |
+| `AWS::EC2::Volume` | `kind: Volume` | `Size`→size, `MultiAttachEnabled`→shared (RWX). `AvailabilityZone`/`VolumeType`/`Iops`/`Throughput` are caveats (one flat cluster, Longhorn). **Refused**: `Encrypted`/`KmsKeyId` (no per-volume encryption knob) and `SnapshotId` (an EBS snapshot id has no open-infra VolumeSnapshot to restore from). |
 
 ## Updating a stack
 
