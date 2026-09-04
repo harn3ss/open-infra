@@ -46,13 +46,27 @@ func TestTranslate_SSMParameter_StringListCaveat(t *testing.T) {
 }
 
 // A parameter with a lifecycle Policy (expiration) blocks — behavior-bearing, no equivalent.
-func TestTranslate_SSMParameter_PolicyBlocks(t *testing.T) {
-	_, fs := translateSSMParameter("Temp", map[string]any{
+// #113: an SSM Expiration policy maps to spec.expiresAt (the parameter reaper enforces it).
+func TestTranslate_SSMParameter_ExpirationMaps(t *testing.T) {
+	m, fs := translateSSMParameter("Temp", map[string]any{
 		"Name": "/tmp/token", "Value": "x",
 		"Policies": `[{"Type":"Expiration","Version":"1.0","Attributes":{"Timestamp":"2026-12-31T00:00:00Z"}}]`,
 	}, nil)
-	if !strings.Contains(findingsText(fs), "Policies") {
-		t.Fatalf("a lifecycle Policy must block, got: %s", findingsText(fs))
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Spec["expiresAt"] != "2026-12-31T00:00:00Z" {
+		t.Fatalf("expiration not mapped to expiresAt: %#v", m.Spec["expiresAt"])
+	}
+}
+
+// A malformed Policies string blocks (never silently ignored).
+func TestTranslate_SSMParameter_MalformedPolicyBlocks(t *testing.T) {
+	_, fs := translateSSMParameter("Bad", map[string]any{
+		"Name": "/tmp/x", "Value": "y", "Policies": "{not-an-array",
+	}, nil)
+	if !strings.Contains(findingsText(fs), "did not parse") {
+		t.Fatalf("a malformed Policies must block, got: %s", findingsText(fs))
 	}
 }
 
