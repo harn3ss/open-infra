@@ -4,7 +4,12 @@
 // default-deny: the model Kubernetes RBAC cannot express. See docs/policy-engine.md.
 //
 // It does NOT replace control-plane RBAC; it adds fine-grained authorization at the data-plane
-// front doors (S3/DynamoDB/Lambda/AppSync), and fails closed.
+// front doors (S3/DynamoDB/Lambda), and fails closed.
+//
+// Action/resource matching: an AWS action ("s3:GetObject", "s3:*") is matched as a STRING via Cedar
+// `like` (so "s3:*" is a real prefix wildcard, which a Cedar Action entity id could not express).
+// The request carries the action + typed resource ("Bucket::assets") in the Cedar context; each
+// statement compiles to a permit/forbid whose `when` matches those strings.
 package policyengine
 
 import (
@@ -24,12 +29,13 @@ const (
 	Deny  Effect = "Deny"
 )
 
-// Statement is one open-infra policy statement (the shape carried on kind: Policy spec.statements),
-// mapping to a Cedar permit/forbid. An empty list or a lone "*" in Actions/Resources means "any".
+// Statement is one open-infra policy statement (the shape carried on kind: Policy spec.dataPlane),
+// mapping to a Cedar permit/forbid. An empty list or a lone "*" in Actions/Resources means "any";
+// a "*" inside an entry (e.g. "s3:*", "Bucket::log-*") is a wildcard.
 type Statement struct {
 	Effect    Effect
-	Actions   []string          // e.g. ["s3:GetObject","s3:PutObject"] or ["*"]
-	Resources []string          // "Type::id" e.g. ["Bucket::assets"], or ["*"]
+	Actions   []string          // e.g. ["s3:GetObject","s3:*"] or ["*"]
+	Resources []string          // "Type::id" e.g. ["Bucket::assets","Bucket::*"], or ["*"]
 	Condition map[string]string // request-context keys that must equal these values ("true"/"false" => bool)
 }
 
@@ -53,7 +59,7 @@ type Decision struct {
 	Reason  string
 }
 
-// Engine holds a compiled Cedar policy set for one principal (or a shared set).
+// Engine holds a compiled Cedar policy set.
 type Engine struct{ ps *cedar.PolicySet }
 
 // NewEngine compiles open-infra statements into a Cedar policy set.
@@ -76,7 +82,10 @@ func NewEngine(statements []Statement) (*Engine, error) {
 
 // Authorize evaluates a request: an explicit Deny wins, else an Allow permits, else default-deny.
 func (e *Engine) Authorize(r Request) Decision {
-	ctx := types.RecordMap{}
+	ctx := types.RecordMap{
+		"action":   types.String(r.Action),
+		"resource": types.String(r.Resource.Type + "::" + r.Resource.ID),
+	}
 	for k, v := range r.Context {
 		switch x := v.(type) {
 		case string:
@@ -86,9 +95,9 @@ func (e *Engine) Authorize(r Request) Decision {
 		}
 	}
 	req := cedar.Request{
-		Principal: types.NewEntityUID(types.EntityType(r.Principal.Type), types.String(r.Principal.ID)),
-		Action:    types.NewEntityUID("Action", types.String(r.Action)),
-		Resource:  types.NewEntityUID(types.EntityType(r.Resource.Type), types.String(r.Resource.ID)),
+		Principal: types.NewEntityUID(entityType(r.Principal.Type), types.String(r.Principal.ID)),
+		Action:    types.NewEntityUID("Action", "perform"),
+		Resource:  types.NewEntityUID(entityType(r.Resource.Type), types.String(r.Resource.ID)),
 		Context:   types.NewRecord(ctx),
 	}
 	if d, _ := e.ps.IsAuthorized(types.EntityMap{}, req); d == cedar.Allow {
@@ -97,7 +106,15 @@ func (e *Engine) Authorize(r Request) Decision {
 	return Decision{Allowed: false, Reason: "no policy allows this action (default deny)"}
 }
 
-// toCedar renders one statement as a Cedar permit/forbid clause.
+func entityType(t string) types.EntityType {
+	if t == "" {
+		return "Any"
+	}
+	return types.EntityType(t)
+}
+
+// toCedar renders one statement as a Cedar permit/forbid clause matching the request's action +
+// resource strings (with `like` wildcards) plus any context conditions.
 func (s Statement) toCedar(idx int) (string, error) {
 	head := "permit"
 	switch s.Effect {
@@ -108,37 +125,20 @@ func (s Statement) toCedar(idx int) (string, error) {
 		return "", fmt.Errorf("statement %d: effect must be Allow or Deny, got %q", idx, s.Effect)
 	}
 
-	var conds []string // extra `when` clauses (multi-resource + context conditions)
-
-	// Action set is allowed directly in the Cedar scope.
-	action := "action"
-	if !wildcard(s.Actions) {
-		uids := make([]string, 0, len(s.Actions))
-		for _, a := range s.Actions {
-			uids = append(uids, fmt.Sprintf(`Action::%q`, a))
-		}
-		action = "action in [" + strings.Join(uids, ", ") + "]"
+	var conds []string
+	if clause := matchAny("context.action", s.Actions); clause != "" {
+		conds = append(conds, clause)
 	}
-
-	// The Cedar scope's `resource` takes only `== entity` (or `in parent`), not a set — so a single
-	// resource goes in the scope, and multiple resources become a `resource in [..]` condition.
-	resource := "resource"
 	if !wildcard(s.Resources) {
-		uids := make([]string, 0, len(s.Resources))
 		for _, r := range s.Resources {
-			t, id, ok := strings.Cut(r, "::")
-			if !ok || t == "" || id == "" {
-				return "", fmt.Errorf("statement %d: resource %q must be Type::id (e.g. Bucket::assets) or *", idx, r)
+			if r != "*" && !strings.Contains(r, "::") {
+				return "", fmt.Errorf("statement %d: resource %q must be Type::id (e.g. Bucket::assets), a wildcard like Bucket::*, or *", idx, r)
 			}
-			uids = append(uids, fmt.Sprintf(`%s::%q`, t, id))
 		}
-		if len(uids) == 1 {
-			resource = "resource == " + uids[0]
-		} else {
-			conds = append(conds, "resource in ["+strings.Join(uids, ", ")+"]")
+		if clause := matchAny("context.resource", s.Resources); clause != "" {
+			conds = append(conds, clause)
 		}
 	}
-
 	for _, k := range sortedKeys(s.Condition) {
 		v := s.Condition[k]
 		if v == "true" || v == "false" {
@@ -148,11 +148,31 @@ func (s Statement) toCedar(idx int) (string, error) {
 		}
 	}
 
-	clause := fmt.Sprintf("%s (\n  principal,\n  %s,\n  %s\n)", head, action, resource)
+	clause := head + " (\n  principal,\n  action,\n  resource\n)"
 	if len(conds) > 0 {
 		clause += "\nwhen { " + strings.Join(conds, " && ") + " }"
 	}
 	return clause + ";", nil
+}
+
+// matchAny renders an OR of equality / `like` tests for a set of values against a context field, or
+// "" when the set is a wildcard (matches anything, so no constraint).
+func matchAny(field string, values []string) string {
+	if wildcard(values) {
+		return ""
+	}
+	ors := make([]string, 0, len(values))
+	for _, v := range values {
+		if strings.Contains(v, "*") {
+			ors = append(ors, fmt.Sprintf("%s like %q", field, v))
+		} else {
+			ors = append(ors, fmt.Sprintf("%s == %q", field, v))
+		}
+	}
+	if len(ors) == 1 {
+		return ors[0]
+	}
+	return "(" + strings.Join(ors, " || ") + ")"
 }
 
 func wildcard(xs []string) bool {

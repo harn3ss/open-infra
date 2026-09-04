@@ -50,12 +50,20 @@ cost and risk of a full engine live.
 ## Evaluation & enforcement
 
 1. The shim authenticates the request (SigV4 → an open-infra principal) — unchanged.
-2. It builds a Cedar request `{principal, action, resource, context}` (context carries
-   authenticated, sourceIp, etc.).
-3. The engine evaluates the principal's compiled Cedar policy set: **explicit `forbid` wins, else an
-   `permit` allows, else default-deny.**
-4. **Fail-closed:** an engine/evaluation error denies. When a principal has no data-plane statements,
-   the shim's existing coarse RBAC check stands (so this is additive, never a silent loosening).
+2. The coarse RBAC SubjectAccessReview runs — unchanged.
+3. The engine evaluates the principal's compiled Cedar policy set: **explicit `forbid` wins, else a
+   `permit` allows, else default-deny** (AWS-style). The final decision is `coarse AND engine`, so a
+   policy can only **tighten** a grant RBAC already allowed — never widen it.
+
+**Per-service governance (no cross-service surprise).** Governance is scoped to the request's
+service (the action prefix — `s3`, `dynamodb`, `lambda`). A principal is governed for a service only
+if one of their statements names that service (`s3:...`) or `*`. If none do, the coarse decision
+stands untouched — so an S3 policy never affects a principal's DynamoDB access. Within a governed
+service the model is AWS-style allow-list: only what a `permit` allows passes (so "block just one
+action" is written the AWS way — `Allow s3:*` + `Deny s3:DeleteObject`).
+
+**Fail-closed:** an engine load or compile error denies. No policy governing a principal's service =
+that principal is unaffected there.
 
 ## AWS policy import
 
