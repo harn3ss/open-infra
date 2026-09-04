@@ -94,6 +94,15 @@ func (c *Checker) get(ctx context.Context) ([]PolicyDoc, error) {
 		return c.cache, c.err
 	}
 	docs, err := c.load(ctx)
+	if err != nil && c.seeded {
+		// A refresh blip on an already-warm cache must not deny ALL data-plane traffic — that
+		// would turn a transient control-plane hiccup into a shim-wide outage. Serve the last
+		// good snapshot and back off a TTL before retrying. (Cold start with no known policies
+		// still fails closed, below.) A just-added Deny is thus delayed by at most one extra TTL
+		// while the control plane is unreachable — bounded, and the coarse SAR still applies.
+		c.fetched = time.Now()
+		return c.cache, c.err
+	}
 	c.cache, c.err, c.fetched, c.seeded = docs, err, time.Now(), true
 	return docs, err
 }
