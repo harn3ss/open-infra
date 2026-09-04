@@ -927,10 +927,16 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 		return nil, f
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: spec, Caveats: caveats}
-	for _, p := range []string{"LoadBalancers", "NetworkConfiguration", "LaunchType", "ServiceName", "ServiceRegistries", "Role"} {
+	for _, p := range []string{"LoadBalancers", "LaunchType", "ServiceName", "ServiceRegistries", "Role"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — open-infra exposes the app via Application.domain (Ingress+TLS) on one flat cluster network; ECS LB/subnet/launch-type config has no direct form")
+			m.Caveats = append(m.Caveats, p+" dropped — open-infra exposes the app via Application.domain (Ingress+TLS); ECS LB/launch-type config has no direct form")
 		}
+	}
+	// A subnet/security-group reference is a network-ISOLATION expectation, not just config: dropping
+	// it quietly would let a user believe a workload is isolated when it runs on the flat cluster
+	// network, reachable by default (a silent security-expectation gap). Surface it loudly.
+	if _, ok := props["NetworkConfiguration"]; ok {
+		m.Caveats = append(m.Caveats, "NetworkConfiguration (subnets / security groups) dropped — SECURITY: this workload runs on the flat cluster network with NO enforced topological isolation; the subnet/security-group reference does NOT map to network isolation here. Do not assume the isolation it implied.")
 	}
 	return m, f
 }
@@ -1186,9 +1192,16 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 			m.Caveats = append(m.Caveats, p+" dropped — open-infra provisions the credentials and injects them as DATABASE_URL; they are not set from the template")
 		}
 	}
-	for _, p := range []string{"VPCSecurityGroups", "DBSubnetGroupName", "PubliclyAccessible", "Port", "BackupRetentionPeriod", "PreferredMaintenanceWindow", "PreferredBackupWindow", "DBParameterGroupName", "DeletionProtection"} {
+	for _, p := range []string{"PubliclyAccessible", "Port", "BackupRetentionPeriod", "PreferredMaintenanceWindow", "PreferredBackupWindow", "DBParameterGroupName", "DeletionProtection"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent (one flat cluster network; backups/params are platform-managed)")
+			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent (backups/params are platform-managed)")
+		}
+	}
+	// Subnet-group / VPC-security-group references imply network isolation; dropping them quietly
+	// would misrepresent a database as isolated when it is reachable on the flat cluster network.
+	for _, p := range []string{"DBSubnetGroupName", "VPCSecurityGroups"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — SECURITY: the database runs on the flat cluster network with NO enforced network isolation; the subnet/security-group reference does NOT map here. Do not assume the isolation it implied.")
 		}
 	}
 	return m, f
