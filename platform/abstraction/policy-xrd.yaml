@@ -55,7 +55,10 @@ spec:
                   description: What this policy is for, shown in the console.
                 statements:
                   type: array
-                  description: Allow statements. Everything not allowed is implicitly denied.
+                  description: >-
+                    Control-plane Allow statements — compiled to a Kubernetes ClusterRole over the
+                    openinfra.dev API group (the permission boundary). Optional: a data-plane-only
+                    policy may omit these and carry only a dataPlane block.
                   items:
                     type: object
                     properties:
@@ -82,7 +85,52 @@ spec:
                           type: string
                         default: ["*"]
                     required: [actions]
-              required: [statements]
+                dataPlane:
+                  type: object
+                  description: >-
+                    Fine-grained DATA-PLANE authorization for the aws-shim front doors (S3, DynamoDB,
+                    Lambda), evaluated by the Cedar-backed policy engine. Unlike the control-plane
+                    statements above, it supports explicit Deny (which overrides Allow) and request
+                    conditions — the model Kubernetes RBAC cannot express. Additive: it can only
+                    tighten a grant the coarse RBAC check already allowed. See docs/policy-engine.md.
+                  properties:
+                    appliesTo:
+                      type: array
+                      description: >-
+                        Principals these statements govern — "User::<name>", "Group::<name>", or "*".
+                      items:
+                        type: string
+                    statements:
+                      type: array
+                      items:
+                        type: object
+                        required: [effect, actions]
+                        properties:
+                          effect:
+                            type: string
+                            enum: [Allow, Deny]
+                            description: Allow or Deny. An explicit Deny overrides any Allow (AWS-style precedence).
+                          actions:
+                            type: array
+                            description: >-
+                              Data-plane actions, e.g. "s3:GetObject", "dynamodb:Query",
+                              "lambda:InvokeFunction", or "*".
+                            items:
+                              type: string
+                          resources:
+                            type: array
+                            description: >-
+                              Typed resources, e.g. "Bucket::assets", "Table::orders",
+                              "Function::worker", or "*".
+                            items:
+                              type: string
+                          condition:
+                            type: object
+                            description: >-
+                              Request-context equality conditions (e.g. sourceIp, authenticated).
+                              Values "true"/"false" are matched as booleans. Optional.
+                            additionalProperties:
+                              type: string
             status:
               type: object
               properties:

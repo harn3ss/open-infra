@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/dynamodb"
 	"go.mongodb.org/mongo-driver/bson"
@@ -40,9 +41,10 @@ const tableRegistry = "_shim_dynamo_tables"
 type dynamoHandler struct {
 	cs      kubernetes.Interface
 	authzNS string
-	db      *mongo.Database // FerretDB; nil when MONGO_URI is unset (data layer not configured)
-	pg      *sql.DB         // the documentdb Postgres behind FerretDB; nil disables Transact* (honest 501)
-	dbName  string          // the documentdb database name (== the mongo DB name) for documentdb_api calls
+	db      *mongo.Database         // FerretDB; nil when MONGO_URI is unset (data layer not configured)
+	pg      *sql.DB                 // the documentdb Postgres behind FerretDB; nil disables Transact* (honest 501)
+	dbName  string                  // the documentdb database name (== the mongo DB name) for documentdb_api calls
+	authz   *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger  *slog.Logger
 }
 
@@ -106,6 +108,14 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, table); !allowed {
 		writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
+	}
+	// Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten. A table
+	// name is required to scope it; the table-agnostic ops (ListTables) skip resource-level policy.
+	if table != "" {
+		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
+			writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
 	}
 	if h.db == nil {
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/minio/minio-go/v7"
 	"k8s.io/client-go/kubernetes"
@@ -29,9 +30,10 @@ import (
 // graduation step; until then the shim acts to MinIO as a single scoped, NON-root service
 // account, and this coarse gate is honest about what it does and does not enforce.
 type s3Handler struct {
-	cs      kubernetes.Interface // for the impersonated SubjectAccessReview (iam.CanDo)
-	mc      *minio.Client        // MinIO bridge — a scoped, non-root service account (v1 identity bridge)
-	authzNS string               // namespace the coarse object-storage RBAC gate is evaluated in
+	cs      kubernetes.Interface    // for the impersonated SubjectAccessReview (iam.CanDo)
+	mc      *minio.Client           // MinIO bridge — a scoped, non-root service account (v1 identity bridge)
+	authzNS string                  // namespace the coarse object-storage RBAC gate is evaluated in
+	authz   *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger  *slog.Logger
 }
 
@@ -61,6 +63,13 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	// 2. Authorize via the shared impersonated SubjectAccessReview — one policy world.
 	if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
 		h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
+			"bucket", op.bucket, "key", op.key, "reason", reason)
+		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+		return
+	}
+	// 2b. Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
+	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, s3Action(op.kind), "Bucket", op.bucket, r); denied {
+		h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
 			"bucket", op.bucket, "key", op.key, "reason", reason)
 		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 		return
