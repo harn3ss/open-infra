@@ -387,17 +387,6 @@ func TestTranslate_DynamoDBTable_Faithful(t *testing.T) {
 	}
 }
 
-func TestTranslate_DynamoDBTable_SecondaryIndexBlocks(t *testing.T) {
-	_, fs := translateDynamoDBTable("T", map[string]any{
-		"AttributeDefinitions":   []any{map[string]any{"AttributeName": "id", "AttributeType": "S"}},
-		"KeySchema":              []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
-		"GlobalSecondaryIndexes": []any{map[string]any{"IndexName": "byX"}},
-	}, nil)
-	if !strings.Contains(findingsText(fs), "GlobalSecondaryIndexes") {
-		t.Fatalf("a GSI is behavior-bearing and must block, findings: %s", findingsText(fs))
-	}
-}
-
 func TestTranslate_DynamoDBTable_MissingKeyTypeBlocks(t *testing.T) {
 	// KeySchema names a key attribute that AttributeDefinitions never types — unguessable, blocks.
 	_, fs := translateDynamoDBTable("T", map[string]any{
@@ -735,5 +724,69 @@ Resources:
 `)
 	if _, fs := translateCognitoUserPoolClient("Orphan", ecsResolvedService(t, ext, "Orphan"), ext); !strings.Contains(findingsText(fs), "in-stack pool") {
 		t.Fatalf("a client of an external pool must refuse, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_DynamoDBTable_GSI_Faithful(t *testing.T) {
+	m, fs := translateDynamoDBTable("Users", map[string]any{
+		"AttributeDefinitions": []any{
+			map[string]any{"AttributeName": "id", "AttributeType": "S"},
+			map[string]any{"AttributeName": "email", "AttributeType": "S"},
+			map[string]any{"AttributeName": "created", "AttributeType": "N"},
+		},
+		"KeySchema": []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
+		"GlobalSecondaryIndexes": []any{
+			map[string]any{
+				"IndexName": "by-email",
+				"KeySchema": []any{
+					map[string]any{"AttributeName": "email", "KeyType": "HASH"},
+					map[string]any{"AttributeName": "created", "KeyType": "RANGE"},
+				},
+				"Projection":            map[string]any{"ProjectionType": "ALL"},
+				"ProvisionedThroughput": map[string]any{"ReadCapacityUnits": float64(5), "WriteCapacityUnits": float64(5)},
+			},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	gsis, _ := m.Spec["globalSecondaryIndexes"].([]any)
+	if len(gsis) != 1 {
+		t.Fatalf("want 1 GSI, got %#v", m.Spec["globalSecondaryIndexes"])
+	}
+	g0, _ := gsis[0].(map[string]any)
+	hk, _ := g0["hashKey"].(map[string]any)
+	rk, _ := g0["rangeKey"].(map[string]any)
+	if g0["name"] != "by-email" || hk["name"] != "email" || hk["type"] != "S" || rk["name"] != "created" || rk["type"] != "N" {
+		t.Fatalf("GSI not faithful: %#v", g0)
+	}
+	// per-GSI throughput is a caveat, not a block.
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "ProvisionedThroughput") {
+		t.Fatalf("per-GSI throughput must be a caveat: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_DynamoDBTable_GSI_UntypedKeyBlocks(t *testing.T) {
+	_, fs := translateDynamoDBTable("T", map[string]any{
+		"AttributeDefinitions": []any{map[string]any{"AttributeName": "id", "AttributeType": "S"}},
+		"KeySchema":            []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
+		"GlobalSecondaryIndexes": []any{map[string]any{
+			"IndexName": "bad", "KeySchema": []any{map[string]any{"AttributeName": "ghost", "KeyType": "HASH"}},
+		}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "no matching AttributeDefinitions") {
+		t.Fatalf("a GSI key with no typed AttributeDefinition must block, findings: %s", findingsText(fs))
+	}
+}
+
+// Local secondary indexes still block (not modeled).
+func TestTranslate_DynamoDBTable_LSIBlocks(t *testing.T) {
+	_, fs := translateDynamoDBTable("T", map[string]any{
+		"AttributeDefinitions":  []any{map[string]any{"AttributeName": "id", "AttributeType": "S"}},
+		"KeySchema":             []any{map[string]any{"AttributeName": "id", "KeyType": "HASH"}},
+		"LocalSecondaryIndexes": []any{map[string]any{"IndexName": "lsi"}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "LocalSecondaryIndexes") {
+		t.Fatalf("LSI must still block, findings: %s", findingsText(fs))
 	}
 }

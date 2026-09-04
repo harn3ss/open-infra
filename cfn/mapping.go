@@ -59,7 +59,7 @@ var mappingTable = map[string]MapEntry{
 	"AWS::AppSync::Resolver":              {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
 	"AWS::AppSync::FunctionConfiguration": {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
 	"AWS::AppSync::GraphQLSchema":         {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
-	"AWS::DynamoDB::Table":                {Kind: "Table", Status: Partial, Note: "table via kind: Table — registers name + key schema (+ TTL) on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, secondary indexes, streams, or per-table SSE — those block."},
+	"AWS::DynamoDB::Table":                {Kind: "Table", Status: Partial, Note: "table via kind: Table — registers name + key schema, TTL, and global secondary indexes on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, local secondary indexes, streams, or per-table SSE — those block."},
 
 	// --- unsupported: explicitly out of scope for v1 ---
 	"AWS::Cognito::UserPool":              {Kind: "UserPool", Status: Partial, Note: "a hosted OIDC pool (Keycloak realm); Cognito-specific config (MFA, Lambda triggers, schema) does not transfer"},

@@ -158,15 +158,24 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 			"CreateTable requires a TableName and a KeySchema.")
 		return
 	}
-	_, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table},
-		bson.M{"_id": table, "keyAttrs": keyAttrs}, options.Replace().SetUpsert(true))
+	gsis := gsisFromCreateTable(body)
+	entry := bson.M{"_id": table, "keyAttrs": keyAttrs}
+	if len(gsis) > 0 {
+		entry["gsi"] = gsis
+	}
+	_, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table}, entry, options.Replace().SetUpsert(true))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": map[string]any{
+	h.ensureGSIIndexes(ctx, table, gsis)
+	desc := map[string]any{
 		"TableName": table, "TableStatus": "ACTIVE", "KeySchema": body["KeySchema"], "ItemCount": float64(0),
-	}})
+	}
+	if len(gsis) > 0 {
+		desc["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
+	}
+	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": desc})
 }
 
 func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter, requestID, table string) {
@@ -184,9 +193,11 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 		}
 		schema = append(schema, map[string]any{"AttributeName": a, "KeyType": kt})
 	}
-	writeDynamoJSON(w, requestID, map[string]any{"Table": map[string]any{
-		"TableName": table, "TableStatus": "ACTIVE", "KeySchema": schema,
-	}})
+	tbl := map[string]any{"TableName": table, "TableStatus": "ACTIVE", "KeySchema": schema}
+	if gsis := h.tableGSIs(ctx, table); len(gsis) > 0 {
+		tbl["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
+	}
+	writeDynamoJSON(w, requestID, map[string]any{"Table": tbl})
 }
 
 func (h *dynamoHandler) getItem(ctx context.Context, w http.ResponseWriter, requestID, table string, body map[string]any) {
@@ -260,6 +271,23 @@ func (h *dynamoHandler) query(ctx context.Context, w http.ResponseWriter, reques
 	}
 	names, values := body["ExpressionAttributeNames"], body["ExpressionAttributeValues"]
 	op := dynamodb.Operation{"operation": "Query", "query": exprBlock(kce, names, values)}
+	// A GSI query: validate IndexName against the table's declared indexes, then let the store
+	// resolve the key condition against the index's attributes (the same runQuery path).
+	if idx, _ := body["IndexName"].(string); idx != "" {
+		known := false
+		for _, g := range h.tableGSIs(ctx, table) {
+			if g.Name == idx {
+				known = true
+				break
+			}
+		}
+		if !known {
+			writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+				"The table does not have the specified index: "+idx)
+			return
+		}
+		op["index"] = idx
+	}
 	if fe, ok := body["FilterExpression"].(string); ok && fe != "" {
 		op["filter"] = exprBlock(fe, names, values)
 	}

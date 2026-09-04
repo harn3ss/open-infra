@@ -36,6 +36,12 @@ spec:
             {{- $table := $spec.tableName | default $name }}
             {{- $keyAttrs := list $spec.hashKey.name }}
             {{- if $spec.rangeKey }}{{- $keyAttrs = append $keyAttrs $spec.rangeKey.name }}{{- end }}
+            {{- $gsis := list }}
+            {{- range $g := ($spec.globalSecondaryIndexes | default list) }}
+              {{- $ka := list $g.hashKey.name }}
+              {{- if $g.rangeKey }}{{- $ka = append $ka $g.rangeKey.name }}{{- end }}
+              {{- $gsis = append $gsis (dict "name" $g.name "keyAttrs" $ka) }}
+            {{- end }}
             ---
             # Spec mirror the aws-shim reads (label-selected) to register the table's registry entry.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -60,6 +66,9 @@ spec:
                     billingMode: "{{ $spec.billingMode | default "PAY_PER_REQUEST" }}"
                     {{- if $spec.ttlAttribute }}
                     ttlAttribute: {{ $spec.ttlAttribute | quote }}
+                    {{- end }}
+                    {{- if $gsis }}
+                    gsi: {{ $gsis | toJson | quote }}
                     {{- end }}
             ---
             apiVersion: openinfra.dev/v1

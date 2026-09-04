@@ -74,6 +74,36 @@ spec:
                 ttlAttribute:
                   type: string
                   description: "Optional. Enables Time-To-Live on this numeric (epoch-seconds) attribute; the shim's reaper deletes items whose value is at or before now."
+                globalSecondaryIndexes:
+                  type: array
+                  description: "Global secondary indexes — query the table by a non-primary key. Each is backed by a real Mongo index on its key attributes; a Query with this IndexName filters on those attributes. The store keeps full items, so projection is always effectively ALL."
+                  items:
+                    type: object
+                    required: [name, hashKey]
+                    properties:
+                      name:
+                        type: string
+                        description: "Index name — the Query IndexName."
+                      hashKey:
+                        type: object
+                        description: "The index's partition key."
+                        required: [name, type]
+                        properties:
+                          name: { type: string, description: "Attribute name of the index partition key." }
+                          type:
+                            type: string
+                            enum: ["S", "N", "B"]
+                            description: 'Scalar key type: S / N / B. Quote it in YAML (type: "N").'
+                      rangeKey:
+                        type: object
+                        description: "The index's optional sort key."
+                        required: [name, type]
+                        properties:
+                          name: { type: string, description: "Attribute name of the index sort key." }
+                          type:
+                            type: string
+                            enum: ["S", "N", "B"]
+                            description: 'Scalar key type: S / N / B. Quote it in YAML.'
             status:
               type: object
               properties:
