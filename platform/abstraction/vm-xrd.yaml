@@ -61,6 +61,9 @@ spec:
                 memory:   { type: string, default: "2Gi", description: "Guest RAM, e.g. 2Gi or 4Gi. Default 2Gi." }
                 diskSize: { type: string, default: "20Gi", description: "Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image's C: can't be reliably auto-grown)." }
                 sshKey:   { type: string, description: "SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is a generated password stored in the connection secret (<name>-vm)." }
+                userData:
+                  type: string
+                  description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent) — so the VM stays reachable. Ignored on Windows. A full #cloud-config document is not accepted here (it can't be safely merged with the base config)."
                 expose:   { type: boolean, default: false, description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port — SSH 22 (Linux) or RDP 3389 (Windows). Default false: reach the VM via port-forward or the web VNC console instead. Setting any entry in ports also implies this." }
                 ports:
                   type: array

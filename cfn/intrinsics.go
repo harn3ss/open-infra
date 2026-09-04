@@ -11,6 +11,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 )
@@ -143,7 +144,14 @@ func (r *resolver) intrinsic(key string, arg any) (bool, any) {
 		}
 		return true, nil
 	case "Fn::Base64":
-		return true, fmt.Sprintf("<base64:%v>", r.resolve(arg))
+		// If the inner value fully resolves (no unresolved placeholder), encode it for real so a
+		// literal UserData/script translates. Otherwise keep an opaque marker — a value that still
+		// carries a reference can't be statically base64-encoded.
+		v := fmt.Sprint(r.resolve(arg))
+		if !placeholderRe.MatchString(v) {
+			return true, base64.StdEncoding.EncodeToString([]byte(v))
+		}
+		return true, fmt.Sprintf("<base64:%v>", v)
 	// Explicitly unsupported intrinsics — fail loud, never pass through.
 	case "Fn::ImportValue":
 		r.find("Fn::ImportValue (cross-stack import) is not supported in v1")
