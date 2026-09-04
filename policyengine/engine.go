@@ -82,10 +82,7 @@ func NewEngine(statements []Statement) (*Engine, error) {
 
 // Authorize evaluates a request: an explicit Deny wins, else an Allow permits, else default-deny.
 func (e *Engine) Authorize(r Request) Decision {
-	ctx := types.RecordMap{
-		"action":   types.String(r.Action),
-		"resource": types.String(r.Resource.Type + "::" + r.Resource.ID),
-	}
+	ctx := types.RecordMap{}
 	for k, v := range r.Context {
 		switch x := v.(type) {
 		case string:
@@ -94,6 +91,11 @@ func (e *Engine) Authorize(r Request) Decision {
 			ctx[types.String(k)] = types.Boolean(x)
 		}
 	}
+	// The reserved keys are set LAST so a caller's context can never clobber the action/resource
+	// the statements match against (a control-plane request, for instance, carries its own
+	// "resource" attribute — that must not shadow the typed resource being authorized).
+	ctx["action"] = types.String(r.Action)
+	ctx["resource"] = types.String(r.Resource.Type + "::" + r.Resource.ID)
 	req := cedar.Request{
 		Principal: types.NewEntityUID(entityType(r.Principal.Type), types.String(r.Principal.ID)),
 		Action:    types.NewEntityUID("Action", "perform"),
