@@ -118,7 +118,12 @@ moment RBAC leaves. Measured on the live cluster (read-only), the surface is con
 This list is the true gate on removing RBAC from the chain (Phase 2 step 6): until each holder has an
 explicit, reviewed Cedar grant, enforce mode is not safe. It also feeds the NIST/CIS mapping
 ([`policy-engine.md`](policy-engine.md) Phase 3), where the assurance that RBAC's minimal-privilege
-posture used to inherit from the CIS benchmark becomes a Cedar-corpus check the project must author.
+posture used to inherit from the CIS benchmark becomes a Cedar-corpus check the project must author —
+now started as **`corpus-check`** (`console-api/cmd/corpus-check`, core in `internal/corpuscheck`):
+it audits the generated corpus for `cluster-admin`-equivalent grants, wildcard-resource grants,
+cluster-wide Secrets access, and privilege-escalation verbs, and can gate CI with `-strict`. Run
+read-only against the live cluster it currently reports 17 `cluster-admin`-equivalent principals —
+exactly the over-privilege signal the CIS benchmark used to give for free, now a generated artifact.
 
 ## Honest status
 
