@@ -385,6 +385,109 @@ Resources:
 	}
 }
 
+// #117 §1: per-container CPU/memory (ECS units) + a shared scratch Volume + MountPoints map to a
+// multi-container Pod with resources and an emptyDir mounted into both containers.
+func TestTranslate_ECSService_ResourcesAndSharedVolume(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Volumes:
+        - { Name: scratch }
+      ContainerDefinitions:
+        - Name: web
+          Image: web:1
+          Cpu: 512
+          Memory: 1024
+          PortMappings: [ { ContainerPort: 8080 } ]
+          MountPoints: [ { SourceVolume: scratch, ContainerPath: /data } ]
+        - Name: log
+          Image: fluentd:1
+          Cpu: 256
+          MemoryReservation: 256
+          MountPoints: [ { SourceVolume: scratch, ContainerPath: /var/log/app } ]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      LoadBalancers: [ { ContainerName: web, ContainerPort: 8080 } ]
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	// primary resources (512 units -> 500m, 1024 MiB -> 1024Mi) + its mount
+	if m.Spec["cpu"] != "500m" || m.Spec["memory"] != "1024Mi" {
+		t.Fatalf("primary resources: want cpu=500m mem=1024Mi, got cpu=%v mem=%v", m.Spec["cpu"], m.Spec["memory"])
+	}
+	pm, _ := m.Spec["volumeMounts"].([]any)
+	if len(pm) != 1 {
+		t.Fatalf("primary volumeMounts not carried: %#v", m.Spec["volumeMounts"])
+	}
+	// shared emptyDir volume declared once
+	vols, _ := m.Spec["volumes"].([]any)
+	if len(vols) != 1 {
+		t.Fatalf("want 1 shared volume, got %#v", m.Spec["volumes"])
+	}
+	// sidecar resources (256 units -> 250m, MemoryReservation 256 -> 256Mi) + its mount
+	sc, _ := m.Spec["sidecars"].([]any)
+	s0, _ := sc[0].(map[string]any)
+	if s0["cpu"] != "250m" || s0["memory"] != "256Mi" {
+		t.Fatalf("sidecar resources: want cpu=250m mem=256Mi, got %#v", s0)
+	}
+	if sm, _ := s0["volumeMounts"].([]any); len(sm) != 1 {
+		t.Fatalf("sidecar volumeMounts not carried: %#v", s0)
+	}
+	// §2: the LB caveat names the port->Service mapping and the domain requirement
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "set Application.domain") {
+		t.Fatalf("LB caveat should point to Application.domain: %v", m.Caveats)
+	}
+}
+
+// #117 §1: a host-path bind-mount Volume refuses (no safe equivalent), never a silent drop.
+func TestTranslate_ECSService_HostVolumeRefused(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Volumes: [ { Name: hostlogs, Host: { SourcePath: /var/log } } ]
+      ContainerDefinitions:
+        - { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties: { TaskDefinition: !Ref Task }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if !strings.Contains(findingsText(fs), "host bind mount") {
+		t.Fatalf("a host-path Volume must refuse, findings: %s", findingsText(fs))
+	}
+}
+
+// #117 §1: container DependsOn ordering has no faithful form — refuse, don't silently drop it.
+func TestTranslate_ECSService_DependsOnRefused(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] }
+        - { Name: init, Image: init:1, DependsOn: [ { Condition: SUCCESS, ContainerName: web } ] }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties: { TaskDefinition: !Ref Task }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if !strings.Contains(findingsText(fs), "DependsOn") {
+		t.Fatalf("container DependsOn must refuse, findings: %s", findingsText(fs))
+	}
+}
+
 // A sidecar with a Command override still refuses (Application runs the image's entrypoint).
 func TestTranslate_ECSService_SidecarCommandRefused(t *testing.T) {
 	tmpl := `

@@ -104,10 +104,17 @@ spec:
                           - name: app
                             image: {{ $spec.image }}
                             ports: [ { containerPort: {{ $spec.port }} } ]
-                            # Requests drive the HPA; limits bound the app (tenant).
+                            # Requests drive the HPA; limits bound the app (tenant). spec.cpu/memory
+                            # (an ECS container's Cpu/Memory) override the small defaults when set.
                             resources:
-                              requests: { cpu: 50m, memory: 64Mi }
-                              limits: { cpu: 500m, memory: 512Mi }
+                              requests: { cpu: {{ $spec.cpu | default "50m" }}, memory: {{ $spec.memory | default "64Mi" }} }
+                              limits: { cpu: {{ $spec.cpu | default "500m" }}, memory: {{ $spec.memory | default "512Mi" }} }
+                            {{- if $spec.volumeMounts }}
+                            volumeMounts:
+                            {{- range $spec.volumeMounts }}
+                              - { name: {{ .name }}, mountPath: {{ .mountPath }} }
+                            {{- end }}
+                            {{- end }}
                             # Health checks auto-injected — k8s self-heals.
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
@@ -157,16 +164,31 @@ spec:
                             {{- if $s.port }}
                             ports: [ { containerPort: {{ $s.port }} } ]
                             {{- end }}
+                            # $s.cpu/memory (an ECS sidecar container's Cpu/Memory) override the defaults.
                             resources:
-                              requests: { cpu: 25m, memory: 32Mi }
-                              limits: { cpu: 500m, memory: 512Mi }
+                              requests: { cpu: {{ $s.cpu | default "25m" }}, memory: {{ $s.memory | default "32Mi" }} }
+                              limits: { cpu: {{ $s.cpu | default "500m" }}, memory: {{ $s.memory | default "512Mi" }} }
                             {{- if $s.env }}
                             env:
                             {{- range $s.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
                             {{- end }}
                             {{- end }}
+                            {{- if $s.volumeMounts }}
+                            volumeMounts:
+                            {{- range $s.volumeMounts }}
+                              - { name: {{ .name }}, mountPath: {{ .mountPath }} }
+                            {{- end }}
+                            {{- end }}
                           {{- end }}
+                        {{- /* Shared ephemeral pod volumes (emptyDir) — an ECS task's shared Volumes.
+                               Scratch/shared space between containers; renders nothing when unset. */}}
+                        {{- if $spec.volumes }}
+                        volumes:
+                        {{- range $spec.volumes }}
+                          - { name: {{ .name }}, emptyDir: {} }
+                        {{- end }}
+                        {{- end }}
             ---
             # --- Service ---
             apiVersion: kubernetes.crossplane.io/v1alpha2

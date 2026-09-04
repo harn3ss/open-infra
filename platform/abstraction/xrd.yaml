@@ -45,6 +45,25 @@ spec:
               properties:
                 image:   { type: string, description: "Container image to run, e.g. ghcr.io/me/my-api:latest. Omit for a data-only app (just a database, buckets, or queues)." }
                 port:    { type: integer, description: "The port your container listens on (e.g. 8080). Needed to serve the app over HTTPS or a LAN IP." }
+                cpu:     { type: string, description: "CPU request/limit for the primary container (e.g. \"500m\" or \"2\"). When unset, a small default is used (an ECS TaskDefinition container's Cpu maps here)." }
+                memory:  { type: string, description: "Memory request/limit for the primary container (e.g. \"512Mi\" or \"1Gi\"). When unset, a small default is used (an ECS container's Memory maps here)." }
+                volumeMounts:
+                  type: array
+                  description: "Mount shared pod volumes (declared in spec.volumes) into the primary container — the ECS task-volume MountPoints equivalent."
+                  items:
+                    type: object
+                    required: [name, mountPath]
+                    properties:
+                      name:      { type: string, description: "Name of a volume declared in spec.volumes." }
+                      mountPath: { type: string, description: "Path to mount it at inside the container." }
+                volumes:
+                  type: array
+                  description: "Shared ephemeral pod volumes (emptyDir), mountable into the primary container and sidecars — an ECS task's shared Volumes. Data lives for the pod's lifetime (scratch/shared space between containers), NOT durable storage (use spec.storage.buckets or a kind: Volume for that)."
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name: { type: string, description: "Volume name, referenced by volumeMounts." }
                 domain:  { type: string, description: "Hostname to serve the app on — open-infra provisions Ingress, a TLS certificate, and DNS for it (e.g. my-api.example.com)." }
                 expose:
                   type: boolean
@@ -132,6 +151,8 @@ spec:
                       name:  { type: string, description: "Sidecar container name (unique within the pod)." }
                       image: { type: string, description: "Sidecar container image." }
                       port:  { type: integer, description: "Optional container port the sidecar listens on." }
+                      cpu:    { type: string, description: "CPU request/limit for this sidecar (e.g. \"250m\"). When unset, a small default is used (an ECS sidecar container's Cpu maps here)." }
+                      memory: { type: string, description: "Memory request/limit for this sidecar (e.g. \"256Mi\"). When unset, a small default is used (an ECS sidecar container's Memory maps here)." }
                       env:
                         type: array
                         description: "Environment variables for the sidecar."
@@ -140,6 +161,15 @@ spec:
                           properties:
                             name:  { type: string }
                             value: { type: string }
+                      volumeMounts:
+                        type: array
+                        description: "Mount shared pod volumes (spec.volumes) into this sidecar — the ECS task-volume MountPoints equivalent."
+                        items:
+                          type: object
+                          required: [name, mountPath]
+                          properties:
+                            name:      { type: string, description: "Name of a volume declared in spec.volumes." }
+                            mountPath: { type: string, description: "Path to mount it at inside the sidecar." }
                 secrets:
                   type: array
                   items: { type: string }
