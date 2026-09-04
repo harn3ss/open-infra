@@ -303,22 +303,24 @@ func translateVolume(id string, props map[string]any, _ *stackCtx) (*Manifest, [
 // open-infra's Table is a thin declarative front for the aws-shim's DynamoDB data layer
 // (FerretDB): it registers a table's name + key schema so items are writable without a runtime
 // CreateTable, and (a #104-added TTL) a TTL attribute the shim's reaper enforces. So the KEY
-// SCHEMA maps faithfully — the partition/sort key and their scalar types (S/N/B) — and TTL maps.
-// What does NOT map is everything DynamoDB provisions that the FerretDB-backed store does not
-// model: read/write capacity (ProvisionedThroughput), secondary indexes (the store scans; it has
-// no GSIs/LSIs), streams, per-table SSE, and PITR/import/restore. Those are behavior-bearing, so
-// they BLOCK — a table that silently lacked its GSIs or stream is the worst shape (looks created,
-// wrong at query time). BillingMode is advisory metadata (there is no capacity behind the store),
-// so it and ProvisionedThroughput are declared caveats rather than blockers.
+// SCHEMA maps faithfully — the partition/sort key and their scalar types (S/N/B) — TTL maps, and
+// GLOBAL SECONDARY INDEXES map (name + key schema; backed by a Mongo index, a GSI Query filters on
+// those attributes). What does NOT map is everything else DynamoDB provisions that the
+// FerretDB-backed store does not model: read/write capacity (ProvisionedThroughput), LOCAL
+// secondary indexes, streams, per-table SSE, and PITR/import/restore. Those are behavior-bearing,
+// so they BLOCK — a table that silently lacked its stream is the worst shape (looks created, wrong
+// at query time). BillingMode is advisory metadata (there is no capacity behind the store), so it
+// and ProvisionedThroughput are declared caveats rather than blockers.
 func translateDynamoDBTable(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
-	// Only the properties we can honor are `known`; the long tail (GlobalSecondaryIndexes,
-	// LocalSecondaryIndexes, StreamSpecification, SSESpecification, KinesisStreamSpecification,
+	// Only the properties we can honor are `known`; the long tail (LocalSecondaryIndexes,
+	// StreamSpecification, SSESpecification, KinesisStreamSpecification,
 	// PointInTimeRecoverySpecification, ImportSourceSpecification, …) is deliberately absent, so
 	// blockUnknownProps refuses it — fail-closed, never a silent drop.
 	known := map[string]bool{
 		"TableName": true, "KeySchema": true, "AttributeDefinitions": true,
 		"BillingMode": true, "ProvisionedThroughput": true, "TimeToLiveSpecification": true,
 		"Tags": true, "DeletionProtectionEnabled": true, "TableClass": true,
+		"GlobalSecondaryIndexes": true,
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
@@ -387,7 +389,65 @@ func translateDynamoDBTable(id string, props map[string]any, _ *stackCtx) (*Mani
 		}
 	}
 
+	// Global secondary indexes: name + key schema map (backed by a Mongo index; a GSI Query filters
+	// on those attributes). Projection (KEYS_ONLY/INCLUDE) and per-index throughput don't apply —
+	// the store keeps full items and has no capacity model — so they are caveats, not blocks.
+	gsiProjection, gsiThroughput := false, false
+	if gsiList, ok := props["GlobalSecondaryIndexes"].([]any); ok && len(gsiList) > 0 {
+		var gsis []any
+		for _, g := range gsiList {
+			gm, ok := g.(map[string]any)
+			if !ok {
+				continue
+			}
+			gsi := map[string]any{}
+			if n, ok := concrete(gm["IndexName"]); ok && n != "" {
+				gsi["name"] = n
+			} else {
+				f = append(f, Finding{"Resource " + id, "a GlobalSecondaryIndex requires an IndexName"})
+			}
+			gh, gr := "", ""
+			if ks, ok := gm["KeySchema"].([]any); ok {
+				for _, e := range ks {
+					em, ok := e.(map[string]any)
+					if !ok {
+						continue
+					}
+					an, _ := concrete(em["AttributeName"])
+					switch em["KeyType"] {
+					case "HASH":
+						gh = an
+					case "RANGE":
+						gr = an
+					}
+				}
+			}
+			if gh == "" {
+				f = append(f, Finding{"Resource " + id, "GlobalSecondaryIndex " + fmt.Sprint(gsi["name"]) + " requires a HASH key"})
+			} else {
+				gsi["hashKey"] = dynamoKeyAttr(id, gh, attrType, &f)
+			}
+			if gr != "" {
+				gsi["rangeKey"] = dynamoKeyAttr(id, gr, attrType, &f)
+			}
+			if _, ok := gm["Projection"]; ok {
+				gsiProjection = true
+			}
+			if _, ok := gm["ProvisionedThroughput"]; ok {
+				gsiThroughput = true
+			}
+			gsis = append(gsis, gsi)
+		}
+		spec["globalSecondaryIndexes"] = gsis
+	}
+
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Table", Name: k8sName(id), Spec: spec}
+	if gsiProjection {
+		m.Caveats = append(m.Caveats, "a GSI Projection (KEYS_ONLY/INCLUDE) is not enforced — the store keeps full items, so every index projects ALL")
+	}
+	if gsiThroughput {
+		m.Caveats = append(m.Caveats, "per-GSI ProvisionedThroughput dropped — the store has no capacity model")
+	}
 	if _, ok := props["ProvisionedThroughput"]; ok {
 		m.Caveats = append(m.Caveats, "ProvisionedThroughput dropped — the FerretDB-backed store has no read/write capacity model to provision")
 	}

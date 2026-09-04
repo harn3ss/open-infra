@@ -64,7 +64,13 @@ func (h *dynamoHandler) syncDeclaredTables(ctx context.Context, namespace string
 			h.logger.Warn("table sync: skipping malformed table declaration", "configMap", cm.Name)
 			continue
 		}
-		if err := h.registerDeclaredTable(ctx, table, keyAttrs, cm.Data["ttlAttribute"]); err != nil {
+		var gsis []gsiDef
+		if raw := cm.Data["gsi"]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &gsis); err != nil {
+				h.logger.Warn("table sync: ignoring malformed gsi declaration", "configMap", cm.Name, "err", err)
+			}
+		}
+		if err := h.registerDeclaredTable(ctx, table, keyAttrs, cm.Data["ttlAttribute"], gsis); err != nil {
 			h.logger.Warn("table sync: registration failed", "table", table, "err", err)
 		}
 	}
@@ -73,11 +79,17 @@ func (h *dynamoHandler) syncDeclaredTables(ctx context.Context, namespace string
 // registerDeclaredTable upserts a table's registry entry (name + key schema, the exact shape
 // CreateTable writes) and, when a TTL attribute is declared, its TTL config — so the declared
 // table behaves identically to one created at runtime.
-func (h *dynamoHandler) registerDeclaredTable(ctx context.Context, table string, keyAttrs []string, ttlAttr string) error {
+func (h *dynamoHandler) registerDeclaredTable(ctx context.Context, table string, keyAttrs []string, ttlAttr string, gsis []gsiDef) error {
 	entry := bson.M{"_id": table, "keyAttrs": keyAttrs}
 	if ttlAttr != "" {
 		entry["ttl"] = bson.M{"enabled": true, "attribute": ttlAttr}
 	}
-	_, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table}, entry, options.Replace().SetUpsert(true))
-	return err
+	if len(gsis) > 0 {
+		entry["gsi"] = gsis
+	}
+	if _, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table}, entry, options.Replace().SetUpsert(true)); err != nil {
+		return err
+	}
+	h.ensureGSIIndexes(ctx, table, gsis)
+	return nil
 }
