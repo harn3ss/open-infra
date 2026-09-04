@@ -91,6 +91,7 @@ var translators = map[string]translator{
 	"AWS::DynamoDB::Table":                translateDynamoDBTable,
 	"AWS::IAM::User":                      translateIAMUser,
 	"AWS::IAM::Policy":                    translateIAMPolicy,
+	"AWS::IAM::ManagedPolicy":             translateManagedPolicy,
 	"AWS::Cognito::UserPool":              translateCognitoUserPool,
 	"AWS::Cognito::UserPoolClient":        translateCognitoUserPoolClient,
 	"AWS::ECS::Service":                   translateECSService,
@@ -562,16 +563,38 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 // at kind: Policy spec.dataPlane to express it natively. Only a policy that is PURELY s3/dynamodb/
 // lambda actions on recognizable ARNs with no conditions translates.
 func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
-	known := map[string]bool{
+	return importAWSPolicyResource(id, props, "AWS::IAM::Policy", map[string]bool{
 		"PolicyName": true, "PolicyDocument": true,
 		"Groups": true, "Users": true, "Roles": true,
-	}
+	})
+}
+
+// ---- AWS::IAM::ManagedPolicy -> kind: Policy (spec.dataPlane) ----
+//
+// Same story as IAM::Policy, and unlocked by the same engine: a ManagedPolicy's PolicyDocument has a
+// data-plane part that now translates. A ManagedPolicy can carry inline Groups/Users/Roles
+// attachments — those bind the imported dataPlane exactly as an inline policy's do. A STANDALONE
+// ManagedPolicy (the usual shape — attached elsewhere via ManagedPolicyArns) names no principal here,
+// so it still blocks loudly. ManagedPolicyName/Description/Path are metadata with no open-infra
+// equivalent (declared caveats).
+func translateManagedPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	return importAWSPolicyResource(id, props, "AWS::IAM::ManagedPolicy", map[string]bool{
+		"ManagedPolicyName": true, "PolicyDocument": true, "Description": true, "Path": true,
+		"Groups": true, "Users": true, "Roles": true,
+	})
+}
+
+// importAWSPolicyResource is the shared core behind the IAM::Policy and IAM::ManagedPolicy
+// translators: import the document's data-plane part into a kind: Policy spec.dataPlane bound to the
+// resource's Users/Groups, fail-closed on anything unmappable. `known` is the per-type property
+// allowlist; `cfnType` names the type in findings.
+func importAWSPolicyResource(id string, props map[string]any, cfnType string, known map[string]bool) (*Manifest, []Finding) {
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 
 	doc, ok := props["PolicyDocument"]
 	if !ok {
-		f = append(f, Finding{"Resource " + id, "AWS::IAM::Policy requires a PolicyDocument"})
+		f = append(f, Finding{"Resource " + id, cfnType + " requires a PolicyDocument"})
 		return nil, f
 	}
 	docJSON, err := json.Marshal(doc)
@@ -594,7 +617,7 @@ func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest
 
 	appliesTo := iamPolicyPrincipals(id, props, &f)
 	if len(appliesTo) == 0 && len(f) == 0 {
-		f = append(f, Finding{"Resource " + id, "AWS::IAM::Policy names no Users or Groups — an inline policy must attach to at least one principal (open-infra has no unattached standalone policy grant; a ManagedPolicy attached elsewhere is not translatable here)"})
+		f = append(f, Finding{"Resource " + id, cfnType + " names no Users or Groups — a policy must attach to at least one principal (a standalone policy attached elsewhere via ManagedPolicyArns is not translatable here; open-infra has no unattached policy grant)"})
 	}
 	if len(f) > 0 {
 		return nil, f
@@ -610,6 +633,11 @@ func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest
 	m.Caveats = append(m.Caveats,
 		"enforced only at the aws-shim data-plane front doors (S3/DynamoDB/Lambda), which are opt-in (off by default); it does not grant or restrict the Kubernetes control plane (that stays RBAC + the permission boundary)",
 		"appliesTo names must match existing open-infra Users/Groups; the policy tightens within a coarse RBAC grant (it can Deny, never widen)")
+	for _, p := range []string{"PolicyName", "ManagedPolicyName", "Description", "Path"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" is metadata with no open-infra equivalent (the Policy is named after the stack resource) — dropped")
+		}
+	}
 	return m, f
 }
 

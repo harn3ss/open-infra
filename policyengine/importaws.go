@@ -81,14 +81,23 @@ func importActions(actions []string) (kept, unsupported []string) {
 }
 
 // importResources maps AWS ARNs to open-infra typed resources, reporting ARNs it can't map.
+// Distinct ARNs can collapse to the same typed resource (a bucket ARN and its `/*` object ARN both
+// map to Bucket::<name>, since open-infra scopes to the bucket), so the result is de-duplicated.
 func importResources(arns []string) (kept, unsupported []string) {
+	seen := map[string]bool{}
+	add := func(res string) {
+		if !seen[res] {
+			seen[res] = true
+			kept = append(kept, res)
+		}
+	}
 	for _, r := range arns {
 		if r == "*" {
-			kept = append(kept, "*")
+			add("*")
 			continue
 		}
 		if res, ok := arnToResource(r); ok {
-			kept = append(kept, res)
+			add(res)
 		} else {
 			unsupported = append(unsupported, "resource "+r+" is not a recognizable S3/DynamoDB/Lambda ARN")
 		}
