@@ -5881,6 +5881,50 @@ components:
                           are matched as booleans. Optional.
                         additionalProperties:
                           type: string
+            controlPlane:
+              type: object
+              description: "Fine-grained CONTROL-PLANE authorization (Kubernetes API access), evaluated by the Cedar authorization\
+                \ webhook (docs/authz-webhook.md). Same Cedar model as dataPlane \u2014 explicit Deny overrides Allow, plus\
+                \ conditions \u2014 over a control-plane vocabulary: a k8s verb is the action; the resource is \"<resource>.<group>\"\
+                \ scoped by \"::<namespace>/<name>\" (or \"::*\"); a non-resource URL is \"NonResourceURL::<path>\". Read\
+                \ by the webhook; NOT compiled to RBAC. This is Phase 2 (shadow first)."
+              properties:
+                appliesTo:
+                  type: array
+                  description: "Principals these statements govern \u2014 \"User::<name>\", \"Group::<name>\", \"ServiceAccount::<namespace>/<name>\"\
+                    , or \"*\"."
+                  items:
+                    type: string
+                statements:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - effect
+                    - actions
+                    properties:
+                      effect:
+                        type: string
+                        enum:
+                        - Allow
+                        - Deny
+                        description: Allow or Deny. An explicit Deny overrides any Allow.
+                      actions:
+                        type: array
+                        description: k8s verbs, e.g. "get", "list", "watch", "create", "update", "delete", or "*".
+                        items:
+                          type: string
+                      resources:
+                        type: array
+                        description: Typed resources, e.g. "databases.openinfra.dev::team-a/*", "secrets::kube-system/*",
+                          "NonResourceURL::/healthz", or "*".
+                        items:
+                          type: string
+                      condition:
+                        type: object
+                        description: Request-context equality conditions. Optional.
+                        additionalProperties:
+                          type: string
         status:
           type: object
           properties:
