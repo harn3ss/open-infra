@@ -113,7 +113,7 @@ spec:
                         # A data key wrapped by the EncryptionKey's Transit KEK: plaintext is the LUKS
                         # passphrase; ciphertext is the wrapped record (crypto-erase: destroy the KEK
                         # and the passphrase can never be re-derived).
-                        dk="$(vault write -format=json "transit/datakey/plaintext/$key" 2>/dev/null || true)"
+                        dk="$(vault write -f -format=json "transit/datakey/plaintext/$key" 2>/dev/null || true)"
                         P="$(printf '%s' "$dk" | jq -r '.data.plaintext // empty')"
                         C="$(printf '%s' "$dk" | jq -r '.data.ciphertext // empty')"
                         if [ -z "$P" ]; then
