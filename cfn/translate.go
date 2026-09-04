@@ -715,8 +715,12 @@ func translateSSMParameter(id string, props map[string]any, _ *stackCtx) (*Manif
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 
-	if _, ok := props["Policies"]; ok {
-		f = append(f, Finding{"Resource " + id, "SSM Parameter Policies (expiration / notification) have no open-infra equivalent — a Vault-backed parameter does not auto-expire; drop the policy or manage the lifecycle out of band"})
+	// SSM Parameter Policies: an Expiration policy maps to spec.expiresAt (the parameter reaper sweeps
+	// it, deleting the CR + its Vault entry + Secret). Notification policies have no equivalent — a
+	// declared caveat, not a block. A malformed Policies string blocks (never silently ignored).
+	expiresAt, hasNotify, perr := ssmExpiration(props["Policies"])
+	if perr != nil {
+		f = append(f, Finding{"Resource " + id, "SSM Parameter Policies did not parse: " + perr.Error()})
 	}
 
 	spec := map[string]any{}
@@ -748,11 +752,17 @@ func translateSSMParameter(id string, props map[string]any, _ *stackCtx) (*Manif
 	if tier, ok := concrete(props["Tier"]); ok && tier != "" {
 		spec["tier"] = tier
 	}
+	if expiresAt != "" {
+		spec["expiresAt"] = expiresAt
+	}
 
 	if len(f) > 0 {
 		return nil, f
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Parameter", Name: k8sName(id), Spec: spec}
+	if hasNotify {
+		m.Caveats = append(m.Caveats, "an SSM notification policy (ExpirationNotification/NoChangeNotification) was dropped — open-infra has no parameter-notification surface; the Expiration policy itself is honored via expiresAt")
+	}
 	if listCaveat {
 		m.Caveats = append(m.Caveats, "Type StringList is stored as a plain comma-separated string — open-infra has no list-typed parameter, so per-element list semantics are not modeled")
 	}
@@ -763,6 +773,44 @@ func translateSSMParameter(id string, props map[string]any, _ *stackCtx) (*Manif
 	}
 	m.Caveats = append(m.Caveats, "the value is held in Vault (KV-v2, encrypted at rest) and materialized into the namespace's Secret — needs the platform Vault configured; consume it by adding `openinfra-parameters` to an Application/Function spec.secrets")
 	return m, f
+}
+
+// ssmExpiration parses an SSM Parameter Policies value (a JSON string: a list of
+// {Type, Version, Attributes}) — returning the Expiration policy's Timestamp (mapped to
+// spec.expiresAt), whether a notification policy is present (a declared caveat), and a parse error.
+func ssmExpiration(pol any) (expiresAt string, hasNotify bool, err error) {
+	if pol == nil {
+		return "", false, nil
+	}
+	s, ok := pol.(string)
+	if !ok {
+		b, e := json.Marshal(pol) // some templates give Policies as a structured list already
+		if e != nil {
+			return "", false, fmt.Errorf("Policies is neither a JSON string nor serializable")
+		}
+		s = string(b)
+	}
+	if strings.TrimSpace(s) == "" {
+		return "", false, nil
+	}
+	var policies []struct {
+		Type       string         `json:"Type"`
+		Attributes map[string]any `json:"Attributes"`
+	}
+	if e := json.Unmarshal([]byte(s), &policies); e != nil {
+		return "", false, fmt.Errorf("expected a JSON array of policy objects: %w", e)
+	}
+	for _, p := range policies {
+		switch p.Type {
+		case "Expiration":
+			if ts, _ := p.Attributes["Timestamp"].(string); ts != "" {
+				expiresAt = ts
+			}
+		case "ExpirationNotification", "NoChangeNotification":
+			hasNotify = true
+		}
+	}
+	return expiresAt, hasNotify, nil
 }
 
 // ---- AWS::Cognito::UserPool -> kind: UserPool ----
