@@ -158,6 +158,9 @@ func printPlan(p *Plan) {
 	fmt.Println("Resources:")
 	for _, r := range p.Resources {
 		mark := statusMark(r.Status)
+		if r.Included && r.Kind != "" && !r.Deployable {
+			mark = "[gate]" // maps to a kind, but gated from creation (no create translator)
+		}
 		line := fmt.Sprintf("  %s %-20s %-34s", mark, r.LogicalID, r.CFNType)
 		if r.Kind != "" {
 			line += "-> " + r.Kind
@@ -170,6 +173,9 @@ func printPlan(p *Plan) {
 		fmt.Println(line)
 		if r.Included && r.Status == Partial && r.Note != "" {
 			fmt.Printf("      caveat: %s\n", r.Note)
+		}
+		if r.Included && r.Kind != "" && !r.Deployable {
+			fmt.Printf("      ⚠ maps at plan only — NOT deployable (no create translator): %s\n", noteOr(r.Note, "ceiling by design"))
 		}
 	}
 
@@ -186,6 +192,16 @@ func printPlan(p *Plan) {
 		}
 	}
 
+	// Count resources that map but can't be created — deploy is all-or-nothing, so even one makes
+	// the whole stack undeployable. State that plainly here; it is the difference between "maps"
+	// and "deploys".
+	nUndeployable := 0
+	for _, r := range p.Resources {
+		if r.Included && r.Kind != "" && !r.Deployable {
+			nUndeployable++
+		}
+	}
+
 	fmt.Println()
 	switch p.Verdict {
 	case Provisionable:
@@ -194,6 +210,9 @@ func printPlan(p *Plan) {
 		fmt.Println("Provisionable, but review the caveats above — some mappings are lossy.")
 	case Rejected:
 		fmt.Println("Rejected. Resolve every blocker above; this engine will not approximate.")
+	}
+	if nUndeployable > 0 && p.Verdict != Rejected {
+		fmt.Printf("NOT DEPLOYABLE AS-IS: %d resource(s) map at plan but have no create translator; `cfn deploy` is all-or-nothing and will refuse this stack until they are removed or expressed natively.\n", nUndeployable)
 	}
 }
 

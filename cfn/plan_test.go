@@ -145,13 +145,15 @@ Resources:
 }
 
 func TestPlan_MissingParam_Rejected(t *testing.T) {
+	// A Supported + deployable type (KMS::Key: create translator, no partial caveats), so with the
+	// param supplied the plan is cleanly PROVISIONABLE — isolating the missing-param behaviour.
 	data := []byte(`
 Parameters:
   Name: { Type: String }
 Resources:
   R:
-    Type: AWS::IAM::Role
-    Properties: { RoleName: !Ref Name }
+    Type: AWS::KMS::Key
+    Properties: { Description: !Ref Name }
 `)
 	p := mustPlan(t, data, nil, "")
 	if p.Verdict != Rejected {
@@ -192,5 +194,38 @@ func TestLookup_UnknownAndCustomUnsupported(t *testing.T) {
 	}
 	if !Lookup("AWS::Lambda::Function").mappable() {
 		t.Error("Lambda should be mappable")
+	}
+}
+
+// A type that maps at plan but has no create translator (an IAM Role) is flagged Deployable=false,
+// and a stack containing one is never cleanly PROVISIONABLE — the map-vs-deploy gap is surfaced at
+// plan time, not discovered at deploy. A translator-backed type is Deployable=true.
+func TestPlan_DeployabilitySurfaced(t *testing.T) {
+	data := []byte(`
+Resources:
+  Key:
+    Type: AWS::KMS::Key
+    Properties: { Description: k }
+  Role:
+    Type: AWS::IAM::Role
+    Properties: { Path: / }
+`)
+	p := mustPlan(t, data, nil, "")
+	// The stack maps (no blockers) but the Role can't be created, so it is not cleanly provisionable.
+	if p.Verdict != ProvisionableWithCaveats {
+		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (a mapped-but-undeployable Role); blockers:\n%s", p.Verdict, blockersJoined(p))
+	}
+	byID := map[string]PlannedResource{}
+	for _, r := range p.Resources {
+		byID[r.LogicalID] = r
+	}
+	if !byID["Key"].Deployable {
+		t.Errorf("KMS::Key has a create translator — want Deployable=true")
+	}
+	if byID["Role"].Deployable {
+		t.Errorf("IAM::Role has no create translator — want Deployable=false")
+	}
+	if byID["Role"].Kind != "Role" {
+		t.Errorf("IAM::Role should still MAP to kind: Role at plan, got %q", byID["Role"].Kind)
 	}
 }

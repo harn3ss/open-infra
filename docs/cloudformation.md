@@ -172,6 +172,12 @@ it does not the engine refuses rather than guess. A resource type that plans as
 
 - The set of types with a create translator is a subset of the plan-supported types. A
   supported type without a translator is refused at deploy with "no create translator".
+  **`cfn plan` surfaces this directly** so the gap is never a deploy-time surprise: a resource
+  that maps but cannot be created is marked `[gate]` and flagged `⚠ maps at plan only — NOT
+  deployable`, its `Deployable` field is `false` in the JSON, and any stack containing one is
+  reported `PROVISIONABLE_WITH_CAVEATS` (never a clean `PROVISIONABLE`) with an explicit
+  `NOT DEPLOYABLE AS-IS` line. Because deploy is all-or-nothing, one such resource makes the whole
+  stack undeployable until it is removed or expressed natively.
 - AWS resource *content* frequently has no faithful open-infra form — IAM's
   `service:Action` permission namespace is a different universe from open-infra's
   `kind:verb` RBAC, KMS key policies have no per-key equivalent, and a `Fn::GetAtt` to
