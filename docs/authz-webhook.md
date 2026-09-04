@@ -1,10 +1,12 @@
 # Control-plane authorization webhook (design + spike, WIP)
 
-> Status: **design + offline spike** on `feat/authz-webhook`. Nothing here is wired to any live
-> API server. This is Phase 2 of making Cedar the platform-wide authorization authority
-> ([`docs/policy-engine.md`](policy-engine.md)): the data plane (Phase 1) is built and
-> live-verified; this extends the *same* engine and the *same* `kind: Policy` corpus to the
-> Kubernetes control plane, through the API server's authorization-webhook interface.
+> Status: **shadow run LIVE** (merged to `main`). This is Phase 2 of making Cedar the platform-wide
+> authorization authority ([`docs/policy-engine.md`](policy-engine.md)): the data plane (Phase 1) is
+> deployed and live-verified; this extends the *same* engine and the *same* `kind: Policy` corpus to
+> the Kubernetes control plane, through the API server's authorization-webhook interface. The webhook
+> is now wired into the live k3s API server in **shadow mode** — it observes real SubjectAccessReviews
+> and logs the Cedar decision, but returns *no opinion*, so it changes no authorization outcome. It
+> does **not** yet enforce, and RBAC remains the authority.
 
 ## The interface (why a webhook, not admission)
 
@@ -128,8 +130,17 @@ posture used to inherit from the CIS benchmark becomes a Cedar-corpus check the 
 - [ ] **`kind: Policy` `spec.controlPlane`** — the XRD field + the drift-gate mirrors (a real schema
       change), and a K8s loader for it. The spike reads the block if present; the field is not yet on
       the XRD.
-- [ ] **Live shadow run** — wiring the webhook into the API server authorization config on a
-      throwaway/non-critical cluster first, then the real one, to record divergence. A consequential
-      control-plane change, gated on explicit approval.
+- [x] **Live shadow run** — wired into the live k3s API server (`authorization-mode=Node,RBAC,Webhook`,
+      webhook last, shadow/no-opinion), during a planned maintenance window with production offline.
+      Observed: the API server consults it on real traffic (controller SAs' `escalate`/`bind`
+      attempts that RBAC denies were logged as would-DENY), the cluster authorizes identically (no
+      outcome changed — the webhook returns no opinion), and the deployment is `hostNetwork` on the
+      control-plane node serving loopback-only TLS. Manifest: `platform/security/manifests/authz-webhook-shadow.yaml`.
+      Running with an **empty** control-plane corpus, so every decision is a trivial default-deny —
+      the baseline. Meaningful divergence needs the corpus below.
+- [ ] **`kind: Policy` `spec.controlPlane` corpus** — author explicit Cedar grants for the enumerated
+      implicit principals (the XRD field + a starter corpus), so the shadow log shows *real*
+      divergence, not "Cedar denies everything". Then move the webhook first-in-chain (structured
+      `authorization-config`) to also see RBAC-allowed traffic.
 - [ ] **Enforce + RBAC removal** — only after divergence is understood, every implicit principal has
       an explicit grant, and the failure posture is evidenced.
