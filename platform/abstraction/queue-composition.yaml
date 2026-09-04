@@ -37,7 +37,12 @@ spec:
             {{- $ret := $spec.retentionHours | default 96 }}
             {{- $retpolicy := "work" }}{{- if $spec.fanout }}{{ $retpolicy = "limits" }}{{- end }}
             {{- $maxbytes := "" }}{{- if $spec.maxBytes }}{{ $maxbytes = printf "--max-bytes %d" (int $spec.maxBytes) }}{{- else }}{{ $maxbytes = "--max-bytes=-1" }}{{- end }}
-            {{- $hash := (printf "%s|%d|%s" $retpolicy (int $ret) $maxbytes) | sha256sum | trunc 10 }}
+            {{- /* FIFO (#116): a per-group subject wildcard (<q>.>) so each MessageGroupId is its own
+                   ordered subject (parallel across groups), and a 5m dedup window matching SQS FIFO. */}}
+            {{- $fifo := $spec.fifo | default false }}
+            {{- $subjects := $q }}{{- if $fifo }}{{ $subjects = printf "%s,%s.>" $q $q }}{{- end }}
+            {{- $dupwin := "2m" }}{{- if $fifo }}{{ $dupwin = printf "%dm" (int ($spec.deduplicationWindowMinutes | default 5)) }}{{- end }}
+            {{- $hash := (printf "%s|%d|%s|%v|%s" $retpolicy (int $ret) $maxbytes $fifo $dupwin) | sha256sum | trunc 10 }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -65,11 +70,11 @@ spec:
                               - |
                                 S=nats://nats.nats.svc.cluster.local:4222
                                 if nats --server $S stream info {{ $q }} >/dev/null 2>&1; then
-                                  nats --server $S stream edit {{ $q }} --max-age {{ $ret }}h {{ $maxbytes }} -f
+                                  nats --server $S stream edit {{ $q }} --subjects '{{ $subjects }}' --max-age {{ $ret }}h {{ $maxbytes }} --dupe-window {{ $dupwin }} -f
                                 else
-                                  nats --server $S stream add {{ $q }} --subjects '{{ $q }}' --storage file --retention {{ $retpolicy }} --max-age {{ $ret }}h {{ $maxbytes }} --discard old --dupe-window 2m --replicas 1 --defaults
+                                  nats --server $S stream add {{ $q }} --subjects '{{ $subjects }}' --storage file --retention {{ $retpolicy }} --max-age {{ $ret }}h {{ $maxbytes }} --discard old --dupe-window {{ $dupwin }} --replicas 1 --defaults
                                 fi
-                                echo "stream {{ $q }} ready ({{ $retpolicy }}, {{ $ret }}h)"
+                                echo "stream {{ $q }} ready ({{ $retpolicy }}, {{ $ret }}h, fifo={{ $fifo }}, dupe-window {{ $dupwin }})"
                         containers:
                           - name: secret
                             image: alpine/k8s:1.30.0
@@ -80,6 +85,7 @@ spec:
                                   --from-literal=NATS_URL=nats://nats.nats.svc.cluster.local:4222 \
                                   --from-literal=QUEUE_STREAM={{ $q }} \
                                   --from-literal=QUEUE_SUBJECT={{ $q }} \
+                                  --from-literal=QUEUE_FIFO={{ $fifo }} \
                                   --dry-run=client -o yaml | kubectl apply -f -
             ---
             apiVersion: openinfra.dev/v1

@@ -6161,6 +6161,20 @@ components:
               default: false
               description: "false (default) = a work queue (each message to one consumer, removed on ack \u2014 SQS). true\
                 \ = a fan-out topic (messages retained for the window; every consumer reads them \u2014 SNS pub/sub)."
+            fifo:
+              type: boolean
+              default: false
+              description: "FIFO queue (SQS .fifo): strict per-message-group ordering plus publish deduplication. The stream\
+                \ carries a per-group subject wildcard (<queue>.>), so producers publish each MessageGroupId to its own subject\
+                \ token <queue>.<groupId> \u2014 JetStream preserves publish order within a subject, and different groups\
+                \ flow in parallel (FIFO's ordering model). Producers set the Nats-Msg-Id header (from MessageDeduplicationId,\
+                \ or a content hash for content-based dedup) so JetStream suppresses duplicates within the window. Immutable.\
+                \ Incompatible with fanout."
+            deduplicationWindowMinutes:
+              type: integer
+              default: 5
+              description: FIFO deduplication window in minutes (JetStream dupe-window), matching SQS FIFO's 5-minute default.
+                Applies only when fifo=true (a standard queue keeps a 2m window).
             retentionHours:
               type: integer
               default: 96
