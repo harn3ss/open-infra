@@ -89,6 +89,7 @@ var translators = map[string]translator{
 	"AWS::DynamoDB::Table":                translateDynamoDBTable,
 	"AWS::IAM::User":                      translateIAMUser,
 	"AWS::Cognito::UserPool":              translateCognitoUserPool,
+	"AWS::Cognito::UserPoolClient":        translateCognitoUserPoolClient,
 	"AWS::ECS::Service":                   translateECSService,
 	"AWS::ECS::TaskDefinition":            translateECSTaskDefinition,
 	"AWS::ECS::Cluster":                   translateECSCluster,
@@ -472,7 +473,7 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 // equivalent here, so they BLOCK (dropping them would silently weaken or change auth). The
 // realm's own defaults cover password policy / schema / verification, so those are declared
 // caveats (the pool still enforces a policy — just the realm's, not Cognito's exact rules).
-func translateCognitoUserPool(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateCognitoUserPool(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"UserPoolName": true, "MfaConfiguration": true, "Policies": true, "Schema": true,
 		"LambdaConfig": true, "AutoVerifiedAttributes": true, "AliasAttributes": true,
@@ -495,6 +496,22 @@ func translateCognitoUserPool(id string, props map[string]any, _ *stackCtx) (*Ma
 		spec["realm"] = k8sName(n)
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "UserPool", Name: k8sName(id), Spec: spec}
+
+	// Collate an in-stack UserPoolClient: kind: UserPool creates exactly ONE app client
+	// (spec.clientId), so a single client's name maps; more than one has no home and refuses.
+	if ctx != nil {
+		clients := ctx.cognitoClients(id)
+		if len(clients) > 1 {
+			f = append(f, Finding{"Resource " + id, "more than one AWS::Cognito::UserPoolClient references this pool — kind: UserPool provisions a single app client (spec.clientId), so multiple clients have no faithful mapping"})
+		} else if len(clients) == 1 {
+			cp, _ := ctx.resolveProps(clients[0])
+			if cn, ok := concrete(cp["ClientName"]); ok && cn != "" {
+				spec["clientId"] = k8sName(cn)
+			}
+			m.Caveats = append(m.Caveats, "the UserPoolClient's OAuth config (flows/scopes/callback+logout URLs, GenerateSecret, ExplicitAuthFlows) is not translated — the realm client applies Keycloak defaults; only its name maps to spec.clientId")
+		}
+	}
+
 	for _, p := range []string{"Policies", "Schema", "AutoVerifiedAttributes", "AliasAttributes",
 		"UsernameAttributes", "EmailConfiguration", "SmsConfiguration", "AdminCreateUserConfig",
 		"AccountRecoverySetting", "DeviceConfiguration", "UserPoolTags", "UsernameConfiguration",
@@ -504,6 +521,36 @@ func translateCognitoUserPool(id string, props map[string]any, _ *stackCtx) (*Ma
 		}
 	}
 	return m, f
+}
+
+// cognitoClients returns the in-stack AWS::Cognito::UserPoolClient logical ids whose UserPoolId
+// references poolID, in deterministic order.
+func (c *stackCtx) cognitoClients(poolID string) []string {
+	var ids []string
+	for cid, res := range c.template.Resources {
+		if res.Type != "AWS::Cognito::UserPoolClient" {
+			continue
+		}
+		raw, _ := c.rawProps(cid)
+		if t, ok := getAttTarget(raw["UserPoolId"]); ok && t == poolID {
+			ids = append(ids, cid)
+		}
+	}
+	sortStrs(ids)
+	return ids
+}
+
+// translateCognitoUserPoolClient is the no-op half of the collation: a client whose UserPoolId
+// points at an in-stack UserPool provisions nothing on its own (the pool creates the app client).
+// One pointing at a pool NOT in this stack is refused rather than silently dropped.
+func translateCognitoUserPoolClient(id string, _ map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	raw, _ := ctx.rawProps(id)
+	if poolID, ok := getAttTarget(raw["UserPoolId"]); ok {
+		if pool, in := ctx.template.Resources[poolID]; in && pool.Type == "AWS::Cognito::UserPool" {
+			return nil, nil // collated into the pool
+		}
+	}
+	return nil, []Finding{{"Resource " + id, "its UserPoolId does not reference an AWS::Cognito::UserPool in this stack — a client can only attach to an in-stack pool (kind: UserPool provisions its own single app client)"}}
 }
 
 // ---- AWS::ECS::* -> kind: Application ----
