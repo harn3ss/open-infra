@@ -278,3 +278,25 @@ func TestDeploy_RequiresNamespace(t *testing.T) {
 		t.Fatal("deploy without a namespace must be refused")
 	}
 }
+
+// An AppSync stack collates to exactly ONE kind: GraphQLApi — the Schema/DataSource/Resolver
+// children provision nothing on their own.
+func TestDeploy_AppSyncCollation(t *testing.T) {
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), []byte(appsyncStack()), deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "GraphQLApi/api" {
+		t.Fatalf("applied = %v, want [GraphQLApi/api] (children must collate, not provision)", got)
+	}
+	spec := f.liveSpecs["GraphQLApi/api"]
+	ds, _ := spec["dataSources"].([]any)
+	rs, _ := spec["resolvers"].([]any)
+	if len(ds) != 1 || len(rs) != 1 {
+		t.Fatalf("collated spec incomplete: dataSources=%v resolvers=%v", spec["dataSources"], spec["resolvers"])
+	}
+}
