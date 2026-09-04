@@ -1,0 +1,34 @@
+# open-infra's kind: Vpc — an isolated tenant network domain, backed by a kube-ovn Vpc. Subnets in
+# different VPCs are fully isolated from each other (real multi-tenant isolation, the AWS VPC model).
+# REQUIRES kube-ovn; inert on Canal (see subnet-xrd.yaml).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xvpcs.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XVpc, plural: xvpcs }
+  claimNames: { kind: Vpc, plural: vpcs }
+  defaultCompositionRef: { name: vpc }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                namespaces:
+                  type: array
+                  items: { type: string }
+                  description: "Namespaces bound to this VPC (their default subnet lives here)."
+            status:
+              type: object
+              properties:
+                ready: { type: boolean }
