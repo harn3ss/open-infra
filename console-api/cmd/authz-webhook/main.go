@@ -52,8 +52,20 @@ func main() {
 	if addr == "" {
 		addr = ":8443"
 	}
-	logger.Info("control-plane authz webhook (SPIKE — not wired to any API server)", "mode", mode, "addr", addr)
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	// The API server connects over TLS. Serve HTTPS when a cert/key are provided (the deployed
+	// path); fall back to plain HTTP only when they are absent (local runs / offline testing).
+	cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
+	if cert != "" && key != "" {
+		logger.Info("control-plane authz webhook (TLS)", "mode", mode, "addr", addr)
+		if err := srv.ListenAndServeTLS(cert, key); err != nil {
+			logger.Error("server exited", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	logger.Warn("control-plane authz webhook (PLAINTEXT — no TLS_CERT_FILE/TLS_KEY_FILE; for local use only)", "mode", mode, "addr", addr)
 	if err := srv.ListenAndServe(); err != nil {
 		logger.Error("server exited", "err", err)
 		os.Exit(1)
