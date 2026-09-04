@@ -53,7 +53,7 @@ var mappingTable = map[string]MapEntry{
 	"AWS::SNS::Topic":                     {Kind: "Application(queues)", Status: Partial, Note: "pub/sub maps to NATS via an Application's queues, but like SQS there is no create translator: streams are app-declared, so a standalone topic has nothing to provision (refused at deploy, never a silent no-op)."},
 	"AWS::RDS::DBInstance":                {Kind: "Application(database)", Status: Partial, Note: "managed DB is provisioned via an Application's database block (CloudNativePG / MariaDB); engine/size mapping is lossy"},
 	"AWS::EC2::Instance":                  {Kind: "VirtualMachine", Status: Partial, Note: "maps at plan, but no create translator by design: ImageId is an opaque AMI id and kind: VirtualMachine needs a real os (image-catalog name) — the OS is unmappable"},
-	"AWS::EC2::Volume":                    {Kind: "Volume", Status: Partial, Note: "block volume (Longhorn)"},
+	"AWS::EC2::Volume":                    {Kind: "Volume", Status: Partial, Note: "block volume (Longhorn); Encrypted -> LUKS keyed by a customer kind: EncryptionKey (KmsKeyId must reference an in-stack KMS::Key). AZ/VolumeType/IOPS have no equivalent."},
 	"AWS::EFS::FileSystem":                {Kind: "FileShare", Status: Partial, Note: "maps at plan, but no create translator by design: EFS is elastic (no size) and kind: FileShare requires a size — inventing one would be a guess"},
 	"AWS::AppSync::DataSource":            {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec, not a standalone resource"},
 	"AWS::AppSync::Resolver":              {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
