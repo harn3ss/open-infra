@@ -35,9 +35,14 @@ type PlannedResource struct {
 	Kind      string
 	Status    Status
 	Note      string
-	Included  bool     // false when a Condition excluded it
-	Condition string   // the gating condition, if any
-	DependsOn []string // resolved dependency ids (included resources only)
+	// Deployable is the honest create-fidelity fact: the type maps to a kind AND has a create
+	// translator, so `cfn deploy` will accept it. A resource that maps at plan but has no
+	// translator (an IAM Role, an EC2 Instance) is Deployable=false — plan-supported is not
+	// create-faithful, and deploy (all-or-nothing) refuses a stack that contains one.
+	Deployable bool
+	Included   bool     // false when a Condition excluded it
+	Condition  string   // the gating condition, if any
+	DependsOn  []string // resolved dependency ids (included resources only)
 }
 
 type Plan struct {
@@ -97,13 +102,14 @@ func BuildPlan(data []byte, params map[string]string, stackName string) (*Plan, 
 		}
 		entry := Lookup(res.Type)
 		pr := PlannedResource{
-			LogicalID: id,
-			CFNType:   res.Type,
-			Kind:      entry.Kind,
-			Status:    entry.Status,
-			Note:      entry.Note,
-			Included:  included,
-			Condition: res.Condition,
+			LogicalID:  id,
+			CFNType:    res.Type,
+			Kind:       entry.Kind,
+			Status:     entry.Status,
+			Note:       entry.Note,
+			Deployable: entry.mappable() && hasTranslator(res.Type),
+			Included:   included,
+			Condition:  res.Condition,
 		}
 		if included {
 			d := r.resolveResource(id, res)
@@ -137,11 +143,13 @@ func BuildPlan(data []byte, params map[string]string, stackName string) (*Plan, 
 		plan.Order = ord
 	}
 
-	// Final verdict.
+	// Final verdict. A stack that maps but contains a resource with no create translator is never
+	// reported as cleanly PROVISIONABLE — deploy (all-or-nothing) would refuse it, so that is a
+	// caveat, surfaced honestly rather than discovered at deploy.
 	switch {
 	case len(plan.Blockers) > 0:
 		plan.Verdict = Rejected
-	case plan.hasPartial():
+	case plan.hasPartial() || plan.hasUndeployable():
 		plan.Verdict = ProvisionableWithCaveats
 	default:
 		plan.Verdict = Provisionable
@@ -152,6 +160,17 @@ func BuildPlan(data []byte, params map[string]string, stackName string) (*Plan, 
 func (p *Plan) hasPartial() bool {
 	for _, r := range p.Resources {
 		if r.Included && r.Status == Partial {
+			return true
+		}
+	}
+	return false
+}
+
+// hasUndeployable reports whether any included resource maps to a kind but has no create
+// translator (plan-supported, not create-faithful) — deploy would refuse the whole stack.
+func (p *Plan) hasUndeployable() bool {
+	for _, r := range p.Resources {
+		if r.Included && r.Kind != "" && !r.Deployable {
 			return true
 		}
 	}
