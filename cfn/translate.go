@@ -92,6 +92,7 @@ var translators = map[string]translator{
 	"AWS::IAM::User":                      translateIAMUser,
 	"AWS::IAM::Policy":                    translateIAMPolicy,
 	"AWS::IAM::ManagedPolicy":             translateManagedPolicy,
+	"AWS::SSM::Parameter":                 translateSSMParameter,
 	"AWS::Cognito::UserPool":              translateCognitoUserPool,
 	"AWS::Cognito::UserPoolClient":        translateCognitoUserPoolClient,
 	"AWS::ECS::Service":                   translateECSService,
@@ -694,6 +695,74 @@ func toAnySlice(ss []string) []any {
 		out[i] = s
 	}
 	return out
+}
+
+// ---- AWS::SSM::Parameter -> kind: Parameter ----
+//
+// open-infra's kind: Parameter is the SSM Parameter Store equivalent (a value stored under a
+// hierarchical path in Vault KV-v2, materialized into a namespace Secret). The core maps cleanly:
+// Name->path, Value->value, Type (String/SecureString). A StringList is stored as its plain
+// comma-separated string (open-infra has no list-typed parameter — a declared caveat). Description/
+// AllowedPattern/DataType/Tags are advisory metadata with no equivalent (caveats). Parameter
+// `Policies` (expiration / no-change notification) are behavior-bearing — a Vault-backed parameter
+// does not auto-expire, so silently dropping one would keep a value that should have expired: they
+// BLOCK.
+func translateSSMParameter(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"Name": true, "Value": true, "Type": true, "Tier": true,
+		"Description": true, "AllowedPattern": true, "DataType": true, "Tags": true, "Policies": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	if _, ok := props["Policies"]; ok {
+		f = append(f, Finding{"Resource " + id, "SSM Parameter Policies (expiration / notification) have no open-infra equivalent — a Vault-backed parameter does not auto-expire; drop the policy or manage the lifecycle out of band"})
+	}
+
+	spec := map[string]any{}
+	if name, ok := concrete(props["Name"]); ok && name != "" {
+		spec["path"] = name
+	} else {
+		f = append(f, Finding{"Resource " + id, "AWS::SSM::Parameter requires a Name (the hierarchical path, e.g. /app/db/host)"})
+	}
+	if val, ok := concrete(props["Value"]); ok {
+		spec["value"] = val
+	} else if _, present := props["Value"]; !present {
+		f = append(f, Finding{"Resource " + id, "AWS::SSM::Parameter requires a Value"})
+	} else {
+		f = append(f, Finding{"Resource " + id, "Parameter Value references a cross-resource value with no concrete result — a Parameter's value must be a literal"})
+	}
+
+	listCaveat := false
+	switch t, _ := concrete(props["Type"]); t {
+	case "", "String":
+		spec["type"] = "String"
+	case "SecureString":
+		spec["type"] = "SecureString"
+	case "StringList":
+		spec["type"] = "String"
+		listCaveat = true
+	default:
+		f = append(f, Finding{"Resource " + id, "unknown SSM Parameter Type " + t + " (expected String, StringList, or SecureString)"})
+	}
+	if tier, ok := concrete(props["Tier"]); ok && tier != "" {
+		spec["tier"] = tier
+	}
+
+	if len(f) > 0 {
+		return nil, f
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Parameter", Name: k8sName(id), Spec: spec}
+	if listCaveat {
+		m.Caveats = append(m.Caveats, "Type StringList is stored as a plain comma-separated string — open-infra has no list-typed parameter, so per-element list semantics are not modeled")
+	}
+	for _, p := range []string{"Description", "AllowedPattern", "DataType", "Tags"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" is advisory metadata with no open-infra equivalent (dropped) — a Vault-backed parameter has no server-side validation/tagging")
+		}
+	}
+	m.Caveats = append(m.Caveats, "the value is held in Vault (KV-v2, encrypted at rest) and materialized into the namespace's Secret — needs the platform Vault configured; consume it by adding `openinfra-parameters` to an Application/Function spec.secrets")
+	return m, f
 }
 
 // ---- AWS::Cognito::UserPool -> kind: UserPool ----
