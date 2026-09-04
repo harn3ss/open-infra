@@ -27,6 +27,7 @@ on:
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
+      - "policyengine/**" # the Cedar-based data-plane authorization engine
       - "docs/openapi/**" # the generated platform spec — re-run the drift gate when it changes
       - ".github/workflows/test.yml"
   pull_request:
@@ -45,6 +46,7 @@ on:
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
+      - "policyengine/**" # the Cedar-based data-plane authorization engine
       - "docs/openapi/**" # the generated platform spec — re-run the drift gate when it changes
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
@@ -77,6 +79,7 @@ jobs:
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
           - tools/chainforge # chaos chain grammar: validate corpus + generate chains
           - open-appsync # the VTL engine + $util + the docs-anchored resolver probe
+          - policyengine # the Cedar-based fine-grained data-plane authz engine (allow/deny/conditions)
     name: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v7
