@@ -1,0 +1,59 @@
+# Parameter expiration reaper (SSM Parameter Expiration policy). Sweeps kind: Parameter objects
+# whose spec.expiresAt is in the past — deleting the CR cascades to its Vault KV entry + materialized
+# Secret. Fail-safe: a parameter without expiresAt never expires; a parse-failure skips (never deletes
+# on ambiguity). Same sweep discipline as the DynamoDB TTL reaper.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: parameter-reaper, namespace: open-infra-console }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: openinfra-parameter-reaper }
+rules:
+  - { apiGroups: [openinfra.dev], resources: [parameters], verbs: [get, list, delete] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: openinfra-parameter-reaper }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-parameter-reaper }
+subjects: [{ kind: ServiceAccount, name: parameter-reaper, namespace: open-infra-console }]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: parameter-reaper, namespace: open-infra-console }
+spec:
+  schedule: "*/5 * * * *"      # sweep every 5 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: parameter-reaper
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          containers:
+            - name: reaper
+              image: alpine/k8s:1.30.0
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -eu
+                  # RFC3339 UTC timestamps sort chronologically, so compare as normalized strings
+                  # (portable across busybox/coreutils date). Both sides reduced to second-precision
+                  # UTC "YYYY-MM-DDTHH:MM:SS"; expiresAt is assumed UTC (Z) per SSM.
+                  now=$(date -u +%Y-%m-%dT%H:%M:%S)
+                  kubectl get parameters.openinfra.dev -A \
+                    -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.expiresAt}{"\n"}{end}' \
+                  | while read ns name exp; do
+                      [ -n "${exp:-}" ] || continue
+                      case "$exp" in *Z|*[+-][0-9][0-9]:[0-9][0-9]) : ;; *) echo "skip $ns/$name: expiresAt not UTC/offset ($exp)"; continue ;; esac
+                      expn=$(printf '%s' "$exp" | sed -E 's/(\.[0-9]+)?(Z|[+-][0-9:]+)$//')
+                      if [ "$expn" \< "$now" ]; then
+                        echo "expiring $ns/$name (expiresAt $exp)"
+                        kubectl delete parameters.openinfra.dev "$name" -n "$ns" --ignore-not-found
+                      fi
+                    done
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
