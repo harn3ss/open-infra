@@ -64,3 +64,38 @@ func TestChecker_FailClosed(t *testing.T) {
 		t.Errorf("nil checker: allowed=%v governed=%v, want true/false", a, g)
 	}
 }
+
+// A transient loader error on an already-warm cache must NOT deny all data-plane traffic (that would
+// turn a control-plane blip into a shim-wide outage); the last good snapshot is served through it.
+func TestChecker_ServesStaleThroughRefreshBlip(t *testing.T) {
+	good := []PolicyDoc{{
+		AppliesTo:  []string{"User::alice"},
+		Statements: []policyengine.Statement{{Effect: policyengine.Allow, Actions: []string{"s3:GetObject"}, Resources: []string{"Bucket::assets"}}},
+	}}
+	var fail bool
+	load := func(context.Context) ([]PolicyDoc, error) {
+		if fail {
+			return nil, errors.New("apiserver blip")
+		}
+		return good, nil
+	}
+	c := New(load, time.Millisecond) // tiny TTL so a later call forces a refresh
+	ctx := context.Background()
+
+	// Warm the cache with a good load: alice is governed + allowed on assets.
+	if a, g, _ := c.Authorize(ctx, "User", "alice", nil, "s3:GetObject", "Bucket", "assets", nil); !a || !g {
+		t.Fatalf("warm: allowed=%v governed=%v, want true/true", a, g)
+	}
+	// The loader now blips; force the TTL to elapse so get() attempts (and fails) a refresh.
+	fail = true
+	time.Sleep(2 * time.Millisecond)
+	if a, g, _ := c.Authorize(ctx, "User", "alice", nil, "s3:GetObject", "Bucket", "assets", nil); !a || !g {
+		t.Errorf("refresh blip must serve the last-good snapshot: allowed=%v governed=%v, want true/true", a, g)
+	}
+	// Recovery: the loader is healthy again → refreshes cleanly and still enforces the policy.
+	fail = false
+	time.Sleep(2 * time.Millisecond)
+	if a, g, _ := c.Authorize(ctx, "User", "alice", nil, "s3:GetObject", "Bucket", "assets", nil); !a || !g {
+		t.Errorf("after recovery: allowed=%v governed=%v, want true/true", a, g)
+	}
+}
