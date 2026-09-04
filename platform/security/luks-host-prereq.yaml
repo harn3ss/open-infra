@@ -1,0 +1,50 @@
+# LUKS host prerequisite for ENCRYPTED volumes: cryptsetup + the dm_crypt kernel module on every
+# node. Longhorn encrypts a volume with LUKS at attach time (cryptsetup luksOpen on the node), which
+# a stock node does not ship — without it an encrypted volume provisions (encrypted=true) but FAILS
+# TO ATTACH (the pod hangs at ContainerCreating / FailedAttachVolume). This mirrors the open-iscsi
+# longhorn-host-prereq DaemonSet: a privileged DaemonSet nsenters the host to install cryptsetup and
+# load dm_crypt idempotently (no-op once present), so new nodes are covered automatically.
+#
+# Part of the OPT-IN `encryption` component (only nodes running encrypted volumes need it). In
+# kube-system and sync-wave -1 so it runs before a pod tries to mount an encrypted volume.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: luks-host-prereq
+  namespace: kube-system
+  labels: { app: luks-host-prereq }
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  selector: { matchLabels: { app: luks-host-prereq } }
+  template:
+    metadata: { labels: { app: luks-host-prereq } }
+    spec:
+      hostPID: true
+      initContainers:
+        - name: install
+          image: ubuntu:24.04
+          securityContext: { privileged: true }
+          command:
+            - nsenter
+            - "--target=1"
+            - "--mount"
+            - "--uts"
+            - "--ipc"
+            - "--net"
+            - "--pid"
+            - "--"
+            - bash
+            - -c
+            - |
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              command -v cryptsetup >/dev/null 2>&1 || { apt-get update -y && apt-get install -y cryptsetup; }
+              # Load dm_crypt now and on every boot (the DaemonSet re-runs on node restart too).
+              modprobe dm_crypt 2>/dev/null || true
+              echo dm_crypt > /etc/modules-load.d/dm_crypt.conf 2>/dev/null || true
+              echo "luks host prereq OK on $(hostname): $(cryptsetup --version 2>/dev/null)"
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+      tolerations: [ { operator: Exists } ]

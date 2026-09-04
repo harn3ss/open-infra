@@ -131,7 +131,7 @@ incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSyn
 # Customer-owned encryption: Vault (Transit KMS), kind: EncryptionKey + its reconciler, and the
 # encrypted Longhorn StorageClass. OFF unless components.encryption: true (Vault needs an operator to
 # initialize/unseal it — see docs/encryption.md).
-incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,abstraction/parameter-xrd.yaml,abstraction/parameter-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,security/parameter-reconciler.yaml,storage/longhorn-encrypted.yaml,security/volume-crypto.yaml"
+incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,abstraction/parameter-xrd.yaml,abstraction/parameter-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,security/parameter-reconciler.yaml,storage/longhorn-encrypted.yaml,security/volume-crypto.yaml,security/luks-host-prereq.yaml"
 # Private certificate authority: kind: CertificateAuthority (its XRD/composition), the Vault-PKI
 # reconciler, and the synchronous ca-issuer. OFF unless components.pki: true; RIDES ON the encryption
 # component (reuses its Vault + Kubernetes-auth wiring — see docs/certificate-authority.md).
