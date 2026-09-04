@@ -102,7 +102,13 @@ RBAC check, so it can only tighten.
       principal model; open-infra `Statement` → Cedar compiler.
 - [x] **Enforcement wired** — S3, DynamoDB, and Lambda front doors consult the engine
       (`internal/dataplaneauthz`), fail-closed, additive to the coarse SAR. `kind: Policy.dataPlane`
-      is the source; the shim's ClusterRole gains read-only `list policies`.
+      is the source; the shim's ClusterRole gains read-only `list policies`. Handler tests prove a
+      Deny blocks the op at the shim.
+- [x] **Live-verified on the cluster** — a real `kind: Policy` with a `dataPlane` block round-trips
+      through the CRD, and the real `K8sLoader` → Checker → Cedar engine decides correctly
+      (deny-overrides, condition-gating, allow-list restriction, per-service governance). The
+      remaining live step is the fully-deployed shim answering a SigV4 aws-cli call (generic shim
+      HTTP plumbing, already proven for the shim's other paths).
 - [ ] **AppSync** — deliberately NOT via this engine: AppSync's fine-grained authz is *inside*
       open-appsync (per-field `@aws_*` + SAR), which is the right layer; the shim can't identify a
       specific API. Left to open-appsync.
