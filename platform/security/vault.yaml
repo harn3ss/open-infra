@@ -183,6 +183,20 @@ spec:
                 bound_service_account_namespaces=crossplane-system \
                 token_policies=encryptionkey-destroyer token_ttl=10m
 
+              echo "writing the volume-crypto identity (per-volume LUKS key from an EncryptionKey)…"
+              # The volume-crypto reconciler (platform/security/volume-crypto.yaml) materializes each
+              # encrypted Volume's <pvc>-crypto Secret from a Transit DATA KEY under the volume's
+              # EncryptionKey. Scoped to datakey generation ONLY — it cannot read, rotate, or destroy
+              # the KEK, and cannot decrypt (the crypto-erase authority stays with the destroyer role).
+              # `+` reaches transit/datakey/plaintext/<key> (one segment), not deeper paths.
+              vault policy write volume-crypto - <<'POLICY'
+              path "transit/datakey/plaintext/+" { capabilities = ["update"] }
+              POLICY
+              vault write auth/kubernetes/role/volume-crypto \
+                bound_service_account_names=volume-crypto \
+                bound_service_account_namespaces=crossplane-system \
+                token_policies=volume-crypto token_ttl=20m
+
               echo "writing the MinIO-KES identity (SSE-KMS via KES → Vault KV; #37)…"
               # MinIO KES keeps its OWN keys in a KV mount (KES does the wrap/unwrap; it does NOT use
               # Transit). Distinct from the transit engine above. Inert unless the objectEncryption
