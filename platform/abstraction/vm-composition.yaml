@@ -294,8 +294,20 @@ spec:
                                     {{ $user }}:{{ $pass }}
                                 packages:
                                   - qemu-guest-agent
+                                {{- if $spec.userData }}
+                                # EC2 UserData equivalent (#115): the user's first-boot script, run
+                                # AFTER the base setup so the VM stays reachable if the script fails.
+                                write_files:
+                                  - path: /opt/openinfra-userdata
+                                    permissions: '0755'
+                                    content: |
+                                      {{- $spec.userData | nindent 22 }}
+                                {{- end }}
                                 runcmd:
                                   - [systemctl, enable, --now, qemu-guest-agent]
+                                  {{- if $spec.userData }}
+                                  - [/bin/sh, /opt/openinfra-userdata]
+                                  {{- end }}
                               {{- if $lan }}
                               # DHCP both NICs: eth0 (pod) + eth1 (direct LAN).
                               networkData: |
