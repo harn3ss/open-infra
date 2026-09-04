@@ -132,6 +132,12 @@ RBAC check, so it can only tighten.
       the real `K8sLoader` → Checker → engine enforced it for a member of the attached group
       (allow/deny/allow-list/per-service governance all correct), and a mixed `ec2`+`s3` policy was
       refused at the translate gate with nothing applied.
-- [ ] **Assurance** — a security review, and the final live step: a fully-deployed shim answering a
-      SigV4 aws-cli call against a governed principal (governed denies are already logged; the loader
-      → engine path and the CFN → enforced-policy path are both live-verified above).
+- [~] **Assurance** — an initial security-review pass is done: it hardened the cache to serve the
+      last-good policy snapshot through a control-plane blip instead of denying all data-plane traffic
+      (a transient loader error was a shim-wide outage), and confirmed the enforcement is coarse-AND
+      (data-plane runs after the SAR, so it only tightens), the request action/resource are matched as
+      exact strings (only a *policy's* `*` becomes a wildcard), and a client-build failure disables the
+      engine loudly rather than silently. Governed denies are logged. Remaining: a deeper external
+      review, and the final live step — a fully-deployed shim answering a SigV4 aws-cli call against a
+      governed principal (the loader → engine and CFN → enforced-policy paths are both live-verified
+      above; standing up the shim front door on the live platform is the opt-in operator step).
