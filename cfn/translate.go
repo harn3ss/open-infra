@@ -314,9 +314,14 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: k8sName(id), Spec: spec}
+	// #114 (Part 2, disproven): VolumeType/Iops/Throughput INTENT does not map to a Longhorn setting.
+	// Longhorn is replica-based distributed storage; it provisions durability (replica count), not
+	// IOPS. Mapping an AWS IOPS number onto a Longhorn knob and calling it equivalent would fabricate
+	// a performance contract the substrate can't hold — forbidden by the honesty rail. So it stays
+	// explicitly unmapped: Size and Encrypted map faithfully; the perf/AZ knobs are inert caveats.
 	for _, p := range []string{"AvailabilityZone", "VolumeType", "Iops", "Throughput"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — open-infra volumes are Longhorn on one flat cluster (no AZ / EBS volume-type / provisioned IOPS)")
+			m.Caveats = append(m.Caveats, p+" dropped — Longhorn provides replica-based durability, not provisioned IOPS / EBS volume-types; the perf number stays unmapped (mapping it would imply a guarantee the substrate can't hold). AZ has no equivalent on one flat cluster.")
 		}
 	}
 	return m, f
@@ -1169,6 +1174,32 @@ func lambdaEnv(id string, _ map[string]any, props map[string]any, f *[]Finding) 
 // storageClass's, sizing is quotas/HPA) -> caveats. Master credentials are provisioned by open-infra
 // and injected as DATABASE_URL, not set from the template -> caveat. StorageEncrypted is a guarantee
 // there is no per-DB knob for -> BLOCK (never silently drop encryption). An unmappable engine blocks.
+// rdsInstanceClasses maps common RDS instance classes to the CPU/memory an open-infra managed
+// DB requests (#114). The correspondence is the class's published vCPU/RAM, requested as
+// dedicated Kubernetes resources. HONEST LIMITS: open-infra does NOT model t-class burst credits
+// (a burstable class gets its full vCPU as a request, not a credited baseline — more, not less),
+// nor EBS-optimized throughput, nor Aurora's distributed storage. A class not listed here is not
+// guessed at: it surfaces a caveat and the DB uses engine-default resources. This is the "common
+// cases map faithfully, edges stay partial" rail — extend it deliberately, one verified class at a time.
+var rdsInstanceClasses = map[string]struct{ cpu, mem string }{
+	// burstable general purpose (t3 / t4g) — vCPU/RAM mapped; burst-credit accounting does not apply
+	"db.t3.micro": {"2", "1Gi"}, "db.t4g.micro": {"2", "1Gi"},
+	"db.t3.small": {"2", "2Gi"}, "db.t4g.small": {"2", "2Gi"},
+	"db.t3.medium": {"2", "4Gi"}, "db.t4g.medium": {"2", "4Gi"},
+	"db.t3.large": {"2", "8Gi"}, "db.t4g.large": {"2", "8Gi"},
+	"db.t3.xlarge": {"4", "16Gi"}, "db.t4g.xlarge": {"4", "16Gi"},
+	"db.t3.2xlarge": {"8", "32Gi"}, "db.t4g.2xlarge": {"8", "32Gi"},
+	// general purpose (m5 / m6g / m6i)
+	"db.m5.large": {"2", "8Gi"}, "db.m6g.large": {"2", "8Gi"}, "db.m6i.large": {"2", "8Gi"},
+	"db.m5.xlarge": {"4", "16Gi"}, "db.m6g.xlarge": {"4", "16Gi"}, "db.m6i.xlarge": {"4", "16Gi"},
+	"db.m5.2xlarge": {"8", "32Gi"}, "db.m6g.2xlarge": {"8", "32Gi"}, "db.m6i.2xlarge": {"8", "32Gi"},
+	"db.m5.4xlarge": {"16", "64Gi"}, "db.m6g.4xlarge": {"16", "64Gi"}, "db.m6i.4xlarge": {"16", "64Gi"},
+	// memory optimized (r5 / r6g)
+	"db.r5.large": {"2", "16Gi"}, "db.r6g.large": {"2", "16Gi"},
+	"db.r5.xlarge": {"4", "32Gi"}, "db.r6g.xlarge": {"4", "32Gi"},
+	"db.r5.2xlarge": {"8", "64Gi"}, "db.r6g.2xlarge": {"8", "64Gi"},
+}
+
 func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"Engine": true, "EngineVersion": true, "DBName": true, "DBInstanceIdentifier": true,
@@ -1229,10 +1260,28 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 		}
 	}
 
+	// AllocatedStorage (GiB) -> the DB's storage size. A direct, faithful correspondence
+	// (previously dropped, silently giving every DB the 5Gi default regardless of request). #114
+	if as, ok := concrete(props["AllocatedStorage"]); ok && as != "" {
+		db["size"] = as + "Gi"
+	}
+	// DBInstanceClass -> CPU/memory requests, for common classes (documented table above). #114
+	if cls, ok := concrete(props["DBInstanceClass"]); ok && cls != "" {
+		if r, known := rdsInstanceClasses[strings.ToLower(cls)]; known {
+			db["cpu"] = r.cpu
+			db["memory"] = r.mem
+		} else {
+			f = append(f, Finding{"Resource " + id, "DBInstanceClass " + cls + " is not in the mapping table — the DB provisions with engine-default resources; map a known class or set cpu/memory natively (open-infra does not guess a class's sizing)"})
+		}
+	}
+
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: map[string]any{"database": db}}
-	for _, p := range []string{"AllocatedStorage", "StorageType", "Iops", "DBInstanceClass"} {
+	// StorageType/Iops are EBS-style perf knobs with no honest DB-storage equivalent here (same
+	// disproven case as EC2::Volume IOPS): open-infra DB storage is a StorageClass PVC, not
+	// provisioned-IOPS EBS — mapping the number would fabricate a performance contract.
+	for _, p := range []string{"StorageType", "Iops"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — open-infra has no per-DB capacity/storage knob (storage is the storageClass's, sizing is via quotas/HPA)")
+			m.Caveats = append(m.Caveats, p+" dropped — DB storage is a StorageClass PVC (Longhorn/local-path), not provisioned-IOPS EBS; the perf number does not map (mapping it would imply a guarantee the substrate can't hold)")
 		}
 	}
 	for _, p := range []string{"MasterUsername", "MasterUserPassword"} {

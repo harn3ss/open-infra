@@ -693,9 +693,50 @@ func TestTranslate_RDS_Faithful(t *testing.T) {
 	if db["engine"] != "postgres" || db["name"] != "app" || db["highAvailability"] != true {
 		t.Fatalf("database not faithful: %#v", db)
 	}
+	// #114: AllocatedStorage -> size, DBInstanceClass -> cpu/memory (faithful correspondences).
+	if db["size"] != "20Gi" {
+		t.Fatalf("AllocatedStorage should map to size 20Gi: %#v", db["size"])
+	}
+	if db["cpu"] != "2" || db["memory"] != "4Gi" {
+		t.Fatalf("db.t3.medium should map to cpu=2/memory=4Gi: cpu=%v mem=%v", db["cpu"], db["memory"])
+	}
 	joined := strings.Join(m.Caveats, "\n")
-	if !strings.Contains(joined, "AllocatedStorage") || !strings.Contains(joined, "MasterUsername") {
-		t.Fatalf("capacity/credentials must be declared caveats: %v", m.Caveats)
+	// Credentials still a caveat; capacity is no longer dropped.
+	if !strings.Contains(joined, "MasterUsername") {
+		t.Fatalf("credentials must be a declared caveat: %v", m.Caveats)
+	}
+	if strings.Contains(joined, "AllocatedStorage") || strings.Contains(joined, "DBInstanceClass db.t3.medium") {
+		t.Fatalf("mapped capacity must NOT appear as a dropped caveat: %v", m.Caveats)
+	}
+}
+
+// #114: a class not in the mapping table surfaces a caveat and uses engine defaults (never guessed).
+func TestTranslate_RDS_UnknownClassCaveat(t *testing.T) {
+	m, fs := translateRDSDBInstance("Db", map[string]any{
+		"Engine": "postgres", "DBInstanceClass": "db.x99.humongous",
+	}, nil)
+	if !strings.Contains(findingsText(fs), "not in the mapping table") {
+		t.Fatalf("an unknown class must surface a caveat, findings: %s", findingsText(fs))
+	}
+	db, _ := m.Spec["database"].(map[string]any)
+	if _, ok := db["cpu"]; ok {
+		t.Fatalf("an unknown class must NOT set cpu (no guess): %#v", db)
+	}
+}
+
+// #114: StorageType/Iops are the disproven EBS-style perf knobs — they stay caveats, not a fabricated map.
+func TestTranslate_RDS_PerfKnobsStayCaveats(t *testing.T) {
+	m, _ := translateRDSDBInstance("Db", map[string]any{
+		"Engine": "postgres", "DBInstanceClass": "db.m5.large",
+		"StorageType": "io1", "Iops": float64(3000),
+	}, nil)
+	joined := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(joined, "StorageType") || !strings.Contains(joined, "Iops") {
+		t.Fatalf("StorageType/Iops must remain caveats (no honest IOPS map): %v", m.Caveats)
+	}
+	db, _ := m.Spec["database"].(map[string]any)
+	if db["cpu"] != "2" || db["memory"] != "8Gi" {
+		t.Fatalf("db.m5.large should map to cpu=2/memory=8Gi: %#v", db)
 	}
 }
 

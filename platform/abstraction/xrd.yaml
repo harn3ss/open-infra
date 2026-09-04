@@ -67,6 +67,15 @@ spec:
                       default: postgres
                       description: "Database engine. postgres = CloudNativePG (relational, injects DATABASE_URL). mongo = FerretDB on DocumentDB-Postgres (Mongo wire protocol, injects MONGODB_URI). mysql = MariaDB (MySQL wire protocol, injects DATABASE_URL). babelfish = SQL Server-compatible (TDS 1433 + T-SQL on Postgres) — experimental, single instance."
                     name:   { type: string, description: "Database name (defaults to the application name)." }
+                    size:
+                      type: string
+                      description: "Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi). Expandable later where the engine + StorageClass support it."
+                    cpu:
+                      type: string
+                      description: "CPU request/limit for the database (e.g. \"2\"), sized to match an RDS instance class's vCPU. When unset, the engine operator's default is used."
+                    memory:
+                      type: string
+                      description: "Memory request/limit for the database (e.g. \"8Gi\"), sized to match an RDS instance class's RAM. When unset, the engine operator's default is used."
                     highAvailability:
                       type: boolean
                       default: false
