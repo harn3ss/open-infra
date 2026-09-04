@@ -64,6 +64,7 @@ var mappingTable = map[string]MapEntry{
 	// --- unsupported: explicitly out of scope for v1 ---
 	"AWS::Cognito::UserPool":              {Kind: "UserPool", Status: Partial, Note: "a hosted OIDC pool (Keycloak realm); Cognito-specific config (MFA, Lambda triggers, schema) does not transfer"},
 	"AWS::Cognito::UserPoolClient":        {Kind: "UserPool(client)", Status: Partial, Note: "the pool's app client is created with the UserPool; a standalone client resource has no separate kind"},
+	"AWS::SSM::Parameter":                 {Kind: "Parameter", Status: Partial, Note: "SSM Parameter Store -> kind: Parameter (Vault KV-v2): Name->path, Value, Type (SecureString held encrypted at rest, materialized into the namespace Secret). StringList stores a plain comma-separated string; Description/AllowedPattern/DataType/Tags are advisory caveats; Policies (expiration) block."},
 	"AWS::CloudFormation::Stack":          {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
 	"AWS::CloudFormation::CustomResource": {Status: Unsupported, Note: "Lambda-backed custom resources are out of scope for v1"},
 	"AWS::ECS::Service":                   {Kind: "Application", Status: Partial, Note: "a Service + its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer"},
