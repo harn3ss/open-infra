@@ -138,6 +138,25 @@ spec:
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
+                          {{- /* Optional sidecars: auxiliary containers alongside the app (logging,
+                                 proxies, an ECS multi-container task). The app above is the primary;
+                                 no sidecars -> this renders nothing, so existing apps are unchanged. */}}
+                          {{- range $s := ($spec.sidecars | default list) }}
+                          - name: {{ $s.name }}
+                            image: {{ $s.image }}
+                            {{- if $s.port }}
+                            ports: [ { containerPort: {{ $s.port }} } ]
+                            {{- end }}
+                            resources:
+                              requests: { cpu: 25m, memory: 32Mi }
+                              limits: { cpu: 500m, memory: 512Mi }
+                            {{- if $s.env }}
+                            env:
+                            {{- range $s.env }}
+                              - { name: {{ .name }}, value: "{{ .value }}" }
+                            {{- end }}
+                            {{- end }}
+                          {{- end }}
             ---
             # --- Service ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
