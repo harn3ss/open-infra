@@ -256,12 +256,12 @@ func translateStateMachine(id string, props map[string]any, _ *stackCtx) (*Manif
 
 // ---- AWS::EC2::Volume -> kind: Volume ----
 //
-// A Longhorn block volume. Size maps directly; MultiAttach maps to shared (RWX). AWS's
-// storage-class/perf knobs (VolumeType, Iops, Throughput) and AvailabilityZone have no
-// open-infra counterpart (one flat cluster, one storage class) and are inert caveats.
-// Encryption and restoring from an AWS SnapshotId are behavior-bearing with no faithful form
-// and block.
-func translateVolume(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+// A Longhorn block volume. Size maps directly; MultiAttach maps to shared (RWX). Encryption maps:
+// Encrypted -> a LUKS volume (longhorn-encrypted) keyed by a customer kind: EncryptionKey, which
+// KmsKeyId must reference (an in-stack AWS::KMS::Key). AWS's storage-class/perf knobs (VolumeType,
+// Iops, Throughput) and AvailabilityZone have no open-infra counterpart (one flat cluster) and are
+// inert caveats. Restoring from an AWS SnapshotId is behavior-bearing with no faithful form and blocks.
+func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"Size": true, "AvailabilityZone": true, "VolumeType": true, "Iops": true,
 		"Throughput": true, "Encrypted": true, "KmsKeyId": true, "SnapshotId": true,
@@ -279,11 +279,28 @@ func translateVolume(id string, props map[string]any, _ *stackCtx) (*Manifest, [
 	if v, ok := props["MultiAttachEnabled"].(bool); ok && v {
 		spec["shared"] = true
 	}
-	if v, ok := props["Encrypted"].(bool); ok && v {
-		f = append(f, Finding{"Resource " + id, "Encrypted volumes are not translatable — open-infra Volumes have no per-volume encryption knob (refusing rather than dropping an encryption guarantee)"})
-	}
-	if _, ok := props["KmsKeyId"]; ok {
-		f = append(f, Finding{"Resource " + id, "KmsKeyId is not translatable — no per-volume KMS encryption"})
+	// Encryption: open-infra encrypts with a CUSTOMER key (kind: EncryptionKey / Vault Transit), so
+	// KmsKeyId must reference an in-stack AWS::KMS::Key (which maps to that EncryptionKey). There is
+	// no default-managed key — Encrypted without a mappable KmsKeyId blocks rather than inventing one.
+	encrypted, _ := props["Encrypted"].(bool)
+	_, hasKms := props["KmsKeyId"]
+	if encrypted || hasKms {
+		spec["encrypted"] = true
+		var kid string
+		if ctx != nil {
+			if raw, ok := ctx.rawProps(id); ok {
+				if t, ok := getAttTarget(raw["KmsKeyId"]); ok {
+					if k, in := ctx.template.Resources[t]; in && k.Type == "AWS::KMS::Key" {
+						kid = t
+					}
+				}
+			}
+		}
+		if kid != "" {
+			spec["encryptionKey"] = k8sName(kid)
+		} else {
+			f = append(f, Finding{"Resource " + id, "an encrypted volume needs KmsKeyId referencing an in-stack AWS::KMS::Key — open-infra keys volumes with a customer kind: EncryptionKey (via that KMS key), not an AWS-managed default key"})
+		}
 	}
 	if _, ok := props["SnapshotId"]; ok {
 		f = append(f, Finding{"Resource " + id, "SnapshotId is not translatable — an AWS EBS snapshot id has no open-infra VolumeSnapshot equivalent to restore from"})
@@ -831,7 +848,7 @@ func translateRDSDBInstance(id string, props map[string]any, _ *stackCtx) (*Mani
 		db["highAvailability"] = true
 	}
 	if v, ok := props["StorageEncrypted"].(bool); ok && v {
-		f = append(f, Finding{"Resource " + id, "StorageEncrypted is not translatable — open-infra has no per-database encryption knob (refusing rather than dropping an encryption guarantee; encrypt via the storage layer instead)"})
+		f = append(f, Finding{"Resource " + id, "StorageEncrypted is not yet translatable for databases — encrypted volumes (kind: Volume) ship, but the managed-DB (CloudNativePG) path keys its own dynamically-named PVCs, which is a follow-up; refusing rather than dropping an encryption guarantee"})
 	}
 	if _, ok := props["KmsKeyId"]; ok {
 		f = append(f, Finding{"Resource " + id, "KmsKeyId is not translatable — no per-database KMS encryption"})

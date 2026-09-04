@@ -1,0 +1,137 @@
+# Reconciler for ENCRYPTED kind: Volume — materializes each volume's LUKS passphrase Secret
+# (`<pvc>-crypto`) from a customer key (kind: EncryptionKey / Vault Transit), so encryption at rest
+# is real AND crypto-erasable: the passphrase is a Vault Transit data key wrapped by the
+# EncryptionKey, so destroying that key (kind: Destruction) makes the passphrase unrecoverable.
+#
+# It watches PVCs on the `longhorn-encrypted` StorageClass carrying the annotation
+# `openinfra.dev/encryption-key: <EncryptionKey name>` (set by the Volume composition), and for any
+# that lack their `<pvc-name>-crypto` Secret, generates a Transit data key under that EncryptionKey
+# and writes the Secret in the PVC's namespace. Idempotent: an existing crypto Secret is never
+# regenerated (a changed passphrase would make the volume unreadable).
+#
+# Least privilege: Vault role scoped to transit/datakey/plaintext/* only (generate a wrapped data
+# key — NOT read/rotate/destroy the KEK). Part of the OPT-IN `encryption` component. If Vault is
+# unreachable or the volume-crypto role is absent (operator has not run the Vault step), the run
+# fails and retries — no volume is silently left unencrypted, and none is silently keyed.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volume-crypto
+  namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-volume-crypto
+rules:
+  # Discover encrypted PVCs awaiting their key, cluster-wide.
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list]
+  # Materialize the per-volume crypto Secret in the PVC's namespace. Cluster-wide because a Volume
+  # can live in any namespace (the same reach the bucket-setup SA has for per-app creds).
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-volume-crypto
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-volume-crypto
+subjects:
+  - kind: ServiceAccount
+    name: volume-crypto
+    namespace: crossplane-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: volume-crypto-reconciler
+  namespace: crossplane-system
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: volume-crypto
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          volumes:
+            - { name: bin, emptyDir: {} }
+            - { name: home, emptyDir: {} }
+          initContainers:
+            - name: fetch-vault
+              image: hashicorp/vault:1.17.2
+              command: [sh, -c, "cp /bin/vault /bin-shared/vault && chmod +x /bin-shared/vault"]
+              volumeMounts: [{ name: bin, mountPath: /bin-shared }]
+          containers:
+            - name: reconcile
+              image: alpine/k8s:1.30.0
+              command: [/bin/sh, -ceu]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: bin, mountPath: /bin-shared }
+                - { name: home, mountPath: /tmp }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
+                - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+              args:
+                - |
+                  VAULT_TOKEN="$(vault write -field=token auth/kubernetes/login \
+                    role=volume-crypto \
+                    jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)")"
+                  export VAULT_TOKEN
+                  [ -n "$VAULT_TOKEN" ] || { echo "vault kubernetes login failed (has the operator run the volume-crypto Vault step?)" >&2; exit 1; }
+
+                  # Encrypted PVCs that name an EncryptionKey but have no crypto Secret yet.
+                  kubectl get pvc -A -o json \
+                    | jq -r '.items[]
+                        | select(.spec.storageClassName=="longhorn-encrypted")
+                        | select(.metadata.annotations["openinfra.dev/encryption-key"] != null)
+                        | [.metadata.namespace, .metadata.name, .metadata.annotations["openinfra.dev/encryption-key"]] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r ns name key; do
+                        [ -n "$name" ] || continue
+                        if kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
+                          continue   # already keyed — never regenerate (would orphan the LUKS data)
+                        fi
+                        # A data key wrapped by the EncryptionKey's Transit KEK: plaintext is the LUKS
+                        # passphrase; ciphertext is the wrapped record (crypto-erase: destroy the KEK
+                        # and the passphrase can never be re-derived).
+                        dk="$(vault write -format=json "transit/datakey/plaintext/$key" 2>/dev/null || true)"
+                        P="$(printf '%s' "$dk" | jq -r '.data.plaintext // empty')"
+                        C="$(printf '%s' "$dk" | jq -r '.data.ciphertext // empty')"
+                        if [ -z "$P" ]; then
+                          echo "skip ${ns}/${name}: no data key from EncryptionKey '$key' (does it exist / is its Transit key provisioned?)" >&2
+                          continue
+                        fi
+                        kubectl create secret generic "${name}-crypto" -n "$ns" \
+                          --from-literal=CRYPTO_KEY_VALUE="$P" \
+                          --from-literal=CRYPTO_KEY_PROVIDER=secret \
+                          --from-literal=CRYPTO_KEY_CIPHER=aes-xts-plain64 \
+                          --from-literal=CRYPTO_KEY_HASH=sha256 \
+                          --from-literal=WRAPPED_KEY="$C" \
+                          --from-literal=OPENINFRA_ENCRYPTION_KEY="$key" \
+                          --dry-run=client -o yaml \
+                          | kubectl label --local -f - "openinfra.dev/volume-crypto=$name" -o yaml \
+                          | kubectl apply -f - >/dev/null
+                        echo "materialized ${name}-crypto in ${ns} from EncryptionKey ${key}"
+                      done
+              resources:
+                requests: { cpu: 20m, memory: 48Mi }
+                limits: { cpu: 300m, memory: 192Mi }

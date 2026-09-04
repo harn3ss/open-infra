@@ -165,14 +165,48 @@ func TestTranslate_Volume_Faithful(t *testing.T) {
 	}
 }
 
-func TestTranslate_Volume_EncryptionAndSnapshotBlock(t *testing.T) {
-	_, fs := translateVolume("Data", map[string]any{"Size": float64(10), "Encrypted": true}, nil)
-	if !strings.Contains(findingsText(fs), "Encrypted") {
-		t.Fatalf("an encrypted volume must block, findings: %s", findingsText(fs))
+func TestTranslate_Volume_SnapshotBlocks(t *testing.T) {
+	_, fs := translateVolume("Data", map[string]any{"Size": float64(10), "SnapshotId": "snap-123"}, nil)
+	if !strings.Contains(findingsText(fs), "SnapshotId") {
+		t.Fatalf("a SnapshotId must block, findings: %s", findingsText(fs))
 	}
-	_, fs2 := translateVolume("Data", map[string]any{"Size": float64(10), "SnapshotId": "snap-123"}, nil)
-	if !strings.Contains(findingsText(fs2), "SnapshotId") {
-		t.Fatalf("a SnapshotId must block, findings: %s", findingsText(fs2))
+}
+
+// An encrypted volume whose KmsKeyId references an in-stack KMS::Key maps to a customer-keyed
+// (kind: EncryptionKey) encrypted Volume.
+func TestTranslate_Volume_EncryptedFaithful(t *testing.T) {
+	ctx := ecsCtx(t, `
+Resources:
+  Key:
+    Type: AWS::KMS::Key
+    Properties: { Description: k }
+  Data:
+    Type: AWS::EC2::Volume
+    Properties:
+      Size: 10
+      Encrypted: true
+      KmsKeyId: !Ref Key
+`)
+	m, fs := translateVolume("Data", ecsResolvedService(t, ctx, "Data"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Spec["encrypted"] != true || m.Spec["encryptionKey"] != "key" {
+		t.Fatalf("encrypted volume not faithful: %#v", m.Spec)
+	}
+}
+
+// Encrypted without a mappable customer key blocks — no default-managed key is invented.
+func TestTranslate_Volume_EncryptedWithoutKeyBlocks(t *testing.T) {
+	ctx := ecsCtx(t, `
+Resources:
+  Data:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 10, Encrypted: true }
+`)
+	_, fs := translateVolume("Data", ecsResolvedService(t, ctx, "Data"), ctx)
+	if !strings.Contains(findingsText(fs), "customer kind: EncryptionKey") {
+		t.Fatalf("encrypted-without-a-key must block, findings: %s", findingsText(fs))
 	}
 }
 

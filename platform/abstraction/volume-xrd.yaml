@@ -59,6 +59,19 @@ spec:
                     snapshot:
                       type: string
                       description: "VolumeSnapshot name (same namespace) to restore from."
+                encrypted:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Encrypt the volume at rest with LUKS (Longhorn longhorn-encrypted class). The
+                    per-volume passphrase is a Vault Transit data key wrapped by encryptionKey, so
+                    destroying that kind: EncryptionKey crypto-erases the volume. Requires the opt-in
+                    encryption component and encryptionKey. Immutable: encryption is set at creation.
+                encryptionKey:
+                  type: string
+                  description: >-
+                    Name of the kind: EncryptionKey (a Vault Transit KEK) whose data key protects an
+                    encrypted volume. Required when encrypted is true; ignored otherwise.
             status:
               type: object
               properties:

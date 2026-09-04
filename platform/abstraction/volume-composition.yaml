@@ -34,6 +34,8 @@ spec:
             {{- $size := $spec.size | default "10Gi" }}
             {{- /* migratable -> RWX block on longhorn-migratable (attachable to a live-migratable VM) */}}
             {{- $migratable := $spec.migratable | default false }}
+            {{- /* encrypted -> LUKS on longhorn-encrypted; the volume-crypto reconciler keys it from encryptionKey */}}
+            {{- $encrypted := $spec.encrypted | default false }}
             ---
             # The volume itself: a Longhorn PVC (RWO, snapshot-capable). When
             # spec.source.snapshot is set, restore the data from that snapshot.
@@ -52,16 +54,23 @@ spec:
                     namespace: {{ $ns }}
                     labels:
                       openinfra.dev/volume: "true"
+                    {{- if $encrypted }}
+                    annotations:
+                      # The volume-crypto reconciler keys this volume from the named EncryptionKey.
+                      openinfra.dev/encryption-key: {{ $spec.encryptionKey | quote }}
+                    {{- end }}
                   spec:
                     # migratable -> RWX so it can attach to a live-migratable (HA) VM without
                     # blocking its live migration; otherwise RWO (single-attach).
-                    accessModes: [{{ if $migratable }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+                    accessModes: [{{ if and $migratable (not $encrypted) }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
                     # Block mode is required for reliable KubeVirt hotplug — a
                     # Filesystem-mode volume attaches to the node but never reaches
                     # the guest (validated: Filesystem stalls at AttachedToNode;
                     # Block reaches Ready and the guest sees the raw disk).
                     volumeMode: Block
-                    storageClassName: {{ if $migratable }}longhorn-migratable{{ else }}longhorn{{ end }}
+                    # encrypted -> longhorn-encrypted (LUKS; RWO — no encrypted+migratable class);
+                    # else migratable -> longhorn-migratable; else longhorn.
+                    storageClassName: {{ if $encrypted }}longhorn-encrypted{{ else if $migratable }}longhorn-migratable{{ else }}longhorn{{ end }}
                     resources:
                       requests:
                         storage: {{ $size }}
