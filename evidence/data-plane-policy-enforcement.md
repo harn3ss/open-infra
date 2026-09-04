@@ -12,7 +12,21 @@ below; the isolated setup and what it does *not* prove are stated plainly.
 
 **Date:** 2026-09-04.
 
-## Setup (isolated, throwaway)
+> **Update 2026-09-04 — now rolled out and verified on the LIVE deployed front door.** The
+> aws-shim is deployed (`open-infra-aws-shim`, ArgoCD-tracked) and the checks below were re-run
+> against it, not a throwaway:
+> - The canonical S3 probe ([`probe/aws-shim-s3.sh`](../probe/aws-shim-s3.sh)) **PASSED**:
+>   byte-identical put/get, well-formed ETag, list, aws-chunked dechunking, `SignatureDoesNotMatch`
+>   on a wrong secret, and the coarse write boundary (a `readers` principal denied `PutObject`,
+>   still allowed `GetObject`).
+> - **Data-plane deny, live:** a `powerusers` principal (coarse SAR allows the read) with a policy
+>   `Deny s3:GetObject on Bucket::aws-shim-probe` got `AccessDenied` over SigV4; the shim logged
+>   `"denied by an explicit forbid policy"`. With the policy removed (cache refreshed), the *same*
+>   principal downloaded the object — the A/B control proving the 403 was the data-plane policy, not
+>   the coarse gate. Verification artifacts (test user/key/policy/bucket) were removed; the shim
+>   stays deployed.
+
+## Setup (isolated, throwaway — the original spike)
 
 The shim was deployed into a throwaway namespace — not the platform's opt-in `open-infra-aws-shim`
 front door, which stays off — pointed at a deliberately-dead object-storage endpoint. A principal
@@ -64,6 +78,7 @@ a coarse grant (an explicit `Deny` RBAC cannot express), never widen it.
   Per-service governance (an S3 policy leaving DynamoDB untouched) and the loader serving its
   last-good snapshot through a control-plane blip are covered by the engine's integration and unit
   tests, not re-staged as a live blip here.
-- **Posture unchanged:** this ran in a throwaway namespace and was torn down; the platform's
-  data-plane front door remains opt-in and off. Enabling it on the live platform is a separate,
-  explicit step.
+- **Rollout:** the original run (above) was a throwaway; the front door is now deployed on the
+  platform (see the dated update at the top). Enforcement bites only where a `kind: Policy`
+  `dataPlane` block names a principal — deploying the shim makes the capability live; it governs
+  nothing until a policy is authored.
