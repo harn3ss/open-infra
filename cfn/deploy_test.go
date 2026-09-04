@@ -11,8 +11,16 @@ import (
 )
 
 // fakeApplier records what the engine would do to a cluster, and can be told to fail a
-// specific apply or readiness wait — so ordering, state, and rollback are tested with no
+// specific apply or readiness wait — so ordering, state, and rollback logic are tested with no
 // cluster.
+//
+// TRANSLATION-LAYER TEST TOOL ONLY — NEVER a source of deploy confidence (#119). A green test
+// against this double proves the engine's ordering/state/rollback *logic*; it proves NOTHING about
+// whether a translated manifest actually applies, admits, defaults, passes quota, or reconciles on
+// a real API server — the exact surfaces where translation-correct manifests fail in reality (the
+// SAR-bug class). Real apply-path behaviour is proven ONLY by live_integration_test.go against a
+// real cluster; "supported" means "deploys and runs", not "translates". Do not add apply-path
+// confidence claims on top of this double.
 type fakeApplier struct {
 	applied    []string                  // "Kind/name" in apply order (ConfigMap included)
 	deleted    []string                  // "Kind/name" in delete order
