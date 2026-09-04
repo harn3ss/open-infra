@@ -62,6 +62,25 @@ spec:
                       noncurrentExpireDays:
                         type: integer
                         description: "Delete non-current (prior) versions this many days after they become non-current. Pairs with versioning."
+                objectLock:
+                  type: object
+                  description: >-
+                    WORM retention (S3 Object Lock), enforced by MinIO. Set only at creation and
+                    auto-enables versioning. In COMPLIANCE mode not even an admin can delete or
+                    shorten a locked object's retention until it expires — the WORM guarantee the
+                    audit store already relies on.
+                  required: [mode]
+                  properties:
+                    mode:
+                      type: string
+                      enum: [GOVERNANCE, COMPLIANCE]
+                      description: "GOVERNANCE (privileged users can override) or COMPLIANCE (no one can, until expiry)."
+                    days:
+                      type: integer
+                      description: "Default retention period in days (mutually exclusive with years)."
+                    years:
+                      type: integer
+                      description: "Default retention period in years (mutually exclusive with days)."
             status:
               type: object
               properties:
