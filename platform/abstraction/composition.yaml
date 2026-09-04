@@ -59,6 +59,16 @@ spec:
             {{- if $spec.database }}{{ $dbStopped = ($spec.database.stopped | default false) }}{{- end }}
             {{- $dbPass := .observed.composite.resource.metadata.uid | sha256sum | trunc 24 }}
             {{- $dbRootPass := printf "%s-root" .observed.composite.resource.metadata.uid | sha256sum | trunc 24 }}
+            {{- /* database.size/cpu/memory: capacity mapped from RDS AllocatedStorage + DBInstanceClass
+                   (#114). Empty = engine default. Rendered into each engine's storage size + pod resources. */}}
+            {{- $dbSize := "" }}
+            {{- $dbCpu := "" }}
+            {{- $dbMem := "" }}
+            {{- if $spec.database }}
+              {{- $dbSize = ($spec.database.size | default "") }}
+              {{- $dbCpu = ($spec.database.cpu | default "") }}
+              {{- $dbMem = ($spec.database.memory | default "") }}
+            {{- end }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
                    image is given. An Application may be database-only — just declare
                    a `database:` block and the platform provisions the DB, no app. */}}
@@ -369,7 +379,7 @@ spec:
                   spec:
                     accessModes: [ReadWriteOnce]
                     storageClassName: {{ $spec.database.storageClass | default "local-path" }}
-                    resources: { requests: { storage: 5Gi } }
+                    resources: { requests: { storage: {{ $dbSize | default "5Gi" }} } }
             ---
             # DocumentDB-Postgres: the storage engine FerretDB translates into.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -537,11 +547,12 @@ spec:
                       enabled: true
                     {{- end }}
                     storage:
-                      size: 5Gi
+                      size: {{ $dbSize | default "5Gi" }}
                       storageClassName: {{ $spec.database.storageClass | default "local-path" }}
                     resources:
-                      requests: { cpu: 100m, memory: 256Mi }
-                      limits: { cpu: "2", memory: 1Gi }
+                      # Capacity from RDS DBInstanceClass (#114) when set; else the operator defaults.
+                      requests: { cpu: {{ $dbCpu | default "100m" | quote }}, memory: {{ $dbMem | default "256Mi" | quote }} }
+                      limits: { cpu: {{ $dbCpu | default "2" | quote }}, memory: {{ $dbMem | default "1Gi" | quote }} }
             {{- else if eq $dbEngine "babelfish" }}
             {{- /* Babelfish for PostgreSQL — SQL-Server-compatible managed DB (TDS 1433 +
                    T-SQL, backed by PG 17). EXPERIMENTAL. Not a CNPG image, so it runs as a
@@ -659,8 +670,9 @@ spec:
                               - { name: data, mountPath: /var/lib/babelfish/data, subPath: pgdata }
                               - { name: tls, mountPath: /certs, readOnly: true }
                             resources:
-                              requests: { cpu: 250m, memory: 512Mi }
-                              limits: { cpu: "2", memory: 2Gi }
+                              # Capacity from RDS DBInstanceClass (#114) when set; else defaults.
+                              requests: { cpu: {{ $dbCpu | default "250m" | quote }}, memory: {{ $dbMem | default "512Mi" | quote }} }
+                              limits: { cpu: {{ $dbCpu | default "2" | quote }}, memory: {{ $dbMem | default "2Gi" | quote }} }
                         volumes:
                           - name: tls
                             secret: { secretName: {{ $name }}-babelfish-tls, defaultMode: 0640 }
@@ -669,7 +681,7 @@ spec:
                         spec:
                           accessModes: [ReadWriteOnce]
                           storageClassName: {{ $spec.database.storageClass | default "longhorn" }}   # node-independent; back up with Velero
-                          resources: { requests: { storage: 10Gi } }
+                          resources: { requests: { storage: {{ $dbSize | default "10Gi" }} } }
             ---
             # Service — SQL Server (1433) + Postgres (5432). expose => LAN LoadBalancer.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -742,8 +754,27 @@ spec:
                     postgresql:
                       shared_preload_libraries:
                         - pg_stat_statements
+                    {{- if or $dbCpu $dbMem }}
+                    # Capacity from RDS DBInstanceClass (#114): CPU/memory requested as dedicated
+                    # resources (request == limit). Burst-credit accounting is not modelled.
+                    resources:
+                      requests:
+                        {{- if $dbCpu }}
+                        cpu: {{ $dbCpu | quote }}
+                        {{- end }}
+                        {{- if $dbMem }}
+                        memory: {{ $dbMem | quote }}
+                        {{- end }}
+                      limits:
+                        {{- if $dbCpu }}
+                        cpu: {{ $dbCpu | quote }}
+                        {{- end }}
+                        {{- if $dbMem }}
+                        memory: {{ $dbMem | quote }}
+                        {{- end }}
+                    {{- end }}
                     storage:
-                      size: 5Gi
+                      size: {{ $dbSize | default "5Gi" }}
                       storageClass: {{ if $dbEncrypted }}longhorn-encrypted{{ else }}{{ $spec.database.storageClass | default "local-path" }}{{ end }}   # NEVER CIFS/NFS
                     bootstrap:
                       initdb:
