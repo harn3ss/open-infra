@@ -92,6 +92,8 @@ var translators = map[string]translator{
 	"AWS::ECS::Service":                   translateECSService,
 	"AWS::ECS::TaskDefinition":            translateECSTaskDefinition,
 	"AWS::ECS::Cluster":                   translateECSCluster,
+	"AWS::RDS::DBInstance":                translateRDSDBInstance,
+	"AWS::S3::Bucket":                     translateS3Bucket,
 	"AWS::AppSync::GraphQLApi":            translateAppSyncGraphQLApi,
 	"AWS::AppSync::GraphQLSchema":         translateAppSyncChild,
 	"AWS::AppSync::DataSource":            translateAppSyncChild,
@@ -679,6 +681,105 @@ func lambdaEnv(id string, _ map[string]any, props map[string]any, f *[]Finding) 
 	}
 	return out
 }
+
+// ---- AWS::RDS::DBInstance -> kind: Application (data-only, spec.database) ----
+//
+// open-infra has no standalone database kind — a managed DB is a data-only Application carrying a
+// spec.database block (the shape the openinfra_database resource uses). So the ENGINE maps (with a
+// lossy family fold) and MultiAZ -> highAvailability; what does NOT map is AWS's capacity/backup/
+// network model. AllocatedStorage/DBInstanceClass have no open-infra knob (storage is the
+// storageClass's, sizing is quotas/HPA) -> caveats. Master credentials are provisioned by open-infra
+// and injected as DATABASE_URL, not set from the template -> caveat. StorageEncrypted is a guarantee
+// there is no per-DB knob for -> BLOCK (never silently drop encryption). An unmappable engine blocks.
+func translateRDSDBInstance(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"Engine": true, "EngineVersion": true, "DBName": true, "DBInstanceIdentifier": true,
+		"DBInstanceClass": true, "AllocatedStorage": true, "MasterUsername": true, "MasterUserPassword": true,
+		"MultiAZ": true, "StorageEncrypted": true, "KmsKeyId": true, "Port": true, "StorageType": true,
+		"Iops": true, "PubliclyAccessible": true, "BackupRetentionPeriod": true, "DBSubnetGroupName": true,
+		"VPCSecurityGroups": true, "DBParameterGroupName": true, "PreferredMaintenanceWindow": true,
+		"PreferredBackupWindow": true, "Tags": true, "DeletionProtection": true, "MultiAZStandbyEnabled": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	db := map[string]any{}
+	eng, _ := concrete(props["Engine"])
+	switch strings.ToLower(eng) {
+	case "postgres", "aurora-postgresql":
+		db["engine"] = "postgres"
+	case "mysql", "mariadb", "aurora-mysql", "aurora":
+		db["engine"] = "mysql"
+	case "sqlserver-ex", "sqlserver-web", "sqlserver-se", "sqlserver-ee":
+		db["engine"] = "babelfish"
+	case "":
+		f = append(f, Finding{"Resource " + id, "RDS Engine is required"})
+	default:
+		f = append(f, Finding{"Resource " + id, "RDS Engine " + eng + " has no open-infra engine (postgres/aurora-postgresql -> postgres; mysql/mariadb/aurora-mysql -> mysql; sqlserver-* -> babelfish)"})
+	}
+	if n, ok := concrete(props["DBName"]); ok && n != "" {
+		db["name"] = n
+	}
+	if v, ok := props["MultiAZ"].(bool); ok && v {
+		db["highAvailability"] = true
+	}
+	if v, ok := props["StorageEncrypted"].(bool); ok && v {
+		f = append(f, Finding{"Resource " + id, "StorageEncrypted is not translatable — open-infra has no per-database encryption knob (refusing rather than dropping an encryption guarantee; encrypt via the storage layer instead)"})
+	}
+	if _, ok := props["KmsKeyId"]; ok {
+		f = append(f, Finding{"Resource " + id, "KmsKeyId is not translatable — no per-database KMS encryption"})
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: map[string]any{"database": db}}
+	for _, p := range []string{"AllocatedStorage", "StorageType", "Iops", "DBInstanceClass"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — open-infra has no per-DB capacity/storage knob (storage is the storageClass's, sizing is via quotas/HPA)")
+		}
+	}
+	for _, p := range []string{"MasterUsername", "MasterUserPassword"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — open-infra provisions the credentials and injects them as DATABASE_URL; they are not set from the template")
+		}
+	}
+	for _, p := range []string{"VPCSecurityGroups", "DBSubnetGroupName", "PubliclyAccessible", "Port", "BackupRetentionPeriod", "PreferredMaintenanceWindow", "PreferredBackupWindow", "DBParameterGroupName", "DeletionProtection"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent (one flat cluster network; backups/params are platform-managed)")
+		}
+	}
+	return m, f
+}
+
+// ---- AWS::S3::Bucket -> kind: Application (data-only, spec.storage.buckets) ----
+//
+// No standalone bucket kind — a bucket is provisioned via a data-only Application's storage.buckets
+// (MinIO). BucketName -> the bucket name; everything else is a behavior-bearing S3 feature MinIO's
+// name-only bucket can't honor, so the strict allowlist BLOCKS it (versioning, encryption,
+// lifecycle, policy, website, CORS, notifications, replication, object-lock, public-access) — a
+// bucket that silently lacked its versioning or encryption is the worst shape. Tags are a caveat.
+func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{"BucketName": true, "Tags": true}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	name := k8sName(id)
+	if bn, ok := concrete(props["BucketName"]); ok && bn != "" {
+		name = bn
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id),
+		Spec: map[string]any{"storage": map[string]any{"buckets": []any{name}}}}
+	if _, ok := props["Tags"]; ok {
+		m.Caveats = append(m.Caveats, "Tags dropped — no open-infra equivalent for a MinIO bucket")
+	}
+	m.Caveats = append(m.Caveats, "provisioned as a data-only Application's storage.buckets (MinIO) — a plain private bucket; S3 features (versioning/encryption/lifecycle/policy/website) are not modeled")
+	return m, f
+}
+
+// AWS::SQS::Queue and AWS::SNS::Topic have NO faithful create translator, by design (an honest
+// ceiling, not an oversight). open-infra's queues are APP-DECLARED JetStream streams: an Application
+// with spec.queues gets NATS_URL + OPENINFRA_QUEUES injected and its own code declares the stream
+// (composition.yaml: "NATS streams are app-declared"). There is no standalone managed-queue resource,
+// so a bare SQS::Queue / SNS::Topic would map to a data-only Application that readies but creates no
+// stream — a silent no-op, verified live. They stay refused (mapping.go documents why).
 
 // ---- AWS::AppSync::GraphQLApi (+ Schema/DataSource/Resolver/FunctionConfiguration) -> kind: GraphQLApi ----
 //

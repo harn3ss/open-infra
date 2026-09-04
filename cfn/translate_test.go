@@ -610,3 +610,62 @@ Resources:
 		t.Fatalf("a child of an external API must refuse, findings: %s", findingsText(fs))
 	}
 }
+
+// ---- data-only Application translators: RDS / S3 / SQS / SNS ----
+
+func TestTranslate_RDS_Faithful(t *testing.T) {
+	m, fs := translateRDSDBInstance("Db", map[string]any{
+		"Engine": "postgres", "DBName": "app", "MultiAZ": true,
+		"AllocatedStorage": float64(20), "DBInstanceClass": "db.t3.medium",
+		"MasterUsername": "admin", "MasterUserPassword": "x",
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "Application" || m.Name != "db" {
+		t.Fatalf("bad manifest head: %+v", m)
+	}
+	db, _ := m.Spec["database"].(map[string]any)
+	if db["engine"] != "postgres" || db["name"] != "app" || db["highAvailability"] != true {
+		t.Fatalf("database not faithful: %#v", db)
+	}
+	joined := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(joined, "AllocatedStorage") || !strings.Contains(joined, "MasterUsername") {
+		t.Fatalf("capacity/credentials must be declared caveats: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_RDS_EncryptedBlocks(t *testing.T) {
+	_, fs := translateRDSDBInstance("Db", map[string]any{"Engine": "mysql", "StorageEncrypted": true}, nil)
+	if !strings.Contains(findingsText(fs), "StorageEncrypted") {
+		t.Fatalf("StorageEncrypted must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_RDS_UnmappableEngineBlocks(t *testing.T) {
+	_, fs := translateRDSDBInstance("Db", map[string]any{"Engine": "oracle-ee"}, nil)
+	if !strings.Contains(findingsText(fs), "no open-infra engine") {
+		t.Fatalf("an unmappable engine must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_S3_Faithful(t *testing.T) {
+	m, fs := translateS3Bucket("Assets", map[string]any{"BucketName": "my-assets"}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	st, _ := m.Spec["storage"].(map[string]any)
+	b, _ := st["buckets"].([]any)
+	if len(b) != 1 || b[0] != "my-assets" {
+		t.Fatalf("bucket not faithful: %#v", m.Spec["storage"])
+	}
+}
+
+func TestTranslate_S3_VersioningBlocks(t *testing.T) {
+	_, fs := translateS3Bucket("B", map[string]any{
+		"BucketName": "b", "VersioningConfiguration": map[string]any{"Status": "Enabled"},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "VersioningConfiguration") {
+		t.Fatalf("a behavior-bearing S3 feature must block, findings: %s", findingsText(fs))
+	}
+}

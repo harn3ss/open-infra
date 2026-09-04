@@ -300,3 +300,68 @@ func TestDeploy_AppSyncCollation(t *testing.T) {
 		t.Fatalf("collated spec incomplete: dataSources=%v resolvers=%v", spec["dataSources"], spec["resolvers"])
 	}
 }
+
+// S3/RDS deploy to data-only Applications (bucket / managed database). SQS/SNS have no create
+// translator by design (queues are app-declared — a standalone queue would be a silent no-op).
+func TestDeploy_S3Bucket_DataOnlyApp(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Assets:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: my-assets }
+`)
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Application/assets" {
+		t.Fatalf("applied = %v, want [Application/assets]", got)
+	}
+	st, _ := f.liveSpecs["Application/assets"]["storage"].(map[string]any)
+	if b, _ := st["buckets"].([]any); len(b) != 1 || b[0] != "my-assets" {
+		t.Fatalf("bucket not faithful: %#v", f.liveSpecs["Application/assets"]["storage"])
+	}
+}
+
+func TestDeploy_RDS_DataOnlyApp(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Db:
+    Type: AWS::RDS::DBInstance
+    Properties: { Engine: postgres, DBName: appdb, MultiAZ: true }
+`)
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	db, _ := f.liveSpecs["Application/db"]["database"].(map[string]any)
+	if db["engine"] != "postgres" || db["name"] != "appdb" || db["highAvailability"] != true {
+		t.Fatalf("database not faithful: %#v", f.liveSpecs["Application/db"]["database"])
+	}
+}
+
+// SQS/SNS refuse at deploy (no create translator) — never a silent no-op.
+func TestDeploy_SQS_Refused(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Q:
+    Type: AWS::SQS::Queue
+    Properties: { QueueName: jobs }
+`)
+	f := &fakeApplier{}
+	_, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err == nil || !strings.Contains(err.Error(), "no create translator") {
+		t.Fatalf("SQS must refuse at deploy (no translator), got %v", err)
+	}
+	if len(f.applied) != 0 {
+		t.Fatalf("a refused deploy must apply nothing, applied: %v", f.applied)
+	}
+}
