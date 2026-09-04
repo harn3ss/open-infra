@@ -42,6 +42,16 @@ spec:
                    composite UID so it's stable across reconciles (never committed). */}}
             {{- $dbEngine := "" }}
             {{- if $spec.database }}{{ $dbEngine = ($spec.database.engine | default "postgres") }}{{- end }}
+            {{- /* database.storageEncrypted: LUKS-encrypt the DB's PVCs (longhorn-encrypted), keyed
+                   by a customer kind: EncryptionKey via the volume-crypto reconciler. v1: postgres
+                   (CloudNativePG) only — CNPG's inheritedMetadata propagates the key annotation to
+                   its PVCs; other engines ignore it (a follow-up). */}}
+            {{- $dbEncrypted := false }}
+            {{- $dbEncKey := "" }}
+            {{- if and $spec.database (eq $dbEngine "postgres") ($spec.database.storageEncrypted | default false) }}
+              {{- $dbEncrypted = true }}
+              {{- $dbEncKey = $spec.database.encryptionKey }}
+            {{- end }}
             {{- $dbName := "" }}
             {{- if $spec.database }}{{ $dbName = ($spec.database.name | default $name) }}{{- end }}
             {{- /* database.stopped: hibernate/scale-to-zero while keeping the PVC (RDS stop/start) */}}
@@ -693,6 +703,14 @@ spec:
                     # so anti-affinity (one instance per node) is what makes the DB
                     # survive a node loss — the standby is promoted automatically.
                     instances: {{ if $spec.database.highAvailability }}2{{ else }}1{{ end }}
+                    {{- if $dbEncrypted }}
+                    # Propagate the encryption-key annotation onto every PVC CNPG creates, so the
+                    # volume-crypto reconciler materializes each <pvc>-crypto LUKS secret from the
+                    # customer EncryptionKey (destroy the key -> the DB's storage is crypto-erased).
+                    inheritedMetadata:
+                      annotations:
+                        openinfra.dev/encryption-key: {{ $dbEncKey | quote }}
+                    {{- end }}
                     {{- if $spec.database.highAvailability }}
                     affinity:
                       enablePodAntiAffinity: true
@@ -707,7 +725,7 @@ spec:
                         - pg_stat_statements
                     storage:
                       size: 5Gi
-                      storageClass: {{ $spec.database.storageClass | default "local-path" }}   # NEVER CIFS/NFS
+                      storageClass: {{ if $dbEncrypted }}longhorn-encrypted{{ else }}{{ $spec.database.storageClass | default "local-path" }}{{ end }}   # NEVER CIFS/NFS
                     bootstrap:
                       initdb:
                         database: {{ $spec.database.name | default $name }}

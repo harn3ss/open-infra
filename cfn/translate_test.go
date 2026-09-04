@@ -864,3 +864,57 @@ func TestTranslate_DynamoDBTable_LSIBlocks(t *testing.T) {
 		t.Fatalf("LSI must still block, findings: %s", findingsText(fs))
 	}
 }
+
+// A postgres RDS with StorageEncrypted + an in-stack KMS key maps to a customer-keyed encrypted DB.
+func TestTranslate_RDS_EncryptedPostgresFaithful(t *testing.T) {
+	ctx := ecsCtx(t, `
+Resources:
+  Key:
+    Type: AWS::KMS::Key
+    Properties: { Description: k }
+  Db:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      DBName: app
+      StorageEncrypted: true
+      KmsKeyId: !Ref Key
+`)
+	m, fs := translateRDSDBInstance("Db", ecsResolvedService(t, ctx, "Db"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	db, _ := m.Spec["database"].(map[string]any)
+	if db["engine"] != "postgres" || db["storageEncrypted"] != true || db["encryptionKey"] != "key" {
+		t.Fatalf("encrypted DB not faithful: %#v", db)
+	}
+}
+
+// StorageEncrypted on a non-postgres engine blocks (v1 supports postgres only).
+func TestTranslate_RDS_EncryptedNonPostgresBlocks(t *testing.T) {
+	ctx := ecsCtx(t, `
+Resources:
+  Key: { Type: AWS::KMS::Key, Properties: { Description: k } }
+  Db:
+    Type: AWS::RDS::DBInstance
+    Properties: { Engine: mysql, StorageEncrypted: true, KmsKeyId: !Ref Key }
+`)
+	_, fs := translateRDSDBInstance("Db", ecsResolvedService(t, ctx, "Db"), ctx)
+	if !strings.Contains(findingsText(fs), "postgres engine in v1") {
+		t.Fatalf("non-postgres StorageEncrypted must block, findings: %s", findingsText(fs))
+	}
+}
+
+// Encrypted postgres without a mappable customer key blocks (no default key invented).
+func TestTranslate_RDS_EncryptedWithoutKeyBlocks(t *testing.T) {
+	ctx := ecsCtx(t, `
+Resources:
+  Db:
+    Type: AWS::RDS::DBInstance
+    Properties: { Engine: postgres, StorageEncrypted: true }
+`)
+	_, fs := translateRDSDBInstance("Db", ecsResolvedService(t, ctx, "Db"), ctx)
+	if !strings.Contains(findingsText(fs), "customer kind: EncryptionKey") {
+		t.Fatalf("encrypted-DB-without-a-key must block, findings: %s", findingsText(fs))
+	}
+}

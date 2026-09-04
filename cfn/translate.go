@@ -815,7 +815,7 @@ func lambdaEnv(id string, _ map[string]any, props map[string]any, f *[]Finding) 
 // storageClass's, sizing is quotas/HPA) -> caveats. Master credentials are provisioned by open-infra
 // and injected as DATABASE_URL, not set from the template -> caveat. StorageEncrypted is a guarantee
 // there is no per-DB knob for -> BLOCK (never silently drop encryption). An unmappable engine blocks.
-func translateRDSDBInstance(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"Engine": true, "EngineVersion": true, "DBName": true, "DBInstanceIdentifier": true,
 		"DBInstanceClass": true, "AllocatedStorage": true, "MasterUsername": true, "MasterUserPassword": true,
@@ -847,11 +847,32 @@ func translateRDSDBInstance(id string, props map[string]any, _ *stackCtx) (*Mani
 	if v, ok := props["MultiAZ"].(bool); ok && v {
 		db["highAvailability"] = true
 	}
-	if v, ok := props["StorageEncrypted"].(bool); ok && v {
-		f = append(f, Finding{"Resource " + id, "StorageEncrypted is not yet translatable for databases — encrypted volumes (kind: Volume) ship, but the managed-DB (CloudNativePG) path keys its own dynamically-named PVCs, which is a follow-up; refusing rather than dropping an encryption guarantee"})
-	}
-	if _, ok := props["KmsKeyId"]; ok {
-		f = append(f, Finding{"Resource " + id, "KmsKeyId is not translatable — no per-database KMS encryption"})
+	// Storage encryption: LUKS on longhorn-encrypted keyed by a customer kind: EncryptionKey (via an
+	// in-stack KMS::Key). v1 supports the postgres engine only (CloudNativePG propagates the key
+	// annotation to its PVCs); other engines' DB encryption is a follow-up, so they block.
+	enc, _ := props["StorageEncrypted"].(bool)
+	_, hasKms := props["KmsKeyId"]
+	if enc || hasKms {
+		if db["engine"] != "postgres" {
+			f = append(f, Finding{"Resource " + id, "StorageEncrypted maps only for the postgres engine in v1 (CloudNativePG); DB encryption for mysql/babelfish is a follow-up (refusing rather than dropping an encryption guarantee)"})
+		} else {
+			db["storageEncrypted"] = true
+			var kid string
+			if ctx != nil {
+				if raw, ok := ctx.rawProps(id); ok {
+					if t, ok := getAttTarget(raw["KmsKeyId"]); ok {
+						if k, in := ctx.template.Resources[t]; in && k.Type == "AWS::KMS::Key" {
+							kid = t
+						}
+					}
+				}
+			}
+			if kid != "" {
+				db["encryptionKey"] = k8sName(kid)
+			} else {
+				f = append(f, Finding{"Resource " + id, "an encrypted database needs KmsKeyId referencing an in-stack AWS::KMS::Key — open-infra keys DB storage with a customer kind: EncryptionKey, not an AWS-managed default key"})
+			}
+		}
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: map[string]any{"database": db}}
