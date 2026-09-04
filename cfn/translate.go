@@ -1437,18 +1437,31 @@ func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		"QueueName": true, "MessageRetentionPeriod": true, "Tags": true, "FifoQueue": true,
 		"VisibilityTimeout": true, "DelaySeconds": true, "RedrivePolicy": true, "KmsMasterKeyId": true,
 		"ReceiveMessageWaitTimeSeconds": true, "MaximumMessageSize": true, "ContentBasedDeduplication": true,
+		"DeduplicationScope": true, "FifoThroughputLimit": true,
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
-	if v, ok := props["FifoQueue"].(bool); ok && v {
-		f = append(f, Finding{"Resource " + id, "a FIFO queue is not translatable — JetStream ordering/dedup semantics differ from SQS FIFO (refusing rather than silently changing delivery guarantees)"})
-	}
 	if _, ok := props["KmsMasterKeyId"]; ok {
 		f = append(f, Finding{"Resource " + id, "KmsMasterKeyId is not translatable — no per-queue encryption"})
 	}
 	spec := map[string]any{}
-	if qn, ok := concrete(props["QueueName"]); ok && qn != "" {
+	// FIFO (#116): FifoQueue:true, or a QueueName ending in .fifo, maps to a JetStream FIFO stream
+	// (per-group subject ordering + a 5m publish-dedup window). The .fifo suffix is stripped — a NATS
+	// stream name cannot contain a dot (the per-group subject token is appended by the producer).
+	fifo := false
+	if v, ok := props["FifoQueue"].(bool); ok && v {
+		fifo = true
+	}
+	qn, _ := concrete(props["QueueName"])
+	if strings.HasSuffix(qn, ".fifo") {
+		fifo = true
+		qn = strings.TrimSuffix(qn, ".fifo")
+	}
+	if qn != "" {
 		spec["queueName"] = qn
+	}
+	if fifo {
+		spec["fifo"] = true
 	}
 	if r, ok := props["MessageRetentionPeriod"]; ok {
 		hrs := toInt(r) / 3600
@@ -1458,9 +1471,24 @@ func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		spec["retentionHours"] = hrs
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: k8sName(id), Spec: spec}
-	for _, p := range []string{"VisibilityTimeout", "DelaySeconds", "RedrivePolicy", "ReceiveMessageWaitTimeSeconds", "MaximumMessageSize", "ContentBasedDeduplication", "Tags"} {
+	// FIFO-specific residue: dedup is honored via the Nats-Msg-Id header (the stream carries the
+	// window), but there is no front door to auto-hash the body for ContentBasedDeduplication, and
+	// dedup scope / throughput-limit have no equivalent — named, not silently dropped.
+	if fifo {
+		if _, ok := props["ContentBasedDeduplication"]; ok {
+			m.Caveats = append(m.Caveats, "ContentBasedDeduplication: dedup is enforced on the Nats-Msg-Id header within the window; the producer must set it (to a content hash) — open-infra has no front door to auto-hash the message body")
+		}
+		for _, p := range []string{"DeduplicationScope", "FifoThroughputLimit"} {
+			if _, ok := props[p]; ok {
+				m.Caveats = append(m.Caveats, p+" dropped — dedup is always per-message-group (subject) scope; FIFO throughput on JetStream differs from SQS and is not modelled")
+			}
+		}
+	} else if _, ok := props["ContentBasedDeduplication"]; ok {
+		m.Caveats = append(m.Caveats, "ContentBasedDeduplication ignored — it applies only to a FIFO queue")
+	}
+	for _, p := range []string{"VisibilityTimeout", "DelaySeconds", "RedrivePolicy", "ReceiveMessageWaitTimeSeconds", "MaximumMessageSize", "Tags"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — SQS delivery semantics (visibility/delay/DLQ/dedup) are configured on the app's JetStream consumer, not the queue")
+			m.Caveats = append(m.Caveats, p+" dropped — SQS delivery semantics (visibility/delay/DLQ) are configured on the app's JetStream consumer, not the queue")
 		}
 	}
 	return m, f

@@ -1021,10 +1021,33 @@ func TestTranslate_SQS_Faithful(t *testing.T) {
 	}
 }
 
-func TestTranslate_SQS_FifoBlocks(t *testing.T) {
-	_, fs := translateSQSQueue("Q", map[string]any{"QueueName": "q", "FifoQueue": true}, nil)
-	if !strings.Contains(findingsText(fs), "FIFO queue") {
-		t.Fatalf("a FIFO queue must block, findings: %s", findingsText(fs))
+// #116: a FIFO queue maps to spec.fifo (per-group subject ordering + dedup window), no longer blocks.
+func TestTranslate_SQS_FifoMaps(t *testing.T) {
+	m, fs := translateSQSQueue("Q", map[string]any{
+		"QueueName": "orders.fifo", "FifoQueue": true, "ContentBasedDeduplication": true,
+		"DeduplicationScope": "messageGroup",
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a FIFO queue must map, not block: %s", findingsText(fs))
+	}
+	// The .fifo suffix is stripped (a NATS stream name can't contain a dot).
+	if m.Spec["queueName"] != "orders" {
+		t.Fatalf(".fifo suffix should be stripped: %#v", m.Spec["queueName"])
+	}
+	if m.Spec["fifo"] != true {
+		t.Fatalf("fifo must be set: %#v", m.Spec)
+	}
+	joined := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(joined, "ContentBasedDeduplication") || !strings.Contains(joined, "DeduplicationScope") {
+		t.Fatalf("FIFO residue must be named as caveats: %v", m.Caveats)
+	}
+}
+
+// A .fifo QueueName alone (no FifoQueue prop) still maps to a FIFO queue.
+func TestTranslate_SQS_FifoBySuffix(t *testing.T) {
+	m, _ := translateSQSQueue("Q", map[string]any{"QueueName": "events.fifo"}, nil)
+	if m.Spec["fifo"] != true || m.Spec["queueName"] != "events" {
+		t.Fatalf(".fifo suffix should imply fifo + strip: %#v", m.Spec)
 	}
 }
 
