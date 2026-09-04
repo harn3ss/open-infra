@@ -48,7 +48,7 @@ var mappingTable = map[string]MapEntry{
 	"AWS::KMS::Key":                    {Kind: "EncryptionKey", Status: Supported, Note: "customer key in Vault Transit"},
 
 	// --- partial: backing kind exists but the mapping is lossy ---
-	"AWS::S3::Bucket":                     {Kind: "Application(storage.buckets)", Status: Partial, Note: "no standalone bucket kind — a bucket is provisioned via an Application's storage.buckets (MinIO)"},
+	"AWS::S3::Bucket":                     {Kind: "Bucket", Status: Partial, Note: "a standalone MinIO bucket (kind: Bucket) with versioning + lifecycle; BucketEncryption needs the opt-in objectEncryption stack, and policy/website/CORS/replication/object-lock don't map"},
 	"AWS::SQS::Queue":                     {Kind: "Application(queues)", Status: Partial, Note: "no standalone queue kind, and no create translator by design: open-infra queues are APP-DECLARED JetStream streams (an Application gets NATS_URL + OPENINFRA_QUEUES injected and its code declares the stream). A bare queue would map to an app that readies but creates no stream — refused at deploy rather than a silent no-op."},
 	"AWS::SNS::Topic":                     {Kind: "Application(queues)", Status: Partial, Note: "pub/sub maps to NATS via an Application's queues, but like SQS there is no create translator: streams are app-declared, so a standalone topic has nothing to provision (refused at deploy, never a silent no-op)."},
 	"AWS::RDS::DBInstance":                {Kind: "Application(database)", Status: Partial, Note: "managed DB is provisioned via an Application's database block (CloudNativePG / MariaDB); engine/size mapping is lossy"},
