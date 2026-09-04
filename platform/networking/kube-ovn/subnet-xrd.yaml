@@ -1,0 +1,57 @@
+# open-infra's kind: Subnet — a topologically-isolated network segment, backed by a kube-ovn Subnet.
+# Unlike a NetworkPolicy (which SIMULATES isolation at the pod-identity layer), a private Subnet is
+# enforced by OVN at the network layer: a pod in one private Subnet cannot reach another Subnet
+# unless explicitly allowed. This is the real AWS Subnet model, not policy approximation.
+#
+# REQUIRES the kube-ovn CNI (docs/authz... substrate migration). It is inert on a Canal cluster —
+# which is why this directory is NOT in the root-app include glob and is enabled only on the
+# kube-ovn substrate.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xsubnets.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XSubnet, plural: xsubnets }
+  claimNames: { kind: Subnet, plural: subnets }
+  defaultCompositionRef: { name: subnet }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [cidr]
+              properties:
+                cidr:
+                  type: string
+                  description: "The subnet's IPv4 CIDR, e.g. 10.20.0.0/24. Must not overlap other subnets."
+                vpc:
+                  type: string
+                  description: "The parent kind: Vpc. Omit for the default VPC (ovn-cluster)."
+                private:
+                  type: boolean
+                  default: true
+                  description: "Topological isolation: when true (default), only this subnet + allowSubnets may reach it — enforced by OVN, not simulated."
+                allowSubnets:
+                  type: array
+                  items: { type: string }
+                  description: "CIDRs explicitly allowed to reach a private subnet (the AWS 'allow from another subnet' hole, punched deliberately)."
+                namespaces:
+                  type: array
+                  items: { type: string }
+                  description: "Namespaces whose pods draw IPs from this subnet."
+                gateway:
+                  type: string
+                  description: "Gateway IP. Defaults to the first usable address in the CIDR."
+            status:
+              type: object
+              properties:
+                ready: { type: boolean }
