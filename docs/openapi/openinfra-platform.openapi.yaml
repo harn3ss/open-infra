@@ -7050,6 +7050,12 @@ components:
               type: string
               description: SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is
                 a generated password stored in the connection secret (<name>-vm).
+            userData:
+              type: string
+              description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with\
+                \ #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent)\
+                \ \u2014 so the VM stays reachable. Ignored on Windows. A full #cloud-config document is not accepted here\
+                \ (it can't be safely merged with the base config)."
             expose:
               type: boolean
               default: false

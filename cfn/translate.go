@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -88,6 +89,7 @@ var translators = map[string]translator{
 	"AWS::Lambda::Function":               translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine":    translateStateMachine,
 	"AWS::EC2::Volume":                    translateVolume,
+	"AWS::EC2::Instance":                  translateEC2Instance,
 	"AWS::DynamoDB::Table":                translateDynamoDBTable,
 	"AWS::IAM::User":                      translateIAMUser,
 	"AWS::IAM::Policy":                    translateIAMPolicy,
@@ -324,6 +326,190 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 			m.Caveats = append(m.Caveats, p+" dropped — Longhorn provides replica-based durability, not provisioned IOPS / EBS volume-types; the perf number stays unmapped (mapping it would imply a guarantee the substrate can't hold). AZ has no equivalent on one flat cluster.")
 		}
 	}
+	return m, f
+}
+
+// ---- AWS::EC2::Instance -> kind: VirtualMachine ----
+//
+// Translated the way CloudFormation does, with ONE honest substitution (#115): the ImageId names an
+// open-infra catalog OS in place of the AMI, because a raw ami- id is an opaque, region/time-specific
+// pointer into Amazon's private catalog that cannot be decoded. A well-known public image
+// SSM-parameter path (which carries a human-readable OS) IS recognized and mapped; a raw ami- id, or
+// an OS not in the catalog, refuses with a message that names what IS available. InstanceType maps to
+// a CPU/memory shape (same discipline as RDS #114). Network fields (subnet/security-groups) are the
+// deferred half and surface a SECURITY caveat, not a silent drop.
+
+// ec2InstanceTypes maps common EC2 instance types to a VirtualMachine CPU/memory shape: the type's
+// published vCPU/RAM. Burst credits (t-family) are not modelled — a burstable type gets its full vCPU.
+// A type not listed surfaces a caveat and the VM uses its default shape (never a guess).
+var ec2InstanceTypes = map[string]struct {
+	cpu int
+	mem string
+}{
+	// burstable (t2 / t3 / t3a)
+	"t3.nano": {2, "512Mi"}, "t3a.nano": {2, "512Mi"},
+	"t2.micro": {1, "1Gi"}, "t3.micro": {2, "1Gi"}, "t3a.micro": {2, "1Gi"},
+	"t2.small": {1, "2Gi"}, "t3.small": {2, "2Gi"}, "t3a.small": {2, "2Gi"},
+	"t2.medium": {2, "4Gi"}, "t3.medium": {2, "4Gi"}, "t3a.medium": {2, "4Gi"},
+	"t2.large": {2, "8Gi"}, "t3.large": {2, "8Gi"}, "t3a.large": {2, "8Gi"},
+	"t2.xlarge": {4, "16Gi"}, "t3.xlarge": {4, "16Gi"}, "t3a.xlarge": {4, "16Gi"},
+	"t2.2xlarge": {8, "32Gi"}, "t3.2xlarge": {8, "32Gi"}, "t3a.2xlarge": {8, "32Gi"},
+	// general purpose (m5 / m6i / m6a)
+	"m5.large": {2, "8Gi"}, "m6i.large": {2, "8Gi"}, "m6a.large": {2, "8Gi"},
+	"m5.xlarge": {4, "16Gi"}, "m6i.xlarge": {4, "16Gi"}, "m6a.xlarge": {4, "16Gi"},
+	"m5.2xlarge": {8, "32Gi"}, "m6i.2xlarge": {8, "32Gi"}, "m6a.2xlarge": {8, "32Gi"},
+	"m5.4xlarge": {16, "64Gi"}, "m6i.4xlarge": {16, "64Gi"}, "m6a.4xlarge": {16, "64Gi"},
+	// compute optimized (c5 / c6i) — 2 GiB/vCPU
+	"c5.large": {2, "4Gi"}, "c6i.large": {2, "4Gi"},
+	"c5.xlarge": {4, "8Gi"}, "c6i.xlarge": {4, "8Gi"},
+	"c5.2xlarge": {8, "16Gi"}, "c6i.2xlarge": {8, "16Gi"},
+	"c5.4xlarge": {16, "32Gi"}, "c6i.4xlarge": {16, "32Gi"},
+	// memory optimized (r5 / r6i) — 8 GiB/vCPU
+	"r5.large": {2, "16Gi"}, "r6i.large": {2, "16Gi"},
+	"r5.xlarge": {4, "32Gi"}, "r6i.xlarge": {4, "32Gi"},
+	"r5.2xlarge": {8, "64Gi"}, "r6i.2xlarge": {8, "64Gi"},
+}
+
+// ec2CatalogOSes MUST stay in sync with vm-xrd.yaml's os enum and vm-composition.yaml's $catalog
+// (the XRD comment warns these three must match).
+var ec2CatalogOSes = []string{
+	"ubuntu-24.04", "ubuntu-22.04", "fedora-40", "debian-12", "centos-stream-9",
+	"windows-server-2019", "windows-server-2022", "windows-server-2025",
+}
+
+// ssmImagePaths recognizes well-known PUBLIC image SSM-parameter path fragments (the resolved
+// ImageId value in sophisticated templates) and maps them to a catalog OS. A raw ami- id stays
+// opaque; the SSM path carries a human-readable OS, so it can translate rather than refuse (#115).
+var ssmImagePaths = []struct{ frag, os string }{
+	{"ubuntu/server/24.04", "ubuntu-24.04"},
+	{"ubuntu/server/22.04", "ubuntu-22.04"},
+	{"debian/release/12", "debian-12"},
+	{"debian/release/bookworm", "debian-12"},
+	{"fedora", "fedora-40"},
+	{"centos-stream-9", "centos-stream-9"},
+	{"windows_server-2019", "windows-server-2019"},
+	{"windows_server-2022", "windows-server-2022"},
+	{"windows_server-2025", "windows-server-2025"},
+}
+
+// resolveEC2Image maps a template ImageId to a catalog OS. It accepts a catalog OS name directly, or
+// a recognizable public image SSM-parameter path. Returns (os, "") on success, or ("", reason) where
+// reason is "ami" (opaque raw id) or "unknown" (no catalog/SSM match).
+func resolveEC2Image(imageID string) (os, reason string) {
+	v := strings.TrimSpace(imageID)
+	lc := strings.ToLower(v)
+	for _, c := range ec2CatalogOSes {
+		if lc == c {
+			return c, ""
+		}
+	}
+	if strings.HasPrefix(lc, "ami-") {
+		return "", "ami"
+	}
+	for _, p := range ssmImagePaths {
+		if strings.Contains(lc, p.frag) {
+			return p.os, ""
+		}
+	}
+	return "", "unknown"
+}
+
+func translateEC2Instance(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"ImageId": true, "InstanceType": true, "KeyName": true, "UserData": true,
+		"BlockDeviceMappings": true, "SecurityGroupIds": true, "SecurityGroups": true,
+		"SubnetId": true, "NetworkInterfaces": true, "Tags": true, "AvailabilityZone": true,
+		"Monitoring": true, "EbsOptimized": true, "IamInstanceProfile": true,
+		"PrivateIpAddress": true, "SourceDestCheck": true, "DisableApiTermination": true,
+	}
+	var f []Finding
+	var cav []string
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	spec := map[string]any{}
+
+	// --- ImageId -> a catalog OS (the honest substitution) ---
+	if imageID, ok := concrete(props["ImageId"]); ok && imageID != "" {
+		switch os, reason := resolveEC2Image(imageID); {
+		case os != "":
+			spec["os"] = os
+		case reason == "ami":
+			f = append(f, Finding{"Resource " + id, "ImageId " + imageID + " is a raw AMI id — an opaque, region/time-specific pointer into Amazon's catalog that open-infra cannot decode. Name a catalog OS instead: " + strings.Join(ec2CatalogOSes, ", ")})
+		default:
+			f = append(f, Finding{"Resource " + id, "ImageId " + imageID + " matches no catalog OS or recognized public image SSM-parameter path. Available catalog OSes: " + strings.Join(ec2CatalogOSes, ", ")})
+		}
+	} else if _, present := props["ImageId"]; present {
+		f = append(f, Finding{"Resource " + id, "ImageId could not be resolved (an unresolvable intrinsic) — name a catalog OS literally: " + strings.Join(ec2CatalogOSes, ", ")})
+	} else {
+		f = append(f, Finding{"Resource " + id, "ImageId is required — name an open-infra catalog OS in place of the AMI: " + strings.Join(ec2CatalogOSes, ", ")})
+	}
+
+	// --- InstanceType -> CPU/memory shape ---
+	if it, ok := concrete(props["InstanceType"]); ok && it != "" {
+		if shape, in := ec2InstanceTypes[strings.ToLower(it)]; in {
+			spec["cpu"] = shape.cpu
+			spec["memory"] = shape.mem
+		} else {
+			f = append(f, Finding{"Resource " + id, "InstanceType " + it + " is not in the mapping table — the VM uses its default shape (2 vCPU / 2Gi); map a known type or set cpu/memory natively"})
+		}
+	}
+
+	// --- KeyName: the key-pair public key is not in the template ---
+	if _, ok := props["KeyName"]; ok {
+		cav = append(cav, "KeyName references a pre-registered EC2 key pair whose public key is NOT in the template — open-infra can't inject it; a login password is generated (in the <name>-vm secret), or supply an sshKey natively")
+	}
+
+	// --- UserData -> cloud-init (#! script form; a #cloud-config isn't merged) ---
+	if ud, ok := concrete(props["UserData"]); ok && ud != "" {
+		if dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(ud)); err == nil {
+			s := strings.TrimSpace(string(dec))
+			switch {
+			case strings.HasPrefix(s, "#cloud-config"):
+				cav = append(cav, "UserData is a #cloud-config document — open-infra can't safely merge it with the base VM cloud-init; it was NOT applied. Supply a #! script (run at first boot) or configure the VM natively")
+			case strings.HasPrefix(s, "#!"):
+				spec["userData"] = s
+			default:
+				spec["userData"] = "#!/bin/sh\n" + s
+			}
+		} else {
+			f = append(f, Finding{"Resource " + id, "UserData is not valid base64 — CloudFormation UserData must be base64-encoded"})
+		}
+	} else if _, present := props["UserData"]; present {
+		cav = append(cav, "UserData could not be statically resolved (Fn::Sub/Fn::Base64 over references) — it was NOT applied; provide literal user data or configure the VM natively")
+	}
+
+	// --- BlockDeviceMappings: root device size -> diskSize; extras -> caveat ---
+	if bdms, ok := props["BlockDeviceMappings"].([]any); ok {
+		mappedRoot := false
+		for _, raw := range bdms {
+			bdm, _ := raw.(map[string]any)
+			ebs, _ := bdm["Ebs"].(map[string]any)
+			if ebs != nil && !mappedRoot {
+				if vs, has := ebs["VolumeSize"]; has {
+					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))
+					mappedRoot = true
+					continue
+				}
+			}
+			cav = append(cav, "an extra BlockDeviceMapping was dropped — only the root device size maps to diskSize; attach additional disks as a kind: Volume")
+		}
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
+
+	// Network fields are the deferred half — dropping them quietly would misrepresent the VM as
+	// isolated when it is on the flat cluster network.
+	for _, p := range []string{"SecurityGroupIds", "SecurityGroups", "SubnetId", "NetworkInterfaces"} {
+		if _, ok := props[p]; ok {
+			cav = append(cav, p+" dropped — SECURITY: the VM runs on the flat cluster network (masquerade); the subnet/security-group isolation does NOT map here (network translation is separate work). Do not assume the isolation it implied.")
+		}
+	}
+	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "IamInstanceProfile", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
+		if _, ok := props[p]; ok {
+			cav = append(cav, p+" dropped — no open-infra equivalent")
+		}
+	}
+	m.Caveats = cav
 	return m, f
 }
 
