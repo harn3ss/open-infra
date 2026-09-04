@@ -8,29 +8,41 @@
 
 ## Why
 
-open-infra's control-plane authorization is Kubernetes RBAC (impersonation → RBAC groups, gated by
-SubjectAccessReview — see [`docs/security-and-compliance.md`](security-and-compliance.md)). RBAC is
-the right fit for the k8s surface, but it is **additive-only**: it has no explicit `Deny`, and no
-request conditions (MFA, source IP, tags). That is exactly why the CloudFormation engine refuses to
-translate AWS `IAM::Policy`/`Role`/`Group` — an AWS policy document (allow **and** deny over
+open-infra's control-plane authorization is today Kubernetes RBAC (impersonation → RBAC groups, gated
+by SubjectAccessReview — see [`docs/security-and-compliance.md`](security-and-compliance.md)). RBAC is
+the native authorization for the k8s surface, but it is **additive-only**: it has no explicit `Deny`,
+and no request conditions (MFA, source IP, tags). That is exactly why the CloudFormation engine could
+not translate AWS `IAM::Policy`/`Role`/`Group` — an AWS policy document (allow **and** deny over
 `service:Action` on ARNs, with conditions) cannot be represented in RBAC without silently dropping a
 `Deny` or a condition, which is a security hole, not a lossy cosmetic ([`docs/cloudformation.md`](cloudformation.md)).
+
+This engine removes that barrier for the data plane: the CloudFormation engine now translates the
+data-plane part of `IAM::Policy`/`ManagedPolicy` into an enforced `kind: Policy` (`Role`/`Group`
+control-plane grants remain refused, pending the platform-wide work below). Its allow/deny/condition
+model is also the basis for the decided move to make Cedar the authority for the whole platform, not
+just the shim.
 
 The policy engine closes that gap **where it actually bites** — the data planes — with a real
 allow/deny/condition model, so a fine-grained data-plane grant can be expressed (and an AWS policy
 can be imported) faithfully.
 
-## Scope — data plane first (the 80/20)
+## Scope — data plane first, platform-wide as the destination
 
 The interesting fine-grained policies are **data-plane** policies: `s3:GetObject` on a bucket,
 `dynamodb:Query` on a table, `lambda:InvokeFunction` on a function. Those are exactly the surfaces
-the aws-shim already fronts, and where AWS IAM actions map cleanly. So:
+the aws-shim already fronts, and where AWS IAM actions map cleanly. So the **first** milestone is
+narrow on purpose:
 
-- **In scope now:** fine-grained authorization at the aws-shim front doors (S3 → MinIO, DynamoDB,
-  Lambda, AppSync), evaluated per request with allow/deny/conditions.
-- **Deliberately out of scope (stays RBAC):** the Kubernetes control plane (`kind:` CRUD). RBAC +
-  the permission boundary remain the authority there. A platform-wide engine that also fronts the
-  k8s API is a later, separate decision — not this build.
+- **In scope, built today:** fine-grained authorization at the aws-shim front doors (S3 → MinIO,
+  DynamoDB, Lambda), evaluated per request with allow/deny/conditions. This is Phase 1.
+- **The decided destination:** Cedar becomes the platform-wide authorization authority, with the
+  Kubernetes control plane (`kind:` CRUD) moving from RBAC to Cedar via a Kubernetes
+  authorization-webhook — run alongside RBAC first to measure divergence, then RBAC leaves the
+  chain. This is a **decided direction, not yet built**; until it lands, RBAC + the permission
+  boundary remain the control-plane authority. It carries its own assurance burden (a Cedar corpus
+  has no published CIS-style benchmark), which is part of the same plan.
+- **Stays where it is:** AppSync field-level authorization remains inside open-appsync
+  (per-field `@aws_*` + SAR) — a different enforcement point, not moved into this engine.
 
 This keeps one enforcement class (the shim) instead of retrofitting every door, which is where the
 cost and risk of a full engine live.
