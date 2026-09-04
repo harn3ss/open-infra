@@ -82,16 +82,21 @@ func (c *stackCtx) rawProps(id string) (map[string]any, bool) {
 // translators is the create-fidelity registry. A CFN type is create-provisionable only if it
 // appears here AND its translator accepts every property. Grow it the gated way.
 var translators = map[string]translator{
-	"AWS::KMS::Key":                    translateKMSKey,
-	"AWS::Lambda::Function":            translateLambdaFunction,
-	"AWS::StepFunctions::StateMachine": translateStateMachine,
-	"AWS::EC2::Volume":                 translateVolume,
-	"AWS::DynamoDB::Table":             translateDynamoDBTable,
-	"AWS::IAM::User":                   translateIAMUser,
-	"AWS::Cognito::UserPool":           translateCognitoUserPool,
-	"AWS::ECS::Service":                translateECSService,
-	"AWS::ECS::TaskDefinition":         translateECSTaskDefinition,
-	"AWS::ECS::Cluster":                translateECSCluster,
+	"AWS::KMS::Key":                       translateKMSKey,
+	"AWS::Lambda::Function":               translateLambdaFunction,
+	"AWS::StepFunctions::StateMachine":    translateStateMachine,
+	"AWS::EC2::Volume":                    translateVolume,
+	"AWS::DynamoDB::Table":                translateDynamoDBTable,
+	"AWS::IAM::User":                      translateIAMUser,
+	"AWS::Cognito::UserPool":              translateCognitoUserPool,
+	"AWS::ECS::Service":                   translateECSService,
+	"AWS::ECS::TaskDefinition":            translateECSTaskDefinition,
+	"AWS::ECS::Cluster":                   translateECSCluster,
+	"AWS::AppSync::GraphQLApi":            translateAppSyncGraphQLApi,
+	"AWS::AppSync::GraphQLSchema":         translateAppSyncChild,
+	"AWS::AppSync::DataSource":            translateAppSyncChild,
+	"AWS::AppSync::Resolver":              translateAppSyncChild,
+	"AWS::AppSync::FunctionConfiguration": translateAppSyncChild,
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).
@@ -673,6 +678,332 @@ func lambdaEnv(id string, _ map[string]any, props map[string]any, f *[]Finding) 
 		out = append(out, map[string]any{"name": name, "value": val})
 	}
 	return out
+}
+
+// ---- AWS::AppSync::GraphQLApi (+ Schema/DataSource/Resolver/FunctionConfiguration) -> kind: GraphQLApi ----
+//
+// AppSync splits one API across several resources that all point back at the API via `ApiId`. This
+// is a COLLATION (the ECS pattern): the GraphQLApi is the anchor and reads its in-stack children —
+// the GraphQLSchema (the SDL), every DataSource, and every Resolver (unit or pipeline, pulling in
+// the FunctionConfigurations a pipeline references) — merging them into one kind: GraphQLApi. The
+// payoff is open-appsync's whole reason to exist: a resolver's VTL is byte-for-byte identical, so
+// Request/ResponseMappingTemplate carry over verbatim.
+//
+// Faithful: schema SDL, unit + pipeline resolvers (VTL and APPSYNC_JS), and the data-source types
+// open-appsync has (dynamodb, http, none, opensearch, eventbridge). Refused (fail-loud, never a
+// silent half-API): a Lambda-ARN data source (an AWS ARN is not an open-infra Function URL), a
+// relational source with no DSN, and any S3-location template/definition. Caveat: AuthenticationType
+// (open-appsync enforces auth via @aws_* schema directives + an apiKeysSecret, configured separately)
+// and a dynamodb source's spec.mongoURI (a deploy-time FerretDB endpoint, not knowable here).
+func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"Name": true, "AuthenticationType": true, "AdditionalAuthenticationProviders": true,
+		"LogConfig": true, "UserPoolConfig": true, "OpenIDConnectConfig": true,
+		"LambdaAuthorizerConfig": true, "XrayEnabled": true, "Tags": true, "ApiType": true,
+		"IntrospectionConfig": true, "QueryDepthLimit": true, "ResolverCountLimit": true,
+		"Visibility": true, "MergedApiExecutionRoleArn": true, "OwnerContact": true,
+		"EnvironmentVariables": true, "HealthMetricsConfig": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	spec := map[string]any{}
+
+	// schema: the in-stack GraphQLSchema whose ApiId -> this API.
+	for _, cid := range ctx.appsyncChildren("AWS::AppSync::GraphQLSchema", id) {
+		sp, _ := ctx.resolveProps(cid)
+		if _, ok := sp["DefinitionS3Location"]; ok {
+			f = append(f, Finding{"Resource " + cid, "GraphQLSchema DefinitionS3Location is not translatable — the SDL must be inline (Definition)"})
+		}
+		if def, ok := concrete(sp["Definition"]); ok && def != "" {
+			spec["schema"] = def
+		}
+	}
+
+	// data sources.
+	var dataSources []any
+	hasDynamo := false
+	for _, cid := range ctx.appsyncChildren("AWS::AppSync::DataSource", id) {
+		sp, _ := ctx.resolveProps(cid)
+		ds, isDynamo := appsyncDataSource(cid, sp, &f)
+		hasDynamo = hasDynamo || isDynamo
+		dataSources = append(dataSources, ds)
+	}
+	if len(dataSources) > 0 {
+		spec["dataSources"] = dataSources
+	}
+
+	// resolvers (required — a GraphQLApi with no resolver can't be created).
+	var resolvers []any
+	for _, cid := range ctx.appsyncChildren("AWS::AppSync::Resolver", id) {
+		resolvers = append(resolvers, ctx.appsyncResolver(cid, &f))
+	}
+	if len(resolvers) == 0 {
+		f = append(f, Finding{"Resource " + id, "a GraphQLApi requires at least one AWS::AppSync::Resolver in the stack (open-infra's GraphQLApi resolves fields from its resolver list)"})
+	} else {
+		spec["resolvers"] = resolvers
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "GraphQLApi", Name: k8sName(id), Spec: spec}
+	if at, ok := concrete(props["AuthenticationType"]); ok && at != "" {
+		m.Caveats = append(m.Caveats, "AuthenticationType "+at+" is not translated to enforcement — open-appsync enforces auth via @aws_* directives in the schema (+ an apiKeysSecret for @aws_api_key); configure it separately")
+	}
+	if hasDynamo {
+		m.Caveats = append(m.Caveats, "a dynamodb data source needs spec.mongoURI (the FerretDB endpoint) set at deploy time — it is not derivable from the template, and the source fails closed at load until set")
+	}
+	return m, f
+}
+
+// translateAppSyncChild is the no-op half of the collation: a Schema/DataSource/Resolver/
+// FunctionConfiguration whose ApiId points at an in-stack GraphQLApi provisions nothing on its own
+// (the API anchor reads it). But one pointing at an API NOT in this stack is REFUSED rather than
+// silently dropped — we can't attach to an API we don't manage.
+func translateAppSyncChild(id string, _ map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	raw, _ := ctx.rawProps(id)
+	apiID, ok := getAttTarget(raw["ApiId"])
+	if ok {
+		if api, in := ctx.template.Resources[apiID]; in && api.Type == "AWS::AppSync::GraphQLApi" {
+			return nil, nil // collated into the API
+		}
+	}
+	return nil, []Finding{{"Resource " + id, "its ApiId does not reference an AWS::AppSync::GraphQLApi in this stack — an AppSync sub-resource can only attach to an in-stack API"}}
+}
+
+// appsyncChildren returns, in deterministic order, the logical ids of resources of cfnType whose
+// ApiId references apiID.
+func (c *stackCtx) appsyncChildren(cfnType, apiID string) []string {
+	var ids []string
+	for cid, res := range c.template.Resources {
+		if res.Type != cfnType {
+			continue
+		}
+		raw, _ := c.rawProps(cid)
+		if t, ok := getAttTarget(raw["ApiId"]); ok && t == apiID {
+			ids = append(ids, cid)
+		}
+	}
+	sortStrs(ids)
+	return ids
+}
+
+// appsyncDataSource maps one AWS::AppSync::DataSource to an open-appsync data source; the bool
+// reports whether it is a dynamodb source (so the caller can surface the mongoURI caveat).
+func appsyncDataSource(cid string, sp map[string]any, f *[]Finding) (map[string]any, bool) {
+	known := map[string]bool{
+		"ApiId": true, "Name": true, "Type": true, "Description": true, "ServiceRoleArn": true,
+		"DynamoDBConfig": true, "LambdaConfig": true, "HttpConfig": true, "MetricsConfig": true,
+		"RelationalDatabaseConfig": true, "OpenSearchServiceConfig": true, "ElasticsearchConfig": true,
+		"EventBridgeConfig": true,
+	}
+	*f = append(*f, blockUnknownProps(cid, sp, known)...)
+	name, _ := concrete(sp["Name"])
+	ds := map[string]any{"name": name}
+	dynamo := false
+	switch t, _ := concrete(sp["Type"]); t {
+	case "AMAZON_DYNAMODB":
+		ds["type"] = "dynamodb"
+		dynamo = true
+		if cfg, ok := sp["DynamoDBConfig"].(map[string]any); ok {
+			if tbl, ok := concrete(cfg["TableName"]); ok && tbl != "" {
+				ds["collection"] = tbl
+			}
+		}
+	case "HTTP":
+		ds["type"] = "http"
+		if cfg, ok := sp["HttpConfig"].(map[string]any); ok {
+			if ep, ok := concrete(cfg["Endpoint"]); ok && ep != "" {
+				ds["endpoint"] = ep
+			}
+		}
+	case "NONE":
+		ds["type"] = "none"
+	case "AMAZON_OPENSEARCH_SERVICE", "AMAZON_ELASTICSEARCH":
+		ds["type"] = "opensearch"
+		for _, k := range []string{"OpenSearchServiceConfig", "ElasticsearchConfig"} {
+			if cfg, ok := sp[k].(map[string]any); ok {
+				if ep, ok := concrete(cfg["Endpoint"]); ok && ep != "" {
+					ds["endpoint"] = ep
+				}
+			}
+		}
+	case "AMAZON_EVENTBRIDGE":
+		ds["type"] = "eventbridge"
+	case "AWS_LAMBDA":
+		*f = append(*f, Finding{"Resource " + cid, "a Lambda data source (AWS_LAMBDA) has no faithful form — an AWS LambdaFunctionArn is not an open-infra Function URL; remap to a lambda data source with the kind: Function URL as its endpoint, or an http source"})
+	case "RELATIONAL_DATABASE":
+		*f = append(*f, Finding{"Resource " + cid, "a relational data source has no faithful form — provide a connectionSecret with a DSN out of band (the AWS RelationalDatabaseConfig names a cluster ARN, not a DSN)"})
+	default:
+		*f = append(*f, Finding{"Resource " + cid, "data source Type " + t + " is not supported by open-appsync"})
+	}
+	return ds, dynamo
+}
+
+// appsyncResolver maps one AWS::AppSync::Resolver to an open-appsync resolver (unit or pipeline).
+func (c *stackCtx) appsyncResolver(cid string, f *[]Finding) map[string]any {
+	sp, _ := c.resolveProps(cid)
+	known := map[string]bool{
+		"ApiId": true, "TypeName": true, "FieldName": true, "DataSourceName": true, "Kind": true,
+		"RequestMappingTemplate": true, "ResponseMappingTemplate": true, "PipelineConfig": true,
+		"RequestMappingTemplateS3Location": true, "ResponseMappingTemplateS3Location": true,
+		"Runtime": true, "Code": true, "CodeS3Location": true, "MaxBatchSize": true,
+		"CachingConfig": true, "SyncConfig": true, "MetricsConfig": true,
+	}
+	*f = append(*f, blockUnknownProps(cid, sp, known)...)
+	for _, k := range []string{"RequestMappingTemplateS3Location", "ResponseMappingTemplateS3Location", "CodeS3Location"} {
+		if _, ok := sp[k]; ok {
+			*f = append(*f, Finding{"Resource " + cid, k + " is not translatable — mapping templates / code must be inline, not fetched from S3"})
+		}
+	}
+
+	r := map[string]any{}
+	if t, ok := concrete(sp["TypeName"]); ok {
+		r["type"] = t
+	}
+	if fld, ok := concrete(sp["FieldName"]); ok {
+		r["field"] = fld
+	}
+	isJS := false
+	if rt, ok := sp["Runtime"].(map[string]any); ok {
+		if n, _ := concrete(rt["Name"]); n == "APPSYNC_JS" {
+			isJS = true
+			r["runtime"] = "appsync-js"
+		}
+	}
+	if !isJS {
+		r["runtime"] = "appsync-vtl"
+	}
+
+	if kind, _ := concrete(sp["Kind"]); kind == "PIPELINE" {
+		// A pipeline resolver: its Request/Response templates are before/after, and PipelineConfig
+		// names the FunctionConfigurations to run in order.
+		if req, ok := concrete(sp["RequestMappingTemplate"]); ok && req != "" {
+			r["before"] = req
+		}
+		if resp, ok := concrete(sp["ResponseMappingTemplate"]); ok && resp != "" {
+			r["after"] = resp
+		}
+		r["functions"] = c.appsyncPipelineFunctions(cid, f)
+	} else {
+		// A unit resolver binds one data source with a request/response template (or JS code).
+		if isJS {
+			if code, ok := concrete(sp["Code"]); ok && code != "" {
+				r["request"] = code
+			}
+		} else {
+			if req, ok := concrete(sp["RequestMappingTemplate"]); ok && req != "" {
+				r["request"] = req
+			}
+			if resp, ok := concrete(sp["ResponseMappingTemplate"]); ok && resp != "" {
+				r["response"] = resp
+			}
+		}
+		if dsn := c.resolveDSName(cid, "DataSourceName"); dsn != "" {
+			r["dataSource"] = dsn
+		} else {
+			*f = append(*f, Finding{"Resource " + cid, "a unit resolver requires a DataSourceName naming an in-stack AWS::AppSync::DataSource"})
+		}
+	}
+	return r
+}
+
+// appsyncPipelineFunctions maps a pipeline resolver's PipelineConfig.Functions (references to
+// AWS::AppSync::FunctionConfiguration) to open-appsync pipeline functions.
+func (c *stackCtx) appsyncPipelineFunctions(cid string, f *[]Finding) []any {
+	raw, _ := c.rawProps(cid)
+	pc, _ := raw["PipelineConfig"].(map[string]any)
+	fnRefs, _ := pc["Functions"].([]any)
+	var out []any
+	for _, ref := range fnRefs {
+		fid, ok := getAttTarget(ref)
+		if !ok {
+			*f = append(*f, Finding{"Resource " + cid, "a PipelineConfig function must reference an in-stack AWS::AppSync::FunctionConfiguration"})
+			continue
+		}
+		fnRes, in := c.template.Resources[fid]
+		if !in || fnRes.Type != "AWS::AppSync::FunctionConfiguration" {
+			*f = append(*f, Finding{"Resource " + cid, "PipelineConfig references " + fid + ", which is not an AWS::AppSync::FunctionConfiguration in this stack"})
+			continue
+		}
+		fp, _ := c.resolveProps(fid)
+		fnknown := map[string]bool{
+			"ApiId": true, "Name": true, "DataSourceName": true, "Description": true,
+			"RequestMappingTemplate": true, "ResponseMappingTemplate": true, "FunctionVersion": true,
+			"RequestMappingTemplateS3Location": true, "ResponseMappingTemplateS3Location": true,
+			"Runtime": true, "Code": true, "CodeS3Location": true, "MaxBatchSize": true, "SyncConfig": true,
+		}
+		*f = append(*f, blockUnknownProps(fid, fp, fnknown)...)
+		fn := map[string]any{"runtime": "appsync-vtl"}
+		if dsn := c.resolveDSName(fid, "DataSourceName"); dsn != "" {
+			fn["dataSource"] = dsn
+		} else {
+			*f = append(*f, Finding{"Resource " + fid, "a FunctionConfiguration requires a DataSourceName naming an in-stack AWS::AppSync::DataSource"})
+		}
+		if req, ok := concrete(fp["RequestMappingTemplate"]); ok {
+			fn["request"] = req
+		}
+		if resp, ok := concrete(fp["ResponseMappingTemplate"]); ok {
+			fn["response"] = resp
+		}
+		out = append(out, fn)
+	}
+	return out
+}
+
+// resolveDSName reads a resolver/function's DataSourceName (field) — a literal name, or a
+// !Ref/!GetAtt to an in-stack AWS::AppSync::DataSource whose Name is what open-appsync references.
+func (c *stackCtx) resolveDSName(id, field string) string {
+	raw, _ := c.rawProps(id)
+	if dsID, ok := getAttTarget(raw[field]); ok {
+		if ds, in := c.template.Resources[dsID]; in && ds.Type == "AWS::AppSync::DataSource" {
+			dp, _ := c.resolveProps(dsID)
+			if n, ok := concrete(dp["Name"]); ok {
+				return n
+			}
+		}
+	}
+	sp, _ := c.resolveProps(id)
+	if n, ok := concrete(sp[field]); ok {
+		return n
+	}
+	return ""
+}
+
+// getAttTarget returns the logical id a raw property references via `{Ref: X}` or
+// `{Fn::GetAtt: [X, attr]}` (long or `X.attr` short form).
+func getAttTarget(rawProp any) (string, bool) {
+	m, ok := rawProp.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if id, ok := m["Ref"].(string); ok {
+		return id, true
+	}
+	if ga, ok := m["Fn::GetAtt"]; ok {
+		switch v := ga.(type) {
+		case []any:
+			if len(v) > 0 {
+				if s, ok := v[0].(string); ok {
+					return s, true
+				}
+			}
+		case string:
+			if i := strings.Index(v, "."); i > 0 {
+				return v[:i], true
+			}
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// sortStrs insertion-sorts a small string slice in place (keeps the dependency tiny, matching
+// sortedKeys), so a collation emits its children in a deterministic order.
+func sortStrs(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
 }
 
 // blockUnknownProps records a blocking finding for every property the translator does not
