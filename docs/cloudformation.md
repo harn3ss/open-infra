@@ -201,6 +201,19 @@ Today's create translators (live-verified on the cluster):
 > stream. A standalone queue would map to an Application that reports Ready but creates no stream — a
 > silent no-op — so it is refused at deploy instead.
 
+### Ceilings — map at plan, refuse at deploy *by design*
+
+These types have a backing kind (so `cfn plan` maps them) but **cannot be created faithfully**, and
+refuse at deploy rather than invent data or silently drop a guarantee. This is a deliberate ceiling,
+not unfinished work:
+
+| CloudFormation | Why it can't be created faithfully |
+|---|---|
+| `AWS::IAM::Role`, `AWS::IAM::ManagedPolicy`, `AWS::IAM::Policy`, `AWS::IAM::Group` | An IAM policy document (`Allow`/`Deny` over `service:Action` on ARNs) is a different universe from open-infra RBAC (`verb` on a `kind`, no `Deny`). Translating it would produce *wrong* permissions — a security risk. (An identity with no permissions — a bare `IAM::User` — does map; see the create-translators table.) |
+| `AWS::EC2::Instance` | `ImageId` is an opaque AMI id; `kind: VirtualMachine` needs a real `os` (an image-catalog name). You cannot derive "ubuntu-22.04" from "ami-0abc…", so the core of the instance is unmappable. |
+| `AWS::EFS::FileSystem` | EFS is elastic (no provisioned size); `kind: FileShare` requires a `size`. There is no size to map from, and inventing one is a guess. |
+| `AWS::SQS::Queue`, `AWS::SNS::Topic` | Queues are *app-declared* JetStream streams (see above) — no standalone managed-queue resource to create. |
+
 ## Updating a stack
 
 `cfn changeset` shows what an update would do, without touching anything:
