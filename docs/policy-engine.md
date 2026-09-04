@@ -4,9 +4,9 @@
 > actually built. The engine, its shim enforcement, and a **fully-deployed shim deciding a real
 > SigV4 request** are all live-verified (see the build phases and
 > [`evidence/data-plane-policy-enforcement.md`](../evidence/data-plane-policy-enforcement.md)).
-> Enforcement only bites where the aws-shim data-plane front doors are enabled, which is opt-in and
-> off by default, so no live platform traffic is governed today — turning that on for the platform
-> is a separate, explicit step.
+> The aws-shim data-plane front door is now **deployed on the platform** and verified live against
+> it; enforcement bites only where a `kind: Policy` `dataPlane` block names a principal, so the
+> capability is live but governs nothing until a policy is authored.
 
 ## Why
 
