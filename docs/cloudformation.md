@@ -101,7 +101,7 @@ part of another kind rather than on its own. The caveat is always printed.
 | `AWS::EC2::Instance` | `kind: VirtualMachine` | AMI/instance-type → os/cpu/memory is lossy |
 | `AWS::EC2::Volume` | `kind: Volume` | Longhorn block volume |
 | `AWS::EFS::FileSystem` | `kind: FileShare` | SMB share on Longhorn |
-| `AWS::AppSync::DataSource` / `Resolver` / `FunctionConfiguration` / `GraphQLSchema` | part of `kind: GraphQLApi` | sub-parts of one API's spec, not standalone resources |
+| `AWS::AppSync::DataSource` / `Resolver` / `FunctionConfiguration` / `GraphQLSchema` | part of `kind: GraphQLApi` | **faithfully** translated as part of one GraphQLApi's spec (SDL / VTL / JS byte-for-byte) — not lossy, just not standalone; a bare one (no in-stack API) refuses |
 | `AWS::DynamoDB::Table` | `kind: Table` | registers name + key schema (+ TTL) on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, secondary indexes, streams, or per-table SSE — those **block** |
 | `AWS::Cognito::UserPool` / `UserPoolClient` | `kind: UserPool` | a hosted OIDC pool (Keycloak realm); MFA, Lambda triggers, and schema do not transfer |
 | `AWS::ECS::Service` (+ its `TaskDefinition`) | `kind: Application` | a Service and its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer |
