@@ -669,3 +669,71 @@ func TestTranslate_S3_VersioningBlocks(t *testing.T) {
 		t.Fatalf("a behavior-bearing S3 feature must block, findings: %s", findingsText(fs))
 	}
 }
+
+// ---- AWS::Cognito::UserPoolClient collation ----
+
+func cognitoStack() string {
+	return `
+Resources:
+  Pool:
+    Type: AWS::Cognito::UserPool
+    Properties: { UserPoolName: my-pool }
+  Client:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref Pool
+      ClientName: web-app
+      GenerateSecret: true
+      CallbackURLs: [ "https://app.example/cb" ]
+`
+}
+
+func TestTranslate_Cognito_ClientCollation(t *testing.T) {
+	ctx := ecsCtx(t, cognitoStack())
+	m, fs := translateCognitoUserPool("Pool", ecsResolvedService(t, ctx, "Pool"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Spec["realm"] != "my-pool" || m.Spec["clientId"] != "web-app" {
+		t.Fatalf("client not collated into the pool: %#v", m.Spec)
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "OAuth config") {
+		t.Fatalf("the dropped client OAuth config must be a caveat: %v", m.Caveats)
+	}
+	// The client itself is a collated no-op.
+	if cm, cfs := translateCognitoUserPoolClient("Client", ecsResolvedService(t, ctx, "Client"), ctx); cm != nil || len(cfs) != 0 {
+		t.Fatalf("an in-stack client must be a no-op, got manifest=%v findings=%s", cm, findingsText(cfs))
+	}
+}
+
+func TestTranslate_Cognito_MultipleClientsBlock(t *testing.T) {
+	tmpl := `
+Resources:
+  Pool:
+    Type: AWS::Cognito::UserPool
+    Properties: { UserPoolName: p }
+  C1:
+    Type: AWS::Cognito::UserPoolClient
+    Properties: { UserPoolId: !Ref Pool, ClientName: a }
+  C2:
+    Type: AWS::Cognito::UserPoolClient
+    Properties: { UserPoolId: !Ref Pool, ClientName: b }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateCognitoUserPool("Pool", ecsResolvedService(t, ctx, "Pool"), ctx)
+	if !strings.Contains(findingsText(fs), "more than one") {
+		t.Fatalf("multiple clients must block (pool has one app client), findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_Cognito_ExternalClientRefused(t *testing.T) {
+	ext := ecsCtx(t, `
+Resources:
+  Orphan:
+    Type: AWS::Cognito::UserPoolClient
+    Properties: { UserPoolId: "us-east-1_external", ClientName: x }
+`)
+	if _, fs := translateCognitoUserPoolClient("Orphan", ecsResolvedService(t, ext, "Orphan"), ext); !strings.Contains(findingsText(fs), "in-stack pool") {
+		t.Fatalf("a client of an external pool must refuse, findings: %s", findingsText(fs))
+	}
+}
