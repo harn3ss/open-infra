@@ -1,6 +1,6 @@
 module github.com/harn3ss/open-infra/console-api
 
-go 1.26.0
+go 1.26.4
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
@@ -25,6 +25,7 @@ require (
 )
 
 require (
+	github.com/cedar-policy/cedar-go v1.8.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -46,6 +47,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
+	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/grpc v1.83.1 // indirect
@@ -70,6 +72,7 @@ require (
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/harn3ss/open-infra/dynamodb v0.0.0
+	github.com/harn3ss/open-infra/policyengine v0.0.0
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
@@ -115,3 +118,5 @@ require (
 )
 
 replace github.com/harn3ss/open-infra/dynamodb => ../dynamodb
+
+replace github.com/harn3ss/open-infra/policyengine => ../policyengine

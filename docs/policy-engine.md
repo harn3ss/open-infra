@@ -65,12 +65,39 @@ Cedar `when`/`unless`. Actions open-infra has no surface for are reported, never
 This is what lets the CFN engine eventually translate `AWS::IAM::Policy` for data-plane actions
 instead of refusing.
 
+## Policy shape
+
+A `kind: Policy` carries an optional `spec.dataPlane` block alongside its RBAC `statements`:
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata: { name: analyst-scope, namespace: open-infra-console }
+spec:
+  dataPlane:
+    appliesTo: ["User::analyst", "Group::analysts"]
+    statements:
+      - { effect: Allow, actions: ["s3:GetObject"], resources: ["Bucket::reports"] }
+      - { effect: Deny,  actions: ["s3:DeleteObject"], resources: ["*"] }
+      - { effect: Allow, actions: ["dynamodb:Query"], resources: ["Table::metrics"],
+          condition: { authenticated: "true" } }
+```
+
+The shim lists these (cached, 30s), collects the statements whose `appliesTo` names the request's
+principal or a group, compiles them to Cedar, and evaluates every request — AND'd with the coarse
+RBAC check, so it can only tighten.
+
 ## Build phases (honest status)
 
 - [x] **Cedar-go validated** — deny-overrides-allow + conditions + default-deny (a spike).
-- [ ] **Engine module** (`policyengine/`) — the request/decision API over Cedar; the open-infra
-      action/resource/principal model; compile `kind: Policy` statements → Cedar. ← in progress
-- [ ] **Enforcement slice** — the S3 front door consults the engine (fail-closed), behind a flag.
-- [ ] **Remaining data planes** — DynamoDB, Lambda, AppSync.
+- [x] **Engine module** (`policyengine/`) — request/decision API over Cedar; the action/resource/
+      principal model; open-infra `Statement` → Cedar compiler.
+- [x] **Enforcement wired** — S3, DynamoDB, and Lambda front doors consult the engine
+      (`internal/dataplaneauthz`), fail-closed, additive to the coarse SAR. `kind: Policy.dataPlane`
+      is the source; the shim's ClusterRole gains read-only `list policies`.
+- [ ] **AppSync** — deliberately NOT via this engine: AppSync's fine-grained authz is *inside*
+      open-appsync (per-field `@aws_*` + SAR), which is the right layer; the shim can't identify a
+      specific API. Left to open-appsync.
 - [ ] **AWS-policy importer** + the CFN `AWS::IAM::Policy` (data-plane) translator.
-- [ ] **Assurance** — adversarial + precedence + condition tests, audit trail, security review.
+- [ ] **Assurance** — audit trail (log every governed deny), a security review, and live-cluster
+      verification of the enforcement path.

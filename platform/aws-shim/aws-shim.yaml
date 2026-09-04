@@ -72,6 +72,28 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Read kind: Policy across the cluster for the fine-grained data-plane authorization engine (it
+# evaluates each request against the policies' dataPlane blocks). Read-only, list/watch only — the
+# shim never mutates policies, and it holds no secrets/RBAC grants beyond these.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-policies
+rules:
+  - apiGroups: [iam.openinfra.dev]
+    resources: [policies]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-aws-shim-policies
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-policies }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Access-key lookup: read Secrets ONLY in the shim's own namespace (the iam-ak-<id> store). The
 # shim never gets secret access in the console namespace.
 apiVersion: rbac.authorization.k8s.io/v1
