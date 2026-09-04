@@ -78,8 +78,8 @@ func TestPlan_Webapp_DevCaveats(t *testing.T) {
 			assets = &p.Resources[i]
 		}
 	}
-	if assets == nil || assets.Status != Partial || !strings.Contains(assets.Note, "Application") {
-		t.Fatalf("Assets should map partial via Application, got %+v", assets)
+	if assets == nil || assets.Status != Partial || assets.Kind != "Bucket" {
+		t.Fatalf("Assets should map partial to kind: Bucket, got %+v", assets)
 	}
 }
 
