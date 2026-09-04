@@ -1,6 +1,9 @@
 package policyengine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The whole point: an explicit Deny overrides an Allow, and a condition gates the Allow — the two
 // things k8s RBAC cannot do. Modeled as open-infra statements compiled to Cedar.
@@ -75,5 +78,28 @@ func TestEngine_MalformedStatement(t *testing.T) {
 	}
 	if _, err := NewEngine([]Statement{{Effect: Allow, Resources: []string{"noTypeSeparator"}}}); err == nil {
 		t.Fatal("a resource without Type::id must fail to compile")
+	}
+}
+
+// The deny reason must distinguish an explicit forbid (a Deny overriding an allow) from a plain
+// default-deny — they are different security events an audit log must not conflate.
+func TestEngine_DenyReasonDistinguishesForbidFromDefault(t *testing.T) {
+	eng, err := NewEngine([]Statement{
+		{Effect: Allow, Actions: []string{"s3:*"}, Resources: []string{"*"}},
+		{Effect: Deny, Actions: []string{"s3:GetObject"}, Resources: []string{"Bucket::secret"}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "u"}
+	// GET on secret: the s3:* allow WOULD permit, but the forbid overrides → explicit-forbid reason.
+	forbid := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "secret"}, nil})
+	if forbid.Allowed || !strings.Contains(forbid.Reason, "forbid") {
+		t.Errorf("GET secret should be an explicit forbid, got allowed=%v reason=%q", forbid.Allowed, forbid.Reason)
+	}
+	// An action no statement mentions at all → default-deny (not a forbid).
+	def := eng.Authorize(Request{p, "sns:Publish", Resource{"Topic", "t"}, nil})
+	if def.Allowed || strings.Contains(def.Reason, "forbid") || !strings.Contains(def.Reason, "default deny") {
+		t.Errorf("sns:Publish should be default-deny, got allowed=%v reason=%q", def.Allowed, def.Reason)
 	}
 }
