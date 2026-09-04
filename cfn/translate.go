@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/harn3ss/open-infra/policyengine"
 )
 
 // Manifest is a concrete open-infra resource to apply.
@@ -88,6 +90,7 @@ var translators = map[string]translator{
 	"AWS::EC2::Volume":                    translateVolume,
 	"AWS::DynamoDB::Table":                translateDynamoDBTable,
 	"AWS::IAM::User":                      translateIAMUser,
+	"AWS::IAM::Policy":                    translateIAMPolicy,
 	"AWS::Cognito::UserPool":              translateCognitoUserPool,
 	"AWS::Cognito::UserPoolClient":        translateCognitoUserPoolClient,
 	"AWS::ECS::Service":                   translateECSService,
@@ -542,6 +545,127 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 		m.Caveats = append(m.Caveats, "LoginProfile dropped — set the user's password via an open-infra password Secret, not an inline console password")
 	}
 	return m, f
+}
+
+// ---- AWS::IAM::Policy -> kind: Policy (spec.dataPlane) ----
+//
+// The reason IAM::Policy was refused was that an AWS policy document has no faithful RBAC form. The
+// data-plane policy engine (kind: Policy spec.dataPlane, Cedar-backed, enforced at the aws-shim)
+// removes that barrier for exactly the actions the shim fronts — s3:*, dynamodb:*, lambda:*. So this
+// translator imports the DATA-PLANE part of the document (policyengine.ImportAWS) into a real,
+// enforced Policy.
+//
+// It is fail-closed to a fault: a partially-translated security policy is worse than none (a dropped
+// Deny or condition is a hole; a dropped Allow is a silent scope change). So if the importer reports
+// ANY part it cannot honor — an action for a service with no data plane, an unrecognizable ARN, or a
+// Condition (not importable yet) — the whole resource BLOCKS with a precise list, pointing the author
+// at kind: Policy spec.dataPlane to express it natively. Only a policy that is PURELY s3/dynamodb/
+// lambda actions on recognizable ARNs with no conditions translates.
+func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"PolicyName": true, "PolicyDocument": true,
+		"Groups": true, "Users": true, "Roles": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	doc, ok := props["PolicyDocument"]
+	if !ok {
+		f = append(f, Finding{"Resource " + id, "AWS::IAM::Policy requires a PolicyDocument"})
+		return nil, f
+	}
+	docJSON, err := json.Marshal(doc)
+	if err != nil {
+		f = append(f, Finding{"Resource " + id, "PolicyDocument is not serializable: " + err.Error()})
+		return nil, f
+	}
+	stmts, unsupported, err := policyengine.ImportAWS(string(docJSON))
+	if err != nil {
+		f = append(f, Finding{"Resource " + id, "PolicyDocument did not parse as an AWS policy: " + err.Error()})
+		return nil, f
+	}
+	for _, u := range unsupported {
+		f = append(f, Finding{"Resource " + id, "cannot faithfully translate this policy: " + u +
+			" — express the whole policy natively on kind: Policy spec.dataPlane, or narrow the CFN policy to s3/dynamodb/lambda actions on recognizable ARNs with no conditions"})
+	}
+	if len(stmts) == 0 && len(unsupported) == 0 {
+		f = append(f, Finding{"Resource " + id, "PolicyDocument has no statements the data plane can honor"})
+	}
+
+	appliesTo := iamPolicyPrincipals(id, props, &f)
+	if len(appliesTo) == 0 && len(f) == 0 {
+		f = append(f, Finding{"Resource " + id, "AWS::IAM::Policy names no Users or Groups — an inline policy must attach to at least one principal (open-infra has no unattached standalone policy grant; a ManagedPolicy attached elsewhere is not translatable here)"})
+	}
+	if len(f) > 0 {
+		return nil, f
+	}
+
+	spec := map[string]any{
+		"dataPlane": map[string]any{
+			"appliesTo":  appliesTo,
+			"statements": statementsToSpec(stmts),
+		},
+	}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: k8sName(id), Spec: spec}
+	m.Caveats = append(m.Caveats,
+		"enforced only at the aws-shim data-plane front doors (S3/DynamoDB/Lambda), which are opt-in (off by default); it does not grant or restrict the Kubernetes control plane (that stays RBAC + the permission boundary)",
+		"appliesTo names must match existing open-infra Users/Groups; the policy tightens within a coarse RBAC grant (it can Deny, never widen)")
+	return m, f
+}
+
+// iamPolicyPrincipals turns an inline policy's Users/Groups into dataPlane appliesTo principals. A
+// Role attachment can't be honored (the shim authenticates Users and access keys, not assumed roles),
+// so it blocks rather than silently no-op.
+func iamPolicyPrincipals(id string, props map[string]any, f *[]Finding) []any {
+	var out []any
+	add := func(prop, kind string) {
+		list, ok := props[prop].([]any)
+		if !ok {
+			return
+		}
+		for _, e := range list {
+			n, cok := concrete(e)
+			if !cok || n == "" {
+				*f = append(*f, Finding{"Resource " + id, prop + " references a cross-resource value with no concrete name"})
+				continue
+			}
+			out = append(out, kind+"::"+n)
+		}
+	}
+	add("Users", "User")
+	add("Groups", "Group")
+	if roles, ok := props["Roles"].([]any); ok && len(roles) > 0 {
+		*f = append(*f, Finding{"Resource " + id, "Roles attachment can't be enforced at the data-plane shim, which authenticates Users and access keys, not assumed roles — attach the policy to the Users/Groups instead"})
+	}
+	return out
+}
+
+// statementsToSpec renders imported Statements as the kind: Policy spec.dataPlane statement shape.
+func statementsToSpec(stmts []policyengine.Statement) []any {
+	out := make([]any, 0, len(stmts))
+	for _, s := range stmts {
+		m := map[string]any{"effect": string(s.Effect), "actions": toAnySlice(s.Actions)}
+		if len(s.Resources) > 0 {
+			m["resources"] = toAnySlice(s.Resources)
+		}
+		if len(s.Condition) > 0 {
+			c := map[string]any{}
+			for k, v := range s.Condition {
+				c[k] = v
+			}
+			m["condition"] = c
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func toAnySlice(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
 }
 
 // ---- AWS::Cognito::UserPool -> kind: UserPool ----

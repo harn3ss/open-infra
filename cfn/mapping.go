@@ -42,7 +42,7 @@ var mappingTable = map[string]MapEntry{
 	"AWS::AppSync::GraphQLApi":         {Kind: "GraphQLApi", Status: Supported, Note: "resolver-first GraphQL"},
 	"AWS::IAM::Role":                   {Kind: "Role", Status: Supported, Note: "maps at plan, but no create translator by design: an IAM policy document (service:Action + Deny over ARNs) has no faithful open-infra RBAC form"},
 	"AWS::IAM::ManagedPolicy":          {Kind: "Policy", Status: Supported, Note: "maps at plan, but no create translator by design: an AWS policy document does not translate to open-infra RBAC (would produce wrong permissions)"},
-	"AWS::IAM::Policy":                 {Kind: "Policy", Status: Supported, Note: "inline policy -> a Policy at plan; no create translator by design (AWS policy documents don't map to k8s RBAC)"},
+	"AWS::IAM::Policy":                 {Kind: "Policy", Status: Supported, Note: "inline policy -> a Policy; a create translator imports the DATA-PLANE part (s3/dynamodb/lambda actions on recognizable ARNs, no conditions) into an enforced kind: Policy spec.dataPlane, and BLOCKS anything it can't honor faithfully (control-plane/unmappable/conditioned parts) — narrow the policy or author it natively"},
 	"AWS::IAM::User":                   {Kind: "User", Status: Supported},
 	"AWS::IAM::Group":                  {Kind: "Group", Status: Supported, Note: "maps at plan, but no create translator by design: a Group's permissions are its attached AWS policies (unmappable), and its required clusterRole can't be derived from them"},
 	"AWS::KMS::Key":                    {Kind: "EncryptionKey", Status: Supported, Note: "customer key in Vault Transit"},
