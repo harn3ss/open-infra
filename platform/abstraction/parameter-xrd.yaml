@@ -56,6 +56,14 @@ spec:
                   default: Standard
                   enum: [Standard, Advanced]
                   description: "Parameter tier (metadata; mirrors SSM Standard/Advanced)."
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: >-
+                    RFC3339 timestamp after which this parameter is swept (the CR + its Vault KV
+                    entry + materialized Secret deleted) — the SSM Parameter Expiration policy. A
+                    background reaper enforces it; fail-safe (a parameter without expiresAt never
+                    expires)."
             status:
               type: object
               properties:
