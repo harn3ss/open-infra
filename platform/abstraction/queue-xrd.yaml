@@ -1,0 +1,63 @@
+# kind: Queue — a standalone managed message queue / topic (AWS SQS + SNS equivalent), backed by a
+# NATS JetStream stream. One claim -> a durable stream + a <name>-queue connection Secret
+# (NATS_URL / QUEUE_STREAM / QUEUE_SUBJECT) apps consume via spec.secrets -> envFrom.
+#
+# This is the STANDALONE counterpart to an Application's spec.queues (which only injects NATS_URL and
+# leaves the app to declare its own stream) — the same way kind: Bucket is the standalone counterpart
+# to an Application's storage.buckets. It is the CFN engine's AWS::SQS::Queue / AWS::SNS::Topic target.
+#
+# Two shapes via `fanout`:
+#   * false (default) — a work queue: each message is delivered to ONE consumer and removed on ack
+#     (SQS semantics; JetStream WorkQueue retention).
+#   * true            — a fan-out topic: messages are retained for the window and EVERY consumer
+#     reads them independently (SNS pub/sub; JetStream Limits retention).
+#
+# NOT modelled: SQS visibility timeout / delay / dead-letter redrive and SNS subscriptions are
+# consumer-side concerns an app configures on its own JetStream consumer; FIFO dedup and encryption
+# are not mapped. Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xqueues.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XQueue, plural: xqueues }
+  claimNames: { kind: Queue, plural: queues }
+  defaultCompositionRef: { name: queue }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                queueName:
+                  type: string
+                  description: "The queue/stream name (also the subject apps publish to). Defaults to the claim name. A valid NATS token: letters, digits, hyphen, underscore (no dots/spaces). Immutable."
+                  pattern: '^[A-Za-z0-9_-]{1,200}$'
+                fanout:
+                  type: boolean
+                  default: false
+                  description: "false (default) = a work queue (each message to one consumer, removed on ack — SQS). true = a fan-out topic (messages retained for the window; every consumer reads them — SNS pub/sub)."
+                retentionHours:
+                  type: integer
+                  default: 96
+                  description: "How long messages are retained (JetStream max-age). Default 96h (4 days, matching SQS's default)."
+                maxBytes:
+                  type: integer
+                  description: "Optional cap on total stored bytes for the stream (JetStream max-bytes). Unset = no byte limit."
+            status:
+              type: object
+              properties:
+                stream: { type: string }
+                ready: { type: boolean }

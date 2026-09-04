@@ -54,7 +54,7 @@ Resources:
       caveat: no standalone bucket kind — a bucket is provisioned via an Application's storage.buckets (MinIO)
   [ok  ] Api         AWS::Lambda::Function             -> Function
   [ok  ] Workflow    AWS::StepFunctions::StateMachine  -> StateMachine
-  [part] ProdAlarms  AWS::SNS::Topic                   -> Application(queues)  [skipped: condition IsProd is false]
+  [part] ProdAlarms  AWS::SNS::Topic                   -> Queue  [skipped: condition IsProd is false]
   [ok  ] AppKey      AWS::KMS::Key                     -> EncryptionKey
   [ok  ] AppRole     AWS::IAM::Role                    -> Role
 
@@ -96,7 +96,7 @@ part of another kind rather than on its own. The caveat is always printed.
 | CloudFormation | open-infra | Caveat |
 |---|---|---|
 | `AWS::S3::Bucket` | `kind: Bucket` | a standalone MinIO bucket with versioning + lifecycle |
-| `AWS::SQS::Queue`, `AWS::SNS::Topic` | an `Application`'s `queues` | mapped to NATS JetStream |
+| `AWS::SQS::Queue`, `AWS::SNS::Topic` | `kind: Queue` | a standalone NATS JetStream stream (SQS=work queue, SNS=fan-out topic) |
 | `AWS::RDS::DBInstance` | an `Application`'s `database` | engine/size mapping is lossy |
 | `AWS::EC2::Instance` | `kind: VirtualMachine` | AMI/instance-type → os/cpu/memory is lossy |
 | `AWS::EC2::Volume` | `kind: Volume` | Longhorn block volume |
@@ -194,12 +194,8 @@ Today's create translators (live-verified on the cluster):
 | `AWS::AppSync::GraphQLApi` + `GraphQLSchema` + `DataSource` + `Resolver` (+ `FunctionConfiguration`) | `kind: GraphQLApi` | **A collation** — the API reads its in-stack Schema (SDL→schema), DataSources, and Resolvers (unit + pipeline). A resolver's VTL carries **byte-for-byte** (Request/ResponseMappingTemplate→request/response), and `APPSYNC_JS` maps to the `appsync-js` runtime. Data-source types: `AMAZON_DYNAMODB`/`HTTP`/`NONE`/`OPENSEARCH`/`EVENTBRIDGE`. Caveats: `AuthenticationType` (open-appsync enforces via `@aws_*` schema directives + apiKeysSecret) and a dynamodb source's `mongoURI` (a deploy-time endpoint). **Refused**: a Lambda-ARN data source (an AWS ARN is not a Function URL), a relational source with no DSN, any S3-location template, and a child pointing at an API not in the stack. |
 | `AWS::S3::Bucket` | `kind: Bucket` | A standalone MinIO bucket (the object-storage analog of `kind: Volume`). `BucketName`→bucket, `VersioningConfiguration`→versioning, `LifecycleConfiguration`→lifecycle rules (Id / Prefix / `ExpirationInDays` / `NoncurrentVersionExpiration.NoncurrentDays`). **Refused**: `BucketEncryption` (per-bucket SSE needs the opt-in objectEncryption stack — refusing beats an unencrypted bucket that looks encrypted), a lifecycle `Transitions`/`ExpirationDate`/tag-or-size filter, and policy/website/CORS/notifications/replication/object-lock/public-access. `Tags` caveat. |
 | `AWS::RDS::DBInstance` | `kind: Application` (data-only, `database`) | `Engine`→engine (postgres/aurora-postgresql→postgres; mysql/mariadb/aurora-mysql→mysql; sqlserver-\*→babelfish), `DBName`→name, `MultiAZ`→highAvailability, **`StorageEncrypted`→LUKS keyed by a customer `kind: EncryptionKey`** (postgres only in v1; `KmsKeyId` must reference an in-stack `AWS::KMS::Key`). Caveats: `AllocatedStorage`/`DBInstanceClass` (no per-DB capacity knob), master credentials (open-infra provisions them, injects `DATABASE_URL`), backup/network config. **Refused**: `StorageEncrypted` on a non-postgres engine or without a mappable `KmsKeyId`, and an unmappable engine (oracle). |
-
-> `AWS::SQS::Queue` and `AWS::SNS::Topic` map at plan time but have **no create translator by
-> design** — an honest ceiling, not an omission. open-infra queues are *app-declared* JetStream
-> streams: an Application gets `NATS_URL` + `OPENINFRA_QUEUES` injected and its own code declares the
-> stream. A standalone queue would map to an Application that reports Ready but creates no stream — a
-> silent no-op — so it is refused at deploy instead.
+| `AWS::SQS::Queue` | `kind: Queue` | `QueueName`→the stream, `MessageRetentionPeriod`→retentionHours. A NATS JetStream **WorkQueue** (each message to one consumer). **Refused**: `FifoQueue` (JetStream ordering/dedup differs) and `KmsMasterKeyId`. Visibility/delay/DLQ-redrive are consumer-side caveats. |
+| `AWS::SNS::Topic` | `kind: Queue` (fanout) | `TopicName`→the stream. A NATS JetStream **Limits** stream (fan-out — every consumer reads each message). **Refused**: inline `Subscription` (SNS subscribers have no open-infra fan-out target — consumers subscribe themselves), `FifoTopic`, `KmsMasterKeyId`. |
 
 ### Ceilings — map at plan, refuse at deploy *by design*
 
@@ -212,7 +208,6 @@ not unfinished work:
 | `AWS::IAM::Role`, `AWS::IAM::ManagedPolicy`, `AWS::IAM::Policy`, `AWS::IAM::Group` | An IAM policy document (`Allow`/`Deny` over `service:Action` on ARNs) is a different universe from open-infra RBAC (`verb` on a `kind`, no `Deny`). Translating it would produce *wrong* permissions — a security risk. (An identity with no permissions — a bare `IAM::User` — does map; see the create-translators table.) |
 | `AWS::EC2::Instance` | `ImageId` is an opaque AMI id; `kind: VirtualMachine` needs a real `os` (an image-catalog name). You cannot derive "ubuntu-22.04" from "ami-0abc…", so the core of the instance is unmappable. |
 | `AWS::EFS::FileSystem` | EFS is elastic (no provisioned size); `kind: FileShare` requires a `size`. There is no size to map from, and inventing one is a guess. |
-| `AWS::SQS::Queue`, `AWS::SNS::Topic` | Queues are *app-declared* JetStream streams (see above) — no standalone managed-queue resource to create. |
 
 ## Updating a stack
 
