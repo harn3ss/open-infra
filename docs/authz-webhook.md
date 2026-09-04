@@ -138,9 +138,21 @@ posture used to inherit from the CIS benchmark becomes a Cedar-corpus check the 
       control-plane node serving loopback-only TLS. Manifest: `platform/security/manifests/authz-webhook-shadow.yaml`.
       Running with an **empty** control-plane corpus, so every decision is a trivial default-deny —
       the baseline. Meaningful divergence needs the corpus below.
-- [ ] **`kind: Policy` `spec.controlPlane` corpus** — author explicit Cedar grants for the enumerated
-      implicit principals (the XRD field + a starter corpus), so the shadow log shows *real*
-      divergence, not "Cedar denies everything". Then move the webhook first-in-chain (structured
-      `authorization-config`) to also see RBAC-allowed traffic.
+- [x] **`spec.controlPlane` field + a corpus generator** — the XRD field is live, and
+      **`rbac-to-cedar`** (`console-api/cmd/rbac-to-cedar`, pure core in `internal/rbactocedar`)
+      translates the cluster's RBAC into per-principal `kind: Policy spec.controlPlane` grants,
+      one per principal, mirroring what RBAC allows and recording faithfulness caveats where the
+      translation is lossy (a resource-`*` widening, dropped `resourceNames`) — it never invents a
+      Deny. Verified end-to-end: a generated `controlPlane` policy is Ready with **zero** RBAC
+      side-effects (it is read by the webhook, not compiled to RBAC), and the webhook honors it
+      (a granted principal's SAR returns "would ALLOW"). Generating the corpus is read-only;
+      **applying** it is a deliberate operator step (it is cluster-specific, so it is regenerated
+      rather than committed):
+      ```
+      KUBECONFIG=... go run ./cmd/rbac-to-cedar > corpus.yaml   # review, then kubectl apply -f
+      ```
+- [ ] **Webhook first-in-chain** — with the corpus applied, move the webhook first (structured
+      `authorization-config`) so it also sees RBAC-*allowed* traffic and the shadow log shows the
+      full divergence (the under-grant direction, not just over-grants). Needs the root config step.
 - [ ] **Enforce + RBAC removal** — only after divergence is understood, every implicit principal has
       an explicit grant, and the failure posture is evidenced.
