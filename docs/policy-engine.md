@@ -1,10 +1,12 @@
 # open-infra policy engine (WIP)
 
-> Status: **in development** on `feat/policy-engine`. This documents the design and tracks what is
-> actually built. The engine and its shim enforcement are built and the decision path is
-> live-verified (see the build phases); enforcement only bites where the aws-shim data-plane front
-> doors are enabled, which is opt-in and off by default, so no live platform traffic is governed
-> today. The remaining live step is a fully-deployed shim answering a SigV4 call.
+> Status: **in development** (merged to `main`). This documents the design and tracks what is
+> actually built. The engine, its shim enforcement, and a **fully-deployed shim deciding a real
+> SigV4 request** are all live-verified (see the build phases and
+> [`evidence/data-plane-policy-enforcement.md`](../evidence/data-plane-policy-enforcement.md)).
+> Enforcement only bites where the aws-shim data-plane front doors are enabled, which is opt-in and
+> off by default, so no live platform traffic is governed today — turning that on for the platform
+> is a separate, explicit step.
 
 ## Why
 
@@ -130,9 +132,12 @@ RBAC check, so it can only tighten.
       Deny blocks the op at the shim.
 - [x] **Live-verified on the cluster** — a real `kind: Policy` with a `dataPlane` block round-trips
       through the CRD, and the real `K8sLoader` → Checker → Cedar engine decides correctly
-      (deny-overrides, condition-gating, allow-list restriction, per-service governance). The
-      remaining live step is the fully-deployed shim answering a SigV4 aws-cli call (generic shim
-      HTTP plumbing, already proven for the shim's other paths).
+      (deny-overrides, condition-gating, allow-list restriction, per-service governance).
+- [x] **Deployed shim, real SigV4** — a fully-deployed shim binary authenticated a real `aws` CLI
+      SigV4 request and let the engine decide: forbid-overrides-allow and per-resource scoping, with
+      the server-side deny log and an A/B control isolating the policy from the coarse SAR. Ran in a
+      throwaway namespace, torn down; the platform front door stays opt-in/off. Evidence:
+      [`evidence/data-plane-policy-enforcement.md`](../evidence/data-plane-policy-enforcement.md).
 - [ ] **AppSync** — deliberately NOT via this engine: AppSync's fine-grained authz is *inside*
       open-appsync (per-field `@aws_*` + SAR), which is the right layer; the shim can't identify a
       specific API. Left to open-appsync.
@@ -149,7 +154,6 @@ RBAC check, so it can only tighten.
       (a transient loader error was a shim-wide outage), and confirmed the enforcement is coarse-AND
       (data-plane runs after the SAR, so it only tightens), the request action/resource are matched as
       exact strings (only a *policy's* `*` becomes a wildcard), and a client-build failure disables the
-      engine loudly rather than silently. Governed denies are logged. Remaining: a deeper external
-      review, and the final live step — a fully-deployed shim answering a SigV4 aws-cli call against a
-      governed principal (the loader → engine and CFN → enforced-policy paths are both live-verified
-      above; standing up the shim front door on the live platform is the opt-in operator step).
+      engine loudly rather than silently. Governed denies are logged, and the deployed-shim SigV4
+      decision is now live-verified (above). Remaining: a deeper external review, and enabling the
+      shim front door on the live platform — a separate, explicit step, not an assurance gap.
