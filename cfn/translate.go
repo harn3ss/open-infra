@@ -1219,6 +1219,7 @@ func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest,
 	known := map[string]bool{
 		"BucketName": true, "VersioningConfiguration": true, "LifecycleConfiguration": true,
 		"BucketEncryption": true, "Tags": true,
+		"ObjectLockEnabled": true, "ObjectLockConfiguration": true,
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
@@ -1240,6 +1241,31 @@ func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		if rules := s3LifecycleRules(id, lc, &f); len(rules) > 0 {
 			spec["lifecycleRules"] = rules
 		}
+	}
+	// Object Lock (WORM) — MinIO enforces it natively. Map the DefaultRetention (the WORM policy the
+	// audit store already proves in-house). A lock-enabled bucket with only per-object retention (no
+	// default) refuses loudly rather than being created without the retention the user expects.
+	_, lockEnabled := props["ObjectLockEnabled"]
+	if olc, ok := props["ObjectLockConfiguration"].(map[string]any); ok {
+		lockEnabled = true
+		rule, _ := olc["Rule"].(map[string]any)
+		dr, _ := rule["DefaultRetention"].(map[string]any)
+		mode, _ := concrete(dr["Mode"])
+		if mode != "GOVERNANCE" && mode != "COMPLIANCE" {
+			f = append(f, Finding{"Resource " + id, "ObjectLockConfiguration needs a Rule.DefaultRetention with Mode GOVERNANCE or COMPLIANCE"})
+		} else {
+			ol := map[string]any{"mode": mode}
+			if d, ok := dr["Days"]; ok {
+				ol["days"] = d
+			} else if y, ok := dr["Years"]; ok {
+				ol["years"] = y
+			} else {
+				f = append(f, Finding{"Resource " + id, "ObjectLock DefaultRetention needs a Days or Years period"})
+			}
+			spec["objectLock"] = ol
+		}
+	} else if lockEnabled {
+		f = append(f, Finding{"Resource " + id, "ObjectLockEnabled without an ObjectLockConfiguration.Rule.DefaultRetention has no open-infra form yet — kind: Bucket objectLock sets a default retention (Mode + Days/Years); add one or manage per-object retention out of band"})
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: k8sName(id), Spec: spec}
