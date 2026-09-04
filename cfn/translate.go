@@ -1166,9 +1166,17 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 		return nil, f
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: spec, Caveats: caveats}
-	for _, p := range []string{"LoadBalancers", "LaunchType", "ServiceName", "ServiceRegistries", "Role"} {
+	// §2 (#117): the LB's HTTP target port maps to the app's Service port (the primary container's
+	// PortMapping, already carried). The routing rules themselves live in separate ELB resources
+	// (Listener/ListenerRule/TargetGroup) that aren't in scope, and the ELB DNS name is not a user
+	// hostname — so an Ingress host/TLS needs Application.domain set natively. Say that precisely
+	// rather than a blanket "LB dropped."
+	if _, ok := props["LoadBalancers"]; ok {
+		m.Caveats = append(m.Caveats, "LoadBalancers: the HTTP target port maps to the app's Service (in-cluster) port; to expose it over HTTPS with an Ingress + TLS, set Application.domain (the ELB DNS name doesn't transfer as a hostname). Target-group health-check tuning and L4/NLB specifics don't map.")
+	}
+	for _, p := range []string{"LaunchType", "ServiceName", "ServiceRegistries", "Role"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — open-infra exposes the app via Application.domain (Ingress+TLS); ECS LB/launch-type config has no direct form")
+			m.Caveats = append(m.Caveats, p+" dropped — open-infra exposes the app via Application.domain (Ingress+TLS); ECS launch-type/registry config has no direct form")
 		}
 	}
 	// A subnet/security-group reference is a network-ISOLATION expectation, not just config: dropping
@@ -1191,8 +1199,39 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 	var f []Finding
 	var caveats []string
 	f = append(f, blockUnknownProps(tdID, td, known)...)
-	if _, ok := td["Volumes"]; ok {
-		f = append(f, Finding{"Resource " + tdID, "task Volumes have no faithful Application form — refusing rather than dropping a mount"})
+	// Task Volumes (#117 §1): a shared scratch volume (no Host SourcePath, no EFS/Docker config) maps
+	// to a pod emptyDir — the natural multi-container fit. A host-path bind mount, EFS, or Docker
+	// volume has no safe/faithful Application form and refuses (never a silent drop of a mount).
+	spec0 := map[string]any{}
+	if vols, ok := td["Volumes"].([]any); ok {
+		var appVols []any
+		for _, raw := range vols {
+			v, _ := raw.(map[string]any)
+			name, _ := concrete(v["Name"])
+			if name == "" {
+				f = append(f, Finding{"Resource " + tdID, "a task Volume requires a Name"})
+				continue
+			}
+			hostBind := false
+			if h, ok := v["Host"].(map[string]any); ok {
+				if sp, _ := concrete(h["SourcePath"]); sp != "" {
+					hostBind = true
+				}
+			}
+			switch {
+			case hostBind:
+				f = append(f, Finding{"Resource " + tdID, "task Volume " + name + " is a host bind mount (Host.SourcePath) — no safe open-infra equivalent (a node host path); refusing rather than dropping it"})
+			case v["EFSVolumeConfiguration"] != nil:
+				f = append(f, Finding{"Resource " + tdID, "task Volume " + name + " is EFS — map it to a kind: FileShare natively (not yet wired into the Application collation); refusing rather than dropping a durable mount"})
+			case v["DockerVolumeConfiguration"] != nil:
+				f = append(f, Finding{"Resource " + tdID, "task Volume " + name + " is a Docker volume — no open-infra equivalent; refusing rather than dropping it"})
+			default:
+				appVols = append(appVols, map[string]any{"name": k8sName(name)})
+			}
+		}
+		if len(appVols) > 0 {
+			spec0["volumes"] = appVols
+		}
 	}
 	for _, p := range []string{"Cpu", "Memory", "TaskRoleArn", "ExecutionRoleArn", "NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
 		if _, ok := td[p]; ok {
@@ -1200,13 +1239,14 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 		}
 	}
 
-	spec := map[string]any{}
+	spec := spec0 // carry the mapped shared volumes (emptyDir), if any
 	containers, _ := td["ContainerDefinitions"].([]any)
 	if len(containers) == 0 {
 		f = append(f, Finding{"Resource " + tdID, "a TaskDefinition requires at least one container"})
 		return spec, caveats, f
 	}
-	// The primary container -> the Application's image/port/env; the rest -> sidecars (same pod).
+	// The primary container -> the Application's image/port/env/cpu/memory/volumeMounts; the rest ->
+	// sidecars (same pod).
 	primaryIdx := ecsPickPrimary(containers, primaryName)
 	pc, _ := containers[primaryIdx].(map[string]any)
 	for k, v := range ecsContainerSpec(tdID, pc, &f) {
@@ -1224,7 +1264,7 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 			name = fmt.Sprintf("sidecar-%d", i)
 		}
 		side := map[string]any{"name": k8sName(name)}
-		for _, k := range []string{"image", "port", "env"} {
+		for _, k := range []string{"image", "port", "env", "cpu", "memory", "volumeMounts"} {
 			if v, ok := cs[k]; ok {
 				side[k] = v
 			}
@@ -1233,7 +1273,7 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 	}
 	if len(sidecars) > 0 {
 		spec["sidecars"] = sidecars
-		caveats = append(caveats, fmt.Sprintf("multi-container task: %q is the primary (image/port), the other %d container(s) map to Application sidecars (image/port/env only — per-container CPU/memory/health checks are not carried)", concreteOr(pc["Name"], "the primary"), len(sidecars)))
+		caveats = append(caveats, fmt.Sprintf("multi-container task: %q is the primary, the other %d container(s) map to Application sidecars (image/port/env/cpu/memory + shared-volume mounts carried; per-container health checks are not)", concreteOr(pc["Name"], "the primary"), len(sidecars)))
 	}
 	return spec, caveats, f
 }
@@ -1268,6 +1308,7 @@ func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding) map[string]an
 		"Name": true, "Image": true, "PortMappings": true, "Environment": true, "Essential": true,
 		"Cpu": true, "Memory": true, "MemoryReservation": true, "Command": true, "EntryPoint": true,
 		"LogConfiguration": true, "Secrets": true, "HealthCheck": true, "DependsOn": true,
+		"MountPoints": true,
 	}
 	*f = append(*f, blockUnknownProps(tdID, c, cknown)...)
 	spec := map[string]any{}
@@ -1288,10 +1329,58 @@ func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding) map[string]an
 			}
 		}
 	}
+	// Per-container resources (#117 §1): Cpu (CPU units, 1024 = 1 vCPU) -> cpu; Memory (or the soft
+	// MemoryReservation) in MiB -> memory. A faithful correspondence, requested == limited.
+	if cpu, ok := c["Cpu"]; ok {
+		if u := toInt(cpu); u > 0 {
+			spec["cpu"] = ecsCPU(u)
+		}
+	}
+	if mem, ok := c["Memory"]; ok {
+		if mi := toInt(mem); mi > 0 {
+			spec["memory"] = fmt.Sprintf("%dMi", mi)
+		}
+	} else if mr, ok := c["MemoryReservation"]; ok {
+		if mi := toInt(mr); mi > 0 {
+			spec["memory"] = fmt.Sprintf("%dMi", mi)
+		}
+	}
+	// MountPoints -> volumeMounts (#117 §1): the SourceVolume must be a task Volume mapped to an
+	// emptyDir (validated in ecsTaskToApp); ContainerPath -> mountPath.
+	if mps, ok := c["MountPoints"].([]any); ok && len(mps) > 0 {
+		var mounts []any
+		for _, raw := range mps {
+			mp, _ := raw.(map[string]any)
+			sv, _ := concrete(mp["SourceVolume"])
+			cp, _ := concrete(mp["ContainerPath"])
+			if sv == "" || cp == "" {
+				*f = append(*f, Finding{"Resource " + tdID, "a MountPoint needs both SourceVolume and ContainerPath"})
+				continue
+			}
+			mounts = append(mounts, map[string]any{"name": k8sName(sv), "mountPath": cp})
+		}
+		if len(mounts) > 0 {
+			spec["volumeMounts"] = mounts
+		}
+	}
+	// DependsOn ordering has no faithful Application field (no init-container / startup-ordering
+	// surface here) — named, not silently dropped.
+	if _, ok := c["DependsOn"]; ok {
+		*f = append(*f, Finding{"Resource " + tdID, "container DependsOn ordering has no Application equivalent — same-pod container startup ordering isn't expressible here (refusing rather than dropping an ordering guarantee); split the dependency into separate Applications or remove it"})
+	}
 	if envList := ecsEnv(tdID, c, f); len(envList) > 0 {
 		spec["env"] = envList
 	}
 	return spec
+}
+
+// ecsCPU converts ECS CPU units (1024 = 1 vCPU) to a Kubernetes millicore string.
+func ecsCPU(units int) string {
+	m := units * 1000 / 1024
+	if m < 1 {
+		m = 1
+	}
+	return fmt.Sprintf("%dm", m)
 }
 
 // concreteOr returns the concrete string of v, or def when it isn't concrete.
