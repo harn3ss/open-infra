@@ -1,0 +1,63 @@
+# Cedar control-plane authorization webhook — SHADOW deployment (Phase 2, docs/authz-webhook.md).
+# Under manifests/ so ArgoCD does NOT auto-sync it: this is the experimental shadow run, applied
+# with kubectl. hostNetwork on the control-plane node, loopback-only TLS on 127.0.0.1:8099, shadow
+# mode (returns no-opinion -> cannot change any authz decision). The API-server wiring
+# (authorization-mode=Node,RBAC,Webhook + the webhook kubeconfig) is a host-side root step, not GitOps.
+# The TLS secret (authz-webhook-tls) is created out-of-band from a self-signed cert (SAN 127.0.0.1).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: authz-webhook, namespace: open-infra-authz }
+---
+# Read kind: Policy cluster-wide for the control-plane corpus (spec.controlPlane). Read-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: open-infra-authz-webhook-policies }
+rules:
+  - { apiGroups: [iam.openinfra.dev], resources: [policies], verbs: [get, list, watch] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: open-infra-authz-webhook-policies }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-authz-webhook-policies }
+subjects: [{ kind: ServiceAccount, name: authz-webhook, namespace: open-infra-authz }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: authz-webhook, namespace: open-infra-authz, labels: { app: authz-webhook } }
+spec:
+  replicas: 1   # shadow spike; HA is a later step (the design calls for multiple replicas)
+  selector: { matchLabels: { app: authz-webhook } }
+  template:
+    metadata: { labels: { app: authz-webhook } }
+    spec:
+      serviceAccountName: authz-webhook
+      # Reachable by the API server WITHOUT cluster networking (authorizers are called early):
+      # hostNetwork on the control-plane node, listening on loopback only.
+      hostNetwork: true
+      nodeSelector: { node-role.kubernetes.io/control-plane: "true" }
+      tolerations:
+        - { key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule }
+        - { key: CriticalAddonsOnly, operator: Exists }
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: authz-webhook
+          image: ghcr.io/harn3ss/open-infra-authz-webhook:latest
+          imagePullPolicy: Always
+          env:
+            - { name: LISTEN_ADDR, value: "127.0.0.1:8099" }   # loopback: only the local API server reaches it
+            - { name: AUTHZ_MODE, value: "shadow" }            # decides NOTHING; logs would-be decisions
+            - { name: TLS_CERT_FILE, value: "/tls/tls.crt" }
+            - { name: TLS_KEY_FILE, value: "/tls/tls.key" }
+          volumeMounts: [{ name: tls, mountPath: /tls, readOnly: true }]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8099, scheme: HTTPS, host: 127.0.0.1 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          resources: { requests: { cpu: 25m, memory: 64Mi }, limits: { cpu: 500m, memory: 256Mi } }
+      volumes:
+        - { name: tls, secret: { secretName: authz-webhook-tls } }
