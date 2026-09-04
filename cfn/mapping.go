@@ -55,10 +55,14 @@ var mappingTable = map[string]MapEntry{
 	"AWS::EC2::Instance":                  {Kind: "VirtualMachine", Status: Partial, Note: "maps at plan, but no create translator by design: ImageId is an opaque AMI id and kind: VirtualMachine needs a real os (image-catalog name) — the OS is unmappable"},
 	"AWS::EC2::Volume":                    {Kind: "Volume", Status: Partial, Note: "block volume (Longhorn); Encrypted -> LUKS keyed by a customer kind: EncryptionKey (KmsKeyId must reference an in-stack KMS::Key). AZ/VolumeType/IOPS have no equivalent."},
 	"AWS::EFS::FileSystem":                {Kind: "FileShare", Status: Partial, Note: "maps at plan, but no create translator by design: EFS is elastic (no size) and kind: FileShare requires a size — inventing one would be a guess"},
-	"AWS::AppSync::DataSource":            {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec, not a standalone resource"},
-	"AWS::AppSync::Resolver":              {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
-	"AWS::AppSync::FunctionConfiguration": {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
-	"AWS::AppSync::GraphQLSchema":         {Kind: "GraphQLApi", Status: Partial, Note: "a sub-part of a GraphQLApi's spec"},
+	// Faithfully translated AS PART OF their parent AWS::AppSync::GraphQLApi (schema SDL / VTL /
+	// APPSYNC_JS carried byte-for-byte via the collation) — NOT lossy, so not "partial". They are
+	// simply not standalone: a bare one whose ApiId names no in-stack GraphQLApi refuses at deploy
+	// (an orphan, not a silent success). See #118.
+	"AWS::AppSync::DataSource":            {Kind: "GraphQLApi", Status: Supported, Note: "faithfully translated as part of its parent GraphQLApi; not standalone — a bare one (no in-stack API) refuses"},
+	"AWS::AppSync::Resolver":              {Kind: "GraphQLApi", Status: Supported, Note: "faithfully translated as part of its parent GraphQLApi (VTL/JS byte-for-byte); not standalone — a bare one refuses"},
+	"AWS::AppSync::FunctionConfiguration": {Kind: "GraphQLApi", Status: Supported, Note: "faithfully translated as part of its parent GraphQLApi (pipeline function); not standalone — a bare one refuses"},
+	"AWS::AppSync::GraphQLSchema":         {Kind: "GraphQLApi", Status: Supported, Note: "faithfully translated as part of its parent GraphQLApi (schema SDL); not standalone — a bare one refuses"},
 	"AWS::DynamoDB::Table":                {Kind: "Table", Status: Partial, Note: "table via kind: Table — registers name + key schema, TTL, and global secondary indexes on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, local secondary indexes, streams, or per-table SSE — those block."},
 
 	// --- unsupported: explicitly out of scope for v1 ---
