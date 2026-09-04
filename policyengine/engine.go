@@ -100,8 +100,15 @@ func (e *Engine) Authorize(r Request) Decision {
 		Resource:  types.NewEntityUID(entityType(r.Resource.Type), types.String(r.Resource.ID)),
 		Context:   types.NewRecord(ctx),
 	}
-	if d, _ := e.ps.IsAuthorized(types.EntityMap{}, req); d == cedar.Allow {
+	d, diag := e.ps.IsAuthorized(types.EntityMap{}, req)
+	if d == cedar.Allow {
 		return Decision{Allowed: true, Reason: "allowed by policy"}
+	}
+	// Distinguish the two denials — they are different security events an audit log must not
+	// conflate. A non-empty diagnostic reason set means an explicit `forbid` (a Deny overriding an
+	// allow) determined the decision; an empty set means nothing permitted the action at all.
+	if len(diag.Reasons) > 0 {
+		return Decision{Allowed: false, Reason: "denied by an explicit forbid policy"}
 	}
 	return Decision{Allowed: false, Reason: "no policy allows this action (default deny)"}
 }
