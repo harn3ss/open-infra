@@ -365,3 +365,21 @@ Resources:
 		t.Fatalf("a refused deploy must apply nothing, applied: %v", f.applied)
 	}
 }
+
+// A UserPool + UserPoolClient stack collates to ONE kind: UserPool (client folds into spec.clientId).
+func TestDeploy_CognitoCollation(t *testing.T) {
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), []byte(cognitoStack()), deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "UserPool/pool" {
+		t.Fatalf("applied = %v, want [UserPool/pool] (the client must collate)", got)
+	}
+	if f.liveSpecs["UserPool/pool"]["clientId"] != "web-app" {
+		t.Fatalf("client name not collated to clientId: %#v", f.liveSpecs["UserPool/pool"])
+	}
+}
