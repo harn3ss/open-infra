@@ -2,13 +2,14 @@
 # cluster and writes it as JSON + Markdown for signing. Lives in the console-api module so it shares
 # internal/attest with the console's read-only view — one assembler, so the signed artifact and the
 # on-screen report are the same. Small static binary on distroless, like audit-offsite/aws-shim.
-# Build context is the repo ROOT — console-api requires the shared dynamodb module via a local
-# replace (../dynamodb), so that sibling is copied in beside it.
+# Build context is the repo ROOT — console-api requires the shared dynamodb and policyengine
+# modules via local replaces (../dynamodb, ../policyengine), so those siblings are copied in beside it.
 FROM golang:1.26 AS build
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
 COPY dynamodb/ dynamodb/
+COPY policyengine/ policyengine/
 COPY console-api/go.mod console-api/go.sum console-api/
 WORKDIR /src/console-api
 RUN go mod download
