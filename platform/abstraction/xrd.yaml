@@ -86,6 +86,13 @@ spec:
                     storageClass:
                       type: string
                       description: "StorageClass for the database's persistent volumes. When unset, each engine keeps its default (local-path; babelfish: longhorn). Set this to your cluster's StorageClass on substrates that don't ship a default local-path provisioner, or to pin the DB onto replicated storage (e.g. longhorn)."
+                    storageEncrypted:
+                      type: boolean
+                      default: false
+                      description: "Encrypt the database's storage at rest with LUKS (longhorn-encrypted), keyed by a customer kind: EncryptionKey via encryptionKey — destroying that key crypto-erases the data. Overrides storageClass. Requires the opt-in encryption component. v1: postgres engine only (other engines ignore it)."
+                    encryptionKey:
+                      type: string
+                      description: "Name of the kind: EncryptionKey (a Vault Transit KEK) protecting the database's storage. Required when storageEncrypted is true; ignored otherwise."
                 storage:
                   type: object
                   description: "Object storage for the app."
