@@ -856,29 +856,99 @@ func translateRDSDBInstance(id string, props map[string]any, _ *stackCtx) (*Mani
 	return m, f
 }
 
-// ---- AWS::S3::Bucket -> kind: Application (data-only, spec.storage.buckets) ----
+// ---- AWS::S3::Bucket -> kind: Bucket ----
 //
-// No standalone bucket kind — a bucket is provisioned via a data-only Application's storage.buckets
-// (MinIO). BucketName -> the bucket name; everything else is a behavior-bearing S3 feature MinIO's
-// name-only bucket can't honor, so the strict allowlist BLOCKS it (versioning, encryption,
-// lifecycle, policy, website, CORS, notifications, replication, object-lock, public-access) — a
-// bucket that silently lacked its versioning or encryption is the worst shape. Tags are a caveat.
+// A standalone MinIO bucket (the object-storage analog of kind: Volume). BucketName maps, and — the
+// fidelity gain over the old Application-sub-block mapping — VersioningConfiguration and
+// LifecycleConfiguration (expiration rules) map too. BucketEncryption REFUSES with a pointer to the
+// opt-in objectEncryption stack (per-bucket SSE isn't declarable here) rather than creating an
+// unencrypted bucket that looks encrypted. Policy, website, CORS, notifications, replication,
+// object-lock, public-access and the rest block via the strict allowlist. Tags are a caveat.
 func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
-	known := map[string]bool{"BucketName": true, "Tags": true}
+	known := map[string]bool{
+		"BucketName": true, "VersioningConfiguration": true, "LifecycleConfiguration": true,
+		"BucketEncryption": true, "Tags": true,
+	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 
-	name := k8sName(id)
-	if bn, ok := concrete(props["BucketName"]); ok && bn != "" {
-		name = bn
+	if _, ok := props["BucketEncryption"]; ok {
+		f = append(f, Finding{"Resource " + id, "BucketEncryption is not translatable here — per-bucket SSE requires the opt-in objectEncryption stack (SSE-KMS via KES→Vault, applied at the MinIO-tenant level); refusing rather than creating an unencrypted bucket that looks encrypted"})
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id),
-		Spec: map[string]any{"storage": map[string]any{"buckets": []any{name}}}}
+
+	spec := map[string]any{}
+	if bn, ok := concrete(props["BucketName"]); ok && bn != "" {
+		spec["bucketName"] = bn
+	}
+	if vc, ok := props["VersioningConfiguration"].(map[string]any); ok {
+		if st, _ := concrete(vc["Status"]); st == "Enabled" {
+			spec["versioning"] = true
+		}
+	}
+	if lc, ok := props["LifecycleConfiguration"].(map[string]any); ok {
+		if rules := s3LifecycleRules(id, lc, &f); len(rules) > 0 {
+			spec["lifecycleRules"] = rules
+		}
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: k8sName(id), Spec: spec}
 	if _, ok := props["Tags"]; ok {
 		m.Caveats = append(m.Caveats, "Tags dropped — no open-infra equivalent for a MinIO bucket")
 	}
-	m.Caveats = append(m.Caveats, "provisioned as a data-only Application's storage.buckets (MinIO) — a plain private bucket; S3 features (versioning/encryption/lifecycle/policy/website) are not modeled")
 	return m, f
+}
+
+// s3LifecycleRules maps an S3 LifecycleConfiguration to kind: Bucket lifecycleRules. Supported per
+// rule: Id, Status (Enabled), a Prefix (top-level or Filter.Prefix), ExpirationInDays, and
+// NoncurrentVersionExpiration.NoncurrentDays. Anything else on a rule (Transitions, an absolute
+// ExpirationDate, tag/size filters, abort-multipart) blocks — a lifecycle rule that silently
+// dropped its transition or kept objects past their expiry is the worst shape.
+func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
+	rules, _ := lc["Rules"].([]any)
+	var out []any
+	for i, r := range rules {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		rknown := map[string]bool{"Id": true, "Status": true, "Prefix": true, "Filter": true, "ExpirationInDays": true, "NoncurrentVersionExpiration": true}
+		*f = append(*f, blockUnknownProps(id+" lifecycle rule", rm, rknown)...)
+
+		rule := map[string]any{}
+		if rid, ok := concrete(rm["Id"]); ok && rid != "" {
+			rule["id"] = rid
+		} else {
+			rule["id"] = fmt.Sprintf("rule-%d", i)
+		}
+		if st, _ := concrete(rm["Status"]); st != "" && st != "Enabled" {
+			*f = append(*f, Finding{"Resource " + id, "lifecycle rule " + fmt.Sprint(rule["id"]) + " Status " + st + " is not applied — only Enabled rules map"})
+		}
+		if p, ok := concrete(rm["Prefix"]); ok && p != "" {
+			rule["prefix"] = p
+		} else if fl, ok := rm["Filter"].(map[string]any); ok {
+			for k := range fl {
+				if k != "Prefix" {
+					*f = append(*f, Finding{"Resource " + id, "lifecycle rule " + fmt.Sprint(rule["id"]) + " Filter." + k + " is not supported — only a Prefix filter maps"})
+				}
+			}
+			if p, ok := concrete(fl["Prefix"]); ok && p != "" {
+				rule["prefix"] = p
+			}
+		}
+		if ed, ok := rm["ExpirationInDays"]; ok {
+			rule["expireDays"] = toInt(ed)
+		}
+		if nve, ok := rm["NoncurrentVersionExpiration"].(map[string]any); ok {
+			if nd, ok := nve["NoncurrentDays"]; ok {
+				rule["noncurrentExpireDays"] = toInt(nd)
+			}
+		}
+		if rule["expireDays"] == nil && rule["noncurrentExpireDays"] == nil {
+			*f = append(*f, Finding{"Resource " + id, "lifecycle rule " + fmt.Sprint(rule["id"]) + " has no supported action (ExpirationInDays or NoncurrentVersionExpiration.NoncurrentDays)"})
+		}
+		out = append(out, rule)
+	}
+	return out
 }
 
 // AWS::SQS::Queue and AWS::SNS::Topic have NO faithful create translator, by design (an honest

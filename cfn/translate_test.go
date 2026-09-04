@@ -639,23 +639,63 @@ func TestTranslate_RDS_UnmappableEngineBlocks(t *testing.T) {
 }
 
 func TestTranslate_S3_Faithful(t *testing.T) {
-	m, fs := translateS3Bucket("Assets", map[string]any{"BucketName": "my-assets"}, nil)
+	m, fs := translateS3Bucket("Assets", map[string]any{
+		"BucketName":              "my-assets",
+		"VersioningConfiguration": map[string]any{"Status": "Enabled"},
+		"LifecycleConfiguration": map[string]any{"Rules": []any{
+			map[string]any{"Id": "expire-logs", "Prefix": "logs/", "Status": "Enabled", "ExpirationInDays": float64(30)},
+			map[string]any{"Id": "trim-versions", "Status": "Enabled", "NoncurrentVersionExpiration": map[string]any{"NoncurrentDays": float64(7)}},
+		}},
+	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
-	st, _ := m.Spec["storage"].(map[string]any)
-	b, _ := st["buckets"].([]any)
-	if len(b) != 1 || b[0] != "my-assets" {
-		t.Fatalf("bucket not faithful: %#v", m.Spec["storage"])
+	if m.Kind != "Bucket" || m.Name != "assets" || m.Spec["bucketName"] != "my-assets" || m.Spec["versioning"] != true {
+		t.Fatalf("bucket not faithful: kind=%s name=%s spec=%#v", m.Kind, m.Name, m.Spec)
+	}
+	rules, _ := m.Spec["lifecycleRules"].([]any)
+	if len(rules) != 2 {
+		t.Fatalf("want 2 lifecycle rules, got %#v", m.Spec["lifecycleRules"])
+	}
+	r0, _ := rules[0].(map[string]any)
+	if r0["id"] != "expire-logs" || r0["prefix"] != "logs/" || r0["expireDays"] != 30 {
+		t.Fatalf("lifecycle rule 0 not faithful: %#v", r0)
+	}
+	r1, _ := rules[1].(map[string]any)
+	if r1["noncurrentExpireDays"] != 7 {
+		t.Fatalf("lifecycle rule 1 not faithful: %#v", r1)
 	}
 }
 
-func TestTranslate_S3_VersioningBlocks(t *testing.T) {
+func TestTranslate_S3_EncryptionBlocks(t *testing.T) {
 	_, fs := translateS3Bucket("B", map[string]any{
-		"BucketName": "b", "VersioningConfiguration": map[string]any{"Status": "Enabled"},
+		"BucketName":       "b",
+		"BucketEncryption": map[string]any{"ServerSideEncryptionConfiguration": []any{}},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "VersioningConfiguration") {
-		t.Fatalf("a behavior-bearing S3 feature must block, findings: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "BucketEncryption") {
+		t.Fatalf("BucketEncryption must refuse (no silent unencrypted bucket), findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_S3_UnsupportedFeatureBlocks(t *testing.T) {
+	_, fs := translateS3Bucket("B", map[string]any{
+		"BucketName":           "b",
+		"WebsiteConfiguration": map[string]any{"IndexDocument": "index.html"},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "WebsiteConfiguration") {
+		t.Fatalf("an unmapped S3 feature must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_S3_LifecycleTransitionBlocks(t *testing.T) {
+	_, fs := translateS3Bucket("B", map[string]any{
+		"BucketName": "b",
+		"LifecycleConfiguration": map[string]any{"Rules": []any{
+			map[string]any{"Id": "r", "Status": "Enabled", "Transitions": []any{map[string]any{"StorageClass": "GLACIER"}}},
+		}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "Transitions") {
+		t.Fatalf("a lifecycle Transition must block, findings: %s", findingsText(fs))
 	}
 }
 

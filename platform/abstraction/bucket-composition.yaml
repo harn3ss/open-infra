@@ -1,0 +1,102 @@
+# The compiler for kind: Bucket. A single setup Job (aws-cli + kubectl) in the minio namespace
+# creates the MinIO bucket, applies versioning + lifecycle (expiration) via the S3 API, and writes
+# the per-bucket creds Secret (<name>-minio) into the claim namespace. It reuses the same pattern as
+# an Application's storage.buckets: runs in the minio namespace so MinIO root creds come from the
+# `minio` Secret via env (never from this Composition), on the pre-defined openinfra-bucket-setup SA.
+#
+# The Job name carries a hash of the mutable spec (versioning + lifecycle), so changing either
+# re-runs the setup (a fresh Job) rather than being a no-op on an immutable Job.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: bucket
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XBucket
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $bucket := $spec.bucketName | default $name }}
+            {{- $rules := list }}
+            {{- range $r := ($spec.lifecycleRules | default list) }}
+              {{- $rule := dict "ID" $r.id "Status" "Enabled" "Filter" (dict "Prefix" ($r.prefix | default "")) }}
+              {{- if $r.expireDays }}{{- $_ := set $rule "Expiration" (dict "Days" $r.expireDays) }}{{- end }}
+              {{- if $r.noncurrentExpireDays }}{{- $_ := set $rule "NoncurrentVersionExpiration" (dict "NoncurrentDays" $r.noncurrentExpireDays) }}{{- end }}
+              {{- $rules = append $rules $rule }}
+            {{- end }}
+            {{- $lifecycle := dict "Rules" $rules | toJson }}
+            {{- $hash := (printf "%v|%s" ($spec.versioning | default false) $lifecycle) | sha256sum | trunc 10 }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-bucket-{{ $hash }}, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            env:
+                              - name: AWS_ACCESS_KEY_ID
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: AWS_SECRET_ACCESS_KEY
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - name: AWS_DEFAULT_REGION
+                                value: us-east-1
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                set -e
+                                E=http://minio.minio.svc.cluster.local:9000
+                                aws --endpoint-url $E s3 mb "s3://{{ $bucket }}" 2>/dev/null || true
+                                {{- if $spec.versioning }}
+                                aws --endpoint-url $E s3api put-bucket-versioning --bucket {{ $bucket }} --versioning-configuration Status=Enabled
+                                {{- end }}
+                                {{- if $rules }}
+                                aws --endpoint-url $E s3api put-bucket-lifecycle-configuration --bucket {{ $bucket }} --lifecycle-configuration '{{ $lifecycle }}'
+                                {{- end }}
+                                kubectl create secret generic {{ $name }}-minio -n {{ $ns }} \
+                                  --from-literal=MINIO_ENDPOINT=$E \
+                                  --from-literal=MINIO_BUCKET={{ $bucket }} \
+                                  --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
+                                  --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
+                                  --dry-run=client -o yaml | kubectl apply -f -
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XBucket
+            status:
+              ready: true
+              bucket: {{ $bucket | quote }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

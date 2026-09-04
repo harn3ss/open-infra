@@ -1,0 +1,69 @@
+# kind: Bucket — a standalone S3-compatible object store (MinIO), the object-storage analog of
+# kind: Volume. One claim -> a MinIO bucket + per-bucket credentials (a <name>-minio Secret in the
+# claim namespace: MINIO_ENDPOINT / MINIO_BUCKET / MINIO_ACCESS_KEY / MINIO_SECRET_KEY), with
+# optional object VERSIONING and LIFECYCLE (expiration) rules.
+#
+# Use it for object storage that isn't tied to one workload (a data lake, a shared asset store); an
+# app that owns its bucket can still declare it inline via an Application's storage.buckets. This is
+# the CFN engine's AWS::S3::Bucket target — a dedicated kind, so a bucket with versioning/lifecycle
+# maps rather than riding an empty data-only Application.
+#
+# NOT modelled here: server-side encryption (that is the opt-in objectEncryption stack — SSE-KMS via
+# KES->Vault, applied at the MinIO-tenant level, see docs/object-encryption.md), bucket policies,
+# website hosting, CORS, replication, and object lock.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xbuckets.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XBucket, plural: xbuckets }
+  claimNames: { kind: Bucket, plural: buckets }
+  defaultCompositionRef: { name: bucket }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                bucketName:
+                  type: string
+                  description: "The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens), 3-63 chars. Immutable."
+                  pattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+                versioning:
+                  type: boolean
+                  default: false
+                  description: "Keep prior versions of overwritten/deleted objects (S3 bucket versioning)."
+                lifecycleRules:
+                  type: array
+                  description: "Object lifecycle (expiration) rules — MinIO applies them in the background."
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: string, description: "Rule id (unique within the bucket)." }
+                      prefix: { type: string, description: "Apply only to object keys under this prefix. Empty = the whole bucket." }
+                      expireDays:
+                        type: integer
+                        description: "Delete current-version objects this many days after creation."
+                      noncurrentExpireDays:
+                        type: integer
+                        description: "Delete non-current (prior) versions this many days after they become non-current. Pairs with versioning."
+            status:
+              type: object
+              properties:
+                bucket: { type: string }
+                ready: { type: boolean }

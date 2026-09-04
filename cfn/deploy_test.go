@@ -301,14 +301,16 @@ func TestDeploy_AppSyncCollation(t *testing.T) {
 	}
 }
 
-// S3/RDS deploy to data-only Applications (bucket / managed database). SQS/SNS have no create
+// S3 deploys to a standalone kind: Bucket; RDS to a data-only Application. SQS/SNS have no create
 // translator by design (queues are app-declared — a standalone queue would be a silent no-op).
-func TestDeploy_S3Bucket_DataOnlyApp(t *testing.T) {
+func TestDeploy_S3Bucket(t *testing.T) {
 	tmpl := []byte(`
 Resources:
   Assets:
     Type: AWS::S3::Bucket
-    Properties: { BucketName: my-assets }
+    Properties:
+      BucketName: my-assets
+      VersioningConfiguration: { Status: Enabled }
 `)
 	f := &fakeApplier{}
 	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
@@ -318,12 +320,12 @@ Resources:
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Application/assets" {
-		t.Fatalf("applied = %v, want [Application/assets]", got)
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Bucket/assets" {
+		t.Fatalf("applied = %v, want [Bucket/assets]", got)
 	}
-	st, _ := f.liveSpecs["Application/assets"]["storage"].(map[string]any)
-	if b, _ := st["buckets"].([]any); len(b) != 1 || b[0] != "my-assets" {
-		t.Fatalf("bucket not faithful: %#v", f.liveSpecs["Application/assets"]["storage"])
+	spec := f.liveSpecs["Bucket/assets"]
+	if spec["bucketName"] != "my-assets" || spec["versioning"] != true {
+		t.Fatalf("bucket not faithful: %#v", spec)
 	}
 }
 
