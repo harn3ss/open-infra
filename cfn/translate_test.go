@@ -345,23 +345,64 @@ Resources:
 }
 
 // A multi-container task can't map (Application runs one container) — refuse.
-func TestTranslate_ECSService_MultiContainerRefused(t *testing.T) {
+// A multi-container task maps to a primary Application + sidecars: the LB-named container is the
+// primary (image/port), the rest become sidecars.
+func TestTranslate_ECSService_MultiContainer(t *testing.T) {
 	tmpl := `
 Resources:
   Task:
     Type: AWS::ECS::TaskDefinition
     Properties:
       ContainerDefinitions:
-        - { Name: app, Image: a:1 }
-        - { Name: sidecar, Image: b:1 }
+        - { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 8080 } ] }
+        - { Name: log, Image: fluentd:1, Environment: [ { Name: SINK, Value: loki } ] }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      DesiredCount: 2
+      LoadBalancers: [ { ContainerName: web, ContainerPort: 8080 } ]
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Spec["image"] != "web:1" || m.Spec["port"] != 8080 {
+		t.Fatalf("primary (LB-named) container not faithful: %#v", m.Spec)
+	}
+	sc, _ := m.Spec["sidecars"].([]any)
+	if len(sc) != 1 {
+		t.Fatalf("want 1 sidecar, got %#v", m.Spec["sidecars"])
+	}
+	s0, _ := sc[0].(map[string]any)
+	if s0["name"] != "log" || s0["image"] != "fluentd:1" {
+		t.Fatalf("sidecar not faithful: %#v", s0)
+	}
+	env, _ := s0["env"].([]any)
+	if len(env) != 1 {
+		t.Fatalf("sidecar env not carried: %#v", s0["env"])
+	}
+}
+
+// A sidecar with a Command override still refuses (Application runs the image's entrypoint).
+func TestTranslate_ECSService_SidecarCommandRefused(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] }
+        - { Name: helper, Image: h:1, Command: [ "do", "thing" ] }
   Svc:
     Type: AWS::ECS::Service
     Properties: { TaskDefinition: !Ref Task, DesiredCount: 1 }
 `
 	ctx := ecsCtx(t, tmpl)
 	_, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
-	if !strings.Contains(findingsText(fs), "one container") {
-		t.Fatalf("a multi-container task must refuse, findings: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "Command") {
+		t.Fatalf("a sidecar Command override must refuse, findings: %s", findingsText(fs))
 	}
 }
 

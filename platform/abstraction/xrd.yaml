@@ -113,6 +113,24 @@ spec:
                     properties:
                       name:  { type: string, description: "Variable name." }
                       value: { type: string, description: "Variable value." }
+                sidecars:
+                  type: array
+                  description: "Auxiliary containers that run alongside the app (a logging agent, a proxy, an ECS multi-container task's helper containers). The `image` above is the primary container; these run in the same pod."
+                  items:
+                    type: object
+                    required: [name, image]
+                    properties:
+                      name:  { type: string, description: "Sidecar container name (unique within the pod)." }
+                      image: { type: string, description: "Sidecar container image." }
+                      port:  { type: integer, description: "Optional container port the sidecar listens on." }
+                      env:
+                        type: array
+                        description: "Environment variables for the sidecar."
+                        items:
+                          type: object
+                          properties:
+                            name:  { type: string }
+                            value: { type: string }
                 secrets:
                   type: array
                   items: { type: string }

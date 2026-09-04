@@ -681,7 +681,19 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 		return nil, f
 	}
 	td, _ := ctx.resolveProps(tdID)
-	spec, caveats, tdFindings := ecsTaskToApp(tdID, td)
+	// The LB routes to a named container — that is the primary; the rest become sidecars.
+	primaryName := ""
+	if lbs, ok := props["LoadBalancers"].([]any); ok {
+		for _, lb := range lbs {
+			if lm, ok := lb.(map[string]any); ok {
+				if n, _ := concrete(lm["ContainerName"]); n != "" {
+					primaryName = n
+					break
+				}
+			}
+		}
+	}
+	spec, caveats, tdFindings := ecsTaskToApp(tdID, td, primaryName)
 	f = append(f, tdFindings...)
 
 	// DesiredCount -> a fixed replica count (ECS Service autoscaling is a separate resource).
@@ -704,7 +716,7 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 
 // ecsTaskToApp translates the TaskDefinition half: exactly one container -> image/port/env,
 // returning the partial Application spec, the declared caveats, and any blocking findings.
-func ecsTaskToApp(tdID string, td map[string]any) (map[string]any, []string, []Finding) {
+func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[string]any, []string, []Finding) {
 	known := map[string]bool{
 		"ContainerDefinitions": true, "Cpu": true, "Memory": true, "NetworkMode": true,
 		"TaskRoleArn": true, "ExecutionRoleArn": true, "RequiresCompatibilities": true,
@@ -724,26 +736,83 @@ func ecsTaskToApp(tdID string, td map[string]any) (map[string]any, []string, []F
 
 	spec := map[string]any{}
 	containers, _ := td["ContainerDefinitions"].([]any)
-	if len(containers) != 1 {
-		f = append(f, Finding{"Resource " + tdID, fmt.Sprintf("a TaskDefinition maps to an Application only with exactly one container (got %d) — Application runs a single container; sidecars have no form", len(containers))})
+	if len(containers) == 0 {
+		f = append(f, Finding{"Resource " + tdID, "a TaskDefinition requires at least one container"})
 		return spec, caveats, f
 	}
-	c, _ := containers[0].(map[string]any)
+	// The primary container -> the Application's image/port/env; the rest -> sidecars (same pod).
+	primaryIdx := ecsPickPrimary(containers, primaryName)
+	pc, _ := containers[primaryIdx].(map[string]any)
+	for k, v := range ecsContainerSpec(tdID, pc, &f) {
+		spec[k] = v
+	}
+	var sidecars []any
+	for i, cc := range containers {
+		if i == primaryIdx {
+			continue
+		}
+		cm, _ := cc.(map[string]any)
+		cs := ecsContainerSpec(tdID, cm, &f)
+		name, _ := concrete(cm["Name"])
+		if name == "" {
+			name = fmt.Sprintf("sidecar-%d", i)
+		}
+		side := map[string]any{"name": k8sName(name)}
+		for _, k := range []string{"image", "port", "env"} {
+			if v, ok := cs[k]; ok {
+				side[k] = v
+			}
+		}
+		sidecars = append(sidecars, side)
+	}
+	if len(sidecars) > 0 {
+		spec["sidecars"] = sidecars
+		caveats = append(caveats, fmt.Sprintf("multi-container task: %q is the primary (image/port), the other %d container(s) map to Application sidecars (image/port/env only — per-container CPU/memory/health checks are not carried)", concreteOr(pc["Name"], "the primary"), len(sidecars)))
+	}
+	return spec, caveats, f
+}
+
+// ecsPickPrimary chooses the primary container: the one the load balancer names, else the first
+// with a published port, else the first.
+func ecsPickPrimary(containers []any, primaryName string) int {
+	if primaryName != "" {
+		for i, cc := range containers {
+			if cm, ok := cc.(map[string]any); ok {
+				if n, _ := concrete(cm["Name"]); n == primaryName {
+					return i
+				}
+			}
+		}
+	}
+	for i, cc := range containers {
+		if cm, ok := cc.(map[string]any); ok {
+			if ports, ok := cm["PortMappings"].([]any); ok && len(ports) > 0 {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+// ecsContainerSpec maps one ECS container to the {image, port, env} an Application container takes.
+// Command/EntryPoint overrides refuse (Application runs the image's entrypoint); the strict cknown
+// allowlist blocks anything else.
+func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding) map[string]any {
 	cknown := map[string]bool{
 		"Name": true, "Image": true, "PortMappings": true, "Environment": true, "Essential": true,
 		"Cpu": true, "Memory": true, "MemoryReservation": true, "Command": true, "EntryPoint": true,
-		"LogConfiguration": true, "Secrets": true, "HealthCheck": true,
+		"LogConfiguration": true, "Secrets": true, "HealthCheck": true, "DependsOn": true,
 	}
-	f = append(f, blockUnknownProps(tdID, c, cknown)...)
-
+	*f = append(*f, blockUnknownProps(tdID, c, cknown)...)
+	spec := map[string]any{}
 	if img, ok := concrete(c["Image"]); ok && img != "" {
 		spec["image"] = img
 	} else {
-		f = append(f, Finding{"Resource " + tdID, "container Image is required and must be a concrete image reference"})
+		*f = append(*f, Finding{"Resource " + tdID, "container Image is required and must be a concrete image reference"})
 	}
 	for _, p := range []string{"Command", "EntryPoint"} {
 		if _, ok := c[p]; ok {
-			f = append(f, Finding{"Resource " + tdID, "container " + p + " override has no Application field — Application runs the image's entrypoint (refusing rather than ignoring it)"})
+			*f = append(*f, Finding{"Resource " + tdID, "container " + p + " override has no Application field — Application runs the image's entrypoint (refusing rather than ignoring it)"})
 		}
 	}
 	if ports, ok := c["PortMappings"].([]any); ok && len(ports) > 0 {
@@ -753,10 +822,18 @@ func ecsTaskToApp(tdID string, td map[string]any) (map[string]any, []string, []F
 			}
 		}
 	}
-	if envList := ecsEnv(tdID, c, &f); len(envList) > 0 {
+	if envList := ecsEnv(tdID, c, f); len(envList) > 0 {
 		spec["env"] = envList
 	}
-	return spec, caveats, f
+	return spec
+}
+
+// concreteOr returns the concrete string of v, or def when it isn't concrete.
+func concreteOr(v any, def string) string {
+	if s, ok := concrete(v); ok && s != "" {
+		return s
+	}
+	return def
 }
 
 // ecsEnv maps a container's Environment ([{Name,Value}]) to Application env ([{name,value}]).
