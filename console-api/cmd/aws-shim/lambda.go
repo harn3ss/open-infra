@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
@@ -39,9 +40,10 @@ var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 type lambdaHandler struct {
 	cs        kubernetes.Interface
 	client    *http.Client
-	fnNS      string        // namespace kind: Function / Knative Services live in
-	svcSuffix string        // cluster DNS suffix; endpoint = http://<name>.<fnNS>.<svcSuffix>
-	async     *asyncInvoker // durable async (Event) delivery; nil = async unavailable (no NATS)
+	fnNS      string                  // namespace kind: Function / Knative Services live in
+	svcSuffix string                  // cluster DNS suffix; endpoint = http://<name>.<fnNS>.<svcSuffix>
+	async     *asyncInvoker           // durable async (Event) delivery; nil = async unavailable (no NATS)
+	authz     *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger    *slog.Logger
 }
 
@@ -73,6 +75,11 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// the function's code (with side effects — pointedly for async Event invokes), so it maps to `create`
 	// on functions, NOT `get`: read-only principals (openinfra:readers hold only get/list/watch) must not
 	// be able to run a function; powerusers/admins hold create. Applies to all invocation types.
+	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "lambda:InvokeFunction", "Function", name, r); denied {
+		h.logger.Warn("lambda denied by data-plane policy", "user", claims.Sub, "function", name, "reason", reason)
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
+	}
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, name); !allowed {
 		h.logger.Warn("lambda denied", "user", claims.Sub, "function", name, "reason", reason)
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,

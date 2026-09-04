@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/tracing"
@@ -38,6 +39,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -62,6 +64,17 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	cs := *kc.Clientset
+
+	// Fine-grained data-plane authorization: a Cedar-backed checker over kind: Policy dataPlane
+	// blocks, cached and refreshed from the cluster. Additive to the coarse SAR (it can only tighten),
+	// fails closed. Disabled (nil-safe no-op) if the dynamic client can't be built.
+	var authzChecker *dataplaneauthz.Checker
+	if dyn, derr := dynamic.NewForConfig(kc.Config); derr != nil {
+		logger.Warn("data-plane policy engine disabled: cannot build dynamic client", "err", derr)
+	} else {
+		authzChecker = dataplaneauthz.New(dataplaneauthz.K8sLoader(dyn), 30*time.Second)
+		logger.Info("data-plane policy engine enabled (kind: Policy dataPlane, refresh 30s)")
+	}
 
 	// Two DIFFERENT namespaces, deliberately split for least privilege:
 	// - keysNS holds the iam-ak-<id> access-key Secrets. Default is the shim's OWN namespace, so
@@ -198,15 +211,18 @@ func run(logger *slog.Logger) error {
 	// client signs for). Adding a service is one more entry. Each carries its own decoder,
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
 	dynamoH := newDynamoHandler(cs, authzNS, mongoDB, pg, getenv("MONGO_DB", "open_infra_dynamodb"), logger)
+	dynamoH.authz = authzChecker
 	dynamoH.startTTLReaper(context.Background(), 60*time.Second) // no-op when the data layer is unset
 	// Register declared kind: Table resources (spec-mirror ConfigMaps) into the table registry, so a
 	// cfn-deployed / GitOps-applied table is usable without a runtime CreateTable. No-op when the
 	// data layer is unset. TABLE_CONFIG_NAMESPACE is where the Table composition writes its mirrors.
 	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-console"), 30*time.Second)
+	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
+	lambdaH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
-		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, logger: logger},
+		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":      &stsHandler{account: account, logger: logger},
-		"lambda":   newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger),
+		"lambda":   lambdaH,
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 		"dynamodb": dynamoH,
 	})
