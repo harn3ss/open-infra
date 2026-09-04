@@ -918,3 +918,52 @@ Resources:
 		t.Fatalf("encrypted-DB-without-a-key must block, findings: %s", findingsText(fs))
 	}
 }
+
+// ---- AWS::SQS::Queue / AWS::SNS::Topic -> kind: Queue ----
+
+func TestTranslate_SQS_Faithful(t *testing.T) {
+	m, fs := translateSQSQueue("Jobs", map[string]any{
+		"QueueName": "jobs", "MessageRetentionPeriod": float64(7200), "VisibilityTimeout": float64(30),
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "Queue" || m.Name != "jobs" || m.Spec["queueName"] != "jobs" || m.Spec["retentionHours"] != 2 {
+		t.Fatalf("SQS queue not faithful: %#v", m.Spec)
+	}
+	if m.Spec["fanout"] == true {
+		t.Fatalf("an SQS queue must not be fanout: %#v", m.Spec)
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "VisibilityTimeout") {
+		t.Fatalf("VisibilityTimeout must be a caveat: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_SQS_FifoBlocks(t *testing.T) {
+	_, fs := translateSQSQueue("Q", map[string]any{"QueueName": "q", "FifoQueue": true}, nil)
+	if !strings.Contains(findingsText(fs), "FIFO queue") {
+		t.Fatalf("a FIFO queue must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_SNS_Faithful(t *testing.T) {
+	m, fs := translateSNSTopic("Events", map[string]any{"TopicName": "events", "DisplayName": "Events"}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "Queue" || m.Spec["queueName"] != "events" || m.Spec["fanout"] != true {
+		t.Fatalf("SNS topic not faithful: %#v", m.Spec)
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "DisplayName") {
+		t.Fatalf("DisplayName must be a caveat: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_SNS_SubscriptionBlocks(t *testing.T) {
+	_, fs := translateSNSTopic("T", map[string]any{
+		"TopicName": "t", "Subscription": []any{map[string]any{"Protocol": "sqs", "Endpoint": "arn:x"}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "Subscriptions") {
+		t.Fatalf("inline Subscriptions must block, findings: %s", findingsText(fs))
+	}
+}

@@ -95,6 +95,8 @@ var translators = map[string]translator{
 	"AWS::ECS::Cluster":                   translateECSCluster,
 	"AWS::RDS::DBInstance":                translateRDSDBInstance,
 	"AWS::S3::Bucket":                     translateS3Bucket,
+	"AWS::SQS::Queue":                     translateSQSQueue,
+	"AWS::SNS::Topic":                     translateSNSTopic,
 	"AWS::AppSync::GraphQLApi":            translateAppSyncGraphQLApi,
 	"AWS::AppSync::GraphQLSchema":         translateAppSyncChild,
 	"AWS::AppSync::DataSource":            translateAppSyncChild,
@@ -989,12 +991,81 @@ func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
 	return out
 }
 
-// AWS::SQS::Queue and AWS::SNS::Topic have NO faithful create translator, by design (an honest
-// ceiling, not an oversight). open-infra's queues are APP-DECLARED JetStream streams: an Application
-// with spec.queues gets NATS_URL + OPENINFRA_QUEUES injected and its own code declares the stream
-// (composition.yaml: "NATS streams are app-declared"). There is no standalone managed-queue resource,
-// so a bare SQS::Queue / SNS::Topic would map to a data-only Application that readies but creates no
-// stream — a silent no-op, verified live. They stay refused (mapping.go documents why).
+// ---- AWS::SQS::Queue -> kind: Queue (a work queue) ----
+//
+// A standalone managed queue backed by a NATS JetStream WorkQueue stream (each message to one
+// consumer, removed on ack — SQS semantics). QueueName -> the stream/subject, MessageRetentionPeriod
+// -> retentionHours. FIFO and per-queue encryption BLOCK (JetStream ordering/dedup differs; no
+// per-queue KMS). Visibility/delay/DLQ-redrive are consumer-side on the app's JetStream consumer,
+// so they are declared caveats.
+func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"QueueName": true, "MessageRetentionPeriod": true, "Tags": true, "FifoQueue": true,
+		"VisibilityTimeout": true, "DelaySeconds": true, "RedrivePolicy": true, "KmsMasterKeyId": true,
+		"ReceiveMessageWaitTimeSeconds": true, "MaximumMessageSize": true, "ContentBasedDeduplication": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+	if v, ok := props["FifoQueue"].(bool); ok && v {
+		f = append(f, Finding{"Resource " + id, "a FIFO queue is not translatable — JetStream ordering/dedup semantics differ from SQS FIFO (refusing rather than silently changing delivery guarantees)"})
+	}
+	if _, ok := props["KmsMasterKeyId"]; ok {
+		f = append(f, Finding{"Resource " + id, "KmsMasterKeyId is not translatable — no per-queue encryption"})
+	}
+	spec := map[string]any{}
+	if qn, ok := concrete(props["QueueName"]); ok && qn != "" {
+		spec["queueName"] = qn
+	}
+	if r, ok := props["MessageRetentionPeriod"]; ok {
+		hrs := toInt(r) / 3600
+		if hrs < 1 {
+			hrs = 1
+		}
+		spec["retentionHours"] = hrs
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: k8sName(id), Spec: spec}
+	for _, p := range []string{"VisibilityTimeout", "DelaySeconds", "RedrivePolicy", "ReceiveMessageWaitTimeSeconds", "MaximumMessageSize", "ContentBasedDeduplication", "Tags"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — SQS delivery semantics (visibility/delay/DLQ/dedup) are configured on the app's JetStream consumer, not the queue")
+		}
+	}
+	return m, f
+}
+
+// ---- AWS::SNS::Topic -> kind: Queue (a fan-out topic) ----
+//
+// A standalone pub/sub topic backed by a NATS JetStream Limits stream (messages retained for the
+// window; every consumer reads them independently — SNS fan-out). TopicName -> the stream/subject.
+// FIFO and encryption BLOCK. Inline Subscriptions BLOCK — SNS subscribers (SQS/Lambda/HTTP targets)
+// have no open-infra fan-out wiring; consumers subscribe to the topic's stream themselves.
+func translateSNSTopic(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"TopicName": true, "DisplayName": true, "Tags": true, "FifoTopic": true,
+		"KmsMasterKeyId": true, "ContentBasedDeduplication": true, "Subscription": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+	if v, ok := props["FifoTopic"].(bool); ok && v {
+		f = append(f, Finding{"Resource " + id, "a FIFO topic is not translatable — JetStream ordering/dedup differs from SNS FIFO"})
+	}
+	if _, ok := props["KmsMasterKeyId"]; ok {
+		f = append(f, Finding{"Resource " + id, "KmsMasterKeyId is not translatable — no per-topic encryption"})
+	}
+	if _, ok := props["Subscription"]; ok {
+		f = append(f, Finding{"Resource " + id, "inline Subscriptions are not translatable — SNS subscribers (SQS/Lambda/HTTP) have no open-infra fan-out target; consumers subscribe to the topic's stream themselves (refusing rather than silently dropping the delivery wiring)"})
+	}
+	spec := map[string]any{"fanout": true}
+	if tn, ok := concrete(props["TopicName"]); ok && tn != "" {
+		spec["queueName"] = tn
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: k8sName(id), Spec: spec}
+	for _, p := range []string{"DisplayName", "Tags", "ContentBasedDeduplication"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent")
+		}
+	}
+	return m, f
+}
 
 // ---- AWS::AppSync::GraphQLApi (+ Schema/DataSource/Resolver/FunctionConfiguration) -> kind: GraphQLApi ----
 //

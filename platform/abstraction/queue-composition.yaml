@@ -1,0 +1,92 @@
+# The compiler for kind: Queue. A setup Job in the nats namespace creates/updates the JetStream
+# stream (an initContainer with the nats CLI — internal NATS is no-auth) and writes the per-queue
+# connection Secret (<name>-queue) into the claim namespace (the openinfra-queue-setup SA).
+#
+# The Job name carries a hash of the mutable spec (retention + max-bytes), so changing either
+# re-runs the setup rather than being a no-op on an immutable Job. fanout/retention policy is fixed
+# at creation (JetStream cannot change a stream's retention policy in place).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: queue
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XQueue
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $q := $spec.queueName | default $name }}
+            {{- $ret := $spec.retentionHours | default 96 }}
+            {{- $retpolicy := "work" }}{{- if $spec.fanout }}{{ $retpolicy = "limits" }}{{- end }}
+            {{- $maxbytes := "" }}{{- if $spec.maxBytes }}{{ $maxbytes = printf "--max-bytes %d" (int $spec.maxBytes) }}{{- else }}{{ $maxbytes = "--max-bytes=-1" }}{{- end }}
+            {{- $hash := (printf "%s|%d|%s" $retpolicy (int $ret) $maxbytes) | sha256sum | trunc 10 }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: queue-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-queue-{{ $hash }}, namespace: nats }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-queue-setup
+                        restartPolicy: OnFailure
+                        initContainers:
+                          - name: stream
+                            image: natsio/nats-box:latest
+                            command: [/bin/sh, -ceu]
+                            args:
+                              - |
+                                S=nats://nats.nats.svc.cluster.local:4222
+                                if nats --server $S stream info {{ $q }} >/dev/null 2>&1; then
+                                  nats --server $S stream edit {{ $q }} --max-age {{ $ret }}h {{ $maxbytes }} -f
+                                else
+                                  nats --server $S stream add {{ $q }} --subjects '{{ $q }}' --storage file --retention {{ $retpolicy }} --max-age {{ $ret }}h {{ $maxbytes }} --discard old --dupe-window 2m --replicas 1 --defaults
+                                fi
+                                echo "stream {{ $q }} ready ({{ $retpolicy }}, {{ $ret }}h)"
+                        containers:
+                          - name: secret
+                            image: alpine/k8s:1.30.0
+                            command: [/bin/sh, -ceu]
+                            args:
+                              - |
+                                kubectl create secret generic {{ $name }}-queue -n {{ $ns }} \
+                                  --from-literal=NATS_URL=nats://nats.nats.svc.cluster.local:4222 \
+                                  --from-literal=QUEUE_STREAM={{ $q }} \
+                                  --from-literal=QUEUE_SUBJECT={{ $q }} \
+                                  --dry-run=client -o yaml | kubectl apply -f -
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XQueue
+            status:
+              ready: true
+              stream: {{ $q | quote }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

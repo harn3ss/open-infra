@@ -350,21 +350,34 @@ Resources:
 	}
 }
 
-// SQS/SNS refuse at deploy (no create translator) — never a silent no-op.
-func TestDeploy_SQS_Refused(t *testing.T) {
+// SQS deploys to a work queue; SNS to a fan-out topic — both kind: Queue.
+func TestDeploy_SQS_And_SNS(t *testing.T) {
 	tmpl := []byte(`
 Resources:
-  Q:
+  Jobs:
     Type: AWS::SQS::Queue
-    Properties: { QueueName: jobs }
+    Properties: { QueueName: jobs, MessageRetentionPeriod: 7200 }
+  Events:
+    Type: AWS::SNS::Topic
+    Properties: { TopicName: events }
 `)
 	f := &fakeApplier{}
-	_, err := Deploy(context.Background(), tmpl, deployOpts(), f)
-	if err == nil || !strings.Contains(err.Error(), "no create translator") {
-		t.Fatalf("SQS must refuse at deploy (no translator), got %v", err)
+	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
 	}
-	if len(f.applied) != 0 {
-		t.Fatalf("a refused deploy must apply nothing, applied: %v", f.applied)
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	got := strings.Join(f.appliedNonCM(), ",")
+	if !strings.Contains(got, "Queue/jobs") || !strings.Contains(got, "Queue/events") {
+		t.Fatalf("applied = %v, want both Queue/jobs and Queue/events", got)
+	}
+	if q := f.liveSpecs["Queue/jobs"]; q["queueName"] != "jobs" || q["retentionHours"] != 2 || q["fanout"] == true {
+		t.Fatalf("SQS queue not faithful: %#v", q)
+	}
+	if e := f.liveSpecs["Queue/events"]; e["queueName"] != "events" || e["fanout"] != true {
+		t.Fatalf("SNS topic (fanout) not faithful: %#v", e)
 	}
 }
 

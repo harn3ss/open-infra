@@ -1,0 +1,31 @@
+# RBAC for kind: Queue's setup Job — a ServiceAccount (in the nats namespace, next to NATS) allowed
+# to write the per-queue connection Secret into the claim's namespace. Mirrors openinfra-bucket-setup
+# (cluster-wide secrets create/get). Internal NATS is no-auth in-cluster, so the Job needs no NATS
+# credential — only the reach to write the connection Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-queue-setup
+  namespace: nats
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-queue-setup
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-queue-setup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-queue-setup
+subjects:
+  - kind: ServiceAccount
+    name: openinfra-queue-setup
+    namespace: nats
