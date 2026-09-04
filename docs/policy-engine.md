@@ -1,7 +1,10 @@
 # open-infra policy engine (WIP)
 
 > Status: **in development** on `feat/policy-engine`. This documents the design and tracks what is
-> actually built. Nothing here is enforced on the live platform yet.
+> actually built. The engine and its shim enforcement are built and the decision path is
+> live-verified (see the build phases); enforcement only bites where the aws-shim data-plane front
+> doors are enabled, which is opt-in and off by default, so no live platform traffic is governed
+> today. The remaining live step is a fully-deployed shim answering a SigV4 call.
 
 ## Why
 
@@ -67,11 +70,20 @@ that principal is unaffected there.
 
 ## AWS policy import
 
-Once the model exists, an AWS IAM policy document maps onto it faithfully for the actions the shim
-supports (`s3:*`, `dynamodb:*`, `lambda:*`) — `Allow`/`Deny` → `permit`/`forbid`, `Condition` →
-Cedar `when`/`unless`. Actions open-infra has no surface for are reported, never silently granted.
-This is what lets the CFN engine eventually translate `AWS::IAM::Policy` for data-plane actions
-instead of refusing.
+`policyengine.ImportAWS` maps an AWS IAM policy document onto the model for the actions the shim
+supports (`s3:*`, `dynamodb:*`, `lambda:*`) — `Effect` → `permit`/`forbid`, ARNs → typed resources
+(`arn:aws:s3:::reports/*` → `Bucket::reports`, a table ARN → `Table::metrics`). Everything it cannot
+honor is **reported, never silently granted or dropped**: an action for a service with no data plane,
+an unrecognizable ARN, a statement with no mappable `Resource`, and — deliberately — any `Condition`
+(a silently-ineffective `Deny` condition is a security hole, so conditions are refused wholesale in
+v1 rather than guessed; the engine evaluates conditions natively, so author them on `spec.dataPlane`).
+
+This is what lets the CFN engine translate `AWS::IAM::Policy`: `translateIAMPolicy` runs the importer
+and, being fail-closed to a fault, **blocks the whole resource** if the importer reports *any*
+unsupported part (a partial security policy is worse than none) — so only a policy that is purely
+data-plane actions on recognizable ARNs with no conditions becomes a `kind: Policy spec.dataPlane`,
+attached to its `Users`/`Groups`. A `Roles` attachment blocks (the shim authenticates Users and
+access keys, not assumed roles). See [`cloudformation.md`](cloudformation.md).
 
 ## Policy shape
 
@@ -112,6 +124,14 @@ RBAC check, so it can only tighten.
 - [ ] **AppSync** — deliberately NOT via this engine: AppSync's fine-grained authz is *inside*
       open-appsync (per-field `@aws_*` + SAR), which is the right layer; the shim can't identify a
       specific API. Left to open-appsync.
-- [ ] **AWS-policy importer** + the CFN `AWS::IAM::Policy` (data-plane) translator.
-- [ ] **Assurance** — audit trail (log every governed deny), a security review, and live-cluster
-      verification of the enforcement path.
+- [x] **AWS-policy importer + CFN `AWS::IAM::Policy` translator** — `policyengine.ImportAWS` maps an
+      AWS policy document to data-plane statements (reporting, never dropping, what it can't honor);
+      the cfn engine's `translateIAMPolicy` imports it into a `kind: Policy spec.dataPlane` and blocks
+      on any unsupported part. **Live-verified**: `cfn deploy` of a pure data-plane `AWS::IAM::Policy`
+      created a real `kind: Policy` (via the Crossplane composition, ARNs mapped, `Deny` preserved),
+      the real `K8sLoader` → Checker → engine enforced it for a member of the attached group
+      (allow/deny/allow-list/per-service governance all correct), and a mixed `ec2`+`s3` policy was
+      refused at the translate gate with nothing applied.
+- [ ] **Assurance** — a security review, and the final live step: a fully-deployed shim answering a
+      SigV4 aws-cli call against a governed principal (governed denies are already logged; the loader
+      → engine path and the CFN → enforced-policy path are both live-verified above).
