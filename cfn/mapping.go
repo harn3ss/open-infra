@@ -48,7 +48,7 @@ var mappingTable = map[string]MapEntry{
 	"AWS::KMS::Key":                    {Kind: "EncryptionKey", Status: Supported, Note: "customer key in Vault Transit"},
 
 	// --- partial: backing kind exists but the mapping is lossy ---
-	"AWS::S3::Bucket":                     {Kind: "Bucket", Status: Partial, Note: "a standalone MinIO bucket (kind: Bucket) with versioning + lifecycle; BucketEncryption needs the opt-in objectEncryption stack, and policy/website/CORS/replication/object-lock don't map"},
+	"AWS::S3::Bucket":                     {Kind: "Bucket", Status: Partial, Note: "a standalone MinIO bucket (kind: Bucket) with versioning + lifecycle; Object Lock (WORM retention) maps to a MinIO lock-enabled bucket; BucketEncryption needs the opt-in objectEncryption stack; policy/website/CORS/replication do not map"},
 	"AWS::SQS::Queue":                     {Kind: "Queue", Status: Partial, Note: "a standalone managed queue (kind: Queue) — a NATS JetStream WorkQueue stream. FIFO + per-queue encryption don't map; visibility/delay/DLQ are consumer-side caveats."},
 	"AWS::SNS::Topic":                     {Kind: "Queue", Status: Partial, Note: "a standalone fan-out topic (kind: Queue, fanout) — a NATS JetStream Limits stream. Inline Subscriptions, FIFO, and encryption don't map (consumers subscribe to the stream themselves)."},
 	"AWS::RDS::DBInstance":                {Kind: "Application(database)", Status: Partial, Note: "managed DB is provisioned via an Application's database block (CloudNativePG / MariaDB); engine/size mapping is lossy"},

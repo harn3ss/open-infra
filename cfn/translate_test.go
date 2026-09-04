@@ -1008,3 +1008,30 @@ func TestTranslate_SNS_SubscriptionBlocks(t *testing.T) {
 		t.Fatalf("inline Subscriptions must block, findings: %s", findingsText(fs))
 	}
 }
+
+// #112: an S3 bucket with Object Lock (WORM) maps to kind: Bucket objectLock (MinIO-enforced).
+func TestTranslate_S3_ObjectLock(t *testing.T) {
+	m, fs := translateS3Bucket("Vault", map[string]any{
+		"BucketName":        "worm",
+		"ObjectLockEnabled": true,
+		"ObjectLockConfiguration": map[string]any{
+			"ObjectLockEnabled": "Enabled",
+			"Rule":              map[string]any{"DefaultRetention": map[string]any{"Mode": "COMPLIANCE", "Days": float64(30)}},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	ol, ok := m.Spec["objectLock"].(map[string]any)
+	if !ok || ol["mode"] != "COMPLIANCE" || ol["days"] != float64(30) {
+		t.Fatalf("objectLock not mapped: %#v", m.Spec["objectLock"])
+	}
+}
+
+// ObjectLockEnabled without a DefaultRetention refuses (no silent drop of the WORM expectation).
+func TestTranslate_S3_ObjectLockNoRetentionRefused(t *testing.T) {
+	_, fs := translateS3Bucket("Bare", map[string]any{"BucketName": "b", "ObjectLockEnabled": true}, nil)
+	if !strings.Contains(findingsText(fs), "DefaultRetention") {
+		t.Fatalf("bare ObjectLockEnabled must refuse, got: %s", findingsText(fs))
+	}
+}
