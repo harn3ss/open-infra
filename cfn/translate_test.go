@@ -422,3 +422,191 @@ func TestTranslate_DynamoDBTable_ProvisionedThroughputIsCaveatNotBlock(t *testin
 		t.Fatalf("ProvisionedThroughput must be a declared caveat, caveats: %v", m.Caveats)
 	}
 }
+
+// ---- AWS::AppSync::* collation ----
+
+func appsyncStack() string {
+	return `
+Resources:
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: todo-api
+      AuthenticationType: API_KEY
+  Schema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Definition: "type Query { getTodo(id: ID!): Todo } type Todo { id: ID! title: String }"
+  TodoDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: todo_table
+      Type: AMAZON_DYNAMODB
+      DynamoDBConfig: { TableName: todos }
+  GetTodo:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getTodo
+      DataSourceName: !GetAtt TodoDS.Name
+      RequestMappingTemplate: '{"version":"2017-02-28","operation":"GetItem"}'
+      ResponseMappingTemplate: '$util.toJson($ctx.result)'
+`
+}
+
+func TestTranslate_AppSync_Collation(t *testing.T) {
+	ctx := ecsCtx(t, appsyncStack())
+	m, fs := translateAppSyncGraphQLApi("Api", ecsResolvedService(t, ctx, "Api"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Kind != "GraphQLApi" || m.Name != "api" {
+		t.Fatalf("bad manifest head: %+v", m)
+	}
+	if s, _ := m.Spec["schema"].(string); !strings.Contains(s, "getTodo") {
+		t.Fatalf("schema not collated: %v", m.Spec["schema"])
+	}
+	ds, _ := m.Spec["dataSources"].([]any)
+	if len(ds) != 1 {
+		t.Fatalf("want 1 data source, got %#v", m.Spec["dataSources"])
+	}
+	d0, _ := ds[0].(map[string]any)
+	if d0["name"] != "todo_table" || d0["type"] != "dynamodb" || d0["collection"] != "todos" {
+		t.Fatalf("data source not faithful: %#v", d0)
+	}
+	rs, _ := m.Spec["resolvers"].([]any)
+	if len(rs) != 1 {
+		t.Fatalf("want 1 resolver, got %#v", m.Spec["resolvers"])
+	}
+	r0, _ := rs[0].(map[string]any)
+	if r0["type"] != "Query" || r0["field"] != "getTodo" || r0["dataSource"] != "todo_table" || r0["runtime"] != "appsync-vtl" {
+		t.Fatalf("resolver not faithful: %#v", r0)
+	}
+	// The whole point: VTL carries over byte-for-byte.
+	if req, _ := r0["request"].(string); !strings.Contains(req, `"operation":"GetItem"`) {
+		t.Fatalf("request VTL not verbatim: %#v", r0["request"])
+	}
+	if resp, _ := r0["response"].(string); !strings.Contains(resp, "$util.toJson") {
+		t.Fatalf("response VTL not verbatim: %#v", r0["response"])
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "mongoURI") {
+		t.Fatalf("a dynamodb source must surface the mongoURI caveat, caveats: %v", m.Caveats)
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "AuthenticationType") {
+		t.Fatalf("AuthenticationType must be a declared caveat, caveats: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_AppSync_Pipeline(t *testing.T) {
+	tmpl := `
+Resources:
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties: { Name: p, AuthenticationType: AWS_IAM }
+  HttpDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: backend
+      Type: HTTP
+      HttpConfig: { Endpoint: "https://svc.internal" }
+  Fn1:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: step1
+      DataSourceName: !GetAtt HttpDS.Name
+      RequestMappingTemplate: 'REQ1'
+      ResponseMappingTemplate: 'RESP1'
+  Pipe:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Mutation
+      FieldName: doThing
+      Kind: PIPELINE
+      RequestMappingTemplate: 'BEFORE'
+      ResponseMappingTemplate: 'AFTER'
+      PipelineConfig: { Functions: [ !GetAtt Fn1.FunctionId ] }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateAppSyncGraphQLApi("Api", ecsResolvedService(t, ctx, "Api"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	rs, _ := m.Spec["resolvers"].([]any)
+	if len(rs) != 1 {
+		t.Fatalf("want 1 resolver, got %#v", m.Spec["resolvers"])
+	}
+	r0, _ := rs[0].(map[string]any)
+	if r0["before"] != "BEFORE" || r0["after"] != "AFTER" {
+		t.Fatalf("pipeline before/after not mapped: %#v", r0)
+	}
+	fns, _ := r0["functions"].([]any)
+	if len(fns) != 1 {
+		t.Fatalf("want 1 pipeline function, got %#v", r0["functions"])
+	}
+	f0, _ := fns[0].(map[string]any)
+	if f0["dataSource"] != "backend" || f0["request"] != "REQ1" || f0["response"] != "RESP1" {
+		t.Fatalf("pipeline function not faithful: %#v", f0)
+	}
+}
+
+func TestTranslate_AppSync_LambdaDataSourceBlocks(t *testing.T) {
+	tmpl := `
+Resources:
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties: { Name: l, AuthenticationType: API_KEY }
+  LDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: fn
+      Type: AWS_LAMBDA
+      LambdaConfig: { LambdaFunctionArn: "arn:aws:lambda:us-east-1:1:function:x" }
+  R:
+    Type: AWS::AppSync::Resolver
+    Properties: { ApiId: !GetAtt Api.ApiId, TypeName: Query, FieldName: f, DataSourceName: !GetAtt LDS.Name, RequestMappingTemplate: x, ResponseMappingTemplate: y }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateAppSyncGraphQLApi("Api", ecsResolvedService(t, ctx, "Api"), ctx)
+	if !strings.Contains(findingsText(fs), "Lambda data source") {
+		t.Fatalf("a Lambda-ARN data source must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_AppSync_NoResolverBlocks(t *testing.T) {
+	tmpl := `
+Resources:
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties: { Name: n, AuthenticationType: API_KEY }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateAppSyncGraphQLApi("Api", ecsResolvedService(t, ctx, "Api"), ctx)
+	if !strings.Contains(findingsText(fs), "at least one") {
+		t.Fatalf("a GraphQLApi with no resolver must block, findings: %s", findingsText(fs))
+	}
+}
+
+func TestTranslate_AppSync_ChildNoopVsExternal(t *testing.T) {
+	ctx := ecsCtx(t, appsyncStack())
+	// A child whose ApiId points at the in-stack API is a collated no-op.
+	if m, fs := translateAppSyncChild("TodoDS", ecsResolvedService(t, ctx, "TodoDS"), ctx); m != nil || len(fs) != 0 {
+		t.Fatalf("an in-stack child must be a no-op, got manifest=%v findings=%s", m, findingsText(fs))
+	}
+	// A child pointing at an API not in the stack must refuse (no silent drop).
+	ext := ecsCtx(t, `
+Resources:
+  Orphan:
+    Type: AWS::AppSync::DataSource
+    Properties: { ApiId: "external-api-id", Name: x, Type: NONE }
+`)
+	if _, fs := translateAppSyncChild("Orphan", ecsResolvedService(t, ext, "Orphan"), ext); !strings.Contains(findingsText(fs), "in-stack API") {
+		t.Fatalf("a child of an external API must refuse, findings: %s", findingsText(fs))
+	}
+}
