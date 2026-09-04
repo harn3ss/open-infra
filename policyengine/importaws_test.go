@@ -65,3 +65,15 @@ func TestImportAWS_ReportsUnsupported(t *testing.T) {
 		t.Fatalf("expected one statement with the s3 action kept: %#v", stmts)
 	}
 }
+
+// A bucket ARN and its object ARN both scope to the same Bucket resource — the result must dedupe.
+func TestImportAWS_DeduplicatesResources(t *testing.T) {
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":["arn:aws:s3:::reports","arn:aws:s3:::reports/*"]}]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
+	}
+	if len(stmts) != 1 || len(stmts[0].Resources) != 1 || stmts[0].Resources[0] != "Bucket::reports" {
+		t.Fatalf("want a single deduped Bucket::reports, got %#v", stmts[0].Resources)
+	}
+}
