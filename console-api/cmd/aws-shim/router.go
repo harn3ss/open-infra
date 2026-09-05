@@ -58,6 +58,15 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	authHdr := r.Header.Get("Authorization")
 	cred, err := awssig.ParseAuthorization(authHdr)
 	if err != nil {
+		// sts:AssumeRoleWithWebIdentity (workload identity) carries NO SigV4 — the projected
+		// ServiceAccount token in the form IS the credential. Route it to STS before any other
+		// non-SigV4 handling; the handler verifies the token and fails closed.
+		if isWebIdentityAssume(r) {
+			if sts, ok := rt.services["sts"].(*stsHandler); ok {
+				sts.assumeRoleWithWebIdentity(w, r, requestID)
+				return
+			}
+		}
 		// Not SigV4. The AppSync data plane accepts ONE non-SigV4 mode, whichever is configured on this
 		// shim: a Lambda authorizer (an opaque custom token) OR an OIDC/Cognito bearer JWT — never both
 		// (main refuses to start with both). So every appsync request is valid SigV4 OR valid via the one
@@ -94,6 +103,16 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc.serve(w, r, claims, requestID)
+}
+
+// isWebIdentityAssume reports whether this is an unauthenticated sts:AssumeRoleWithWebIdentity POST
+// (the one STS call that carries no SigV4 — the ServiceAccount token in the form is the credential).
+func isWebIdentityAssume(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	_ = r.ParseForm()
+	return r.PostFormValue("Action") == "AssumeRoleWithWebIdentity"
 }
 
 // serveAppsyncJWT handles the OIDC/Cognito bearer-JWT path for the appsync data plane. It fails CLOSED:
