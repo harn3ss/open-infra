@@ -1233,13 +1233,24 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 			spec0["volumes"] = appVols
 		}
 	}
-	for _, p := range []string{"Cpu", "Memory", "TaskRoleArn", "ExecutionRoleArn", "NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
+	for _, p := range []string{"Cpu", "Memory", "ExecutionRoleArn", "NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
 		if _, ok := td[p]; ok {
-			caveats = append(caveats, "TaskDefinition "+p+" dropped — open-infra sizes via quotas/HPA and connects via secrets/env, not task IAM roles / launch-compat / network mode")
+			caveats = append(caveats, "TaskDefinition "+p+" dropped — task-level sizing is via per-container resources/quotas; ExecutionRoleArn (the ECS agent's image-pull/log role) has no equivalent (the platform pulls images), and launch-compat/network-mode don't map")
 		}
 	}
+	// TaskRoleArn -> workload identity (#117 §3): the task's application runs AS this role via the
+	// Application's assumeRole (sts:AssumeRoleWithWebIdentity). Now possible because roles are
+	// first-class assumable identities (#111). The named kind: Role must exist and its spec.trust
+	// must name the app's ServiceAccount.
+	if tra, ok := concrete(td["TaskRoleArn"]); ok && tra != "" {
+		role := k8sName(iamRoleNameFromArn(tra))
+		spec0["assumeRole"] = role
+		caveats = append(caveats, "TaskRoleArn -> the app assumes kind: Role "+role+" via workload identity (sts:AssumeRoleWithWebIdentity); that Role must exist and its spec.trust must name this app's ServiceAccount")
+	} else if _, present := td["TaskRoleArn"]; present {
+		caveats = append(caveats, "TaskRoleArn could not be resolved (an unresolvable intrinsic) — set the Application's assumeRole natively to the kind: Role name")
+	}
 
-	spec := spec0 // carry the mapped shared volumes (emptyDir), if any
+	spec := spec0 // carry the mapped shared volumes (emptyDir) + assumeRole, if any
 	containers, _ := td["ContainerDefinitions"].([]any)
 	if len(containers) == 0 {
 		f = append(f, Finding{"Resource " + tdID, "a TaskDefinition requires at least one container"})
@@ -1372,6 +1383,20 @@ func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding) map[string]an
 		spec["env"] = envList
 	}
 	return spec
+}
+
+// iamRoleNameFromArn extracts the role name from an IAM role ARN (arn:aws:iam::<acct>:role/<name>,
+// possibly a path like role/path/<name>) or returns a bare name unchanged. The last path segment is
+// the role name.
+func iamRoleNameFromArn(arn string) string {
+	if i := strings.Index(arn, ":role/"); i >= 0 {
+		p := arn[i+len(":role/"):]
+		if j := strings.LastIndex(p, "/"); j >= 0 {
+			return p[j+1:]
+		}
+		return p
+	}
+	return arn
 }
 
 // ecsCPU converts ECS CPU units (1024 = 1 vCPU) to a Kubernetes millicore string.
