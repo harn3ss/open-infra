@@ -7,6 +7,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
+	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
@@ -31,6 +32,7 @@ type ownerResolver func(ctx context.Context, owner string) (groups []string, ok 
 type authenticator struct {
 	keys    keyLookuper
 	resolve ownerResolver
+	sts     *awssts.Minter // verifies sts:AssumeRole session tokens; nil disables assumed-role auth
 }
 
 // authenticate proves the caller holds a valid open-infra access key and returns the iam.Claims
@@ -41,6 +43,26 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 	cred, err := awssig.ParseAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
 		return iam.Claims{}, errAuth
+	}
+	// Assumed-role path: a request carrying a session token (X-Amz-Security-Token) is an
+	// sts:AssumeRole credential. Verify the sealed token, then verify the SigV4 signature against the
+	// temp secret the token carries, and act AS the role. Falls closed on any failure.
+	if tok := r.Header.Get("X-Amz-Security-Token"); tok != "" {
+		if a.sts == nil {
+			return iam.Claims{}, errAuth
+		}
+		sess, ok := a.sts.Verify(cred.AccessKeyID, tok)
+		if !ok {
+			return iam.Claims{}, errAuth
+		}
+		if err := awssig.Verify(r, cred, sess.SecretKey); err != nil {
+			return iam.Claims{}, errAuth
+		}
+		return iam.Claims{
+			Sub:         "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
+			Groups:      sess.Groups,
+			AssumedRole: sess.RoleName,
+		}, nil
 	}
 	key, ok := a.keys.Lookup(ctx, cred.AccessKeyID)
 	if !ok {
