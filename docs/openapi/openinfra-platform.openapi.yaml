@@ -3592,6 +3592,11 @@ components:
               type: string
               description: "Hostname to serve the app on \u2014 open-infra provisions Ingress, a TLS certificate, and DNS\
                 \ for it (e.g. my-api.example.com)."
+            subnet:
+              type: string
+              description: "Name of a kind: Subnet to place this app in (kube-ovn). The pod draws its IP from that subnet\
+                \ and inherits its OVN-enforced topological isolation \u2014 the AWS \"launch in this subnet\" model. Omit\
+                \ to use the namespace's default network."
             assumeRole:
               type: string
               description: "Name of a kind: Role this app runs as (workload identity, IRSA-shaped). The app gets a dedicated\
@@ -7176,6 +7181,11 @@ components:
               items:
                 type: string
               description: Names of SecurityGroups (firewall rule sets) to attach to this VM.
+            subnet:
+              type: string
+              description: "Name of a kind: Subnet to place this VM in (kube-ovn). The VM's launcher pod draws its IP from\
+                \ that subnet and inherits its OVN-enforced topological isolation \u2014 the AWS \"launch in this subnet\"\
+                \ model. Omit to use the namespace's default network."
             running:
               type: boolean
               default: true

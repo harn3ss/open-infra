@@ -479,6 +479,59 @@ Resources:
 	}
 }
 
+// #117 §4 / #120 subnet half: NetworkConfiguration's awsvpc subnet naming a kind: Subnet places the
+// Application in it (real OVN isolation); a raw subnet- id refuses; SecurityGroups stay a caveat.
+func TestTranslate_ECSService_SubnetPlacement(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: [ app-tier ]
+          SecurityGroups: [ web-sg ]
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Spec["subnet"] != "app-tier" {
+		t.Fatalf("awsvpc subnet should map to spec.subnet=app-tier, got %#v", m.Spec["subnet"])
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "SecurityGroups") {
+		t.Fatalf("NetworkConfiguration SecurityGroups must stay a caveat: %v", m.Caveats)
+	}
+}
+
+// #120: a raw subnet- id in NetworkConfiguration refuses with help.
+func TestTranslate_ECSService_RawSubnetRefuses(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions: [ { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] } ]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      NetworkConfiguration: { AwsvpcConfiguration: { Subnets: [ subnet-0abc ] } }
+`
+	ctx := ecsCtx(t, tmpl)
+	_, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if !strings.Contains(findingsText(fs), "raw AWS subnet id") {
+		t.Fatalf("a raw subnet- id must refuse, got: %s", findingsText(fs))
+	}
+}
+
 // #117 §1: a host-path bind-mount Volume refuses (no safe equivalent), never a silent drop.
 func TestTranslate_ECSService_HostVolumeRefused(t *testing.T) {
 	tmpl := `

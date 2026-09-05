@@ -414,7 +414,31 @@ func resolveEC2Image(imageID string) (os, reason string) {
 	return "", "unknown"
 }
 
-func translateEC2Instance(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+// resolveSubnetRef maps an AWS subnet reference to an open-infra kind: Subnet name (#120). Like an
+// AMI, a raw subnet- id is opaque and refuses; a !Ref to an in-stack AWS::EC2::Subnet uses that
+// resource's name (AWS::EC2::Subnet translation, Phase 3, provisions the matching kind: Subnet); a
+// plain string is taken as a kind: Subnet name (substitution). Returns (name, reason) where reason is
+// "raw" (opaque id), "unresolved" (an intrinsic we can't resolve), or "" on success.
+func resolveSubnetRef(id, prop string, props map[string]any, ctx *stackCtx) (string, string) {
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if t, ok := refTarget(raw[prop]); ok {
+				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::Subnet" {
+					return k8sName(t), ""
+				}
+			}
+		}
+	}
+	if v, ok := concrete(props[prop]); ok && v != "" {
+		if strings.HasPrefix(strings.ToLower(v), "subnet-") {
+			return "", "raw"
+		}
+		return v, ""
+	}
+	return "", "unresolved"
+}
+
+func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"ImageId": true, "InstanceType": true, "KeyName": true, "UserData": true,
 		"BlockDeviceMappings": true, "SecurityGroupIds": true, "SecurityGroups": true,
@@ -495,13 +519,26 @@ func translateEC2Instance(id string, props map[string]any, _ *stackCtx) (*Manife
 		}
 	}
 
+	// SubnetId -> place the VM in a kind: Subnet with real OVN isolation (#120). A raw subnet- id is
+	// opaque (refuse with help); a plain kind: Subnet name, or a !Ref to an in-stack AWS::EC2::Subnet, maps.
+	if _, present := props["SubnetId"]; present {
+		switch name, reason := resolveSubnetRef(id, "SubnetId", props, ctx); {
+		case name != "":
+			spec["subnet"] = name
+		case reason == "raw":
+			f = append(f, Finding{"Resource " + id, "SubnetId is a raw AWS subnet id (opaque, like an AMI) — name an open-infra kind: Subnet in its place, or reference an in-stack AWS::EC2::Subnet"})
+		default:
+			cav = append(cav, "SubnetId could not be resolved to a kind: Subnet — set the VM's subnet natively to place it in one")
+		}
+	}
+
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
 
-	// Network fields are the deferred half — dropping them quietly would misrepresent the VM as
-	// isolated when it is on the flat cluster network.
-	for _, p := range []string{"SecurityGroupIds", "SecurityGroups", "SubnetId", "NetworkInterfaces"} {
+	// Security-group isolation is a separate half (SG -> kind: SecurityGroup/NetworkPolicy) — dropping
+	// it quietly would misrepresent the VM's reachability.
+	for _, p := range []string{"SecurityGroupIds", "SecurityGroups", "NetworkInterfaces"} {
 		if _, ok := props[p]; ok {
-			cav = append(cav, p+" dropped — SECURITY: the VM runs on the flat cluster network (masquerade); the subnet/security-group isolation does NOT map here (network translation is separate work). Do not assume the isolation it implied.")
+			cav = append(cav, p+" dropped — SECURITY: security-group isolation maps via kind: SecurityGroup (attach securityGroups natively; CFN SG translation is a follow-on). Do not assume the isolation it implied.")
 		}
 	}
 	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "IamInstanceProfile", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
@@ -1179,13 +1216,57 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 			m.Caveats = append(m.Caveats, p+" dropped — open-infra exposes the app via Application.domain (Ingress+TLS); ECS launch-type/registry config has no direct form")
 		}
 	}
-	// A subnet/security-group reference is a network-ISOLATION expectation, not just config: dropping
-	// it quietly would let a user believe a workload is isolated when it runs on the flat cluster
-	// network, reachable by default (a silent security-expectation gap). Surface it loudly.
-	if _, ok := props["NetworkConfiguration"]; ok {
-		m.Caveats = append(m.Caveats, "NetworkConfiguration (subnets / security groups) dropped — SECURITY: this workload runs on the flat cluster network with NO enforced topological isolation; the subnet/security-group reference does NOT map to network isolation here. Do not assume the isolation it implied.")
+	// NetworkConfiguration: the awsvpc subnet -> place the Application in a kind: Subnet (real OVN
+	// isolation, #120); SecurityGroups stay a caveat (SG -> kind: SecurityGroup is a separate half).
+	if nc, ok := props["NetworkConfiguration"].(map[string]any); ok {
+		avc, _ := nc["AwsvpcConfiguration"].(map[string]any)
+		switch name, reason := ecsFirstSubnet(id, avc, ctx); {
+		case name != "":
+			m.Spec["subnet"] = name
+		case reason == "raw":
+			f = append(f, Finding{"Resource " + id, "NetworkConfiguration subnet is a raw AWS subnet id (opaque) — name an open-infra kind: Subnet, or reference an in-stack AWS::EC2::Subnet"})
+		default:
+			m.Caveats = append(m.Caveats, "NetworkConfiguration subnet could not be resolved to a kind: Subnet — set the Application's subnet natively to place it in one")
+		}
+		if avc != nil {
+			if sgs, ok := avc["SecurityGroups"].([]any); ok && len(sgs) > 0 {
+				m.Caveats = append(m.Caveats, "NetworkConfiguration SecurityGroups dropped — SECURITY: attach kind: SecurityGroups natively (CFN SG translation is a follow-on); do not assume the isolation implied")
+			}
+		}
 	}
 	return m, f
+}
+
+// ecsFirstSubnet resolves the first awsvpc subnet to a kind: Subnet name — a !Ref to an in-stack
+// AWS::EC2::Subnet, or a plain kind: Subnet name; a raw subnet- id refuses ("raw"). #120.
+func ecsFirstSubnet(id string, avc map[string]any, ctx *stackCtx) (string, string) {
+	if avc == nil {
+		return "", "unresolved"
+	}
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if rnc, ok := raw["NetworkConfiguration"].(map[string]any); ok {
+				if ravc, ok := rnc["AwsvpcConfiguration"].(map[string]any); ok {
+					if subs, ok := ravc["Subnets"].([]any); ok && len(subs) > 0 {
+						if t, ok := refTarget(subs[0]); ok {
+							if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::Subnet" {
+								return k8sName(t), ""
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if subs, ok := avc["Subnets"].([]any); ok && len(subs) > 0 {
+		if v, ok := concrete(subs[0]); ok && v != "" {
+			if strings.HasPrefix(strings.ToLower(v), "subnet-") {
+				return "", "raw"
+			}
+			return v, ""
+		}
+	}
+	return "", "unresolved"
 }
 
 // ecsTaskToApp translates the TaskDefinition half: exactly one container -> image/port/env,
