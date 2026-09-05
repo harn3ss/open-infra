@@ -63,6 +63,12 @@ import { CreateFaultInjectionPage } from "@/features/chaos/create-fault-injectio
 import { SecurityGroupsPage } from "@/features/securitygroups/securitygroups-page";
 import { SecurityGroupDetailPage } from "@/features/securitygroups/sg-detail-page";
 import { CreateSecurityGroupPage } from "@/features/securitygroups/create-security-group-page";
+import { VpcsPage } from "@/features/networking/vpcs-page";
+import { VpcDetailPage } from "@/features/networking/vpc-detail-page";
+import { CreateVpcPage } from "@/features/networking/create-vpc-page";
+import { SubnetsPage } from "@/features/networking/subnets-page";
+import { SubnetDetailPage } from "@/features/networking/subnet-detail-page";
+import { CreateSubnetPage } from "@/features/networking/create-subnet-page";
 import {
   StreamDetailPage,
   FaultInjectionDetailPage,
@@ -340,6 +346,14 @@ const securityGroupDetailRoute = createRoute({
   path: "/security-groups/$namespace/$name",
   component: SecurityGroupDetailPage,
 });
+
+// --- Networking: VPCs + Subnets (kube-ovn). Static "/new" before "$namespace/$name". ---
+const vpcsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/vpcs", component: VpcsPage });
+const vpcCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/vpcs/new", component: CreateVpcPage });
+const vpcDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/vpcs/$namespace/$name", component: VpcDetailPage });
+const subnetsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/subnets", component: SubnetsPage });
+const subnetCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/subnets/new", component: CreateSubnetPage });
+const subnetDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/subnets/$namespace/$name", component: SubnetDetailPage });
 
 const migrationsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -657,6 +671,12 @@ const routeTree = rootRoute.addChildren([
   securityGroupsRoute,
   securityGroupCreateRoute,
   securityGroupDetailRoute,
+  vpcsRoute,
+  vpcCreateRoute,
+  vpcDetailRoute,
+  subnetsRoute,
+  subnetCreateRoute,
+  subnetDetailRoute,
   migrationsRoute,
   migrationDetailRoute,
   replicationsRoute,

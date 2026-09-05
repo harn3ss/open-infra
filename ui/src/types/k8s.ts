@@ -697,6 +697,37 @@ export type SecurityGroup = K8sObject<SecurityGroupSpec, SecurityGroupStatus>;
 export const SECURITYGROUPS_PLURAL = "securitygroups";
 export const SECURITYGROUPS_CRD_NAME = "securitygroups.openinfra.dev";
 
+/* ------------------- open-infra Vpc / Subnet (kube-ovn) -------------------- */
+// Real, OVN-enforced network isolation — the AWS VPC/subnet model. A Vpc is an
+// isolated network domain; a Subnet is a topologically-isolated segment (private
+// by default). Workloads join a subnet via spec.subnet (Application/VirtualMachine).
+export interface VpcSpec {
+  namespaces?: string[];
+}
+export interface VpcStatus {
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type Vpc = K8sObject<VpcSpec, VpcStatus>;
+export const VPCS_PLURAL = "vpcs";
+export const VPCS_CRD_NAME = "vpcs.openinfra.dev";
+
+export interface SubnetSpec {
+  cidr: string;
+  vpc?: string;
+  private?: boolean;
+  allowSubnets?: string[];
+  namespaces?: string[];
+  gateway?: string;
+}
+export interface SubnetStatus {
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type Subnet = K8sObject<SubnetSpec, SubnetStatus>;
+export const SUBNETS_PLURAL = "subnets";
+export const SUBNETS_CRD_NAME = "subnets.openinfra.dev";
+
 /* ---------------------- open-infra StateMachine CRD ----------------------- */
 // open-infra's Step Functions: an ASL workflow. spec.definition is the ASL JSON
 // string (like aws_sfn_state_machine.definition); runs are kind: Execution.
