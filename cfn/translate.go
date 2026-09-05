@@ -90,6 +90,8 @@ var translators = map[string]translator{
 	"AWS::StepFunctions::StateMachine":    translateStateMachine,
 	"AWS::EC2::Volume":                    translateVolume,
 	"AWS::EC2::Instance":                  translateEC2Instance,
+	"AWS::EC2::VPC":                       translateEC2VPC,
+	"AWS::EC2::Subnet":                    translateEC2Subnet,
 	"AWS::DynamoDB::Table":                translateDynamoDBTable,
 	"AWS::IAM::User":                      translateIAMUser,
 	"AWS::IAM::Policy":                    translateIAMPolicy,
@@ -547,6 +549,71 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		}
 	}
 	m.Caveats = cav
+	return m, f
+}
+
+// ---- AWS::EC2::VPC -> kind: Vpc ----
+//
+// A kube-ovn Vpc (an isolated network domain / router). The AWS VPC-level CidrBlock has no kind: Vpc
+// field — in kube-ovn the subnets carry the CIDRs, not the VPC — so it is an informational caveat.
+func translateEC2VPC(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"CidrBlock": true, "EnableDnsSupport": true, "EnableDnsHostnames": true,
+		"InstanceTenancy": true, "Tags": true, "CidrBlockAssociations": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Vpc", Name: k8sName(id), Spec: map[string]any{}}
+	if _, ok := props["CidrBlock"]; ok {
+		m.Caveats = append(m.Caveats, "CidrBlock is informational — in kube-ovn the subnets carry the CIDRs, not the VPC; the VPC-level range does not map to a field")
+	}
+	for _, p := range []string{"EnableDnsSupport", "EnableDnsHostnames", "InstanceTenancy", "Tags"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no kind: Vpc equivalent (DNS is cluster-wide; tenancy/tags don't map)")
+		}
+	}
+	return m, f
+}
+
+// ---- AWS::EC2::Subnet -> kind: Subnet ----
+//
+// A kube-ovn Subnet with real OVN isolation (#120). CidrBlock -> cidr (faithful, required); a VpcId
+// !Ref to an in-stack AWS::EC2::VPC -> vpc; MapPublicIpOnLaunch -> private (public subnet => not
+// private). AvailabilityZone/tags have no equivalent (caveats).
+func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"CidrBlock": true, "VpcId": true, "AvailabilityZone": true, "MapPublicIpOnLaunch": true,
+		"Tags": true, "AssignIpv6AddressOnCreation": true, "Ipv6CidrBlock": true, "OutpostArn": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	spec := map[string]any{}
+	if cidr, ok := concrete(props["CidrBlock"]); ok && cidr != "" {
+		spec["cidr"] = cidr
+	} else {
+		f = append(f, Finding{"Resource " + id, "CidrBlock is required to create a Subnet"})
+	}
+	// VpcId: a !Ref to an in-stack AWS::EC2::VPC maps to that kind: Vpc.
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if t, ok := refTarget(raw["VpcId"]); ok {
+				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::VPC" {
+					spec["vpc"] = k8sName(t)
+				}
+			}
+		}
+	}
+	// A public subnet (MapPublicIpOnLaunch) is NOT private; otherwise private (default) — OVN isolated.
+	if v, ok := props["MapPublicIpOnLaunch"].(bool); ok {
+		spec["private"] = !v
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Subnet", Name: k8sName(id), Spec: spec}
+	for _, p := range []string{"AvailabilityZone", "Tags", "AssignIpv6AddressOnCreation", "Ipv6CidrBlock"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no kind: Subnet equivalent (one flat cluster, no AZ; IPv6/tags don't map)")
+		}
+	}
 	return m, f
 }
 
