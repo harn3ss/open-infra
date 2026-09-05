@@ -74,20 +74,20 @@ export function UsersPage() {
                     </td>
                     <td className="p-3">
                       <div className="flex flex-wrap items-center gap-1">
-                        {u.groups.length === 0 ? (
+                        {(u.groups ?? []).length === 0 ? (
                           <span className="text-xs text-muted-foreground">none</span>
                         ) : (
-                          u.groups.map((g) => (
+                          (u.groups ?? []).map((g) => (
                             <Badge
                               key={g}
-                              variant={u.unboundGroups.includes(g) ? "outline" : "secondary"}
+                              variant={(u.unboundGroups ?? []).includes(g) ? "outline" : "secondary"}
                               className={
-                                u.unboundGroups.includes(g)
+                                (u.unboundGroups ?? []).includes(g)
                                   ? "border-amber-500/40 text-amber-600 dark:text-amber-400"
                                   : ""
                               }
                             >
-                              {u.unboundGroups.includes(g) ? (
+                              {(u.unboundGroups ?? []).includes(g) ? (
                                 <AlertTriangle className="size-3" />
                               ) : null}
                               {g}

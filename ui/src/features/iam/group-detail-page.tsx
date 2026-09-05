@@ -25,7 +25,7 @@ export function GroupDetailPage() {
   const users = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers });
 
   const group = groups?.find((g) => g.name === name);
-  const members = (users.data ?? []).filter((u) => u.groups.includes(name));
+  const members = (users.data ?? []).filter((u) => (u.groups ?? []).includes(name));
 
   const del = useMutation({
     mutationFn: (force: boolean) => deleteIamGroup(name, force),

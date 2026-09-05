@@ -39,7 +39,7 @@ export function UserDetailPage() {
   // Group editing (staged, saved with a button).
   const [editGroups, setEditGroups] = useState<string[]>([]);
   useEffect(() => {
-    if (user) setEditGroups(user.groups);
+    if (user) setEditGroups(user.groups ?? []);
   }, [user]);
 
   const saveGroups = useMutation({
@@ -76,8 +76,8 @@ export function UserDetailPage() {
   if (isError || !user) return <ErrorState error={error} onRetry={refetch} />;
 
   const groupsDirty =
-    editGroups.length !== user.groups.length ||
-    editGroups.some((g) => !user.groups.includes(g));
+    editGroups.length !== (user.groups ?? []).length ||
+    editGroups.some((g) => !(user.groups ?? []).includes(g));
 
   return (
     <DetailShell
@@ -135,12 +135,12 @@ export function UserDetailPage() {
               </DetailRow>
               <DetailRow label="Groups">
                 <div className="flex flex-wrap gap-1">
-                  {user.groups.length === 0
+                  {(user.groups ?? []).length === 0
                     ? "none"
-                    : user.groups.map((g) => (
+                    : (user.groups ?? []).map((g) => (
                         <Badge
                           key={g}
-                          variant={user.unboundGroups.includes(g) ? "outline" : "secondary"}
+                          variant={(user.unboundGroups ?? []).includes(g) ? "outline" : "secondary"}
                         >
                           {g}
                         </Badge>
@@ -170,7 +170,7 @@ export function UserDetailPage() {
                   Save groups
                 </Button>
                 {groupsDirty ? (
-                  <Button variant="ghost" onClick={() => setEditGroups(user.groups)}>
+                  <Button variant="ghost" onClick={() => setEditGroups(user.groups ?? [])}>
                     Reset
                   </Button>
                 ) : null}
