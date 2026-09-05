@@ -65,6 +65,15 @@ spec:
                     properties:
                       name: { type: string, description: "Volume name, referenced by volumeMounts." }
                 domain:  { type: string, description: "Hostname to serve the app on — open-infra provisions Ingress, a TLS certificate, and DNS for it (e.g. my-api.example.com)." }
+                assumeRole:
+                  type: string
+                  description: >-
+                    Name of a kind: Role this app runs as (workload identity, IRSA-shaped). The app
+                    gets a dedicated ServiceAccount and a projected token; the AWS SDK exchanges it
+                    for the role's temporary credentials via sts:AssumeRoleWithWebIdentity on the
+                    aws-shim — no static keys. The role's spec.trust MUST name
+                    system:serviceaccount:<this-namespace>:<this-app-name>. Requires the aws-shim
+                    with assume-role enabled.
                 expose:
                   type: boolean
                   default: false
