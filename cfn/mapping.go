@@ -40,11 +40,11 @@ var mappingTable = map[string]MapEntry{
 	"AWS::Lambda::Function":            {Kind: "Function", Status: Supported, Note: "scale-to-zero Function"},
 	"AWS::StepFunctions::StateMachine": {Kind: "StateMachine", Status: Supported, Note: "Amazon States Language engine"},
 	"AWS::AppSync::GraphQLApi":         {Kind: "GraphQLApi", Status: Supported, Note: "resolver-first GraphQL"},
-	"AWS::IAM::Role":                   {Kind: "Role", Status: Supported, Note: "maps at plan, but no create translator by design: an IAM policy document (service:Action + Deny over ARNs) has no faithful open-infra RBAC form"},
+	"AWS::IAM::Role":                   {Kind: "Role", Status: Partial, Note: "kind: Role is now a first-class assumable identity (a trust policy + attached data-plane Policies; sts:AssumeRole issues temporary session credentials on the aws-shim — #111). But there is no CFN CREATE translator yet: an inline role policy document (service:Action + conditions) still has no faithful automatic form, and the trust policy must be authored natively. Plan-recognized, not create-deployable (Deployable=false)."},
 	"AWS::IAM::ManagedPolicy":          {Kind: "Policy", Status: Supported, Note: "like IAM::Policy: a create translator imports the DATA-PLANE part into an enforced kind: Policy spec.dataPlane when the ManagedPolicy carries inline Groups/Users attachments; a standalone ManagedPolicy (attached via ManagedPolicyArns) has no principal here and BLOCKS, as does any control-plane/unmappable/conditioned part"},
 	"AWS::IAM::Policy":                 {Kind: "Policy", Status: Supported, Note: "inline policy -> a Policy; a create translator imports the DATA-PLANE part (s3/dynamodb/lambda actions on recognizable ARNs, no conditions) into an enforced kind: Policy spec.dataPlane, and BLOCKS anything it can't honor faithfully (control-plane/unmappable/conditioned parts) — narrow the policy or author it natively"},
 	"AWS::IAM::User":                   {Kind: "User", Status: Supported},
-	"AWS::IAM::Group":                  {Kind: "Group", Status: Supported, Note: "maps at plan, but no create translator by design: a Group's permissions are its attached AWS policies (unmappable), and its required clusterRole can't be derived from them"},
+	"AWS::IAM::Group":                  {Kind: "Group", Status: Partial, Note: "maps at plan, but no create translator (Deployable=false): a Group's permissions are its attached AWS policies (unmappable automatically), and its required clusterRole can't be derived from them — author the Group + its policy attachment natively"},
 	"AWS::KMS::Key":                    {Kind: "EncryptionKey", Status: Supported, Note: "customer key in Vault Transit"},
 
 	// --- partial: backing kind exists but the mapping is lossy ---

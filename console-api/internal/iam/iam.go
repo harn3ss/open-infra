@@ -32,6 +32,27 @@ type Claims struct {
 	// authoritative. Empty for Secret-backed accounts, where the role name maps to a fixed
 	// group set via RoleGroups.
 	Groups []string `json:"groups,omitempty"`
+	// AssumedRole, when non-empty, marks this as an sts:AssumeRole session acting AS a kind: Role
+	// (not a User): its value is the assumed role's name — the data-plane principal id. Sub still
+	// carries the full assumed-role session identifier (role/session) for audit + GetCallerIdentity.
+	AssumedRole string `json:"assumedRole,omitempty"`
+}
+
+// PrincipalType is the data-plane principal type the policy engine evaluates: "Role" for an
+// assumed-role session (so the role's kind: Policy dataPlane governs it), else "User".
+func (c Claims) PrincipalType() string {
+	if c.AssumedRole != "" {
+		return "Role"
+	}
+	return "User"
+}
+
+// PrincipalID is the data-plane principal id: the assumed role's name, else the user Sub.
+func (c Claims) PrincipalID() string {
+	if c.AssumedRole != "" {
+		return c.AssumedRole
+	}
+	return c.Sub
 }
 
 // GroupsFromSpec turns a kind: User's spec.groups into the impersonation groups the principal

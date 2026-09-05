@@ -16,7 +16,9 @@ import (
 // fails closed (a load/compile error denies), and a nil checker is a no-op.
 func deniedByDataPlane(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
 	action, resType, resID string, r *http.Request) (bool, string) {
-	allowed, governed, reason := authz.Authorize(ctx, "User", claims.Sub, claims.Groups,
+	// The principal is the User normally, or the assumed kind: Role for an sts:AssumeRole session —
+	// so a role's data-plane policies govern what that session may do, exactly as in AWS.
+	allowed, governed, reason := authz.Authorize(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
 		action, resType, resID, requestContext(r))
 	if governed && !allowed {
 		return true, reason
