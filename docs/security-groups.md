@@ -5,8 +5,9 @@ define once and attach to resources (`Application`, `Function`, `VirtualMachine`
 by name. Like an AWS SG, it's **stateful** (return traffic is implied) and
 **default-deny** on the directions you define — only what you allow gets through.
 
-Enforced by **Cilium** (the cluster CNI), so rules can match real IP/CIDR ranges
-at the edge, other Security Groups, or whole namespaces.
+Enforced by **kube-ovn** (the cluster CNI) via OVN ACLs, so rules can match real
+IP/CIDR ranges (including `ipBlock`/CIDR, which is enforced — verified), other
+Security Groups, or whole namespaces.
 
 ## Quick start
 
@@ -98,13 +99,18 @@ spec:
 
 ## Enforcement semantics (read this)
 
-Security Groups compile to Kubernetes **NetworkPolicies** enforced by Cilium.
-Two behaviors matter:
+Security Groups compile to Kubernetes **NetworkPolicies** enforced by kube-ovn
+(OVN ACLs). Two behaviors matter:
 
-1. **CIDR rules match *external* sources, not in-cluster pods.** Cilium identifies
-   in-cluster pods by *identity*, so a `cidr:` rule governs edge/LAN traffic — use
-   `securityGroup:` / `namespace:` peers to restrict pod-to-pod (east-west). This
-   mirrors AWS, where CIDR is for the edge and SG-to-SG is for internal tiers.
+1. **CIDR rules match by IP — edge *and* in-cluster.** kube-ovn enforces
+   `ipBlock`/CIDR against the actual source IP (verified: a client inside an
+   allowed CIDR reaches the target, one outside is blocked). Because kube-ovn
+   gives pods real routable IPs from their `kind: Subnet`, a `cidr:` rule can also
+   govern east-west between subnets. Still prefer `securityGroup:` / `namespace:`
+   peers for pod-to-pod by label/identity (stable across pod IP churn) — CIDR is
+   clearest for edge/LAN and for whole-subnet tiers, mirroring AWS's CIDR-for-edge,
+   SG-to-SG-for-internal split. (Under the previous CNI, CIDR rules did not
+   reliably match; that non-enforcement gap is closed under kube-ovn.)
 2. **For real client-IP filtering at the edge**, the traffic must arrive with the
    client's source IP. A `VirtualMachine`/`Application` exposed via a MetalLB
    LoadBalancer preserves it (the platform sets `externalTrafficPolicy: Local`).
