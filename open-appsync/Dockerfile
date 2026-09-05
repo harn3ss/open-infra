@@ -1,7 +1,7 @@
 # open-appsync — open-infra's resolver-first, VTL-faithful AppSync engine. Static Go on distroless.
 # Build context is the repo ROOT — this module requires the shared dynamodb module via a local
 # replace (../dynamodb), so that sibling is copied in beside it.
-FROM golang:1.26 AS build
+FROM golang:1.27 AS build
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
