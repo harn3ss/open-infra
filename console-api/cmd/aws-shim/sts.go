@@ -27,10 +27,18 @@ type roleResolver interface {
 	Resolve(ctx context.Context, roleName string) (trust []string, groups []string, ok bool)
 }
 
+// tokenReviewer verifies a projected ServiceAccount token (the web-identity token) and returns the
+// SA username ("system:serviceaccount:<ns>:<sa>"). Backed by a k8s TokenReview in production. nil
+// disables AssumeRoleWithWebIdentity (workload identity).
+type tokenReviewer interface {
+	Review(ctx context.Context, token string) (username string, ok bool)
+}
+
 type stsHandler struct {
 	account string         // the open-infra "account" id surfaced in the ARN/Account fields
 	minter  *awssts.Minter // mints sts:AssumeRole session tokens; nil disables AssumeRole
 	roles   roleResolver   // resolves a role's trust policy + session groups; nil disables AssumeRole
+	webID   tokenReviewer  // verifies workload SA tokens; nil disables AssumeRoleWithWebIdentity
 	logger  *slog.Logger
 }
 
@@ -43,6 +51,10 @@ func (h *stsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.writeCallerIdentity(w, claims, requestID)
 	case "AssumeRole":
 		h.assumeRole(w, r, claims, requestID)
+	case "AssumeRoleWithWebIdentity":
+		// Reachable pre-auth via the router (the web-identity token IS the credential); if it
+		// arrives here it was SigV4-authenticated, which is fine too — the token still governs.
+		h.assumeRoleWithWebIdentity(w, r, requestID)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
 			"The STS action '"+action+"' is not implemented by this open-infra shim", stsXMLNamespace)
@@ -92,6 +104,64 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 		return
 	}
 	h.writeAssumeRole(w, roleName, sessionName, akid, sk, token, exp, requestID)
+}
+
+// assumeRoleWithWebIdentity implements a faithful sts:AssumeRoleWithWebIdentity — the workload
+// identity (IRSA) path. A pod presents its projected ServiceAccount token; the shim verifies it via
+// a k8s TokenReview, then authorizes the SA against the role's trust policy and mints session
+// credentials for the role. No static keys, no SigV4 on this call: the SA token IS the credential.
+func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Request, requestID string) {
+	if h.minter == nil || h.roles == nil || h.webID == nil {
+		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
+			"sts:AssumeRoleWithWebIdentity is not enabled on this shim", stsXMLNamespace)
+		return
+	}
+	_ = r.ParseForm()
+	roleName := roleNameFromArn(r.PostFormValue("RoleArn"))
+	token := r.PostFormValue("WebIdentityToken")
+	sessionName := r.PostFormValue("RoleSessionName")
+	if roleName == "" || token == "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"AssumeRoleWithWebIdentity requires RoleArn and WebIdentityToken", stsXMLNamespace)
+		return
+	}
+	username, ok := h.webID.Review(r.Context(), token)
+	if !ok {
+		// STS's dialect for a bad web-identity token.
+		writeQueryError(w, http.StatusBadRequest, "InvalidIdentityToken", requestID,
+			"the web identity token could not be validated", stsXMLNamespace)
+		return
+	}
+	trust, groups, ok := h.roles.Resolve(r.Context(), roleName)
+	if !ok || !trusted(username, trust) {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
+			username+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
+		return
+	}
+	if sessionName == "" {
+		sessionName = saShortName(username)
+	}
+	ttl := awssts.DefaultDuration
+	if d := r.PostFormValue("DurationSeconds"); d != "" {
+		if secs, err := strconv.Atoi(d); err == nil {
+			ttl = time.Duration(secs) * time.Second
+		}
+	}
+	akid, sk, tok, exp, err := h.minter.Mint(roleName, groups, sessionName, username, ttl)
+	if err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
+		return
+	}
+	h.writeWebIdentity(w, roleName, sessionName, username, akid, sk, tok, exp, requestID)
+}
+
+// saShortName turns "system:serviceaccount:ns:sa" into "sa" for a default session name.
+func saShortName(username string) string {
+	parts := strings.Split(username, ":")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return username
 }
 
 // roleNameFromArn accepts an arn:openinfra:iam::<acct>:role/<name> or a bare role name.
@@ -182,6 +252,51 @@ func (h *stsHandler) writeAssumeRole(w http.ResponseWriter, role, session, akid,
 	resp.Result.Credentials.Expiration = exp.UTC().Format(time.RFC3339)
 	resp.Result.AssumedRoleUser.Arn = "arn:openinfra:iam::" + h.account + ":assumed-role/" + role + "/" + session
 	resp.Result.AssumedRoleUser.AssumedRoleId = role + ":" + session
+	resp.ResponseMetadata.RequestId = requestID
+	out, err := xml.Marshal(resp)
+	if err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "internal error", stsXMLNamespace)
+		return
+	}
+	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set("x-amzn-RequestId", requestID)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(xml.Header))
+	_, _ = w.Write(out)
+}
+
+// assumeRoleWithWebIdentityResponse is the STS AssumeRoleWithWebIdentity XML body.
+type assumeRoleWithWebIdentityResponse struct {
+	XMLName xml.Name `xml:"https://sts.amazonaws.com/doc/2011-06-15/ AssumeRoleWithWebIdentityResponse"`
+	Result  struct {
+		Credentials struct {
+			AccessKeyId     string `xml:"AccessKeyId"`
+			SecretAccessKey string `xml:"SecretAccessKey"`
+			SessionToken    string `xml:"SessionToken"`
+			Expiration      string `xml:"Expiration"`
+		} `xml:"Credentials"`
+		AssumedRoleUser struct {
+			Arn           string `xml:"Arn"`
+			AssumedRoleId string `xml:"AssumedRoleId"`
+		} `xml:"AssumedRoleUser"`
+		SubjectFromWebIdentityToken string `xml:"SubjectFromWebIdentityToken"`
+		Provider                    string `xml:"Provider"`
+	} `xml:"AssumeRoleWithWebIdentityResult"`
+	ResponseMetadata struct {
+		RequestId string `xml:"RequestId"`
+	} `xml:"ResponseMetadata"`
+}
+
+func (h *stsHandler) writeWebIdentity(w http.ResponseWriter, role, session, subject, akid, sk, token string, exp time.Time, requestID string) {
+	var resp assumeRoleWithWebIdentityResponse
+	resp.Result.Credentials.AccessKeyId = akid
+	resp.Result.Credentials.SecretAccessKey = sk
+	resp.Result.Credentials.SessionToken = token
+	resp.Result.Credentials.Expiration = exp.UTC().Format(time.RFC3339)
+	resp.Result.AssumedRoleUser.Arn = "arn:openinfra:iam::" + h.account + ":assumed-role/" + role + "/" + session
+	resp.Result.AssumedRoleUser.AssumedRoleId = role + ":" + session
+	resp.Result.SubjectFromWebIdentityToken = subject
+	resp.Result.Provider = "openinfra:serviceaccount"
 	resp.ResponseMetadata.RequestId = requestID
 	out, err := xml.Marshal(resp)
 	if err != nil {

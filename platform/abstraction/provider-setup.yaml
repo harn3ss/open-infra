@@ -27,7 +27,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 rules:
   - apiGroups: [""]
-    resources: [services, configmaps, secrets, resourcequotas, limitranges, persistentvolumeclaims]
+    # serviceaccounts: an Application with spec.assumeRole (workload identity, #111) runs under a
+    # dedicated SA the composition creates, so the provider must be able to manage them.
+    resources: [services, configmaps, secrets, serviceaccounts, resourcequotas, limitranges, persistentvolumeclaims]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
     resources: [deployments, statefulsets]
