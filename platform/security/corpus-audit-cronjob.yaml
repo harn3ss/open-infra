@@ -1,0 +1,53 @@
+# Control-plane authorization corpus audit (CA-2 / CA-7, #109 Phase 3 / #110).
+#
+# Runs corpus-check on a cadence: it derives the Cedar grant corpus from live RBAC and flags
+# cluster-admin sprawl, wildcard permissions, cluster-wide secret reads, and escalation verbs — the
+# machine-checkable replacement for the CIS Kubernetes RBAC controls once Cedar is the base grantor.
+# The audit is logged to stdout (→ promtail → Loki), so the finding trend is observable over time.
+#
+# NON-strict deliberately: the current corpus has cluster-admin grants inherited from third-party
+# operators (see evidence/cedar-corpus-baseline.md). The HIGH count is the metric to drive down; a
+# `-strict` CI gate belongs elsewhere once that count is intentionally zero. Read-only: the SA can
+# only GET/LIST RBAC objects.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: corpus-auditor, namespace: open-infra-authz }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: openinfra-corpus-auditor }
+rules:
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles, roles, clusterrolebindings, rolebindings]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: openinfra-corpus-auditor }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-corpus-auditor }
+subjects: [{ kind: ServiceAccount, name: corpus-auditor, namespace: open-infra-authz }]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: corpus-audit, namespace: open-infra-authz }
+spec:
+  schedule: "17 6 * * *" # daily, off-peak
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: corpus-auditor
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          containers:
+            - name: corpus-check
+              image: ghcr.io/harn3ss/open-infra-corpus-check:latest
+              args: [] # non-strict: log the audit, never fail the Job on current HIGH findings
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+              resources:
+                requests: { cpu: 25m, memory: 64Mi }
+                limits: { cpu: 250m, memory: 256Mi }

@@ -1,0 +1,276 @@
+Control-plane corpus audit — 160 principals, 137 findings (high=17 warn=73 info=47)
+
+  [high] cluster-admin-equivalent                 Group::crossplane:masters
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 Group::system:masters
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::argocd/argocd-application-controller
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::cdi/cdi-operator
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::cdi/cdi-sa
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::chaos-mesh/chaos-controller-manager
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::chaos-mesh/chaos-dashboard
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::chaos-mesh/chaos-dns-server
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::crossplane-system/crossplane
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::knative-operator/knative-operator
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::kube-system/helm-traefik
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::kube-system/helm-traefik-crd
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::kube-system/multus
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::kubevirt/kubevirt-controller
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::kubevirt/kubevirt-operator
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::longhorn-system/longhorn-support-bundle
+         grants action "*" on resource "*" — full control-plane authority
+  [high] cluster-admin-equivalent                 ServiceAccount::velero/velero-server
+         grants action "*" on resource "*" — full control-plane authority
+  [warn] secrets-cluster-wide                     Group::crossplane:masters
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     Group::openinfra:admins
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        Group::openinfra:powerusers
+         grants [get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     Group::openinfra:powerusers
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        Group::openinfra:readers
+         grants [get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     Group::openinfra:readers
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        Group::openinfra:readers
+         grants [get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     Group::openinfra:readers
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     Group::system:serviceaccounts:crossplane-system
+         can read Secrets cluster-wide
+  [warn] privilege-escalation-verb                Group::system:serviceaccounts:crossplane-system
+         grants [bind] (RBAC escalation verbs) — confirm this is intended
+  [warn] privilege-escalation-verb                Group::system:serviceaccounts:crossplane-system
+         grants [escalate] (RBAC escalation verbs) — confirm this is intended
+  [warn] secrets-cluster-wide                     ServiceAccount::argocd/argocd-applicationset-controller
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::argocd/argocd-server
+         grants [delete get patch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::argocd/argocd-server
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::cert-manager/cert-manager
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::cert-manager/cert-manager
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::cert-manager/cert-manager
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::cert-manager/cert-manager-cainjector
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::chaos-mesh/chaos-controller-manager
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::cnpg-system/cloudnative-pg
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::crossplane-system/crossplane
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::crossplane-system/crossplane-contrib-provider-kubernetes-101d5a6d80d3
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::crossplane-system/parameter-reconciler
+         can read Secrets cluster-wide
+  [warn] privilege-escalation-verb                ServiceAccount::crossplane-system/rbac-manager
+         grants [escalate] (RBAC escalation verbs) — confirm this is intended
+  [warn] privilege-escalation-verb                ServiceAccount::crossplane-system/rbac-manager
+         grants [bind] (RBAC escalation verbs) — confirm this is intended
+  [warn] secrets-cluster-wide                     ServiceAccount::crossplane-system/volume-crypto
+         can read Secrets cluster-wide
+  [warn] privilege-escalation-verb                ServiceAccount::knative-operator/knative-operator
+         grants [escalate] (RBAC escalation verbs) — confirm this is intended
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-operator/knative-operator
+         can read Secrets cluster-wide
+  [warn] privilege-escalation-verb                ServiceAccount::knative-operator/knative-operator
+         grants [bind] (RBAC escalation verbs) — confirm this is intended
+  [warn] privilege-escalation-verb                ServiceAccount::knative-operator/knative-operator
+         grants [bind] (RBAC escalation verbs) — confirm this is intended
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-operator/knative-operator
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::knative-operator/knative-operator
+         grants [get list create update delete deletecollection patch watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-operator/knative-operator
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::knative-operator/knative-operator
+         grants [get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-operator/knative-operator
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::knative-operator/knative-operator
+         grants [create update patch delete] on ANY resource type (resource "*")
+  [warn] wildcard-resource                        ServiceAccount::knative-operator/knative-operator
+         grants [get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-operator/knative-operator
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-operator/knative-operator
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-serving/controller
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::knative-serving/controller
+         grants [get list create update delete deletecollection patch watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-serving/controller
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::knative-serving/net-kourier
+         can read Secrets cluster-wide
+  [warn] privilege-escalation-verb                ServiceAccount::kube-system/clusterrole-aggregation-controller
+         grants [escalate] (RBAC escalation verbs) — confirm this is intended
+  [warn] wildcard-resource                        ServiceAccount::kube-system/generic-garbage-collector
+         grants [delete get list patch update watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/generic-garbage-collector
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::kube-system/horizontal-pod-autoscaler
+         grants [get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/horizontal-pod-autoscaler
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/kube-ovn-cni
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::kube-system/namespace-controller
+         grants [delete deletecollection get list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/namespace-controller
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/ovn
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        ServiceAccount::kube-system/resourcequota-controller
+         grants [list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/resourcequota-controller
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/sealed-secrets-controller
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::kube-system/traefik
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::longhorn-system/longhorn-backup-setup
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::longhorn-system/longhorn-service-account
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::mariadb-operator/mariadb-operator
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::mariadb-operator/mariadb-operator-cert-controller-cert-controller
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::minio/lakehouse-setup
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::minio/openinfra-bucket-setup
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::minio/query-iam-setup
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::monitoring/kube-prometheus-stack-grafana
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::monitoring/kube-prometheus-stack-kube-state-metrics
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::monitoring/kube-prometheus-stack-operator
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::nats/openinfra-queue-setup
+         can read Secrets cluster-wide
+  [warn] secrets-cluster-wide                     ServiceAccount::open-infra-console/console
+         can read Secrets cluster-wide
+  [warn] privilege-escalation-verb                ServiceAccount::open-infra-console/console
+         grants [impersonate] (RBAC escalation verbs) — confirm this is intended
+  [warn] privilege-escalation-verb                ServiceAccount::open-infra-console/console
+         grants [impersonate] (RBAC escalation verbs) — confirm this is intended
+  [warn] secrets-cluster-wide                     User::system:kube-controller-manager
+         can read Secrets cluster-wide
+  [warn] wildcard-resource                        User::system:kube-controller-manager
+         grants [list watch] on ANY resource type (resource "*")
+  [warn] secrets-cluster-wide                     User::system:kube-controller-manager
+         can read Secrets cluster-wide
+  [info] faithfulness-caveat                      Group::crossplane:masters
+         resource "*" in apiGroup "apiextensions.crossplane.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "pkg.crossplane.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "secrets.crossplane.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      Group::openinfra:powerusers
+         resource "*" in apiGroup "kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "snapshot.storage.k8s.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "postgresql.cnpg.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "k8s.mariadb.com" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      Group::openinfra:readers
+         resource "*" in apiGroup "openinfra.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "snapshot.storage.k8s.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "postgresql.cnpg.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "k8s.mariadb.com" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      Group::system:authenticated
+         resourceNames [sealed-secrets-controller] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [http:sealed-secrets-controller: http:sealed-secrets-controller:http sealed-secrets-controller] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      Group::system:serviceaccounts:crossplane-system
+         resourceNames [open-infra-console open-infra-poweruser open-infra-readonly] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::/argocd-applicationset-controller
+         resourceNames [58ac56fa.applicationsets.argoproj.io] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::/argocd-notifications-controller
+         resourceNames [argocd-notifications-cm] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [argocd-notifications-secret] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::/argocd-redis
+         resourceNames [argocd-redis] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::argocd/argocd-applicationset-controller
+         resourceNames [58ac56fa.applicationsets.argoproj.io] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::cdi/cdi-operator
+         resource "*" in apiGroup "cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "upload.cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resourceNames [cdi-api-dataimportcron-validate cdi-api-populator-validate cdi-api-datavolume-validate cdi-api-validate objecttransfer-api-validate] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [cdi-api-datavolume-mutate cdi-api-pvc-mutate] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [cdi-api-dataimportcron-mutate] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resource "*" in apiGroup "forklift.cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::cdi/cdi-sa
+         resource "*" in apiGroup "cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "forklift.cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::cert-manager/cert-manager
+         resourceNames [issuers.cert-manager.io/* clusterissuers.cert-manager.io/*] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [cert-manager-controller] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::cert-manager/cert-manager-cainjector
+         resourceNames [cert-manager-cainjector-leader-election cert-manager-cainjector-leader-election-core] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::cert-manager/cert-manager-webhook
+         resourceNames [cert-manager-webhook-ca] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::chaos-mesh/chaos-controller-manager
+         resource "*" in apiGroup "chaos-mesh.org" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::chaos-mesh/chaos-dashboard
+         resource "*" in apiGroup "chaos-mesh.org" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::chaos-mesh/chaos-dns-server
+         resource "*" in apiGroup "chaos-mesh.org" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::crossplane-system/compliance-attest
+         resourceNames [audit-offsite-minio-creds] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::crossplane-system/crossplane
+         resource "*" in apiGroup "apiextensions.crossplane.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "pkg.crossplane.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "secrets.crossplane.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::crossplane-system/encryptionkey-destroyer
+         resourceNames [audit-offsite-minio-creds] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::dcgm-exporter/dcgm-exporter
+         resourceNames [exporter-metrics-config-map] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::default/nodejstest-db
+         resourceNames [cnpg-default-monitoring nodejstest-db] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [nodejstest-db-app nodejstest-db-ca nodejstest-db-replication nodejstest-db-server nodejstest-db-superuser] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [nodejstest-db] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::default/test-db
+         resourceNames [cnpg-default-monitoring test-db] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [test-db-app test-db-ca test-db-replication test-db-server test-db-superuser] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [test-db] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::knative-operator/knative-operator
+         resource "*" in apiGroup "operator.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resourceNames [knative-eventing-operator] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [kafka-channel-config] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [kafka-webhook] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [system:auth-delegator] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [extension-apiserver-authentication-reader] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [knative-ingressgateway] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [config-controller] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [knative-serving-operator] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resource "*" in apiGroup "serving.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "autoscaling.internal.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "networking.internal.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resourceNames [knative-serving-certmanager] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resource "*" in apiGroup "caching.internal.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::knative-serving/activator
+         resourceNames [routing-serving-certs knative-serving-certs] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::knative-serving/controller
+         resource "*" in apiGroup "serving.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "autoscaling.internal.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "networking.internal.knative.dev" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resourceNames [knative-serving-certmanager] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/bootstrap-signer
+         resourceNames [cluster-info] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/certificate-controller
+         resourceNames [kubernetes.io/kube-apiserver-client-kubelet] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [kubernetes.io/kube-apiserver-client kubernetes.io/kube-apiserver-client-kubelet kubernetes.io/kubelet-serving kubernetes.io/legacy-unknown] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/horizontal-pod-autoscaler
+         resource "*" in apiGroup "custom.metrics.k8s.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "external.metrics.k8s.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/kube-ovn-app
+         resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/kube-ovn-cni
+         resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/legacy-service-account-token-cleaner
+         resourceNames [kube-apiserver-legacy-service-account-token-tracking] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/metrics-server
+         resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/multus
+         resource "*" in apiGroup "k8s.cni.cncf.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/ovn
+         resourceNames [kubeovn.io/signer] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kube-system/sealed-secrets-controller
+         resourceNames [sealed-secrets-key] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kubevirt/kubevirt-controller
+         resource "*" in apiGroup "kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kubevirt/kubevirt-exportproxy
+         resourceNames [kubevirt-export-ca] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kubevirt/kubevirt-operator
+         resourceNames [privileged] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [kubevirt-handler kubevirt-controller] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resource "*" in apiGroup "kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resource "*" in apiGroup "cdi.kubevirt.io" is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce; resourceNames [kubevirt-ca kubevirt-export-ca kubevirt-backup-ca kubevirt-virt-handler-certs kubevirt-virt-handler-server-certs kubevirt-virt-handler-migration-client-certs kubevirt-virt-handler-vsock-client-certs kubevirt-operator-certs kubevirt-virt-api-certs kubevirt-controller-certs kubevirt-exportproxy-certs kubevirt-synchronization-controller-certs kubevirt-synchronization-controller-server-certs kubevirt-virt-template-api-certs kubevirt-virt-template-webhook-certs kubevirt-virt-template-controller-metrics-certs] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [kubevirt-export-ca] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [kubevirt-ca] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::kubevirt/kubevirt-synchronization-controller
+         resourceNames [kubevirt-ca] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::metallb-system/controller
+         resourceNames [controller] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [metallb-webhook-configuration] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [bfdprofiles.metallb.io bgpadvertisements.metallb.io bgppeers.metallb.io ipaddresspools.metallb.io l2advertisements.metallb.io communities.metallb.io] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [memberlist] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::metallb-system/speaker
+         resourceNames [speaker] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::minio/aws-shim-iam-setup
+         resourceNames [aws-shim-minio] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      ServiceAccount::open-infra-console/console
+         resourceNames [openinfra:admins openinfra:powerusers openinfra:readers openinfra:users] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [console-minio-creds] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      User::k3s-cloud-controller-manager
+         resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      User::system:kube-controller-manager
+         resourceNames [kube-controller-manager] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
+  [info] faithfulness-caveat                      User::system:kube-scheduler
+         resourceNames [kube-scheduler] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce; resourceNames [extension-apiserver-authentication] are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce
