@@ -24,6 +24,8 @@ import {
   DATAFLOWS_PLURAL,
   STREAMS_PLURAL,
   SECURITYGROUPS_PLURAL,
+  VPCS_PLURAL,
+  SUBNETS_PLURAL,
   STATEMACHINES_PLURAL,
   EXECUTIONS_PLURAL,
   TRAININGJOBS_PLURAL,
@@ -124,6 +126,12 @@ export const openinfraPaths = {
     `${oiGV}${nsSegment(ns)}/${SECURITYGROUPS_PLURAL}`,
   securitygroup: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${SECURITYGROUPS_PLURAL}/${name}`,
+  vpcs: (ns?: string) => `${oiGV}${nsSegment(ns)}/${VPCS_PLURAL}`,
+  vpc: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${VPCS_PLURAL}/${name}`,
+  subnets: (ns?: string) => `${oiGV}${nsSegment(ns)}/${SUBNETS_PLURAL}`,
+  subnet: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${SUBNETS_PLURAL}/${name}`,
   statemachines: (ns?: string) => `${oiGV}${nsSegment(ns)}/${STATEMACHINES_PLURAL}`,
   statemachine: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${STATEMACHINES_PLURAL}/${name}`,
