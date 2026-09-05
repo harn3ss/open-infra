@@ -1,6 +1,6 @@
 # open-infra apply-sink — the generic CDC apply engine for kind: Migration.
 # Static Go binary on distroless.
-FROM golang:1.26 AS build
+FROM golang:1.27 AS build
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src

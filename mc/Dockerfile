@@ -14,7 +14,7 @@
 # Bump MC_VERSION periodically (latest at https://github.com/minio/mc/releases) to stay current.
 # --platform=$BUILDPLATFORM keeps the build stage NATIVE on the builder (amd64) and cross-compiles to
 # the target arch via GOARCH below — so the multi-arch build never emulates the Go toolchain under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 ARG TARGETARCH
 RUN git clone --depth 1 --branch ${MC_VERSION} https://github.com/minio/mc /src
