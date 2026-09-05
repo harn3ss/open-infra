@@ -65,6 +65,12 @@ spec:
                     properties:
                       name: { type: string, description: "Volume name, referenced by volumeMounts." }
                 domain:  { type: string, description: "Hostname to serve the app on — open-infra provisions Ingress, a TLS certificate, and DNS for it (e.g. my-api.example.com)." }
+                subnet:
+                  type: string
+                  description: >-
+                    Name of a kind: Subnet to place this app in (kube-ovn). The pod draws its IP from
+                    that subnet and inherits its OVN-enforced topological isolation — the AWS "launch
+                    in this subnet" model. Omit to use the namespace's default network.
                 assumeRole:
                   type: string
                   description: >-

@@ -106,6 +106,12 @@ spec:
                           {{- range $sg := ($spec.securityGroups | default list) }}
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
+                        {{- if $spec.subnet }}
+                        annotations:
+                          # Place the app in a kind: Subnet (kube-ovn): the pod draws its IP from that
+                          # subnet and inherits its OVN-enforced isolation — the AWS "in this subnet" model.
+                          ovn.kubernetes.io/logical_switch: {{ $spec.subnet }}
+                        {{- end }}
                       spec:
                         {{- if $assume }}
                         serviceAccountName: {{ $name }}
