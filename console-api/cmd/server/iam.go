@@ -147,13 +147,24 @@ func isBuiltinGroup(name string) bool {
 }
 
 func unboundGroups(groups []string) []string {
-	var out []string
+	// Always a JSON array, never null — a nil slice marshals to `null`, which the SPA
+	// would call .includes() on and crash. Same reason Groups is normalised below.
+	out := []string{}
 	for _, g := range groups {
 		if g = strings.TrimSpace(g); g != "" && !isBuiltinGroup(g) {
 			out = append(out, g)
 		}
 	}
 	return out
+}
+
+// groupList normalises a possibly-nil groups slice to a non-nil array so it serialises
+// as `[]` not `null`.
+func groupList(groups []string) []string {
+	if groups == nil {
+		return []string{}
+	}
+	return groups
 }
 
 // ── Config: what the UI needs to render sensibly ─────────────────────────────────
@@ -188,7 +199,7 @@ func handleIAMUsersList(cs kubernetes.Interface, auth *authStore, logger *slog.L
 				DisplayName:   u.Spec.DisplayName,
 				Source:        u.Spec.Source,
 				Disabled:      u.Spec.Disabled,
-				Groups:        u.Spec.Groups,
+				Groups:        groupList(u.Spec.Groups),
 				HasPassword:   hasPw,
 				UnboundGroups: unboundGroups(u.Spec.Groups),
 			})
