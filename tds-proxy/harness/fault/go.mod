@@ -2,7 +2,7 @@ module openinfra-tds-fault
 
 go 1.26.4
 
-require github.com/microsoft/go-mssqldb v1.10.0
+require github.com/microsoft/go-mssqldb v1.11.0
 
 require (
 	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
