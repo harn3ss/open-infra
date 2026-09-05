@@ -163,6 +163,15 @@ func run(logger *slog.Logger) error {
 		logger.Info("sts:AssumeRole enabled (temporary session credentials)", slog.String("rolesNamespace", rolesNS))
 	}
 
+	// Workload identity (sts:AssumeRoleWithWebIdentity, IRSA-shaped): a pod's projected SA token,
+	// verified via a k8s TokenReview against the shim's audience. Enabled alongside AssumeRole.
+	var webIDReviewer tokenReviewer
+	if stsMinter != nil {
+		aud := getenv("STS_WEB_IDENTITY_AUDIENCE", "sts.openinfra")
+		webIDReviewer = &k8sTokenReviewer{cs: cs, audience: aud}
+		logger.Info("sts:AssumeRoleWithWebIdentity enabled (workload identity)", slog.String("audience", aud))
+	}
+
 	// Optional OIDC/Cognito JWT auth for the AppSync data plane (the one non-SigV4 path). Enabled when
 	// OIDC_ISSUER is set. Audience is REQUIRED (no unaudienced tokens). The mode is EXPLICIT
 	// (OIDC_MODE, default aws_oidc); the issuer only picks the default groups-claim name.
@@ -246,7 +255,7 @@ func run(logger *slog.Logger) error {
 	lambdaH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
-		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, logger: logger},
+		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, logger: logger},
 		"lambda":   lambdaH,
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 		"dynamodb": dynamoH,

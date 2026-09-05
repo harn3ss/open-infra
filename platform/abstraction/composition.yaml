@@ -37,6 +37,13 @@ spec:
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $scaling := $spec.scaling | default dict }}
+            {{- /* assumeRole (#111 workload identity, IRSA-shaped): the app runs under a dedicated
+                   ServiceAccount, projects an SA token, and the AWS SDK exchanges it for the role's
+                   temporary credentials via sts:AssumeRoleWithWebIdentity on the shim. The role's
+                   trust must name system:serviceaccount:<ns>:<name>. */}}
+            {{- $assume := $spec.assumeRole | default "" }}
+            {{- $stsEndpoint := "http://open-infra-aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
+            {{- $stsAudience := "sts.openinfra" }}
             {{- /* database.engine: postgres (CloudNativePG) or mongo (FerretDB on
                    the DocumentDB-Postgres extension). dbPass is derived from the
                    composite UID so it's stable across reconciles (never committed). */}}
@@ -100,6 +107,9 @@ spec:
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
                       spec:
+                        {{- if $assume }}
+                        serviceAccountName: {{ $name }}
+                        {{- end }}
                         containers:
                           - name: app
                             image: {{ $spec.image }}
@@ -109,17 +119,30 @@ spec:
                             resources:
                               requests: { cpu: {{ $spec.cpu | default "50m" }}, memory: {{ $spec.memory | default "64Mi" }} }
                               limits: { cpu: {{ $spec.cpu | default "500m" }}, memory: {{ $spec.memory | default "512Mi" }} }
-                            {{- if $spec.volumeMounts }}
+                            {{- if or $spec.volumeMounts $assume }}
                             volumeMounts:
                             {{- range $spec.volumeMounts }}
                               - { name: {{ .name }}, mountPath: {{ .mountPath }} }
+                            {{- end }}
+                            {{- if $assume }}
+                              - { name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra, readOnly: true }
                             {{- end }}
                             {{- end }}
                             # Health checks auto-injected — k8s self-heals.
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
-                            {{- if or $spec.env $spec.database $spec.queues }}
+                            {{- if or $spec.env $spec.database $spec.queues $assume }}
                             env:
+                            {{- if $assume }}
+                              # Workload identity: the AWS SDK's web-identity provider reads these and
+                              # calls sts:AssumeRoleWithWebIdentity on the shim, exchanging the projected
+                              # SA token for the role's temporary credentials — no static keys.
+                              - { name: AWS_ROLE_ARN, value: "arn:openinfra:iam::open-infra:role/{{ $assume }}" }
+                              - { name: AWS_WEB_IDENTITY_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
+                              - { name: AWS_ENDPOINT_URL_STS, value: "{{ $stsEndpoint }}" }
+                              - { name: AWS_ENDPOINT_URL, value: "{{ $stsEndpoint }}" }
+                              - { name: AWS_REGION, value: "us-east-1" }
+                            {{- end }}
                             {{- range $spec.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
                             {{- end }}
@@ -181,14 +204,43 @@ spec:
                             {{- end }}
                             {{- end }}
                           {{- end }}
-                        {{- /* Shared ephemeral pod volumes (emptyDir) — an ECS task's shared Volumes.
-                               Scratch/shared space between containers; renders nothing when unset. */}}
-                        {{- if $spec.volumes }}
+                        {{- /* Shared ephemeral pod volumes (emptyDir) — an ECS task's shared Volumes —
+                               plus the projected SA token for workload identity (assumeRole). Renders
+                               nothing when neither is set. */}}
+                        {{- if or $spec.volumes $assume }}
                         volumes:
                         {{- range $spec.volumes }}
                           - { name: {{ .name }}, emptyDir: {} }
                         {{- end }}
+                        {{- if $assume }}
+                          - name: openinfra-sts-token
+                            projected:
+                              sources:
+                                - serviceAccountToken:
+                                    audience: {{ $stsAudience }}
+                                    expirationSeconds: 3600
+                                    path: token
                         {{- end }}
+                        {{- end }}
+            {{- if $assume }}
+            ---
+            # --- Workload-identity ServiceAccount (assumeRole): the pod runs as this SA; the
+            #     assumed role's trust policy must name system:serviceaccount:<ns>:<name>. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: workload-sa
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ServiceAccount
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+            {{- end }}
             ---
             # --- Service ---
             apiVersion: kubernetes.crossplane.io/v1alpha2

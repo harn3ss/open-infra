@@ -173,6 +173,104 @@ func TestSessionToken_RejectedWhenAssumeDisabled(t *testing.T) {
 	}
 }
 
+// --- Workload identity (sts:AssumeRoleWithWebIdentity) ---
+
+type fakeReviewer map[string]string // web-identity token -> SA username; missing => not authenticated
+
+func (f fakeReviewer) Review(_ context.Context, tok string) (string, bool) {
+	u, ok := f[tok]
+	return u, ok
+}
+
+func webIdentityRequest(roleArn, token string) *http.Request {
+	form := url.Values{"Action": {"AssumeRoleWithWebIdentity"}, "RoleArn": {roleArn}, "WebIdentityToken": {token}}
+	req := httptest.NewRequest("POST", "http://sts.local/", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
+func newWebIDSTS(t *testing.T, roles fakeRoles, rev fakeReviewer) *stsHandler {
+	h, _ := newSTS(t, roles)
+	h.webID = rev
+	return h
+}
+
+// A pod whose SA token verifies and whose SA is named by the role's trust gets role credentials.
+func TestWebIdentity_TrustedServiceAccount(t *testing.T) {
+	const sa = "system:serviceaccount:apps:web-sa"
+	h := newWebIDSTS(t,
+		fakeRoles{"svc-role": {trust: []string{sa}, groups: []string{"openinfra:users"}}},
+		fakeReviewer{"pod-token": sa})
+	w := httptest.NewRecorder()
+	h.serve(w, webIdentityRequest("arn:openinfra:iam::open-infra:role/svc-role", "pod-token"), iam.Claims{}, "rid")
+	if w.Code != http.StatusOK {
+		t.Fatalf("trusted SA should get creds, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp assumeRoleWithWebIdentityResponse
+	if err := xml.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.HasPrefix(resp.Result.Credentials.AccessKeyId, "ASIA") || resp.Result.Credentials.SessionToken == "" {
+		t.Fatalf("credentials incomplete: %+v", resp.Result.Credentials)
+	}
+	if resp.Result.SubjectFromWebIdentityToken != sa {
+		t.Fatalf("subject should be the SA, got %q", resp.Result.SubjectFromWebIdentityToken)
+	}
+}
+
+// A verified SA that the role's trust does NOT name is denied.
+func TestWebIdentity_UntrustedServiceAccount(t *testing.T) {
+	h := newWebIDSTS(t,
+		fakeRoles{"svc-role": {trust: []string{"system:serviceaccount:apps:other-sa"}}},
+		fakeReviewer{"pod-token": "system:serviceaccount:apps:web-sa"})
+	w := httptest.NewRecorder()
+	h.serve(w, webIdentityRequest("svc-role", "pod-token"), iam.Claims{}, "rid")
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Fatalf("untrusted SA must be AccessDenied, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// A token the reviewer can't authenticate is rejected with InvalidIdentityToken.
+func TestWebIdentity_InvalidTokenRejected(t *testing.T) {
+	h := newWebIDSTS(t,
+		fakeRoles{"svc-role": {trust: []string{"*"}}},
+		fakeReviewer{}) // no token authenticates
+	w := httptest.NewRecorder()
+	h.serve(w, webIdentityRequest("svc-role", "forged-token"), iam.Claims{}, "rid")
+	if !strings.Contains(w.Body.String(), "InvalidIdentityToken") {
+		t.Fatalf("an unverifiable token must be InvalidIdentityToken, got: %s", w.Body.String())
+	}
+}
+
+// Web identity disabled (no reviewer) answers InvalidAction.
+func TestWebIdentity_DisabledWhenNoReviewer(t *testing.T) {
+	h, _ := newSTS(t, fakeRoles{"svc-role": {trust: []string{"*"}}}) // webID nil
+	w := httptest.NewRecorder()
+	h.serve(w, webIdentityRequest("svc-role", "pod-token"), iam.Claims{}, "rid")
+	if !strings.Contains(w.Body.String(), "InvalidAction") {
+		t.Fatalf("web identity with no reviewer must be InvalidAction, got: %s", w.Body.String())
+	}
+}
+
+// The router dispatches an UNAUTHENTICATED web-identity call (no SigV4) to STS — the SA token is
+// the credential.
+func TestRouter_DispatchesUnauthenticatedWebIdentity(t *testing.T) {
+	const sa = "system:serviceaccount:apps:web-sa"
+	h := newWebIDSTS(t,
+		fakeRoles{"svc-role": {trust: []string{sa}, groups: []string{"openinfra:users"}}},
+		fakeReviewer{"pod-token": sa})
+	rt := &serviceRouter{
+		auth:     &authenticator{keys: fakeKeys{}, resolve: func(context.Context, string) ([]string, bool) { return nil, false }},
+		services: map[string]awsService{"sts": h},
+		logger:   discardLogger(),
+	}
+	w := httptest.NewRecorder()
+	rt.ServeHTTP(w, webIdentityRequest("svc-role", "pod-token")) // NO Authorization header
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ASIA") {
+		t.Fatalf("router must dispatch unauthenticated web-identity to STS, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // signedSessionRequest signs a request with temporary credentials and attaches the STS session token.
 func signedSessionRequest(t *testing.T, accessKeyID, secretKey, token string) *http.Request {
 	t.Helper()
