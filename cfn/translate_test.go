@@ -446,6 +446,39 @@ Resources:
 	}
 }
 
+// #117 §3: a TaskDefinition's TaskRoleArn maps to the Application's assumeRole (workload identity),
+// now that roles are first-class assumable identities; ExecutionRoleArn stays a caveat.
+func TestTranslate_ECSService_TaskRoleMapsToAssumeRole(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      TaskRoleArn: arn:aws:iam::123456789012:role/data-reader
+      ExecutionRoleArn: arn:aws:iam::123456789012:role/ecsTaskExecutionRole
+      ContainerDefinitions:
+        - { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] }
+  Svc:
+    Type: AWS::ECS::Service
+    Properties: { TaskDefinition: !Ref Task, DesiredCount: 1 }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if m.Spec["assumeRole"] != "data-reader" {
+		t.Fatalf("TaskRoleArn should map to assumeRole=data-reader, got %#v", m.Spec["assumeRole"])
+	}
+	joined := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(joined, "spec.trust must name") {
+		t.Fatalf("a task-role mapping must caveat the trust requirement: %v", m.Caveats)
+	}
+	if !strings.Contains(joined, "ExecutionRoleArn") {
+		t.Fatalf("ExecutionRoleArn must stay a caveat: %v", m.Caveats)
+	}
+}
+
 // #117 §1: a host-path bind-mount Volume refuses (no safe equivalent), never a silent drop.
 func TestTranslate_ECSService_HostVolumeRefused(t *testing.T) {
 	tmpl := `
