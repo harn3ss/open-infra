@@ -37,6 +37,11 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [ingresses, networkpolicies]
     verbs: [get, list, watch, create, update, patch, delete]
+  # kube-ovn Vpc/Subnet: kind: Vpc and kind: Subnet (#120) compile to kubeovn.io objects the
+  # provider manages — real OVN-enforced topological isolation (the AWS VPC/subnet model).
+  - apiGroups: [kubeovn.io]
+    resources: [vpcs, subnets]
+    verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [autoscaling]
     resources: [horizontalpodautoscalers]
     verbs: [get, list, watch, create, update, patch, delete]
