@@ -97,14 +97,29 @@ func TestTranslate_EC2Instance_UnknownInstanceTypeCaveat(t *testing.T) {
 	}
 }
 
-// Network fields surface a SECURITY caveat (deferred half), never a silent drop.
-func TestTranslate_EC2Instance_NetworkFieldsSecurityCaveat(t *testing.T) {
-	m, _ := translateEC2Instance("Web", map[string]any{
+// #120 subnet half: a raw AWS subnet id is opaque and refuses; security groups stay a SECURITY caveat.
+func TestTranslate_EC2Instance_RawSubnetRefusesSGCaveat(t *testing.T) {
+	m, fs := translateEC2Instance("Web", map[string]any{
 		"ImageId": "ubuntu-24.04", "SubnetId": "subnet-123", "SecurityGroupIds": []any{"sg-1"},
 	}, nil)
-	joined := strings.Join(m.Caveats, "\n")
-	if !strings.Contains(joined, "SubnetId") || !strings.Contains(joined, "SECURITY") {
-		t.Fatalf("network fields must surface a SECURITY caveat: %v", m.Caveats)
+	if !strings.Contains(findingsText(fs), "raw AWS subnet id") {
+		t.Fatalf("a raw subnet- id must refuse with help, got: %s", findingsText(fs))
+	}
+	if !strings.Contains(strings.Join(m.Caveats, "\n"), "SECURITY") {
+		t.Fatalf("SecurityGroupIds must stay a SECURITY caveat: %v", m.Caveats)
+	}
+}
+
+// #120 subnet half: a SubnetId naming a kind: Subnet places the VM in it (real OVN isolation).
+func TestTranslate_EC2Instance_SubnetNameMaps(t *testing.T) {
+	m, fs := translateEC2Instance("Web", map[string]any{
+		"ImageId": "ubuntu-24.04", "SubnetId": "app-tier",
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a kind: Subnet name must map cleanly: %s", findingsText(fs))
+	}
+	if m.Spec["subnet"] != "app-tier" {
+		t.Fatalf("SubnetId should map to spec.subnet=app-tier, got %#v", m.Spec["subnet"])
 	}
 }
 

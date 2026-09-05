@@ -83,6 +83,12 @@ spec:
                   type: array
                   items: { type: string }
                   description: "Names of SecurityGroups (firewall rule sets) to attach to this VM."
+                subnet:
+                  type: string
+                  description: >-
+                    Name of a kind: Subnet to place this VM in (kube-ovn). The VM's launcher pod draws
+                    its IP from that subnet and inherits its OVN-enforced topological isolation — the
+                    AWS "launch in this subnet" model. Omit to use the namespace's default network.
                 running:  { type: boolean, default: true, description: "Power state. Default true = running; false stops the VM (mapped to KubeVirt runStrategy Halted) while retaining its disk. The console's Start/Stop button flips this." }
                 highAvailability: { type: boolean, default: false, description: "Node-independent storage and live migration. Default false = root disk on local-path NVMe (faster, but pinned to one node). true provisions the root disk on Longhorn (replicated, migratable RWX block) and sets evictionStrategy: LiveMigrate, so the VM survives a node loss (reschedule + reboot) and live-migrates off a drained node with zero downtime. See cpuModel for cross-CPU portability." }
                 existingRootClaim: { type: string, description: "Boot from an existing root PVC instead of cloning a fresh disk from the OS image — used to migrate or restore a VM onto a pre-populated disk (e.g. one cloned onto Longhorn). When set, no root DataVolume is provisioned." }

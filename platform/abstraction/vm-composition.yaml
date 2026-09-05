@@ -151,6 +151,12 @@ spec:
                           {{- range $sg := ($spec.securityGroups | default list) }}
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
+                        {{- if $spec.subnet }}
+                        annotations:
+                          # Place the VM's launcher pod in a kind: Subnet (kube-ovn) — the VM inherits
+                          # that subnet's OVN-enforced isolation (the AWS "launch in this subnet" model).
+                          ovn.kubernetes.io/logical_switch: {{ $spec.subnet }}
+                        {{- end }}
                       spec:
                         {{- if $vmArch }}
                         # Pin BOTH the VMI architecture and the launcher node arch. `architecture` matters
