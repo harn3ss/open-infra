@@ -54,6 +54,15 @@ spec:
                   description: Names of Policies (in this namespace) to aggregate.
                   items:
                     type: string
+                trust:
+                  type: array
+                  description: >-
+                    Trust policy — the principals permitted to assume this role via sts:AssumeRole
+                    (kind: User names, or "*" for any authenticated principal). A role with no trust
+                    entries cannot be assumed by anyone (fail closed), exactly as an AWS role needs a
+                    trust policy. An assumed session acts with the role's attached policies.
+                  items:
+                    type: string
               required: [policies]
             status:
               type: object

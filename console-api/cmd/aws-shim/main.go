@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
+	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
@@ -69,8 +71,9 @@ func run(logger *slog.Logger) error {
 	// blocks, cached and refreshed from the cluster. Additive to the coarse SAR (it can only tighten),
 	// fails closed. Disabled (nil-safe no-op) if the dynamic client can't be built.
 	var authzChecker *dataplaneauthz.Checker
-	if dyn, derr := dynamic.NewForConfig(kc.Config); derr != nil {
-		logger.Warn("data-plane policy engine disabled: cannot build dynamic client", "err", derr)
+	dyn, derr := dynamic.NewForConfig(kc.Config)
+	if derr != nil {
+		logger.Warn("data-plane policy engine + assume-role disabled: cannot build dynamic client", "err", derr)
 	} else {
 		authzChecker = dataplaneauthz.New(dataplaneauthz.K8sLoader(dyn), 30*time.Second)
 		logger.Info("data-plane policy engine enabled (kind: Policy dataPlane, refresh 30s)")
@@ -136,6 +139,28 @@ func run(logger *slog.Logger) error {
 	auth := &authenticator{
 		keys:    awskeys.NewStore(cs, keysNS),
 		resolve: newOwnerResolver(cs, usersNS),
+	}
+
+	// sts:AssumeRole (faithful STS temporary credentials). Opt-in via STS_SIGNING_KEY (base64,
+	// 32 bytes / AES-256), the same key across replicas so a token minted by one shim verifies on
+	// another. Unset -> AssumeRole answers InvalidAction and no session tokens are accepted, so the
+	// identity surface stays exactly as before. Requires the dynamic client (to read a role's trust).
+	var stsMinter *awssts.Minter
+	var roleRes roleResolver
+	rolesNS := getenv("ROLES_NAMESPACE", usersNS)
+	if keyB64 := getenv("STS_SIGNING_KEY", ""); keyB64 != "" && dyn != nil {
+		key, kerr := base64.StdEncoding.DecodeString(keyB64)
+		if kerr != nil {
+			return fmt.Errorf("STS_SIGNING_KEY is not valid base64: %w", kerr)
+		}
+		m, merr := awssts.NewMinter(key)
+		if merr != nil {
+			return merr
+		}
+		stsMinter = m
+		roleRes = &dynRoleResolver{dyn: dyn, ns: rolesNS}
+		auth.sts = stsMinter
+		logger.Info("sts:AssumeRole enabled (temporary session credentials)", slog.String("rolesNamespace", rolesNS))
 	}
 
 	// Optional OIDC/Cognito JWT auth for the AppSync data plane (the one non-SigV4 path). Enabled when
@@ -221,7 +246,7 @@ func run(logger *slog.Logger) error {
 	lambdaH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
-		"sts":      &stsHandler{account: account, logger: logger},
+		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, logger: logger},
 		"lambda":   lambdaH,
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 		"dynamodb": dynamoH,

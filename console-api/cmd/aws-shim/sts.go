@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/xml"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
@@ -16,8 +21,16 @@ import (
 //
 // Protocol: AWS Query (form-encoded `Action=…` POST, XML response). Only GetCallerIdentity is
 // implemented; every other action returns a faithful query-protocol error rather than a guess.
+// roleResolver looks up a kind: Role's trust (who may assume it) and the groups an assumed session
+// acts as. Backed by a dynamic k8s client in production and a fake in tests.
+type roleResolver interface {
+	Resolve(ctx context.Context, roleName string) (trust []string, groups []string, ok bool)
+}
+
 type stsHandler struct {
-	account string // the open-infra "account" id surfaced in the ARN/Account fields
+	account string         // the open-infra "account" id surfaced in the ARN/Account fields
+	minter  *awssts.Minter // mints sts:AssumeRole session tokens; nil disables AssumeRole
+	roles   roleResolver   // resolves a role's trust policy + session groups; nil disables AssumeRole
 	logger  *slog.Logger
 }
 
@@ -28,10 +41,86 @@ func (h *stsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		// AWS allows GetCallerIdentity for ANY authenticated principal (no extra authorization) —
 		// it only reports who you are. We mirror that: the request is already authenticated.
 		h.writeCallerIdentity(w, claims, requestID)
+	case "AssumeRole":
+		h.assumeRole(w, r, claims, requestID)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
 			"The STS action '"+action+"' is not implemented by this open-infra shim", stsXMLNamespace)
 	}
+}
+
+// assumeRole implements a faithful sts:AssumeRole. It authorizes the caller against the target
+// role's trust policy (who may assume), then mints a temporary credential (AccessKeyId +
+// SecretAccessKey + SessionToken) that acts AS the role. Fails closed: assume disabled, an unknown
+// role, or a caller not named by the trust policy all deny.
+func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	if h.minter == nil || h.roles == nil {
+		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
+			"sts:AssumeRole is not enabled on this shim (no signing key configured)", stsXMLNamespace)
+		return
+	}
+	_ = r.ParseForm()
+	roleName := roleNameFromArn(r.PostFormValue("RoleArn"))
+	sessionName := r.PostFormValue("RoleSessionName")
+	if roleName == "" || sessionName == "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"AssumeRole requires RoleArn and RoleSessionName", stsXMLNamespace)
+		return
+	}
+	trust, groups, ok := h.roles.Resolve(r.Context(), roleName)
+	if !ok {
+		// AWS returns AccessDenied (not "not found") so a caller can't probe which roles exist.
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
+			"not authorized to perform sts:AssumeRole on role "+roleName, stsXMLNamespace)
+		return
+	}
+	caller := callerName(claims)
+	if !trusted(caller, trust) {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
+			caller+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
+		return
+	}
+	ttl := awssts.DefaultDuration
+	if d := r.PostFormValue("DurationSeconds"); d != "" {
+		if secs, err := strconv.Atoi(d); err == nil {
+			ttl = time.Duration(secs) * time.Second
+		}
+	}
+	akid, sk, token, exp, err := h.minter.Mint(roleName, groups, sessionName, caller, ttl)
+	if err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
+		return
+	}
+	h.writeAssumeRole(w, roleName, sessionName, akid, sk, token, exp, requestID)
+}
+
+// roleNameFromArn accepts an arn:openinfra:iam::<acct>:role/<name> or a bare role name.
+func roleNameFromArn(arn string) string {
+	arn = strings.TrimSpace(arn)
+	if i := strings.Index(arn, ":role/"); i >= 0 {
+		return arn[i+len(":role/"):]
+	}
+	return arn
+}
+
+// callerName is the principal the trust policy is evaluated against: the User's name, or (for a
+// chained assume) the already-assumed role's name.
+func callerName(c iam.Claims) string {
+	if c.AssumedRole != "" {
+		return c.AssumedRole
+	}
+	return c.Sub
+}
+
+// trusted reports whether the caller is named by the trust policy. "*" trusts any authenticated
+// principal (AWS's Principal:"*" trust); otherwise an exact name match.
+func trusted(caller string, trust []string) bool {
+	for _, t := range trust {
+		if t == "*" || t == caller {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *stsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
@@ -65,10 +154,56 @@ type getCallerIdentityResponse struct {
 	} `xml:"ResponseMetadata"`
 }
 
+// assumeRoleResponse is the STS AssumeRole XML body — SDKs read Credentials + AssumedRoleUser.
+type assumeRoleResponse struct {
+	XMLName xml.Name `xml:"https://sts.amazonaws.com/doc/2011-06-15/ AssumeRoleResponse"`
+	Result  struct {
+		Credentials struct {
+			AccessKeyId     string `xml:"AccessKeyId"`
+			SecretAccessKey string `xml:"SecretAccessKey"`
+			SessionToken    string `xml:"SessionToken"`
+			Expiration      string `xml:"Expiration"`
+		} `xml:"Credentials"`
+		AssumedRoleUser struct {
+			Arn           string `xml:"Arn"`
+			AssumedRoleId string `xml:"AssumedRoleId"`
+		} `xml:"AssumedRoleUser"`
+	} `xml:"AssumeRoleResult"`
+	ResponseMetadata struct {
+		RequestId string `xml:"RequestId"`
+	} `xml:"ResponseMetadata"`
+}
+
+func (h *stsHandler) writeAssumeRole(w http.ResponseWriter, role, session, akid, sk, token string, exp time.Time, requestID string) {
+	var resp assumeRoleResponse
+	resp.Result.Credentials.AccessKeyId = akid
+	resp.Result.Credentials.SecretAccessKey = sk
+	resp.Result.Credentials.SessionToken = token
+	resp.Result.Credentials.Expiration = exp.UTC().Format(time.RFC3339)
+	resp.Result.AssumedRoleUser.Arn = "arn:openinfra:iam::" + h.account + ":assumed-role/" + role + "/" + session
+	resp.Result.AssumedRoleUser.AssumedRoleId = role + ":" + session
+	resp.ResponseMetadata.RequestId = requestID
+	out, err := xml.Marshal(resp)
+	if err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "internal error", stsXMLNamespace)
+		return
+	}
+	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set("x-amzn-RequestId", requestID)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(xml.Header))
+	_, _ = w.Write(out)
+}
+
 func (h *stsHandler) writeCallerIdentity(w http.ResponseWriter, claims iam.Claims, requestID string) {
 	var resp getCallerIdentityResponse
 	// An open-infra-shaped ARN: honest about the provider, parseable by tools that split on ':'.
-	resp.Result.Arn = "arn:openinfra:iam::" + h.account + ":user/" + claims.Sub
+	// An assumed-role session reports the assumed-role ARN (claims.Sub is "assumed-role/<role>/<sess>").
+	if claims.AssumedRole != "" {
+		resp.Result.Arn = "arn:openinfra:iam::" + h.account + ":" + claims.Sub
+	} else {
+		resp.Result.Arn = "arn:openinfra:iam::" + h.account + ":user/" + claims.Sub
+	}
 	resp.Result.UserId = claims.Sub
 	resp.Result.Account = h.account
 	resp.ResponseMetadata.RequestId = requestID
