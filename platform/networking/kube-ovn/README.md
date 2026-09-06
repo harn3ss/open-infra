@@ -10,9 +10,17 @@ under `networking/kube-ovn/` — the root app-of-apps include glob is `networkin
 enabled on the kube-ovn substrate.
 
 - `subnet-xrd.yaml` / `subnet-composition.yaml` — `kind: Subnet` → a kube-ovn `Subnet` (via
-  provider-kubernetes), `private`/`allowSubnets` → OVN-enforced isolation.
+  provider-kubernetes), `private`/`allowSubnets` → OVN-enforced isolation. `spec.acls` is the
+  **Network ACL** (stateless subnet rules → `subnet.spec.acls`; structured direction/action/
+  protocol/cidr/port compiled to an OVN match, or a raw `match`).
 - `vpc-xrd.yaml` / `vpc-composition.yaml` — `kind: Vpc` → a kube-ovn `Vpc` (an isolated tenant
-  network domain). `spec.routes` is the VPC route table (→ `staticRoutes`).
+  network domain). `spec.routes` is the VPC route table (→ `staticRoutes`); `spec.peerings` is
+  **VPC Peering** (→ `vpc.spec.vpcPeerings`, declared on both VPCs).
+- `transitgateway-xrd.yaml` / `transitgateway-composition.yaml` — `kind: TransitGateway` → a
+  subnet-less kube-ovn `Vpc` (a pure transit router) that peers every spoke and routes to each
+  spoke's CIDR, giving **transitive** spoke↔spoke routing (the AWS Transit Gateway; the property
+  plain peering lacks). Each spoke is also wired on its own `kind: Vpc` (a peering to the hub + a
+  route to the other spokes via the hub).
 - `natgateway-xrd.yaml` / `natgateway-composition.yaml` — `kind: NatGateway` → a kube-ovn
   `VpcNatGateway` (the border device). SNAT egress (AWS NAT-Gateway) via `spec.egress`; on a flat
   `/24` it also serves the Internet-Gateway role (a real routing hop that terminates + re-NATs, so a

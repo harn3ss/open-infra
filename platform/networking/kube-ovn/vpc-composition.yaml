@@ -45,5 +45,12 @@ spec:
                         policy: policyDst
                     {{- end }}
                     {{- end }}
+                    {{- if $spec.peerings }}
+                    vpcPeerings:
+                    {{- range $spec.peerings }}
+                      - remoteVpc: {{ .remoteVpc }}
+                        localConnectIP: {{ .localConnectIP }}
+                    {{- end }}
+                    {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }

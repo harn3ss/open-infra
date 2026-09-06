@@ -39,7 +39,14 @@ spec:
                     protocol: IPv4
                     cidrBlock: {{ $spec.cidr }}
                     natOutgoing: true
-                    private: {{ $spec.private | default true }}
+                    {{- /* NB: do NOT use `default true` here — sprig's default treats the bool false
+                           as empty, so `private: false` would render as true (a public subnet would be
+                           silently private). The XRD defaults private to true, so render it directly. */}}
+                    {{- if hasKey $spec "private" }}
+                    private: {{ $spec.private }}
+                    {{- else }}
+                    private: true
+                    {{- end }}
                     {{- if $spec.vpc }}
                     vpc: {{ $spec.vpc }}
                     {{- end }}
@@ -51,6 +58,26 @@ spec:
                     {{- end }}
                     {{- if $spec.allowSubnets }}
                     allowSubnets: {{ toYaml $spec.allowSubnets | nindent 22 }}
+                    {{- end }}
+                    {{- /* acls rendered authoritatively: an empty list clears them (provider-kubernetes
+                           merges additively, so an omitted field would leave stale ACLs in place). */}}
+                    {{- if $spec.acls }}
+                    acls:
+                    {{- range $acl := $spec.acls }}
+                    {{- $dir := ternary "to-lport" "from-lport" (eq $acl.direction "ingress") }}
+                    {{- $parts := list }}
+                    {{- if $acl.cidr }}{{- if eq $acl.direction "ingress" }}{{- $parts = append $parts (printf "ip4.src == %s" $acl.cidr) }}{{- else }}{{- $parts = append $parts (printf "ip4.dst == %s" $acl.cidr) }}{{- end }}{{- end }}
+                    {{- $proto := $acl.protocol | default "all" }}
+                    {{- if ne $proto "all" }}{{- $parts = append $parts $proto }}{{- if $acl.port }}{{- $parts = append $parts (printf "%s.dst == %d" $proto (int $acl.port)) }}{{- end }}{{- end }}
+                    {{- if not $parts }}{{- $parts = append $parts "ip4" }}{{- end }}
+                    {{- $m := $acl.match | default (join " && " $parts) }}
+                      - direction: {{ $dir }}
+                        priority: {{ $acl.priority | default 1000 }}
+                        match: "{{ $m }}"
+                        action: {{ $acl.action }}
+                    {{- end }}
+                    {{- else }}
+                    acls: []
                     {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }
