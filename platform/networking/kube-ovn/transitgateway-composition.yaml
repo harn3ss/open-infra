@@ -1,12 +1,13 @@
-# One kind: Vpc claim -> one kube-ovn Vpc (kubeovn.io/v1) via provider-kubernetes.
+# One kind: TransitGateway claim -> a subnet-less kube-ovn Vpc (the hub / transit router) that peers
+# with every spoke and routes to every spoke's CIDR. Rendered via a provider-kubernetes Object.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
-  name: vpc
+  name: transitgateway
   annotations:
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
-  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XVpc }
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XTransitGateway }
   mode: Pipeline
   pipeline:
     - step: render-resources
@@ -24,7 +25,7 @@ spec:
             kind: Object
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: vpc
+                gotemplating.fn.crossplane.io/composition-resource-name: hub
             spec:
               forProvider:
                 manifest:
@@ -32,25 +33,18 @@ spec:
                   kind: Vpc
                   metadata:
                     name: {{ $name }}
-                    labels: { openinfra.dev/vpc: {{ $name }} }
+                    labels: { openinfra.dev/transitgateway: {{ $name }} }
                   spec:
-                    {{- if $spec.namespaces }}
-                    namespaces: {{ toYaml $spec.namespaces | nindent 22 }}
-                    {{- end }}
-                    {{- if $spec.routes }}
-                    staticRoutes:
-                    {{- range $spec.routes }}
-                      - cidr: {{ .cidr }}
-                        nextHopIP: {{ .nextHop }}
-                        policy: policyDst
-                    {{- end }}
-                    {{- end }}
-                    {{- if $spec.peerings }}
                     vpcPeerings:
-                    {{- range $spec.peerings }}
-                      - remoteVpc: {{ .remoteVpc }}
-                        localConnectIP: {{ .localConnectIP }}
+                    {{- range $spec.attachments }}
+                      - remoteVpc: {{ .vpc }}
+                        localConnectIP: {{ .hubConnectIP }}
                     {{- end }}
+                    staticRoutes:
+                    {{- range $spec.attachments }}
+                      - cidr: {{ .cidr }}
+                        nextHopIP: {{ .spokeConnectIP }}
+                        policy: policyDst
                     {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }
