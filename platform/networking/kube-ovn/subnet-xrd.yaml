@@ -51,6 +51,37 @@ spec:
                 gateway:
                   type: string
                   description: "Gateway IP. Defaults to the first usable address in the CIDR."
+                acls:
+                  type: array
+                  description: "Stateless subnet-level rules — the AWS Network ACL. Evaluated by OVN at the logical switch, in priority order (higher first). Distinct from kind: SecurityGroup (per-instance, stateful): an ACL governs a whole subnet and does not track connection state."
+                  items:
+                    type: object
+                    required: [direction, action]
+                    properties:
+                      direction:
+                        type: string
+                        enum: [ingress, egress]
+                        description: "ingress (to workloads on this subnet) or egress (from them)."
+                      action:
+                        type: string
+                        enum: [allow, drop]
+                      priority:
+                        type: integer
+                        default: 1000
+                        description: "Higher priority wins (0-32767)."
+                      protocol:
+                        type: string
+                        enum: [tcp, udp, icmp, all]
+                        default: all
+                      cidr:
+                        type: string
+                        description: "Peer CIDR — source for ingress, destination for egress. Omit for any."
+                      port:
+                        type: integer
+                        description: "L4 destination port (tcp/udp). Omit for any."
+                      match:
+                        type: string
+                        description: "Raw OVN match expression — overrides the structured fields for advanced rules."
             status:
               type: object
               properties:
