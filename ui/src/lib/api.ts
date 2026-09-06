@@ -868,10 +868,44 @@ export interface PolicyStatement {
   resources?: string[];
 }
 
+/**
+ * One Cedar-backed statement on a Policy's dataPlane/controlPlane block — the model Kubernetes RBAC
+ * cannot express: an explicit Deny (which overrides) and request conditions. Mirrors the BFF
+ * `cedarStatement` (console-api/cmd/server/iam_policies.go) 1:1.
+ */
+export interface CedarStatement {
+  /** "Allow" or "Deny". Deny overrides — this is the whole point of the Cedar plane. */
+  effect: "Allow" | "Deny";
+  /** e.g. "s3:GetObject", "dynamodb:Query", "lambda:InvokeFunction", or "*" (see iam-cedar-vocab.ts). */
+  actions: string[];
+  /** Typed resources, e.g. "Bucket::assets", "Table::orders", "Function::worker", "*". Omitted ⇒ any. */
+  resources?: string[];
+  /** Request conditions, e.g. { authenticated: "true", sourceIp: "10.0.0.0/8" }. */
+  condition?: Record<string, string>;
+}
+
+/**
+ * A `spec.dataPlane` or `spec.controlPlane` block: the principals it governs plus its Cedar
+ * statements. Mirrors the BFF `cedarBlock`. On read from the BFF, `appliesTo` and `statements` are
+ * always present; on write `appliesTo` may be omitted (the BFF normalises a missing list to []).
+ */
+export interface CedarBlock {
+  /** Principals the block applies to: "User::alice", "Group::eng", or "*". */
+  appliesTo?: string[];
+  statements: CedarStatement[];
+}
+
 export interface IamPolicy {
   name: string;
   description: string;
   statements: PolicyStatement[];
+  /**
+   * Cedar data-plane block (aws-shim S3/DynamoDB/Lambda: Allow/Deny + conditions). Absent for a
+   * control-plane-only policy — the common case. Mirrors `iamPolicyView.dataPlane`.
+   */
+  dataPlane?: CedarBlock;
+  /** Cedar control-plane block (Phase-2 shadow webhook over k8s verbs). Absent unless authored. */
+  controlPlane?: CedarBlock;
   clusterRole: string;
   ruleCount: number;
   ready: boolean;
@@ -881,6 +915,11 @@ export interface IamRole {
   name: string;
   description: string;
   policies: string[];
+  /**
+   * AssumeRole trust policy — principal names ("alice") or "*". Always an array from the BFF (never
+   * null); empty ⇒ the role is assumable by no one (fail closed). Mirrors `iamRoleView.trust`.
+   */
+  trust?: string[];
   clusterRole: string;
   ready: boolean;
 }
@@ -895,12 +934,23 @@ export function createIamPolicy(body: {
   name: string;
   description: string;
   statements: PolicyStatement[];
+  /** Optional Cedar data-plane block (S3/DynamoDB/Lambda Allow/Deny + conditions). */
+  dataPlane?: CedarBlock;
+  /** Optional Cedar control-plane block (Phase-2 shadow). */
+  controlPlane?: CedarBlock;
 }): Promise<{ name: string }> {
   return request("/iam/policies", { method: "POST", body: JSON.stringify(body) });
 }
 export function updateIamPolicy(
   name: string,
-  body: { description: string; statements: PolicyStatement[] },
+  // A Cedar block left out (undefined) leaves the stored block untouched on the BFF; send an empty
+  // block ({ appliesTo: [], statements: [] }) to clear one. This mirrors the BFF's pointer semantics.
+  body: {
+    description: string;
+    statements: PolicyStatement[];
+    dataPlane?: CedarBlock;
+    controlPlane?: CedarBlock;
+  },
 ): Promise<{ name: string }> {
   return request(`/iam/policies/${encodeURIComponent(name)}`, {
     method: "PATCH",
@@ -923,12 +973,16 @@ export function createIamRole(body: {
   name: string;
   description: string;
   policies: string[];
+  /** AssumeRole trust principals ("alice", "*"). Omitted/[] ⇒ assumable by no one (fail closed). */
+  trust?: string[];
 }): Promise<{ name: string }> {
   return request("/iam/roles", { method: "POST", body: JSON.stringify(body) });
 }
 export function updateIamRole(
   name: string,
-  body: { description: string; policies: string[] },
+  // trust left out (undefined) leaves the stored trust untouched on the BFF; send [] to clear it —
+  // mirrors the BFF's "apply trust only when present" semantics so an old client can't wipe it.
+  body: { description: string; policies: string[]; trust?: string[] },
 ): Promise<{ name: string }> {
   return request(`/iam/roles/${encodeURIComponent(name)}`, {
     method: "PATCH",
@@ -938,6 +992,67 @@ export function updateIamRole(
 export function deleteIamRole(name: string, force = false): Promise<{ name: string }> {
   return request(`/iam/roles/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
     method: "DELETE",
+  });
+}
+
+/* ------------------------------ IAM policy simulator ------------------------------ */
+// POST /api/iam/simulate — the open-infra analog of AWS's policy simulator. Pick a principal, one or
+// more actions and an optional resource; the BFF answers "Allow or Deny under the CURRENT policies?"
+// using the REAL enforcement paths (an impersonated SubjectAccessReview for the control plane; the
+// same Cedar engine the aws-shim enforces spec.dataPlane with for the data plane). Nothing is
+// performed. Admin-gated (same SAR as listing policies). Mirrors console-api/cmd/server/iam_simulate.go.
+
+/** What to simulate. `principal` + `actions` are required; the rest are optional inputs. */
+export interface SimulateRequest {
+  /** "User::alice", "Group::eng", "Role::deployer". A bare name ("alice") is treated as a User. */
+  principal: string;
+  /** Control-plane "<resource>:<verb>" (e.g. "virtualmachines:Get") and/or data-plane "s3:GetObject". */
+  actions: string[];
+  /** Optional; typed for the data plane, e.g. "Bucket::assets". */
+  resource?: string;
+  /** Optional control-plane SAR namespace; defaults to the console namespace. */
+  namespace?: string;
+  /** Optional data-plane condition context, e.g. { sourceIp: "10.0.0.1" }. */
+  context?: Record<string, unknown>;
+}
+
+/** One plane's verdict. `decision` is allow | deny | not-governed | indeterminate. */
+export interface SimPlaneResult {
+  decision: string;
+  reason: string;
+  /** Data plane only: whether any policy governs the service for this principal. */
+  governed?: boolean;
+}
+
+/** The result for one simulated action. Mirrors the BFF `simResult`. */
+export interface SimActionResult {
+  action: string;
+  /** control | data | unknown. */
+  plane: string;
+  /** Net effective decision: allow | deny | not-governed | indeterminate | unknown. */
+  decision: string;
+  reason: string;
+  /** true when evaluated via a real enforcement path. */
+  enforced: boolean;
+  /** Set for control actions, and for the coarse control-plane gate of a data action. */
+  controlPlane?: SimPlaneResult;
+  /** Set for data actions. */
+  dataPlane?: SimPlaneResult;
+}
+
+/** The simulator's full response. Mirrors the BFF `simulateResp`. */
+export interface SimulateResult {
+  principal: string;
+  resource?: string;
+  results: SimActionResult[];
+  warnings: string[];
+  limitations: string[];
+}
+
+export function simulatePolicy(req: SimulateRequest): Promise<SimulateResult> {
+  return request<SimulateResult>("/iam/simulate", {
+    method: "POST",
+    body: JSON.stringify(req),
   });
 }
 

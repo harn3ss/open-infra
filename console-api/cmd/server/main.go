@@ -325,6 +325,9 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles/{name}", handleIAMRoleGet(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/roles/{name}", handleIAMRoleUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/roles/{name}", handleIAMRoleDelete(cs, auth, logger))
+		// Policy simulator — a what-if over the current policies (control plane via SAR, data plane
+		// via the Cedar engine). Same SAR gate (list policies) as the endpoints above.
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/simulate", handleIAMSimulate(cs, auth, logger))
 		// Temporal Grants (JIT access) with a second-party approval workflow — AC-2(2)/AC-5/AC-6(2).
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/grants", handleIAMGrantsList(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/grants", handleIAMGrantCreate(cs, auth, logger))

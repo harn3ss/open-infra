@@ -3,6 +3,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { HelpProvider } from "@/components/help/help-context";
 import { HelpPanel } from "@/components/help/help-panel";
+import { FlashProvider, Flashbar } from "@/components/common/flashbar";
 import { BootError, BootLoading } from "@/components/layout/boot-screen";
 import { LoginPage } from "@/features/auth/login-page";
 import { getConfig } from "@/lib/api";
@@ -50,8 +51,13 @@ function AuthenticatedApp() {
         <SearchProvider>
           <TooltipProvider delayDuration={200}>
             <HelpProvider>
-              <RouterProvider router={router} />
-              <HelpPanel />
+              <FlashProvider>
+                <RouterProvider router={router} />
+                {/* Pinned notifications region (Cloudscape Flashbar), below the
+                    sticky top bar and above page content. */}
+                <Flashbar className="fixed inset-x-0 top-16 z-40 mx-auto w-full max-w-2xl px-4" />
+                <HelpPanel />
+              </FlashProvider>
             </HelpProvider>
           </TooltipProvider>
         </SearchProvider>

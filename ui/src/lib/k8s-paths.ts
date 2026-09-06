@@ -26,6 +26,10 @@ import {
   SECURITYGROUPS_PLURAL,
   VPCS_PLURAL,
   SUBNETS_PLURAL,
+  NATGATEWAYS_PLURAL,
+  ELASTICIPS_PLURAL,
+  TRANSITGATEWAYS_PLURAL,
+  FLOWLOGS_PLURAL,
   STATEMACHINES_PLURAL,
   EXECUTIONS_PLURAL,
   TRAININGJOBS_PLURAL,
@@ -132,6 +136,18 @@ export const openinfraPaths = {
   subnets: (ns?: string) => `${oiGV}${nsSegment(ns)}/${SUBNETS_PLURAL}`,
   subnet: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${SUBNETS_PLURAL}/${name}`,
+  natgateways: (ns?: string) => `${oiGV}${nsSegment(ns)}/${NATGATEWAYS_PLURAL}`,
+  natgateway: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${NATGATEWAYS_PLURAL}/${name}`,
+  elasticips: (ns?: string) => `${oiGV}${nsSegment(ns)}/${ELASTICIPS_PLURAL}`,
+  elasticip: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${ELASTICIPS_PLURAL}/${name}`,
+  transitgateways: (ns?: string) => `${oiGV}${nsSegment(ns)}/${TRANSITGATEWAYS_PLURAL}`,
+  transitgateway: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${TRANSITGATEWAYS_PLURAL}/${name}`,
+  flowlogs: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FLOWLOGS_PLURAL}`,
+  flowlog: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${FLOWLOGS_PLURAL}/${name}`,
   statemachines: (ns?: string) => `${oiGV}${nsSegment(ns)}/${STATEMACHINES_PLURAL}`,
   statemachine: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${STATEMACHINES_PLURAL}/${name}`,
