@@ -48,12 +48,17 @@ func TestArgoExcludeListNoDrift(t *testing.T) {
 			if excludedByArgo(rel, globs) {
 				return nil // deployed by a child app / read off disk — not root-app state
 			}
-			// Not excluded ⇒ the root app WILL apply this file directly.
-			if segs := strings.Split(rel, "/"); len(segs) != 2 {
-				t.Errorf("%s is nested and NOT excluded: the root-app include picks it up "+
-					"('*' spans '/') and applies it as raw state — double-owning it, or, if it "+
-					"isn't a served kind, wedging the whole platform sync. Add a matching glob to "+
-					"install.sh EXCLUDES (e.g. **/manifests/**) or move it out of an included area.", rel)
+			// Not excluded ⇒ the root app WILL apply this file directly. That is legitimate
+			// when the file sits DIRECTLY inside an included area — even a multi-segment area
+			// like `networking/kube-ovn` (an explicitly-listed area whose XRDs/Compositions the
+			// root app is meant to apply). Only a file nested DEEPER than every included area
+			// (e.g. `console/manifests/…`, child-app territory) must be excluded, or it gets
+			// double-owned / wedges the sync.
+			if !directlyInArea(rel, areas) {
+				t.Errorf("%s is nested below every included area and NOT excluded: the root-app "+
+					"include picks it up ('*' spans '/') and applies it as raw state — double-owning "+
+					"it, or, if it isn't a served kind, wedging the whole platform sync. Add a matching "+
+					"glob to install.sh EXCLUDES (e.g. **/manifests/**) or move it out of an included area.", rel)
 				return nil
 			}
 			if firstKind(t, p) == "" {
@@ -67,6 +72,25 @@ func TestArgoExcludeListNoDrift(t *testing.T) {
 			t.Fatalf("walk %s: %v", dir, err)
 		}
 	}
+}
+
+// directlyInArea reports whether rel sits DIRECTLY inside one of the included areas — its
+// parent directory IS an included area. This holds for a multi-segment area too (e.g. a file
+// networking/kube-ovn/vpc-xrd.yaml when "networking/kube-ovn" is an included area), which the
+// root app legitimately applies. A file whose parent is not an included area is nested deeper
+// than any area (child-app territory) and must be excluded.
+func directlyInArea(rel string, areas []string) bool {
+	i := strings.LastIndex(rel, "/")
+	if i < 0 {
+		return false
+	}
+	dir := rel[:i]
+	for _, a := range areas {
+		if dir == a {
+			return true
+		}
+	}
+	return false
 }
 
 // includeAreas parses the '{a,b,c}/*.yaml' include glob out of platform/root-app.yaml —
