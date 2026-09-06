@@ -1,0 +1,49 @@
+# open-infra's kind: FlowLog — VPC-style flow logging on kube-ovn, backed by OVS sFlow. Each node's
+# OVS bridge (br-int) samples packets and exports them to a node-local collector that decodes the
+# sampled headers to flow records (5-tuple + bytes) on stdout, which the platform's promtail ships to
+# Loki. The AWS VPC Flow Logs analog.
+#
+# FIDELITY NOTE: OVS sFlow is per-BRIDGE (a node captures all its traffic), not per-VPC/subnet/ENI
+# like AWS. Scope to a VPC/subnet by filtering the flow records on CIDR at query time in Loki. This
+# is a sampled record stream (1:N), not a per-connection ledger.
+#
+# REQUIRES kube-ovn (OVS br-int). Inert on Canal.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xflowlogs.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XFlowLog, plural: xflowlogs }
+  claimNames: { kind: FlowLog, plural: flowlogs }
+  defaultCompositionRef: { name: flowlog }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                samplingRate:
+                  type: integer
+                  default: 64
+                  description: "1:N packet sampling. Lower = more records + more overhead; 64 is a sane default, 1 samples every packet (test/debug only)."
+                namespace:
+                  type: string
+                  default: kube-system
+                  description: "Namespace for the collector DaemonSet."
+                nodeSelector:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: "Which nodes to capture on (label key -> value). Omit for all nodes."
+            status:
+              type: object
+              properties:
+                ready: { type: boolean }

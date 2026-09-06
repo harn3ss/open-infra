@@ -1,0 +1,141 @@
+# One kind: FlowLog claim -> a ConfigMap (sFlow decoder) + a DaemonSet per selected node. Each pod
+# (hostNetwork) runs: an OVS configurator that points br-int's sFlow at a node-local collector
+# (127.0.0.1:6343, cleared on preStop), and the collector that decodes sampled headers to JSON flow
+# records on stdout (-> promtail -> Loki). Rendered via provider-kubernetes Objects.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: flowlog
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XFlowLog }
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef: { name: crossplane-contrib-function-go-templating }
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := $spec.namespace | default "kube-system" }}
+            {{- $rate := $spec.samplingRate | default 64 }}
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: decoder-cm
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-flowlog-decoder
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/flowlog: {{ $name }} }
+                  data:
+                    decode.py: |
+                      import socket, struct, time, json
+                      def u32(b,o): return struct.unpack_from("!I", b, o)[0]
+                      s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                      s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                      s.bind(("127.0.0.1", 6343))
+                      print(json.dumps({"flowlog": "listening", "port": 6343}), flush=True)
+                      while True:
+                          try:
+                              data, _ = s.recvfrom(65535)
+                          except Exception:
+                              continue
+                          try:
+                              o = 0
+                              if u32(data, o) != 5: continue
+                              o += 4; atype = u32(data, o); o += 4; o += 4 if atype == 1 else 16
+                              o += 12; ns = u32(data, o); o += 4
+                              for _ in range(ns):
+                                  st = u32(data, o); o += 4; sl = u32(data, o); o += 4; send = o + sl
+                                  if (st & 0xFFF) == 1:
+                                      o2 = o + 8; rate = u32(data, o2); o2 += 20; nrec = u32(data, o2); o2 += 4
+                                      for _ in range(nrec):
+                                          rf = u32(data, o2); o2 += 4; rl = u32(data, o2); o2 += 4; rend = o2 + rl
+                                          if (rf & 0xFFF) == 1:
+                                              proto = u32(data, o2); flen = u32(data, o2 + 4); hlen = u32(data, o2 + 12)
+                                              hdr = data[o2 + 16:o2 + 16 + hlen]
+                                              if proto == 1 and len(hdr) >= 34:
+                                                  et = struct.unpack_from("!H", hdr, 12)[0]; off = 14
+                                                  if et == 0x8100: et = struct.unpack_from("!H", hdr, 16)[0]; off = 18
+                                                  if et == 0x0800 and len(hdr) >= off + 20:
+                                                      ihl = (hdr[off] & 0x0f) * 4; ipp = hdr[off + 9]
+                                                      src = ".".join(str(x) for x in hdr[off + 12:off + 16])
+                                                      dst = ".".join(str(x) for x in hdr[off + 16:off + 20])
+                                                      l4 = off + ihl; sp = dp = 0
+                                                      if ipp in (6, 17) and len(hdr) >= l4 + 4:
+                                                          sp = struct.unpack_from("!H", hdr, l4)[0]; dp = struct.unpack_from("!H", hdr, l4 + 2)[0]
+                                                      pn = {6: "tcp", 17: "udp", 1: "icmp"}.get(ipp, str(ipp))
+                                                      print(json.dumps({"ts": round(time.time(), 3), "src": src, "dst": dst, "sport": sp, "dport": dp, "proto": pn, "bytes": flen, "rate": rate}), flush=True)
+                                          o2 = rend
+                                  o = send
+                          except Exception:
+                              continue
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: collector-ds
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: DaemonSet
+                  metadata:
+                    name: {{ $name }}-flowlog
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/flowlog: {{ $name }} }
+                  spec:
+                    selector:
+                      matchLabels: { openinfra.dev/flowlog: {{ $name }} }
+                    template:
+                      metadata:
+                        labels: { openinfra.dev/flowlog: {{ $name }} }
+                      spec:
+                        hostNetwork: true
+                        dnsPolicy: ClusterFirstWithHostNet
+                        tolerations:
+                          - operator: Exists
+                        {{- if $spec.nodeSelector }}
+                        nodeSelector: {{ toYaml $spec.nodeSelector | nindent 26 }}
+                        {{- end }}
+                        volumes:
+                          - name: ovs-run
+                            hostPath: { path: /run/openvswitch }
+                          - name: decoder
+                            configMap: { name: {{ $name }}-flowlog-decoder }
+                        containers:
+                          - name: sflow-config
+                            image: docker.io/kubeovn/kube-ovn:v1.14.41
+                            securityContext: { privileged: true }
+                            volumeMounts:
+                              - { name: ovs-run, mountPath: /run/openvswitch }
+                            command: ["sh", "-c"]
+                            args:
+                              - |
+                                ovs-vsctl -- --id=@s create sflow agent=lo target='"127.0.0.1:6343"' header=128 sampling={{ $rate }} polling=20 -- set bridge br-int sflow=@s
+                                echo "flowlog: sflow set on br-int (sampling 1:{{ $rate }})"
+                                trap 'ovs-vsctl clear Bridge br-int sflow; exit 0' TERM INT
+                                sleep infinity & wait
+                            lifecycle:
+                              preStop:
+                                exec: { command: ["sh", "-c", "ovs-vsctl clear Bridge br-int sflow || true"] }
+                          - name: collector
+                            image: docker.io/library/python:3.12-alpine
+                            volumeMounts:
+                              - { name: decoder, mountPath: /app }
+                            command: ["python3", "/app/decode.py"]
+    - step: ready
+      functionRef: { name: crossplane-contrib-function-auto-ready }

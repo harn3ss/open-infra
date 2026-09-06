@@ -57,6 +57,7 @@ func TestMapping_NetworkingPlanOnly(t *testing.T) {
 		{"AWS::EC2::TransitGateway", "TransitGateway"},
 		{"AWS::EC2::RouteTable", "Vpc(routes)"},
 		{"AWS::EC2::Route", "Vpc(routes)"},
+		{"AWS::EC2::FlowLog", "FlowLog"},
 	} {
 		e := Lookup(tc.cfnType)
 		if e.Status != Partial || e.Kind != tc.kind {
