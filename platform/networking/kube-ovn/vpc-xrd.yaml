@@ -28,6 +28,15 @@ spec:
                   type: array
                   items: { type: string }
                   description: "Namespaces bound to this VPC (their default subnet lives here)."
+                routes:
+                  type: array
+                  description: "Static routes — the VPC route table. e.g. cidr 0.0.0.0/0 -> nextHop a kind: NatGateway's internalIp, so private workloads reach the border device (and ingress replies return through it)."
+                  items:
+                    type: object
+                    required: [cidr, nextHop]
+                    properties:
+                      cidr: { type: string, description: "Destination CIDR, e.g. 0.0.0.0/0." }
+                      nextHop: { type: string, description: "Next-hop IP (e.g. a NatGateway internalIp)." }
             status:
               type: object
               properties:
