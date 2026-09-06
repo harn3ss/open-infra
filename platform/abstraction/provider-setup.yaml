@@ -39,8 +39,10 @@ rules:
     verbs: [get, list, watch, create, update, patch, delete]
   # kube-ovn Vpc/Subnet: kind: Vpc and kind: Subnet (#120) compile to kubeovn.io objects the
   # provider manages — real OVN-enforced topological isolation (the AWS VPC/subnet model).
+  # The NAT family backs kind: NatGateway (the border device) and kind: ElasticIp (public IP +
+  # DNAT/FIP association) — the AWS EIP + NAT/Internet-Gateway surface (#120).
   - apiGroups: [kubeovn.io]
-    resources: [vpcs, subnets]
+    resources: [vpcs, subnets, vpc-nat-gateways, iptables-eips, iptables-dnat-rules, iptables-snat-rules, iptables-fip-rules]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [autoscaling]
     resources: [horizontalpodautoscalers]
