@@ -7,6 +7,7 @@ import {
   type ColumnDef,
   type Row,
   type SortingState,
+  type VisibilityState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
@@ -19,6 +20,8 @@ interface VirtualDataTableProps<TData> {
   getRowId: (row: TData) => string;
   sorting: SortingState;
   onSortingChange: React.Dispatch<React.SetStateAction<SortingState>>;
+  /** Controlled column visibility (column id → shown). Omit to show all. */
+  columnVisibility?: VisibilityState;
   onRowClick?: (row: TData) => void;
   /** Approx row height in px for the virtualizer. */
   estimateRowHeight?: number;
@@ -38,6 +41,7 @@ export function VirtualDataTable<TData>({
   getRowId,
   sorting,
   onSortingChange,
+  columnVisibility,
   onRowClick,
   estimateRowHeight = 44,
   heightClassName = "h-[calc(100vh-19rem)]",
@@ -46,7 +50,7 @@ export function VirtualDataTable<TData>({
   const table = useReactTable({
     data,
     columns,
-    state: { sorting },
+    state: { sorting, ...(columnVisibility ? { columnVisibility } : {}) },
     onSortingChange,
     getRowId,
     getCoreRowModel: getCoreRowModel(),

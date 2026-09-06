@@ -99,7 +99,7 @@ export function VpcsPage() {
       emptyDescription="Create a VPC, then add subnets that reference it."
       docsHref={kindDocsUrl("Vpc")}
       headerActions={
-        <Button onClick={() => navigate({ to: "/vpcs/new" })}>
+        <Button onClick={() => navigate({ to: "/networking/create" })}>
           <Plus className="size-4" /> New VPC
         </Button>
       }

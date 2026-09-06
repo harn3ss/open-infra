@@ -69,6 +69,21 @@ import { CreateVpcPage } from "@/features/networking/create-vpc-page";
 import { SubnetsPage } from "@/features/networking/subnets-page";
 import { SubnetDetailPage } from "@/features/networking/subnet-detail-page";
 import { CreateSubnetPage } from "@/features/networking/create-subnet-page";
+import { VpcDashboardPage } from "@/features/networking/vpc-dashboard-page";
+import { ResourceMapPage } from "@/features/networking/resource-map-page";
+import { CreateVpcAndMorePage } from "@/features/networking/create-vpc-and-more-page";
+import { NatGatewaysPage } from "@/features/networking/natgateways-page";
+import { NatGatewayDetailPage } from "@/features/networking/natgateway-detail-page";
+import { CreateNatGatewayPage } from "@/features/networking/create-natgateway-page";
+import { ElasticIpsPage } from "@/features/networking/elasticips-page";
+import { ElasticIpDetailPage } from "@/features/networking/elasticip-detail-page";
+import { CreateElasticIpPage } from "@/features/networking/create-elasticip-page";
+import { TransitGatewaysPage } from "@/features/networking/transitgateways-page";
+import { TransitGatewayDetailPage } from "@/features/networking/transitgateway-detail-page";
+import { CreateTransitGatewayPage } from "@/features/networking/create-transitgateway-page";
+import { FlowLogsPage } from "@/features/networking/flowlogs-page";
+import { FlowLogDetailPage } from "@/features/networking/flowlog-detail-page";
+import { CreateFlowLogPage } from "@/features/networking/create-flowlog-page";
 import {
   StreamDetailPage,
   FaultInjectionDetailPage,
@@ -101,6 +116,7 @@ import { UsersPage } from "@/features/iam/users-page";
 import { CreateUserPage } from "@/features/iam/create-user-page";
 import { CreateGroupPage } from "@/features/iam/create-group-page";
 import { CreatePolicyPage } from "@/features/iam/create-policy-page";
+import { EditPolicyPage } from "@/features/iam/create-policy-page";
 import { CreateRolePage } from "@/features/iam/create-role-page";
 import { CreateGrantPage } from "@/features/iam/create-grant-page";
 import { UserDetailPage } from "@/features/iam/user-detail-page";
@@ -118,6 +134,8 @@ import { EncryptionPage } from "@/features/iam/encryption-page";
 import { LineagePage } from "@/features/data/lineage-page";
 import { AttestationPage } from "@/features/iam/attestation-page";
 import { AccessReviewPage } from "@/features/iam/access-review-page";
+import { IamDashboardPage } from "@/features/iam/iam-dashboard-page";
+import { PolicySimulatorPage } from "@/features/iam/policy-simulator-page";
 import { PkiPage, CertificateAuthorityDetailPage } from "@/features/pki/pki-page";
 import { CreateCaPage } from "@/features/pki/create-ca-page";
 
@@ -355,6 +373,25 @@ const subnetsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/subn
 const subnetCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/subnets/new", component: CreateSubnetPage });
 const subnetDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/subnets/$namespace/$name", component: SubnetDetailPage });
 
+// --- Networking wave 1: dashboard, resource map, "VPC and more" wizard (static
+// paths, no ordering constraint) + NAT gateways, Elastic IPs, Transit gateways,
+// Flow logs (each: list, static "/new" BEFORE "$namespace/$name" detail). ---
+const networkingDashboardRoute = createRoute({ getParentRoute: () => rootRoute, path: "/networking", component: VpcDashboardPage });
+const resourceMapRoute = createRoute({ getParentRoute: () => rootRoute, path: "/networking/map", component: ResourceMapPage });
+const createVpcAndMoreRoute = createRoute({ getParentRoute: () => rootRoute, path: "/networking/create", component: CreateVpcAndMorePage });
+const natGatewaysRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nat-gateways", component: NatGatewaysPage });
+const natGatewayCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nat-gateways/new", component: CreateNatGatewayPage });
+const natGatewayDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/nat-gateways/$namespace/$name", component: NatGatewayDetailPage });
+const elasticIpsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/elastic-ips", component: ElasticIpsPage });
+const elasticIpCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/elastic-ips/new", component: CreateElasticIpPage });
+const elasticIpDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/elastic-ips/$namespace/$name", component: ElasticIpDetailPage });
+const transitGatewaysRoute = createRoute({ getParentRoute: () => rootRoute, path: "/transit-gateways", component: TransitGatewaysPage });
+const transitGatewayCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/transit-gateways/new", component: CreateTransitGatewayPage });
+const transitGatewayDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/transit-gateways/$namespace/$name", component: TransitGatewayDetailPage });
+const flowLogsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/flow-logs", component: FlowLogsPage });
+const flowLogCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/flow-logs/new", component: CreateFlowLogPage });
+const flowLogDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/flow-logs/$namespace/$name", component: FlowLogDetailPage });
+
 const migrationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/migrations",
@@ -532,6 +569,11 @@ const policyDetailRoute = createRoute({
   path: "/policies/$name",
   component: PolicyDetailPage,
 });
+const policyEditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/policies/$name/edit",
+  component: EditPolicyPage,
+});
 const rolesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/roles",
@@ -587,10 +629,20 @@ const attestationRoute = createRoute({
   path: "/attestation",
   component: AttestationPage,
 });
+const iamDashboardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/iam",
+  component: IamDashboardPage,
+});
 const accessReviewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/access-review",
   component: AccessReviewPage,
+});
+const policySimulatorRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/policy-simulator",
+  component: PolicySimulatorPage,
 });
 // kind: CertificateAuthority (managed PKI). Static "/new" before the detail route.
 const pkiRoute = createRoute({
@@ -677,6 +729,21 @@ const routeTree = rootRoute.addChildren([
   subnetsRoute,
   subnetCreateRoute,
   subnetDetailRoute,
+  networkingDashboardRoute,
+  resourceMapRoute,
+  createVpcAndMoreRoute,
+  natGatewaysRoute,
+  natGatewayCreateRoute,
+  natGatewayDetailRoute,
+  elasticIpsRoute,
+  elasticIpCreateRoute,
+  elasticIpDetailRoute,
+  transitGatewaysRoute,
+  transitGatewayCreateRoute,
+  transitGatewayDetailRoute,
+  flowLogsRoute,
+  flowLogCreateRoute,
+  flowLogDetailRoute,
   migrationsRoute,
   migrationDetailRoute,
   replicationsRoute,
@@ -709,6 +776,7 @@ const routeTree = rootRoute.addChildren([
   policiesRoute,
   policyCreateRoute,
   policyDetailRoute,
+  policyEditRoute,
   rolesRoute,
   roleCreateRoute,
   roleDetailRoute,
@@ -720,7 +788,9 @@ const routeTree = rootRoute.addChildren([
   encryptionRoute,
   lineageRoute,
   attestationRoute,
+  iamDashboardRoute,
   accessReviewRoute,
+  policySimulatorRoute,
   pkiRoute,
   caCreateRoute,
   caDetailRoute,
