@@ -64,13 +64,33 @@ type policyStatement struct {
 	Resources []string `json:"resources,omitempty"`
 }
 
+// cedarStatement is one Cedar-backed statement carried on spec.dataPlane / spec.controlPlane —
+// the model Kubernetes RBAC cannot express (explicit Deny + request conditions). It mirrors the
+// XRD shape exactly and maps 1:1 to policyengine.Statement at enforcement time.
+type cedarStatement struct {
+	Effect    string            `json:"effect"`
+	Actions   []string          `json:"actions"`
+	Resources []string          `json:"resources,omitempty"`
+	Condition map[string]string `json:"condition,omitempty"`
+}
+
+// cedarBlock is a spec.dataPlane or spec.controlPlane block: the principals it governs plus its
+// Cedar statements. A nil block means the policy carries no such plane (the common case), which is
+// why the views and requests use a pointer — absent stays absent through the round-trip.
+type cedarBlock struct {
+	AppliesTo  []string         `json:"appliesTo"`
+	Statements []cedarStatement `json:"statements"`
+}
+
 type crdPolicy struct {
 	Metadata struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		Description string            `json:"description"`
-		Statements  []policyStatement `json:"statements"`
+		Description  string            `json:"description"`
+		Statements   []policyStatement `json:"statements"`
+		DataPlane    *cedarBlock       `json:"dataPlane,omitempty"`
+		ControlPlane *cedarBlock       `json:"controlPlane,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		Ready       bool   `json:"ready"`
@@ -86,6 +106,7 @@ type crdRole struct {
 	Spec struct {
 		Description string   `json:"description"`
 		Policies    []string `json:"policies"`
+		Trust       []string `json:"trust"`
 	} `json:"spec"`
 	Status struct {
 		Ready       bool   `json:"ready"`
@@ -168,15 +189,23 @@ type iamPolicyView struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Statements  []policyStatement `json:"statements"`
-	ClusterRole string            `json:"clusterRole"`
-	RuleCount   int               `json:"ruleCount"`
-	Ready       bool              `json:"ready"`
+	// DataPlane/ControlPlane carry the Cedar blocks (Allow/Deny + conditions) so the visual/JSON
+	// editor can read and write them. Omitted (pointer nil) for a policy that has neither, so the
+	// existing control-plane-only shape is unchanged for old consumers.
+	DataPlane    *cedarBlock `json:"dataPlane,omitempty"`
+	ControlPlane *cedarBlock `json:"controlPlane,omitempty"`
+	ClusterRole  string      `json:"clusterRole"`
+	RuleCount    int         `json:"ruleCount"`
+	Ready        bool        `json:"ready"`
 }
 
 type iamRoleView struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Policies    []string `json:"policies"`
+	// Trust is the AssumeRole trust policy (principal names, or "*"). Always an array (never null)
+	// so the UI can render/edit it safely; empty means the role is assumable by no one (fail closed).
+	Trust       []string `json:"trust"`
 	ClusterRole string   `json:"clusterRole"`
 	Ready       bool     `json:"ready"`
 }
@@ -184,6 +213,7 @@ type iamRoleView struct {
 func policyView(p crdPolicy) iamPolicyView {
 	return iamPolicyView{
 		Name: p.Metadata.Name, Description: p.Spec.Description, Statements: p.Spec.Statements,
+		DataPlane: p.Spec.DataPlane, ControlPlane: p.Spec.ControlPlane,
 		ClusterRole: p.Status.ClusterRole, RuleCount: p.Status.RuleCount, Ready: p.Status.Ready,
 	}
 }
@@ -191,6 +221,7 @@ func policyView(p crdPolicy) iamPolicyView {
 func roleView(r crdRole) iamRoleView {
 	return iamRoleView{
 		Name: r.Metadata.Name, Description: r.Spec.Description, Policies: r.Spec.Policies,
+		Trust:       groupList(r.Spec.Trust),
 		ClusterRole: r.Status.ClusterRole, Ready: r.Status.Ready,
 	}
 }
@@ -229,6 +260,88 @@ func validateStatements(sts []policyStatement) string {
 	return ""
 }
 
+// validateCedar checks a data-plane / control-plane Cedar block's shape without the RBAC boundary
+// that applies to control-plane statements: it permits Deny and conditions (the whole point of
+// Cedar), but still rejects a malformed effect, an empty action list, or a resource that is neither
+// "*", a wildcard, nor "Type::id" (so a typo fails here with a clear message instead of at compile
+// time in the engine). A nil block, or a block with no statements, is valid — a data-plane-only
+// intent may be absent. plane is only used to prefix the message ("dataPlane"/"controlPlane").
+func validateCedar(plane string, b *cedarBlock) string {
+	if b == nil {
+		return ""
+	}
+	for _, s := range b.Statements {
+		eff := strings.TrimSpace(s.Effect)
+		if eff == "" {
+			return fmt.Sprintf("%s: every statement needs an effect (Allow or Deny)", plane)
+		}
+		if !strings.EqualFold(eff, "Allow") && !strings.EqualFold(eff, "Deny") {
+			return fmt.Sprintf("%s: effect %q is not supported — use Allow or Deny", plane, s.Effect)
+		}
+		if len(nonEmpty(s.Actions)) == 0 {
+			return fmt.Sprintf("%s: every statement needs at least one action", plane)
+		}
+		for _, res := range s.Resources {
+			res = strings.TrimSpace(res)
+			if res == "" || res == "*" || strings.Contains(res, "*") {
+				continue
+			}
+			if !strings.Contains(res, "::") {
+				return fmt.Sprintf("%s: resource %q must be Type::id (e.g. Bucket::assets), a wildcard, or *", plane, res)
+			}
+		}
+	}
+	return ""
+}
+
+// cedarHasStatements reports whether a block carries at least one statement — used to decide
+// whether a policy has any rule at all (a data-plane-only policy has no control-plane statements).
+func cedarHasStatements(b *cedarBlock) bool { return b != nil && len(b.Statements) > 0 }
+
+// canonEffect canonicalises an effect string to exactly "Allow" or "Deny" (the engine's compile
+// switch is case-sensitive, and the XRD enum is exactly those two). Anything not "Deny" is Allow.
+func canonEffect(e string) string {
+	if strings.EqualFold(strings.TrimSpace(e), "Deny") {
+		return "Deny"
+	}
+	return "Allow"
+}
+
+// nonEmpty returns the input with blank entries trimmed out.
+func nonEmpty(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// normCedar canonicalises a Cedar block for the API server: effect to Allow/Deny, trimmed
+// actions/resources, appliesTo cleaned. Always emits appliesTo + statements arrays so the stored
+// shape is predictable and round-trips cleanly.
+func normCedar(b *cedarBlock) map[string]any {
+	stmts := make([]any, 0, len(b.Statements))
+	for _, s := range b.Statements {
+		sm := map[string]any{
+			"effect":  canonEffect(s.Effect),
+			"actions": nonEmpty(s.Actions),
+		}
+		if res := nonEmpty(s.Resources); len(res) > 0 {
+			sm["resources"] = res
+		}
+		if len(s.Condition) > 0 {
+			sm["condition"] = s.Condition
+		}
+		stmts = append(stmts, sm)
+	}
+	return map[string]any{
+		"appliesTo":  nonEmpty(b.AppliesTo),
+		"statements": stmts,
+	}
+}
+
 // ── Policy handlers ────────────────────────────────────────────────────────────
 
 func handleIAMPoliciesList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -264,6 +377,32 @@ type policyReq struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
 	Statements  []policyStatement `json:"statements"`
+	// DataPlane/ControlPlane are optional Cedar blocks. A nil pointer means "not provided" — on
+	// update the stored block is then left untouched (backward-compatible with the old client that
+	// only knew about statements); send an empty block ({appliesTo:[],statements:[]}) to clear one.
+	DataPlane    *cedarBlock `json:"dataPlane,omitempty"`
+	ControlPlane *cedarBlock `json:"controlPlane,omitempty"`
+}
+
+// validatePolicyReq runs the shared validation for a create/update body: control-plane statements
+// against the permission boundary (when present), Cedar blocks for shape, and the requirement that
+// a policy carry at least one rule somewhere. Returns "" when valid.
+func validatePolicyReq(in policyReq) string {
+	if len(in.Statements) > 0 {
+		if msg := validateStatements(in.Statements); msg != "" {
+			return msg
+		}
+	}
+	if msg := validateCedar("dataPlane", in.DataPlane); msg != "" {
+		return msg
+	}
+	if msg := validateCedar("controlPlane", in.ControlPlane); msg != "" {
+		return msg
+	}
+	if len(in.Statements) == 0 && !cedarHasStatements(in.DataPlane) && !cedarHasStatements(in.ControlPlane) {
+		return "a policy needs at least one statement (or a data-plane/control-plane rule)"
+	}
+	return ""
 }
 
 func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -278,18 +417,25 @@ func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slo
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return
 		}
-		if msg := validateStatements(in.Statements); msg != "" {
+		if msg := validatePolicyReq(in); msg != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 			return
 		}
 		if !authorize(w, r, cs, auth, logger, "create", "iam.openinfra.dev", "policies", auth.ns, in.Name) {
 			return
 		}
+		spec := map[string]any{"description": in.Description, "statements": normStatements(in.Statements)}
+		if in.DataPlane != nil {
+			spec["dataPlane"] = normCedar(in.DataPlane)
+		}
+		if in.ControlPlane != nil {
+			spec["controlPlane"] = normCedar(in.ControlPlane)
+		}
 		body := map[string]any{
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "Policy",
 			"metadata":   map[string]any{"name": in.Name, "namespace": auth.ns},
-			"spec":       map[string]any{"description": in.Description, "statements": normStatements(in.Statements)},
+			"spec":       spec,
 		}
 		if err := auth.postCR(r.Context(), policiesAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create policy", "policy", in.Name, "error", err.Error())
@@ -309,16 +455,24 @@ func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slo
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 			return
 		}
-		if msg := validateStatements(in.Statements); msg != "" {
+		if msg := validatePolicyReq(in); msg != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 			return
 		}
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "policies", auth.ns, name) {
 			return
 		}
-		patch := map[string]any{"spec": map[string]any{
-			"description": in.Description, "statements": normStatements(in.Statements),
-		}}
+		spec := map[string]any{"description": in.Description, "statements": normStatements(in.Statements)}
+		// Only touch a Cedar plane when the request carries it (pointer non-nil): a client that
+		// doesn't know about dataPlane leaves an existing block intact; sending an empty block
+		// clears one.
+		if in.DataPlane != nil {
+			spec["dataPlane"] = normCedar(in.DataPlane)
+		}
+		if in.ControlPlane != nil {
+			spec["controlPlane"] = normCedar(in.ControlPlane)
+		}
+		patch := map[string]any{"spec": spec}
 		if err := auth.patchCR(r.Context(), policiesAbsPath(auth.ns)+"/"+name, patch); err != nil {
 			logger.Error("iam: update policy", "policy", name, "error", err.Error())
 			writeIAMErr(w, err)
@@ -387,6 +541,10 @@ type roleReq struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Policies    []string `json:"policies"`
+	// Trust is the AssumeRole trust policy (kind: User names, or "*"). On update it is applied only
+	// when present in the request body (a non-nil slice — an explicit [] clears it, an absent key
+	// leaves the stored trust untouched, so an old client that doesn't send trust cannot wipe it).
+	Trust []string `json:"trust"`
 }
 
 func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -408,7 +566,13 @@ func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "Role",
 			"metadata":   map[string]any{"name": in.Name, "namespace": auth.ns},
-			"spec":       map[string]any{"description": in.Description, "policies": cleanGroups(in.Policies)},
+			"spec": map[string]any{
+				"description": in.Description,
+				"policies":    cleanGroups(in.Policies),
+				// nil trust normalises to [] — a role starts assumable by no one (fail closed),
+				// exactly as an AWS role needs an explicit trust policy.
+				"trust": cleanGroups(in.Trust),
+			},
 		}
 		if err := auth.postCR(r.Context(), rolesAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create role", "role", in.Name, "error", err.Error())
@@ -431,9 +595,13 @@ func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "roles", auth.ns, name) {
 			return
 		}
-		patch := map[string]any{"spec": map[string]any{
-			"description": in.Description, "policies": cleanGroups(in.Policies),
-		}}
+		spec := map[string]any{"description": in.Description, "policies": cleanGroups(in.Policies)}
+		// Apply trust only when the request carries it, so an old client (which never sends trust)
+		// leaves the stored trust policy intact rather than silently clearing it.
+		if in.Trust != nil {
+			spec["trust"] = cleanGroups(in.Trust)
+		}
+		patch := map[string]any{"spec": spec}
 		if err := auth.patchCR(r.Context(), rolesAbsPath(auth.ns)+"/"+name, patch); err != nil {
 			logger.Error("iam: update role", "role", name, "error", err.Error())
 			writeIAMErr(w, err)
