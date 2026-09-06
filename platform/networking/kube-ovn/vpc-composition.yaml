@@ -37,5 +37,13 @@ spec:
                     {{- if $spec.namespaces }}
                     namespaces: {{ toYaml $spec.namespaces | nindent 22 }}
                     {{- end }}
+                    {{- if $spec.routes }}
+                    staticRoutes:
+                    {{- range $spec.routes }}
+                      - cidr: {{ .cidr }}
+                        nextHopIP: {{ .nextHop }}
+                        policy: policyDst
+                    {{- end }}
+                    {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }
