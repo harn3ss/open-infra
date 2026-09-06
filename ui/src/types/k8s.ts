@@ -701,8 +701,20 @@ export const SECURITYGROUPS_CRD_NAME = "securitygroups.openinfra.dev";
 // Real, OVN-enforced network isolation — the AWS VPC/subnet model. A Vpc is an
 // isolated network domain; a Subnet is a topologically-isolated segment (private
 // by default). Workloads join a subnet via spec.subnet (Application/VirtualMachine).
+// A VPC route-table entry (spec.routes) — e.g. 0.0.0.0/0 -> a NatGateway internalIp.
+export interface VpcRoute {
+  cidr: string;
+  nextHop: string;
+}
+// A VPC peering /30 interconnect (spec.peerings) — declared on both VPCs.
+export interface VpcPeering {
+  remoteVpc: string;
+  localConnectIP: string;
+}
 export interface VpcSpec {
   namespaces?: string[];
+  routes?: VpcRoute[];
+  peerings?: VpcPeering[];
 }
 export interface VpcStatus {
   ready?: boolean;
@@ -712,6 +724,16 @@ export type Vpc = K8sObject<VpcSpec, VpcStatus>;
 export const VPCS_PLURAL = "vpcs";
 export const VPCS_CRD_NAME = "vpcs.openinfra.dev";
 
+// A Network ACL entry (Subnet.spec.acls) — stateless, subnet-wide, priority-ordered.
+export interface SubnetAcl {
+  direction: "ingress" | "egress";
+  action: "allow" | "drop";
+  priority?: number;
+  protocol?: "tcp" | "udp" | "icmp" | "all";
+  cidr?: string;
+  port?: number;
+  match?: string;
+}
 export interface SubnetSpec {
   cidr: string;
   vpc?: string;
@@ -719,6 +741,7 @@ export interface SubnetSpec {
   allowSubnets?: string[];
   namespaces?: string[];
   gateway?: string;
+  acls?: SubnetAcl[];
 }
 export interface SubnetStatus {
   ready?: boolean;
@@ -727,6 +750,76 @@ export interface SubnetStatus {
 export type Subnet = K8sObject<SubnetSpec, SubnetStatus>;
 export const SUBNETS_PLURAL = "subnets";
 export const SUBNETS_CRD_NAME = "subnets.openinfra.dev";
+
+/* ------------------- open-infra kube-ovn networking family ------------------ */
+// The AWS L3 networking surface (#120). All ride the generic /api/k8s proxy.
+
+// NatGateway — the border device (AWS NAT Gateway + Internet-Gateway role).
+export interface NatGatewaySpec {
+  vpc: string;
+  subnet: string;
+  internalIp: string;
+  externalNetwork?: string;
+  egress?: { publicIp?: string; sourceCidrs?: string[] };
+  nodeSelector?: Record<string, string>;
+}
+export interface NatGatewayStatus {
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type NatGateway = K8sObject<NatGatewaySpec, NatGatewayStatus>;
+export const NATGATEWAYS_PLURAL = "natgateways";
+export const NATGATEWAYS_CRD_NAME = "natgateways.openinfra.dev";
+
+// ElasticIp — a static public IP on a NatGateway, optionally associated (fip/dnat).
+export interface ElasticIpSpec {
+  natGateway: string;
+  externalNetwork?: string;
+  address?: string;
+  target?: string;
+  mode?: "fip" | "dnat";
+  ports?: { external: string; internal: string; protocol?: "tcp" | "udp" }[];
+}
+export interface ElasticIpStatus {
+  ready?: boolean;
+  address?: string;
+  conditions?: Condition[];
+}
+export type ElasticIp = K8sObject<ElasticIpSpec, ElasticIpStatus>;
+export const ELASTICIPS_PLURAL = "elasticips";
+export const ELASTICIPS_CRD_NAME = "elasticips.openinfra.dev";
+
+// TransitGateway — a hub with transitive spoke-to-spoke routing.
+export interface TransitGatewayAttachment {
+  vpc: string;
+  cidr: string;
+  hubConnectIP: string;
+  spokeConnectIP: string;
+}
+export interface TransitGatewaySpec {
+  attachments: TransitGatewayAttachment[];
+}
+export interface TransitGatewayStatus {
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type TransitGateway = K8sObject<TransitGatewaySpec, TransitGatewayStatus>;
+export const TRANSITGATEWAYS_PLURAL = "transitgateways";
+export const TRANSITGATEWAYS_CRD_NAME = "transitgateways.openinfra.dev";
+
+// FlowLog — VPC flow logging (OVS sFlow -> collector -> Loki).
+export interface FlowLogSpec {
+  samplingRate?: number;
+  namespace?: string;
+  nodeSelector?: Record<string, string>;
+}
+export interface FlowLogStatus {
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type FlowLog = K8sObject<FlowLogSpec, FlowLogStatus>;
+export const FLOWLOGS_PLURAL = "flowlogs";
+export const FLOWLOGS_CRD_NAME = "flowlogs.openinfra.dev";
 
 /* ---------------------- open-infra StateMachine CRD ----------------------- */
 // open-infra's Step Functions: an ASL workflow. spec.definition is the ASL JSON

@@ -7,26 +7,30 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { KeyValuePairs } from "@/components/common/key-value-pairs";
 import { DetailRow } from "@/components/common/detail-row";
+import { YamlViewer } from "@/components/common/yaml-viewer";
+import { CopyButton } from "@/components/common/copy-button";
 import { DangerZone } from "@/components/common/danger-zone";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import {
-  deleteIamPolicy,
-  getIamConfig,
-  getIamPolicy,
-  listIamRoles,
-} from "@/lib/api";
-import { NewPolicyDialog } from "./new-policy-dialog";
+import { deleteIamPolicy, getIamPolicy, listIamRoles } from "@/lib/api";
+import { PermissionsSummary } from "./policy-editor/permissions-summary";
+import { policyType, type PolicyTypeLabel } from "./policy-type";
+
+const TYPE_TONE: Record<PolicyTypeLabel, "default" | "accent" | "secondary"> = {
+  "Control plane": "default",
+  "Data plane": "accent",
+  Mixed: "secondary",
+  Empty: "secondary",
+};
 
 export function PolicyDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const [edit, setEdit] = useState(false);
   const [forcePrompt, setForcePrompt] = useState(false);
 
-  const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const roles = useQuery({ queryKey: ["iam", "roles"], queryFn: listIamRoles });
   const { data: policy, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["iam", "policy", name],
@@ -34,7 +38,14 @@ export function PolicyDetailPage() {
     refetchInterval: 5000,
   });
 
-  const attachedRoles = (roles.data ?? []).filter((r) => r.policies.includes(name));
+  // The /policies/$name/edit route is registered via this unit's router snippet (see report). Until the
+  // integrator applies it, the generated route table doesn't know it, so navigate via a locally-typed
+  // shim rather than the typed route id.
+  const goEdit = () =>
+    (navigate as unknown as (o: { to: string; params: { name: string } }) => void)({
+      to: "/policies/$name/edit",
+      params: { name },
+    });
 
   const del = useMutation({
     mutationFn: (force: boolean) => deleteIamPolicy(name, force),
@@ -47,7 +58,29 @@ export function PolicyDetailPage() {
   if (isLoading) return <LoadingState label="Loading policy…" />;
   if (isError || !policy) return <ErrorState error={error} onRetry={refetch} />;
 
-  const actions = policy.statements.flatMap((s) => s.actions ?? []);
+  const doc = {
+    description: policy.description,
+    statements: policy.statements,
+    dataPlane: policy.dataPlane,
+    controlPlane: policy.controlPlane,
+  };
+  const type = policyType(policy);
+  const attachedRoles = (roles.data ?? []).filter((r) => r.policies.includes(name));
+  const appliesTo = policy.dataPlane?.appliesTo?.filter((p) => p && p !== "*") ?? [];
+  const hasDataPlane = (policy.dataPlane?.statements ?? []).length > 0;
+
+  // The read-only CR view (the "JSON/CR" tab source of truth).
+  const cr = {
+    apiVersion: "iam.openinfra.dev/v1",
+    kind: "Policy",
+    metadata: { name: policy.name },
+    spec: {
+      description: policy.description || undefined,
+      statements: policy.statements?.length ? policy.statements : undefined,
+      dataPlane: policy.dataPlane?.statements?.length ? policy.dataPlane : undefined,
+      controlPlane: policy.controlPlane?.statements?.length ? policy.controlPlane : undefined,
+    },
+  };
 
   return (
     <DetailShell
@@ -56,8 +89,9 @@ export function PolicyDetailPage() {
       icon={<FileText className="size-5" />}
       title={policy.name}
       subtitle={policy.description || "Policy"}
+      status={{ label: policy.ready ? "Ready" : "Compiling", tone: policy.ready ? "success" : "warning" }}
       actions={
-        <Button onClick={() => setEdit(true)}>
+        <Button onClick={goEdit}>
           <Pencil className="size-4" /> Edit
         </Button>
       }
@@ -65,7 +99,8 @@ export function PolicyDetailPage() {
       <Tabs defaultValue="permissions">
         <TabsList>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
-          <TabsTrigger value="usedby">Used by ({attachedRoles.length})</TabsTrigger>
+          <TabsTrigger value="json">JSON / CR</TabsTrigger>
+          <TabsTrigger value="entities">Entities attached ({attachedRoles.length})</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -74,63 +109,96 @@ export function PolicyDetailPage() {
           </TabsTrigger>
         </TabsList>
 
+        {/* Permissions — the AWS permissions-summary table + overview + boundary note. */}
         <TabsContent value="permissions" className="space-y-4 pt-4">
           <Card>
-            <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Compiled ClusterRole">
-                <code className="text-xs">{policy.clusterRole || `openinfra-policy-${name}`}</code>
-              </DetailRow>
-              <DetailRow label="Rules">
-                <span className="flex items-center gap-2">
-                  {policy.ruleCount}
-                  <Badge variant={policy.ready ? "default" : "secondary"}>
-                    {policy.ready ? "Ready" : "Compiling"}
-                  </Badge>
-                </span>
-              </DetailRow>
+            <CardContent className="p-4">
+              <KeyValuePairs
+                columns={3}
+                items={[
+                  { label: "Type", value: <Badge variant={TYPE_TONE[type]}>{type}</Badge> },
+                  {
+                    label: "Compiled ClusterRole",
+                    value: (
+                      <span className="inline-flex items-center gap-1">
+                        <code className="text-xs">{policy.clusterRole || `openinfra-policy-${name}`}</code>
+                        <CopyButton value={policy.clusterRole || `openinfra-policy-${name}`} />
+                      </span>
+                    ),
+                  },
+                  {
+                    label: "RBAC rules",
+                    value: (
+                      <span className="flex items-center gap-2">
+                        {policy.ruleCount}
+                        <Badge variant={policy.ready ? "success" : "warning"}>
+                          {policy.ready ? "Ready" : "Compiling"}
+                        </Badge>
+                      </span>
+                    ),
+                  },
+                ]}
+              />
             </CardContent>
           </Card>
+
           <Card>
             <CardContent className="p-0">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-left text-muted-foreground">
-                    <th className="p-3 font-medium">Effect</th>
-                    <th className="p-3 font-medium">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {actions.length === 0 ? (
-                    <tr>
-                      <td colSpan={2} className="p-3 text-xs text-muted-foreground">
-                        No actions — this policy grants nothing.
-                      </td>
-                    </tr>
-                  ) : (
-                    actions.map((a) => (
-                      <tr key={a} className="border-b last:border-0">
-                        <td className="p-3">
-                          <Badge variant="default">Allow</Badge>
-                        </td>
-                        <td className="p-3">
-                          <code className="text-xs">{a}</code>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+              <div className="border-b border-border p-3">
+                <h3 className="text-sm font-semibold">Permissions summary</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Platform (control-plane) permissions compile to RBAC — Allow-only, all resources of the
+                  kind. Data-service permissions are enforced by Cedar and may Deny, scope, and set conditions.
+                </p>
+              </div>
+              <PermissionsSummary doc={doc} />
             </CardContent>
           </Card>
         </TabsContent>
 
-        <TabsContent value="usedby" className="pt-4">
+        {/* JSON / CR — the source of truth, plus a read-only Cedar expander. */}
+        <TabsContent value="json" className="space-y-4 pt-4">
+          <Card>
+            <CardContent className="space-y-2 p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Policy resource</h3>
+                <CopyButton value={yamlOf(cr)} label="Copy YAML" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The Policy CR is the authored artifact — the same object GitOps would apply. Edit it on the
+                policy editor's JSON tab.
+              </p>
+              <YamlViewer value={cr} />
+            </CardContent>
+          </Card>
+          {policy.dataPlane?.statements?.length || policy.controlPlane?.statements?.length ? (
+            <Card>
+              <CardContent className="space-y-2 p-4">
+                <h3 className="text-sm font-semibold">Cedar policy set (data / control plane)</h3>
+                <p className="text-xs text-muted-foreground">
+                  What the aws-shim (data plane) and the shadow webhook (control plane) evaluate — the
+                  Allow/Deny + conditions RBAC cannot express.
+                </p>
+                <YamlViewer
+                  value={{ dataPlane: policy.dataPlane, controlPlane: policy.controlPlane }}
+                  maxHeightClassName="max-h-[40vh]"
+                />
+              </CardContent>
+            </Card>
+          ) : null}
+        </TabsContent>
+
+        {/* Entities attached — the reverse "who has this?" view (roles + data-plane principals). */}
+        <TabsContent value="entities" className="space-y-4 pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
+              <div className="p-3 text-xs font-medium text-muted-foreground">
+                Roles that include this policy (control plane)
+              </div>
               {attachedRoles.length === 0 ? (
                 <div className="p-4 text-sm text-muted-foreground">
-                  Not attached to any role. Add it from a Role's Policies tab — a policy does
-                  nothing on its own.
+                  Not attached to any role. Add it from a Role's Policies tab — a control-plane policy does
+                  nothing until a Role includes it and a Group binds that Role.
                 </div>
               ) : (
                 attachedRoles.map((r) => (
@@ -147,6 +215,27 @@ export function PolicyDetailPage() {
               )}
             </CardContent>
           </Card>
+          {hasDataPlane ? (
+            <Card>
+              <CardContent className="divide-y divide-border p-0">
+                <div className="p-3 text-xs font-medium text-muted-foreground">
+                  Principals governed by the data plane (spec.dataPlane.appliesTo)
+                </div>
+                {appliesTo.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    Applies to <code className="text-xs">*</code> — every principal. Scope it on the editor's
+                    Visual tab to narrow which Users/Groups the data-plane rules govern.
+                  </div>
+                ) : (
+                  appliesTo.map((p) => (
+                    <DetailRow key={p} label="Principal">
+                      <code className="text-xs">{p}</code>
+                    </DetailRow>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">
@@ -160,8 +249,8 @@ export function PolicyDetailPage() {
             }}
             confirmDescription={
               <>
-                Delete policy <span className="font-medium text-foreground">{policy.name}</span> and
-                its compiled ClusterRole.{" "}
+                Delete policy <span className="font-medium text-foreground">{policy.name}</span> and its
+                compiled ClusterRole.{" "}
                 {attachedRoles.length > 0
                   ? `${attachedRoles.length} role(s) attach it and will lose these permissions.`
                   : "No role attaches it."}
@@ -177,24 +266,20 @@ export function PolicyDetailPage() {
             onConfirm={() => del.mutate(true)}
             description={
               <>
-                <span className="font-medium text-foreground">{attachedRoles.length}</span> role(s)
-                still attach <span className="font-medium text-foreground">{policy.name}</span>.
-                Deleting it removes those permissions from them.
+                <span className="font-medium text-foreground">{attachedRoles.length}</span> role(s) still
+                attach <span className="font-medium text-foreground">{policy.name}</span>. Deleting it
+                removes those permissions from them.
               </>
             }
           />
         </TabsContent>
       </Tabs>
-
-      <NewPolicyDialog
-        open={edit}
-        onOpenChange={(o) => {
-          setEdit(o);
-          if (!o) void refetch();
-        }}
-        resources={cfg.data?.policyResources ?? []}
-        editing={policy}
-      />
     </DetailShell>
   );
+}
+
+// Small local YAML serializer for the copy button (YamlViewer renders its own; this matches it closely
+// enough for a clipboard copy).
+function yamlOf(obj: unknown): string {
+  return JSON.stringify(obj, null, 2);
 }

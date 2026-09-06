@@ -12,6 +12,7 @@ import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Application, Subnet, VirtualMachine } from "@/types/k8s";
+import { NetworkAclEditor } from "./network-acl-editor";
 
 export function SubnetDetailPage() {
   const { namespace, name } = useParams({ strict: false }) as {
@@ -60,6 +61,7 @@ export function SubnetDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="acls">Network ACL ({spec.acls?.length ?? 0})</TabsTrigger>
           <TabsTrigger value="members">In this subnet ({members.length})</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
@@ -100,6 +102,10 @@ export function SubnetDetailPage() {
               </DetailRow>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="acls" className="pt-4">
+          <NetworkAclEditor subnet={sub} namespace={namespace} onSaved={() => void refetch()} />
         </TabsContent>
 
         <TabsContent value="members" className="pt-4">

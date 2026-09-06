@@ -12,6 +12,8 @@ import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Subnet, Vpc } from "@/types/k8s";
+import { RouteTableEditor } from "./route-table-editor";
+import { PeeringEditor } from "./peering-editor";
 
 export function VpcDetailPage() {
   const { namespace, name } = useParams({ strict: false }) as {
@@ -51,6 +53,8 @@ export function VpcDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="subnets">Subnets ({inVpc.length})</TabsTrigger>
+          <TabsTrigger value="routes">Route table ({vpc.spec?.routes?.length ?? 0})</TabsTrigger>
+          <TabsTrigger value="peering">Peering ({vpc.spec?.peerings?.length ?? 0})</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -93,6 +97,19 @@ export function VpcDetailPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="routes" className="pt-4">
+          <RouteTableEditor
+            vpc={vpc}
+            namespace={namespace}
+            localCidrs={inVpc.map((s) => s.spec?.cidr).filter((c): c is string => Boolean(c))}
+            onSaved={() => void refetch()}
+          />
+        </TabsContent>
+
+        <TabsContent value="peering" className="pt-4">
+          <PeeringEditor vpc={vpc} namespace={namespace} onSaved={() => void refetch()} />
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">

@@ -294,3 +294,62 @@ export const APPLICATION_CREATE: CreateKindSpec = {
     domain: { "ui:placeholder": "my-api.example.com" },
   },
 };
+
+export const NATGATEWAY_CREATE: CreateKindSpec = {
+  kind: "NatGateway",
+  crdName: "natgateways.openinfra.dev",
+  description:
+    "The border device for a private VPC (kube-ovn VpcNatGateway) — the AWS NAT Gateway (SNAT egress) and, on a flat network, the Internet-Gateway role. Requires the kube-ovn CNI.",
+  sections: [
+    { title: "Gateway", fields: ["vpc", "subnet", "internalIp"] },
+    { title: "Egress", fields: ["egress"], advanced: true },
+    { title: "Placement", fields: ["externalNetwork", "nodeSelector"], advanced: true },
+  ],
+  uiSchema: { internalIp: { "ui:placeholder": "10.0.0.254" } },
+};
+
+export const ELASTICIP_CREATE: CreateKindSpec = {
+  kind: "ElasticIp",
+  crdName: "elasticips.openinfra.dev",
+  description:
+    "A static public IP on a NAT gateway (kube-ovn IptablesEIP) — the AWS Elastic IP, optionally associated with a private workload (1:1 fip or per-port dnat).",
+  sections: [
+    { title: "Allocation", fields: ["natGateway", "address"] },
+    { title: "Association", fields: ["target", "mode", "ports"], advanced: true },
+    { title: "Network", fields: ["externalNetwork"], advanced: true },
+  ],
+  uiSchema: { address: { "ui:placeholder": "auto-assigned when empty" } },
+};
+
+export const TRANSITGATEWAY_CREATE: CreateKindSpec = {
+  kind: "TransitGateway",
+  crdName: "transitgateways.openinfra.dev",
+  description:
+    "A hub with transitive spoke-to-spoke routing (AWS Transit Gateway) — attach VPCs so they can route between each other through one hub.",
+  sections: [{ title: "Attachments", fields: ["attachments"] }],
+  uiSchema: {
+    attachments: {
+      items: {
+        vpc: { "ui:placeholder": "spoke-vpc" },
+        cidr: { "ui:placeholder": "10.1.0.0/16" },
+        hubConnectIP: { "ui:placeholder": "169.254.100.1" },
+        spokeConnectIP: { "ui:placeholder": "169.254.100.2" },
+      },
+    },
+  },
+};
+
+export const FLOWLOG_CREATE: CreateKindSpec = {
+  kind: "FlowLog",
+  crdName: "flowlogs.openinfra.dev",
+  description:
+    "VPC flow logging (OVS sFlow → collector → Loki) — sample node traffic and ship flow records to Loki; scope to a VPC or subnet by CIDR at view time.",
+  sections: [
+    { title: "Sampling", fields: ["samplingRate"] },
+    { title: "Collector", fields: ["namespace", "nodeSelector"], advanced: true },
+  ],
+  uiSchema: {
+    samplingRate: { "ui:placeholder": "64" },
+    namespace: { "ui:placeholder": "kube-system" },
+  },
+};

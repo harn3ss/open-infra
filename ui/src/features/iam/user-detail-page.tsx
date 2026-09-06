@@ -9,9 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DetailRow } from "@/components/common/detail-row";
+import { KeyValuePairs } from "@/components/common/key-value-pairs";
+import { CopyButton } from "@/components/common/copy-button";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState, Spinner } from "@/components/common/states";
+import { useFlash } from "@/components/common/flashbar";
 import {
   deleteIamUser,
   getIamConfig,
@@ -21,11 +23,13 @@ import {
   updateIamUser,
 } from "@/lib/api";
 import { GroupPicker } from "./group-picker";
+import { UserPermissionsTab } from "./user-permissions-tab";
 
 export function UserDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const flash = useFlash();
 
   const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
@@ -42,19 +46,24 @@ export function UserDetailPage() {
     if (user) setEditGroups(user.groups ?? []);
   }, [user]);
 
+  const invalidateUser = () => {
+    void qc.invalidateQueries({ queryKey: ["iam", "user", name] });
+    void qc.invalidateQueries({ queryKey: ["iam", "users"] });
+  };
+
   const saveGroups = useMutation({
     mutationFn: () => updateIamUser(name, { groups: editGroups }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["iam", "user", name] });
-      void qc.invalidateQueries({ queryKey: ["iam", "users"] });
+      invalidateUser();
+      flash.success(`Updated group membership for ${name}.`);
     },
   });
 
   const toggleDisabled = useMutation({
     mutationFn: (disabled: boolean) => updateIamUser(name, { disabled }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["iam", "user", name] });
-      void qc.invalidateQueries({ queryKey: ["iam", "users"] });
+    onSuccess: (_res, disabled) => {
+      invalidateUser();
+      flash.success(`${disabled ? "Disabled" : "Enabled"} console access for ${name}.`);
     },
   });
 
@@ -63,18 +72,24 @@ export function UserDetailPage() {
     mutationFn: () => resetIamPassword(name, pw),
     onSuccess: () => {
       setPw("");
-      void qc.invalidateQueries({ queryKey: ["iam", "user", name] });
+      invalidateUser();
+      flash.success(`Password updated for ${name}.`);
     },
   });
 
   const del = useMutation({
     mutationFn: () => deleteIamUser(name),
-    onSuccess: () => navigate({ to: "/users" }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["iam", "users"] });
+      flash.success(`Deleted user ${name}.`);
+      navigate({ to: "/users" });
+    },
   });
 
   if (isLoading) return <LoadingState label="Loading user…" />;
   if (isError || !user) return <ErrorState error={error} onRetry={refetch} />;
 
+  const isLocal = user.source === "local" || !user.source;
   const groupsDirty =
     editGroups.length !== (user.groups ?? []).length ||
     editGroups.some((g) => !(user.groups ?? []).includes(g));
@@ -86,6 +101,11 @@ export function UserDetailPage() {
       icon={<User className="size-5" />}
       title={user.name}
       subtitle={user.displayName ? user.displayName : "Console user"}
+      status={
+        user.disabled
+          ? { label: "Disabled", tone: "muted" }
+          : { label: "Enabled", tone: "success" }
+      }
       actions={
         user.disabled ? (
           <Button variant="outline" onClick={() => toggleDisabled.mutate(false)}>
@@ -101,8 +121,9 @@ export function UserDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="groups">Groups</TabsTrigger>
-          <TabsTrigger value="security">Security</TabsTrigger>
+          <TabsTrigger value="permissions">Permissions</TabsTrigger>
+          <TabsTrigger value="groups">Groups ({(user.groups ?? []).length})</TabsTrigger>
+          <TabsTrigger value="security">Security credentials</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -113,42 +134,69 @@ export function UserDetailPage() {
 
         <TabsContent value="overview" className="pt-4">
           <Card>
-            <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Username">{user.name}</DetailRow>
-              <DetailRow label="Display name">{user.displayName || "—"}</DetailRow>
-              <DetailRow label="Source">{user.source || "local"}</DetailRow>
-              <DetailRow label="Status">
-                {user.disabled ? (
-                  <Badge variant="outline" className="text-muted-foreground">Disabled</Badge>
-                ) : (
-                  <Badge variant="default">Active</Badge>
-                )}
-              </DetailRow>
-              <DetailRow label="Password">
-                {user.hasPassword ? (
-                  "Set"
-                ) : (
-                  <span className="text-amber-600 dark:text-amber-400">
-                    Not set — can't sign in until a password is set (Security tab)
-                  </span>
-                )}
-              </DetailRow>
-              <DetailRow label="Groups">
-                <div className="flex flex-wrap gap-1">
-                  {(user.groups ?? []).length === 0
-                    ? "none"
-                    : (user.groups ?? []).map((g) => (
-                        <Badge
-                          key={g}
-                          variant={(user.unboundGroups ?? []).includes(g) ? "outline" : "secondary"}
-                        >
-                          {g}
-                        </Badge>
-                      ))}
-                </div>
-              </DetailRow>
+            <CardContent className="p-5">
+              <KeyValuePairs
+                columns={3}
+                items={[
+                  {
+                    label: "User name",
+                    value: (
+                      <span className="inline-flex items-center gap-1">
+                        {user.name}
+                        <CopyButton value={user.name} label="Copy user name" />
+                      </span>
+                    ),
+                  },
+                  { label: "Display name", value: user.displayName || "" },
+                  { label: "Source", value: user.source || "local" },
+                  {
+                    label: "Console access",
+                    value: user.disabled ? (
+                      <Badge variant="muted">Disabled</Badge>
+                    ) : (
+                      <Badge variant="success">Enabled</Badge>
+                    ),
+                  },
+                  {
+                    label: "Sign-in credential",
+                    value: !isLocal ? (
+                      `Managed by ${user.source}`
+                    ) : user.hasPassword ? (
+                      "Password set"
+                    ) : (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        No password — set one on Security credentials
+                      </span>
+                    ),
+                  },
+                  {
+                    label: "Groups",
+                    value:
+                      (user.groups ?? []).length === 0 ? (
+                        "none"
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {(user.groups ?? []).map((g) => (
+                            <Badge
+                              key={g}
+                              variant={
+                                (user.unboundGroups ?? []).includes(g) ? "outline" : "secondary"
+                              }
+                            >
+                              {g}
+                            </Badge>
+                          ))}
+                        </div>
+                      ),
+                  },
+                ]}
+              />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="permissions" className="pt-4">
+          <UserPermissionsTab user={user} />
         </TabsContent>
 
         <TabsContent value="groups" className="space-y-4 pt-4">
@@ -184,36 +232,69 @@ export function UserDetailPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="security" className="pt-4">
+        <TabsContent value="security" className="space-y-4 pt-4">
+          {/* Console access */}
           <Card>
-            <CardContent className="max-w-md space-y-3 p-5">
-              <div className="space-y-1.5">
-                <Label htmlFor="new-pw" className="flex items-center gap-1.5">
-                  <KeyRound className="size-4" /> Set a new password
-                </Label>
-                <Input
-                  id="new-pw"
-                  type="password"
-                  value={pw}
-                  onChange={(e) => setPw(e.target.value)}
-                  placeholder="At least 8 characters"
-                />
+            <CardContent className="flex flex-wrap items-center justify-between gap-4 p-5">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Console access</h3>
+                <p className="text-sm text-muted-foreground">
+                  {user.disabled
+                    ? "This user can't sign in. Enable to restore console access."
+                    : "This user can sign in to the console."}
+                </p>
               </div>
-              <Button
-                disabled={pw.length < 8 || resetPw.isPending}
-                onClick={() => resetPw.mutate()}
-              >
-                {resetPw.isPending ? <Spinner className="size-4" /> : null}
-                Set password
-              </Button>
-              {resetPw.isSuccess ? (
-                <p className="text-sm text-emerald-600 dark:text-emerald-400">Password updated.</p>
-              ) : null}
-              {resetPw.isError ? (
-                <p className="text-sm text-destructive">{(resetPw.error as Error).message}</p>
-              ) : null}
+              {user.disabled ? (
+                <Button variant="outline" onClick={() => toggleDisabled.mutate(false)}>
+                  <CircleCheck className="size-4" /> Enable access
+                </Button>
+              ) : (
+                <Button variant="outline" onClick={() => toggleDisabled.mutate(true)}>
+                  <Ban className="size-4" /> Disable access
+                </Button>
+              )}
             </CardContent>
           </Card>
+
+          {/* Password */}
+          {isLocal ? (
+            <Card>
+              <CardContent className="max-w-md space-y-3 p-5">
+                <div className="space-y-1.5">
+                  <Label htmlFor="new-pw" className="flex items-center gap-1.5">
+                    <KeyRound className="size-4" /> Set a new password
+                  </Label>
+                  <Input
+                    id="new-pw"
+                    type="password"
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                    placeholder="At least 8 characters"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Stored as a bcrypt hash in a Secret — the console never keeps the plaintext.
+                  </p>
+                </div>
+                <Button
+                  disabled={pw.length < 8 || resetPw.isPending}
+                  onClick={() => resetPw.mutate()}
+                >
+                  {resetPw.isPending ? <Spinner className="size-4" /> : null}
+                  Set password
+                </Button>
+                {resetPw.isError ? (
+                  <p className="text-sm text-destructive">{(resetPw.error as Error).message}</p>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardContent className="p-5 text-sm text-muted-foreground">
+                This user's source is <code>{user.source}</code> — sign-in credentials are managed
+                by the directory, not the console. There is no password to set here.
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, Check, Info } from "lucide-react";
+import { AlertTriangle, Boxes, Check, Info, ShieldCheck } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,14 +10,17 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
 import { DangerZone } from "@/components/common/danger-zone";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { CopyButton } from "@/components/common/copy-button";
 import { LoadingState, ErrorState, Spinner } from "@/components/common/states";
 import {
   deleteIamRole,
   getIamRole,
   listIamGroups,
   listIamPolicies,
+  listIamUsers,
   updateIamRole,
 } from "@/lib/api";
+import { TrustEditor, principalLabel } from "./trust-editor";
 
 export function RoleDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -27,6 +30,7 @@ export function RoleDetailPage() {
 
   const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
+  const users = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers });
   const { data: role, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["iam", "role", name],
     queryFn: () => getIamRole(name),
@@ -37,12 +41,31 @@ export function RoleDetailPage() {
   const usedByGroups = (groups.data ?? []).filter((g) => g.clusterRole === clusterRole);
 
   const [attached, setAttached] = useState<string[]>([]);
+  const [trust, setTrust] = useState<string[]>([]);
   useEffect(() => {
-    if (role) setAttached(role.policies);
+    if (role) {
+      setAttached(role.policies);
+      setTrust(role.trust ?? []);
+    }
   }, [role]);
 
   const savePolicies = useMutation({
+    // trust omitted → the BFF leaves the stored trust policy untouched.
     mutationFn: () => updateIamRole(name, { description: role?.description ?? "", policies: attached }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
+      void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
+    },
+  });
+
+  const saveTrust = useMutation({
+    // pass the server's policies so a trust save never clobbers unsaved policy edits.
+    mutationFn: () =>
+      updateIamRole(name, {
+        description: role?.description ?? "",
+        policies: role?.policies ?? [],
+        trust,
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
       void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
@@ -60,9 +83,13 @@ export function RoleDetailPage() {
   if (isLoading) return <LoadingState label="Loading role…" />;
   if (isError || !role) return <ErrorState error={error} onRetry={refetch} />;
 
-  const dirty =
-    attached.length !== role.policies.length ||
-    attached.some((p) => !role.policies.includes(p));
+  const storedTrust = role.trust ?? [];
+  const policiesDirty =
+    attached.length !== role.policies.length || attached.some((p) => !role.policies.includes(p));
+  const trustDirty =
+    trust.length !== storedTrust.length ||
+    trust.some((p) => !storedTrust.includes(p)) ||
+    storedTrust.some((p) => !trust.includes(p));
   const toggle = (p: string) =>
     setAttached(attached.includes(p) ? attached.filter((x) => x !== p) : [...attached, p]);
 
@@ -73,10 +100,12 @@ export function RoleDetailPage() {
       icon={<Boxes className="size-5" />}
       title={role.name}
       subtitle={role.description || "Role"}
+      status={{ label: role.ready ? "Ready" : "Compiling", tone: role.ready ? "success" : "warning" }}
     >
-      <Tabs defaultValue="policies">
+      <Tabs defaultValue="permissions">
         <TabsList>
-          <TabsTrigger value="policies">Policies</TabsTrigger>
+          <TabsTrigger value="permissions">Permissions</TabsTrigger>
+          <TabsTrigger value="trust">Trust relationships</TabsTrigger>
           <TabsTrigger value="usage">Usage</TabsTrigger>
           <TabsTrigger
             value="danger"
@@ -86,7 +115,8 @@ export function RoleDetailPage() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="policies" className="space-y-4 pt-4">
+        {/* Permissions — attached policies (the aggregated union). */}
+        <TabsContent value="permissions" className="space-y-4 pt-4">
           <Card>
             <CardContent className="space-y-3 p-5">
               <p className="text-sm text-muted-foreground">
@@ -118,11 +148,11 @@ export function RoleDetailPage() {
                 <p className="text-xs text-muted-foreground">No policies exist yet.</p>
               )}
               <div className="flex items-center gap-3">
-                <Button disabled={!dirty || savePolicies.isPending} onClick={() => savePolicies.mutate()}>
+                <Button disabled={!policiesDirty || savePolicies.isPending} onClick={() => savePolicies.mutate()}>
                   {savePolicies.isPending ? <Spinner className="size-4" /> : null}
                   Save
                 </Button>
-                {dirty ? (
+                {policiesDirty ? (
                   <Button variant="ghost" onClick={() => setAttached(role.policies)}>
                     Reset
                   </Button>
@@ -137,11 +167,88 @@ export function RoleDetailPage() {
           </Card>
         </TabsContent>
 
+        {/* Trust relationships — who may assume the role (spec.trust). */}
+        <TabsContent value="trust" className="space-y-4 pt-4">
+          <Card>
+            <CardContent className="space-y-4 p-5">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">Trusted entities</h3>
+                <p className="text-sm text-muted-foreground">
+                  The principals allowed to assume this role via <code>sts:AssumeRole</code> (and
+                  service accounts via web identity). A role with no trusted entities is assumable by
+                  no one — fail closed, exactly as an AWS role needs a trust policy.
+                </p>
+              </div>
+
+              <TrustEditor value={trust} onChange={setTrust} users={(users.data ?? []).map((u) => u.name)} />
+
+              <div className="flex items-center gap-3 border-t border-border pt-4">
+                <Button disabled={!trustDirty || saveTrust.isPending} onClick={() => saveTrust.mutate()}>
+                  {saveTrust.isPending ? <Spinner className="size-4" /> : null}
+                  Update trust policy
+                </Button>
+                {trustDirty ? (
+                  <Button variant="ghost" onClick={() => setTrust(storedTrust)}>
+                    Reset
+                  </Button>
+                ) : null}
+                {saveTrust.isError ? (
+                  <span className="text-sm text-destructive">{(saveTrust.error as Error).message}</span>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <ShieldCheck className="size-4" /> How to assume this role
+              </div>
+              <p className="text-sm text-muted-foreground">
+                A trusted principal calls the aws-shim STS endpoint with the role ARN:
+              </p>
+              <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-muted/30 p-2 font-mono text-xs">
+                <span className="break-all">
+                  aws sts assume-role --role-arn arn:openinfra:iam::open-infra:role/{role.name} --role-session-name s1
+                </span>
+                <CopyButton
+                  value={`aws sts assume-role --role-arn arn:openinfra:iam::open-infra:role/${role.name} --role-session-name s1`}
+                  label="Copy command"
+                />
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                The returned session credentials carry this role's aggregated policies. Pods assume it
+                instead via <code>AssumeRoleWithWebIdentity</code> using their projected ServiceAccount token.
+              </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Usage — how the role becomes effective. */}
         <TabsContent value="usage" className="space-y-4 pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
               <DetailRow label="Binds as (ClusterRole)">
                 <code className="text-xs">{clusterRole}</code>
+              </DetailRow>
+              <DetailRow label="Trusted entities">
+                {storedTrust.length === 0 ? (
+                  <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                    <AlertTriangle className="size-3.5" /> none — not assumable
+                  </span>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {storedTrust.map((p) => (
+                      <Badge
+                        key={p}
+                        variant={p === "*" ? "outline" : "secondary"}
+                        className={p === "*" ? "border-amber-500/40 text-amber-600 dark:text-amber-400" : ""}
+                      >
+                        {principalLabel(p)}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </DetailRow>
               <DetailRow label="Status">
                 <Badge variant={role.ready ? "default" : "secondary"}>
