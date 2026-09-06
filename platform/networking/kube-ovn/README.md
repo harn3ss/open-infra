@@ -29,6 +29,10 @@ enabled on the kube-ovn substrate.
 - `elasticip-xrd.yaml` / `elasticip-composition.yaml` — `kind: ElasticIp` → a kube-ovn `IptablesEIP`
   plus an `IptablesFipRule` (`mode: fip`, 1:1 whole-IP) or `IptablesDnatRule`s (`mode: dnat`,
   per-port). The AWS Elastic IP.
+- `flowlog-xrd.yaml` / `flowlog-composition.yaml` — `kind: FlowLog` → a per-node DaemonSet that sets
+  OVS sFlow on `br-int` and decodes sampled headers to JSON flow records on stdout (→ promtail →
+  Loki). The AWS VPC Flow Logs analog. OVS sFlow is per-bridge (per-node), not per-VPC/ENI — scope
+  to a VPC/subnet by filtering records on CIDR at query time; it's a sampled (1:N) record stream.
 
 ## The AWS EIP + NAT/Internet-Gateway surface (#120)
 
