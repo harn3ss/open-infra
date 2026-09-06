@@ -136,6 +136,16 @@ rules:
       - staticsites
       - parameters
       - emailsenders
+      - buckets
+      - queues
+      - tables
+      # kube-ovn networking family (#120)
+      - vpcs
+      - subnets
+      - natgateways
+      - elasticips
+      - transitgateways
+      - flowlogs
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [""]
     resources: [pods, services, configmaps, persistentvolumeclaims, nodes, namespaces, events]

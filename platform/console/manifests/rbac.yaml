@@ -150,6 +150,16 @@ rules:
       - encryptionkeys
       - destructions
       - userpools
+      - buckets
+      - queues
+      - tables
+      # kube-ovn networking family (#120)
+      - vpcs
+      - subnets
+      - natgateways
+      - elasticips
+      - transitgateways
+      - flowlogs
     verbs: [get, list, watch, create, update, patch, delete]
 
   # ── KubeVirt + CDI: read VM/guest/disk status for the Virtual Machines view
