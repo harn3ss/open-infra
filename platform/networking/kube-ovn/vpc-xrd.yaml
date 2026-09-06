@@ -30,13 +30,22 @@ spec:
                   description: "Namespaces bound to this VPC (their default subnet lives here)."
                 routes:
                   type: array
-                  description: "Static routes — the VPC route table. e.g. cidr 0.0.0.0/0 -> nextHop a kind: NatGateway's internalIp, so private workloads reach the border device (and ingress replies return through it)."
+                  description: "Static routes — the VPC route table. e.g. cidr 0.0.0.0/0 -> nextHop a kind: NatGateway's internalIp, so private workloads reach the border device (and ingress replies return through it). Also carries peering/transit routes: a remote VPC's CIDR -> the peer link's far-side IP."
                   items:
                     type: object
                     required: [cidr, nextHop]
                     properties:
                       cidr: { type: string, description: "Destination CIDR, e.g. 0.0.0.0/0." }
-                      nextHop: { type: string, description: "Next-hop IP (e.g. a NatGateway internalIp)." }
+                      nextHop: { type: string, description: "Next-hop IP (e.g. a NatGateway internalIp, or a peer link far-side IP)." }
+                peerings:
+                  type: array
+                  description: "VPC peerings — a /30 interconnect to another kind: Vpc (AWS VPC Peering). Declare on BOTH VPCs (each names the other + its own /30 side) and add a spec.routes entry for the remote CIDR via the peer link. Non-transitive, like AWS — for hub-and-spoke transit use kind: TransitGateway."
+                  items:
+                    type: object
+                    required: [remoteVpc, localConnectIP]
+                    properties:
+                      remoteVpc: { type: string, description: "The kind: Vpc on the other end." }
+                      localConnectIP: { type: string, description: "This VPC's IP on the /30 link, e.g. 169.254.100.1/30 (the peer uses .2/30)." }
             status:
               type: object
               properties:

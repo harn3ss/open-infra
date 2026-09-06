@@ -1,0 +1,48 @@
+# open-infra's kind: TransitGateway — a hub for many kind: Vpc spokes, giving TRANSITIVE routing
+# (any attached spoke reaches any other through the hub), the property plain VPC peering lacks.
+# Backed by a subnet-less kube-ovn Vpc that acts as a pure transit router: it peers with each spoke
+# and carries a route to each spoke's CIDR. The AWS Transit Gateway, composed from primitives (there
+# is no native kube-ovn TGW object).
+#
+# Each spoke must ALSO be wired on its own kind: Vpc — a peering to this hub (spec.peerings) and a
+# route to every other spoke's CIDR via the hub link (spec.routes) — exactly as AWS needs a TGW
+# attachment + a route per VPC. REQUIRES kube-ovn; inert on Canal.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xtransitgateways.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XTransitGateway, plural: xtransitgateways }
+  claimNames: { kind: TransitGateway, plural: transitgateways }
+  defaultCompositionRef: { name: transitgateway }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [attachments]
+              properties:
+                attachments:
+                  type: array
+                  description: "The spoke VPCs attached to this hub. Each is a /30 peer link + a route to the spoke's CIDR."
+                  items:
+                    type: object
+                    required: [vpc, cidr, hubConnectIP, spokeConnectIP]
+                    properties:
+                      vpc: { type: string, description: "The spoke kind: Vpc." }
+                      cidr: { type: string, description: "The spoke's subnet CIDR, routed to via the hub." }
+                      hubConnectIP: { type: string, description: "The hub's IP on this spoke's /30 link, e.g. 169.254.101.1/30." }
+                      spokeConnectIP: { type: string, description: "The spoke's IP on the /30 (route next-hop from the hub), e.g. 169.254.101.2." }
+            status:
+              type: object
+              properties:
+                ready: { type: boolean }
