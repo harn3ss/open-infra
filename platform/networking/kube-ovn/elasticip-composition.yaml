@@ -1,0 +1,90 @@
+# One kind: ElasticIp claim -> a kube-ovn IptablesEIP + (when associated) an IptablesFipRule (mode
+# fip) or IptablesDnatRule(s) (mode dnat). Rendered via provider-kubernetes Objects.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: elasticip
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XElasticIp }
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef: { name: crossplane-contrib-function-go-templating }
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $extnet := $spec.externalNetwork | default "ovn-vpc-external-network" }}
+            {{- $mode := $spec.mode | default "fip" }}
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: eip
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: IptablesEIP
+                  metadata:
+                    name: {{ $name }}
+                    labels: { openinfra.dev/elasticip: {{ $name }} }
+                  spec:
+                    natGwDp: {{ $spec.natGateway }}
+                    externalSubnet: {{ $extnet }}
+                    {{- if $spec.address }}
+                    v4ip: {{ $spec.address }}
+                    {{- end }}
+            {{- if $spec.target }}
+            {{- if eq $mode "fip" }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: fip
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: IptablesFIPRule
+                  metadata:
+                    name: {{ $name }}-fip
+                    labels: { openinfra.dev/elasticip: {{ $name }} }
+                  spec:
+                    eip: {{ $name }}
+                    internalIp: {{ $spec.target }}
+            {{- else }}
+            {{- range $i, $p := ($spec.ports | default list) }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: dnat-{{ $i }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: IptablesDnatRule
+                  metadata:
+                    name: {{ $name }}-dnat-{{ $i }}
+                    labels: { openinfra.dev/elasticip: {{ $name }} }
+                  spec:
+                    eip: {{ $name }}
+                    internalIp: {{ $spec.target }}
+                    internalPort: "{{ $p.internal }}"
+                    externalPort: "{{ $p.external }}"
+                    protocol: {{ $p.protocol | default "tcp" }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+    - step: ready
+      functionRef: { name: crossplane-contrib-function-auto-ready }

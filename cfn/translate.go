@@ -92,6 +92,8 @@ var translators = map[string]translator{
 	"AWS::EC2::Instance":                  translateEC2Instance,
 	"AWS::EC2::VPC":                       translateEC2VPC,
 	"AWS::EC2::Subnet":                    translateEC2Subnet,
+	"AWS::EC2::InternetGateway":           translateEC2ImplicitGateway,
+	"AWS::EC2::VPCGatewayAttachment":      translateEC2ImplicitGateway,
 	"AWS::DynamoDB::Table":                translateDynamoDBTable,
 	"AWS::IAM::User":                      translateIAMUser,
 	"AWS::IAM::Policy":                    translateIAMPolicy,
@@ -615,6 +617,17 @@ func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manife
 		}
 	}
 	return m, f
+}
+
+// ---- AWS::EC2::InternetGateway / AWS::EC2::VPCGatewayAttachment -> implicit ----
+//
+// On open-infra the border device is a kind: NatGateway (which, on a flat /24, serves both the
+// NAT-Gateway and Internet-Gateway roles), and the "attachment" is a kind: Vpc default route to
+// that gateway. So an IGW and its VPCGatewayAttachment provision NOTHING standalone — they are
+// structural, like an ECS Cluster. A no-op (nil Manifest) keeps a template that carries them from
+// blocking; public reachability is authored with kind: NatGateway + kind: ElasticIp + a VPC route.
+func translateEC2ImplicitGateway(_ string, _ map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	return nil, nil
 }
 
 // ---- AWS::DynamoDB::Table -> kind: Table ----

@@ -1,0 +1,66 @@
+# open-infra's kind: NatGateway — the border device for a private kind: Vpc, backed by a kube-ovn
+# VpcNatGateway. It is the AWS NAT Gateway (SNAT egress for private subnets) AND, on this flat-LAN
+# substrate, the Internet Gateway role (a real routing hop that terminates + re-NATs, so a floating
+# public IP can reach a private overlay pod and the return path completes — which an L2 LoadBalancer
+# VIP cannot do on a single flat /24). Public ingress is attached with kind: ElasticIp; the VPC must
+# carry a default route (kind: Vpc spec.routes 0.0.0.0/0 -> spec.internalIp) so replies return
+# through this hop.
+#
+# REQUIRES kube-ovn (VpcNatGateway + the ovn-vpc-external-network macvlan attachment). Inert on Canal
+# — which is why this lives under networking/kube-ovn/, outside the root-app include glob.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xnatgateways.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XNatGateway, plural: xnatgateways }
+  claimNames: { kind: NatGateway, plural: natgateways }
+  defaultCompositionRef: { name: natgateway }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [vpc, subnet, internalIp]
+              properties:
+                vpc:
+                  type: string
+                  description: "The parent kind: Vpc this gateway serves."
+                subnet:
+                  type: string
+                  description: "A kind: Subnet in the VPC that hosts the gateway's internal leg."
+                internalIp:
+                  type: string
+                  description: "The gateway's IP on `subnet` (its lanIp). Set the VPC's default route (kind: Vpc spec.routes 0.0.0.0/0) to this IP so ingress replies and egress route through the gateway."
+                externalNetwork:
+                  type: string
+                  default: ovn-vpc-external-network
+                  description: "The external (macvlan-over-NIC) network the gateway attaches to for public IPs. Defaults to the shared ovn-vpc-external-network."
+                egress:
+                  type: object
+                  description: "SNAT egress (the AWS NAT Gateway function): source-masquerade private subnets to a public IP for outbound reachability."
+                  properties:
+                    publicIp:
+                      type: string
+                      description: "The egress public IP (an EIP on the external network). Omit to auto-allocate."
+                    sourceCidrs:
+                      type: array
+                      items: { type: string }
+                      description: "Private CIDRs whose outbound traffic is SNAT'd to publicIp (typically the VPC's subnet CIDRs)."
+                nodeSelector:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: "Node placement for the gateway pod (label key -> value). A stable edge node, not a chaos-tested one."
+            status:
+              type: object
+              properties:
+                ready: { type: boolean }

@@ -1,0 +1,92 @@
+# One kind: NatGateway claim -> a kube-ovn VpcNatGateway (the border device) + (optional) an egress
+# IptablesEIP and IptablesSnatRule(s) for the AWS NAT-Gateway SNAT function. Rendered via
+# provider-kubernetes Objects (mirrors the vpc/subnet composition pattern).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: natgateway
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XNatGateway }
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef: { name: crossplane-contrib-function-go-templating }
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $extnet := $spec.externalNetwork | default "ovn-vpc-external-network" }}
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: natgateway
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: VpcNatGateway
+                  metadata:
+                    name: {{ $name }}
+                    labels: { openinfra.dev/natgateway: {{ $name }} }
+                  spec:
+                    vpc: {{ $spec.vpc }}
+                    subnet: {{ $spec.subnet }}
+                    lanIp: {{ $spec.internalIp }}
+                    externalSubnets: [{{ $extnet }}]
+                    {{- if $spec.nodeSelector }}
+                    selector:
+                    {{- range $k, $v := $spec.nodeSelector }}
+                      - "{{ $k }}: {{ $v }}"
+                    {{- end }}
+                    {{- end }}
+            {{- if $spec.egress }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: egress-eip
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: IptablesEIP
+                  metadata:
+                    name: {{ $name }}-egress
+                    labels: { openinfra.dev/natgateway: {{ $name }} }
+                  spec:
+                    natGwDp: {{ $name }}
+                    externalSubnet: {{ $extnet }}
+                    {{- if $spec.egress.publicIp }}
+                    v4ip: {{ $spec.egress.publicIp }}
+                    {{- end }}
+            {{- range $i, $cidr := ($spec.egress.sourceCidrs | default list) }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: egress-snat-{{ $i }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: IptablesSnatRule
+                  metadata:
+                    name: {{ $name }}-snat-{{ $i }}
+                    labels: { openinfra.dev/natgateway: {{ $name }} }
+                  spec:
+                    eip: {{ $name }}-egress
+                    internalCIDR: {{ $cidr }}
+            {{- end }}
+            {{- end }}
+    - step: ready
+      functionRef: { name: crossplane-contrib-function-auto-ready }

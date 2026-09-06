@@ -1,0 +1,68 @@
+# open-infra's kind: ElasticIp — a static public IP on a kind: NatGateway, backed by a kube-ovn
+# IptablesEIP, optionally associated with a private workload for public ingress. This is the AWS
+# Elastic IP: allocate a public address, then associate it with an instance.
+#
+# Two association modes, both dataplane-proven on this flat-LAN substrate:
+#   fip  — 1:1 whole-IP bidirectional NAT (IptablesFipRule). The AWS "EIP associated with an
+#          instance": every port maps, and the instance's egress is sourced as this IP.
+#   dnat — per-port forward (IptablesDnatRule). A single public IP:port -> a private IP:port.
+#
+# REQUIRES kube-ovn and a kind: NatGateway. The VPC must carry a default route to the gateway
+# (kind: Vpc spec.routes) so ingress replies return through it. Inert on Canal.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xelasticips.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XElasticIp, plural: xelasticips }
+  claimNames: { kind: ElasticIp, plural: elasticips }
+  defaultCompositionRef: { name: elasticip }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [natGateway]
+              properties:
+                natGateway:
+                  type: string
+                  description: "The kind: NatGateway that hosts this address."
+                externalNetwork:
+                  type: string
+                  default: ovn-vpc-external-network
+                  description: "The external network the address is drawn from. Must match the gateway's. Defaults to ovn-vpc-external-network."
+                address:
+                  type: string
+                  description: "A specific public IP from the external network's range. Omit to auto-allocate."
+                target:
+                  type: string
+                  description: "The private IP of the workload to associate this address with. Omit for an unassociated (allocated-only) EIP. The target MUST sit on a PUBLIC kind: Subnet (private: false) — a DNAT/FIP preserves the client source IP, so a private subnet's OVN isolation drops the external-sourced ingress before it reaches the target (the AWS model: internet-facing instances live in a public subnet). Verified 2026-09-06."
+                mode:
+                  type: string
+                  enum: [fip, dnat]
+                  default: fip
+                  description: "Association mode when `target` is set: `fip` (1:1 whole-IP, bidirectional) or `dnat` (per-port, needs `ports`)."
+                ports:
+                  type: array
+                  description: "For mode=dnat: the port forwards from this address to `target`."
+                  items:
+                    type: object
+                    required: [external, internal]
+                    properties:
+                      external: { type: string, description: "Public-facing port." }
+                      internal: { type: string, description: "Target port on the workload." }
+                      protocol: { type: string, enum: [tcp, udp], default: tcp }
+            status:
+              type: object
+              properties:
+                ready: { type: boolean }
+                address: { type: string }
