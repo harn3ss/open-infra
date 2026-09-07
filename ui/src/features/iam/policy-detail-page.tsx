@@ -14,10 +14,11 @@ import { CopyButton } from "@/components/common/copy-button";
 import { DangerZone } from "@/components/common/danger-zone";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { deleteIamPolicy, getIamPolicy, listIamRoles } from "@/lib/api";
+import { deleteIamPolicy, getIamPolicy, listIamRoles, updateIamPolicyTags } from "@/lib/api";
 import { PermissionsSummary } from "./policy-editor/permissions-summary";
 import { policyType, type PolicyTypeLabel } from "./policy-type";
 import { PendingTab } from "./pending-notice";
+import { TagsTab } from "./tags-tab";
 import { cn } from "@/lib/utils";
 
 const TYPE_TONE: Record<PolicyTypeLabel, "default" | "accent" | "secondary"> = {
@@ -281,13 +282,14 @@ export function PolicyDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* Tags — backend-blocked (the policy view carries no labels/annotations yet). */}
+        {/* Tags — free-form key/value pairs, stored as openinfra.dev/tag-* annotations on the Policy. */}
         <TabsContent value="tags" className="pt-4">
-          <PendingTab title="Tags">
-            Tags are not yet surfaced for policies. The IAM policy view carries no labels or
-            annotations today, so there is nothing to show or edit here. When the BFF exposes them,
-            this tab wires the shared tag editor (add/remove key–value rows).
-          </PendingTab>
+          <TagsTab
+            tags={policy.tags ?? {}}
+            resourceLabel="policy"
+            save={(tags) => updateIamPolicyTags(name, tags)}
+            onSaved={() => void qc.invalidateQueries({ queryKey: ["iam", "policy", name] })}
+          />
         </TabsContent>
 
         {/* Policy versions — backend-blocked (CR generations/revisions not exposed yet). */}

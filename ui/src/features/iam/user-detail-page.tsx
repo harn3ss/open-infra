@@ -21,11 +21,13 @@ import {
   listIamGroups,
   resetIamPassword,
   updateIamUser,
+  updateIamUserTags,
 } from "@/lib/api";
 import { GroupPicker } from "./group-picker";
 import { UserPermissionsTab } from "./user-permissions-tab";
 import { PendingTab } from "./pending-notice";
 import { AccessKeysPanel } from "./access-keys-panel";
+import { TagsTab } from "./tags-tab";
 
 export function UserDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -232,13 +234,14 @@ export function UserDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* Tags — backend-blocked (the user view carries no labels/annotations yet). */}
+        {/* Tags — free-form key/value pairs, stored as openinfra.dev/tag-* annotations on the User. */}
         <TabsContent value="tags" className="pt-4">
-          <PendingTab title="Tags">
-            Tags are not yet surfaced for users. The IAM user view (<code>iamUserView</code>) does not
-            carry labels or annotations today, so there is nothing to show or edit here. When the BFF
-            exposes them, this tab wires the shared tag editor (add/remove key–value rows).
-          </PendingTab>
+          <TagsTab
+            tags={user.tags ?? {}}
+            resourceLabel="user"
+            save={(tags) => updateIamUserTags(name, tags)}
+            onSaved={invalidateUser}
+          />
         </TabsContent>
 
         <TabsContent value="security" className="space-y-4 pt-4">

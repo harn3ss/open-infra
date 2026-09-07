@@ -791,6 +791,8 @@ export interface IamUser {
   hasPassword: boolean;
   /** Groups that will NOT take effect because they're outside the impersonation ceiling. */
   unboundGroups: string[];
+  /** Free-form key/value tags (the AWS Tags tab). Always a map (never null) from the BFF. */
+  tags: Record<string, string>;
 }
 
 /** A permission group (kind: Group). */
@@ -992,6 +994,8 @@ export interface IamPolicy {
   clusterRole: string;
   ruleCount: number;
   ready: boolean;
+  /** Free-form key/value tags (the AWS Tags tab). Always a map (never null) from the BFF. */
+  tags: Record<string, string>;
 }
 
 export interface IamRole {
@@ -1005,6 +1009,8 @@ export interface IamRole {
   trust?: string[];
   clusterRole: string;
   ready: boolean;
+  /** Free-form key/value tags (the AWS Tags tab). Always a map (never null) from the BFF. */
+  tags: Record<string, string>;
 }
 
 export function listIamPolicies(): Promise<IamPolicy[]> {
@@ -1075,6 +1081,43 @@ export function updateIamRole(
 export function deleteIamRole(name: string, force = false): Promise<{ name: string }> {
   return request(`/iam/roles/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
     method: "DELETE",
+  });
+}
+
+/* ------------------------------ IAM tags (the AWS "Tags" tab) ------------------------------ */
+// Free-form key/value tags on a User / Role / Policy. Read back on the resource view (`tags`), and
+// SET here with a PUT that REPLACES the whole set (add/change/remove in one call — the tag editor's
+// Save). Backed by openinfra.dev/tag-* annotations on the CR; the prefix is a BFF implementation
+// detail, so these helpers speak clean keys. Same admin SAR gate as the resource's other writes.
+// Groups deliberately have no tags endpoint — AWS IAM groups don't carry tags.
+
+export function updateIamUserTags(
+  name: string,
+  tags: Record<string, string>,
+): Promise<{ name: string }> {
+  return request(`/iam/users/${encodeURIComponent(name)}/tags`, {
+    method: "PUT",
+    body: JSON.stringify({ tags }),
+  });
+}
+
+export function updateIamRoleTags(
+  name: string,
+  tags: Record<string, string>,
+): Promise<{ name: string }> {
+  return request(`/iam/roles/${encodeURIComponent(name)}/tags`, {
+    method: "PUT",
+    body: JSON.stringify({ tags }),
+  });
+}
+
+export function updateIamPolicyTags(
+  name: string,
+  tags: Record<string, string>,
+): Promise<{ name: string }> {
+  return request(`/iam/policies/${encodeURIComponent(name)}/tags`, {
+    method: "PUT",
+    body: JSON.stringify({ tags }),
   });
 }
 
