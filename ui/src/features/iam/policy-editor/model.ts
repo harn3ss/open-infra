@@ -220,6 +220,48 @@ export function modelToJson(model: PolicyModel): string {
   return JSON.stringify(modelToDoc(model), null, 2);
 }
 
+/**
+ * Merge an imported policy document into the model the user is authoring — the AWS "Actions → Import
+ * policy" behaviour, which APPENDS the imported statements rather than replacing the draft.
+ *
+ * - Control plane: verbs are unioned per resource (an imported resource already present gains the new
+ *   verbs; a new resource is appended). In-progress empty rows the user was editing are preserved.
+ * - Data plane: the imported blocks are appended (docToModel gives each a fresh id).
+ * - appliesTo: unioned; the "*" catch-all is dropped once any specific principal is present.
+ * - The draft's name/description and any hand-authored controlPlane block are left untouched.
+ */
+export function mergeImportedDoc(base: PolicyModel, doc: PolicyDoc): PolicyModel {
+  const incoming = docToModel(doc);
+
+  const controlRows: PermRow[] = base.controlRows.map((r) => ({ ...r, verbs: [...r.verbs] }));
+  for (const inc of incoming.controlRows) {
+    if (!inc.resource) continue;
+    const existing = controlRows.find((r) => r.resource === inc.resource);
+    if (existing) {
+      const set = new Set(existing.verbs);
+      for (const v of inc.verbs) set.add(v);
+      existing.verbs = [...set];
+    } else {
+      controlRows.push({ resource: inc.resource, verbs: [...inc.verbs] });
+    }
+  }
+
+  const dataBlocks = [...base.dataBlocks, ...incoming.dataBlocks];
+
+  const merged = new Set<string>([...base.appliesTo, ...incoming.appliesTo]);
+  let appliesTo = [...merged];
+  if (appliesTo.some((p) => p !== "*")) appliesTo = appliesTo.filter((p) => p !== "*");
+  if (appliesTo.length === 0) appliesTo = ["*"];
+
+  return {
+    description: base.description,
+    controlRows,
+    dataBlocks,
+    appliesTo,
+    controlPlane: base.controlPlane ?? incoming.controlPlane,
+  };
+}
+
 /** True when the policy authors no permission on either plane (would grant nothing). */
 export function isEmptyModel(model: PolicyModel): boolean {
   const doc = modelToDoc(model);
