@@ -9,8 +9,10 @@
 # maps rather than riding an empty data-only Application.
 #
 # NOT modelled here: server-side encryption (that is the opt-in objectEncryption stack — SSE-KMS via
-# KES->Vault, applied at the MinIO-tenant level, see docs/object-encryption.md), bucket policies,
-# website hosting, CORS, replication, and object lock.
+# KES->Vault, applied at the MinIO-tenant level, see docs/object-encryption.md), website hosting,
+# replication, and CORS. Per-bucket CORS is a documented MinIO ceiling: MinIO rejects the S3
+# PutBucketCors call (MalformedXML) and does CORS globally via MINIO_API_CORS_ALLOW_ORIGIN, not per
+# bucket. Object Lock and bucket POLICIES are modelled (objectLock / policy below).
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -81,6 +83,11 @@ spec:
                     years:
                       type: integer
                       description: "Default retention period in years (mutually exclusive with days)."
+                policy:
+                  type: string
+                  description: >-
+                    An S3/MinIO bucket-policy JSON document applied verbatim via put-bucket-policy.
+                    Principals must be `*` (public); AWS-IAM-ARN principals do not resolve on MinIO.
             status:
               type: object
               properties:
