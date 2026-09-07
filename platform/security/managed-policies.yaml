@@ -1,0 +1,776 @@
+# open-infra's out-of-the-box MANAGED-POLICY LIBRARY — the equivalent of AWS's managed
+# policies (the ready-made documents you tick to attach to a Role or a principal). Each is a
+# `kind: Policy` (iam.openinfra.dev/v1) shipped by the platform, grounded in open-infra's REAL
+# permissions:
+#
+#   * Control plane  — RBAC verbs (Get/List/Watch/Create/Update/Patch/Delete or *) on
+#     openinfra.dev kinds. spec.statements compile to a labelled ClusterRole. A Policy can
+#     ONLY name the 31 openinfra.dev resources in the permission boundary
+#     (platform/abstraction/policy-boundary.yaml); anything else is DROPPED by the
+#     composition, so every action below stays inside that whitelist.
+#   * Data plane     — Cedar authorization at the aws-shim front doors. Only three services
+#     are governed: s3 (Bucket), dynamodb (Table), lambda (Function). Actions come from
+#     ui/src/lib/iam-cedar-vocab.ts. dataPlane.appliesTo is intentionally OMITTED: these are
+#     ATTACHABLE (managed-axis) policies — the grant takes effect only when a Role/User names
+#     the Policy in its spec.policies, never inline-to-everyone.
+#
+# COORDINATING CONVENTION (with the console agent):
+#   label  openinfra.dev/managed-policy: "true"   → the console marks these read-only / "Managed"
+#   label  openinfra.dev/policy-category: job-function | service
+#   annot. openinfra.dev/title / spec.description  → human labels shown in the console
+#
+# HONEST SCOPE — a `kind: Policy` is bounded to the openinfra.dev PRODUCT surface. It CANNOT
+# grant on iam.openinfra.dev (users/groups/policies/roles/grants) or on the excluded
+# governance kinds (certificateauthorities, encryptionkeys, destructions, dataclassifications,
+# userpools) — those live outside every Policy's boundary by design. So the ceiling here is
+# "full control of the product surface", not cluster-admin: genuine identity/governance
+# administration comes from the built-in openinfra:admin group / root break-glass, which no
+# attachable policy can confer. See private/iam-ux/managed-policy-library.md for the full
+# AWS -> open-infra mapping and the deliberate gaps.
+#
+# GitOps: raw claim-kind manifests applied by the root app-of-apps. Each carries
+# SkipDryRunOnMissingResource=true (the policy CRD is established by the abstraction area at an
+# earlier sync-wave) and sync-wave "4" so it lands after the XRD (2) and composition (3). They
+# are created in the open-infra-console namespace — the namespace the console BFF reads IAM
+# claims from (consoleNamespace()), so the library shows up in the IAM > Policies view.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# JOB-FUNCTION POLICIES
+# ─────────────────────────────────────────────────────────────────────────────────────────
+---
+# AdministratorAccess — the ceiling a kind: Policy can express: every verb on every
+# openinfra.dev product kind + every data-plane action on every service. Does NOT include
+# identity/governance administration (structurally out of boundary — see header).
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: administrator-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  annotations:
+    openinfra.dev/title: Administrator Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of the entire open-infra product surface (all openinfra.dev kinds, all verbs)
+    plus full data-plane access to S3, DynamoDB and Lambda. Does not confer identity or
+    governance administration — those are outside every managed policy's permission boundary.
+  statements:
+    - effect: Allow
+      actions: ["*:*"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["*"]
+        resources: ["*"]
+---
+# PowerUserAccess — full use of every product kind and every data service, EXCEPT launching
+# fault injection (chaos, a CM-7-gated safety control), which is read-only. AWS PowerUser's own
+# carve-out (IAM/Organizations/Account) is already structural here, so this adds the one
+# in-boundary safety carve-out a Policy can express. Enumerated, not "*", because RBAC is
+# additive-only and cannot subtract a kind from a wildcard.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: power-user-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  annotations:
+    openinfra.dev/title: Power User Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full access to all open-infra resources and data services for building and operating
+    workloads, but cannot launch fault-injection (chaos) experiments — those stay read-only.
+    Identity and governance administration remain out of boundary.
+  statements:
+    - effect: Allow
+      actions:
+        - applications:*
+        - functions:*
+        - models:*
+        - virtualmachines:*
+        - vmimages:*
+        - volumes:*
+        - fileshares:*
+        - directories:*
+        - migrations:*
+        - replications:*
+        - dataflows:*
+        - streams:*
+        - securitygroups:*
+        - queries:*
+        - httpapis:*
+        - graphqlapis:*
+        - databaseproxies:*
+        - statemachines:*
+        - trainingjobs:*
+        - modelpackages:*
+        - batchtransforms:*
+        - processingjobs:*
+        - modelmonitors:*
+        - featuregroups:*
+        - staticsites:*
+        - parameters:*
+        - emailsenders:*
+        - tables:*
+        - buckets:*
+        - queues:*
+      resources: ["*"]
+    - effect: Allow
+      actions: ["faultinjections:Get", "faultinjections:List", "faultinjections:Watch"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["*"]
+        resources: ["*"]
+---
+# ReadOnlyAccess — Get/List/Watch on every openinfra.dev kind + the read/list data-plane
+# actions on S3 and DynamoDB. (Lambda's only enforced action is InvokeFunction, a write, so
+# it contributes nothing to a read-only policy.)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: read-only-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  annotations:
+    openinfra.dev/title: Read Only Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility across the whole platform: Get/List/Watch on every openinfra.dev kind,
+    plus read and list actions on S3 objects/buckets and DynamoDB items/tables.
+  statements:
+    - effect: Allow
+      actions: ["*:Get", "*:List", "*:Watch"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions:
+          - s3:GetObject
+          - s3:ListBucket
+          - s3:ListAllMyBuckets
+          - dynamodb:GetItem
+          - dynamodb:BatchGetItem
+          - dynamodb:Query
+          - dynamodb:Scan
+          - dynamodb:TransactGetItems
+          - dynamodb:DescribeTable
+          - dynamodb:DescribeTimeToLive
+          - dynamodb:ListTables
+        resources: ["*"]
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# PER-SERVICE POLICIES — Full / ReadOnly for the highest-value service groups
+# ─────────────────────────────────────────────────────────────────────────────────────────
+---
+# S3 (Buckets) — full. AWS analog: AmazonS3FullAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: bucket-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Bucket Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of object-storage buckets: manage the Bucket resource and read/write/delete
+    objects through the S3 front door.
+  statements:
+    - effect: Allow
+      actions: ["buckets:*"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["s3:*"]
+        resources: ["*"]
+---
+# S3 (Buckets) — read only. AWS analog: AmazonS3ReadOnlyAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: bucket-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Bucket Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only access to object-storage buckets: view Bucket resources and get/list objects
+    through the S3 front door.
+  statements:
+    - effect: Allow
+      actions: ["buckets:Get", "buckets:List", "buckets:Watch"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["s3:GetObject", "s3:ListBucket", "s3:ListAllMyBuckets"]
+        resources: ["*"]
+---
+# DynamoDB (Tables) — full. AWS analog: AmazonDynamoDBFullAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: table-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Table Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of NoSQL tables: manage the Table resource and read/write items through the
+    DynamoDB front door.
+  statements:
+    - effect: Allow
+      actions: ["tables:*"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["dynamodb:*"]
+        resources: ["*"]
+---
+# DynamoDB (Tables) — read only. AWS analog: AmazonDynamoDBReadOnlyAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: table-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Table Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only access to NoSQL tables: view Table resources and get/query/scan items through the
+    DynamoDB front door.
+  statements:
+    - effect: Allow
+      actions: ["tables:Get", "tables:List", "tables:Watch"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions:
+          - dynamodb:GetItem
+          - dynamodb:BatchGetItem
+          - dynamodb:Query
+          - dynamodb:Scan
+          - dynamodb:TransactGetItems
+          - dynamodb:DescribeTable
+          - dynamodb:DescribeTimeToLive
+          - dynamodb:ListTables
+        resources: ["*"]
+---
+# Lambda (Functions) — full. AWS analog: AWSLambda_FullAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: function-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Function Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of serverless functions: manage the Function resource and invoke functions
+    through the Lambda front door.
+  statements:
+    - effect: Allow
+      actions: ["functions:*"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["lambda:*"]
+        resources: ["*"]
+---
+# Lambda (Functions) — invoke only. AWS analog: the invoke half of AWSLambdaRole. Control-plane
+# read so callers can discover functions; data-plane InvokeFunction to call them.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: function-invoke
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Function Invoke
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Invoke serverless functions (and view them), without permission to create, modify or delete
+    them.
+  statements:
+    - effect: Allow
+      actions: ["functions:Get", "functions:List", "functions:Watch"]
+      resources: ["*"]
+  dataPlane:
+    statements:
+      - effect: Allow
+        actions: ["lambda:InvokeFunction"]
+        resources: ["*"]
+---
+# Compute / VMs — full. AWS analog: AmazonEC2FullAccess. Covers VMs, their images, and volumes.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: vm-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Virtual Machine Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of virtual machines, their boot images (VM Images) and attachable block
+    volumes.
+  statements:
+    - effect: Allow
+      actions: ["virtualmachines:*", "vmimages:*", "volumes:*"]
+      resources: ["*"]
+---
+# Compute / VMs — read only. AWS analog: AmazonEC2ReadOnlyAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: vm-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Virtual Machine Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of virtual machines, VM images and block volumes.
+  statements:
+    - effect: Allow
+      actions:
+        - virtualmachines:Get
+        - virtualmachines:List
+        - virtualmachines:Watch
+        - vmimages:Get
+        - vmimages:List
+        - vmimages:Watch
+        - volumes:Get
+        - volumes:List
+        - volumes:Watch
+      resources: ["*"]
+---
+# Block/file storage — full. AWS analog: a merged AmazonEBS + AmazonEFS full access. Covers
+# block Volumes and FileShares.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: storage-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Storage Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of block volumes and shared file systems (FileShares).
+  statements:
+    - effect: Allow
+      actions: ["volumes:*", "fileshares:*"]
+      resources: ["*"]
+---
+# Block/file storage — read only.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: storage-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Storage Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of block volumes and shared file systems.
+  statements:
+    - effect: Allow
+      actions:
+        - volumes:Get
+        - volumes:List
+        - volumes:Watch
+        - fileshares:Get
+        - fileshares:List
+        - fileshares:Watch
+      resources: ["*"]
+---
+# Queues (SQS) — full. AWS analog: AmazonSQSFullAccess. Control-plane only: there is no SQS
+# data-plane front door in the aws-shim, so queue message operations are not Cedar-governed.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: queue-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Queue Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of message queues (create, configure and delete Queue resources).
+  statements:
+    - effect: Allow
+      actions: ["queues:*"]
+      resources: ["*"]
+---
+# Queues (SQS) — read only. AWS analog: AmazonSQSReadOnlyAccess.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: queue-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Queue Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of message queues.
+  statements:
+    - effect: Allow
+      actions: ["queues:Get", "queues:List", "queues:Watch"]
+      resources: ["*"]
+---
+# ML / SageMaker — full. AWS analog: AmazonSageMakerFullAccess. Covers the full ML surface:
+# Models, Model Packages, Training Jobs, Batch Transforms, Processing Jobs, Model Monitors and
+# Feature Groups. (Hyperparameter tuning jobs are not in the permission boundary; see the doc.)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: ml-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Machine Learning Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of the machine-learning surface: models, model packages, training jobs, batch
+    transforms, processing jobs, model monitors and feature groups.
+  statements:
+    - effect: Allow
+      actions:
+        - models:*
+        - modelpackages:*
+        - trainingjobs:*
+        - batchtransforms:*
+        - processingjobs:*
+        - modelmonitors:*
+        - featuregroups:*
+      resources: ["*"]
+---
+# ML / SageMaker — read only. AWS analog: AmazonSageMakerReadOnly.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: ml-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Machine Learning Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of the machine-learning surface: models, model packages, training
+    jobs, batch transforms, processing jobs, model monitors and feature groups.
+  statements:
+    - effect: Allow
+      actions:
+        - models:Get
+        - models:List
+        - models:Watch
+        - modelpackages:Get
+        - modelpackages:List
+        - modelpackages:Watch
+        - trainingjobs:Get
+        - trainingjobs:List
+        - trainingjobs:Watch
+        - batchtransforms:Get
+        - batchtransforms:List
+        - batchtransforms:Watch
+        - processingjobs:Get
+        - processingjobs:List
+        - processingjobs:Watch
+        - modelmonitors:Get
+        - modelmonitors:List
+        - modelmonitors:Watch
+        - featuregroups:Get
+        - featuregroups:List
+        - featuregroups:Watch
+      resources: ["*"]
+---
+# Database / data tier — full. AWS analog: a merged database + DMS admin (AmazonRDSFullAccess +
+# AWSDatabaseMigrationServiceFullAccess). Covers database proxies, migrations, replications,
+# dataflows and streams. NOTE: open-infra has no standalone kind: Database — a managed database
+# INSTANCE is provisioned as a facet of kind: Application, so instance lifecycle needs
+# application-full-access (or administrator-access). See the mapping doc.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: database-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Database Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of the managed-data tier: database proxies, migrations, replications,
+    dataflows and streams. Database instances themselves are provisioned via Application.
+  statements:
+    - effect: Allow
+      actions:
+        - databaseproxies:*
+        - migrations:*
+        - replications:*
+        - dataflows:*
+        - streams:*
+      resources: ["*"]
+---
+# Database / data tier — read only.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: database-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Database Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of the managed-data tier: database proxies, migrations, replications,
+    dataflows and streams.
+  statements:
+    - effect: Allow
+      actions:
+        - databaseproxies:Get
+        - databaseproxies:List
+        - databaseproxies:Watch
+        - migrations:Get
+        - migrations:List
+        - migrations:Watch
+        - replications:Get
+        - replications:List
+        - replications:Watch
+        - dataflows:Get
+        - dataflows:List
+        - dataflows:Watch
+        - streams:Get
+        - streams:List
+        - streams:Watch
+      resources: ["*"]
+---
+# Networking — full. AWS analog: (a subset of) AmazonVPCFullAccess. NOTE: the only networking
+# kind inside the permission boundary today is securitygroups (the EC2 Security Group analog).
+# The kube-ovn VPC family (vpcs/subnets/natgateways/elasticips/transitgateways/flowlogs) is not
+# yet in the boundary, so it cannot be granted via a managed policy — see the mapping doc.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: networking-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Networking Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of security groups (the network firewall surface). VPC/subnet/gateway
+    management is not yet grantable via a managed policy.
+  statements:
+    - effect: Allow
+      actions: ["securitygroups:*"]
+      resources: ["*"]
+---
+# Networking — read only.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: networking-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Networking Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of security groups.
+  statements:
+    - effect: Allow
+      actions: ["securitygroups:Get", "securitygroups:List", "securitygroups:Watch"]
+      resources: ["*"]
+---
+# Applications — full. AWS analog: AWSElasticBeanstalkFullAccess (the general "deploy an app"
+# service). This is broad: databases, queues and buckets are facets of an Application, so full
+# Application access implies the ability to provision them as part of a workload.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: application-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Application Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of Applications — the core PaaS workload kind (which can itself declare
+    databases, queues and buckets as part of a workload).
+  statements:
+    - effect: Allow
+      actions: ["applications:*"]
+      resources: ["*"]
+---
+# Applications — read only.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: application-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: Application Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of Applications.
+  statements:
+    - effect: Allow
+      actions: ["applications:Get", "applications:List", "applications:Watch"]
+      resources: ["*"]
+---
+# APIs — full. AWS analog: a merged AmazonAPIGatewayAdministrator + AWSAppSyncAdministrator.
+# Covers HTTP APIs (API Gateway) and GraphQL APIs (AppSync). NOTE: the AppSync DATA plane is
+# governed by GraphQL auth modes (@aws_iam / API key / Cognito / OIDC / Lambda authorizer), not
+# by a kind: Policy dataPlane block, so there is no "appsync:*" data-plane action to grant here.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: api-full-access
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: API Full Access
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Full control of HTTP APIs (API Gateway) and GraphQL APIs (AppSync).
+  statements:
+    - effect: Allow
+      actions: ["httpapis:*", "graphqlapis:*"]
+      resources: ["*"]
+---
+# APIs — read only.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: api-read-only
+  namespace: open-infra-console
+  labels:
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  annotations:
+    openinfra.dev/title: API Read Only
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  description: >-
+    Read-only visibility of HTTP APIs and GraphQL APIs.
+  statements:
+    - effect: Allow
+      actions:
+        - httpapis:Get
+        - httpapis:List
+        - httpapis:Watch
+        - graphqlapis:Get
+        - graphqlapis:List
+        - graphqlapis:Watch
+      resources: ["*"]
