@@ -55,6 +55,27 @@ import { CreateStreamPage } from "@/features/streams/create-stream-page";
 import { CreateMigrationPage } from "@/features/migrations/create-migration-page";
 import { CreateReplicationPage } from "@/features/migrations/create-replication-page";
 import { VolumesPage } from "@/features/volumes/volumes-page";
+import { TablesPage } from "@/features/tables/tables-page";
+import { TableDetailPage } from "@/features/tables/table-detail-page";
+import { CreateTablePage } from "@/features/tables/create-table-page";
+import { HttpApisPage } from "@/features/httpapi/httpapis-page";
+import { HttpApiDetailPage } from "@/features/httpapi/httpapi-detail-page";
+import { CreateHttpApiPage } from "@/features/httpapi/create-httpapi-page";
+import { UserPoolsPage } from "@/features/userpool/userpools-page";
+import { UserPoolDetailPage } from "@/features/userpool/userpool-detail-page";
+import { CreateUserPoolPage } from "@/features/userpool/create-userpool-page";
+import { StaticSitesPage } from "@/features/staticsites/staticsites-page";
+import { StaticSiteDetailPage } from "@/features/staticsites/staticsite-detail-page";
+import { CreateStaticSitePage } from "@/features/staticsites/create-staticsite-page";
+import { EmailSendersPage } from "@/features/emailsenders/emailsenders-page";
+import { EmailSenderDetailPage } from "@/features/emailsenders/emailsender-detail-page";
+import { CreateEmailSenderPage } from "@/features/emailsenders/create-emailsender-page";
+import { DatabaseProxiesPage } from "@/features/databaseproxies/databaseproxies-page";
+import { DatabaseProxyDetailPage } from "@/features/databaseproxies/databaseproxy-detail-page";
+import { CreateDatabaseProxyPage } from "@/features/databaseproxies/create-databaseproxy-page";
+import { ParametersPage } from "@/features/parameters/parameters-page";
+import { ParameterDetailPage } from "@/features/parameters/parameter-detail-page";
+import { CreateParameterPage } from "@/features/parameters/create-parameter-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
 import { DirectoriesPage } from "@/features/directories/directories-page";
 import { QueriesPage } from "@/features/queries/queries-page";
@@ -84,10 +105,8 @@ import { CreateTransitGatewayPage } from "@/features/networking/create-transitga
 import { FlowLogsPage } from "@/features/networking/flowlogs-page";
 import { FlowLogDetailPage } from "@/features/networking/flowlog-detail-page";
 import { CreateFlowLogPage } from "@/features/networking/create-flowlog-page";
-import {
-  StreamDetailPage,
-  FaultInjectionDetailPage,
-} from "@/features/detail/simple-detail-pages";
+import { FaultInjectionDetailPage } from "@/features/detail/simple-detail-pages";
+import { StreamDetailPage } from "@/features/streams/stream-detail-page";
 import { VolumeDetailPage } from "@/features/volumes/volume-detail-page";
 import { FileShareDetailPage } from "@/features/fileshares/fileshare-detail-page";
 import { DirectoryDetailPage } from "@/features/directories/directory-detail-page";
@@ -105,6 +124,7 @@ import { ManagedDatabaseDetailPage } from "@/features/databases/managed-detail-p
 import { QueueDetailPage } from "@/features/queues/queue-detail-page";
 import { BucketsPage } from "@/features/buckets/buckets-page";
 import { BucketDetailPage } from "@/features/buckets/bucket-detail-page";
+import { CreateBucketPage } from "@/features/buckets/create-bucket-page";
 import { QueuesPage } from "@/features/queues/queues-page";
 import { WorkloadsPage } from "@/features/workloads/workloads-page";
 import { NodesPage } from "@/features/nodes/nodes-page";
@@ -325,6 +345,44 @@ const volumeDetailRoute = createRoute({
   path: "/volumes/$namespace/$name",
   component: VolumeDetailPage,
 });
+
+const tablesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/tables",
+  component: TablesPage,
+});
+// Static "/new" — matched before the "$namespace/$name" detail route.
+const tableCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/tables/new",
+  component: CreateTablePage,
+});
+const tableDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/tables/$namespace/$name",
+  component: TableDetailPage,
+});
+
+// Wave-2 console units. Each: list, static "/new" (before the "$namespace/$name"
+// detail route), detail.
+const httpApisRoute = createRoute({ getParentRoute: () => rootRoute, path: "/http-apis", component: HttpApisPage });
+const httpApiCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/http-apis/new", component: CreateHttpApiPage });
+const httpApiDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/http-apis/$namespace/$name", component: HttpApiDetailPage });
+const userPoolsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/user-pools", component: UserPoolsPage });
+const userPoolCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/user-pools/new", component: CreateUserPoolPage });
+const userPoolDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/user-pools/$namespace/$name", component: UserPoolDetailPage });
+const staticSitesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/staticsites", component: StaticSitesPage });
+const staticSiteCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/staticsites/new", component: CreateStaticSitePage });
+const staticSiteDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/staticsites/$namespace/$name", component: StaticSiteDetailPage });
+const emailSendersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/emailsenders", component: EmailSendersPage });
+const emailSenderCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/emailsenders/new", component: CreateEmailSenderPage });
+const emailSenderDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/emailsenders/$namespace/$name", component: EmailSenderDetailPage });
+const databaseProxiesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/database-proxies", component: DatabaseProxiesPage });
+const databaseProxyCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/database-proxies/new", component: CreateDatabaseProxyPage });
+const databaseProxyDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/database-proxies/$namespace/$name", component: DatabaseProxyDetailPage });
+const parametersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/parameters", component: ParametersPage });
+const parameterCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/parameters/new", component: CreateParameterPage });
+const parameterDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/parameters/$namespace/$name", component: ParameterDetailPage });
 const fileShareDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/fileshares/$namespace/$name",
@@ -473,6 +531,13 @@ const bucketsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/buckets",
   component: BucketsPage,
+});
+
+// Static "/new" — matched before the "/buckets/$bucket" detail route.
+const bucketCreateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/buckets/new",
+  component: CreateBucketPage,
 });
 
 const bucketDetailRoute = createRoute({
@@ -712,6 +777,27 @@ const routeTree = rootRoute.addChildren([
   featuregroupDetailRoute,
   volumesRoute,
   volumeDetailRoute,
+  tablesRoute,
+  tableCreateRoute,
+  tableDetailRoute,
+  httpApisRoute,
+  httpApiCreateRoute,
+  httpApiDetailRoute,
+  userPoolsRoute,
+  userPoolCreateRoute,
+  userPoolDetailRoute,
+  staticSitesRoute,
+  staticSiteCreateRoute,
+  staticSiteDetailRoute,
+  emailSendersRoute,
+  emailSenderCreateRoute,
+  emailSenderDetailRoute,
+  databaseProxiesRoute,
+  databaseProxyCreateRoute,
+  databaseProxyDetailRoute,
+  parametersRoute,
+  parameterCreateRoute,
+  parameterDetailRoute,
   fileSharesRoute,
   fileShareDetailRoute,
   directoriesRoute,
@@ -758,6 +844,7 @@ const routeTree = rootRoute.addChildren([
   databaseDetailRoute,
   managedDbDetailRoute,
   bucketsRoute,
+  bucketCreateRoute,
   bucketDetailRoute,
   queuesRoute,
   queueDetailRoute,

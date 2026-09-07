@@ -221,6 +221,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 			Post("/graphqlapis/{namespace}/{name}/test-resolver", handleGraphQLTestResolver(*client.Clientset, logger))
 		api.With(middleware.Timeout(10*time.Second)).
 			Post("/queues/publish", handleQueuePublish(logger))
+		api.With(middleware.Timeout(10*time.Second)).
+			Get("/queues/{stream}/messages", handleQueuePeek(logger))
 		api.With(middleware.Timeout(15*time.Second)).
 			Post("/queues/{stream}/purge", handleQueuePurge(logger))
 

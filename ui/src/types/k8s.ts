@@ -1057,3 +1057,203 @@ export const CNPG_GROUP = "postgresql.cnpg.io";
 export const CNPG_VERSION = "v1";
 export const CNPG_CLUSTERS_PLURAL = "clusters";
 export const APPLICATIONS_CRD_NAME = "applications.openinfra.dev";
+
+/* ========================================================================== *
+ * Wave 2 — AWS-console-mimicry kinds (no console UI yet).                     *
+ * Types + REST path builders only; pages are separate build units.           *
+ * ========================================================================== */
+
+/* ---------------- open-infra HttpApi CRD (API Gateway) -------------------- */
+// A hostname with path routes onto Function/Application backends (one Traefik
+// Ingress + cert-manager TLS). Routes are order-sensitive (specific paths first).
+export interface HttpApiCors {
+  allowOrigins?: string[]; // Access-Control-Allow-Origin (default ["*"])
+  allowMethods?: string[]; // default [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+  allowHeaders?: string[]; // default ["*"]
+  allowCredentials?: boolean; // default false
+  maxAge?: number; // preflight cache seconds (default 600)
+}
+export interface HttpApiRateLimit {
+  average?: number; // sustained req/s (default 100)
+  burst?: number; // max burst above average (default 50)
+}
+export interface HttpApiJwtAuthorizer {
+  issuer: string; // OIDC issuer URL (e.g. a UserPool ISSUER_URL)
+  audience?: string[]; // accepted aud claims
+  required?: boolean; // reject requests without a valid token (default true)
+}
+export interface HttpApiAuthorizer {
+  jwt?: HttpApiJwtAuthorizer;
+}
+export interface HttpApiBackend {
+  kind?: "Function" | "Application"; // default Function
+  name: string; // backing Function/Application (same namespace)
+  port?: number; // backend Service port (default 80)
+}
+export type HttpApiMethod =
+  | "GET"
+  | "POST"
+  | "PUT"
+  | "PATCH"
+  | "DELETE"
+  | "HEAD"
+  | "OPTIONS";
+export interface HttpApiRoute {
+  path: string; // URL path to match, e.g. / or /users
+  pathType?: "Prefix" | "Exact" | "ImplementationSpecific"; // default Prefix
+  methods?: HttpApiMethod[]; // omit = accept all methods
+  backend: HttpApiBackend;
+}
+export interface HttpApiSpec {
+  domain: string; // hostname the API is served on
+  tls?: boolean; // cert-manager TLS (default true)
+  waf?: boolean; // in-cluster L7 WAF (Coraza/OWASP CRS) (default false)
+  cors?: HttpApiCors; // presence enables CORS
+  rateLimit?: HttpApiRateLimit; // presence enables throttling
+  authorizer?: HttpApiAuthorizer; // JWT authorizer (off unless set)
+  routes: HttpApiRoute[]; // >= 1, evaluated in order
+}
+export interface HttpApiStatus {
+  url?: string; // public URL (scheme + domain)
+  conditions?: Condition[];
+}
+export type HttpApi = K8sObject<HttpApiSpec, HttpApiStatus>;
+export const HTTPAPIS_PLURAL = "httpapis";
+export const HTTPAPIS_CRD_NAME = "httpapis.openinfra.dev";
+
+/* ---------------- open-infra StaticSite CRD (Amplify) --------------------- */
+// Frontend static hosting for a built SPA: a MinIO bucket + nginx (SPA
+// history-fallback) + Traefik Ingress w/ cert-manager TLS.
+export interface StaticSiteSpec {
+  domain: string; // hostname the site is served on
+  bucket?: string; // MinIO bucket for assets (default <name>-site)
+  tls?: boolean; // cert-manager TLS (default true)
+  spa?: boolean; // index.html history fallback (default true)
+  indexDocument?: string; // entry document (default index.html)
+  errorDocument?: string; // 404 document when spa is false
+  syncIntervalSeconds?: number; // bucket re-sync cadence (default 30)
+}
+export interface StaticSiteStatus {
+  url?: string;
+  bucket?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type StaticSite = K8sObject<StaticSiteSpec, StaticSiteStatus>;
+export const STATICSITES_PLURAL = "staticsites";
+export const STATICSITES_CRD_NAME = "staticsites.openinfra.dev";
+
+/* ---------------- open-infra UserPool CRD (Cognito) ----------------------- */
+// A managed customer-facing OIDC identity provider (Keycloak realm) that issues
+// tokens. Admin-gated. All spec fields optional (name-derived defaults).
+export interface UserPoolSpec {
+  storageClass?: string; // PV StorageClass (default longhorn)
+  realm?: string; // the pool/realm (default resource name)
+  clientId?: string; // OIDC app client (default openinfra)
+  hostname?: string; // external hosted-login/admin UI host (in-cluster only if omitted)
+  registrationAllowed?: boolean; // self-service sign-up (default true)
+  size?: string; // pool database storage (default 2Gi)
+}
+export interface UserPoolStatus {
+  issuer?: string; // OIDC issuer URL
+  realm?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type UserPool = K8sObject<UserPoolSpec, UserPoolStatus>;
+export const USERPOOLS_PLURAL = "userpools";
+export const USERPOOLS_CRD_NAME = "userpools.openinfra.dev";
+
+/* ---------------- open-infra Table CRD (DynamoDB) ------------------------- */
+// A DynamoDB-shaped key/value table registered on the aws-shim DynamoDB layer.
+// Key schema is IMMUTABLE (as in DynamoDB).
+export type TableKeyType = "S" | "N" | "B"; // string | number | binary
+export interface TableKey {
+  name: string; // attribute name
+  type: TableKeyType;
+}
+export interface TableGlobalSecondaryIndex {
+  name: string; // index name (the Query IndexName)
+  hashKey: TableKey; // index partition key
+  rangeKey?: TableKey; // index sort key (optional)
+}
+export interface TableSpec {
+  tableName?: string; // addressed table name (default claim name; immutable)
+  hashKey: TableKey; // partition (HASH) key (required; immutable)
+  rangeKey?: TableKey; // sort (RANGE) key (optional; immutable)
+  billingMode?: "PAY_PER_REQUEST" | "PROVISIONED"; // advisory (default PAY_PER_REQUEST)
+  ttlAttribute?: string; // epoch-seconds attr enforced by the shim reaper
+  globalSecondaryIndexes?: TableGlobalSecondaryIndex[];
+}
+export interface TableStatus {
+  tableName?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type Table = K8sObject<TableSpec, TableStatus>;
+export const TABLES_PLURAL = "tables";
+export const TABLES_CRD_NAME = "tables.openinfra.dev";
+
+/* ---------------- open-infra DatabaseProxy CRD (RDS Proxy) ---------------- */
+// A pooled, connection-bounded TDS endpoint in front of a managed
+// SQL-Server/Babelfish database (the RDS Proxy path).
+export interface DatabaseProxyTlsIssuerRef {
+  name: string;
+  kind?: "Issuer" | "ClusterIssuer"; // default ClusterIssuer
+}
+export interface DatabaseProxyTls {
+  terminate?: boolean; // enable client TLS termination (default false)
+  issuerRef?: DatabaseProxyTlsIssuerRef; // cert-manager (Cluster)Issuer for the serving cert
+  dnsNames?: string[]; // additional SANs for the serving cert
+}
+export interface DatabaseProxySpec {
+  targetDatabase: string; // managed database to pool in front of (required)
+  engineFamily?: "babelfish" | "sqlserver"; // backend wire family (default babelfish)
+  poolMax?: number; // max backend conns per credential key (default 20)
+  acquireTimeoutMs?: number; // wait for a backend at cap before failing (default 10000)
+  replicas?: number; // proxy Deployment replicas (default 1)
+  tls?: DatabaseProxyTls; // client TLS termination (off by default)
+}
+export interface DatabaseProxyStatus {
+  endpoint?: string; // in-cluster TDS endpoint clients connect to
+  conditions?: Condition[];
+}
+export type DatabaseProxy = K8sObject<DatabaseProxySpec, DatabaseProxyStatus>;
+export const DATABASEPROXIES_PLURAL = "databaseproxies";
+export const DATABASEPROXIES_CRD_NAME = "databaseproxies.openinfra.dev";
+
+/* ---------------- open-infra Parameter CRD (SSM Parameter Store) ---------- */
+// A hierarchical, optionally-encrypted parameter stored in Vault KV-v2 and
+// materialized into a per-namespace openinfra-parameters Secret.
+export interface ParameterSpec {
+  path: string; // hierarchical path, e.g. /app/db/host (required)
+  value: string; // the parameter value (required)
+  type?: "String" | "SecureString"; // default String
+  tier?: "Standard" | "Advanced"; // default Standard (advisory metadata)
+  expiresAt?: string; // RFC3339; swept after this time (SSM expiration policy)
+}
+export interface ParameterStatus {
+  path?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type Parameter = K8sObject<ParameterSpec, ParameterStatus>;
+export const PARAMETERS_PLURAL = "parameters";
+export const PARAMETERS_CRD_NAME = "parameters.openinfra.dev";
+
+/* ---------------- open-infra EmailSender CRD (SES) ------------------------ */
+// A transactional sending identity (a From address) + a <name>-smtp connection
+// secret injected into apps via spec.secrets -> envFrom.
+export interface EmailSenderSpec {
+  fromAddress: string; // the sending identity / From address (required)
+  fromName?: string; // optional display name for the From header
+}
+export interface EmailSenderStatus {
+  fromAddress?: string;
+  connectionSecret?: string; // the <name>-smtp secret name
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type EmailSender = K8sObject<EmailSenderSpec, EmailSenderStatus>;
+export const EMAILSENDERS_PLURAL = "emailsenders";
+export const EMAILSENDERS_CRD_NAME = "emailsenders.openinfra.dev";

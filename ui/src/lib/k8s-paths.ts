@@ -39,6 +39,13 @@ import {
   PROCESSINGJOBS_PLURAL,
   MODELMONITORS_PLURAL,
   FEATUREGROUPS_PLURAL,
+  HTTPAPIS_PLURAL,
+  STATICSITES_PLURAL,
+  USERPOOLS_PLURAL,
+  TABLES_PLURAL,
+  DATABASEPROXIES_PLURAL,
+  PARAMETERS_PLURAL,
+  EMAILSENDERS_PLURAL,
 } from "@/types/k8s";
 
 /**
@@ -175,6 +182,29 @@ export const openinfraPaths = {
   featuregroups: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FEATUREGROUPS_PLURAL}`,
   featuregroup: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${FEATUREGROUPS_PLURAL}/${name}`,
+  // Wave 2 — AWS-console-mimicry kinds (no console UI yet).
+  httpapis: (ns?: string) => `${oiGV}${nsSegment(ns)}/${HTTPAPIS_PLURAL}`,
+  httpapi: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${HTTPAPIS_PLURAL}/${name}`,
+  staticsites: (ns?: string) => `${oiGV}${nsSegment(ns)}/${STATICSITES_PLURAL}`,
+  staticsite: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${STATICSITES_PLURAL}/${name}`,
+  userpools: (ns?: string) => `${oiGV}${nsSegment(ns)}/${USERPOOLS_PLURAL}`,
+  userpool: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${USERPOOLS_PLURAL}/${name}`,
+  tables: (ns?: string) => `${oiGV}${nsSegment(ns)}/${TABLES_PLURAL}`,
+  table: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${TABLES_PLURAL}/${name}`,
+  databaseproxies: (ns?: string) =>
+    `${oiGV}${nsSegment(ns)}/${DATABASEPROXIES_PLURAL}`,
+  databaseproxy: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${DATABASEPROXIES_PLURAL}/${name}`,
+  parameters: (ns?: string) => `${oiGV}${nsSegment(ns)}/${PARAMETERS_PLURAL}`,
+  parameter: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${PARAMETERS_PLURAL}/${name}`,
+  emailsenders: (ns?: string) => `${oiGV}${nsSegment(ns)}/${EMAILSENDERS_PLURAL}`,
+  emailsender: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${EMAILSENDERS_PLURAL}/${name}`,
   // kind: CertificateAuthority (managed PKI, Vault-backed). Plural declared
   // locally — the CRD constants live in @/types/k8s, which this layer doesn't own.
   certificateauthorities: (ns?: string) =>

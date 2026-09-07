@@ -1,14 +1,15 @@
-import { useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useParams } from "@tanstack/react-router";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Repeat, ArrowRight } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { DetailRow } from "@/components/common/detail-row";
 import { YamlViewer } from "@/components/common/yaml-viewer";
+import { DangerZone } from "@/components/common/danger-zone";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { k8sGet, getReplicationStatus } from "@/lib/api";
+import { k8sDelete, k8sGet, getReplicationStatus } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { Replication, ReplicationEndpoint } from "@/types/k8s";
 import { type StatusTone } from "@/lib/format";
@@ -33,6 +34,7 @@ export function ReplicationDetailPage() {
     namespace: string;
     name: string;
   };
+  const navigate = useNavigate();
 
   const {
     data: repl,
@@ -44,6 +46,11 @@ export function ReplicationDetailPage() {
     queryKey: ["replication", namespace, name],
     queryFn: () => k8sGet<Replication>(openinfraPaths.replication(namespace, name)),
     refetchInterval: 10_000,
+  });
+
+  const del = useMutation({
+    mutationFn: () => k8sDelete(openinfraPaths.replication(namespace, name)),
+    onSuccess: () => navigate({ to: "/replications" }),
   });
 
   const a = repl?.spec?.siteA;
@@ -77,6 +84,7 @@ export function ReplicationDetailPage() {
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
         {/* Both directions, each its own pipeline. */}
@@ -126,6 +134,18 @@ export function ReplicationDetailPage() {
 
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={repl} />
+        </TabsContent>
+
+        <TabsContent value="danger" className="pt-4">
+          <DangerZone
+            resourceLabel="Replication"
+            resourceName={name}
+            deleting={del.isPending}
+            onConfirm={() => del.mutate()}
+            confirmDescription={
+              <>Permanently delete replication <span className="font-medium text-foreground">{name}</span> and tear down both directions of the pipeline. This cannot be undone.</>
+            }
+          />
         </TabsContent>
       </Tabs>
     </DetailShell>
