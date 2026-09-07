@@ -226,6 +226,34 @@ export const GRAPHQLAPI_CREATE: CreateKindSpec = {
   ],
 };
 
+export const TABLE_CREATE: CreateKindSpec = {
+  kind: "Table",
+  crdName: "tables.openinfra.dev",
+  description:
+    "A managed key/value table (DynamoDB-compatible), served by the aws-shim DynamoDB front door. Pick a partition key and (optionally) a sort key — the key schema is immutable once created.",
+  sections: [
+    { title: "Table details", fields: ["tableName", "hashKey", "rangeKey"] },
+    {
+      title: "Settings",
+      fields: ["billingMode", "ttlAttribute", "globalSecondaryIndexes"],
+      advanced: true,
+    },
+  ],
+  uiSchema: {
+    tableName: { "ui:placeholder": "defaults to the resource name" },
+    hashKey: { name: { "ui:placeholder": "e.g. pk" } },
+    rangeKey: { name: { "ui:placeholder": "e.g. sk (optional)" } },
+    ttlAttribute: { "ui:placeholder": "epoch-seconds attribute, e.g. expiresAt" },
+    globalSecondaryIndexes: {
+      items: {
+        name: { "ui:placeholder": "index name (the Query IndexName)" },
+        hashKey: { name: { "ui:placeholder": "index partition key" } },
+        rangeKey: { name: { "ui:placeholder": "index sort key (optional)" } },
+      },
+    },
+  },
+};
+
 export const VOLUME_CREATE: CreateKindSpec = {
   kind: "Volume",
   crdName: "volumes.openinfra.dev",
@@ -339,6 +367,24 @@ export const TRANSITGATEWAY_CREATE: CreateKindSpec = {
   },
 };
 
+export const USERPOOL_CREATE: CreateKindSpec = {
+  kind: "UserPool",
+  crdName: "userpools.openinfra.dev",
+  description:
+    "A customer-facing OIDC identity provider (AWS Cognito analog) — a Keycloak realm that issues tokens your applications sign in against. Expose an issuer + one app client; pair it with an HttpApi/GraphQLApi JWT authorizer.",
+  sections: [
+    { title: "Pool", fields: ["realm", "hostname"] },
+    { title: "App client & sign-up", fields: ["clientId", "registrationAllowed"], advanced: true },
+    { title: "Storage", fields: ["size", "storageClass"], advanced: true },
+  ],
+  uiSchema: {
+    realm: { "ui:placeholder": "defaults to the resource name" },
+    hostname: { "ui:placeholder": "login.example.com (external hosted login/admin; in-cluster only if omitted)" },
+    clientId: { "ui:placeholder": "openinfra" },
+    size: { "ui:placeholder": "2Gi" },
+  },
+};
+
 export const FLOWLOG_CREATE: CreateKindSpec = {
   kind: "FlowLog",
   crdName: "flowlogs.openinfra.dev",
@@ -351,5 +397,58 @@ export const FLOWLOG_CREATE: CreateKindSpec = {
   uiSchema: {
     samplingRate: { "ui:placeholder": "64" },
     namespace: { "ui:placeholder": "kube-system" },
+  },
+};
+
+export const HTTPAPI_CREATE: CreateKindSpec = {
+  kind: "HttpApi",
+  crdName: "httpapis.openinfra.dev",
+  description:
+    "A managed HTTP API (API Gateway-style) — map path routes onto backends behind one hostname, with optional JWT authorization, CORS, throttling, TLS and WAF.",
+  sections: [
+    { title: "API", fields: ["domain", "routes"] },
+    { title: "Authorization", fields: ["authorizer"], advanced: true },
+    { title: "CORS", fields: ["cors"], advanced: true },
+    { title: "Throttling", fields: ["rateLimit"], advanced: true },
+    { title: "TLS & WAF", fields: ["tls", "waf"], advanced: true },
+  ],
+  uiSchema: {
+    domain: { "ui:placeholder": "api.example.com" },
+  },
+};
+
+export const STATICSITE_CREATE: CreateKindSpec = {
+  kind: "StaticSite",
+  crdName: "staticsites.openinfra.dev",
+  description:
+    "Static frontend hosting (S3 + CloudFront-style) — serve a built SPA (a dist/ tree) from an object-store bucket behind one hostname, with SPA routing, TLS, and periodic sync.",
+  sections: [
+    { title: "Site", fields: ["domain"] },
+    {
+      title: "Bucket & routing",
+      fields: ["bucket", "spa", "indexDocument", "errorDocument"],
+      advanced: true,
+    },
+    { title: "TLS & sync", fields: ["tls", "syncIntervalSeconds"], advanced: true },
+  ],
+  uiSchema: {
+    domain: { "ui:placeholder": "app.example.com" },
+    indexDocument: { "ui:placeholder": "index.html" },
+    errorDocument: { "ui:placeholder": "index.html (SPA fallback)" },
+  },
+};
+
+export const EMAILSENDER_CREATE: CreateKindSpec = {
+  kind: "EmailSender",
+  crdName: "emailsenders.openinfra.dev",
+  description:
+    "Transactional email sending (AWS SES-shaped) — a verified sending identity that emits an SMTP connection secret your applications send through.",
+  sections: [
+    { title: "Sending identity", fields: ["fromAddress"] },
+    { title: "Display name", fields: ["fromName"], advanced: true },
+  ],
+  uiSchema: {
+    fromAddress: { "ui:placeholder": "no-reply@example.com" },
+    fromName: { "ui:placeholder": "Example App" },
   },
 };

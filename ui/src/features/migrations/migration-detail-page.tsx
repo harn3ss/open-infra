@@ -1,14 +1,15 @@
-import { useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useParams } from "@tanstack/react-router";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRightLeft } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { DetailRow } from "@/components/common/detail-row";
 import { YamlViewer } from "@/components/common/yaml-viewer";
+import { DangerZone } from "@/components/common/danger-zone";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingState, ErrorState } from "@/components/common/states";
-import { k8sGet, getMigrationStatus } from "@/lib/api";
+import { k8sDelete, k8sGet, getMigrationStatus } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { Migration } from "@/types/k8s";
 import { type StatusTone } from "@/lib/format";
@@ -28,6 +29,7 @@ export function MigrationDetailPage() {
     namespace: string;
     name: string;
   };
+  const navigate = useNavigate();
 
   const {
     data: mig,
@@ -39,6 +41,11 @@ export function MigrationDetailPage() {
     queryKey: ["migration", namespace, name],
     queryFn: () => k8sGet<Migration>(openinfraPaths.migration(namespace, name)),
     refetchInterval: 10_000,
+  });
+
+  const del = useMutation({
+    mutationFn: () => k8sDelete(openinfraPaths.migration(namespace, name)),
+    onSuccess: () => navigate({ to: "/migrations" }),
   });
 
   const { data: ps } = useQuery({
@@ -68,6 +75,7 @@ export function MigrationDetailPage() {
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
         <TabsContent value="status" className="pt-4">
@@ -102,6 +110,18 @@ export function MigrationDetailPage() {
 
         <TabsContent value="yaml" className="pt-4">
           <YamlViewer value={mig} />
+        </TabsContent>
+
+        <TabsContent value="danger" className="pt-4">
+          <DangerZone
+            resourceLabel="Migration"
+            resourceName={name}
+            deleting={del.isPending}
+            onConfirm={() => del.mutate()}
+            confirmDescription={
+              <>Permanently delete migration <span className="font-medium text-foreground">{name}</span> and tear down its pipeline. This cannot be undone.</>
+            }
+          />
         </TabsContent>
       </Tabs>
     </DetailShell>
