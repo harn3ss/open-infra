@@ -309,7 +309,7 @@ func dataPlaneCheckerFor(ps []crdPolicy) *dataplaneauthz.Checker {
 		if b == nil || len(b.Statements) == 0 {
 			continue
 		}
-		doc := dataplaneauthz.PolicyDoc{AppliesTo: b.AppliesTo}
+		doc := dataplaneauthz.PolicyDoc{Name: p.Metadata.Name, AppliesTo: b.AppliesTo}
 		for _, s := range b.Statements {
 			doc.Statements = append(doc.Statements, policyengine.Statement{
 				Effect:    policyengine.Effect(canonEffect(s.Effect)),
@@ -320,7 +320,11 @@ func dataPlaneCheckerFor(ps []crdPolicy) *dataplaneauthz.Checker {
 		}
 		docs = append(docs, doc)
 	}
-	return dataplaneauthz.New(func(context.Context) ([]dataplaneauthz.PolicyDoc, error) { return docs, nil }, time.Minute)
+	// The simulator evaluates the inline appliesTo axis here (no attachment index): the managed
+	// spec.policies axis is resolved by the live shim's K8sLoader from kind: Role/User/Group.
+	return dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
+		return dataplaneauthz.Snapshot{Docs: docs}, nil
+	}, time.Minute)
 }
 
 // classifyAction decides which plane owns an action and splits it. A control-plane action is

@@ -112,16 +112,56 @@ func TestTranslate_IAMPolicy_NoPrincipalBlocks(t *testing.T) {
 	}
 }
 
-// A Role attachment can't be enforced at the shim → block (don't silently no-op the attachment).
-func TestTranslate_IAMPolicy_RoleBlocks(t *testing.T) {
-	_, fs := translateIAMPolicy("ForRole", map[string]any{
+// A Roles attachment now translates (the shim authenticates assumed-role sessions, #111): the imported
+// data-plane document is scoped to the Role via appliesTo: [Role::<name>], with a declared caveat that
+// the Role must exist + carry a trust policy natively. It no longer blocks (§6 overclaim reconciled).
+func TestTranslate_IAMPolicy_RoleTranslatesToAppliesTo(t *testing.T) {
+	m, fs := translateIAMPolicy("ForRole", map[string]any{
 		"Roles": []any{"app-role"},
 		"PolicyDocument": map[string]any{
 			"Statement": []any{map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}},
 		},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "Role") {
-		t.Fatalf("a Role attachment must block, got: %s", findingsText(fs))
+	if len(fs) != 0 {
+		t.Fatalf("a Roles attachment must no longer block, got findings: %s", findingsText(fs))
+	}
+	dp, ok := m.Spec["dataPlane"].(map[string]any)
+	if !ok {
+		t.Fatalf("no dataPlane block: %#v", m.Spec)
+	}
+	at, _ := dp["appliesTo"].([]any)
+	if len(at) != 1 || at[0] != "Role::app-role" {
+		t.Fatalf("appliesTo must be [Role::app-role], got: %#v", dp["appliesTo"])
+	}
+	// The Role-existence/trust requirement is surfaced as a declared caveat, not a silent partial.
+	if !strings.Contains(strings.Join(m.Caveats, " | "), "trust policy") {
+		t.Fatalf("expected a declared Role trust caveat, got: %v", m.Caveats)
+	}
+}
+
+// Users/Groups/Roles can be attached together — each maps to its typed principal on the same dataPlane.
+func TestTranslate_IAMPolicy_MixedPrincipals(t *testing.T) {
+	m, fs := translateIAMPolicy("Mixed", map[string]any{
+		"Users":  []any{"alice"},
+		"Groups": []any{"eng"},
+		"Roles":  []any{"app-role"},
+		"PolicyDocument": map[string]any{
+			"Statement": []any{map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	dp, _ := m.Spec["dataPlane"].(map[string]any)
+	at, _ := dp["appliesTo"].([]any)
+	got := map[string]bool{}
+	for _, p := range at {
+		got[p.(string)] = true
+	}
+	for _, want := range []string{"User::alice", "Group::eng", "Role::app-role"} {
+		if !got[want] {
+			t.Fatalf("appliesTo missing %s, got: %#v", want, at)
+		}
 	}
 }
 

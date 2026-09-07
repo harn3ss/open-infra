@@ -1559,3 +1559,133 @@ func TestDataFlow_DriftCompanionOptIn(t *testing.T) {
 		t.Errorf("driftDetection:false (default) must NOT render the -flow-drift Deployment; got:\n%s", grepCtx(off, "flow-drift"))
 	}
 }
+
+// TestAssumeRole_TrustBindingCondition covers gap §2 of the IAM identity model
+// (polyhedron#111 Part B): when an Application's spec.assumeRole names a Role whose
+// spec.trust does NOT admit the app's workload identity (the SA principal
+// system:serviceaccount:<ns>:<name>), the composition surfaces a RoleTrustsWorkload=False
+// condition on the Application that names the exact fix — WITHOUT mutating the Role.
+//
+// The Role's trust is read via function-go-templating ExtraResources: the composition
+// requests the cluster-scoped XRole composite (which mirrors the Role claim's spec.trust)
+// and reads it back on the next reconcile as .extraResources["assumed-role"].items[].resource.
+// Key invariants asserted here:
+//   - untrusted role      -> condition present, names the missing SA principal + the Role
+//   - role already trusts  -> NO condition (additive: renders as before)
+//   - trust "*"            -> NO condition
+//   - empty trust          -> condition present (empty trust = unassumable, fail closed)
+//   - role not yet observed-> ExtraResources request emitted, but NO (false) condition
+//   - no assumeRole        -> neither the fetch request nor the condition (byte-identical)
+//   - the composition NEVER emits a mutation of the Role (kind: XRole/Role write)
+func TestAssumeRole_TrustBindingCondition(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+
+	const saPrincipal = "system:serviceaccount:team-a:app1"
+
+	// roleExtra builds the .extraResources shape the go-templating function exposes for a
+	// fetched XRole: a map keyed by the requirement name, whose .items are {resource: {...}}.
+	roleExtra := func(trust ...string) map[string]any {
+		tl := make([]any, len(trust))
+		for i, s := range trust {
+			tl[i] = s
+		}
+		return map[string]any{
+			"assumed-role": map[string]any{
+				"items": []any{
+					map[string]any{"resource": map[string]any{"spec": map[string]any{"trust": tl}}},
+				},
+			},
+		}
+	}
+
+	appCtx := func(assume string, extra any) map[string]any {
+		spec := map[string]any{"image": "ghcr.io/me/app:latest", "port": 8080}
+		if assume != "" {
+			spec["assumeRole"] = assume
+		}
+		ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{
+				"uid":    "uid-abc",
+				"labels": map[string]any{"crossplane.io/claim-name": "app1", "crossplane.io/claim-namespace": "team-a"},
+			},
+		}}}}
+		if extra != nil {
+			ctx["extraResources"] = extra
+		}
+		return ctx
+	}
+
+	// A role that does not name this app's SA -> warn, and name the exact principal + role.
+	t.Run("untrusted role warns with the exact fix", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("myrole", roleExtra("system:serviceaccount:team-a:other", "alice")))
+		for _, want := range []string{
+			"type: RoleTrustsWorkload",
+			`status: "False"`,
+			"reason: RoleMissingWorkloadTrust",
+			saPrincipal,          // the principal the admin must add
+			`Role "myrole"`,      // the role named in the message
+			"kind: XApplication", // the condition rides the composite status
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("untrusted assumeRole must surface %q; got:\n%s", want, grepCtx(out, "RoleTrustsWorkload"))
+			}
+		}
+		// It must request the role via ExtraResources, keyed by the app's claim labels.
+		if !strings.Contains(out, "kind: ExtraResources") || !strings.Contains(out, "crossplane.io/claim-name: myrole") {
+			t.Errorf("must fetch the assumed role via ExtraResources by claim label; got:\n%s", grepCtx(out, "ExtraResources"))
+		}
+		// The rail: it must NEVER write/mutate the Role. The only XRole reference allowed is
+		// the read-only ExtraResources requirement (kind: XRole under requirements), never a
+		// provider-kubernetes Object carrying an XRole/Role manifest to apply.
+		if strings.Contains(out, "kind: Role\n") {
+			t.Errorf("must NOT emit a Role manifest (trust is admin-managed); got:\n%s", out)
+		}
+	})
+
+	// A role that already trusts this app renders exactly as before: no condition.
+	t.Run("trusted role emits no condition", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("myrole", roleExtra(saPrincipal)))
+		if strings.Contains(out, "RoleTrustsWorkload") {
+			t.Errorf("a role that trusts the app's SA must NOT raise a condition; got:\n%s", grepCtx(out, "RoleTrustsWorkload"))
+		}
+	})
+
+	// Wildcard trust ("*") admits any authenticated principal: no condition.
+	t.Run("wildcard trust emits no condition", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("myrole", roleExtra("*")))
+		if strings.Contains(out, "RoleTrustsWorkload") {
+			t.Errorf(`trust "*" must NOT raise a condition; got:\n%s`, grepCtx(out, "RoleTrustsWorkload"))
+		}
+	})
+
+	// Empty trust = unassumable (fail closed): warn.
+	t.Run("empty trust warns", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("myrole", roleExtra()))
+		if !strings.Contains(out, "type: RoleTrustsWorkload") {
+			t.Errorf("empty trust (unassumable) must warn; got:\n%s", out)
+		}
+	})
+
+	// Before the role is observed (first reconcile), request the fetch but do NOT warn.
+	t.Run("role not yet observed requests fetch without false warning", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("myrole", nil))
+		if !strings.Contains(out, "kind: ExtraResources") {
+			t.Errorf("must still request the role fetch; got:\n%s", out)
+		}
+		if strings.Contains(out, "RoleTrustsWorkload") {
+			t.Errorf("must not raise a warning before the role is observed (avoid flapping); got:\n%s", grepCtx(out, "RoleTrustsWorkload"))
+		}
+	})
+
+	// No assumeRole: additive/byte-identical — neither the fetch nor the condition appears,
+	// and the workload SA wiring stays off.
+	t.Run("no assumeRole is a no-op", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("", nil))
+		for _, forbidden := range []string{"kind: ExtraResources", "RoleTrustsWorkload", "serviceAccountName", "AWS_ROLE_ARN"} {
+			if strings.Contains(out, forbidden) {
+				t.Errorf("an app with no assumeRole must not render %q; got:\n%s", forbidden, grepCtx(out, forbidden))
+			}
+		}
+	})
+}

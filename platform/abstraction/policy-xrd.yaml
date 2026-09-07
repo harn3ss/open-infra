@@ -97,7 +97,12 @@ spec:
                     appliesTo:
                       type: array
                       description: >-
-                        Principals these statements govern — "User::<name>", "Group::<name>", or "*".
+                        Principals these statements govern — "User::<name>", "Group::<name>",
+                        "Role::<name>" (an assumed sts:AssumeRole session — see role-xrd.yaml), or
+                        "*". This is the INLINE/direct axis (a Policy names its own principals). The
+                        MANAGED axis is the reverse: a principal names this Policy in its
+                        spec.policies (kind: Role/User), which confers the same dataPlane authority —
+                        one policy world, resolved together by internal/dataplaneauthz.
                       items:
                         type: string
                     statements:
@@ -131,6 +136,30 @@ spec:
                               Values "true"/"false" are matched as booleans. Optional.
                             additionalProperties:
                               type: string
+                          ipConditions:
+                            type: array
+                            description: >-
+                              Source-IP CIDR conditions (the aws:SourceIp equivalent the AWS importer
+                              emits from IpAddress/NotIpAddress), evaluated via the policy engine's
+                              ipaddr extension. Each requires the request source IP to be in (negate
+                              false) or not in (negate true) the CIDR. On a Deny statement these fail
+                              CLOSED: an absent or unparseable source IP DENIES rather than letting the
+                              forbid evaporate. key must be a request attribute the shim populates
+                              (today: "sourceIp"). Optional.
+                            items:
+                              type: object
+                              required: [key, cidr]
+                              properties:
+                                key:
+                                  type: string
+                                  description: The request-context attribute to test, e.g. "sourceIp".
+                                cidr:
+                                  type: string
+                                  description: An IPv4/IPv6 CIDR (a bare address is treated as /32), e.g. "10.0.0.0/8".
+                                negate:
+                                  type: boolean
+                                  default: false
+                                  description: true = NotIpAddress (the source must NOT be in the CIDR).
                 controlPlane:
                   type: object
                   description: >-

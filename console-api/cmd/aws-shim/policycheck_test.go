@@ -14,8 +14,8 @@ import (
 // checkerFor builds a Checker whose single policy (for principal "User::tester") carries the given
 // statements — the realistic "allow the service, forbid one action" shape.
 func checkerFor(stmts ...policyengine.Statement) *dataplaneauthz.Checker {
-	return dataplaneauthz.New(func(context.Context) ([]dataplaneauthz.PolicyDoc, error) {
-		return []dataplaneauthz.PolicyDoc{{AppliesTo: []string{"User::tester"}, Statements: stmts}}, nil
+	return dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
+		return dataplaneauthz.Snapshot{Docs: []dataplaneauthz.PolicyDoc{{AppliesTo: []string{"User::tester"}, Statements: stmts}}}, nil
 	}, time.Minute)
 }
 
@@ -71,5 +71,38 @@ func TestS3_DataPlaneDeny(t *testing.T) {
 	h.serve(w, httptest.NewRequest("DELETE", "/reports/q3.csv", nil), iam.Claims{Sub: "tester"}, "r")
 	if w.Code != 403 {
 		t.Fatalf("s3 DeleteObject on reports must be denied by data-plane policy, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// §5 DRIFT GATE (security-critical). The AWS condition importer may map a condition key ONLY if the
+// aws-shim actually populates that request-context attribute at request time — otherwise a Deny gated
+// on the key would silently never fire (Cedar SKIPS a forbid whose `when` errors on an absent
+// attribute), the fail-open hole the wholesale condition refusal originally guarded.
+// policyengine.SupportedConditionAttrs() is the importable-key set (the SINGLE source of truth the
+// importer consults); requestContext() is the SINGLE source of truth for what the shim populates. This
+// test fails if the two ever diverge — e.g. someone adds an importable key without populating it, or
+// removes a populated key that is still importable. Keep them one shared list.
+func TestSupportedConditionKeysMatchRequestContext(t *testing.T) {
+	// Exercise requestContext with a request that populates every attribute it can set: a RemoteAddr
+	// yields the source IP, and authenticated is always set.
+	req := httptest.NewRequest("GET", "http://shim/", nil)
+	req.RemoteAddr = "203.0.113.7:5555"
+	populated := map[string]bool{}
+	for k := range requestContext(req) {
+		populated[k] = true
+	}
+
+	importable := policyengine.SupportedConditionAttrs()
+	for attr := range importable {
+		if !populated[attr] {
+			t.Errorf("FAIL-OPEN RISK: SupportedConditionKeys maps %q but requestContext() never populates it — a Deny "+
+				"gated on it would silently never fire. Populate it in requestContext() or drop it from the whitelist.", attr)
+		}
+	}
+	for attr := range populated {
+		if !importable[attr] {
+			t.Errorf("drift: requestContext() populates %q but it is not in SupportedConditionKeys — decide whether it "+
+				"should be importable (add it there) or is intentionally excluded (then update this test's expectation).", attr)
+		}
 	}
 }

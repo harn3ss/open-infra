@@ -63,6 +63,16 @@ spec:
                     trust policy. An assumed session acts with the role's attached policies.
                   items:
                     type: string
+                permissionBoundary:
+                  type: string
+                  description: >-
+                    Optional data-plane permission boundary (the AWS permission-boundary analog): the
+                    name of a kind: Policy whose dataPlane Allow statements are the CEILING for an
+                    assumed session. The effective permission is the INTERSECTION of the role's
+                    identity policies and this boundary — nothing outside the boundary can be allowed,
+                    no matter what an attached Policy grants (compiled as a Cedar forbid-unless guard,
+                    fail-closed). It caps a session already governed at the data plane for a service;
+                    it does not itself confer access. A boundary that allows nothing caps to nothing.
               required: [policies]
             status:
               type: object

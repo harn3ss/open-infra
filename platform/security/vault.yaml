@@ -224,7 +224,27 @@ spec:
                 bound_service_account_namespaces=crossplane-system \
                 token_policies=parameter-reconciler token_ttl=20m
 
-              echo "Transit ready; reconciler + destroyer + minio-kes + parameter-reconciler authenticate via Kubernetes auth (no stored secrets)."
+              echo "enabling the STS sealing-key store (aws-shim session-token key) KV-v2 mount + identity (#111 §1)…"
+              # The aws-shim mints faithful sts:AssumeRole temporary credentials as AES-256-GCM sealed,
+              # STATELESS session tokens. The one piece of long-lived key material — the 32-byte AES
+              # sealing key — lives HERE, not in a k8s Secret, so nothing with cluster-wide `get secrets`
+              # can read it. The shim logs in with its OWN SA token (role aws-shim-sts) and reads the key;
+              # its policy is scoped to read exactly ONE path and nothing else — it cannot write, rotate,
+              # list, or reach any other mount. Rotating this key (a new version at sts/signing-key) is the
+              # session revoke-all lever: outstanding sealed tokens fail to open once the shim's overlap
+              # window passes (see docs/aws-shim.md). An operator writes the key once (or a one-shot Job):
+              #   vault kv put sts/signing-key key="$(head -c32 /dev/urandom | base64)"
+              vault secrets enable -path=sts -version=2 kv 2>/dev/null || echo "  sts KV already enabled"
+              # KV-v2 read is at sts/data/signing-key (the `data/` infix); grant read there and only there.
+              vault policy write aws-shim-sts - <<'POLICY'
+              path "sts/data/signing-key" { capabilities = ["read"] }
+              POLICY
+              vault write auth/kubernetes/role/aws-shim-sts \
+                bound_service_account_names=aws-shim \
+                bound_service_account_namespaces=open-infra-aws-shim \
+                token_policies=aws-shim-sts token_ttl=20m
+
+              echo "Transit ready; reconciler + destroyer + minio-kes + parameter-reconciler + aws-shim-sts authenticate via Kubernetes auth (no stored secrets)."
 
               # ── kind: CertificateAuthority — PKI engines + least-priv provisioner/issuer split ──
               # Same discipline as Transit above: two identities, each bound to its OWN ServiceAccount
