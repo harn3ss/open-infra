@@ -1,5 +1,5 @@
 # tds-proxy — TDS-aware connection multiplexer. Stdlib-only, static, minimal runtime.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
