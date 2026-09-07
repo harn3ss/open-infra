@@ -56,6 +56,26 @@ func isPolicyResource(r string) bool {
 	return false
 }
 
+const (
+	// managedPolicyLabel marks a Policy CR as an out-of-the-box MANAGED policy — the AWS
+	// "AWS managed" analog. The managed-policy LIBRARY ships these as kind: Policy CRs carrying
+	// this label (set to exactly "true"); GitOps owns them, so the console treats them as
+	// read-only: no edit, no delete. This label is the contract with the library and must match
+	// what those CRs set.
+	managedPolicyLabel = "openinfra.dev/managed-policy"
+	// policyCategoryLabel groups managed policies (e.g. "job-function", "administrator") the way
+	// AWS's "AWS managed - job function" set does. Advisory only; surfaced in the view when present.
+	policyCategoryLabel = "openinfra.dev/policy-category"
+	// managedReadOnlyMsg is the 403 body when a client tries to update or delete a managed policy.
+	managedReadOnlyMsg = "managed policies are read-only — they are provisioned out of the box by GitOps and cannot be changed from the console"
+)
+
+// isManagedPolicy reports whether a Policy's labels mark it as an out-of-the-box managed policy.
+// A managed policy is read-only from the console — mutation is refused server-side.
+func isManagedPolicy(labels map[string]string) bool {
+	return labels[managedPolicyLabel] == "true"
+}
+
 // ── CR types (read side) ─────────────────────────────────────────────────────────
 
 type policyStatement struct {
@@ -87,6 +107,9 @@ type crdPolicy struct {
 		Name string `json:"name"`
 		// Annotations carry free-form tags (openinfra.dev/tag-*); see iam_tags.go.
 		Annotations map[string]string `json:"annotations,omitempty"`
+		// Labels carry the managed-policy contract (openinfra.dev/managed-policy,
+		// openinfra.dev/policy-category) set by the GitOps-shipped managed-policy library.
+		Labels map[string]string `json:"labels,omitempty"`
 	} `json:"metadata"`
 	Spec struct {
 		Description  string            `json:"description"`
@@ -201,6 +224,13 @@ type iamPolicyView struct {
 	ClusterRole  string      `json:"clusterRole"`
 	RuleCount    int         `json:"ruleCount"`
 	Ready        bool        `json:"ready"`
+	// Managed is true for an out-of-the-box managed policy (openinfra.dev/managed-policy: "true").
+	// The console renders these read-only and the update/delete handlers refuse to mutate them —
+	// they are provisioned by GitOps, never the console (the AWS "AWS managed" policy analog).
+	Managed bool `json:"managed"`
+	// Category is the managed-policy grouping (openinfra.dev/policy-category), e.g. "job-function".
+	// Empty for a customer-managed policy or a managed one that sets no category.
+	Category string `json:"category,omitempty"`
 	// Tags are free-form key/value pairs (the AWS Tags tab), read from openinfra.dev/tag-*
 	// annotations. Always a map (never null) so the SPA can iterate it. See iam_tags.go.
 	Tags map[string]string `json:"tags"`
@@ -225,7 +255,9 @@ func policyView(p crdPolicy) iamPolicyView {
 		Name: p.Metadata.Name, Description: p.Spec.Description, Statements: p.Spec.Statements,
 		DataPlane: p.Spec.DataPlane, ControlPlane: p.Spec.ControlPlane,
 		ClusterRole: p.Status.ClusterRole, RuleCount: p.Status.RuleCount, Ready: p.Status.Ready,
-		Tags: tagsFromAnnotations(p.Metadata.Annotations),
+		Managed:  isManagedPolicy(p.Metadata.Labels),
+		Category: p.Metadata.Labels[policyCategoryLabel],
+		Tags:     tagsFromAnnotations(p.Metadata.Annotations),
 	}
 }
 
@@ -474,6 +506,12 @@ func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slo
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "policies", auth.ns, name) {
 			return
 		}
+		// Managed policies are provisioned out of the box by GitOps — read-only from the console.
+		// Refuse the mutation even for an admin, so the library stays the single source of truth.
+		if p, ok := auth.crdPolicyByName(r.Context(), name); ok && isManagedPolicy(p.Metadata.Labels) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": managedReadOnlyMsg})
+			return
+		}
 		spec := map[string]any{"description": in.Description, "statements": normStatements(in.Statements)}
 		// Only touch a Cedar plane when the request carries it (pointer non-nil): a client that
 		// doesn't know about dataPlane leaves an existing block intact; sending an empty block
@@ -499,6 +537,11 @@ func handleIAMPolicyDelete(cs kubernetes.Interface, auth *authStore, logger *slo
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "delete", "iam.openinfra.dev", "policies", auth.ns, name) {
+			return
+		}
+		// Managed policies are owned by GitOps — the console never deletes them.
+		if p, ok := auth.crdPolicyByName(r.Context(), name); ok && isManagedPolicy(p.Metadata.Labels) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": managedReadOnlyMsg})
 			return
 		}
 		// A policy still attached to a role would leave that role silently thinner. Warn.

@@ -24,8 +24,13 @@ import (
 // ClusterRoleBindings that kind: Group creates are what actually confer permission.
 
 type crdUserSpec struct {
-	DisplayName       string   `json:"displayName"`
-	Groups            []string `json:"groups"`
+	DisplayName string   `json:"displayName"`
+	Groups      []string `json:"groups"`
+	// Policies are kind: Policy names attached directly to this user (spec.policies). Their
+	// dataPlane blocks confer the user's DATA-PLANE authority at the aws-shim front doors — the
+	// AWS "attach a managed policy to a user" analog. Control-plane authority still comes only
+	// from spec.groups; an attached policy's control-plane statements are not conferred here.
+	Policies          []string `json:"policies"`
 	Source            string   `json:"source"`
 	Disabled          bool     `json:"disabled"`
 	PasswordSecretRef struct {

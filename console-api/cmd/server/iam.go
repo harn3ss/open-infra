@@ -117,6 +117,10 @@ type iamUserView struct {
 	Source      string   `json:"source"`
 	Disabled    bool     `json:"disabled"`
 	Groups      []string `json:"groups"`
+	// Policies are kind: Policy names attached directly to this user (spec.policies) — the AWS
+	// "managed policies attached to a user" analog. They confer the user's data-plane authority at
+	// the aws-shim; control-plane authority still comes only from Groups. Always a non-nil array.
+	Policies []string `json:"policies"`
 	// HasPassword is false for a User whose passwordSecretRef points nowhere usable —
 	// a directory user, or one created before its Secret existed. The UI shows it so an
 	// admin isn't surprised that someone can't sign in.
@@ -203,6 +207,7 @@ func handleIAMUsersList(cs kubernetes.Interface, auth *authStore, logger *slog.L
 				Source:        u.Spec.Source,
 				Disabled:      u.Spec.Disabled,
 				Groups:        groupList(u.Spec.Groups),
+				Policies:      groupList(u.Spec.Policies),
 				HasPassword:   hasPw,
 				UnboundGroups: unboundGroups(u.Spec.Groups),
 				Tags:          tagsFromAnnotations(u.Metadata.Annotations),
@@ -232,6 +237,7 @@ func handleIAMUserGet(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 			Source:        u.Spec.Source,
 			Disabled:      u.Spec.Disabled,
 			Groups:        u.Spec.Groups,
+			Policies:      groupList(u.Spec.Policies),
 			HasPassword:   hasPw,
 			UnboundGroups: unboundGroups(u.Spec.Groups),
 			Tags:          tagsFromAnnotations(u.Metadata.Annotations),
@@ -305,7 +311,12 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 type updateUserReq struct {
 	DisplayName *string   `json:"displayName"`
 	Groups      *[]string `json:"groups"`
-	Disabled    *bool     `json:"disabled"`
+	// Policies attaches kind: Policy names directly to the user (spec.policies). Applied only when
+	// present (a non-nil pointer) so a client that never sends it leaves the stored set intact; an
+	// explicit [] detaches everything. The §3 backend makes spec.policies govern the user's data
+	// plane, so this is how "attach a policy to a user" actually takes effect.
+	Policies *[]string `json:"policies"`
+	Disabled *bool     `json:"disabled"`
 }
 
 func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -325,6 +336,10 @@ func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}
 		if in.Groups != nil {
 			spec["groups"] = cleanGroups(*in.Groups)
+		}
+		if in.Policies != nil {
+			// cleanGroups trims + dedupes; the same tidy applied to a role's spec.policies.
+			spec["policies"] = cleanGroups(*in.Policies)
 		}
 		if in.Disabled != nil {
 			spec["disabled"] = *in.Disabled

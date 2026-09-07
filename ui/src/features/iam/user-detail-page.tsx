@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { User, KeyRound, Ban, CircleCheck } from "lucide-react";
+import { User, KeyRound, Ban, CircleCheck, Plus, X } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
   getIamConfig,
   getIamUser,
   listIamGroups,
+  listIamPolicies,
   resetIamPassword,
   updateIamUser,
   updateIamUserTags,
@@ -28,6 +29,8 @@ import { UserPermissionsTab } from "./user-permissions-tab";
 import { PendingTab } from "./pending-notice";
 import { AccessKeysPanel } from "./access-keys-panel";
 import { TagsTab } from "./tags-tab";
+import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
+import { policyType } from "./policy-type";
 
 export function UserDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -37,6 +40,7 @@ export function UserDetailPage() {
 
   const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
+  const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const { data: user, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["iam", "user", name],
     queryFn: () => getIamUser(name),
@@ -46,8 +50,15 @@ export function UserDetailPage() {
 
   // Group editing (staged, saved with a button).
   const [editGroups, setEditGroups] = useState<string[]>([]);
+  // Directly-attached policies (spec.policies), staged and saved with a button — the AWS
+  // "attach a managed policy to a user" flow, managed through the shared Add-permissions picker.
+  const [attachedPolicies, setAttachedPolicies] = useState<string[]>([]);
+  const [policyPickerOpen, setPolicyPickerOpen] = useState(false);
   useEffect(() => {
-    if (user) setEditGroups(user.groups ?? []);
+    if (user) {
+      setEditGroups(user.groups ?? []);
+      setAttachedPolicies(user.policies ?? []);
+    }
   }, [user]);
 
   const invalidateUser = () => {
@@ -60,6 +71,14 @@ export function UserDetailPage() {
     onSuccess: () => {
       invalidateUser();
       flash.success(`Updated group membership for ${name}.`);
+    },
+  });
+
+  const savePolicies = useMutation({
+    mutationFn: () => updateIamUser(name, { policies: attachedPolicies }),
+    onSuccess: () => {
+      invalidateUser();
+      flash.success(`Updated attached policies for ${name}.`);
     },
   });
 
@@ -97,6 +116,17 @@ export function UserDetailPage() {
   const groupsDirty =
     editGroups.length !== (user.groups ?? []).length ||
     editGroups.some((g) => !(user.groups ?? []).includes(g));
+  const userPolicies = user.policies ?? [];
+  const policiesDirty =
+    attachedPolicies.length !== userPolicies.length ||
+    attachedPolicies.some((p) => !userPolicies.includes(p));
+  const policyByName = new Map((policies.data ?? []).map((p) => [p.name, p]));
+  const togglePolicy = (nm: string) =>
+    setAttachedPolicies(
+      attachedPolicies.includes(nm)
+        ? attachedPolicies.filter((x) => x !== nm)
+        : [...attachedPolicies, nm],
+    );
 
   return (
     <DetailShell
@@ -197,7 +227,97 @@ export function UserDetailPage() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="permissions" className="pt-4">
+        <TabsContent value="permissions" className="space-y-4 pt-4">
+          {/* Directly-attached policies (spec.policies) — parity with a Role's attach flow. These
+              confer this user's DATA-PLANE authority at the aws-shim (S3/DynamoDB/Lambda) via each
+              policy's dataPlane block; control-plane (Kubernetes) access still comes only from groups
+              (resolved in the effective-permissions view below). */}
+          <Card>
+            <CardContent className="space-y-4 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold">Attached policies</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Policies attached directly to this user. Their data-service (S3 / DynamoDB /
+                    Lambda) statements confer the user's data-plane authority at the aws-shim.
+                    Control-plane access still comes from the user's groups.
+                  </p>
+                </div>
+                <Button variant="outline" className="shrink-0" onClick={() => setPolicyPickerOpen(true)}>
+                  <Plus className="size-4" /> Add permissions
+                </Button>
+              </div>
+
+              {attachedPolicies.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No policies attached directly to this user.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {attachedPolicies.map((nm) => {
+                    const p = policyByName.get(nm);
+                    return (
+                      <li key={nm} className="flex items-center justify-between gap-3 p-3">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <Link
+                            to="/policies/$name"
+                            params={{ name: nm }}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {nm}
+                          </Link>
+                          {p ? (
+                            <>
+                              <ManagedBadge managed={p.managed} category={p.category} />
+                              <Badge variant="secondary">{policyType(p)}</Badge>
+                            </>
+                          ) : (
+                            <Badge variant="outline">not found</Badge>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => togglePolicy(nm)}
+                          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                          aria-label={`Detach ${nm}`}
+                        >
+                          <X className="size-4" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+
+              <div className="flex items-center gap-3 border-t border-border pt-4">
+                <Button disabled={!policiesDirty || savePolicies.isPending} onClick={() => savePolicies.mutate()}>
+                  {savePolicies.isPending ? <Spinner className="size-4" /> : null}
+                  Save
+                </Button>
+                {policiesDirty ? (
+                  <Button variant="ghost" onClick={() => setAttachedPolicies(userPolicies)}>
+                    Reset
+                  </Button>
+                ) : null}
+                {savePolicies.isError ? (
+                  <span className="text-sm text-destructive">
+                    {(savePolicies.error as Error).message}
+                  </span>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+
+          <AttachPolicyPicker
+            open={policyPickerOpen}
+            onOpenChange={setPolicyPickerOpen}
+            policies={policies.data ?? []}
+            attached={attachedPolicies}
+            onConfirm={setAttachedPolicies}
+            subjectLabel={`user ${user.name}`}
+          />
+
+          {/* The effective (control-plane) permissions, resolved from the user's groups. */}
           <UserPermissionsTab user={user} />
         </TabsContent>
 

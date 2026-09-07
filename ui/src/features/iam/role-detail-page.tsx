@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Boxes, Check, Info, ShieldCheck, ShieldX } from "lucide-react";
+import { AlertTriangle, Boxes, Info, Plus, ShieldCheck, ShieldX, X } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,12 +25,15 @@ import {
 import { TrustEditor, principalLabel } from "./trust-editor";
 import { PendingTab } from "./pending-notice";
 import { TagsTab } from "./tags-tab";
+import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
+import { policyType } from "./policy-type";
 
 export function RoleDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [forcePrompt, setForcePrompt] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
@@ -97,6 +100,7 @@ export function RoleDetailPage() {
     storedTrust.some((p) => !trust.includes(p));
   const toggle = (p: string) =>
     setAttached(attached.includes(p) ? attached.filter((x) => x !== p) : [...attached, p]);
+  const policyByName = new Map((policies.data ?? []).map((p) => [p.name, p]));
 
   return (
     <DetailShell
@@ -179,39 +183,62 @@ export function RoleDetailPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Permissions — attached policies (the aggregated union). */}
+        {/* Permissions — attached policies (the aggregated union), managed via the Add-permissions picker. */}
         <TabsContent value="permissions" className="space-y-4 pt-4">
           <Card>
-            <CardContent className="space-y-3 p-5">
-              <p className="text-sm text-muted-foreground">
-                This role grants the union of the policies below. Toggle to attach or detach.
-              </p>
-              {policies.data && policies.data.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {policies.data.map((p) => {
-                    const on = attached.includes(p.name);
+            <CardContent className="space-y-4 p-5">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm text-muted-foreground">
+                  This role grants the union of the policies below. Use <b>Add permissions</b> to
+                  attach out-of-the-box managed or customer-managed policies; remove one with its ✕.
+                </p>
+                <Button variant="outline" className="shrink-0" onClick={() => setPickerOpen(true)}>
+                  <Plus className="size-4" /> Add permissions
+                </Button>
+              </div>
+
+              {attached.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No policies attached — this role grants nothing until you add one.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border rounded-md border border-border">
+                  {attached.map((name) => {
+                    const p = policyByName.get(name);
                     return (
-                      <button
-                        key={p.name}
-                        type="button"
-                        onClick={() => toggle(p.name)}
-                        className={[
-                          "inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-                          on
-                            ? "border-primary/40 bg-primary/15 text-primary"
-                            : "border-border text-muted-foreground hover:bg-muted",
-                        ].join(" ")}
-                      >
-                        {on ? <Check className="size-3" /> : null}
-                        {p.name}
-                      </button>
+                      <li key={name} className="flex items-center justify-between gap-3 p-3">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <Link
+                            to="/policies/$name"
+                            params={{ name }}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {name}
+                          </Link>
+                          {p ? (
+                            <>
+                              <ManagedBadge managed={p.managed} category={p.category} />
+                              <Badge variant="secondary">{policyType(p)}</Badge>
+                            </>
+                          ) : (
+                            <Badge variant="outline">not found</Badge>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => toggle(name)}
+                          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                          aria-label={`Detach ${name}`}
+                        >
+                          <X className="size-4" />
+                        </button>
+                      </li>
                     );
                   })}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">No policies exist yet.</p>
+                </ul>
               )}
-              <div className="flex items-center gap-3">
+
+              <div className="flex items-center gap-3 border-t border-border pt-4">
                 <Button disabled={!policiesDirty || savePolicies.isPending} onClick={() => savePolicies.mutate()}>
                   {savePolicies.isPending ? <Spinner className="size-4" /> : null}
                   Save
@@ -229,6 +256,15 @@ export function RoleDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          <AttachPolicyPicker
+            open={pickerOpen}
+            onOpenChange={setPickerOpen}
+            policies={policies.data ?? []}
+            attached={attached}
+            onConfirm={setAttached}
+            subjectLabel={`role ${role.name}`}
+          />
         </TabsContent>
 
         {/* Trust relationships — who may assume the role (spec.trust). */}
