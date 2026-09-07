@@ -12,8 +12,9 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { Link } from "@tanstack/react-router";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
-import type { Execution } from "@/types/k8s";
+import type { Execution, StateMachine } from "@/types/k8s";
 import { execTone } from "./statemachine-detail-page";
+import { AslGraph, deriveStateStatus } from "./asl-graph";
 
 function pretty(s?: string): string {
   if (!s) return "";
@@ -46,6 +47,15 @@ export function ExecutionDetailPage() {
     },
   });
 
+  // Fetch the backing state machine so the Graph tab can render its ASL, coloured
+  // by this execution's live progress.
+  const smRefName = ex?.spec?.stateMachineRef?.name;
+  const { data: sm } = useQuery({
+    queryKey: ["statemachine", namespace, smRefName],
+    queryFn: () => k8sGet<StateMachine>(openinfraPaths.statemachine(namespace, smRefName!)),
+    enabled: Boolean(smRefName),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: () => k8sDelete(openinfraPaths.execution(namespace, name)),
     onSuccess: () => navigate({ to: "/statemachines" }),
@@ -57,6 +67,7 @@ export function ExecutionDetailPage() {
   const st = ex.status;
   const smName = ex.spec?.stateMachineRef?.name;
   const history = st?.history ?? [];
+  const statusByState = deriveStateStatus(history, st?.currentState, st?.phase);
 
   return (
     <DetailShell
@@ -67,14 +78,23 @@ export function ExecutionDetailPage() {
       subtitle={`Execution · ${namespace}`}
       status={{ label: st?.phase ?? "Pending", tone: execTone(st?.phase) }}
     >
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue="graph">
         <TabsList>
+          <TabsTrigger value="graph">Graph</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="io">Input / Output</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="graph" className="pt-4">
+          <AslGraph
+            definition={sm?.spec?.definition}
+            statusByState={statusByState}
+            className="h-[calc(100vh-18rem)] min-h-[420px]"
+          />
+        </TabsContent>
 
         <TabsContent value="overview" className="pt-4">
           <Card>

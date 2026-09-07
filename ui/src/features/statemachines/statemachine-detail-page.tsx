@@ -10,6 +10,7 @@ import { YamlViewer } from "@/components/common/yaml-viewer";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status-badge";
+import { AslGraph } from "./asl-graph";
 import { claimHealth } from "@/lib/resource-health";
 import { age } from "@/lib/format";
 import { ApiError, k8sCreate, k8sDelete, k8sGet } from "@/lib/api";
@@ -139,13 +140,18 @@ export function StateMachineDetailPage() {
       subtitle={`State machine · ${namespace}`}
       status={claimHealth(sm)}
     >
-      <Tabs defaultValue="executions">
+      <Tabs defaultValue="graph">
         <TabsList>
+          <TabsTrigger value="graph">Graph</TabsTrigger>
           <TabsTrigger value="executions">Executions</TabsTrigger>
           <TabsTrigger value="definition">Definition</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="graph" className="pt-4">
+          <AslGraph definition={sm.spec?.definition} className="h-[calc(100vh-18rem)] min-h-[420px]" />
+        </TabsContent>
 
         <TabsContent value="executions" className="space-y-4 pt-4">
           <StartExecution namespace={namespace} name={name} />

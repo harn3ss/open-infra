@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
+import { CopyButton } from "@/components/common/copy-button";
+import { JobLogs } from "@/components/common/job-logs";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
@@ -32,9 +34,10 @@ function ChannelRows({ label, channels }: { label: string; channels?: Processing
     <DetailRow label={label}>
       <span className="flex flex-col gap-1">
         {channels.map((c) => (
-          <span key={c.name} className="text-xs">
-            <Badge variant="secondary" className="mr-2">{c.name}</Badge>
+          <span key={c.name} className="flex items-center gap-1 text-xs">
+            <Badge variant="secondary" className="mr-1">{c.name}</Badge>
             <code>s3://{c.bucket}/{c.prefix ?? ""}</code>
+            <CopyButton value={`s3://${c.bucket}/${c.prefix ?? ""}`} label={`Copy ${c.name} URI`} />
           </span>
         ))}
       </span>
@@ -54,6 +57,7 @@ export function ProcessingJobDetailPage() {
   const jobWatch = useK8sWatch<Job>(batchPaths.jobs(namespace));
   const jobName = pj?.status?.jobName ?? `${name}-proc`;
   const job = useMemo(() => jobWatch.items.find((j) => j.metadata.name === jobName), [jobWatch.items, jobName]);
+  const running = jobPhase(job).label === "Running";
 
   const deleteMutation = useMutation({
     mutationFn: () => k8sDelete(openinfraPaths.processingjob(namespace, name)),
@@ -79,6 +83,7 @@ export function ProcessingJobDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -106,9 +111,20 @@ export function ProcessingJobDetailPage() {
                 </DetailRow>
               ) : null}
               <DetailRow label="Job">
-                <code className="text-xs">{jobName}</code>
-                <span className="ml-2 text-xs text-muted-foreground">— logs: <code>kubectl logs -n {namespace} job/{jobName}</code></span>
+                <span className="flex items-center gap-1">
+                  <code className="text-xs">{jobName}</code>
+                  <CopyButton value={jobName} label="Copy Job name" />
+                </span>
+                <span className="ml-1 text-xs text-muted-foreground">— see the <strong>Logs</strong> tab</span>
               </DetailRow>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="logs" className="pt-4">
+          <Card>
+            <CardContent className="p-4">
+              <JobLogs namespace={namespace} jobName={jobName} running={running} />
             </CardContent>
           </Card>
         </TabsContent>

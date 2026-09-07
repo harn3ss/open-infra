@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
+import { CopyButton } from "@/components/common/copy-button";
+import { JobLogs } from "@/components/common/job-logs";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
@@ -39,6 +41,7 @@ export function BatchTransformDetailPage() {
   const jobWatch = useK8sWatch<Job>(batchPaths.jobs(namespace));
   const jobName = bt?.status?.jobName ?? `${name}-transform`;
   const job = useMemo(() => jobWatch.items.find((j) => j.metadata.name === jobName), [jobWatch.items, jobName]);
+  const running = jobPhase(job).label === "Running";
 
   const deleteMutation = useMutation({
     mutationFn: () => k8sDelete(openinfraPaths.batchtransform(namespace, name)),
@@ -64,6 +67,7 @@ export function BatchTransformDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -81,10 +85,25 @@ export function BatchTransformDetailPage() {
               <DetailRow label="GPU">
                 {gpu > 0 ? <Badge variant="secondary">{gpu}× {s?.gpuTier ?? "smallgpu"}</Badge> : <span className="text-xs text-muted-foreground">CPU-only</span>}
               </DetailRow>
-              <DetailRow label="Input"><code className="text-xs">s3://{s?.input?.bucket}/{s?.input?.prefix ?? ""}</code></DetailRow>
-              <DetailRow label="Output"><code className="text-xs">s3://{s?.output?.bucket}/{s?.output?.prefix ?? ""}</code></DetailRow>
+              <DetailRow label="Input">
+                <span className="flex items-center gap-1">
+                  <code className="text-xs">s3://{s?.input?.bucket}/{s?.input?.prefix ?? ""}</code>
+                  <CopyButton value={`s3://${s?.input?.bucket}/${s?.input?.prefix ?? ""}`} label="Copy input URI" />
+                </span>
+              </DetailRow>
+              <DetailRow label="Output">
+                <span className="flex items-center gap-1">
+                  <code className="text-xs">s3://{s?.output?.bucket}/{s?.output?.prefix ?? ""}</code>
+                  <CopyButton value={`s3://${s?.output?.bucket}/${s?.output?.prefix ?? ""}`} label="Copy output URI" />
+                </span>
+              </DetailRow>
               {s?.artifact?.bucket ? (
-                <DetailRow label="Model artifact"><code className="text-xs">s3://{s.artifact.bucket}/{s.artifact.key ?? ""}</code></DetailRow>
+                <DetailRow label="Model artifact">
+                  <span className="flex items-center gap-1">
+                    <code className="text-xs">s3://{s.artifact.bucket}/{s.artifact.key ?? ""}</code>
+                    <CopyButton value={`s3://${s.artifact.bucket}/${s.artifact.key ?? ""}`} label="Copy artifact URI" />
+                  </span>
+                </DetailRow>
               ) : null}
               {s?.env?.length ? (
                 <DetailRow label="Environment">
@@ -94,9 +113,20 @@ export function BatchTransformDetailPage() {
                 </DetailRow>
               ) : null}
               <DetailRow label="Job">
-                <code className="text-xs">{jobName}</code>
-                <span className="ml-2 text-xs text-muted-foreground">— logs: <code>kubectl logs -n {namespace} job/{jobName}</code></span>
+                <span className="flex items-center gap-1">
+                  <code className="text-xs">{jobName}</code>
+                  <CopyButton value={jobName} label="Copy Job name" />
+                </span>
+                <span className="ml-1 text-xs text-muted-foreground">— see the <strong>Logs</strong> tab</span>
               </DetailRow>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="logs" className="pt-4">
+          <Card>
+            <CardContent className="p-4">
+              <JobLogs namespace={namespace} jobName={jobName} running={running} />
             </CardContent>
           </Card>
         </TabsContent>

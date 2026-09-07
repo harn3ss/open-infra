@@ -300,6 +300,21 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(20*time.Second)).
 			Post("/trainingjobs/{namespace}/{name}/register", handleTrainingJobRegister(*client.Clientset, auth, logger))
 
+		// ML/batch job observability — kill the "kubectl logs -n … job/…" dead-end on the SageMaker
+		// job family (TrainingJob / ProcessingJob / BatchTransform). {name} is the backing batch/v1
+		// Job. Logs: NO request timeout (output can be large; the client ctx bounds it), like the
+		// object up/download routes. Metrics: best-effort Prometheus range query (fails soft to
+		// available:false), 15s.
+		api.Get("/jobs/{namespace}/{name}/logs", handleJobLogs(*client.Clientset, logger))
+		api.With(middleware.Timeout(15*time.Second)).
+			Get("/jobs/{namespace}/{name}/metrics", handleJobMetrics(*client.Clientset, logger))
+
+		// ModelMonitor drift reports (SageMaker Model Monitor) — read the latest report JSON +
+		// prior runs from the bucket/prefix named in the CR's OWN spec (never a client param), via
+		// the scoped console MinIO client. Honest-empty when no report has been written yet. 20s.
+		api.With(middleware.Timeout(20*time.Second)).
+			Get("/modelmonitors/{namespace}/{name}/report", handleModelMonitorReport(*client.Clientset, logger))
+
 		// IAM: manage kind: User / kind: Group from the console instead of kubectl.
 		// Every handler authorizes the signed-in user with a SubjectAccessReview against
 		// iam.openinfra.dev (see authz.go), so this is exactly as restricted as kubectl —

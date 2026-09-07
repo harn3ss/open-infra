@@ -1,21 +1,45 @@
 import { useMemo, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  Bookmark,
   ChevronRight,
   Database,
   Download,
   FileText,
   Loader2,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
   Search,
   Table2,
+  Trash2,
   X,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useNamespace } from "@/lib/namespace-context";
@@ -29,7 +53,7 @@ import {
   type QueryResult,
 } from "@/lib/api";
 import type { StatusTone } from "@/lib/format";
-import { age } from "@/lib/format";
+import { age, formatTimestamp } from "@/lib/format";
 import type { Query } from "@/types/k8s";
 import { SqlEditor, type SqlEditorHandle } from "./sql-editor";
 
@@ -37,9 +61,21 @@ const DEFAULT_SQL =
   "SELECT *\nFROM read_parquet('s3://query-data/sales.parquet')\nLIMIT 100";
 
 function toneFor(state?: string): StatusTone {
-  if (state === "SUCCEEDED") return "success";
-  if (state === "FAILED") return "destructive";
-  return "warning";
+  const s = (state ?? "").toUpperCase();
+  if (s === "SUCCEEDED") return "success";
+  if (s === "FAILED") return "destructive";
+  if (s === "RUNNING") return "warning";
+  return "muted";
+}
+
+/** executionTimeMs → a human runtime like Athena's ("842 ms", "1.24 s", "2m 3s"). */
+function formatRuntime(ms?: number): string {
+  if (ms == null || ms <= 0) return "—";
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(2)} s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.round(s % 60)}s`;
 }
 
 type Engine = "duckdb" | "trino";
@@ -49,6 +85,62 @@ const ENGINES: { value: Engine; label: string; hint: string }[] = [
   { value: "duckdb", label: "Lake files — serverless", hint: "read_parquet('s3://…') · $0 idle" },
   { value: "trino", label: "Catalog & federation", hint: "database.table · joins across sources" },
 ];
+
+const engineLabel = (e?: string) =>
+  ENGINES.find((x) => x.value === e)?.label ?? e ?? "duckdb";
+
+/* --------------------------- Saved queries (v1) --------------------------- */
+// Honest v1: named queries persisted to this browser's localStorage only — no
+// backend, so they are NOT synced across devices or users. Labeled as such in UI.
+
+interface SavedQuery {
+  id: string;
+  name: string;
+  sql: string;
+  engine: Engine;
+  savedAt: string; // ISO
+}
+
+const SAVED_KEY = "openinfra:saved-queries";
+
+function readSaved(): SavedQuery[] {
+  try {
+    const raw = localStorage.getItem(SAVED_KEY);
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? (v as SavedQuery[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function useSavedQueries() {
+  const [saved, setSaved] = useState<SavedQuery[]>(readSaved);
+
+  const persist = (next: SavedQuery[]) => {
+    setSaved(next);
+    try {
+      localStorage.setItem(SAVED_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore — private mode / disabled storage */
+    }
+  };
+
+  const save = (name: string, sql: string, engine: Engine) =>
+    persist([
+      {
+        id: `sq-${Date.now().toString(36)}`,
+        name,
+        sql,
+        engine,
+        savedAt: new Date().toISOString(),
+      },
+      ...saved,
+    ]);
+
+  const remove = (id: string) => persist(saved.filter((s) => s.id !== id));
+
+  return { saved, save, remove };
+}
 
 interface QueryTab {
   id: number;
@@ -63,6 +155,9 @@ let tabSeq = 2;
 export function QueriesPage() {
   const { scoped } = useNamespace();
   const ns = scoped || "default";
+
+  const [view, setView] = useState<"editor" | "recent" | "saved">("editor");
+  const saved = useSavedQueries();
 
   const [tabs, setTabs] = useState<QueryTab[]>([
     { id: 1, name: "Query 1", sql: DEFAULT_SQL, engine: "duckdb", crName: null },
@@ -122,10 +217,11 @@ export function QueriesPage() {
   });
   const res = result.data;
 
-  const openInTab = (sql: string, crName: string, engine: Engine) => {
+  const openInTab = (sql: string, crName: string | null, engine: Engine) => {
     const id = ++tabSeq;
     setTabs((ts) => [...ts, { id, name: `Query ${id}`, sql, engine, crName }]);
     setActiveId(id);
+    setView("editor"); // jump to the editor so the re-opened query is visible
   };
 
   return (
@@ -136,10 +232,15 @@ export function QueriesPage() {
         icon={<Search />}
       />
 
-      <Tabs defaultValue="editor" className="flex min-h-0 flex-1 flex-col">
+      <Tabs
+        value={view}
+        onValueChange={(v) => setView(v as "editor" | "recent" | "saved")}
+        className="flex min-h-0 flex-1 flex-col"
+      >
         <TabsList className="w-fit">
           <TabsTrigger value="editor">Editor</TabsTrigger>
           <TabsTrigger value="recent">Recent queries</TabsTrigger>
+          <TabsTrigger value="saved">Saved queries</TabsTrigger>
         </TabsList>
 
         {/* ── Editor: three-pane IDE ── */}
@@ -167,14 +268,29 @@ export function QueriesPage() {
                 onRun={(sql) => run.mutate(sql)}
                 onClear={() => patchActive({ sql: "" })}
                 onEngineChange={(engine) => patchActive({ engine })}
+                onSaveQuery={saved.save}
               />
             </div>
           </div>
         </TabsContent>
 
-        {/* ── Recent queries ── */}
+        {/* ── Recent queries (Athena-style history) ── */}
         <TabsContent value="recent" className="min-h-0 flex-1">
-          <RecentQueries queries={recent} ns={ns} onOpen={openInTab} />
+          <RecentQueries
+            queries={recent}
+            ns={ns}
+            showNamespace={!scoped}
+            onOpenEditor={openInTab}
+          />
+        </TabsContent>
+
+        {/* ── Saved queries ── */}
+        <TabsContent value="saved" className="min-h-0 flex-1">
+          <SavedQueries
+            saved={saved.saved}
+            onOpen={(sql, engine) => openInTab(sql, null, engine)}
+            onRemove={saved.remove}
+          />
         </TabsContent>
       </Tabs>
     </div>
@@ -392,6 +508,7 @@ function EditorAndResults({
   onRun,
   onClear,
   onEngineChange,
+  onSaveQuery,
 }: {
   tab: QueryTab;
   res?: QueryResult;
@@ -401,9 +518,12 @@ function EditorAndResults({
   onRun: (sql: string) => void;
   onClear: () => void;
   onEngineChange: (engine: Engine) => void;
+  onSaveQuery: (name: string, sql: string, engine: Engine) => void;
 }) {
   const [topPct, setTopPct] = useState(58);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
 
   const startDrag = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -451,6 +571,17 @@ function EditorAndResults({
         <Button size="sm" variant="ghost" onClick={onClear}>
           Clear
         </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            setSaveName(tab.name);
+            setSaveOpen(true);
+          }}
+          disabled={!tab.sql.trim()}
+        >
+          <Bookmark className="size-4" /> Save
+        </Button>
         <span className="text-[11px] text-muted-foreground">⌘⏎ to run</span>
         <select
           value={tab.engine}
@@ -483,6 +614,49 @@ function EditorAndResults({
       <div className="flex min-h-0 flex-1 flex-col">
         <ResultsPanel res={res} hasRun={Boolean(tab.crName)} />
       </div>
+
+      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save query</DialogTitle>
+            <DialogDescription>
+              Saved in this browser only (localStorage) — an honest v1, not
+              synced across devices or users.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5 py-2">
+            <label className="text-xs font-medium text-muted-foreground">
+              Name
+            </label>
+            <Input
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="e.g. Daily sales rollup"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && saveName.trim() && tab.sql.trim()) {
+                  onSaveQuery(saveName.trim(), tab.sql, tab.engine);
+                  setSaveOpen(false);
+                }
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSaveOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!saveName.trim() || !tab.sql.trim()}
+              onClick={() => {
+                onSaveQuery(saveName.trim(), tab.sql, tab.engine);
+                setSaveOpen(false);
+              }}
+            >
+              <Bookmark className="size-4" /> Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -563,63 +737,356 @@ function ResultsPanel({ res, hasRun }: { res?: QueryResult; hasRun: boolean }) {
 
 /* ------------------------------ Recent queries ---------------------------- */
 
+// Athena-style query history: each past run's state / runtime / rows, click a
+// row to re-open its RESULTS. NB: there is deliberately no "Data scanned" column
+// — no bytes-scanned metric is measured by the Query engine or the result API, so
+// showing one would be fabricated. Runtime/state/rows come from the per-run result
+// endpoint (the CR status only carries a coarse phase).
 function RecentQueries({
   queries,
   ns,
-  onOpen,
+  showNamespace,
+  onOpenEditor,
 }: {
   queries: Query[];
   ns: string;
-  onOpen: (sql: string, crName: string, engine: Engine) => void;
+  showNamespace: boolean;
+  onOpenEditor: (sql: string, crName: string, engine: Engine) => void;
 }) {
+  const qc = useQueryClient();
+  const [selected, setSelected] = useState<Query | null>(null);
+
+  // Cap the number of runs we fan out result-fetches for (each is a BFF/MinIO
+  // read); the list is already newest-first.
+  const rows = queries.slice(0, 250);
+
+  const results = useQueries({
+    queries: rows.map((q) => {
+      const rns = q.metadata.namespace ?? ns;
+      const name = q.metadata.name ?? "";
+      return {
+        queryKey: ["query-result", rns, name],
+        queryFn: () => queryResult(rns, name),
+        enabled: Boolean(name),
+        staleTime: 15_000,
+        retry: 0,
+        // Keep polling only while a run is still RUNNING; finished runs are stable.
+        refetchInterval: (query: { state: { data?: QueryResult } }) =>
+          query.state.data && query.state.data.state !== "RUNNING"
+            ? false
+            : 5000,
+      };
+    }),
+  });
+
+  const colCount = showNamespace ? 6 : 5;
+
   return (
     <div className="h-full overflow-auto rounded-lg border border-border bg-background">
       <div className="flex items-center justify-between border-b border-border px-3 py-2">
         <span className="text-xs font-medium text-muted-foreground">
           Recent queries ({queries.length})
         </span>
-        <RefreshCw className="size-3.5 text-muted-foreground" />
+        <button
+          onClick={() => qc.invalidateQueries({ queryKey: ["query-result"] })}
+          title="Refresh run stats"
+          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          aria-label="Refresh"
+        >
+          <RefreshCw className="size-3.5" />
+        </button>
       </div>
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-background">
           <tr className="text-left text-xs text-muted-foreground">
             <th className="border-b border-border p-2 font-medium">Query</th>
-            <th className="w-24 border-b border-border p-2 font-medium">Namespace</th>
-            <th className="w-24 border-b border-border p-2 font-medium">Age</th>
+            <th className="w-28 border-b border-border p-2 font-medium">State</th>
+            <th className="w-24 border-b border-border p-2 font-medium">Runtime</th>
+            <th className="w-20 border-b border-border p-2 font-medium">Rows</th>
+            {showNamespace ? (
+              <th className="w-24 border-b border-border p-2 font-medium">
+                Namespace
+              </th>
+            ) : null}
+            <th className="w-28 border-b border-border p-2 font-medium">Time</th>
           </tr>
         </thead>
         <tbody>
-          {queries.length === 0 ? (
+          {rows.length === 0 ? (
             <tr>
-              <td colSpan={3} className="p-3 text-xs text-muted-foreground">
+              <td colSpan={colCount} className="p-3 text-xs text-muted-foreground">
                 No queries yet.
               </td>
             </tr>
           ) : (
-            queries.map((q) => (
-              <tr key={`${q.metadata.namespace}/${q.metadata.name}`}>
-                <td className="border-b border-border p-2">
-                  <button
-                    onClick={() =>
-                      onOpen(q.spec?.sql ?? "", q.metadata.name ?? "", (q.spec?.engine ?? "duckdb") as Engine)
-                    }
-                    title={q.spec?.sql}
-                    className="max-w-[560px] truncate font-mono text-xs text-primary hover:underline"
+            rows.map((q, i) => {
+              const r = results[i];
+              const res = r?.data;
+              const loading = r?.isLoading ?? false;
+              const phase = q.status?.phase;
+              return (
+                <tr
+                  key={`${q.metadata.namespace}/${q.metadata.name}`}
+                  onClick={() => setSelected(q)}
+                  className="group cursor-pointer hover:bg-muted/50"
+                >
+                  {/* Query preview → view results */}
+                  <td className="border-b border-border p-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        title={q.spec?.sql}
+                        className="block max-w-[460px] truncate font-mono text-xs text-primary"
+                      >
+                        {q.spec?.sql}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenEditor(
+                            q.spec?.sql ?? "",
+                            q.metadata.name ?? "",
+                            (q.spec?.engine ?? "duckdb") as Engine,
+                          );
+                        }}
+                        title="Re-open in editor"
+                        aria-label="Re-open in editor"
+                        className="shrink-0 rounded p-1 text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                  {/* State */}
+                  <td className="border-b border-border p-2">
+                    {res?.state ? (
+                      <StatusBadge status={res.state} tone={toneFor(res.state)} />
+                    ) : loading ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin" /> checking…
+                      </span>
+                    ) : phase ? (
+                      <StatusBadge
+                        status={phase.toUpperCase()}
+                        tone={toneFor(phase)}
+                      />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  {/* Runtime */}
+                  <td className="border-b border-border p-2 text-xs tabular-nums text-muted-foreground">
+                    {res && res.state !== "RUNNING"
+                      ? formatRuntime(res.executionTimeMs)
+                      : "—"}
+                  </td>
+                  {/* Rows */}
+                  <td className="border-b border-border p-2 text-xs tabular-nums text-muted-foreground">
+                    {res?.state === "SUCCEEDED"
+                      ? res.rowCount.toLocaleString()
+                      : "—"}
+                  </td>
+                  {showNamespace ? (
+                    <td className="border-b border-border p-2 text-xs text-muted-foreground">
+                      {q.metadata.namespace ?? ns}
+                    </td>
+                  ) : null}
+                  {/* Time */}
+                  <td
+                    className="border-b border-border p-2 text-xs text-muted-foreground"
+                    title={formatTimestamp(q.metadata.creationTimestamp)}
                   >
-                    {q.spec?.sql}
-                  </button>
-                </td>
-                <td className="border-b border-border p-2 text-xs text-muted-foreground">
-                  {q.metadata.namespace ?? ns}
-                </td>
-                <td className="border-b border-border p-2 text-xs text-muted-foreground">
-                  {age(q.metadata.creationTimestamp)}
-                </td>
-              </tr>
-            ))
+                    {age(q.metadata.creationTimestamp)}
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
+
+      {selected ? (
+        <ResultsSheet
+          query={selected}
+          ns={ns}
+          onClose={() => setSelected(null)}
+          onOpenEditor={onOpenEditor}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/* ---------------------- Past-run results (view results) ------------------- */
+
+// Row-click on a history entry lands here: re-fetch that run's result via the
+// existing result endpoint (shared React-Query cache — same key as the list, so
+// no double fetch) and render the results grid, matching Athena's "view results".
+function ResultsSheet({
+  query,
+  ns,
+  onClose,
+  onOpenEditor,
+}: {
+  query: Query;
+  ns: string;
+  onClose: () => void;
+  onOpenEditor: (sql: string, crName: string, engine: Engine) => void;
+}) {
+  const rns = query.metadata.namespace ?? ns;
+  const name = query.metadata.name ?? "";
+  const sql = query.spec?.sql ?? "";
+  const engine = (query.spec?.engine ?? "duckdb") as Engine;
+
+  const result = useQuery({
+    queryKey: ["query-result", rns, name],
+    queryFn: () => queryResult(rns, name),
+    refetchInterval: (q) =>
+      q.state.data && q.state.data.state !== "RUNNING" ? false : 1500,
+  });
+  const res = result.data;
+
+  return (
+    <Sheet open onOpenChange={(o) => (o ? null : onClose())}>
+      <SheetContent
+        side="right"
+        className="flex w-full flex-col gap-0 p-0 sm:max-w-2xl"
+      >
+        <SheetHeader className="gap-2 pr-12">
+          <div>
+            <SheetTitle className="text-base">Query results</SheetTitle>
+            <SheetDescription>
+              {name} · {engineLabel(engine)} ·{" "}
+              {age(query.metadata.creationTimestamp)} ago
+            </SheetDescription>
+          </div>
+          <pre className="max-h-28 overflow-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-xs">
+            {sql}
+          </pre>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                onOpenEditor(sql, name, engine);
+                onClose();
+              }}
+            >
+              <Pencil className="size-3.5" /> Open in editor
+            </Button>
+            {res?.state === "SUCCEEDED" && res.rows?.length ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => downloadCsv(name, res)}
+              >
+                <Download className="size-4" /> CSV
+              </Button>
+            ) : null}
+          </div>
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <ResultsPanel res={res} hasRun />
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/* ------------------------------ Saved queries ----------------------------- */
+
+function SavedQueries({
+  saved,
+  onOpen,
+  onRemove,
+}: {
+  saved: SavedQuery[];
+  onOpen: (sql: string, engine: Engine) => void;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="h-full overflow-auto rounded-lg border border-border bg-background">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          Saved queries ({saved.length})
+        </span>
+      </div>
+      <p className="border-b border-border bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground">
+        Saved in this browser only (localStorage) — an honest v1, not synced
+        across devices or users.
+      </p>
+      {saved.length === 0 ? (
+        <div className="p-3 text-xs text-muted-foreground">
+          No saved queries yet. Write a query in the editor and choose{" "}
+          <span className="font-medium">Save</span>.
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-background">
+            <tr className="text-left text-xs text-muted-foreground">
+              <th className="w-48 border-b border-border p-2 font-medium">
+                Name
+              </th>
+              <th className="border-b border-border p-2 font-medium">Query</th>
+              <th className="w-40 border-b border-border p-2 font-medium">
+                Engine
+              </th>
+              <th className="w-24 border-b border-border p-2 font-medium">
+                Saved
+              </th>
+              <th className="w-16 border-b border-border p-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {saved.map((s) => (
+              <tr key={s.id} className="hover:bg-muted/50">
+                <td className="border-b border-border p-2 align-top text-xs font-medium">
+                  {s.name}
+                </td>
+                <td className="border-b border-border p-2 align-top">
+                  <button
+                    onClick={() => onOpen(s.sql, s.engine)}
+                    title={s.sql}
+                    className="block max-w-[520px] truncate text-left font-mono text-xs text-primary hover:underline"
+                  >
+                    {s.sql}
+                  </button>
+                </td>
+                <td className="border-b border-border p-2 align-top text-xs text-muted-foreground">
+                  {engineLabel(s.engine)}
+                </td>
+                <td
+                  className="border-b border-border p-2 align-top text-xs text-muted-foreground"
+                  title={formatTimestamp(s.savedAt)}
+                >
+                  {age(s.savedAt)}
+                </td>
+                <td className="border-b border-border p-2 align-top">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      title="Open in editor"
+                      aria-label="Open in editor"
+                      onClick={() => onOpen(s.sql, s.engine)}
+                    >
+                      <Pencil className="size-3.5" />
+                    </Button>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      title="Delete saved query"
+                      aria-label="Delete saved query"
+                      onClick={() => onRemove(s.id)}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
