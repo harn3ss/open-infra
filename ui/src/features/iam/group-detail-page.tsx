@@ -32,6 +32,7 @@ import {
   type IamUser,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { PendingTab } from "./pending-notice";
 
 /** What the three shipped console ClusterRoles confer, for the Permissions tab. */
 const BUILTIN_ROLES: Record<string, { label: string; blurb: string }> = {
@@ -161,11 +162,49 @@ export function GroupDetailPage() {
           : { label: "Inert", tone: "warning" }
       }
     >
-      <Tabs defaultValue="overview">
+      {/* Summary — AWS shows the group's facts above the tab strip, then leads with Users. */}
+      {!group.impersonable ? <InertWarning name={group.name} /> : null}
+      <Card>
+        <CardContent className="p-5">
+          <KeyValuePairs
+            columns={2}
+            items={[
+              { label: "Name", value: group.name },
+              { label: "Description", value: group.description || "—" },
+              {
+                label: "Grants (ClusterRole)",
+                value: (
+                  <span className="inline-flex items-center gap-1">
+                    <code className="text-xs">{group.clusterRole}</code>
+                    <CopyButton value={group.clusterRole} />
+                  </span>
+                ),
+              },
+              {
+                label: "Bound to",
+                value: <code className="text-xs">{group.boundTo || `openinfra:${group.name}`}</code>,
+              },
+              { label: "Users", value: String(members.length) },
+              {
+                label: "Status",
+                value: group.impersonable ? (
+                  <Badge variant={group.ready ? "success" : "secondary"}>
+                    {group.ready ? "Ready" : "Provisioning"}
+                  </Badge>
+                ) : (
+                  <Badge variant="warning">Inert</Badge>
+                ),
+              },
+            ]}
+          />
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="users" className="mt-5">
         <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="users">Users ({members.length})</TabsTrigger>
+          <TabsTrigger value="permissions">Permissions</TabsTrigger>
+          <TabsTrigger value="advisor">Access Advisor</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -173,46 +212,6 @@ export function GroupDetailPage() {
             Danger Zone
           </TabsTrigger>
         </TabsList>
-
-        {/* ---------------------------------------------------------- Overview */}
-        <TabsContent value="overview" className="pt-4">
-          {!group.impersonable ? <InertWarning name={group.name} /> : null}
-          <Card>
-            <CardContent className="p-5">
-              <KeyValuePairs
-                columns={2}
-                items={[
-                  { label: "Name", value: group.name },
-                  { label: "Description", value: group.description || "—" },
-                  {
-                    label: "Grants (ClusterRole)",
-                    value: (
-                      <span className="inline-flex items-center gap-1">
-                        <code className="text-xs">{group.clusterRole}</code>
-                        <CopyButton value={group.clusterRole} />
-                      </span>
-                    ),
-                  },
-                  {
-                    label: "Bound to",
-                    value: <code className="text-xs">{group.boundTo || `openinfra:${group.name}`}</code>,
-                  },
-                  { label: "Users", value: String(members.length) },
-                  {
-                    label: "Status",
-                    value: group.impersonable ? (
-                      <Badge variant={group.ready ? "success" : "secondary"}>
-                        {group.ready ? "Ready" : "Provisioning"}
-                      </Badge>
-                    ) : (
-                      <Badge variant="warning">Inert</Badge>
-                    ),
-                  },
-                ]}
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         {/* ------------------------------------------------------- Permissions */}
         <TabsContent value="permissions" className="pt-4 space-y-4">
@@ -432,6 +431,16 @@ export function GroupDetailPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ---------------------------------------------------- Access Advisor */}
+        <TabsContent value="advisor" className="pt-4">
+          <PendingTab title="Access Advisor — services last accessed">
+            Per-service last-used data for this group's members (through its bound ClusterRole) is not
+            available yet. Only aggregate last-seen exists today (in Access Review); the per-service
+            breakdown AWS shows here needs richer audit parsing (k8s-audit + shim logs via Loki,
+            attributed to the group's members).
+          </PendingTab>
         </TabsContent>
 
         {/* -------------------------------------------------------- Danger Zone */}

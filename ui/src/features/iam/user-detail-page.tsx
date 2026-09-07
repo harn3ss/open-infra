@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { GroupPicker } from "./group-picker";
 import { UserPermissionsTab } from "./user-permissions-tab";
+import { PendingTab } from "./pending-notice";
 
 export function UserDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -118,12 +119,73 @@ export function UserDetailPage() {
         )
       }
     >
-      <Tabs defaultValue="overview">
+      {/* Summary — AWS puts the identity facts above the tab strip, then leads with Permissions. */}
+      <Card>
+        <CardContent className="p-5">
+          <KeyValuePairs
+            columns={3}
+            items={[
+              {
+                label: "User name",
+                value: (
+                  <span className="inline-flex items-center gap-1">
+                    {user.name}
+                    <CopyButton value={user.name} label="Copy user name" />
+                  </span>
+                ),
+              },
+              { label: "Display name", value: user.displayName || "" },
+              { label: "Source", value: user.source || "local" },
+              {
+                label: "Console access",
+                value: user.disabled ? (
+                  <Badge variant="muted">Disabled</Badge>
+                ) : (
+                  <Badge variant="success">Enabled</Badge>
+                ),
+              },
+              {
+                label: "Sign-in credential",
+                value: !isLocal ? (
+                  `Managed by ${user.source}`
+                ) : user.hasPassword ? (
+                  "Password set"
+                ) : (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    No password — set one on Security credentials
+                  </span>
+                ),
+              },
+              {
+                label: "Groups",
+                value:
+                  (user.groups ?? []).length === 0 ? (
+                    "none"
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {(user.groups ?? []).map((g) => (
+                        <Badge
+                          key={g}
+                          variant={(user.unboundGroups ?? []).includes(g) ? "outline" : "secondary"}
+                        >
+                          {g}
+                        </Badge>
+                      ))}
+                    </div>
+                  ),
+              },
+            ]}
+          />
+        </CardContent>
+      </Card>
+
+      <Tabs defaultValue="permissions" className="mt-5">
         <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="groups">Groups ({(user.groups ?? []).length})</TabsTrigger>
+          <TabsTrigger value="tags">Tags</TabsTrigger>
           <TabsTrigger value="security">Security credentials</TabsTrigger>
+          <TabsTrigger value="advisor">Access Advisor</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -131,69 +193,6 @@ export function UserDetailPage() {
             Danger Zone
           </TabsTrigger>
         </TabsList>
-
-        <TabsContent value="overview" className="pt-4">
-          <Card>
-            <CardContent className="p-5">
-              <KeyValuePairs
-                columns={3}
-                items={[
-                  {
-                    label: "User name",
-                    value: (
-                      <span className="inline-flex items-center gap-1">
-                        {user.name}
-                        <CopyButton value={user.name} label="Copy user name" />
-                      </span>
-                    ),
-                  },
-                  { label: "Display name", value: user.displayName || "" },
-                  { label: "Source", value: user.source || "local" },
-                  {
-                    label: "Console access",
-                    value: user.disabled ? (
-                      <Badge variant="muted">Disabled</Badge>
-                    ) : (
-                      <Badge variant="success">Enabled</Badge>
-                    ),
-                  },
-                  {
-                    label: "Sign-in credential",
-                    value: !isLocal ? (
-                      `Managed by ${user.source}`
-                    ) : user.hasPassword ? (
-                      "Password set"
-                    ) : (
-                      <span className="text-amber-600 dark:text-amber-400">
-                        No password — set one on Security credentials
-                      </span>
-                    ),
-                  },
-                  {
-                    label: "Groups",
-                    value:
-                      (user.groups ?? []).length === 0 ? (
-                        "none"
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {(user.groups ?? []).map((g) => (
-                            <Badge
-                              key={g}
-                              variant={
-                                (user.unboundGroups ?? []).includes(g) ? "outline" : "secondary"
-                              }
-                            >
-                              {g}
-                            </Badge>
-                          ))}
-                        </div>
-                      ),
-                  },
-                ]}
-              />
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         <TabsContent value="permissions" className="pt-4">
           <UserPermissionsTab user={user} />
@@ -230,6 +229,15 @@ export function UserDetailPage() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Tags — backend-blocked (the user view carries no labels/annotations yet). */}
+        <TabsContent value="tags" className="pt-4">
+          <PendingTab title="Tags">
+            Tags are not yet surfaced for users. The IAM user view (<code>iamUserView</code>) does not
+            carry labels or annotations today, so there is nothing to show or edit here. When the BFF
+            exposes them, this tab wires the shared tag editor (add/remove key–value rows).
+          </PendingTab>
         </TabsContent>
 
         <TabsContent value="security" className="space-y-4 pt-4">
@@ -295,6 +303,30 @@ export function UserDetailPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Access keys + MFA — net-new, backend-blocked. A separate batch fills these in. */}
+          <Card>
+            <CardContent className="space-y-1 p-5 text-sm text-muted-foreground">
+              <h3 className="text-sm font-semibold text-foreground">Access keys &amp; MFA</h3>
+              <p>
+                AWS lists a user's access keys (create-once secret, Active/Inactive, last used) and
+                registered MFA devices here. open-infra's access keys are the aws-shim SigV4
+                sub-resource (<code>iam-ak-&lt;hash&gt;</code> Secret) and are not yet exposed by a
+                BFF endpoint; MFA is deferred. A separate credentials batch adds these — no widget is
+                shown until it lands.
+              </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Access Advisor — backend-blocked (no per-service last-used data plumbing yet). */}
+        <TabsContent value="advisor" className="pt-4">
+          <PendingTab title="Access Advisor — services last accessed">
+            Per-service, per-permission last-used data for this user is not available yet. Only
+            aggregate last-seen exists today (in Access Review); the per-service breakdown AWS shows
+            here needs richer audit parsing (k8s-audit + shim logs via Loki, attributed by
+            <code> impersonatedUser</code>).
+          </PendingTab>
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

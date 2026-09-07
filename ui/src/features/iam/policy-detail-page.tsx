@@ -17,6 +17,8 @@ import { LoadingState, ErrorState } from "@/components/common/states";
 import { deleteIamPolicy, getIamPolicy, listIamRoles } from "@/lib/api";
 import { PermissionsSummary } from "./policy-editor/permissions-summary";
 import { policyType, type PolicyTypeLabel } from "./policy-type";
+import { PendingTab } from "./pending-notice";
+import { cn } from "@/lib/utils";
 
 const TYPE_TONE: Record<PolicyTypeLabel, "default" | "accent" | "secondary"> = {
   "Control plane": "default",
@@ -30,6 +32,9 @@ export function PolicyDetailPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [forcePrompt, setForcePrompt] = useState(false);
+  // AWS's Permissions tab carries a { } / Summary toggle at the top-right; open-infra's JSON view is
+  // the Policy CR (the source of truth), so the toggle switches the summary table ⇄ the raw CR.
+  const [permView, setPermView] = useState<"summary" | "json">("summary");
 
   const roles = useQuery({ queryKey: ["iam", "roles"], queryFn: listIamRoles });
   const { data: policy, isLoading, isError, error, refetch } = useQuery({
@@ -69,7 +74,7 @@ export function PolicyDetailPage() {
   const appliesTo = policy.dataPlane?.appliesTo?.filter((p) => p && p !== "*") ?? [];
   const hasDataPlane = (policy.dataPlane?.statements ?? []).length > 0;
 
-  // The read-only CR view (the "JSON/CR" tab source of truth).
+  // The read-only CR view (the JSON toggle's source of truth).
   const cr = {
     apiVersion: "iam.openinfra.dev/v1",
     kind: "Policy",
@@ -99,8 +104,10 @@ export function PolicyDetailPage() {
       <Tabs defaultValue="permissions">
         <TabsList>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
-          <TabsTrigger value="json">JSON / CR</TabsTrigger>
           <TabsTrigger value="entities">Entities attached ({attachedRoles.length})</TabsTrigger>
+          <TabsTrigger value="tags">Tags</TabsTrigger>
+          <TabsTrigger value="versions">Policy versions</TabsTrigger>
+          <TabsTrigger value="advisor">Access Advisor</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -109,7 +116,7 @@ export function PolicyDetailPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Permissions — the AWS permissions-summary table + overview + boundary note. */}
+        {/* Permissions — the AWS permissions-summary table with a Summary ⇄ JSON/CR toggle. */}
         <TabsContent value="permissions" className="space-y-4 pt-4">
           <Card>
             <CardContent className="p-4">
@@ -144,48 +151,70 @@ export function PolicyDetailPage() {
 
           <Card>
             <CardContent className="p-0">
-              <div className="border-b border-border p-3">
-                <h3 className="text-sm font-semibold">Permissions summary</h3>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Platform (control-plane) permissions compile to RBAC — Allow-only, all resources of the
-                  kind. Data-service permissions are enforced by Cedar and may Deny, scope, and set conditions.
-                </p>
+              <div className="flex items-start justify-between gap-3 border-b border-border p-3">
+                <div>
+                  <h3 className="text-sm font-semibold">
+                    {permView === "summary" ? "Permissions summary" : "Policy resource (CR)"}
+                  </h3>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {permView === "summary"
+                      ? "Platform (control-plane) permissions compile to RBAC — Allow-only, all resources of the kind. Data-service permissions are enforced by Cedar and may Deny, scope, and set conditions."
+                      : "The Policy CR is the authored artifact — the same object GitOps would apply. Edit it on the policy editor's JSON tab."}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {/* Summary | JSON toggle (AWS parity). */}
+                  <div className="inline-flex overflow-hidden rounded-md border border-border">
+                    <button
+                      type="button"
+                      onClick={() => setPermView("summary")}
+                      className={cn(
+                        "px-2.5 py-1 text-xs font-medium transition-colors",
+                        permView === "summary"
+                          ? "bg-primary/15 text-primary"
+                          : "text-muted-foreground hover:bg-muted",
+                      )}
+                    >
+                      Summary
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPermView("json")}
+                      className={cn(
+                        "border-l border-border px-2.5 py-1 font-mono text-xs font-medium transition-colors",
+                        permView === "json"
+                          ? "bg-primary/15 text-primary"
+                          : "text-muted-foreground hover:bg-muted",
+                      )}
+                    >
+                      {"{ }"} JSON / CR
+                    </button>
+                  </div>
+                  {permView === "json" ? <CopyButton value={yamlOf(cr)} label="Copy YAML" /> : null}
+                </div>
               </div>
-              <PermissionsSummary doc={doc} />
+              {permView === "summary" ? (
+                <PermissionsSummary doc={doc} />
+              ) : (
+                <div className="space-y-4 p-4">
+                  <YamlViewer value={cr} />
+                  {policy.dataPlane?.statements?.length || policy.controlPlane?.statements?.length ? (
+                    <div className="space-y-2">
+                      <h4 className="text-sm font-semibold">Cedar policy set (data / control plane)</h4>
+                      <p className="text-xs text-muted-foreground">
+                        What the aws-shim (data plane) and the shadow webhook (control plane) evaluate —
+                        the Allow/Deny + conditions RBAC cannot express.
+                      </p>
+                      <YamlViewer
+                        value={{ dataPlane: policy.dataPlane, controlPlane: policy.controlPlane }}
+                        maxHeightClassName="max-h-[40vh]"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        {/* JSON / CR — the source of truth, plus a read-only Cedar expander. */}
-        <TabsContent value="json" className="space-y-4 pt-4">
-          <Card>
-            <CardContent className="space-y-2 p-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">Policy resource</h3>
-                <CopyButton value={yamlOf(cr)} label="Copy YAML" />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                The Policy CR is the authored artifact — the same object GitOps would apply. Edit it on the
-                policy editor's JSON tab.
-              </p>
-              <YamlViewer value={cr} />
-            </CardContent>
-          </Card>
-          {policy.dataPlane?.statements?.length || policy.controlPlane?.statements?.length ? (
-            <Card>
-              <CardContent className="space-y-2 p-4">
-                <h3 className="text-sm font-semibold">Cedar policy set (data / control plane)</h3>
-                <p className="text-xs text-muted-foreground">
-                  What the aws-shim (data plane) and the shadow webhook (control plane) evaluate — the
-                  Allow/Deny + conditions RBAC cannot express.
-                </p>
-                <YamlViewer
-                  value={{ dataPlane: policy.dataPlane, controlPlane: policy.controlPlane }}
-                  maxHeightClassName="max-h-[40vh]"
-                />
-              </CardContent>
-            </Card>
-          ) : null}
         </TabsContent>
 
         {/* Entities attached — the reverse "who has this?" view (roles + data-plane principals). */}
@@ -236,6 +265,48 @@ export function PolicyDetailPage() {
               </CardContent>
             </Card>
           ) : null}
+
+          {/* AWS lists "Attached as a permissions boundary" here; open-infra has no per-identity
+              boundary — the platform boundary is structural, so this subsection stays honest. */}
+          <Card>
+            <CardContent className="p-4">
+              <h3 className="text-sm font-semibold">Attached as a permissions boundary</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                open-infra does not use per-identity permission boundaries, so a policy is never
+                attached as one. The effective ceiling is the always-on <b>structural platform
+                boundary</b> (a Policy can only ever grant on the ~33 <code>openinfra.dev</code>
+                resources) — it applies to every identity and is not attached or detached here.
+              </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tags — backend-blocked (the policy view carries no labels/annotations yet). */}
+        <TabsContent value="tags" className="pt-4">
+          <PendingTab title="Tags">
+            Tags are not yet surfaced for policies. The IAM policy view carries no labels or
+            annotations today, so there is nothing to show or edit here. When the BFF exposes them,
+            this tab wires the shared tag editor (add/remove key–value rows).
+          </PendingTab>
+        </TabsContent>
+
+        {/* Policy versions — backend-blocked (CR generations/revisions not exposed yet). */}
+        <TabsContent value="versions" className="pt-4">
+          <PendingTab title="Policy versions">
+            open-infra does not keep AWS's 5-version model. The honest analog is the Policy CR's
+            revision history (generations / GitOps revisions), and the BFF does not expose that yet.
+            When it does, this tab lists prior CR revisions with a "set as current" action — labelled
+            as revisions, not AWS versions.
+          </PendingTab>
+        </TabsContent>
+
+        {/* Access Advisor — backend-blocked (no per-service last-used via this policy yet). */}
+        <TabsContent value="advisor" className="pt-4">
+          <PendingTab title="Access Advisor — services last accessed via this policy">
+            Per-service last-used data attributed to this policy is not available yet. Only aggregate
+            last-seen exists today (in Access Review); the per-service breakdown AWS shows here needs
+            richer audit parsing (k8s-audit + shim logs via Loki).
+          </PendingTab>
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">
