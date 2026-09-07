@@ -856,6 +856,65 @@ export function deleteIamUser(name: string): Promise<{ name: string }> {
   return request(`/iam/users/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+/* ------------------------------ IAM access keys (Security credentials) ------------------------------ */
+// A User's aws-shim SigV4 access keys — the AWS "Security credentials" surface. Same BFF SAR gate as
+// the rest of IAM, PLUS self-service: a signed-in user manages their own keys without being an admin
+// (console-api/cmd/server/iam_accesskeys.go). The secret is returned ONCE by createAccessKey and is
+// never retrievable again — there is no endpoint that hands it back.
+
+/** One access key as the console sees it — never the secret. */
+export interface AccessKey {
+  accessKeyId: string;
+  owner: string;
+  /** "Active" | "Inactive" — AWS's status. Inactive keys stop verifying but can be re-activated. */
+  status: "Active" | "Inactive";
+  /** RFC3339 creation time, or "" when unknown. */
+  created: string;
+  /** Per-key last-used is not tracked yet; always null today (shown as "—"). */
+  lastUsed: string | null;
+}
+
+/** The create response — the ONLY place `secretAccessKey` is ever returned. Show it once, then lose it. */
+export interface AccessKeyCreated {
+  accessKeyId: string;
+  secretAccessKey: string;
+  owner: string;
+  status: "Active";
+  created: string;
+}
+
+export function listAccessKeys(user: string): Promise<AccessKey[]> {
+  return request<AccessKey[]>(`/iam/users/${encodeURIComponent(user)}/access-keys`);
+}
+
+export function createAccessKey(user: string): Promise<AccessKeyCreated> {
+  return request<AccessKeyCreated>(`/iam/users/${encodeURIComponent(user)}/access-keys`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function updateAccessKey(
+  user: string,
+  accessKeyId: string,
+  status: "Active" | "Inactive",
+): Promise<{ accessKeyId: string; status: string }> {
+  return request(
+    `/iam/users/${encodeURIComponent(user)}/access-keys/${encodeURIComponent(accessKeyId)}`,
+    { method: "PATCH", body: JSON.stringify({ status }) },
+  );
+}
+
+export function deleteAccessKey(
+  user: string,
+  accessKeyId: string,
+): Promise<{ accessKeyId: string }> {
+  return request(
+    `/iam/users/${encodeURIComponent(user)}/access-keys/${encodeURIComponent(accessKeyId)}`,
+    { method: "DELETE" },
+  );
+}
+
 export function listIamGroups(): Promise<IamGroup[]> {
   return request<IamGroup[]>("/iam/groups");
 }

@@ -126,6 +126,33 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Console access-key management: the console BFF's "Security credentials" surface mints, lists,
+# deactivates and deletes a User's access keys, so the console SA needs full Secret access in the
+# shim's KEYS namespace — scoped to THIS namespace only (which holds nothing but iam-ak-<id> key
+# Secrets). `list` is the reason this Role must exist: the cluster-wide console ClusterRole grants
+# get/create/update/patch/delete on secrets but deliberately withholds list/watch, and listing a
+# user's keys by owner label needs it. Granted only when the aws-shim overlay is deployed.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-infra-console-keys
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: open-infra-console-keys
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: open-infra-console-keys }
+subjects:
+  - kind: ServiceAccount
+    name: console
+    namespace: open-infra-console
+---
 # Owner resolution: read kind: User (NEVER Secrets) in the console namespace, to map an access
 # key's owner to its current groups. get+list only; nothing mutating.
 apiVersion: rbac.authorization.k8s.io/v1

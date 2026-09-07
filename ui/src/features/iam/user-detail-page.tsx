@@ -25,6 +25,7 @@ import {
 import { GroupPicker } from "./group-picker";
 import { UserPermissionsTab } from "./user-permissions-tab";
 import { PendingTab } from "./pending-notice";
+import { AccessKeysPanel } from "./access-keys-panel";
 
 export function UserDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -304,16 +305,19 @@ export function UserDetailPage() {
             </Card>
           )}
 
-          {/* Access keys + MFA — net-new, backend-blocked. A separate batch fills these in. */}
+          {/* Access keys — the aws-shim SigV4 sub-resource. The secret is shown exactly once. */}
+          <AccessKeysPanel user={user.name} />
+
+          {/* MFA — deferred (Part A). Kept as an honest note, not a fake widget. */}
           <Card>
             <CardContent className="space-y-1 p-5 text-sm text-muted-foreground">
-              <h3 className="text-sm font-semibold text-foreground">Access keys &amp; MFA</h3>
+              <h3 className="text-sm font-semibold text-foreground">Multi-factor authentication (MFA)</h3>
               <p>
-                AWS lists a user's access keys (create-once secret, Active/Inactive, last used) and
-                registered MFA devices here. open-infra's access keys are the aws-shim SigV4
-                sub-resource (<code>iam-ak-&lt;hash&gt;</code> Secret) and are not yet exposed by a
-                BFF endpoint; MFA is deferred. A separate credentials batch adds these — no widget is
-                shown until it lands.
+                MFA device registration is not yet supported.{" "}
+                {isLocal
+                  ? "It is on the roadmap for local users."
+                  : `For this user, sign-in (and any MFA) is handled by the ${user.source} directory.`}{" "}
+                No MFA widget is shown until it lands.
               </p>
             </CardContent>
           </Card>

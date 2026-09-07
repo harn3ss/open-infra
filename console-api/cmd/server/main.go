@@ -327,6 +327,15 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/users/{name}", handleIAMUserUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users/{name}/password", handleIAMUserPassword(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/users/{name}", handleIAMUserDelete(cs, auth, logger))
+		// Access keys (the AWS "Security credentials" surface) — the aws-shim SigV4 sub-resource of a
+		// User. A user manages their OWN keys; managing another's needs the same admin SAR as the
+		// endpoints above (see iam_accesskeys.go). The secret is returned ONCE, by create, and never
+		// again. Keys live in the shim's KEYS_NAMESPACE, kept in step with the shim's own default.
+		keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/users/{name}/access-keys", handleIAMAccessKeysList(cs, auth, keysNS, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users/{name}/access-keys", handleIAMAccessKeyCreate(cs, auth, keysNS, logger))
+		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/users/{name}/access-keys/{id}", handleIAMAccessKeyUpdate(cs, auth, keysNS, logger))
+		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/users/{name}/access-keys/{id}", handleIAMAccessKeyDelete(cs, auth, keysNS, logger))
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/groups", handleIAMGroupsList(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/groups", handleIAMGroupCreate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/groups/{name}", handleIAMGroupUpdate(cs, auth, logger))

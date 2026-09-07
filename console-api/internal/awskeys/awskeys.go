@@ -27,7 +27,9 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,6 +55,17 @@ type Key struct {
 	AccessKeyID string
 	SecretKey   string
 	Owner       string
+}
+
+// Meta is a key's PUBLIC metadata — everything the console may show, and deliberately NOT the
+// secret. It is what List and Describe return; the secret material never travels through them, so
+// no code path outside SigV4 verification (Lookup) can read a stored secret back. Disabled true is
+// AWS's "Inactive": the key still exists (and can be re-activated) but stops verifying.
+type Meta struct {
+	AccessKeyID string
+	Owner       string
+	Disabled    bool
+	Created     time.Time
 }
 
 // Store reads and writes access-key Secrets in a single namespace (the IAM/console namespace).
@@ -145,6 +158,81 @@ func (s *Store) Revoke(ctx context.Context, accessKeyID string) error {
 	sec.Data[dataDisabled] = []byte("true")
 	_, err = s.cs.CoreV1().Secrets(s.ns).Update(ctx, sec, metav1.UpdateOptions{})
 	return err
+}
+
+// Activate reverses Revoke: it clears the disabled flag so a key verifies again (AWS's
+// "Make active"). Get+Update rather than a patch so the []byte value's base64 encoding is the
+// client-go library's problem, not ours.
+func (s *Store) Activate(ctx context.Context, accessKeyID string) error {
+	sec, err := s.cs.CoreV1().Secrets(s.ns).Get(ctx, SecretName(accessKeyID), metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if sec.Data == nil {
+		sec.Data = map[string][]byte{}
+	}
+	sec.Data[dataDisabled] = []byte("false")
+	_, err = s.cs.CoreV1().Secrets(s.ns).Update(ctx, sec, metav1.UpdateOptions{})
+	return err
+}
+
+// Delete permanently removes a key's Secret. Unlike Revoke (which keeps a tombstone so the ID
+// can never be silently reissued), this is the AWS "Delete access key" — gone for good. The
+// console offers both: Deactivate (Revoke) to pause a key, Delete to retire it.
+func (s *Store) Delete(ctx context.Context, accessKeyID string) error {
+	return s.cs.CoreV1().Secrets(s.ns).Delete(ctx, SecretName(accessKeyID), metav1.DeleteOptions{})
+}
+
+// Describe returns one key's PUBLIC metadata (never the secret), including revoked keys — the
+// console needs to show an Inactive key so it can be re-activated or deleted. ok=false when the
+// key doesn't exist or the stored ID doesn't match the hashed name (the same collision guard
+// Lookup uses).
+func (s *Store) Describe(ctx context.Context, accessKeyID string) (Meta, bool) {
+	if accessKeyID == "" {
+		return Meta{}, false
+	}
+	sec, err := s.cs.CoreV1().Secrets(s.ns).Get(ctx, SecretName(accessKeyID), metav1.GetOptions{})
+	if err != nil {
+		return Meta{}, false
+	}
+	if string(sec.Data[dataAccessKeyID]) != accessKeyID {
+		return Meta{}, false
+	}
+	return metaFromSecret(sec), true
+}
+
+// List returns the PUBLIC metadata of every key owned by a principal (a kind: User name), newest
+// first. It reads by the owner label — the reason keys are labelled — and never returns secret
+// material: the console lists keys, it does not retrieve them. Revoked (Inactive) keys are
+// included so the UI can render and manage them.
+func (s *Store) List(ctx context.Context, owner string) ([]Meta, error) {
+	sel := LabelOwner + "=" + owner + "," + labelManagedBy + "=" + managedByValue
+	list, err := s.cs.CoreV1().Secrets(s.ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Meta, 0, len(list.Items))
+	for i := range list.Items {
+		sec := &list.Items[i]
+		// Skip anything that isn't a well-formed key Secret (defends against a stray labelled Secret).
+		if len(sec.Data[dataAccessKeyID]) == 0 {
+			continue
+		}
+		out = append(out, metaFromSecret(sec))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Created.After(out[j].Created) })
+	return out, nil
+}
+
+// metaFromSecret projects a key Secret onto its public Meta — the one place the mapping lives, so
+// List and Describe agree and neither can accidentally include dataSecretKey.
+func metaFromSecret(sec *corev1.Secret) Meta {
+	return Meta{
+		AccessKeyID: string(sec.Data[dataAccessKeyID]),
+		Owner:       string(sec.Data[dataOwner]),
+		Disabled:    strings.EqualFold(string(sec.Data[dataDisabled]), "true"),
+		Created:     sec.CreationTimestamp.Time,
+	}
 }
 
 // GenerateKeyPair mints a fresh, AWS-shaped access key ID + secret using crypto/rand. The ID is
