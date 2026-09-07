@@ -1435,3 +1435,115 @@ export interface AccessReview {
 export function getAccessReview(): Promise<AccessReview> {
   return request<AccessReview>(`/iam/access-review`);
 }
+
+/* ------------------------- ML / batch job observability ------------------------- */
+// Logs + metrics for the backing batch/v1 Job of a SageMaker-style job (TrainingJob /
+// ProcessingJob / BatchTransform). {name} is the Job name; the BFF resolves its pods and
+// reads pod logs (pods/log) or range-queries Prometheus. Both fail soft — never fabricated.
+
+/** One pod's tailed log output for a Job (aggregated across the Job's pods). */
+export interface JobPodLog {
+  pod: string;
+  container: string;
+  logs: string;
+}
+export interface JobLogs {
+  /** Empty when the Job has no pods yet (honest empty, HTTP 200) — not an error. */
+  pods: JobPodLog[];
+}
+
+/**
+ * Tail the logs of every pod backing a batch Job. `tailLines` defaults to 1000 (server cap
+ * 5000); `container` selects a specific container (default: the pod's first). Aggregated
+ * across all of the Job's pods.
+ */
+export function jobLogs(
+  namespace: string,
+  name: string,
+  opts?: { tailLines?: number; container?: string },
+): Promise<JobLogs> {
+  const q = new URLSearchParams();
+  if (opts?.tailLines) q.set("tailLines", String(opts.tailLines));
+  if (opts?.container) q.set("container", opts.container);
+  const qs = q.toString();
+  return request<JobLogs>(
+    `/jobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** One resource time-series for a Job. `points` are [tsSeconds, value] pairs. */
+export interface JobMetricSeries {
+  /** "cpu" | "memory" | "gpu" (gpu present only when a DCGM series exists). */
+  name: "cpu" | "memory" | "gpu" | string;
+  /** "cores" | "bytes" | "percent". */
+  unit: string;
+  points: [number, number][];
+}
+export interface JobMetrics {
+  /** false when Prometheus is unreachable or there are no pods/series yet (see `reason`). */
+  available: boolean;
+  reason?: string;
+  series?: JobMetricSeries[];
+}
+
+/**
+ * Best-effort CPU/memory (and GPU, if present) time-series for a batch Job's pods, from
+ * Prometheus. Returns { available:false, reason } — never invented points — when there is
+ * nothing real to show.
+ */
+export function jobMetrics(namespace: string, name: string): Promise<JobMetrics> {
+  return request<JobMetrics>(
+    `/jobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/metrics`,
+  );
+}
+
+/* ------------------------- ModelMonitor drift reports ------------------------- */
+// SageMaker Model Monitor "Reports": the BFF reads the report bucket/prefix from the
+// ModelMonitor CR's OWN spec (never a client param) and returns the latest report JSON +
+// prior runs. Honest-empty ({ runs:[], latest:null, reason }) when none written yet.
+
+/** Per-feature drift figures within a single report. */
+export interface ModelMonitorFeatureDrift {
+  baselineMean: number;
+  currentMean: number;
+  drift: number;
+  violation: boolean;
+}
+/** A parsed drift report document (the JSON the monitor CronJob writes). */
+export interface ModelMonitorReportDoc {
+  time?: string;
+  baselineCount?: number;
+  currentCount?: number;
+  threshold?: number;
+  features?: Record<string, ModelMonitorFeatureDrift>;
+  /** true when any monitored feature drifted beyond the threshold. */
+  violation?: boolean;
+  driftedFeatures?: string[];
+  /** Reports may carry fields beyond the built-in drift check. */
+  [key: string]: unknown;
+}
+/** One prior monitoring run's report object. */
+export interface ModelMonitorReportRun {
+  key: string;
+  lastModified: string;
+  /** Derived from the report-<ts>.json key when parseable; else absent. */
+  time?: string;
+}
+export interface ModelMonitorReport {
+  runs: ModelMonitorReportRun[];
+  /** The latest report (latest.json, else newest run), or null when none written yet. */
+  latest: ModelMonitorReportDoc | null;
+  reason?: string;
+  bucket?: string;
+  prefix?: string;
+}
+
+/** Read a ModelMonitor's latest drift report + prior runs (bucket/prefix come from the CR). */
+export function modelMonitorReport(
+  namespace: string,
+  name: string,
+): Promise<ModelMonitorReport> {
+  return request<ModelMonitorReport>(
+    `/modelmonitors/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/report`,
+  );
+}
