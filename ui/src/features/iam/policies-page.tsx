@@ -23,6 +23,7 @@ import {
 } from "@/components/common/property-filter";
 import { listIamPolicies, listIamRoles, type IamPolicy } from "@/lib/api";
 import { policyType, type PolicyTypeLabel } from "./policy-type";
+import { ManagedBadge } from "./attach-policy-picker";
 
 const TYPE_TONE: Record<PolicyTypeLabel, "default" | "accent" | "secondary"> = {
   "Control plane": "default",
@@ -31,9 +32,14 @@ const TYPE_TONE: Record<PolicyTypeLabel, "default" | "accent" | "secondary"> = {
   Empty: "secondary",
 };
 
-/** AWS's "Filter by type" control — open-infra's type axis is the enforcement plane. */
-const TYPE_OPTIONS: PolicyTypeLabel[] = ["Control plane", "Data plane", "Mixed", "Empty"];
+/** The enforcement-plane axis (open-infra-specific) — surfaced as the "Plane" column + filter. */
+const PLANE_OPTIONS: PolicyTypeLabel[] = ["Control plane", "Data plane", "Mixed", "Empty"];
+const ALL_PLANES = "__all__";
+
+/** AWS's "Filter by Type" axis — out-of-the-box Managed vs Customer-managed. */
 const ALL_TYPES = "__all__";
+const MANAGED = "__managed__";
+const CUSTOMER = "__customer__";
 
 const FILTER_PROPERTIES: FilterProperty[] = [
   { key: "name", label: "Name" },
@@ -53,6 +59,7 @@ const FILTER_DEFS: FilterPropertyDef<IamPolicy>[] = [
 export function PoliciesPage() {
   const navigate = useNavigate();
   const [tokens, setTokens] = useState<FilterToken[]>([]);
+  const [planeFilter, setPlaneFilter] = useState<string>(ALL_PLANES);
   const [typeFilter, setTypeFilter] = useState<string>(ALL_TYPES);
 
   const { data = [], isLoading, isError, error } = useQuery({
@@ -66,12 +73,16 @@ export function PoliciesPage() {
     (roles.data ?? []).filter((r) => r.policies.includes(name)).length;
 
   const rows = useMemo(() => {
+    const byPlane =
+      planeFilter === ALL_PLANES ? data : data.filter((p) => policyType(p) === planeFilter);
     const byType =
-      typeFilter === ALL_TYPES ? data : data.filter((p) => policyType(p) === typeFilter);
+      typeFilter === ALL_TYPES
+        ? byPlane
+        : byPlane.filter((p) => (typeFilter === MANAGED ? p.managed : !p.managed));
     return applyFilterTokens(byType, tokens, FILTER_DEFS);
-  }, [data, tokens, typeFilter]);
+  }, [data, tokens, planeFilter, typeFilter]);
 
-  const filtered = tokens.length > 0 || typeFilter !== ALL_TYPES;
+  const filtered = tokens.length > 0 || planeFilter !== ALL_PLANES || typeFilter !== ALL_TYPES;
 
   return (
     <div className="space-y-6">
@@ -103,7 +114,7 @@ export function PoliciesPage() {
         />
       ) : (
         <div className="space-y-3">
-          {/* AWS policies list is defined by its "Filter by type" dropdown + search. */}
+          {/* AWS's policies list filters by Type (managed vs customer); open-infra adds a Plane axis. */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-2">
               <span className="text-xs font-medium text-muted-foreground">Filter by type</span>
@@ -113,7 +124,20 @@ export function PoliciesPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={ALL_TYPES}>All types</SelectItem>
-                  {TYPE_OPTIONS.map((t) => (
+                  <SelectItem value={MANAGED}>Managed</SelectItem>
+                  <SelectItem value={CUSTOMER}>Customer managed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Filter by plane</span>
+              <Select value={planeFilter} onValueChange={setPlaneFilter}>
+                <SelectTrigger className="h-9 w-auto min-w-40" aria-label="Filter by plane">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_PLANES}>All planes</SelectItem>
+                  {PLANE_OPTIONS.map((t) => (
                     <SelectItem key={t} value={t}>
                       {t}
                     </SelectItem>
@@ -147,6 +171,7 @@ export function PoliciesPage() {
                       onClick={() => {
                         setTokens([]);
                         setTypeFilter(ALL_TYPES);
+                        setPlaneFilter(ALL_PLANES);
                       }}
                     >
                       Clear filters
@@ -164,6 +189,7 @@ export function PoliciesPage() {
                       <tr className="border-b text-left text-muted-foreground">
                         <th className="p-3 font-medium">Name</th>
                         <th className="p-3 font-medium">Type</th>
+                        <th className="p-3 font-medium">Plane</th>
                         <th className="p-3 font-medium">Description</th>
                         <th className="p-3 font-medium">Permissions</th>
                         <th className="p-3 font-medium">Attached</th>
@@ -172,7 +198,7 @@ export function PoliciesPage() {
                     </thead>
                     <tbody>
                       {rows.map((p) => {
-                        const type = policyType(p);
+                        const plane = policyType(p);
                         const n = attachCount(p.name);
                         return (
                           <tr
@@ -184,7 +210,10 @@ export function PoliciesPage() {
                           >
                             <td className="p-3 font-medium text-primary">{p.name}</td>
                             <td className="p-3">
-                              <Badge variant={TYPE_TONE[type]}>{type}</Badge>
+                              <ManagedBadge managed={p.managed} category={p.category} />
+                            </td>
+                            <td className="p-3">
+                              <Badge variant={TYPE_TONE[plane]}>{plane}</Badge>
                             </td>
                             <td className="p-3 text-muted-foreground">{p.description || "—"}</td>
                             <td className="p-3 text-muted-foreground tabular-nums">

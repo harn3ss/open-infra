@@ -787,6 +787,12 @@ export interface IamUser {
   source: string;
   disabled: boolean;
   groups: string[];
+  /**
+   * kind: Policy names attached directly to this user (spec.policies) — the AWS "managed policies
+   * attached to a user" analog. Their dataPlane blocks confer the user's data-plane authority at
+   * the aws-shim; control-plane authority still comes only from groups. Always an array from the BFF.
+   */
+  policies: string[];
   /** false when no usable password Secret is referenced — the user can't sign in locally. */
   hasPassword: boolean;
   /** Groups that will NOT take effect because they're outside the impersonation ceiling. */
@@ -839,7 +845,9 @@ export function createIamUser(body: {
 
 export function updateIamUser(
   name: string,
-  body: { displayName?: string; groups?: string[]; disabled?: boolean },
+  // `policies` left out (undefined) leaves the stored spec.policies untouched on the BFF; send []
+  // to detach everything. Mirrors the BFF's "apply only when present" pointer semantics.
+  body: { displayName?: string; groups?: string[]; policies?: string[]; disabled?: boolean },
 ): Promise<{ name: string }> {
   return request(`/iam/users/${encodeURIComponent(name)}`, {
     method: "PATCH",
@@ -994,6 +1002,14 @@ export interface IamPolicy {
   clusterRole: string;
   ruleCount: number;
   ready: boolean;
+  /**
+   * True for an out-of-the-box MANAGED policy (openinfra.dev/managed-policy: "true") — the AWS
+   * "AWS managed" analog. Managed policies are provisioned by GitOps: the console renders them
+   * read-only (no edit, no Danger Zone) and the BFF refuses update/delete on them.
+   */
+  managed: boolean;
+  /** Managed-policy grouping (openinfra.dev/policy-category), e.g. "job-function". Absent otherwise. */
+  category?: string;
   /** Free-form key/value tags (the AWS Tags tab). Always a map (never null) from the BFF. */
   tags: Record<string, string>;
 }
