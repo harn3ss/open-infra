@@ -124,6 +124,9 @@ type iamUserView struct {
 	// UnboundGroups lists this user's groups that will NOT take effect because they are
 	// outside the impersonation ceiling. Surfaced so the UI can flag a silent no-op.
 	UnboundGroups []string `json:"unboundGroups"`
+	// Tags are free-form key/value pairs (the AWS Tags tab), read from openinfra.dev/tag-*
+	// annotations. Always a map (never null) so the SPA can iterate it. See iam_tags.go.
+	Tags map[string]string `json:"tags"`
 }
 
 type iamGroupView struct {
@@ -202,6 +205,7 @@ func handleIAMUsersList(cs kubernetes.Interface, auth *authStore, logger *slog.L
 				Groups:        groupList(u.Spec.Groups),
 				HasPassword:   hasPw,
 				UnboundGroups: unboundGroups(u.Spec.Groups),
+				Tags:          tagsFromAnnotations(u.Metadata.Annotations),
 			})
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -230,6 +234,7 @@ func handleIAMUserGet(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 			Groups:        u.Spec.Groups,
 			HasPassword:   hasPw,
 			UnboundGroups: unboundGroups(u.Spec.Groups),
+			Tags:          tagsFromAnnotations(u.Metadata.Annotations),
 		})
 	}
 }
