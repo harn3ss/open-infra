@@ -3972,6 +3972,10 @@ components:
                 years:
                   type: integer
                   description: Default retention period in years (mutually exclusive with days).
+            policy:
+              type: string
+              description: An S3/MinIO bucket-policy JSON document applied verbatim via put-bucket-policy. Principals must
+                be `*` (public); AWS-IAM-ARN principals do not resolve on MinIO.
         status:
           type: object
           properties:
