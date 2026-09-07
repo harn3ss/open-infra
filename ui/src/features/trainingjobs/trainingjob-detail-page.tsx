@@ -10,11 +10,14 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
+import { CopyButton } from "@/components/common/copy-button";
+import { JobLogs } from "@/components/common/job-logs";
+import { MetricChart } from "@/components/common/metric-chart";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status-badge";
-import { ApiError, k8sDelete, k8sGet, registerTrainingJob } from "@/lib/api";
+import { ApiError, jobMetrics, k8sDelete, k8sGet, registerTrainingJob } from "@/lib/api";
 import { openinfraPaths, batchPaths } from "@/lib/k8s-paths";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Job, TrainingJob } from "@/types/k8s";
@@ -28,6 +31,20 @@ function jobPhase(job?: Job): { label: string; tone: "success" | "destructive" |
     return { label: "Failed", tone: "destructive" };
   if ((s.active ?? 0) > 0) return { label: "Running", tone: "accent" };
   return { label: "Pending", tone: "muted" };
+}
+
+/** Human label for a metric series name (mirrors SageMaker's instance-metric charts). */
+function metricTitle(name: string): string {
+  switch (name) {
+    case "cpu":
+      return "CPU utilization";
+    case "memory":
+      return "Memory utilization";
+    case "gpu":
+      return "GPU utilization";
+    default:
+      return name;
+  }
 }
 
 export function TrainingJobDetailPage() {
@@ -46,6 +63,14 @@ export function TrainingJobDetailPage() {
     () => jobWatch.items.find((j) => j.metadata.name === jobName),
     [jobWatch.items, jobName],
   );
+  const running = jobPhase(job).label === "Running";
+
+  // Best-effort resource time-series for the backing Job (CPU/memory/GPU), from Prometheus.
+  const metricsQuery = useQuery({
+    queryKey: ["job-metrics", namespace, jobName],
+    queryFn: () => jobMetrics(namespace, jobName),
+    refetchInterval: running ? 15_000 : false,
+  });
 
   const deleteMutation = useMutation({
     mutationFn: () => k8sDelete(openinfraPaths.trainingjob(namespace, name)),
@@ -92,6 +117,8 @@ export function TrainingJobDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="logs">Logs</TabsTrigger>
+          <TabsTrigger value="metrics">Metrics</TabsTrigger>
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
@@ -119,12 +146,18 @@ export function TrainingJobDetailPage() {
               ) : null}
               {s?.dataset?.bucket ? (
                 <DetailRow label="Dataset">
-                  <code className="text-xs">s3://{s.dataset.bucket}/{s.dataset.prefix ?? ""}</code>
+                  <span className="flex items-center gap-1">
+                    <code className="text-xs">s3://{s.dataset.bucket}/{s.dataset.prefix ?? ""}</code>
+                    <CopyButton value={`s3://${s.dataset.bucket}/${s.dataset.prefix ?? ""}`} label="Copy dataset URI" />
+                  </span>
                 </DetailRow>
               ) : null}
               {s?.output?.bucket ? (
                 <DetailRow label="Output">
-                  <code className="text-xs">s3://{s.output.bucket}/{s.output.prefix ?? ""}</code>
+                  <span className="flex items-center gap-1">
+                    <code className="text-xs">s3://{s.output.bucket}/{s.output.prefix ?? ""}</code>
+                    <CopyButton value={`s3://${s.output.bucket}/${s.output.prefix ?? ""}`} label="Copy output URI" />
+                  </span>
                 </DetailRow>
               ) : null}
               {s?.env?.length ? (
@@ -137,8 +170,11 @@ export function TrainingJobDetailPage() {
                 </DetailRow>
               ) : null}
               <DetailRow label="Job">
-                <code className="text-xs">{jobName}</code>
-                <span className="ml-2 text-xs text-muted-foreground">— view logs with <code>kubectl logs -n {namespace} job/{jobName}</code></span>
+                <span className="flex items-center gap-1">
+                  <code className="text-xs">{jobName}</code>
+                  <CopyButton value={jobName} label="Copy Job name" />
+                </span>
+                <span className="ml-1 text-xs text-muted-foreground">— see the <strong>Logs</strong> and <strong>Metrics</strong> tabs</span>
               </DetailRow>
             </CardContent>
           </Card>
@@ -190,6 +226,38 @@ export function TrainingJobDetailPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="logs" className="pt-4">
+          <Card>
+            <CardContent className="p-4">
+              <JobLogs namespace={namespace} jobName={jobName} running={running} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="metrics" className="pt-4">
+          {metricsQuery.isLoading ? (
+            <LoadingState label="Loading metrics…" />
+          ) : metricsQuery.isError ? (
+            <ErrorState error={metricsQuery.error} onRetry={metricsQuery.refetch} />
+          ) : !metricsQuery.data?.available || !metricsQuery.data.series?.length ? (
+            <Card>
+              <CardContent className="p-6 text-center text-sm text-muted-foreground">
+                {metricsQuery.data?.reason ?? "No metrics available for this job yet."}
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-4">
+              {metricsQuery.data.series.map((serie) => (
+                <Card key={serie.name}>
+                  <CardContent className="p-4">
+                    <MetricChart series={serie} title={metricTitle(serie.name)} />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
