@@ -145,3 +145,145 @@ Resources:
 	}
 	t.Logf("observed: out-of-band spec edit detected as drift on the live cluster")
 }
+
+// 4. REAL CREATE — a Function (Knative-backed), the family #119 flagged as never deploy-verified.
+// A PackageType: Image Lambda -> kind: Function driven through the engine into the real API server,
+// admitted, reconciled to ready. This adds a fourth distinct backing family (Knative) to the live
+// spread alongside Bucket (MinIO), IAM Policy (Crossplane), and Parameter (Vault).
+func TestLive_Function_RealCreate(t *testing.T) {
+	ns := liveNS(t)
+	ap := kubectlApplier{namespace: ns}
+	opts := liveOpts(ns, "live-fn", 240*time.Second)
+	// ghcr.io/knative/helloworld-go is the canonical public Knative sample: serves HTTP on 8080
+	// (the Function XRD's default port) and scales to zero. A concrete ImageUri is what the
+	// Lambda->Function translator requires.
+	tmpl := []byte(`
+Resources:
+  Hello:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code: { ImageUri: ghcr.io/knative/helloworld-go:latest }
+      Environment:
+        Variables:
+          TARGET: cfn-live
+`)
+	defer Destroy(context.Background(), opts, ap)
+
+	rec, err := Deploy(context.Background(), tmpl, opts, ap)
+	if err != nil {
+		t.Fatalf("live Function deploy failed: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if err := ap.WaitReady(context.Background(), "openinfra.dev/v1", "Function", "hello", 210*time.Second); err != nil {
+		t.Fatalf("the created Function did not reach ready on the real cluster: %v", err)
+	}
+	t.Logf("observed: kind: Function hello (Knative) created + ready on the live cluster")
+}
+
+// 5. REAL CREATE — an ECS multi-container service (#117): an AWS::ECS::TaskDefinition with two
+// ContainerDefinitions + an AWS::ECS::Service with a LoadBalancer -> kind: Application, driven live.
+// Observes the #117 bar directly: the backing Pod is genuinely multi-container and sits behind a
+// real Service. Primary = helloworld-go (serves 8080); sidecar = pause (long-running, no port).
+func TestLive_ECS_MultiContainer(t *testing.T) {
+	ns := liveNS(t)
+	ap := kubectlApplier{namespace: ns}
+	opts := liveOpts(ns, "live-ecs", 240*time.Second)
+	tmpl := []byte(`
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Name: web
+          Image: ghcr.io/knative/helloworld-go:latest
+          PortMappings: [ { ContainerPort: 8080 } ]
+          Environment: [ { Name: TARGET, Value: cfn-live-ecs } ]
+        - Name: log
+          Image: registry.k8s.io/pause:3.9
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      DesiredCount: 1
+      LoadBalancers: [ { ContainerName: web, ContainerPort: 8080 } ]
+`)
+	defer Destroy(context.Background(), opts, ap)
+
+	rec, err := Deploy(context.Background(), tmpl, opts, ap)
+	if err != nil {
+		t.Fatalf("live ECS deploy failed: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if err := ap.WaitReady(context.Background(), "openinfra.dev/v1", "Application", "svc", 210*time.Second); err != nil {
+		t.Fatalf("the created Application did not reach ready on the real cluster: %v", err)
+	}
+	// #117's actual bar: a genuinely multi-container Pod behind a working Service. Observe both on
+	// the live cluster rather than inferring them from the translation.
+	out, err := exec.Command("kubectl", "-n", ns, "get", "deploy", "-o",
+		"jsonpath={range .items[*]}{.metadata.name}={.spec.template.spec.containers[*].name};{end}").Output()
+	if err != nil {
+		t.Fatalf("listing deployments failed: %v", err)
+	}
+	// The Application composition names the primary container "app" (its convention) and preserves
+	// the ECS sidecar name ("log"); both containers landing in one Pod is the multi-container fact.
+	if !strings.Contains(string(out), "app") || !strings.Contains(string(out), "log") {
+		t.Fatalf("expected a multi-container Deployment (app + log), got: %s", out)
+	}
+	svc, err := exec.Command("kubectl", "-n", ns, "get", "svc", "--no-headers").Output()
+	if err != nil || len(strings.TrimSpace(string(svc))) == 0 {
+		t.Fatalf("expected a backing Service for the ECS-mapped Application, got: %q (err %v)", svc, err)
+	}
+	t.Logf("observed: kind: Application svc created + ready as a multi-container Pod (web+log) behind a Service: deploys=%q", out)
+}
+
+// 6. REAL CREATE — an EC2 instance -> a RUNNING VirtualMachine (#115). A catalog-OS
+// AWS::EC2::Instance (ubuntu-22.04) driven live: InstanceType -> cpu/memory, translated to a
+// kind: VirtualMachine that KubeVirt actually boots. #115's bar is "a real template produces a
+// running VirtualMachine, observed" — so this waits for the CR ready AND asserts the VMI reaches
+// phase Running on the live cluster. Slow (image pull + boot), hence the long timeout.
+func TestLive_EC2_VM(t *testing.T) {
+	ns := liveNS(t)
+	ap := kubectlApplier{namespace: ns}
+	opts := liveOpts(ns, "live-ec2", 600*time.Second)
+	tmpl := []byte(`
+Resources:
+  Web:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ubuntu-22.04
+      InstanceType: t3.small
+`)
+	defer Destroy(context.Background(), opts, ap)
+
+	rec, err := Deploy(context.Background(), tmpl, opts, ap)
+	if err != nil {
+		t.Fatalf("live EC2/VM deploy failed: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	if err := ap.WaitReady(context.Background(), "openinfra.dev/v1", "VirtualMachine", "web", 540*time.Second); err != nil {
+		t.Fatalf("the created VirtualMachine did not reach ready on the real cluster: %v", err)
+	}
+	// #115's bar: an actually-running VM. Confirm the VMI phase on the live cluster, not just the CR.
+	deadline := time.Now().Add(120 * time.Second)
+	var phase string
+	for time.Now().Before(deadline) {
+		out, _ := exec.Command("kubectl", "-n", ns, "get", "vmi", "web", "-o",
+			"jsonpath={.status.phase}").Output()
+		phase = strings.TrimSpace(string(out))
+		if phase == "Running" {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if phase != "Running" {
+		t.Fatalf("the VMI did not reach phase Running (got %q)", phase)
+	}
+	t.Logf("observed: kind: VirtualMachine web (KubeVirt) created + VMI phase Running on the live cluster")
+}
