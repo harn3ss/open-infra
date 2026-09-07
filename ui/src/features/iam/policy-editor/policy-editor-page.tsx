@@ -1,12 +1,19 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, FileText, Info, Lightbulb } from "lucide-react";
+import { AlertTriangle, ChevronDown, Download, FileText, Info, Lightbulb } from "lucide-react";
 import { CreateShell } from "@/components/create/create-shell";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import {
   createIamPolicy,
@@ -18,13 +25,16 @@ import {
 import { VisualEditor } from "./visual-editor";
 import { JsonEditor } from "./json-editor";
 import { PermissionsSummary } from "./permissions-summary";
+import { ImportPolicyDialog } from "./import-policy-dialog";
 import {
   docToModel,
   emptyModel,
+  mergeImportedDoc,
   modelToDoc,
   modelToJson,
   parseDoc,
   validateModel,
+  type PolicyDoc,
   type PolicyModel,
 } from "./model";
 
@@ -47,11 +57,14 @@ export function PolicyEditorPage({ editName }: { editName?: string }) {
   if (isEdit && (existing.isError || !existing.data))
     return <ErrorState error={existing.error} onRetry={existing.refetch} />;
 
+  const controlVerbs = (cfg.data?.policyVerbs ?? []).filter((v) => v !== "*");
+
   return (
     <Editor
       isEdit={isEdit}
       initial={existing.data}
       controlResources={cfg.data?.policyResources ?? []}
+      controlVerbs={controlVerbs.length ? controlVerbs : undefined}
     />
   );
 }
@@ -60,10 +73,12 @@ function Editor({
   isEdit,
   initial,
   controlResources,
+  controlVerbs,
 }: {
   isEdit: boolean;
   initial?: IamPolicy;
   controlResources: string[];
+  controlVerbs?: string[];
 }) {
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -83,6 +98,7 @@ function Editor({
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const validation = useMemo(
     () => validateModel(model, { name, isCreate: !isEdit }),
@@ -156,6 +172,15 @@ function Editor({
     }
   };
 
+  // AWS "Actions → Import policy": append the imported statements to the draft, then show them in the
+  // Visual editor (AWS adds the imported blocks at the bottom). Merges into the one model, so the JSON
+  // tab reflects the import too when next opened.
+  const onImport = (doc: PolicyDoc) => {
+    setModel((m) => mergeImportedDoc(m, doc));
+    setJsonError(null);
+    setView("visual");
+  };
+
   const submit = () => {
     setTouched(true);
     if (view === "json" && jsonError) return;
@@ -209,20 +234,40 @@ function Editor({
       {/* Policy editor: Visual | JSON */}
       <div className="space-y-3">
         <Tabs value={view} onValueChange={(v) => switchTo(v as "visual" | "json")}>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-3">
             <TabsList>
               <TabsTrigger value="visual">Visual editor</TabsTrigger>
               <TabsTrigger value="json">JSON</TabsTrigger>
             </TabsList>
-            {view === "json" ? (
-              <span className="text-xs text-muted-foreground">
-                This is the Policy resource itself — the single source of truth.
-              </span>
-            ) : null}
+            <div className="flex items-center gap-3">
+              {view === "json" ? (
+                <span className="hidden text-xs text-muted-foreground sm:inline">
+                  This is the Policy resource itself — the single source of truth.
+                </span>
+              ) : null}
+              {/* AWS's top-right "Actions ▾" menu on the policy editor. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    Actions <ChevronDown className="size-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => setImportOpen(true)}>
+                    <Download className="size-4" /> Import policy
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
 
           <TabsContent value="visual" className="pt-3">
-            <VisualEditor model={model} onChange={setModel} controlResources={controlResources} />
+            <VisualEditor
+              model={model}
+              onChange={setModel}
+              controlResources={controlResources}
+              controlVerbs={controlVerbs}
+            />
           </TabsContent>
 
           <TabsContent value="json" className="pt-3">
@@ -266,6 +311,8 @@ function Editor({
           <PermissionsSummary doc={doc} />
         </CardContent>
       </Card>
+
+      <ImportPolicyDialog open={importOpen} onOpenChange={setImportOpen} onImport={onImport} />
     </CreateShell>
   );
 }

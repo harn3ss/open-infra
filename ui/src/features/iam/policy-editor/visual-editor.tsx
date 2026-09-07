@@ -22,11 +22,14 @@ export function VisualEditor({
   model,
   onChange,
   controlResources,
+  controlVerbs,
 }: {
   model: PolicyModel;
   onChange: (m: PolicyModel) => void;
   /** openinfra.dev resources selectable on the control plane (the boundary) — from /iam/config. */
   controlResources: string[];
+  /** Verbs a control-plane action may use — from /iam/config policyVerbs (defaults applied downstream). */
+  controlVerbs?: string[];
 }) {
   const setBlock = (id: string, b: DataBlock) =>
     onChange({ ...model, dataBlocks: model.dataBlocks.map((x) => (x.id === id ? b : x)) });
@@ -41,14 +44,16 @@ export function VisualEditor({
         <div>
           <h3 className="text-sm font-semibold">Platform permissions</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Actions over openinfra.dev resources (the permission boundary). These compile to a Kubernetes
-            ClusterRole — so they are <span className="font-medium">Allow-only</span>, apply to{" "}
+            One permission block per openinfra.dev resource (the permission boundary), with actions
+            grouped by access level. These compile to a Kubernetes ClusterRole — so they are{" "}
+            <span className="font-medium">Allow-only</span>, apply to{" "}
             <span className="font-medium">all resources of the kind</span> (RBAC cannot scope list/watch by
             name), and take no conditions. Use a data-service block below for Deny, scoping, or conditions.
           </p>
         </div>
         <PermissionEditor
           resources={controlResources}
+          verbs={controlVerbs}
           rows={model.controlRows}
           onChange={(controlRows) => onChange({ ...model, controlRows })}
         />
