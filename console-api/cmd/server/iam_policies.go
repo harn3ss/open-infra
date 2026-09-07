@@ -85,6 +85,8 @@ type cedarBlock struct {
 type crdPolicy struct {
 	Metadata struct {
 		Name string `json:"name"`
+		// Annotations carry free-form tags (openinfra.dev/tag-*); see iam_tags.go.
+		Annotations map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata"`
 	Spec struct {
 		Description  string            `json:"description"`
@@ -102,6 +104,8 @@ type crdPolicy struct {
 type crdRole struct {
 	Metadata struct {
 		Name string `json:"name"`
+		// Annotations carry free-form tags (openinfra.dev/tag-*); see iam_tags.go.
+		Annotations map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata"`
 	Spec struct {
 		Description string   `json:"description"`
@@ -197,6 +201,9 @@ type iamPolicyView struct {
 	ClusterRole  string      `json:"clusterRole"`
 	RuleCount    int         `json:"ruleCount"`
 	Ready        bool        `json:"ready"`
+	// Tags are free-form key/value pairs (the AWS Tags tab), read from openinfra.dev/tag-*
+	// annotations. Always a map (never null) so the SPA can iterate it. See iam_tags.go.
+	Tags map[string]string `json:"tags"`
 }
 
 type iamRoleView struct {
@@ -208,6 +215,9 @@ type iamRoleView struct {
 	Trust       []string `json:"trust"`
 	ClusterRole string   `json:"clusterRole"`
 	Ready       bool     `json:"ready"`
+	// Tags are free-form key/value pairs (the AWS Tags tab), read from openinfra.dev/tag-*
+	// annotations. Always a map (never null) so the SPA can iterate it. See iam_tags.go.
+	Tags map[string]string `json:"tags"`
 }
 
 func policyView(p crdPolicy) iamPolicyView {
@@ -215,6 +225,7 @@ func policyView(p crdPolicy) iamPolicyView {
 		Name: p.Metadata.Name, Description: p.Spec.Description, Statements: p.Spec.Statements,
 		DataPlane: p.Spec.DataPlane, ControlPlane: p.Spec.ControlPlane,
 		ClusterRole: p.Status.ClusterRole, RuleCount: p.Status.RuleCount, Ready: p.Status.Ready,
+		Tags: tagsFromAnnotations(p.Metadata.Annotations),
 	}
 }
 
@@ -223,6 +234,7 @@ func roleView(r crdRole) iamRoleView {
 		Name: r.Metadata.Name, Description: r.Spec.Description, Policies: r.Spec.Policies,
 		Trust:       groupList(r.Spec.Trust),
 		ClusterRole: r.Status.ClusterRole, Ready: r.Status.Ready,
+		Tags: tagsFromAnnotations(r.Metadata.Annotations),
 	}
 }
 
