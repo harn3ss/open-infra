@@ -140,7 +140,7 @@ func updateItem(item, key map[string]any, op map[string]any) (map[string]any, er
 			return nil, err
 		}
 		if !pass {
-			return nil, fmt.Errorf("dynamodb: ConditionalCheckFailedException")
+			return nil, ErrConditionalCheckFailed
 		}
 	}
 	upd, ok, err := readBlock(op, "update")

@@ -7,8 +7,10 @@
 // dialect. Supported today: CreateTable, DescribeTable, GetItem, PutItem, DeleteItem, Query
 // (key-condition + filter + sort + pagination), UpdateItem (update + condition expressions),
 // full Scan, and the batch item APIs BatchGetItem / BatchWriteItem (capped at DynamoDB's 100/25
-// limits, non-transactional like the real service). Everything else — Transact*, ListTables,
-// DeleteTable, Scan-with-filter, projection expressions, TTL, streams — returns an honest 501
+// limits, non-transactional like the real service), the full transaction surface
+// (TransactWriteItems with Put/Update/Delete + ConditionExpression, and TransactGetItems'
+// consistent snapshot — atomic over the documentdb Postgres behind FerretDB), and TTL. The
+// remainder — ListTables, DeleteTable, projection expressions, streams — returns an honest 501
 // NotImplementedException, the shim's per-op graduation, never a silent fake.
 //
 // The store executor is the SHARED module github.com/harn3ss/open-infra/dynamodb — the same code
