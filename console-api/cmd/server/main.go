@@ -327,6 +327,10 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/users/{name}", handleIAMUserUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users/{name}/password", handleIAMUserPassword(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/users/{name}", handleIAMUserDelete(cs, auth, logger))
+		// Tags (the AWS "Tags" tab) — free-form key/value pairs stored as openinfra.dev/tag-*
+		// annotations on the CR. PUT replaces the whole set. Same admin SAR as the resource's
+		// other writes (see iam_tags.go).
+		api.With(middleware.Timeout(15*time.Second)).Put("/iam/users/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "users", "user", usersAbsPath))
 		// Access keys (the AWS "Security credentials" surface) — the aws-shim SigV4 sub-resource of a
 		// User. A user manages their OWN keys; managing another's needs the same admin SAR as the
 		// endpoints above (see iam_accesskeys.go). The secret is returned ONCE, by create, and never
@@ -346,11 +350,13 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies/{name}", handleIAMPolicyGet(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/policies/{name}", handleIAMPolicyUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/policies/{name}", handleIAMPolicyDelete(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Put("/iam/policies/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "policies", "policy", policiesAbsPath))
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles", handleIAMRolesList(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/roles", handleIAMRoleCreate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles/{name}", handleIAMRoleGet(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/roles/{name}", handleIAMRoleUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/roles/{name}", handleIAMRoleDelete(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Put("/iam/roles/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "roles", "role", rolesAbsPath))
 		// Policy simulator — a what-if over the current policies (control plane via SAR, data plane
 		// via the Cedar engine). Same SAR gate (list policies) as the endpoints above.
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/simulate", handleIAMSimulate(cs, auth, logger))

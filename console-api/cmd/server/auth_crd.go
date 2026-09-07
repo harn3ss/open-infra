@@ -37,6 +37,8 @@ type crdUserSpec struct {
 type crdUser struct {
 	Metadata struct {
 		Name string `json:"name"`
+		// Annotations carry free-form tags (openinfra.dev/tag-*); see iam_tags.go.
+		Annotations map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata"`
 	Spec crdUserSpec `json:"spec"`
 }

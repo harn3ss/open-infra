@@ -95,7 +95,8 @@ func TestNormStatementsDefaults(t *testing.T) {
 func TestRolesUsingPolicyAndGroupsUsingClusterRole(t *testing.T) {
 	roles := []crdRole{
 		{Metadata: struct {
-			Name string `json:"name"`
+			Name        string            `json:"name"`
+			Annotations map[string]string `json:"annotations,omitempty"`
 		}{Name: "ops"}, Spec: struct {
 			Description string   `json:"description"`
 			Policies    []string `json:"policies"`

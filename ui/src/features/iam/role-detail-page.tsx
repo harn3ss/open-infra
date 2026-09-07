@@ -20,9 +20,11 @@ import {
   listIamPolicies,
   listIamUsers,
   updateIamRole,
+  updateIamRoleTags,
 } from "@/lib/api";
 import { TrustEditor, principalLabel } from "./trust-editor";
 import { PendingTab } from "./pending-notice";
+import { TagsTab } from "./tags-tab";
 
 export function RoleDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -286,13 +288,17 @@ export function RoleDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* Tags — backend-blocked (the role view carries no labels/annotations yet). */}
+        {/* Tags — free-form key/value pairs, stored as openinfra.dev/tag-* annotations on the Role. */}
         <TabsContent value="tags" className="pt-4">
-          <PendingTab title="Tags">
-            Tags are not yet surfaced for roles. The IAM role view (<code>iamRoleView</code>) does not
-            carry labels or annotations today, so there is nothing to show or edit here. When the BFF
-            exposes them, this tab wires the shared tag editor (add/remove key–value rows).
-          </PendingTab>
+          <TagsTab
+            tags={role.tags ?? {}}
+            resourceLabel="role"
+            save={(tags) => updateIamRoleTags(name, tags)}
+            onSaved={() => {
+              void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
+              void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
+            }}
+          />
         </TabsContent>
 
         {/* Access Advisor — backend-blocked (no per-service last-used data plumbing yet). */}
