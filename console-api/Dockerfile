@@ -32,7 +32,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2 — build the Go BFF with the SPA embedded.
 # ---------------------------------------------------------------------------
-FROM golang:1.26-alpine AS go-builder
+FROM golang:1.27-alpine AS go-builder
 ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-arm64 overrides to empty (non-FIPS arm64)
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
