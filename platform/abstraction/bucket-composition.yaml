@@ -50,7 +50,10 @@ spec:
               {{- if $lock.days }}{{- $_ := set $ret "Days" $lock.days }}{{- else if $lock.years }}{{- $_ := set $ret "Years" $lock.years }}{{- end }}
               {{- $lockJson = dict "ObjectLockEnabled" "Enabled" "Rule" (dict "DefaultRetention" $ret) | toJson }}
             {{- end }}
-            {{- $hash := (printf "%v|%s|%s" ($spec.versioning | default false) $lifecycle $lockJson) | sha256sum | trunc 10 }}
+            {{- $policy := $spec.policy | default "" }}
+            {{- $hashIn := printf "%v|%s|%s" ($spec.versioning | default false) $lifecycle $lockJson }}
+            {{- if $policy }}{{- $hashIn = printf "%s|%s" $hashIn $policy }}{{- end }}
+            {{- $hash := $hashIn | sha256sum | trunc 10 }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -97,6 +100,11 @@ spec:
                                 {{- end }}
                                 {{- if $rules }}
                                 aws --endpoint-url $E s3api put-bucket-lifecycle-configuration --bucket {{ $bucket }} --lifecycle-configuration '{{ $lifecycle }}'
+                                {{- end }}
+                                {{- if $policy }}
+                                # Bucket policy applied verbatim. MinIO stores it via put-bucket-policy, but only `*`
+                                # (public) principals resolve — AWS-IAM-ARN principals name identities MinIO can't map.
+                                aws --endpoint-url $E s3api put-bucket-policy --bucket {{ $bucket }} --policy '{{ $spec.policy }}'
                                 {{- end }}
                                 kubectl create secret generic {{ $name }}-minio -n {{ $ns }} \
                                   --from-literal=MINIO_ENDPOINT=$E \

@@ -108,6 +108,7 @@ var translators = map[string]translator{
 	"AWS::ECS::Cluster":                     translateECSCluster,
 	"AWS::RDS::DBInstance":                  translateRDSDBInstance,
 	"AWS::S3::Bucket":                       translateS3Bucket,
+	"AWS::S3::BucketPolicy":                 translateS3BucketPolicy,
 	"AWS::SQS::Queue":                       translateSQSQueue,
 	"AWS::SNS::Topic":                       translateSNSTopic,
 	"AWS::AppSync::GraphQLApi":              translateAppSyncGraphQLApi,
@@ -1774,14 +1775,19 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 //
 // A standalone MinIO bucket (the object-storage analog of kind: Volume). BucketName maps, and — the
 // fidelity gain over the old Application-sub-block mapping — VersioningConfiguration and
-// LifecycleConfiguration (expiration rules) map too. BucketEncryption REFUSES with a pointer to the
-// opt-in objectEncryption stack (per-bucket SSE isn't declarable here) rather than creating an
-// unencrypted bucket that looks encrypted. Policy, website, CORS, notifications, replication,
-// object-lock, public-access and the rest block via the strict allowlist. Tags are a caveat.
-func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+// LifecycleConfiguration (expiration rules) map too. An in-stack AWS::S3::BucketPolicy targeting this
+// bucket is COLLATED in as spec.policy (a public "*"-principal policy only — an AWS IAM ARN principal
+// doesn't resolve to a MinIO principal, so such a policy would be stored and silently NOT enforce; it
+// refuses instead). BucketEncryption REFUSES with a pointer to the opt-in objectEncryption stack
+// (per-bucket SSE isn't declarable here) rather than creating an unencrypted bucket that looks
+// encrypted. CorsConfiguration REFUSES — per-bucket CORS is a MinIO ceiling (PutBucketCors returns
+// MalformedXML; MinIO does CORS globally via MINIO_API_CORS_ALLOW_ORIGIN), so it is refused loudly
+// rather than silently dropped. Website, notifications, replication, public-access and the rest block
+// via the strict allowlist. Tags are a caveat.
+func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"BucketName": true, "VersioningConfiguration": true, "LifecycleConfiguration": true,
-		"BucketEncryption": true, "Tags": true,
+		"BucketEncryption": true, "CorsConfiguration": true, "Tags": true,
 		"ObjectLockEnabled": true, "ObjectLockConfiguration": true,
 	}
 	var f []Finding
@@ -1789,6 +1795,9 @@ func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest,
 
 	if _, ok := props["BucketEncryption"]; ok {
 		f = append(f, Finding{"Resource " + id, "BucketEncryption is not translatable here — per-bucket SSE requires the opt-in objectEncryption stack (SSE-KMS via KES→Vault, applied at the MinIO-tenant level); refusing rather than creating an unencrypted bucket that looks encrypted"})
+	}
+	if _, ok := props["CorsConfiguration"]; ok {
+		f = append(f, Finding{"Resource " + id, "CorsConfiguration has no faithful open-infra mapping — MinIO does not support per-bucket CORS via the S3 API (PutBucketCors returns MalformedXML on this release); CORS is configured globally via MINIO_API_CORS_ALLOW_ORIGIN. Refusing rather than silently dropping."})
 	}
 
 	spec := map[string]any{}
@@ -1831,11 +1840,160 @@ func translateS3Bucket(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		f = append(f, Finding{"Resource " + id, "ObjectLockEnabled without an ObjectLockConfiguration.Rule.DefaultRetention has no open-infra form yet — kind: Bucket objectLock sets a default retention (Mode + Days/Years); add one or manage per-object retention out of band"})
 	}
 
+	// Fold an in-stack AWS::S3::BucketPolicy targeting this bucket into spec.policy (#112). MinIO stores
+	// a bucket policy verbatim via put-bucket-policy, but ONLY public ("*") principals resolve — an AWS
+	// IAM ARN principal names an identity MinIO has never heard of, so a policy carrying one would be
+	// applied and silently NOT enforce as written. That is the same security-expectation gap as the
+	// db-stats/dataflow rule (refuse rather than apply something that won't enforce as intended): a
+	// non-"*" principal REFUSES with no spec.policy, rather than deploying a policy that looks applied.
+	if ctx != nil {
+		if pid, ok := ctx.s3BucketPolicyFor(id); ok {
+			sp, _ := ctx.resolveProps(pid)
+			doc, hasDoc := sp["PolicyDocument"]
+			switch {
+			case !hasDoc:
+				f = append(f, Finding{"Resource " + pid, "AWS::S3::BucketPolicy requires a PolicyDocument"})
+			case !s3PolicyPrincipalsPublic(doc):
+				f = append(f, Finding{"Resource " + pid, "the BucketPolicy has a Statement whose Principal is not \"*\" (public) — AWS IAM ARN principals do not resolve to MinIO principals, so the policy would be stored but not enforce as intended; refusing rather than applying a policy that silently won't restrict as written. Use Principal \"*\" for a public policy, or govern identity-scoped access via open-infra IAM (kind: Policy spec.dataPlane at the aws-shim)."})
+			default:
+				b, err := json.Marshal(doc)
+				if err != nil {
+					f = append(f, Finding{"Resource " + pid, "BucketPolicy PolicyDocument is not serializable to JSON: " + err.Error()})
+				} else {
+					spec["policy"] = string(b)
+				}
+			}
+		}
+	}
+
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: k8sName(id), Spec: spec}
 	if _, ok := props["Tags"]; ok {
 		m.Caveats = append(m.Caveats, "Tags dropped — no open-infra equivalent for a MinIO bucket")
 	}
 	return m, f
+}
+
+// ---- AWS::S3::BucketPolicy -> collated into its in-stack AWS::S3::Bucket ----
+//
+// A BucketPolicy has no standalone open-infra form: it rides its bucket as kind: Bucket spec.policy,
+// read by translateS3Bucket. So when its Bucket resolves to an in-stack AWS::S3::Bucket it is a no-op
+// here (the bucket anchor reads it). A BucketPolicy whose Bucket is NOT in this stack refuses rather
+// than silently dropping — we can't apply a policy to a bucket we don't manage.
+func translateS3BucketPolicy(id string, _ map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	if ctx != nil {
+		if _, ok := ctx.s3BucketPolicyTarget(id); ok {
+			return nil, nil // collated into its in-stack AWS::S3::Bucket (spec.policy)
+		}
+	}
+	return nil, []Finding{{"Resource " + id, "an AWS::S3::BucketPolicy must reference an in-stack AWS::S3::Bucket — its Bucket names/Refs a bucket not in this stack, and a policy over an unmanaged bucket is not translatable (it is collated into the referenced kind: Bucket as spec.policy)"}}
+}
+
+// s3BucketPolicyTarget returns the logical id of the in-stack AWS::S3::Bucket that BucketPolicy
+// `policyID`'s raw Bucket property references — a !Ref/!GetAtt to an in-stack bucket, or a plain
+// string naming one (by BucketName or logical id) — and whether such an in-stack bucket was found.
+func (c *stackCtx) s3BucketPolicyTarget(policyID string) (string, bool) {
+	raw, ok := c.rawProps(policyID)
+	if !ok {
+		return "", false
+	}
+	b := raw["Bucket"]
+	// A !Ref / !GetAtt: it targets an in-stack bucket only if the referenced logical id is one.
+	if t, ok := getAttTarget(b); ok {
+		if r, in := c.template.Resources[t]; in && r.Type == "AWS::S3::Bucket" {
+			return t, true
+		}
+		return "", false
+	}
+	// A plain string bucket name: match it against an in-stack bucket's BucketName or logical id.
+	if name, ok := b.(string); ok && name != "" {
+		for bid, r := range c.template.Resources {
+			if r.Type != "AWS::S3::Bucket" {
+				continue
+			}
+			if bid == name {
+				return bid, true
+			}
+			if bn, ok := r.Properties["BucketName"].(string); ok && bn == name {
+				return bid, true
+			}
+		}
+	}
+	return "", false
+}
+
+// s3BucketPolicyFor returns, deterministically, the logical id of an in-stack AWS::S3::BucketPolicy
+// whose Bucket resolves to bucketID (the bucket collates it into spec.policy).
+func (c *stackCtx) s3BucketPolicyFor(bucketID string) (string, bool) {
+	var ids []string
+	for pid, res := range c.template.Resources {
+		if res.Type == "AWS::S3::BucketPolicy" {
+			ids = append(ids, pid)
+		}
+	}
+	sortStrs(ids)
+	for _, pid := range ids {
+		if t, ok := c.s3BucketPolicyTarget(pid); ok && t == bucketID {
+			return pid, true
+		}
+	}
+	return "", false
+}
+
+// s3PolicyPrincipalsPublic reports whether EVERY Statement in a bucket-policy document has a public
+// principal — "*" or {"AWS": "*"} / {"AWS": ["*"]}. Anything else (an AWS IAM ARN, a Service
+// principal, a mixed list, or a missing Principal) makes it non-public: MinIO can't resolve it, so the
+// caller refuses rather than applying a policy that won't enforce as written.
+func s3PolicyPrincipalsPublic(doc any) bool {
+	m, ok := doc.(map[string]any)
+	if !ok {
+		return false
+	}
+	var stmts []any
+	switch s := m["Statement"].(type) {
+	case []any:
+		stmts = s
+	case map[string]any:
+		stmts = []any{s}
+	}
+	if len(stmts) == 0 {
+		return false
+	}
+	for _, s := range stmts {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			return false
+		}
+		p, ok := sm["Principal"]
+		if !ok || !isPublicPrincipal(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// isPublicPrincipal reports whether a single Statement's Principal is the public wildcard in any of
+// its accepted forms: "*", {"AWS": "*"}, or {"AWS": ["*"]} (a one-element list of exactly "*").
+func isPublicPrincipal(p any) bool {
+	switch v := p.(type) {
+	case string:
+		return v == "*"
+	case map[string]any:
+		aws, ok := v["AWS"]
+		if !ok || len(v) != 1 { // exactly {"AWS": ...} — no Service/Federated/CanonicalUser alongside
+			return false
+		}
+		switch a := aws.(type) {
+		case string:
+			return a == "*"
+		case []any:
+			if len(a) != 1 {
+				return false
+			}
+			s, ok := a[0].(string)
+			return ok && s == "*"
+		}
+	}
+	return false
 }
 
 // s3LifecycleRules maps an S3 LifecycleConfiguration to kind: Bucket lifecycleRules. Supported per
