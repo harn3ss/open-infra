@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,17 +96,72 @@ func TestDynamo_TransactWriteItems(t *testing.T) {
 		t.Errorf("transactional Delete of a did not take effect: %v", getItem("a"))
 	}
 
-	// Fail-loud: an unsupported item (Update) refuses the WHOLE transaction before any write —
-	// its sibling Put must NOT land (nothing partial).
-	w := call("TransactWriteItems", `{"TransactItems":[
-		{"Put":{"TableName":"acct","Item":{"id":{"S":"z"},"bal":{"N":"99"}}}},
-		{"Update":{"TableName":"acct","Key":{"id":{"S":"y"}},"UpdateExpression":"SET bal = :b","ExpressionAttributeValues":{":b":{"N":"1"}}}}
-	]}`)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("a transaction with an Update item should be refused (400), got %d: %s", w.Code, w.Body.String())
+	// Update INSIDE a transaction: increment y.bal by 5 (20 -> 25) atomically with a Put of w. The
+	// update reads y's current value within the same Postgres transaction and commits with the Put.
+	mustOK("TransactWriteItems", call("TransactWriteItems", `{"TransactItems":[
+		{"Update":{"TableName":"acct","Key":{"id":{"S":"y"}},"UpdateExpression":"SET bal = bal + :d","ExpressionAttributeValues":{":d":{"N":"5"}}}},
+		{"Put":{"TableName":"acct","Item":{"id":{"S":"w"},"bal":{"N":"1"}}}}
+	]}`))
+	if bal, _ := getItem("y")["bal"].(map[string]any); bal["N"] != "25" {
+		t.Errorf("transactional Update y.bal = %v, want {N:25}", getItem("y")["bal"])
 	}
-	if getItem("z") != nil {
-		t.Errorf("refused transaction must write NOTHING, but z landed: %v", getItem("z"))
+	if getItem("w") == nil {
+		t.Errorf("the Put committed alongside the Update did not land")
+	}
+
+	// A failed ConditionExpression cancels the WHOLE transaction (nothing partial): a conditional
+	// Put of x that requires x to NOT exist (it does) must cancel, and its sibling Put of q must not
+	// land. The response is a TransactionCanceledException with per-item cancellation reasons.
+	wr := call("TransactWriteItems", `{"TransactItems":[
+		{"Put":{"TableName":"acct","Item":{"id":{"S":"q"},"bal":{"N":"1"}}}},
+		{"Put":{"TableName":"acct","Item":{"id":{"S":"x"},"bal":{"N":"0"}},"ConditionExpression":"attribute_not_exists(id)"}}
+	]}`)
+	if wr.Code != http.StatusBadRequest {
+		t.Fatalf("a failed condition should cancel the transaction (400), got %d: %s", wr.Code, wr.Body.String())
+	}
+	var cancelBody map[string]any
+	_ = json.Unmarshal(wr.Body.Bytes(), &cancelBody)
+	if typ, _ := cancelBody["__type"].(string); !strings.HasSuffix(typ, "TransactionCanceledException") {
+		t.Errorf("__type = %v, want a TransactionCanceledException", cancelBody["__type"])
+	}
+	reasons, _ := cancelBody["CancellationReasons"].([]any)
+	if len(reasons) != 2 {
+		t.Fatalf("want 2 cancellation reasons in order, got %v", cancelBody["CancellationReasons"])
+	}
+	if r0, _ := reasons[0].(map[string]any); r0["Code"] != "None" {
+		t.Errorf("reason[0] = %v, want Code None", reasons[0])
+	}
+	if r1, _ := reasons[1].(map[string]any); r1["Code"] != "ConditionalCheckFailed" {
+		t.Errorf("reason[1] = %v, want Code ConditionalCheckFailed", reasons[1])
+	}
+	if getItem("q") != nil {
+		t.Errorf("a cancelled transaction must write NOTHING, but q landed: %v", getItem("q"))
+	}
+	if bal, _ := getItem("x")["bal"].(map[string]any); bal["N"] != "10" {
+		t.Errorf("x.bal changed under a cancelled transaction: %v", getItem("x")["bal"])
+	}
+
+	// TransactGetItems: a consistent snapshot across items — present items return an Item, a missing
+	// item returns an empty ItemResponse, all in request order. (x present, a deleted earlier, w present.)
+	gm := mustOK("TransactGetItems", call("TransactGetItems", `{"TransactItems":[
+		{"Get":{"TableName":"acct","Key":{"id":{"S":"x"}}}},
+		{"Get":{"TableName":"acct","Key":{"id":{"S":"a"}}}},
+		{"Get":{"TableName":"acct","Key":{"id":{"S":"w"}}}}
+	]}`))
+	resp, _ := gm["Responses"].([]any)
+	if len(resp) != 3 {
+		t.Fatalf("want 3 responses in request order, got %v", gm["Responses"])
+	}
+	if first, _ := resp[0].(map[string]any); first["Item"] == nil {
+		t.Errorf("response[0] should carry item x, got %v", resp[0])
+	} else if id, _ := first["Item"].(map[string]any)["id"].(map[string]any); id["S"] != "x" {
+		t.Errorf("response[0] Item is not x: %v", first["Item"])
+	}
+	if mid, _ := resp[1].(map[string]any); len(mid) != 0 {
+		t.Errorf("response[1] (missing 'a') should be an empty ItemResponse, got %v", resp[1])
+	}
+	if third, _ := resp[2].(map[string]any); third["Item"] == nil {
+		t.Errorf("response[2] should carry item w, got %v", resp[2])
 	}
 }
 
