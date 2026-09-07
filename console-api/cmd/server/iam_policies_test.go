@@ -245,3 +245,64 @@ func TestPolicyAndRoleViewRoundTrip(t *testing.T) {
 		t.Errorf("empty trust should serialise as [], got %s", b)
 	}
 }
+
+// Managed policies are the out-of-the-box library set (openinfra.dev/managed-policy: "true").
+// The console must recognise them so it renders them read-only and the update/delete handlers
+// refuse to mutate them. The label value is an exact "true"; anything else is customer-managed.
+func TestIsManagedPolicyAndView(t *testing.T) {
+	if isManagedPolicy(nil) {
+		t.Error("nil labels must not be managed")
+	}
+	if isManagedPolicy(map[string]string{managedPolicyLabel: "false"}) {
+		t.Error(`a "false" label must not be managed`)
+	}
+	if isManagedPolicy(map[string]string{managedPolicyLabel: "yes"}) {
+		t.Error(`only exactly "true" is managed`)
+	}
+	if !isManagedPolicy(map[string]string{managedPolicyLabel: "true"}) {
+		t.Error(`a "true" label must be managed`)
+	}
+
+	// A managed policy's view carries managed=true and its category.
+	var m crdPolicy
+	m.Metadata.Name = "AdministratorAccess"
+	m.Metadata.Labels = map[string]string{managedPolicyLabel: "true", policyCategoryLabel: "job-function"}
+	m.Spec.Statements = []policyStatement{{Actions: []string{"virtualmachines:*"}}}
+	mv := policyView(m)
+	if !mv.Managed {
+		t.Error("policyView did not mark a labelled policy managed")
+	}
+	if mv.Category != "job-function" {
+		t.Errorf("policyView dropped category: %q", mv.Category)
+	}
+
+	// A customer policy is not managed and omits the category field from the JSON, while `managed`
+	// is always present (not omitempty) so the SPA can rely on it being a boolean.
+	var c crdPolicy
+	c.Metadata.Name = "custom"
+	c.Spec.Statements = []policyStatement{{Actions: []string{"volumes:Get"}}}
+	cv := policyView(c)
+	if cv.Managed {
+		t.Error("a customer policy must not be managed")
+	}
+	b, _ := json.Marshal(cv)
+	if strings.Contains(string(b), "category") {
+		t.Errorf("a customer policy view should omit category: %s", b)
+	}
+	if !strings.Contains(string(b), `"managed":false`) {
+		t.Errorf("managed must be present even when false: %s", b)
+	}
+}
+
+// A user's attached policies must serialise as an array (never JSON null) — the SPA calls
+// .includes()/.map() on it. This guards the spec.policies attach surface the User detail page uses.
+func TestUserViewPoliciesAlwaysArray(t *testing.T) {
+	v := iamUserView{Name: "alice", Groups: groupList(nil), Policies: groupList(nil)}
+	if b, _ := json.Marshal(v); !strings.Contains(string(b), `"policies":[]`) {
+		t.Errorf("empty policies should serialise as [], got %s", b)
+	}
+	v2 := iamUserView{Name: "bob", Policies: groupList([]string{"read-only", "s3-access"})}
+	if b, _ := json.Marshal(v2); !strings.Contains(string(b), `"policies":["read-only","s3-access"]`) {
+		t.Errorf("policies not carried through: %s", b)
+	}
+}
