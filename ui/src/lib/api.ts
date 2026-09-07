@@ -324,6 +324,30 @@ export function purgeQueue(stream: string): Promise<{ status: string }> {
   });
 }
 
+/** One stored JetStream message returned by a non-destructive peek (see peekQueue). */
+export interface QueueMessage {
+  seq: number;
+  subject: string;
+  data: string;
+  time: string;
+  truncated: boolean;
+}
+
+/**
+ * Non-destructively read the most recent messages STORED in a JetStream stream
+ * (newest first) — the honest JetStream analog of SQS "poll for messages". It
+ * consumes nothing: no consumer is created, no cursor advances, and the stream's
+ * real durable consumers (subscribing apps/Functions/sinks) are untouched.
+ */
+export function peekQueue(
+  stream: string,
+  limit = 25,
+): Promise<{ stream: string; messages: QueueMessage[] }> {
+  return request(
+    `/queues/${encodeURIComponent(stream)}/messages?limit=${limit}`,
+  );
+}
+
 /* --------------------------- DMS (table discovery) ------------------------ */
 
 export interface DiscoverSource {

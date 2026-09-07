@@ -1,53 +1,19 @@
-import { useMemo, useState } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { type ColumnDef, type SortingState } from "@tanstack/react-table";
-import { Boxes, Plus, RefreshCw } from "lucide-react";
-import { PageHeader } from "@/components/common/page-header";
-import { Button } from "@/components/ui/button";
+import { useMemo } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
+import { useNavigate } from "@tanstack/react-router";
+import { Boxes, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
-import { LiveIndicator } from "@/components/common/live-indicator";
-import { VirtualDataTable } from "@/components/common/virtual-data-table";
-import { ConfirmDialog } from "@/components/common/confirm-dialog";
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-} from "@/components/common/states";
-import { ApplicationDetail } from "@/features/applications/application-detail";
+import { ResourceTablePage } from "@/components/common/resource-table-page";
+import { type FilterPropertyDef } from "@/components/common/property-filter";
+import { Button } from "@/components/ui/button";
 import { applicationHealth } from "@/features/applications/application-status";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useDeleteResource } from "@/hooks/use-delete-resource";
-import { useListFilter } from "@/hooks/use-list-filter";
 import { openinfraPaths } from "@/lib/k8s-paths";
-import { useNamespace } from "@/lib/namespace-context";
 import { kindDocsUrl } from "@/lib/kind-docs";
 import { age } from "@/lib/format";
-import { ApiError } from "@/lib/api";
 import type { Application } from "@/types/k8s";
 
 export function ApplicationsPage() {
-  const { scoped } = useNamespace();
-  const listPath = openinfraPaths.applications(scoped);
-
-  const { items, isLoading, isError, error, live, refetch } =
-    useK8sWatch<Application>(listPath);
-
-  const { filtered } = useListFilter(items, (a) => [
-    a.metadata.name,
-    a.metadata.namespace,
-    a.spec?.image,
-    a.spec?.domain,
-  ]);
-
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "name", desc: false },
-  ]);
-  const [selected, setSelected] = useState<Application | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
   const navigate = useNavigate();
-  const [toDelete, setToDelete] = useState<Application | null>(null);
-
-  const deleteMutation = useDeleteResource(listPath);
 
   const columns = useMemo<ColumnDef<Application, unknown>[]>(
     () => [
@@ -56,16 +22,7 @@ export function ApplicationsPage() {
         header: "Name",
         accessorFn: (a) => a.metadata.name,
         cell: ({ row }) => (
-          <Link
-            to="/applications/$namespace/$name"
-            params={{
-              namespace: row.original.metadata.namespace ?? "default",
-              name: row.original.metadata.name ?? "",
-            }}
-            className="font-medium text-primary hover:underline"
-          >
-            {row.original.metadata.name}
-          </Link>
+          <span className="font-medium">{row.original.metadata.name}</span>
         ),
         size: 220,
       },
@@ -116,122 +73,73 @@ export function ApplicationsPage() {
     [],
   );
 
-  const openDetail = (app: Application) => {
-    setSelected(app);
-    setDetailOpen(true);
-  };
-
-  const confirmDelete = () => {
-    if (!toDelete) return;
-    const path = openinfraPaths.application(
-      toDelete.metadata.namespace ?? "default",
-      toDelete.metadata.name,
-    );
-    deleteMutation.mutate(path, {
-      onSuccess: () => {
-        setToDelete(null);
-        setDetailOpen(false);
+  const filterProperties = useMemo<FilterPropertyDef<Application>[]>(
+    () => [
+      { key: "name", label: "Name", getValue: (a) => a.metadata.name },
+      {
+        key: "namespace",
+        label: "Namespace",
+        getValue: (a) => a.metadata.namespace,
       },
-    });
-  };
+      { key: "image", label: "Image", getValue: (a) => a.spec?.image },
+      {
+        key: "status",
+        label: "Status",
+        getValue: (a) => applicationHealth(a).label,
+        options: [
+          { value: "Ready" },
+          { value: "Provisioning" },
+          { value: "Pending" },
+          { value: "Terminating" },
+        ],
+      },
+    ],
+    [],
+  );
 
   return (
-    <div className="space-y-5">
-      <PageHeader
-        icon={<Boxes />}
-        title="Applications"
-        description="The open-infra flagship resource. Declare intent; the platform provisions the rest."
-        actions={
-          <>
-            <LiveIndicator live={live} />
-            <Button variant="outline" size="icon" onClick={refetch} aria-label="Refresh">
-              <RefreshCw className="size-4" />
-            </Button>
-            <Button onClick={() => navigate({ to: "/applications/new" })}>
-              <Plus className="size-4" />
-              New Application
-            </Button>
-          </>
-        }
-      />
-
-      {isLoading ? (
-        <LoadingState label="Loading Applications…" />
-      ) : isError ? (
-        <ErrorState error={error} onRetry={refetch} />
-      ) : items.length === 0 ? (
-        <EmptyState
-          icon={<Boxes className="size-6" />}
-          title="No Applications yet"
-          description="Create your first Application to spin up an autoscaling, HTTPS service with optional database, buckets, and queues."
-          action={
-            <Button onClick={() => navigate({ to: "/applications/new" })}>
-              <Plus className="size-4" />
-              New Application
-            </Button>
-          }
-          learnMore={kindDocsUrl("Application")}
-        />
-      ) : (
-        <>
-          <p className="text-sm text-muted-foreground">
-            {filtered.length} of {items.length}{" "}
-            {items.length === 1 ? "Application" : "Applications"}
-          </p>
-          <VirtualDataTable
-            data={filtered}
-            columns={columns}
-            getRowId={(a) =>
-              a.metadata.uid ?? `${a.metadata.namespace}/${a.metadata.name}`
-            }
-            sorting={sorting}
-            onSortingChange={setSorting}
-            onRowClick={openDetail}
-            emptyState={
-              <EmptyState
-                title="No matches"
-                description="No Applications match the current filter."
-              />
-            }
-          />
-        </>
-      )}
-
-      <ApplicationDetail
-        app={selected}
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        onDelete={(app) => setToDelete(app)}
-      />
-
-      <ConfirmDialog
-        open={Boolean(toDelete)}
-        onOpenChange={(o) => (o ? null : setToDelete(null))}
-        title="Delete Application?"
-        description={
-          toDelete ? (
-            <>
-              This permanently deletes{" "}
-              <span className="font-medium text-foreground">
-                {toDelete.metadata.name}
-              </span>{" "}
-              and the infrastructure it provisioned (hosting, and any attached
-              database, buckets, and queues). This cannot be undone.
-            </>
-          ) : null
-        }
-        confirmLabel="Delete"
-        loading={deleteMutation.isPending}
-        onConfirm={confirmDelete}
-      />
-
-      {deleteMutation.isError ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          {deleteMutation.error instanceof ApiError
-            ? deleteMutation.error.message
-            : "Failed to delete the Application."}
-        </div>
-      ) : null}
-    </div>
+    <ResourceTablePage<Application>
+      icon={<Boxes />}
+      title="Applications"
+      description="The open-infra flagship resource. Declare intent; the platform provisions the rest."
+      listPath={openinfraPaths.applications}
+      columns={columns}
+      search={(a) => [
+        a.metadata.name,
+        a.metadata.namespace,
+        a.spec?.image,
+        a.spec?.domain,
+      ]}
+      filterProperties={filterProperties}
+      enablePreferences
+      enablePagination
+      columnLabels={{
+        name: "Name",
+        namespace: "Namespace",
+        image: "Image",
+        status: "Status",
+        age: "Age",
+      }}
+      singular="Application"
+      plural="Applications"
+      emptyTitle="No Applications yet"
+      emptyDescription="Create your first Application to spin up an autoscaling, HTTPS service with optional database, buckets, and queues."
+      docsHref={kindDocsUrl("Application")}
+      onRowClick={(a) =>
+        navigate({
+          to: "/applications/$namespace/$name",
+          params: {
+            namespace: a.metadata.namespace ?? "default",
+            name: a.metadata.name ?? "",
+          },
+        })
+      }
+      headerActions={
+        <Button onClick={() => navigate({ to: "/applications/new" })}>
+          <Plus className="size-4" />
+          New Application
+        </Button>
+      }
+    />
   );
 }

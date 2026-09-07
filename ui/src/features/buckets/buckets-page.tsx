@@ -1,20 +1,10 @@
 import { useMemo, useState } from "react";
 import { type ColumnDef, type SortingState } from "@tanstack/react-table";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronRight, HardDrive, Plus, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { VirtualDataTable } from "@/components/common/virtual-data-table";
 import {
   EmptyState,
@@ -22,12 +12,11 @@ import {
   LoadingState,
 } from "@/components/common/states";
 import { useListFilter } from "@/hooks/use-list-filter";
-import { ApiError, createBucket, listBuckets, type BucketInfo } from "@/lib/api";
+import { listBuckets, type BucketInfo } from "@/lib/api";
 import { age } from "@/lib/format";
 
 export function BucketsPage() {
   const navigate = useNavigate();
-  const qc = useQueryClient();
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["buckets"],
     queryFn: listBuckets,
@@ -37,17 +26,6 @@ export function BucketsPage() {
   const [sorting, setSorting] = useState<SortingState>([
     { id: "name", desc: false },
   ]);
-  const [newOpen, setNewOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-
-  const createMutation = useMutation({
-    mutationFn: () => createBucket(newName.trim()),
-    onSuccess: () => {
-      setNewOpen(false);
-      setNewName("");
-      qc.invalidateQueries({ queryKey: ["buckets"] });
-    },
-  });
 
   const columns = useMemo<ColumnDef<BucketInfo, unknown>[]>(
     () => [
@@ -104,9 +82,9 @@ export function BucketsPage() {
             >
               <RefreshCw className="size-4" />
             </Button>
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/buckets/new" })}>
               <Plus className="size-4" />
-              New bucket
+              Create bucket
             </Button>
           </>
         }
@@ -121,9 +99,9 @@ export function BucketsPage() {
           title="No buckets yet"
           description="Create a bucket, or declare `storage: { buckets: [uploads] }` on an Application."
           action={
-            <Button onClick={() => setNewOpen(true)}>
+            <Button onClick={() => navigate({ to: "/buckets/new" })}>
               <Plus className="size-4" />
-              New bucket
+              Create bucket
             </Button>
           }
         />
@@ -151,48 +129,6 @@ export function BucketsPage() {
           />
         </>
       )}
-
-      <Dialog open={newOpen} onOpenChange={setNewOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New bucket</DialogTitle>
-            <DialogDescription>
-              Bucket names are lowercase, 3–63 chars, no spaces.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="bucket-name">Name</Label>
-            <Input
-              id="bucket-name"
-              value={newName}
-              autoFocus
-              placeholder="my-bucket"
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && newName.trim()) createMutation.mutate();
-              }}
-            />
-            {createMutation.isError ? (
-              <p className="text-sm text-destructive">
-                {createMutation.error instanceof ApiError
-                  ? createMutation.error.message
-                  : "Failed to create bucket."}
-              </p>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setNewOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => createMutation.mutate()}
-              disabled={!newName.trim() || createMutation.isPending}
-            >
-              {createMutation.isPending ? "Creating…" : "Create"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

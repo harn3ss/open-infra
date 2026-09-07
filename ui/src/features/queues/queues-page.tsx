@@ -96,7 +96,7 @@ export function QueuesPage() {
       <PageHeader
         icon={<Send />}
         title="Queues"
-        description="Messaging — open-infra's SQS/SNS (NATS JetStream). Live stream stats from the cluster's NATS."
+        description="Messaging — durable streams on NATS JetStream (open-infra's SQS/SNS-style messaging). Each row is a JetStream stream with its subjects, stored messages, and durable consumers; live from the cluster's NATS."
         actions={
           <Button
             variant="outline"
