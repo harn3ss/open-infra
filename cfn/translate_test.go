@@ -1004,6 +1004,117 @@ func TestTranslate_S3_LifecycleTransitionBlocks(t *testing.T) {
 	}
 }
 
+// (a) A Bucket + a BucketPolicy referencing it collate: spec.policy is the compact PolicyDocument JSON,
+// and the BucketPolicy resource itself is a no-op (it rides the bucket).
+func TestTranslate_S3_BucketPolicyCollates(t *testing.T) {
+	tmpl := `
+Resources:
+  Assets:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-assets
+  AssetsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Assets
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: "arn:aws:s3:::my-assets/*"
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateS3Bucket("Assets", ecsResolvedService(t, ctx, "Assets"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	policy, _ := m.Spec["policy"].(string)
+	if policy == "" {
+		t.Fatalf("spec.policy should be the collated BucketPolicy document, got spec: %#v", m.Spec)
+	}
+	if strings.Contains(policy, "\n") || !strings.Contains(policy, `"Effect":"Allow"`) || !strings.Contains(policy, `"Principal":"*"`) {
+		t.Fatalf("spec.policy should be the compact PolicyDocument JSON, got: %q", policy)
+	}
+	// The BucketPolicy resource is a no-op — it is collated into the bucket, not provisioned standalone.
+	if mp, fp := translateS3BucketPolicy("AssetsPolicy", ecsResolvedService(t, ctx, "AssetsPolicy"), ctx); mp != nil || len(fp) != 0 {
+		t.Fatalf("an in-stack BucketPolicy should be a no-op, got %v / %s", mp, findingsText(fp))
+	}
+}
+
+// (b) A BucketPolicy with a non-"*" (AWS-ARN) principal refuses — MinIO can't resolve the ARN, so it
+// would store a policy that silently doesn't enforce. No spec.policy is set.
+func TestTranslate_S3_BucketPolicyNonPublicPrincipalRefuses(t *testing.T) {
+	tmpl := `
+Resources:
+  Assets:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-assets
+  AssetsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Assets
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: "arn:aws:iam::123456789012:user/alice" }
+            Action: "s3:GetObject"
+            Resource: "arn:aws:s3:::my-assets/*"
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateS3Bucket("Assets", ecsResolvedService(t, ctx, "Assets"), ctx)
+	if !strings.Contains(findingsText(fs), "Principal") {
+		t.Fatalf("a non-\"*\" principal must refuse, findings: %s", findingsText(fs))
+	}
+	if m != nil && m.Spec["policy"] != nil {
+		t.Fatalf("no spec.policy must be set when the principal refuses, got: %#v", m.Spec["policy"])
+	}
+}
+
+// (c) CorsConfiguration refuses with the MinIO-ceiling message (per-bucket CORS is not supported).
+func TestTranslate_S3_CorsCeilingRefuses(t *testing.T) {
+	_, fs := translateS3Bucket("B", map[string]any{
+		"BucketName": "b",
+		"CorsConfiguration": map[string]any{"CorsRules": []any{
+			map[string]any{"AllowedMethods": []any{"GET"}, "AllowedOrigins": []any{"*"}},
+		}},
+	}, nil)
+	txt := findingsText(fs)
+	if !strings.Contains(txt, "CorsConfiguration") || !strings.Contains(txt, "MINIO_API_CORS_ALLOW_ORIGIN") {
+		t.Fatalf("CorsConfiguration must refuse with the MinIO-ceiling reason, findings: %s", txt)
+	}
+}
+
+// (d) A bare AWS::S3::BucketPolicy whose Bucket is out-of-stack refuses (no bucket we manage to apply
+// it to) rather than silently doing nothing.
+func TestTranslate_S3_BucketPolicyOutOfStackRefuses(t *testing.T) {
+	tmpl := `
+Resources:
+  Orphan:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: some-external-bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: "arn:aws:s3:::some-external-bucket/*"
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateS3BucketPolicy("Orphan", ecsResolvedService(t, ctx, "Orphan"), ctx)
+	if m != nil {
+		t.Fatalf("an out-of-stack BucketPolicy should provision nothing, got %#v", m)
+	}
+	if !strings.Contains(findingsText(fs), "in-stack AWS::S3::Bucket") {
+		t.Fatalf("an out-of-stack BucketPolicy must refuse, findings: %s", findingsText(fs))
+	}
+}
+
 // ---- AWS::Cognito::UserPoolClient collation ----
 
 func cognitoStack() string {
