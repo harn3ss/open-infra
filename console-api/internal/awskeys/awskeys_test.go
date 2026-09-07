@@ -109,6 +109,123 @@ func TestLookup_CollisionGuard(t *testing.T) {
 	}
 }
 
+// Describe returns a key's public metadata WITHOUT its secret, and — unlike Lookup — returns a
+// revoked key too (so the console can show an Inactive key and re-activate it).
+func TestDescribe(t *testing.T) {
+	s := NewStore(fake.NewSimpleClientset(), "open-infra-console")
+	ctx := context.Background()
+	k := Key{AccessKeyID: "OIAKDESCRIBE00000000", SecretKey: "super-secret", Owner: "dana"}
+	if err := s.Put(ctx, k); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	m, ok := s.Describe(ctx, k.AccessKeyID)
+	if !ok {
+		t.Fatal("Describe returned not-found for an existing key")
+	}
+	if m.AccessKeyID != k.AccessKeyID || m.Owner != "dana" || m.Disabled {
+		t.Fatalf("Describe meta mismatch: %+v", m)
+	}
+	// A revoked key is still describable, now Inactive.
+	if err := s.Revoke(ctx, k.AccessKeyID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	m, ok = s.Describe(ctx, k.AccessKeyID)
+	if !ok || !m.Disabled {
+		t.Fatalf("revoked key must describe as Disabled: ok=%v meta=%+v", ok, m)
+	}
+	if _, ok := s.Describe(ctx, "OIAKNOPE000000000000"); ok {
+		t.Fatal("Describe of a missing key must be not-found")
+	}
+}
+
+// Activate reverses Revoke: a deactivated key verifies again after Activate.
+func TestActivate(t *testing.T) {
+	s := NewStore(fake.NewSimpleClientset(), "open-infra-console")
+	ctx := context.Background()
+	k := Key{AccessKeyID: "OIAKACTIVATE00000000", SecretKey: "x", Owner: "erin"}
+	if err := s.Put(ctx, k); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Revoke(ctx, k.AccessKeyID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, ok := s.Lookup(ctx, k.AccessKeyID); ok {
+		t.Fatal("precondition: a revoked key must not verify")
+	}
+	if err := s.Activate(ctx, k.AccessKeyID); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	if _, ok := s.Lookup(ctx, k.AccessKeyID); !ok {
+		t.Fatal("an activated key must verify again")
+	}
+}
+
+// Delete removes a key permanently — Lookup fails and the Secret is gone (not merely tombstoned
+// the way Revoke leaves it).
+func TestDelete(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	s := NewStore(cs, "open-infra-console")
+	ctx := context.Background()
+	k := Key{AccessKeyID: "OIAKDELETE0000000000", SecretKey: "x", Owner: "frank"}
+	if err := s.Put(ctx, k); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Delete(ctx, k.AccessKeyID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := s.Lookup(ctx, k.AccessKeyID); ok {
+		t.Fatal("a deleted key must not verify")
+	}
+	if _, err := cs.CoreV1().Secrets("open-infra-console").Get(ctx, SecretName(k.AccessKeyID), metav1.GetOptions{}); err == nil {
+		t.Fatal("Delete must remove the underlying Secret, not tombstone it")
+	}
+}
+
+// List returns only the queried owner's keys, includes revoked (Inactive) ones, and never leaks
+// secret material through the Meta it returns.
+func TestList(t *testing.T) {
+	s := NewStore(fake.NewSimpleClientset(), "open-infra-console")
+	ctx := context.Background()
+	must := func(err error) {
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	must(s.Put(ctx, Key{AccessKeyID: "OIAKGRACE00000000001", SecretKey: "s1", Owner: "grace"}))
+	must(s.Put(ctx, Key{AccessKeyID: "OIAKGRACE00000000002", SecretKey: "s2", Owner: "grace"}))
+	must(s.Put(ctx, Key{AccessKeyID: "OIAKHEIDI00000000001", SecretKey: "s3", Owner: "heidi"}))
+	// Revoke one of grace's — it must still appear in the list, marked Disabled.
+	if err := s.Revoke(ctx, "OIAKGRACE00000000002"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	got, err := s.List(ctx, "grace")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List(grace) returned %d keys, want 2 (including the revoked one)", len(got))
+	}
+	seen := map[string]bool{}
+	for _, m := range got {
+		if m.Owner != "grace" {
+			t.Fatalf("List(grace) leaked another owner's key: %+v", m)
+		}
+		seen[m.AccessKeyID] = true
+	}
+	if !seen["OIAKGRACE00000000001"] || !seen["OIAKGRACE00000000002"] {
+		t.Fatalf("List(grace) missing an expected key: %v", seen)
+	}
+
+	// Heidi sees only her own; a stranger sees none.
+	if h, _ := s.List(ctx, "heidi"); len(h) != 1 {
+		t.Fatalf("List(heidi) = %d, want 1", len(h))
+	}
+	if n, _ := s.List(ctx, "nobody"); len(n) != 0 {
+		t.Fatalf("List(nobody) = %d, want 0", len(n))
+	}
+}
+
 func TestGenerateKeyPair(t *testing.T) {
 	id1, sec1, err := GenerateKeyPair()
 	if err != nil {
