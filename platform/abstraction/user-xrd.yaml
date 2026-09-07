@@ -64,6 +64,29 @@ spec:
                   items:
                     type: string
                   default: []
+                policies:
+                  type: array
+                  description: >-
+                    Optional managed-policy attachment (the AWS "attach a managed policy to a
+                    user" analog): names of kind: Policy to attach to this user. Their
+                    spec.dataPlane blocks confer this user's DATA-PLANE authority at the aws-shim
+                    front doors (S3/DynamoDB/Lambda) — the same single policy world as a Policy's
+                    own dataPlane.appliesTo, resolved by internal/dataplaneauthz. Control-plane
+                    (Kubernetes) permission still comes only from the user's groups (above); an
+                    attached Policy's control-plane statements are not conferred through this field.
+                  items:
+                    type: string
+                  default: []
+                permissionBoundary:
+                  type: string
+                  description: >-
+                    Optional data-plane permission boundary (the AWS permission-boundary analog): the
+                    name of a kind: Policy whose dataPlane Allow statements are the CEILING for this
+                    user's data-plane authority. The effective permission is the INTERSECTION of the
+                    user's identity policies (spec.policies + any Policy whose appliesTo names them) and
+                    this boundary — nothing outside the boundary can be allowed (compiled as a Cedar
+                    forbid-unless guard, fail-closed). It caps a user already governed at the data plane
+                    for a service; it does not itself confer access.
                 source:
                   type: string
                   description: >-

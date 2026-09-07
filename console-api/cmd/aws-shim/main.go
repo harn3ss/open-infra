@@ -15,7 +15,6 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -141,26 +140,37 @@ func run(logger *slog.Logger) error {
 		resolve: newOwnerResolver(cs, usersNS),
 	}
 
-	// sts:AssumeRole (faithful STS temporary credentials). Opt-in via STS_SIGNING_KEY (base64,
-	// 32 bytes / AES-256), the same key across replicas so a token minted by one shim verifies on
-	// another. Unset -> AssumeRole answers InvalidAction and no session tokens are accepted, so the
-	// identity surface stays exactly as before. Requires the dynamic client (to read a role's trust).
+	// sts:AssumeRole (faithful STS temporary credentials). The AES-256 key that seals/opens the
+	// stateless session tokens is Vault-custodied: the shim logs into Vault with its OWN SA token
+	// (k8s-auth role aws-shim-sts) and reads sts/data/signing-key — no raw key in a cluster Secret that
+	// anything with `get secrets` could read (#111 §1). The same key across replicas means a token
+	// minted by one shim verifies on another. STS_SIGNING_KEY (base64 AES-256) stays an explicit
+	// dev/override fallback. Unset/unavailable -> AssumeRole answers InvalidAction and no session tokens
+	// are accepted, so the identity surface stays exactly as before (fail closed). Requires the dynamic
+	// client (to read a role's trust).
 	var stsMinter *awssts.Minter
 	var roleRes roleResolver
+	var stsVaultManaged bool
 	rolesNS := getenv("ROLES_NAMESPACE", usersNS)
-	if keyB64 := getenv("STS_SIGNING_KEY", ""); keyB64 != "" && dyn != nil {
-		key, kerr := base64.StdEncoding.DecodeString(keyB64)
+	if dyn != nil {
+		key, keySource, kerr := loadSTSSigningKey(context.Background(), logger)
 		if kerr != nil {
-			return fmt.Errorf("STS_SIGNING_KEY is not valid base64: %w", kerr)
+			return kerr
 		}
-		m, merr := awssts.NewMinter(key)
-		if merr != nil {
-			return merr
+		if key != nil {
+			m, merr := awssts.NewMinter(key)
+			if merr != nil {
+				return merr
+			}
+			stsMinter = m
+			roleRes = &dynRoleResolver{dyn: dyn, ns: rolesNS}
+			auth.sts = stsMinter
+			stsVaultManaged = keySource == "vault"
+			logger.Info("sts:AssumeRole enabled (temporary session credentials)",
+				slog.String("keySource", keySource), slog.String("rolesNamespace", rolesNS))
+		} else {
+			logger.Info("sts:AssumeRole disabled: no sealing key in Vault (sts/signing-key) and STS_SIGNING_KEY unset")
 		}
-		stsMinter = m
-		roleRes = &dynRoleResolver{dyn: dyn, ns: rolesNS}
-		auth.sts = stsMinter
-		logger.Info("sts:AssumeRole enabled (temporary session credentials)", slog.String("rolesNamespace", rolesNS))
 	}
 
 	// Workload identity (sts:AssumeRoleWithWebIdentity, IRSA-shaped): a pod's projected SA token,
@@ -294,6 +304,12 @@ func run(logger *slog.Logger) error {
 	if asyncInv != nil {
 		go asyncInv.run(ctx) // durable async-invoke delivery worker; exits when ctx is cancelled
 		defer asyncInv.Close()
+	}
+	// When the sealing key is Vault-custodied, re-fetch it periodically and rotate the Minter so an
+	// operator's key rotation is picked up without a restart; the previous key is retained for one
+	// overlap window so live sessions are not cut mid-rotation. Exits when ctx is cancelled.
+	if stsMinter != nil && stsVaultManaged {
+		go rotateSTSSigningKey(ctx, stsMinter, stsKeyRefreshInterval(), logger)
 	}
 	select {
 	case err := <-serverErr:

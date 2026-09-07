@@ -967,12 +967,19 @@ func importAWSPolicyResource(id string, props map[string]any, cfnType string, kn
 			m.Caveats = append(m.Caveats, p+" is metadata with no open-infra equivalent (the Policy is named after the stack resource) — dropped")
 		}
 	}
+	if roles, ok := props["Roles"].([]any); ok && len(roles) > 0 {
+		m.Caveats = append(m.Caveats,
+			"a Roles attachment maps to dataPlane.appliesTo: [Role::<name>] and governs an assumed sts:AssumeRole session (#111) — but only once each named kind: Role exists and carries a trust policy (authored natively); until then the Role is unassumable (fail closed)")
+	}
 	return m, f
 }
 
-// iamPolicyPrincipals turns an inline policy's Users/Groups into dataPlane appliesTo principals. A
-// Role attachment can't be honored (the shim authenticates Users and access keys, not assumed roles),
-// so it blocks rather than silently no-op.
+// iamPolicyPrincipals turns an inline policy's Users/Groups/Roles into dataPlane appliesTo principals.
+// A Roles attachment is now honored: the shim authenticates assumed-role sessions (sts:AssumeRole,
+// #111) and the data-plane engine governs "Role::<name>" principals, so the attachment maps to
+// appliesTo: ["Role::<name>"] and governs the assumed session — faithful, not a silent no-op. (The
+// Role must exist and carry a trust policy natively for a session to assume it; that is a declared
+// caveat surfaced by importAWSPolicyResource, not a silent partial.)
 func iamPolicyPrincipals(id string, props map[string]any, f *[]Finding) []any {
 	var out []any
 	add := func(prop, kind string) {
@@ -991,9 +998,7 @@ func iamPolicyPrincipals(id string, props map[string]any, f *[]Finding) []any {
 	}
 	add("Users", "User")
 	add("Groups", "Group")
-	if roles, ok := props["Roles"].([]any); ok && len(roles) > 0 {
-		*f = append(*f, Finding{"Resource " + id, "Roles attachment can't be enforced at the data-plane shim, which authenticates Users and access keys, not assumed roles — attach the policy to the Users/Groups instead"})
-	}
+	add("Roles", "Role")
 	return out
 }
 
@@ -1011,6 +1016,13 @@ func statementsToSpec(stmts []policyengine.Statement) []any {
 				c[k] = v
 			}
 			m["condition"] = c
+		}
+		if len(s.IPConditions) > 0 {
+			ips := make([]any, 0, len(s.IPConditions))
+			for _, ip := range s.IPConditions {
+				ips = append(ips, map[string]any{"key": ip.Key, "cidr": ip.CIDR, "negate": ip.Negate})
+			}
+			m["ipConditions"] = ips
 		}
 		out = append(out, m)
 	}
