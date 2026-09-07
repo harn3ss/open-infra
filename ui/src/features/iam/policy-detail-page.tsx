@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileText, Pencil } from "lucide-react";
+import { FileText, Lock, Pencil } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { deleteIamPolicy, getIamPolicy, listIamRoles, updateIamPolicyTags } from "@/lib/api";
 import { PermissionsSummary } from "./policy-editor/permissions-summary";
+import { ManagedBadge } from "./attach-policy-picker";
 import { policyType, type PolicyTypeLabel } from "./policy-type";
 import { PendingTab } from "./pending-notice";
 import { TagsTab } from "./tags-tab";
@@ -71,6 +72,9 @@ export function PolicyDetailPage() {
     controlPlane: policy.controlPlane,
   };
   const type = policyType(policy);
+  // Managed policies ship out of the box (GitOps-owned): read-only — no Edit, no Danger Zone. The BFF
+  // also refuses update/delete on them, so the UI just mirrors an enforced server-side truth.
+  const managed = policy.managed;
   const attachedRoles = (roles.data ?? []).filter((r) => r.policies.includes(name));
   const appliesTo = policy.dataPlane?.appliesTo?.filter((p) => p && p !== "*") ?? [];
   const hasDataPlane = (policy.dataPlane?.statements ?? []).length > 0;
@@ -97,11 +101,35 @@ export function PolicyDetailPage() {
       subtitle={policy.description || "Policy"}
       status={{ label: policy.ready ? "Ready" : "Compiling", tone: policy.ready ? "success" : "warning" }}
       actions={
-        <Button onClick={goEdit}>
-          <Pencil className="size-4" /> Edit
-        </Button>
+        managed ? undefined : (
+          <Button onClick={goEdit}>
+            <Pencil className="size-4" /> Edit
+          </Button>
+        )
       }
     >
+      {managed ? (
+        <Card className="mb-4 border-warning/40">
+          <CardContent className="flex items-start gap-3 p-4">
+            <Lock className="mt-0.5 size-5 shrink-0 text-warning" aria-hidden />
+            <div className="space-y-1 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-foreground">
+                  Managed policy (out of the box) — read only
+                </span>
+                <ManagedBadge managed category={policy.category} />
+              </div>
+              <p className="text-muted-foreground">
+                This policy is provisioned by GitOps as part of the built-in managed-policy library.
+                It can be attached to roles and users, but its permissions cannot be edited or deleted
+                from the console — the server refuses those changes. Copy it into a customer-managed
+                policy if you need a variant.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Tabs defaultValue="permissions">
         <TabsList>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
@@ -109,12 +137,14 @@ export function PolicyDetailPage() {
           <TabsTrigger value="tags">Tags</TabsTrigger>
           <TabsTrigger value="versions">Policy versions</TabsTrigger>
           <TabsTrigger value="advisor">Access Advisor</TabsTrigger>
-          <TabsTrigger
-            value="danger"
-            className="text-destructive data-[state=active]:text-destructive"
-          >
-            Danger Zone
-          </TabsTrigger>
+          {!managed ? (
+            <TabsTrigger
+              value="danger"
+              className="text-destructive data-[state=active]:text-destructive"
+            >
+              Danger Zone
+            </TabsTrigger>
+          ) : null}
         </TabsList>
 
         {/* Permissions — the AWS permissions-summary table with a Summary ⇄ JSON/CR toggle. */}
@@ -124,7 +154,11 @@ export function PolicyDetailPage() {
               <KeyValuePairs
                 columns={3}
                 items={[
-                  { label: "Type", value: <Badge variant={TYPE_TONE[type]}>{type}</Badge> },
+                  {
+                    label: "Type",
+                    value: <ManagedBadge managed={managed} category={policy.category} />,
+                  },
+                  { label: "Plane", value: <Badge variant={TYPE_TONE[type]}>{type}</Badge> },
                   {
                     label: "Compiled ClusterRole",
                     value: (
@@ -311,41 +345,43 @@ export function PolicyDetailPage() {
           </PendingTab>
         </TabsContent>
 
-        <TabsContent value="danger" className="pt-4">
-          <DangerZone
-            resourceLabel="Policy"
-            resourceName={policy.name}
-            deleting={del.isPending}
-            onConfirm={() => {
-              if (attachedRoles.length > 0) setForcePrompt(true);
-              else del.mutate(false);
-            }}
-            confirmDescription={
-              <>
-                Delete policy <span className="font-medium text-foreground">{policy.name}</span> and its
-                compiled ClusterRole.{" "}
-                {attachedRoles.length > 0
-                  ? `${attachedRoles.length} role(s) attach it and will lose these permissions.`
-                  : "No role attaches it."}
-              </>
-            }
-          />
-          <ConfirmDialog
-            open={forcePrompt}
-            onOpenChange={setForcePrompt}
-            title="Delete a policy in use?"
-            confirmLabel="Delete anyway"
-            loading={del.isPending}
-            onConfirm={() => del.mutate(true)}
-            description={
-              <>
-                <span className="font-medium text-foreground">{attachedRoles.length}</span> role(s) still
-                attach <span className="font-medium text-foreground">{policy.name}</span>. Deleting it
-                removes those permissions from them.
-              </>
-            }
-          />
-        </TabsContent>
+        {!managed ? (
+          <TabsContent value="danger" className="pt-4">
+            <DangerZone
+              resourceLabel="Policy"
+              resourceName={policy.name}
+              deleting={del.isPending}
+              onConfirm={() => {
+                if (attachedRoles.length > 0) setForcePrompt(true);
+                else del.mutate(false);
+              }}
+              confirmDescription={
+                <>
+                  Delete policy <span className="font-medium text-foreground">{policy.name}</span> and its
+                  compiled ClusterRole.{" "}
+                  {attachedRoles.length > 0
+                    ? `${attachedRoles.length} role(s) attach it and will lose these permissions.`
+                    : "No role attaches it."}
+                </>
+              }
+            />
+            <ConfirmDialog
+              open={forcePrompt}
+              onOpenChange={setForcePrompt}
+              title="Delete a policy in use?"
+              confirmLabel="Delete anyway"
+              loading={del.isPending}
+              onConfirm={() => del.mutate(true)}
+              description={
+                <>
+                  <span className="font-medium text-foreground">{attachedRoles.length}</span> role(s) still
+                  attach <span className="font-medium text-foreground">{policy.name}</span>. Deleting it
+                  removes those permissions from them.
+                </>
+              }
+            />
+          </TabsContent>
+        ) : null}
       </Tabs>
     </DetailShell>
   );
