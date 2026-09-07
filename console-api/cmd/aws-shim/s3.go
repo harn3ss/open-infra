@@ -60,19 +60,39 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		return
 	}
 
-	// 2. Authorize via the shared impersonated SubjectAccessReview — one policy world.
-	if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
-		h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
-			"bucket", op.bucket, "key", op.key, "reason", reason)
-		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
-		return
-	}
-	// 2b. Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
-	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, s3Action(op.kind), "Bucket", op.bucket, r); denied {
-		h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
-			"bucket", op.bucket, "key", op.key, "reason", reason)
-		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
-		return
+	// 2. Authorize.
+	if claims.PrincipalType() == "Role" {
+		// An assumed kind: Role has no console user behind it, so the coarse console-user SAR
+		// (get/create applications) does NOT apply — an assumed session's control-plane groups are
+		// deliberately minimal (openinfra:users). Its authority is EXACTLY its attached data-plane
+		// policies, AWS-style default-deny: an ungoverned role (no applicable policy) is denied, never
+		// allowed to fall through the way an ungoverned console user does (#111 Gap C — fail closed).
+		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
+			s3Action(op.kind), "Bucket", op.bucket, requestContext(r))
+		if !governed || !allowed {
+			if reason == "" {
+				reason = "assumed role has no data-plane policy allowing this action (default deny)"
+			}
+			h.logger.Warn("s3 denied (assumed role)", "user", claims.Sub, "op", op.kind,
+				"bucket", op.bucket, "key", op.key, "reason", reason)
+			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+			return
+		}
+	} else {
+		// 2a. Coarse impersonated SubjectAccessReview — one policy world (console-user principals).
+		if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
+			h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
+				"bucket", op.bucket, "key", op.key, "reason", reason)
+			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+			return
+		}
+		// 2b. Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
+		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, s3Action(op.kind), "Bucket", op.bucket, r); denied {
+			h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
+				"bucket", op.bucket, "key", op.key, "reason", reason)
+			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+			return
+		}
 	}
 
 	// 3. Dispatch to MinIO and re-encode.
