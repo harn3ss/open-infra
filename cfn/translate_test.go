@@ -1364,12 +1364,211 @@ func TestTranslate_SNS_Faithful(t *testing.T) {
 	}
 }
 
-func TestTranslate_SNS_SubscriptionBlocks(t *testing.T) {
+// An inline sqs Subscription on a topic refuses honestly (no topic→queue bridge in open-infra).
+func TestTranslate_SNS_InlineSqsSubscriptionRefuses(t *testing.T) {
 	_, fs := translateSNSTopic("T", map[string]any{
 		"TopicName": "t", "Subscription": []any{map[string]any{"Protocol": "sqs", "Endpoint": "arn:x"}},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "Subscriptions") {
-		t.Fatalf("inline Subscriptions must block, findings: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "topic→queue stream bridge") {
+		t.Fatalf("an inline sqs Subscription must refuse, findings: %s", findingsText(fs))
+	}
+}
+
+// #113 (a): a standalone lambda AWS::SNS::Subscription collates into the subscribing Function's
+// spec.queues (the topic's stream name), and the Subscription resource itself is a no-op.
+func TestTranslate_SNS_StandaloneLambdaSubscriptionCollates(t *testing.T) {
+	tmpl := `
+Resources:
+  Events:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: events
+  Handler:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code: { ImageUri: registry/handler:1 }
+  Sub:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref Events
+      Endpoint: !GetAtt Handler.Arn
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateLambdaFunction("Handler", ecsResolvedService(t, ctx, "Handler"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	qs, _ := m.Spec["queues"].([]string)
+	if len(qs) != 1 || qs[0] != "events" {
+		t.Fatalf("Function should subscribe to the topic stream via spec.queues=[events], got: %#v", m.Spec["queues"])
+	}
+	// The Subscription resource is a no-op — collated into the Function, not provisioned standalone.
+	if ms, fp := translateSNSSubscription("Sub", ecsResolvedService(t, ctx, "Sub"), ctx); ms != nil || len(fp) != 0 {
+		t.Fatalf("an in-stack lambda Subscription should be a no-op, got %v / %s", ms, findingsText(fp))
+	}
+}
+
+// #113 (b): an inline lambda Subscription on the topic collates the same way — the topic's stream
+// name lands in the subscribing Function's spec.queues, and the topic refuses nothing.
+func TestTranslate_SNS_InlineLambdaSubscriptionCollates(t *testing.T) {
+	tmpl := `
+Resources:
+  Events:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: events
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt Handler.Arn
+  Handler:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code: { ImageUri: registry/handler:1 }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateLambdaFunction("Handler", ecsResolvedService(t, ctx, "Handler"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	qs, _ := m.Spec["queues"].([]string)
+	if len(qs) != 1 || qs[0] != "events" {
+		t.Fatalf("Function should subscribe to the inline-subscribed topic stream, got: %#v", m.Spec["queues"])
+	}
+	// The topic must NOT refuse a lambda sub to an in-stack Function (the Function anchor handles it).
+	if _, ft := translateSNSTopic("Events", ecsResolvedService(t, ctx, "Events"), ctx); len(ft) != 0 {
+		t.Fatalf("a lambda inline sub to an in-stack Function must not refuse, findings: %s", findingsText(ft))
+	}
+}
+
+// A topic with no TopicName falls back to k8sName(logical id) as its stream name — the subscriber's
+// spec.queues must match exactly the stream translateSNSTopic creates.
+func TestTranslate_SNS_SubscriptionQueueNameFallsBackToLogicalID(t *testing.T) {
+	tmpl := `
+Resources:
+  Alerts:
+    Type: AWS::SNS::Topic
+  Handler:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code: { ImageUri: registry/handler:1 }
+  Sub:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref Alerts
+      Endpoint: !GetAtt Handler.Arn
+`
+	ctx := ecsCtx(t, tmpl)
+	m, _ := translateLambdaFunction("Handler", ecsResolvedService(t, ctx, "Handler"), ctx)
+	qs, _ := m.Spec["queues"].([]string)
+	if len(qs) != 1 || qs[0] != "alerts" {
+		t.Fatalf("spec.queues should fall back to k8sName(topic id)=alerts, got: %#v", m.Spec["queues"])
+	}
+}
+
+// #113 (c): a standalone sqs Subscription refuses — open-infra builds no topic→queue bridge.
+func TestTranslate_SNS_StandaloneSqsSubscriptionRefuses(t *testing.T) {
+	tmpl := `
+Resources:
+  Events:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: events
+  Q:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: q
+  Sub:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      TopicArn: !Ref Events
+      Endpoint: !GetAtt Q.Arn
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateSNSSubscription("Sub", ecsResolvedService(t, ctx, "Sub"), ctx)
+	if m != nil {
+		t.Fatalf("an sqs Subscription should provision nothing, got %#v", m)
+	}
+	if !strings.Contains(findingsText(fs), "topic→queue stream bridge") {
+		t.Fatalf("an sqs Subscription must refuse, findings: %s", findingsText(fs))
+	}
+}
+
+// #113 (d): an http/email Subscription refuses — no open-infra outward push-delivery surface.
+func TestTranslate_SNS_StandaloneOutwardProtocolRefuses(t *testing.T) {
+	for _, proto := range []string{"http", "email"} {
+		tmpl := `
+Resources:
+  Events:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: events
+  Sub:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: ` + proto + `
+      TopicArn: !Ref Events
+      Endpoint: "https://example.test/hook"
+`
+		ctx := ecsCtx(t, tmpl)
+		m, fs := translateSNSSubscription("Sub", ecsResolvedService(t, ctx, "Sub"), ctx)
+		if m != nil {
+			t.Fatalf("a %s Subscription should provision nothing, got %#v", proto, m)
+		}
+		if !strings.Contains(findingsText(fs), "outward-delivery surface") {
+			t.Fatalf("a %s Subscription must refuse, findings: %s", proto, findingsText(fs))
+		}
+	}
+}
+
+// #113 (e): a lambda Subscription whose Topic or Endpoint is out-of-stack refuses (nothing we manage).
+func TestTranslate_SNS_OutOfStackSubscriptionRefuses(t *testing.T) {
+	// (e1) TopicArn is a raw ARN — not an in-stack topic.
+	tmpl1 := `
+Resources:
+  Handler:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code: { ImageUri: registry/handler:1 }
+  Sub:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: "arn:aws:sns:us-east-1:1:external"
+      Endpoint: !GetAtt Handler.Arn
+`
+	ctx1 := ecsCtx(t, tmpl1)
+	if m, fs := translateSNSSubscription("Sub", ecsResolvedService(t, ctx1, "Sub"), ctx1); m != nil || !strings.Contains(findingsText(fs), "in-stack AWS::SNS::Topic") {
+		t.Fatalf("an out-of-stack TopicArn must refuse, got %v / %s", m, findingsText(fs))
+	}
+	// The subscribed Function must NOT pick up an out-of-stack-topic sub in spec.queues.
+	if m, _ := translateLambdaFunction("Handler", ecsResolvedService(t, ctx1, "Handler"), ctx1); m.Spec["queues"] != nil {
+		t.Fatalf("Function must not subscribe to an out-of-stack topic, got queues: %#v", m.Spec["queues"])
+	}
+
+	// (e2) Endpoint is a raw ARN — not an in-stack Function.
+	tmpl2 := `
+Resources:
+  Events:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: events
+  Sub:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn: !Ref Events
+      Endpoint: "arn:aws:lambda:us-east-1:1:function:external"
+`
+	ctx2 := ecsCtx(t, tmpl2)
+	if m, fs := translateSNSSubscription("Sub", ecsResolvedService(t, ctx2, "Sub"), ctx2); m != nil || !strings.Contains(findingsText(fs), "in-stack AWS::Lambda::Function") {
+		t.Fatalf("an out-of-stack lambda Endpoint must refuse, got %v / %s", m, findingsText(fs))
 	}
 }
 

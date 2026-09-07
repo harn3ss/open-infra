@@ -111,6 +111,7 @@ var translators = map[string]translator{
 	"AWS::S3::BucketPolicy":                 translateS3BucketPolicy,
 	"AWS::SQS::Queue":                       translateSQSQueue,
 	"AWS::SNS::Topic":                       translateSNSTopic,
+	"AWS::SNS::Subscription":                translateSNSSubscription,
 	"AWS::AppSync::GraphQLApi":              translateAppSyncGraphQLApi,
 	"AWS::AppSync::GraphQLSchema":           translateAppSyncChild,
 	"AWS::AppSync::DataSource":              translateAppSyncChild,
@@ -164,7 +165,14 @@ func translateKMSKey(id string, props map[string]any, _ *stackCtx) (*Manifest, [
 // Faithful: Code.ImageUri (-> image), Environment.Variables (-> env), MemorySize (-> memory),
 // Timeout (-> timeout). Declared caveat: Role (Functions connect via secrets/env, not an
 // assumed IAM role). Zip packaging, VpcConfig, Layers, and the rest block.
-func translateLambdaFunction(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+//
+// The Function is also the ANCHOR of the SNS-subscription collation (#113): it scans the stack for
+// lambda SNS subscriptions (a standalone AWS::SNS::Subscription, or an inline Subscription on a topic)
+// whose Endpoint resolves to THIS Function and whose topic is an in-stack AWS::SNS::Topic, and adds
+// each subscribed topic's stream name to spec.queues — so the Function consumes the topic's JetStream
+// stream directly (open-infra's "subscribe a consumer to the topic" mechanism, in place of SNS's
+// push delivery). The subscription resource itself is then a no-op.
+func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"Code": true, "PackageType": true, "Environment": true, "MemorySize": true,
 		"Timeout": true, "Role": true, "FunctionName": true, "Description": true,
@@ -192,6 +200,12 @@ func translateLambdaFunction(id string, props map[string]any, _ *stackCtx) (*Man
 	}
 	if env := lambdaEnv(id, code, props, &f); len(env) > 0 {
 		spec["env"] = env
+	}
+	// #113: fold every lambda SNS subscription targeting this Function into spec.queues.
+	if ctx != nil {
+		if qs := ctx.snsQueuesForFunction(id); len(qs) > 0 {
+			spec["queues"] = qs
+		}
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Function", Name: k8sName(id), Spec: spec}
 	if _, ok := props["Role"]; ok {
@@ -2122,9 +2136,11 @@ func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest,
 //
 // A standalone pub/sub topic backed by a NATS JetStream Limits stream (messages retained for the
 // window; every consumer reads them independently — SNS fan-out). TopicName -> the stream/subject.
-// FIFO and encryption BLOCK. Inline Subscriptions BLOCK — SNS subscribers (SQS/Lambda/HTTP targets)
-// have no open-infra fan-out wiring; consumers subscribe to the topic's stream themselves.
-func translateSNSTopic(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+// FIFO and encryption BLOCK. Inline Subscriptions are classified per-protocol (#113): a `lambda` sub
+// to an in-stack Function is fine (the Function anchor folds the topic's stream into its spec.queues,
+// so no Finding here); every other protocol — sqs/http/email/sms/etc — refuses honestly, since
+// open-infra has no push-delivery surface for it (consumers read the stream themselves).
+func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"TopicName": true, "DisplayName": true, "Tags": true, "FifoTopic": true,
 		"KmsMasterKeyId": true, "ContentBasedDeduplication": true, "Subscription": true,
@@ -2137,8 +2153,25 @@ func translateSNSTopic(id string, props map[string]any, _ *stackCtx) (*Manifest,
 	if _, ok := props["KmsMasterKeyId"]; ok {
 		f = append(f, Finding{"Resource " + id, "KmsMasterKeyId is not translatable — no per-topic encryption"})
 	}
-	if _, ok := props["Subscription"]; ok {
-		f = append(f, Finding{"Resource " + id, "inline Subscriptions are not translatable — SNS subscribers (SQS/Lambda/HTTP) have no open-infra fan-out target; consumers subscribe to the topic's stream themselves (refusing rather than silently dropping the delivery wiring)"})
+	// Classify each inline Subscription. Read the raw property list (when we have a stack context) so a
+	// lambda Endpoint's {Fn::GetAtt}/{Ref} is still followable to an in-stack Function logical id.
+	subsRaw := props["Subscription"]
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			subsRaw = raw["Subscription"]
+		}
+	}
+	if subs, ok := subsRaw.([]any); ok {
+		for _, s := range subs {
+			sm, ok := s.(map[string]any)
+			if !ok {
+				continue
+			}
+			proto, _ := concrete(sm["Protocol"])
+			if msg, _ := ctx.classifySNSSub(proto, sm["Endpoint"]); msg != "" {
+				f = append(f, Finding{"Resource " + id, msg})
+			}
+		}
 	}
 	spec := map[string]any{"fanout": true}
 	if tn, ok := concrete(props["TopicName"]); ok && tn != "" {
@@ -2151,6 +2184,128 @@ func translateSNSTopic(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		}
 	}
 	return m, f
+}
+
+// ---- AWS::SNS::Subscription -> collated into the subscriber's kind: Function (spec.queues) ----
+//
+// Only a `lambda` subscription to an in-stack AWS::Lambda::Function has a faithful open-infra form:
+// the Function reads the topic's JetStream stream directly (the Function anchor folds the topic into
+// its spec.queues), so this resource provisions nothing on its own — a no-op, like an S3::BucketPolicy
+// riding its bucket. Everything else refuses honestly rather than silently dropping the delivery
+// wiring: a topic not in this stack (nothing we manage to subscribe to), a lambda Endpoint that is not
+// an in-stack Function, an `sqs` sub (open-infra builds no topic→queue bridge — point the consumer at
+// the topic stream via spec.queues instead), and http/https/email/email-json/sms/application/firehose
+// (open-infra has no outward push-delivery surface).
+func translateSNSSubscription(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	if ctx == nil {
+		return nil, []Finding{{"Resource " + id, "an AWS::SNS::Subscription must reference an in-stack AWS::SNS::Topic"}}
+	}
+	raw, _ := ctx.rawProps(id)
+	// The TopicArn must resolve to an in-stack AWS::SNS::Topic — we only subscribe to a topic we manage.
+	if t, ok := getAttTarget(raw["TopicArn"]); !ok || !ctx.isType(t, "AWS::SNS::Topic") {
+		return nil, []Finding{{"Resource " + id, "an AWS::SNS::Subscription must reference an in-stack AWS::SNS::Topic — its TopicArn names/Refs a topic not in this stack, and a subscription to a topic we don't manage is not translatable (a lambda subscription is collated into the subscribing kind: Function as spec.queues)"}}
+	}
+	proto, _ := concrete(props["Protocol"])
+	if msg, _ := ctx.classifySNSSub(proto, raw["Endpoint"]); msg != "" {
+		return nil, []Finding{{"Resource " + id, msg}}
+	}
+	return nil, nil // a lambda sub to an in-stack Function — the Function anchor collates it (spec.queues)
+}
+
+// classifySNSSub classifies one SNS subscription by its Protocol and raw Endpoint. It returns a
+// refusing message when the subscription has no faithful open-infra form, or ("", fnID) when it is a
+// `lambda` subscription whose Endpoint resolves to an in-stack AWS::Lambda::Function (fnID) — the case
+// the subscribing Function collates into spec.queues. A nil receiver (no stack context) treats a
+// lambda sub as unresolvable and refuses it.
+func (c *stackCtx) classifySNSSub(protocol string, endpointRaw any) (msg string, fnID string) {
+	switch strings.ToLower(protocol) {
+	case "lambda":
+		if c != nil {
+			if eid, ok := getAttTarget(endpointRaw); ok && c.isType(eid, "AWS::Lambda::Function") {
+				return "", eid
+			}
+		}
+		return "a lambda SNS subscription's Endpoint must resolve to an in-stack AWS::Lambda::Function (the subscribing Function reads the topic stream via spec.queues) — an out-of-stack or non-Function endpoint has no open-infra delivery target", ""
+	case "sqs":
+		return "an SQS subscription needs a topic→queue stream bridge, which open-infra does not build — instead give the consumer `spec.queues: [<topic>]` so it reads the topic stream directly", ""
+	case "http", "https", "email", "email-json", "sms", "application", "firehose":
+		return "no open-infra outward-delivery surface for the \"" + protocol + "\" SNS subscription protocol", ""
+	default:
+		return "SNS subscription protocol \"" + protocol + "\" is not translatable", ""
+	}
+}
+
+// isType reports whether logical id `rid` is an in-stack resource of the given CFN type.
+func (c *stackCtx) isType(rid, cfnType string) bool {
+	r, in := c.template.Resources[rid]
+	return in && r.Type == cfnType
+}
+
+// snsTopicQueueName returns the JetStream stream/queue name an AWS::SNS::Topic maps to — resolved the
+// SAME way translateSNSTopic does (TopicName when concrete, else k8sName(logical id)) — so a subscriber
+// that adds this to spec.queues reads exactly the stream the topic creates.
+func snsTopicQueueName(topicID string, topicProps map[string]any) string {
+	if tn, ok := concrete(topicProps["TopicName"]); ok && tn != "" {
+		return tn
+	}
+	return k8sName(topicID)
+}
+
+// snsQueuesForFunction returns, in stable (deduped, sorted) order, the stream name of every in-stack
+// AWS::SNS::Topic that a `lambda` SNS subscription targets at Function fnID — whether via a standalone
+// AWS::SNS::Subscription or an inline Subscription on the topic. Folding these into the Function's
+// spec.queues is how an SNS→Lambda subscription is honored: the Function consumes the topic's stream.
+func (c *stackCtx) snsQueuesForFunction(fnID string) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(topicID string) {
+		tp, _ := c.resolveProps(topicID)
+		if qn := snsTopicQueueName(topicID, tp); qn != "" && !seen[qn] {
+			seen[qn] = true
+			names = append(names, qn)
+		}
+	}
+	var ids []string
+	for rid := range c.template.Resources {
+		ids = append(ids, rid)
+	}
+	sortStrs(ids)
+	for _, rid := range ids {
+		switch c.template.Resources[rid].Type {
+		case "AWS::SNS::Subscription":
+			raw, _ := c.rawProps(rid)
+			sp, _ := c.resolveProps(rid)
+			if proto, _ := concrete(sp["Protocol"]); strings.ToLower(proto) != "lambda" {
+				continue
+			}
+			if eid, ok := getAttTarget(raw["Endpoint"]); !ok || eid != fnID {
+				continue
+			}
+			if tid, ok := getAttTarget(raw["TopicArn"]); ok && c.isType(tid, "AWS::SNS::Topic") {
+				add(tid)
+			}
+		case "AWS::SNS::Topic":
+			raw, _ := c.rawProps(rid)
+			subs, ok := raw["Subscription"].([]any)
+			if !ok {
+				continue
+			}
+			for _, s := range subs {
+				sm, ok := s.(map[string]any)
+				if !ok {
+					continue
+				}
+				if proto, _ := concrete(sm["Protocol"]); strings.ToLower(proto) != "lambda" {
+					continue
+				}
+				if eid, ok := getAttTarget(sm["Endpoint"]); ok && eid == fnID {
+					add(rid)
+				}
+			}
+		}
+	}
+	sortStrs(names)
+	return names
 }
 
 // ---- AWS::AppSync::GraphQLApi (+ Schema/DataSource/Resolver/FunctionConfiguration) -> kind: GraphQLApi ----
