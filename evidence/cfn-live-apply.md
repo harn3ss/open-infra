@@ -9,8 +9,9 @@ test double, so across the matrix "supported" meant "translates," not "deploys a
 the live cluster and the stated behaviour was seen. A pass against the fake applier does not count and
 is now marked in-code as translation-layer-only (`cfn/deploy_test.go`).
 
-**Date:** 2026-09-04. **Cluster:** the live control plane (`cake-precision-5820-tower`).
-**Test:** `cfn/live_integration_test.go` (build tag `integration`), run with `KUBECONFIG` set.
+**Date:** 2026-09-04; spread broadened 2026-09-07 (Function, ECS/Application, EC2/VM added live).
+**Cluster:** the live control plane. **Test:** `cfn/live_integration_test.go` (build tag `integration`),
+run with `KUBECONFIG` set (`KUBECONFIG=… go test -tags integration -run TestLive ./cfn`).
 
 ## The three facts a fake applier structurally cannot test — observed
 
@@ -28,14 +29,21 @@ double cannot exercise, because it never runs real admission/validation. It is n
 `cfn deploy` has been observed driving real objects to ready across more than one backing family this
 cycle — but **not the whole matrix**, and one kind's live success does not imply another's:
 
-- **deploy-verified (observed applying + ready live):** `AWS::S3::Bucket` (MinIO), `AWS::IAM::Policy`
-  and `AWS::IAM::ManagedPolicy` (Crossplane composition → real `kind: Policy`), `AWS::SSM::Parameter`
-  (Vault-backed `kind: Parameter`, reached ready).
-- **plan-verified only (translates; NOT yet observed applying live):** every other entry in
-  `cfn/mapping.go` — Queue (NATS), a database Application (CNPG), Function (Knative), Table (FerretDB),
-  the AppSync collation, Cognito/UserPool, etc. These stay explicitly plan-verified until each is
-  driven live; admission/defaulting/reconcile differ by kind, so a green apply for a Bucket says
-  nothing about whether a Queue applies.
+- **deploy-verified (observed applying + ready live):**
+  - `AWS::S3::Bucket` → `kind: Bucket` (MinIO)
+  - `AWS::IAM::Policy` / `AWS::IAM::ManagedPolicy` → `kind: Policy` (Crossplane composition)
+  - `AWS::SSM::Parameter` → `kind: Parameter` (Vault-backed, reached ready)
+  - `AWS::Lambda::Function` → `kind: Function` (Knative) — created + **ready** (`TestLive_Function_RealCreate`, 2026-09-07)
+  - `AWS::ECS::TaskDefinition` + `AWS::ECS::Service` → `kind: Application` (Deployment) — created + **ready** as a genuinely **multi-container Pod** (primary `app` + sidecar `log`) behind a real **Service** (`TestLive_ECS_MultiContainer`, 2026-09-07)
+  - `AWS::EC2::Instance` (catalog OS `ubuntu-22.04`) → `kind: VirtualMachine` (KubeVirt) — created + **VMI phase `Running`** observed on the cluster (`TestLive_EC2_VM`, 2026-09-07)
+
+  That is **six** distinct backing families now observed live — MinIO, Crossplane, Vault, Knative, a
+  Deployment+Service, and KubeVirt — spanning stateless, stateful, and VM workloads.
+- **plan-verified only (translates; NOT yet observed applying live):** the remaining `cfn/mapping.go`
+  entries — Queue (NATS), a **database** Application (CNPG-backed, distinct from the Deployment-backed
+  ECS Application above), Table (FerretDB), the AppSync collation, Cognito/UserPool, etc. These stay
+  explicitly plan-verified until each is driven live; admission/defaulting/reconcile differ by kind, so
+  a green apply for one family says nothing about another.
 
 ## The type-vs-payload caveat (recorded, per #119)
 
