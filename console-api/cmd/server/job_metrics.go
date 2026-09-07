@@ -105,8 +105,8 @@ func promEscape(s string) string {
 }
 
 type metricSeries struct {
-	Name   string       `json:"name"`  // cpu | memory | gpu
-	Unit   string       `json:"unit"`  // cores | bytes | percent
+	Name   string       `json:"name"` // cpu | memory | gpu
+	Unit   string       `json:"unit"` // cores | bytes | percent
 	Points [][2]float64 `json:"points"`
 }
 
