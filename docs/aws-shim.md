@@ -106,7 +106,7 @@ error dialect.
 | Service | Backend | Operations | Status |
 |---|---|---|---|
 | **S3** | MinIO | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets` | **Faithful, proven live** — byte-identical round-trip + auth/boundary negatives (`probe/aws-shim-s3.sh`) |
-| **STS** | none (identity) | `GetCallerIdentity` | **Faithful** — reflects the SigV4-proven principal as an open-infra ARN; unit-tested |
+| **STS** | none (identity) | `GetCallerIdentity`; `AssumeRole` + `AssumeRoleWithWebIdentity` (temporary session credentials) | **Faithful** — `GetCallerIdentity` reflects the SigV4-proven principal as an open-infra ARN; `AssumeRole` mints AES-256-GCM-sealed, **stateless** session tokens governed by the assumed `kind: Role`'s trust + data-plane policies (opt-in; sealing key **Vault-custodied**). Unit + e2e tested |
 | **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse + `Event` async + `DryRun`) | **Built + unit-tested** — live proof pending a deployed Function |
 | **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); runtime **behavior-faithful** (goldens captured from a live AWS AppSync account, CI-green), broader parity experimental. Needs `components.openAppsync` |
 | **DynamoDB** | FerretDB (Mongo-wire) + its documentdb Postgres (transactions) | `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort + pagination), `UpdateItem` (update + condition expressions), `Scan`, `BatchGetItem`, `BatchWriteItem` (capped at DynamoDB's 100/25 limits), **`TransactWriteItems`** (atomic Put/Update/Delete + `ConditionExpression`), **`TransactGetItems`** (consistent multi-item snapshot), **`UpdateTimeToLive`/`DescribeTimeToLive`** (TTL) | **Runs live** — full wire path exercised by live round-trips (`dynamo_integration_test.go`, `dynamo_transact_integration_test.go`, `-tags integration`). **Transactions:** FerretDB has no Mongo transactions, so the whole transaction surface drops to the documentdb Postgres *behind* FerretDB — one `BEGIN/COMMIT` over the same `documentdb_api` calls, with in-transaction reads (a condition/update sees the txn's own consistent state) and `TransactGetItems` on a `REPEATABLE READ` snapshot; a failed `ConditionExpression` rolls back the whole transaction with per-item `CancellationReasons` (needs `MONGO_PG_URI`). Verified live against `postgres-documentdb:17`. **TTL:** a background reaper sweeps expired items (DynamoDB TTL is epoch-number, which a Mongo Date-only TTL index can't act on). Still `501`, refused loudly not faked: `ProjectionExpression`, `ListTables`, `DeleteTable`, streams. Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions) |
@@ -131,6 +131,48 @@ upload (`--checksum-algorithm CRC32`) and asserts byte-identity.
 auth work." It has no backend: the shim reflects the identity it already proved via SigV4 as an
 open-infra-shaped ARN (`arn:openinfra:iam::open-infra:user/<name>`), so there is nothing to
 translate and nothing to get subtly wrong. Any authenticated principal may call it (as on AWS).
+
+#### AssumeRole — temporary session credentials (opt-in)
+
+`aws sts assume-role` (and `assume-role-with-web-identity`, the IRSA-shaped workload path) mints a
+faithful AWS temporary credential: an `ASIA…` access key id, a secret, and an opaque `SessionToken`,
+15m–12h (1h default). The shim first checks the target `kind: Role`'s `spec.trust` (who may assume
+it — a list of principals, `"*"`, or empty ⇒ nobody, fail closed); later requests signed with the
+temporary credential and carrying the `SessionToken` are then authorized as principal type `Role`,
+so the Role's `kind: Policy` data-plane blocks govern the session — one policy world, no parallel
+authz.
+
+The session token is **stateless by construction**: it is an AES-256-GCM sealed blob carrying the
+session (role, groups, session name, caller, the temp secret, and the expiry). The shim recovers the
+temp secret from the token itself to verify the request's SigV4 signature, so there is **no
+server-side session store** to replicate across replicas or lose on restart — exactly how AWS STS
+scales. This is opt-in and OFF until a sealing key is available (below); with no key, `AssumeRole`
+answers `InvalidAction` and no session tokens are accepted, so the identity surface is unchanged.
+
+#### Sealing-key custody (Vault) and rotation
+
+The one piece of long-lived key material — the 32-byte AES sealing key — is **custodied in Vault**,
+never in a Kubernetes Secret. The shim authenticates to Vault with its **own ServiceAccount token**
+via Kubernetes auth (Vault role `aws-shim-sts`, scoped to read exactly one path,
+`sts/data/signing-key`, and nothing else), the same custody discipline the encryption-key /
+volume-crypto / parameter / CA reconcilers use — so nothing with cluster-wide `get secrets` can read
+the key, and no static Vault credential is stored anywhere. `STS_SIGNING_KEY` (base64 AES-256)
+remains an explicit dev/override fallback for setups without Vault. A missing or unreachable Vault is
+non-fatal: it logs a warning and leaves `AssumeRole` disabled (fail closed).
+
+The shim re-fetches the key from Vault periodically (`STS_KEY_REFRESH`, default 10m) and applies a
+**dual-key overlap**: on a rotation the new key becomes primary (used to mint and verify) while the
+previous key is retained for one window (verify only). A key rotation therefore does **not** cut
+sessions minted moments before it — they remain verifiable until the previous key ages out.
+
+**Revocation limitation (stated plainly, not hidden).** A stateless sealed token **cannot be revoked
+before its expiry** — the exact trade-off AWS STS session tokens make (there is no session store to
+delete an entry from). The levers, in order: **(a)** short default TTL (1h) bounds the exposure of
+any leaked session; **(b)** **rotating the Vault sealing key is a blunt "revoke-all"** — once the
+rotated-out key leaves the overlap window, every session it sealed fails `aead.Open` and falls
+closed at once (there is no per-session early revoke). A selective per-session deny-list is a
+possible fast-follow, not built. Operators must not assume AWS-style per-session revocation exists;
+size the session TTL to the blast radius you can tolerate between rotations.
 
 ### Lambda (built; live proof pending)
 

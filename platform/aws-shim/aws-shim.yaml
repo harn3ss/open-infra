@@ -37,6 +37,12 @@ rules:
   - apiGroups: [authorization.k8s.io]
     resources: [subjectaccessreviews]
     verbs: [create]
+  # sts:AssumeRoleWithWebIdentity (#111): verify a workload's projected SA token via a TokenReview
+  # (audience-pinned). Like the SAR above, a TokenReview only ASKS the API server a question and
+  # grants nothing. Without this, workload-identity assume fails closed at token verification.
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -72,16 +78,19 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
-# Read kind: Policy across the cluster for the fine-grained data-plane authorization engine (it
-# evaluates each request against the policies' dataPlane blocks). Read-only, list/watch only — the
-# shim never mutates policies, and it holds no secrets/RBAC grants beyond these.
+# Read the IAM objects across the cluster for the fine-grained data-plane authorization engine and
+# STS role resolution (#111): kind: Policy (dataPlane blocks), and kind: Role/User/Group so the
+# engine can resolve a principal's attached spec.policies (dual-plane attachment) and sts:AssumeRole
+# can read a Role's spec.trust. Read-only, get/list/watch only — the shim never mutates any of these,
+# and it holds no Secret/RBAC grants beyond these. NOTE: the loader fails CLOSED on a list error, so
+# a missing grant here denies all governed traffic rather than silently loosening.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: open-infra-aws-shim-policies
 rules:
   - apiGroups: [iam.openinfra.dev]
-    resources: [policies]
+    resources: [policies, roles, users, groups]
     verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -294,6 +303,17 @@ spec:
             # the account id surfaced in STS GetCallerIdentity ARNs.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
             - { name: ACCOUNT_ID, value: "open-infra" }
+            # sts:AssumeRole session-token sealing key — Vault-custodied (#111 §1). The shim logs into
+            # Vault with its OWN SA token (k8s-auth role aws-shim-sts, provisioned by
+            # platform/security/vault.yaml) and reads the 32-byte AES key from sts/signing-key — no raw
+            # key in a cluster Secret. It re-fetches every STS_KEY_REFRESH (default 10m) and keeps the
+            # previous key for one overlap window, so a key rotation doesn't cut live sessions.
+            # STS stays DISABLED (fail-closed, identity surface unchanged) until an operator provisions
+            # that key AND the encryption (Vault) component is on — a missing/unreachable Vault just logs
+            # a warning at startup and leaves AssumeRole off. STS_SIGNING_KEY (base64 AES-256, e.g. via a
+            # Secret) remains an explicit dev/override fallback when Vault is not in play.
+            - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+            - { name: STS_VAULT_ROLE, value: "aws-shim-sts" }
             # AppSync (GraphQL) → the open-appsync engine (components.openAppsync). Our own engine, so
             # no admin secret: the shim conveys the verified principal and open-appsync enforces authz
             # internally. Absent (component disabled) → the appsync service returns 502.

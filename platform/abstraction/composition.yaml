@@ -246,6 +246,51 @@ spec:
                     name: {{ $name }}
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/name: {{ $name }} }
+            {{- /* assumeRole trust binding (#111 §2 — the IRSA trust gap): the pod's workload
+                   identity is the SA principal system:serviceaccount:<ns>:<name>, which the
+                   assumed role's spec.trust MUST name (or "*") for sts:AssumeRoleWithWebIdentity
+                   to succeed. We READ the role's trust and, if it does not admit this app, surface
+                   a warning condition on the Application naming the exact principal to add. We
+                   NEVER mutate the role — trust stays admin-managed (the rail). Fetch the
+                   cluster-scoped XRole composite (it mirrors the Role claim's spec.trust) by its
+                   claim labels; on the first reconcile before it is observed, nothing is emitted
+                   (no false warning), so an app whose role already trusts it — or that has no
+                   assumeRole — renders exactly as before. */}}
+            ---
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              assumed-role:
+                apiVersion: iam.openinfra.dev/v1
+                kind: XRole
+                matchLabels:
+                  crossplane.io/claim-name: {{ $assume }}
+                  crossplane.io/claim-namespace: {{ $ns }}
+            {{- $saPrincipal := printf "system:serviceaccount:%s:%s" $ns $name }}
+            {{- $roleReq := index (.extraResources | default dict) "assumed-role" }}
+            {{- $roleItems := list }}
+            {{- if $roleReq }}{{ $roleItems = ($roleReq.items | default list) }}{{- end }}
+            {{- if $roleItems }}
+            {{- $trust := ((index $roleItems 0).resource.spec.trust) | default list }}
+            {{- if not (or (has "*" $trust) (has $saPrincipal $trust)) }}
+            ---
+            # The assumed role does NOT trust this app's workload identity. Surface it as an
+            # Application condition (RoleTrustsWorkload=False) that names the exact fix. The role
+            # is left untouched: an admin must add the principal to its spec.trust.
+            apiVersion: openinfra.dev/v1
+            kind: XApplication
+            status:
+              conditions:
+                - type: RoleTrustsWorkload
+                  status: "False"
+                  reason: RoleMissingWorkloadTrust
+                  message: >-
+                    Role "{{ $assume }}" does not trust this app's workload identity. Add
+                    "{{ $saPrincipal }}" to Role "{{ $assume }}" spec.trust (or "*") so
+                    sts:AssumeRoleWithWebIdentity can succeed. Trust is admin-managed; it is
+                    not modified automatically.
+            {{- end }}
+            {{- end }}
             {{- end }}
             ---
             # --- Service ---

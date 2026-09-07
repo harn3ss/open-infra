@@ -15,21 +15,46 @@ import (
 	"github.com/harn3ss/open-infra/policyengine"
 )
 
-// PolicyDoc is one kind: Policy's data-plane block — its statements and the principals they apply to.
+// PolicyDoc is one kind: Policy's data-plane block — its name, statements, and the principals its
+// own appliesTo axis directly governs. Name is how a principal's spec.policies references it (the
+// managed-attachment axis); AppliesTo is the inline/direct axis a Policy uses to name its own
+// principals. Both feed the SAME Cedar set — one policy world, no second evaluator.
 type PolicyDoc struct {
+	Name       string // the kind: Policy name — how spec.policies attaches it to a principal
 	Statements []policyengine.Statement
-	AppliesTo  []string // "User::alice", "Group::eng", or "*"
+	AppliesTo  []string // "User::alice", "Group::eng", "Role::deployer", or "*"
 }
 
-// Loader returns the current data-plane policy docs (e.g. a list of kind: Policy from the cluster).
-type Loader func(context.Context) ([]PolicyDoc, error)
+// Snapshot is one atomic read of the data-plane policy world: every kind: Policy's dataPlane block
+// (Docs), plus the managed-attachment index (Attach) mapping a principal to the Policy names attached
+// to it via its spec.policies. Loading both together keeps the two attachment axes consistent within
+// one TTL window — a principal's attached Policies confer their dataPlane authority (so a Role's
+// attached Policies govern an assumed session), exactly as the inline appliesTo axis does.
+type Snapshot struct {
+	Docs []PolicyDoc
+	// Attach maps a principal key — "Role::<name>", "User::<name>", or "Group::<name>" — to the
+	// Policy names on that principal's spec.policies. Group members inherit a Group's attached
+	// Policies. nil/empty means the managed axis contributes nothing (inline appliesTo still applies).
+	Attach map[string][]string
+	// Boundary maps a principal key — "Role::<name>" or "User::<name>" — to its spec.permissionBoundary
+	// (a kind: Policy name). The boundary Policy's dataPlane Allow statements are the CEILING: the
+	// effective permission is the intersection of the principal's identity policies and the boundary,
+	// compiled as a Cedar forbid-unless guard. It caps a principal that is already governed for the
+	// request's service (a data-plane boundary tightens existing data-plane grants; it does not itself
+	// make an otherwise-ungoverned principal governed). Groups carry no boundary. nil/empty ⇒ no ceiling.
+	Boundary map[string]string
+}
 
-// Checker resolves + evaluates data-plane policies for a principal, caching the loaded docs.
+// Loader returns the current data-plane policy world (kind: Policy docs + the managed-attachment
+// index), e.g. read from the cluster.
+type Loader func(context.Context) (Snapshot, error)
+
+// Checker resolves + evaluates data-plane policies for a principal, caching the loaded snapshot.
 type Checker struct {
 	load    Loader
 	ttl     time.Duration
 	mu      sync.Mutex
-	cache   []PolicyDoc
+	cache   Snapshot
 	err     error
 	fetched time.Time
 	seeded  bool
@@ -50,7 +75,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 	if c == nil || c.load == nil {
 		return true, false, "data-plane policy disabled"
 	}
-	docs, err := c.get(ctx)
+	snap, err := c.get(ctx)
 	if err != nil {
 		return false, true, "data-plane policy load failed: " + err.Error() // fail closed
 	}
@@ -58,23 +83,54 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 	if i := strings.IndexByte(action, ':'); i > 0 {
 		service = action[:i]
 	}
+	// Gather this principal's data-plane statements from BOTH attachment axes, one policy world:
+	//   (1) inline/direct — a Policy whose own dataPlane.appliesTo names this principal (or "*");
+	//   (2) managed — a Policy named in the principal's (or one of its groups') spec.policies.
+	// Both contribute their statements to the same Cedar set. A Policy reached by both paths is
+	// contributed once (dedup by name), so an inline+attached policy can't double its statements.
+	byName := make(map[string]PolicyDoc, len(snap.Docs))
+	for _, d := range snap.Docs {
+		if d.Name != "" {
+			byName[d.Name] = d
+		}
+	}
 	var stmts []policyengine.Statement
-	governs := false
-	for _, d := range docs {
-		if !appliesTo(d.AppliesTo, principalType, principalID, groups) {
-			continue
+	seen := make(map[string]bool)
+	add := func(d PolicyDoc) {
+		if d.Name != "" {
+			if seen[d.Name] {
+				return
+			}
+			seen[d.Name] = true
 		}
 		stmts = append(stmts, d.Statements...)
-		for _, s := range d.Statements {
-			if coversService(s.Actions, service) {
-				governs = true
-			}
+	}
+	for _, d := range snap.Docs {
+		if appliesTo(d.AppliesTo, principalType, principalID, groups) {
+			add(d)
+		}
+	}
+	for _, name := range attachedPolicyNames(snap.Attach, principalType, principalID, groups) {
+		if d, ok := byName[name]; ok {
+			add(d)
+		}
+	}
+	governs := false
+	for _, s := range stmts {
+		if coversService(s.Actions, service) {
+			governs = true
+			break
 		}
 	}
 	if !governs {
 		return true, false, "no data-plane policy governs " + service + " for this principal"
 	}
-	eng, err := policyengine.NewEngine(stmts)
+	// Permission boundary (§4): if this principal (its User, or the Role it assumed) carries a
+	// spec.permissionBoundary, cap the compiled set with the boundary Policy's Allow ceiling — the
+	// effective permission is the intersection. A named-but-unresolvable boundary compiles to a
+	// deny-all ceiling (nil boundary statements ⇒ forbid everything), so a missing/typo'd boundary
+	// fails CLOSED rather than silently lifting the cap.
+	eng, err := c.engineFor(stmts, byName, snap.Boundary[principalType+"::"+principalID])
 	if err != nil {
 		return false, true, "data-plane policy compile error: " + err.Error() // fail closed
 	}
@@ -87,13 +143,24 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 	return d.Allowed, true, d.Reason
 }
 
-func (c *Checker) get(ctx context.Context) ([]PolicyDoc, error) {
+// engineFor compiles the principal's identity statements, applying a permission boundary when one is
+// named. With no boundary it is the plain engine. With a boundary it uses the boundary Policy's
+// dataPlane Allow statements as the ceiling (NewEngineWithBoundary): an unresolvable boundary name
+// yields nil ceiling statements, which compiles to a deny-all boundary (fail closed).
+func (c *Checker) engineFor(stmts []policyengine.Statement, byName map[string]PolicyDoc, boundary string) (*policyengine.Engine, error) {
+	if boundary == "" {
+		return policyengine.NewEngine(stmts)
+	}
+	return policyengine.NewEngineWithBoundary(stmts, byName[boundary].Statements)
+}
+
+func (c *Checker) get(ctx context.Context) (Snapshot, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.seeded && time.Since(c.fetched) < c.ttl {
 		return c.cache, c.err
 	}
-	docs, err := c.load(ctx)
+	snap, err := c.load(ctx)
 	if err != nil && c.seeded {
 		// A refresh blip on an already-warm cache must not deny ALL data-plane traffic — that
 		// would turn a transient control-plane hiccup into a shim-wide outage. Serve the last
@@ -103,8 +170,24 @@ func (c *Checker) get(ctx context.Context) ([]PolicyDoc, error) {
 		c.fetched = time.Now()
 		return c.cache, c.err
 	}
-	c.cache, c.err, c.fetched, c.seeded = docs, err, time.Now(), true
-	return docs, err
+	c.cache, c.err, c.fetched, c.seeded = snap, err, time.Now(), true
+	return snap, err
+}
+
+// attachedPolicyNames returns the Policy names attached to this principal via a managed spec.policies:
+// its own ("Role::"/"User::"/"Group::"+id) plus those attached to each Group it belongs to (group
+// members inherit a Group's attached Policies). Group keys drop the "openinfra:" impersonation prefix
+// on both sides, exactly as appliesTo matches groups.
+func attachedPolicyNames(attach map[string][]string, ptype, pid string, groups []string) []string {
+	if len(attach) == 0 {
+		return nil
+	}
+	var names []string
+	names = append(names, attach[ptype+"::"+pid]...)
+	for _, g := range groups {
+		names = append(names, attach["Group::"+strings.TrimPrefix(g, "openinfra:")]...)
+	}
+	return names
 }
 
 // coversService reports whether any action names the given service (e.g. "s3") — "s3:..." or "*" —
