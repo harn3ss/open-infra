@@ -164,13 +164,19 @@ export function UserPermissionsTab({ user }: { user: IamUser }) {
               body={
                 <div className="space-y-2 text-sm">
                   <p>
-                    Kubernetes RBAC is the enforcement plane, and it is purely additive with no
-                    user-direct attachment. A user's authority is the union of its groups' ClusterRoles.
+                    This rollup shows the user's <b>control-plane</b> authority (console / kubectl
+                    RBAC). Kubernetes RBAC is purely additive and has no user-direct attachment, so a
+                    user's control-plane authority is exactly the union of its groups' ClusterRoles.
                   </p>
                   <p>
                     Each group points at a ClusterRole compiled from a Role (a bundle of policies) or a
                     single Policy. This table resolves that chain and shows the provenance in the
                     <b> Attached via</b> column.
+                  </p>
+                  <p>
+                    <b>Data-plane</b> policies (object storage, tables, functions) can be attached to
+                    this user directly with <b>Add permissions</b> above; those are enforced at the
+                    aws-shim and appear in the Attached policies list there.
                   </p>
                 </div>
               }
