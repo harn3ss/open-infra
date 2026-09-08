@@ -249,7 +249,12 @@ type createUserReq struct {
 	Name        string   `json:"name"`
 	DisplayName string   `json:"displayName"`
 	Groups      []string `json:"groups"`
-	Password    string   `json:"password"`
+	// Policies attaches kind: Policy names directly to the user (spec.policies) at create time,
+	// the AWS "attach policies directly" affordance. It confers the user's DATA-plane authority
+	// at the aws-shim (§3); CONTROL-plane authority still comes only through Groups. Mirrors the
+	// update path (handleIAMUserUpdate) so create is no longer the gap.
+	Policies []string `json:"policies"`
+	Password string   `json:"password"`
 }
 
 func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -293,6 +298,7 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 				"displayName":       in.DisplayName,
 				"source":            "local",
 				"groups":            cleanGroups(in.Groups),
+				"policies":          cleanGroups(in.Policies),
 				"passwordSecretRef": map[string]any{"name": secretName, "key": iamPasswordKey},
 			},
 		}
