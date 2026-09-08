@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Copy, UsersRound } from "lucide-react";
+import { AlertTriangle, Copy, FileText, Info, Plus, UsersRound, X } from "lucide-react";
 import { Wizard, WizardReview, type WizardStep } from "@/components/create/wizard";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,10 +13,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useFlash } from "@/components/common/flashbar";
-import { createIamUser, getIamConfig, listIamGroups, listIamUsers } from "@/lib/api";
+import {
+  createIamUser,
+  getIamConfig,
+  listIamGroups,
+  listIamPolicies,
+  listIamUsers,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { GroupPicker } from "./group-picker";
+import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
+import { policyType } from "./policy-type";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -25,9 +34,11 @@ type PermMode = "group" | "copy" | "direct";
 /**
  * Create user — the AWS multi-step wizard: Specify user details → Set permissions → Review and
  * create. Written on the shared Wizard (left step nav + Review step). The permission step mirrors
- * AWS's three options as radio cards; "Attach policies directly" is honestly disabled because
- * Kubernetes RBAC has no user-direct policy attachment (permissions come through groups). Creates
- * via the SAR-gated BFF (`POST /api/iam/users`), which stores the password as a bcrypt hash.
+ * AWS's three options as radio cards. "Attach policies directly" is enabled with honest plane
+ * framing: attaching a Policy to the user (spec.policies) grants that policy's DATA-plane access
+ * (S3 / DynamoDB / Lambda via the aws-shim, §3), while CONTROL-plane authority (console / kubectl)
+ * takes effect only through group membership. Creates via the SAR-gated BFF (`POST /api/iam/users`),
+ * which stores the password as a bcrypt hash.
  */
 export function CreateUserPage() {
   const navigate = useNavigate();
@@ -37,6 +48,7 @@ export function CreateUserPage() {
   const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const groupsQ = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
   const usersQ = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers });
+  const policiesQ = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const builtins = cfg.data?.builtinGroups ?? [];
 
   const [step, setStep] = useState(0);
@@ -46,7 +58,16 @@ export function CreateUserPage() {
   const [permMode, setPermMode] = useState<PermMode>("group");
   const [selected, setSelected] = useState<string[]>([]);
   const [copyFrom, setCopyFrom] = useState<string>("");
+  // Policies attached directly to the user (spec.policies) when permMode === "direct" — the AWS
+  // "Attach policies directly" set. Grants the user's data-plane authority; see the card note.
+  const [directPolicies, setDirectPolicies] = useState<string[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const policyByName = useMemo(
+    () => new Map((policiesQ.data ?? []).map((p) => [p.name, p])),
+    [policiesQ.data],
+  );
 
   const copySource = useMemo(
     () => (usersQ.data ?? []).find((u) => u.name === copyFrom),
@@ -57,14 +78,20 @@ export function CreateUserPage() {
   const resultingGroups = useMemo<string[]>(() => {
     if (permMode === "group") return selected;
     if (permMode === "copy") return copySource?.groups ?? [];
-    return []; // "direct" attaches nothing on the control plane (see the disabled card).
+    return []; // "direct" attaches nothing on the control plane — access comes via spec.policies.
   }, [permMode, selected, copySource]);
 
   const unboundResulting = resultingGroups.filter((g) => !builtins.includes(g));
 
   const create = useMutation({
     mutationFn: () =>
-      createIamUser({ name, displayName, groups: resultingGroups, password }),
+      // Direct mode grants the data plane via spec.policies (no groups); group/copy mode grants
+      // the control plane via group membership (no direct policies).
+      createIamUser(
+        permMode === "direct"
+          ? { name, displayName, groups: [], policies: directPolicies, password }
+          : { name, displayName, groups: resultingGroups, policies: [], password },
+      ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["iam", "users"] });
       flash.success(`Created user ${name}.`);
@@ -155,7 +182,8 @@ export function CreateUserPage() {
     },
     {
       title: "Set permissions",
-      description: "Choose how this user gets its access. Permissions come from group membership.",
+      description:
+        "Choose how this user gets its access. Group membership grants control-plane (console / kubectl) access; attaching policies directly grants data-plane access.",
       content: (
         <div className="space-y-4">
           <PermCard
@@ -222,22 +250,78 @@ export function CreateUserPage() {
           <PermCard
             checked={permMode === "direct"}
             onSelect={() => setPermMode("direct")}
-            icon={<AlertTriangle className="size-4" />}
+            icon={<FileText className="size-4" />}
             title="Attach policies directly"
-            hint="Not available on this platform."
-            disabled
+            hint="Grant policies' data-plane access directly to this user."
           >
-            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-              <span>
-                Kubernetes RBAC has no user-direct policy attachment — a user's authority is exactly
-                the union of its groups' ClusterRoles. Attach a Policy or Role by pointing a Group at
-                it, then add the user to that group. Create the group first from the Groups page.
-              </span>
-            </div>
+            {permMode === "direct" ? (
+              <div className="space-y-3 pt-1">
+                <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                  <Info className="mt-0.5 size-4 shrink-0" />
+                  <span>
+                    Attaching a policy to the user directly grants that policy's{" "}
+                    <b className="text-foreground">data-plane</b> permissions (object storage, tables,
+                    functions) to this user. A policy's{" "}
+                    <b className="text-foreground">control-plane</b> permissions (console / kubectl)
+                    take effect only through group membership — so for console access, also add this
+                    user to a group (you can do both from the user's page after creating).
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-muted-foreground">
+                    {directPolicies.length === 0
+                      ? "No policies attached."
+                      : `${directPolicies.length} ${
+                          directPolicies.length === 1 ? "policy" : "policies"
+                        } attached.`}
+                  </span>
+                  <Button
+                    variant="outline"
+                    className="shrink-0"
+                    onClick={() => setPickerOpen(true)}
+                  >
+                    <Plus className="size-4" /> Add permissions
+                  </Button>
+                </div>
+
+                {directPolicies.length > 0 ? (
+                  <ul className="divide-y divide-border rounded-md border border-border">
+                    {directPolicies.map((nm) => {
+                      const p = policyByName.get(nm);
+                      return (
+                        <li key={nm} className="flex items-center justify-between gap-3 p-3">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="font-medium text-foreground">{nm}</span>
+                            {p ? (
+                              <>
+                                <ManagedBadge managed={p.managed} category={p.category} />
+                                <Badge variant="secondary">{policyType(p)}</Badge>
+                              </>
+                            ) : (
+                              <Badge variant="outline">not found</Badge>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDirectPolicies((cur) => cur.filter((x) => x !== nm))
+                            }
+                            className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                            aria-label={`Detach ${nm}`}
+                          >
+                            <X className="size-4" />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
           </PermCard>
 
-          {resultingGroups.length === 0 && permMode !== "direct" ? (
+          {permMode !== "direct" && resultingGroups.length === 0 ? (
             <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
               <AlertTriangle className="mt-0.5 size-4 shrink-0" />
               <span>
@@ -245,6 +329,25 @@ export function CreateUserPage() {
               </span>
             </div>
           ) : null}
+
+          {permMode === "direct" && directPolicies.length === 0 ? (
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <span>
+                No policies attached. This user will be able to sign in but is authorized for nothing.
+                Attach a policy for data-plane access, or add the user to a group for console access.
+              </span>
+            </div>
+          ) : null}
+
+          <AttachPolicyPicker
+            open={pickerOpen}
+            onOpenChange={setPickerOpen}
+            policies={policiesQ.data ?? []}
+            attached={directPolicies}
+            onConfirm={setDirectPolicies}
+            subjectLabel={name ? `user ${name}` : "this user"}
+          />
         </div>
       ),
     },
@@ -270,12 +373,26 @@ export function CreateUserPage() {
                 <div className="space-y-2 text-sm">
                   <p className="text-muted-foreground">
                     {permMode === "group"
-                      ? "Added to groups:"
+                      ? "Added to groups (control plane):"
                       : permMode === "copy"
-                        ? `Copied from ${copyFrom || "—"}:`
-                        : "No permissions attached (direct attach is not supported)."}
+                        ? `Copied groups from ${copyFrom || "—"} (control plane):`
+                        : "Policies attached directly (data plane):"}
                   </p>
-                  {permMode !== "direct" ? (
+                  {permMode === "direct" ? (
+                    <div className="flex flex-wrap gap-1">
+                      {directPolicies.length === 0 ? (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          none — authorized for nothing
+                        </span>
+                      ) : (
+                        directPolicies.map((p) => (
+                          <Badge key={p} variant="secondary">
+                            {p}
+                          </Badge>
+                        ))
+                      )}
+                    </div>
+                  ) : (
                     <div className="flex flex-wrap gap-1">
                       {resultingGroups.length === 0 ? (
                         <span className="text-amber-600 dark:text-amber-400">
@@ -297,8 +414,14 @@ export function CreateUserPage() {
                         ))
                       )}
                     </div>
+                  )}
+                  {permMode === "direct" && directPolicies.length > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Grants data-plane access only. For console / kubectl access, add this user to a
+                      group from its page after creating.
+                    </p>
                   ) : null}
-                  {unboundResulting.length > 0 ? (
+                  {permMode !== "direct" && unboundResulting.length > 0 ? (
                     <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
                       <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                       {unboundResulting.join(", ")} {unboundResulting.length === 1 ? "is" : "are"} not
