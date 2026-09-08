@@ -27,6 +27,8 @@ import {
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import type { OpenInfraFunction } from "@/types/k8s";
+import { InstanceTypeLabel } from "@/components/common/instance-type-label";
+import { LAMBDA_MEMORY_TIERS } from "@/lib/instance-types";
 
 const ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
 
@@ -242,6 +244,13 @@ export function FunctionDetailPage() {
                 <code className="text-xs">{s?.image ?? "—"}</code>
               </DetailRow>
               <DetailRow label="Port">{s?.port ?? 8080}</DetailRow>
+              <DetailRow label="Memory">
+                {s?.memory ? (
+                  <InstanceTypeLabel groups={LAMBDA_MEMORY_TIERS} spec={{ memory: s.memory }} detail={s.memory} />
+                ) : (
+                  <span className="text-xs text-muted-foreground">Platform default</span>
+                )}
+              </DetailRow>
               <DetailRow label="Scaling">
                 {s?.scaling?.min ?? 0}–{s?.scaling?.max ?? 10} pods · target{" "}
                 {s?.scaling?.target ?? 100} concurrent

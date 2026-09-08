@@ -3,7 +3,6 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { useNavigate } from "@tanstack/react-router";
 import { BrainCog, Plus } from "lucide-react";
 import { StatusBadge } from "@/components/common/status-badge";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ResourceTablePage } from "@/components/common/resource-table-page";
 import { kindDocsUrl } from "@/lib/kind-docs";
@@ -11,6 +10,8 @@ import { claimHealth } from "@/lib/resource-health";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { TrainingJob } from "@/types/k8s";
+import { InstanceTypeLabel } from "@/components/common/instance-type-label";
+import { SAGEMAKER_INSTANCE_TYPES } from "@/lib/instance-types";
 
 /** kind: TrainingJob — a run-once, GPU-capable model-training Job (SageMaker Training
  *  Jobs). The training-loop counterpart to kind: Model (inference). Run status is the
@@ -37,14 +38,18 @@ export function TrainingJobsPage() {
       },
       {
         id: "gpu",
-        header: "GPU",
+        header: "Instance type",
         accessorFn: (t) => (t.spec?.gpu ?? 1) > 0 ? `${t.spec?.gpu ?? 1}×${t.spec?.gpuTier ?? "smallgpu"}` : "CPU",
         cell: ({ row }) => {
-          const gpu = row.original.spec?.gpu ?? 1;
-          return gpu > 0 ? (
-            <Badge variant="secondary">{gpu}× {row.original.spec?.gpuTier ?? "smallgpu"}</Badge>
-          ) : (
-            <span className="text-xs text-muted-foreground">CPU</span>
+          const sp = row.original.spec;
+          const gpu = sp?.gpu ?? 1;
+          return (
+            <InstanceTypeLabel
+              compact
+              groups={SAGEMAKER_INSTANCE_TYPES}
+              spec={{ cpu: sp?.cpu, memory: sp?.memory, gpu, gpuTier: sp?.gpuTier ?? "smallgpu" }}
+              detail={gpu > 0 ? `${gpu}× ${sp?.gpuTier ?? "smallgpu"}` : "CPU"}
+            />
           );
         },
         size: 150,

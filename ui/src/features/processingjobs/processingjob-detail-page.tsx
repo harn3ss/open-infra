@@ -17,6 +17,8 @@ import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths, batchPaths } from "@/lib/k8s-paths";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { ProcessingChannel, ProcessingJob, Job } from "@/types/k8s";
+import { InstanceTypeLabel } from "@/components/common/instance-type-label";
+import { SAGEMAKER_INSTANCE_TYPES } from "@/lib/instance-types";
 
 function jobPhase(job?: Job): { label: string; tone: "success" | "destructive" | "accent" | "muted" } {
   const s = job?.status;
@@ -98,8 +100,16 @@ export function ProcessingJobDetailPage() {
                 ) : null}
               </DetailRow>
               <DetailRow label="Image"><code className="text-xs">{s?.image ?? "—"}</code></DetailRow>
-              <DetailRow label="GPU">
-                {gpu > 0 ? <Badge variant="secondary">{gpu}× {s?.gpuTier ?? "smallgpu"}</Badge> : <span className="text-xs text-muted-foreground">CPU-only</span>}
+              <DetailRow label="Instance type">
+                <InstanceTypeLabel
+                  groups={SAGEMAKER_INSTANCE_TYPES}
+                  spec={{ cpu: s?.cpu, memory: s?.memory, gpu, gpuTier: s?.gpuTier ?? "smallgpu" }}
+                  detail={[
+                    gpu > 0 ? `${gpu}× ${s?.gpuTier ?? "smallgpu"} GPU` : "CPU-only",
+                    s?.cpu ? `${s.cpu} vCPU` : null,
+                    s?.memory ?? null,
+                  ].filter(Boolean).join(" · ")}
+                />
               </DetailRow>
               <ChannelRows label="Inputs" channels={s?.inputs} />
               <ChannelRows label="Outputs" channels={s?.outputs} />

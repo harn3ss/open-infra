@@ -17,6 +17,8 @@ import {
   type Vmi,
 } from "@/types/k8s";
 import { osLabel, rootDvName, vmIp, vmKey, vmStatus } from "./vm-shared";
+import { InstanceTypeLabel } from "@/components/common/instance-type-label";
+import { EC2_INSTANCE_TYPES } from "@/lib/instance-types";
 
 export function VmsPage() {
   const navigate = useNavigate();
@@ -76,12 +78,15 @@ export function VmsPage() {
       },
       {
         id: "size",
-        header: "Size",
+        header: "Instance type",
         accessorFn: (vm) => vm.spec?.cpu ?? 0,
         cell: ({ row }) => (
-          <span className="font-mono text-xs text-muted-foreground">
-            {row.original.spec?.cpu ?? 2} vCPU · {row.original.spec?.memory ?? "2Gi"}
-          </span>
+          <InstanceTypeLabel
+            compact
+            groups={EC2_INSTANCE_TYPES}
+            spec={row.original.spec as Record<string, unknown> | undefined}
+            detail={`${row.original.spec?.cpu ?? 2} vCPU · ${row.original.spec?.memory ?? "2Gi"}`}
+          />
         ),
         size: 150,
       },
