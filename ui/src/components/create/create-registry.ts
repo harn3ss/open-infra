@@ -1,4 +1,6 @@
 import type { UiSchema } from "@rjsf/utils";
+import type { InstanceTypeGroup } from "@/lib/instance-types";
+import { EC2_INSTANCE_TYPES, LAMBDA_MEMORY_TIERS, SAGEMAKER_INSTANCE_TYPES } from "@/lib/instance-types";
 
 /**
  * Per-kind create configuration — the data that steers the unified schema-driven create page
@@ -24,6 +26,30 @@ export interface CredentialSpec {
   label: string;
 }
 
+/**
+ * An AWS-style named instance-type picker for a kind's sizing (issue #111 follow-on) — EC2 instance
+ * types, Lambda memory tiers, SageMaker ml.* types. When set, the create page renders ONE type
+ * dropdown in place of the raw cpu/memory/gpu inputs: the `fields` it owns are hidden from the CRD
+ * form and the chosen type's values are overlaid onto the spec (preview + submit). A "Default" option
+ * omits them all so the XRD's own default sizing applies.
+ */
+export interface SizingSpec {
+  /** Section heading, e.g. "Instance type". */
+  title: string;
+  /** Help text under the heading. */
+  description?: string;
+  /** Grouped, selectable instance types (from lib/instance-types). */
+  groups: InstanceTypeGroup[];
+  /**
+   * Top-level spec fields this picker OWNS — hidden from the CRD form and set only from the chosen
+   * type. Must cover every key any type in `groups` sets, so a switch between types can't leave a
+   * stale field behind.
+   */
+  fields: string[];
+  /** Label for the "no explicit sizing" option (omits all owned fields → XRD defaults apply). */
+  defaultLabel: string;
+}
+
 export interface CreateKindSpec {
   kind: string;
   crdName: string;
@@ -32,6 +58,8 @@ export interface CreateKindSpec {
   sections: SectionSpec[];
   /** Endpoint objects whose password is collected + stored as a Secret (the ref is filled on create). */
   credentials?: CredentialSpec[];
+  /** AWS-style named instance-type picker, in place of raw cpu/memory/gpu inputs. */
+  sizing?: SizingSpec;
   uiSchema?: UiSchema;
 }
 
@@ -41,7 +69,7 @@ export const VIRTUALMACHINE_CREATE: CreateKindSpec = {
   description:
     "A full virtual machine — pick an OS image and a size; open-infra clones the golden image, wires networking, and boots it.",
   sections: [
-    { title: "Machine", fields: ["os", "cpu", "memory", "diskSize"] },
+    { title: "Machine", fields: ["os", "diskSize"] },
     { title: "Networking", fields: ["network", "expose", "ports", "securityGroups"], advanced: true },
     { title: "Access", fields: ["sshKey"], advanced: true },
     {
@@ -50,8 +78,15 @@ export const VIRTUALMACHINE_CREATE: CreateKindSpec = {
       advanced: true,
     },
   ],
+  sizing: {
+    title: "Instance type",
+    description:
+      "Pick an EC2-style instance type (vCPU / RAM). The root disk size is set separately below, like an EC2 root volume.",
+    groups: EC2_INSTANCE_TYPES,
+    fields: ["cpu", "memory"],
+    defaultLabel: "Default (2 vCPU, 2 GiB)",
+  },
   uiSchema: {
-    memory: { "ui:placeholder": "2Gi" },
     diskSize: { "ui:placeholder": "20Gi" },
     sshKey: { "ui:placeholder": "ssh-ed25519 AAAA… (injected via cloud-init on Linux)" },
     cpuModel: { "ui:placeholder": "host-passthrough (or e.g. Broadwell-noTSX for live migration)" },
@@ -105,12 +140,20 @@ export const FUNCTION_CREATE: CreateKindSpec = {
   crdName: "functions.openinfra.dev",
   description: "A scale-to-zero function from a container image — with optional GPU, HTTP exposure, and event triggers.",
   sections: [
-    { title: "Function", fields: ["image", "port", "memory"] },
+    { title: "Function", fields: ["image", "port"] },
     { title: "Compute", fields: ["gpu", "timeout", "scaling"], advanced: true },
     { title: "Networking", fields: ["expose", "securityGroups"], advanced: true },
     { title: "Environment", fields: ["env", "secrets", "queues"], advanced: true },
     { title: "Trigger", fields: ["trigger"], advanced: true },
   ],
+  sizing: {
+    title: "Memory",
+    description:
+      "AWS Lambda is sized by memory; CPU is allocated proportionally by the platform. Pick a memory tier — GPU (an open-infra extension) is set separately under Compute.",
+    groups: LAMBDA_MEMORY_TIERS,
+    fields: ["memory"],
+    defaultLabel: "Default (platform default memory)",
+  },
   uiSchema: { image: { "ui:placeholder": "ghcr.io/me/my-fn:latest" } },
 };
 
@@ -142,12 +185,19 @@ export const TRAININGJOB_CREATE: CreateKindSpec = {
   description:
     "A run-once model-training job on a GPU (SageMaker-style) — your training container runs to completion; read a dataset and write model artifacts to the object store.",
   sections: [
-    { title: "Training job", fields: ["image", "gpu", "gpuTier"] },
+    { title: "Training job", fields: ["image"] },
     { title: "Command", fields: ["command", "args"], advanced: true },
     { title: "Hyperparameters & config", fields: ["env", "secrets"], advanced: true },
     { title: "Data (object store)", fields: ["dataset", "output"], advanced: true },
-    { title: "Resources & run", fields: ["cpu", "memory", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
+    { title: "Resources & run", fields: ["backoffLimit", "maxRuntimeSeconds"], advanced: true },
   ],
+  sizing: {
+    title: "Instance type",
+    description: "Pick a SageMaker-style ml.* instance type (vCPU / RAM / GPU). GPU types map their accelerator to open-infra's real GPU class.",
+    groups: SAGEMAKER_INSTANCE_TYPES,
+    fields: ["cpu", "memory", "gpu", "gpuTier"],
+    defaultLabel: "Default (1 GPU, smallgpu class)",
+  },
   uiSchema: { image: { "ui:placeholder": "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime" } },
 };
 
@@ -169,11 +219,18 @@ export const PROCESSINGJOB_CREATE: CreateKindSpec = {
   description:
     "Data processing (SageMaker-style) — a run-once job with named inputs and outputs for preprocessing, feature engineering, validation, or model evaluation.",
   sections: [
-    { title: "Processing job", fields: ["image", "gpu", "gpuTier"] },
+    { title: "Processing job", fields: ["image"] },
     { title: "Channels", fields: ["inputs", "outputs"] },
     { title: "Command", fields: ["command", "args"], advanced: true },
-    { title: "Config", fields: ["env", "secrets", "cpu", "memory", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
+    { title: "Config", fields: ["env", "secrets", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
   ],
+  sizing: {
+    title: "Instance type",
+    description: "Pick a SageMaker-style ml.* instance type (vCPU / RAM / GPU). CPU types run without a GPU.",
+    groups: SAGEMAKER_INSTANCE_TYPES,
+    fields: ["cpu", "memory", "gpu", "gpuTier"],
+    defaultLabel: "Default (CPU-only)",
+  },
 };
 
 export const MODELMONITOR_CREATE: CreateKindSpec = {
@@ -206,11 +263,18 @@ export const BATCHTRANSFORM_CREATE: CreateKindSpec = {
   description:
     "Offline batch inference (SageMaker-style) — a run-once job that loads a model, scores an input dataset, and writes predictions to the object store.",
   sections: [
-    { title: "Batch transform", fields: ["image", "gpu", "gpuTier"] },
+    { title: "Batch transform", fields: ["image"] },
     { title: "Data", fields: ["input", "output", "artifact"] },
     { title: "Command", fields: ["command", "args"], advanced: true },
-    { title: "Config", fields: ["env", "secrets", "cpu", "memory", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
+    { title: "Config", fields: ["env", "secrets", "backoffLimit", "maxRuntimeSeconds"], advanced: true },
   ],
+  sizing: {
+    title: "Instance type",
+    description: "Pick a SageMaker-style ml.* instance type (vCPU / RAM / GPU). CPU types run without a GPU.",
+    groups: SAGEMAKER_INSTANCE_TYPES,
+    fields: ["cpu", "memory", "gpu", "gpuTier"],
+    defaultLabel: "Default (CPU-only)",
+  },
 };
 
 export const GRAPHQLAPI_CREATE: CreateKindSpec = {
