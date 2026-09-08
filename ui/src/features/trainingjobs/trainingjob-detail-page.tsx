@@ -21,6 +21,8 @@ import { ApiError, jobMetrics, k8sDelete, k8sGet, registerTrainingJob } from "@/
 import { openinfraPaths, batchPaths } from "@/lib/k8s-paths";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Job, TrainingJob } from "@/types/k8s";
+import { InstanceTypeLabel } from "@/components/common/instance-type-label";
+import { SAGEMAKER_INSTANCE_TYPES } from "@/lib/instance-types";
 
 /** Map a batch Job's status to a run phase + badge tone. */
 function jobPhase(job?: Job): { label: string; tone: "success" | "destructive" | "accent" | "muted" } {
@@ -136,14 +138,17 @@ export function TrainingJobDetailPage() {
                 ) : null}
               </DetailRow>
               <DetailRow label="Image"><code className="text-xs">{s?.image ?? "—"}</code></DetailRow>
-              <DetailRow label="GPU">
-                {gpu > 0 ? <Badge variant="secondary">{gpu}× {s?.gpuTier ?? "smallgpu"}</Badge> : <span className="text-xs text-muted-foreground">CPU-only</span>}
+              <DetailRow label="Instance type">
+                <InstanceTypeLabel
+                  groups={SAGEMAKER_INSTANCE_TYPES}
+                  spec={{ cpu: s?.cpu, memory: s?.memory, gpu, gpuTier: s?.gpuTier ?? "smallgpu" }}
+                  detail={[
+                    gpu > 0 ? `${gpu}× ${s?.gpuTier ?? "smallgpu"} GPU` : "CPU-only",
+                    s?.cpu ? `${s.cpu} vCPU` : null,
+                    s?.memory ?? null,
+                  ].filter(Boolean).join(" · ")}
+                />
               </DetailRow>
-              {(s?.cpu || s?.memory) ? (
-                <DetailRow label="Resources">
-                  <span className="text-xs">{s?.cpu ? `${s.cpu} CPU` : ""}{s?.cpu && s?.memory ? " · " : ""}{s?.memory ?? ""}</span>
-                </DetailRow>
-              ) : null}
               {s?.dataset?.bucket ? (
                 <DetailRow label="Dataset">
                   <span className="flex items-center gap-1">
