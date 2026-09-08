@@ -11,7 +11,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -21,7 +23,8 @@ import { InfoLink } from "@/components/help/info-link";
 import { LearnMore } from "@/components/help/learn-more";
 import { kindDocsUrl } from "@/lib/kind-docs";
 import { createTemplates } from "@/components/create/rjsf-templates";
-import type { CredentialSpec, SectionSpec } from "@/components/create/create-registry";
+import type { CredentialSpec, SectionSpec, SizingSpec } from "@/components/create/create-registry";
+import { findInstanceType } from "@/lib/instance-types";
 import { YamlViewer } from "@/components/common/yaml-viewer";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
@@ -50,6 +53,12 @@ export interface CreatePageConfig {
    * lives only in the Secret, never in the resource spec.
    */
   credentials?: CredentialSpec[];
+  /**
+   * AWS-style named instance-type picker. When set, the raw cpu/memory/gpu inputs it owns are hidden
+   * from the CRD form and replaced by one type dropdown; the chosen type's values are overlaid onto
+   * the spec (a "Default" option omits them so the XRD's default sizing applies).
+   */
+  sizing?: SizingSpec;
   /** k8s create path for a namespace, e.g. openinfraPaths.applications. */
   createPath: (ns: string) => string;
   /** list path (k8s) to invalidate after create. */
@@ -79,6 +88,8 @@ export function CreatePage(cfg: CreatePageConfig) {
   );
 
   const creds = cfg.credentials ?? [];
+  const sizing = cfg.sizing;
+  const DEFAULT_SIZE = "__default__";
 
   // #41 Phase 3: respect the kind's architecture capability. Unavailable kinds are blocked here with
   // an honest reason (not silently hidden); untested kinds are permitted with a warning banner.
@@ -91,6 +102,22 @@ export function CreatePage(cfg: CreatePageConfig) {
   const [passwords, setPasswords] = useState<Record<string, string>>({});
   const [credTouched, setCredTouched] = useState(false);
   const [liveValidate, setLiveValidate] = useState(false);
+  const [sizeChoice, setSizeChoice] = useState<string>(DEFAULT_SIZE);
+
+  // The spec-field values the chosen instance type applies (empty for "Default" → XRD defaults apply).
+  const sizingValues = useMemo<Record<string, unknown>>(() => {
+    if (!sizing || sizeChoice === DEFAULT_SIZE) return {};
+    return findInstanceType(sizing.groups, sizeChoice)?.values ?? {};
+  }, [sizing, sizeChoice]);
+
+  const sizingSummary = useMemo(() => {
+    const v = sizingValues;
+    const parts: string[] = [];
+    if (v.cpu != null) parts.push(`${v.cpu} vCPU`);
+    if (v.memory != null) parts.push(`${v.memory} memory`);
+    if (typeof v.gpu === "number") parts.push(v.gpu > 0 ? `${v.gpu} GPU (${v.gpuTier ?? "default class"})` : "no GPU");
+    return parts.length ? `Requests ${parts.join(", ")}.` : "";
+  }, [sizingValues]);
 
   const schemaQuery = useQuery({
     queryKey: ["crd-schema", cfg.crdName],
@@ -103,15 +130,21 @@ export function CreatePage(cfg: CreatePageConfig) {
     if (!raw) return null;
     const props = raw["properties"] as Record<string, unknown> | undefined;
     const spec = (props && "spec" in props ? props["spec"] : raw) as RJSFSchema;
-    if (creds.length === 0) return spec;
-    // Hide passwordSecretRef from the endpoint forms — the Credentials section handles it, and we
-    // fill the ref on submit. Clone so we never mutate the cached query data.
+    const hideSizing = !!sizing && sizing.fields.length > 0;
+    if (creds.length === 0 && !hideSizing) return spec;
+    // Clone so we never mutate the cached query data, then remove fields handled outside the form:
+    //  - passwordSecretRef, filled from the Credentials section on submit;
+    //  - the sizing-owned cpu/memory/gpu, replaced by the instance-type picker and overlaid on submit.
     const clone = JSON.parse(JSON.stringify(spec)) as RJSFSchema;
     const cprops = (clone.properties ?? {}) as Record<string, { properties?: Record<string, unknown>; required?: string[] }>;
     for (const c of creds) {
       const ep = cprops[c.path];
       if (ep?.properties) delete ep.properties.passwordSecretRef;
       if (ep && Array.isArray(ep.required)) ep.required = ep.required.filter((r) => r !== "passwordSecretRef");
+    }
+    if (hideSizing) {
+      for (const f of sizing!.fields) delete cprops[f];
+      if (Array.isArray(clone.required)) clone.required = clone.required.filter((r: string) => !sizing!.fields.includes(r));
     }
     return clone;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,15 +166,24 @@ export function CreatePage(cfg: CreatePageConfig) {
     return s;
   };
 
+  // The exact spec to preview/apply: credential refs, then the chosen instance type's sizing (clearing
+  // any owned field first so switching types never leaves a stale cpu/memory/gpu behind).
+  const specFinal = (base: Record<string, unknown>): Record<string, unknown> => {
+    const s = specWithRefs(base);
+    if (!sizing) return s;
+    for (const f of sizing.fields) delete s[f];
+    return { ...s, ...sizingValues };
+  };
+
   const manifest = useMemo(
     (): K8sObject => ({
       apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
       kind: cfg.kind,
       metadata: { name: name || `my-${cfg.kind.toLowerCase()}`, namespace },
-      spec: specWithRefs(formData),
+      spec: specFinal(formData),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cfg.kind, name, namespace, formData],
+    [cfg.kind, name, namespace, formData, sizingValues],
   );
 
   const createMutation = useMutation({
@@ -157,12 +199,13 @@ export function CreatePage(cfg: CreatePageConfig) {
           stringData: { password: pw },
         });
       }
-      // 2. Create the resource, with its passwordSecretRef(s) pointing at those Secrets.
+      // 2. Create the resource, with its passwordSecretRef(s) pointing at those Secrets and the
+      //    chosen instance type's cpu/memory/gpu overlaid.
       return k8sCreate<K8sObject>(cfg.createPath(namespace), {
         apiVersion: `${OPENINFRA_GROUP}/${OPENINFRA_VERSION}`,
         kind: cfg.kind,
         metadata: { name, namespace },
-        spec: specWithRefs(fd),
+        spec: specFinal(fd),
       });
     },
     onSuccess: () => {
@@ -283,6 +326,41 @@ export function CreatePage(cfg: CreatePageConfig) {
             {avail.reason ||
               `${cfg.kind} is untested on this cluster's architecture — you can create it, but it is not verified to run here.`}
           </span>
+        </div>
+      ) : null}
+
+      {/* Instance type — AWS-style named sizing, replacing the raw cpu/memory/gpu inputs. */}
+      {sizing ? (
+        <div className="space-y-4 rounded-lg border border-border p-4">
+          <div>
+            <h3 className="text-sm font-semibold">{sizing.title}</h3>
+            {sizing.description ? <p className="text-xs text-muted-foreground">{sizing.description}</p> : null}
+          </div>
+          <div className="space-y-1.5">
+            <Select value={sizeChoice} onValueChange={setSizeChoice}>
+              <SelectTrigger id="oi-instance-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={DEFAULT_SIZE}>{sizing.defaultLabel}</SelectItem>
+                {sizing.groups.map((g) => (
+                  <SelectGroup key={g.label}>
+                    <SelectLabel>{g.label}</SelectLabel>
+                    {g.types.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {sizeChoice === DEFAULT_SIZE
+                ? "No explicit sizing — the platform's default for this resource applies."
+                : sizingSummary}
+            </p>
+          </div>
         </div>
       ) : null}
 
