@@ -15,6 +15,7 @@ export function CreateVmPage() {
       title="Create VirtualMachine"
       description={VIRTUALMACHINE_CREATE.description}
       sections={VIRTUALMACHINE_CREATE.sections}
+      sizing={VIRTUALMACHINE_CREATE.sizing}
       uiSchema={VIRTUALMACHINE_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.virtualmachines(ns)}
       listPath={openinfraPaths.virtualmachines()}
