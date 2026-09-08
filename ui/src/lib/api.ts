@@ -838,6 +838,9 @@ export function createIamUser(body: {
   name: string;
   displayName: string;
   groups: string[];
+  // Optional kind: Policy names attached directly to the user (spec.policies) at create time —
+  // grants the user's data-plane authority (§3). Control-plane authority still comes via groups.
+  policies?: string[];
   password: string;
 }): Promise<{ name: string }> {
   return request("/iam/users", { method: "POST", body: JSON.stringify(body) });
