@@ -15,6 +15,7 @@ export function CreateTrainingJobPage() {
       title={`Create ${TRAININGJOB_CREATE.kind}`}
       description={TRAININGJOB_CREATE.description}
       sections={TRAININGJOB_CREATE.sections}
+      sizing={TRAININGJOB_CREATE.sizing}
       uiSchema={TRAININGJOB_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.trainingjobs(ns)}
       listPath={openinfraPaths.trainingjobs()}

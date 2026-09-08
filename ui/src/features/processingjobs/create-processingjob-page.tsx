@@ -15,6 +15,7 @@ export function CreateProcessingJobPage() {
       title={`Create ${PROCESSINGJOB_CREATE.kind}`}
       description={PROCESSINGJOB_CREATE.description}
       sections={PROCESSINGJOB_CREATE.sections}
+      sizing={PROCESSINGJOB_CREATE.sizing}
       uiSchema={PROCESSINGJOB_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.processingjobs(ns)}
       listPath={openinfraPaths.processingjobs()}

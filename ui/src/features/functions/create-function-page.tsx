@@ -15,6 +15,7 @@ export function CreateFunctionPage() {
       title={`Create ${FUNCTION_CREATE.kind}`}
       description={FUNCTION_CREATE.description}
       sections={FUNCTION_CREATE.sections}
+      sizing={FUNCTION_CREATE.sizing}
       uiSchema={FUNCTION_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.functions(ns)}
       listPath={openinfraPaths.functions()}

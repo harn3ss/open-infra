@@ -15,6 +15,7 @@ export function CreateBatchTransformPage() {
       title={`Create ${BATCHTRANSFORM_CREATE.kind}`}
       description={BATCHTRANSFORM_CREATE.description}
       sections={BATCHTRANSFORM_CREATE.sections}
+      sizing={BATCHTRANSFORM_CREATE.sizing}
       uiSchema={BATCHTRANSFORM_CREATE.uiSchema}
       createPath={(ns) => openinfraPaths.batchtransforms(ns)}
       listPath={openinfraPaths.batchtransforms()}
