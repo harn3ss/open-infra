@@ -42,6 +42,8 @@ import {
 import { VmVolumesTab } from "./vm-volumes";
 import { VmNetworkTab } from "./vm-network";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
+import { InstanceTypeLabel } from "@/components/common/instance-type-label";
+import { EC2_INSTANCE_TYPES } from "@/lib/instance-types";
 
 function decode(v?: string): string {
   if (!v) return "";
@@ -242,11 +244,14 @@ export function VmDetailPage() {
               <DetailRow label="Operating system">
                 <Badge variant="secondary">{osLabel(spec?.os)}</Badge>
               </DetailRow>
-              <DetailRow label="Size">
-                <span className="font-mono text-xs">
-                  {spec?.cpu ?? 2} vCPU · {spec?.memory ?? "2Gi"} RAM ·{" "}
-                  {isWin ? `${WINDOWS_ROOT_DISK} (fixed)` : spec?.diskSize ?? "20Gi"} disk
-                </span>
+              <DetailRow label="Instance type">
+                <InstanceTypeLabel
+                  groups={EC2_INSTANCE_TYPES}
+                  spec={spec as Record<string, unknown> | undefined}
+                  detail={`${spec?.cpu ?? 2} vCPU · ${spec?.memory ?? "2Gi"} RAM · ${
+                    isWin ? `${WINDOWS_ROOT_DISK} (fixed)` : spec?.diskSize ?? "20Gi"
+                  } disk`}
+                />
               </DetailRow>
               {status.detail ? (
                 <DetailRow label="Disk status">

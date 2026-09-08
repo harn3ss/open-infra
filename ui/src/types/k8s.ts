@@ -229,6 +229,7 @@ export const APPLICATIONS_PLURAL = "applications";
 export interface FunctionSpec {
   image: string;
   port?: number;
+  memory?: string;
   gpu?: number;
   scaling?: { min?: number; max?: number; target?: number };
   queues?: string[];

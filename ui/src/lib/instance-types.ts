@@ -39,6 +39,28 @@ export function findInstanceType(groups: InstanceTypeGroup[], id: string): Insta
   return undefined;
 }
 
+/**
+ * Reverse lookup for detail/list views: the named type whose values EXACTLY match a resource's spec.
+ * A type matches only when every field it sets is present on the spec with the same value (compared as
+ * strings, so cpu 2 and "2" match). Returns undefined for a resource sized outside the catalog (raw
+ * cpu/memory, or a field left at the XRD default) — callers fall back to the raw sizing.
+ */
+export function matchInstanceType(
+  groups: InstanceTypeGroup[],
+  spec: Record<string, unknown> | undefined | null,
+): InstanceType | undefined {
+  if (!spec) return undefined;
+  for (const g of groups) {
+    for (const t of g.types) {
+      const keys = Object.keys(t.values);
+      if (keys.every((k) => spec[k] !== undefined && spec[k] !== null && String(spec[k]) === String(t.values[k]))) {
+        return t;
+      }
+    }
+  }
+  return undefined;
+}
+
 // ── EC2 (kind: VirtualMachine) ────────────────────────────────────────────────────────────────
 // cpu is an integer (KubeVirt domain.cpu.cores); memory is a Kubernetes quantity. Root disk size
 // (diskSize) is a separate control, like an EC2 root EBS volume — not part of the instance type.
