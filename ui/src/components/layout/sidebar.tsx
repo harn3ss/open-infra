@@ -353,13 +353,13 @@ export function Sidebar({
             }}
             aria-expanded={open}
             className={cn(
-              "flex w-full items-center justify-between rounded-md px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider transition-colors",
+              "flex w-full items-center justify-between gap-2 rounded-md px-3 py-1.5 text-left text-[0.65rem] font-semibold uppercase tracking-wider transition-colors",
               hasActive
                 ? "text-foreground/80"
                 : "text-muted-foreground/70 hover:text-foreground",
             )}
           >
-            <span>{cat.name}</span>
+            <span className="min-w-0 flex-1 text-left">{cat.name}</span>
             <ChevronDown
               className={cn(
                 "size-3.5 shrink-0 transition-transform duration-200",
