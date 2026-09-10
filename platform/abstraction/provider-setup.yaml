@@ -155,6 +155,11 @@ rules:
   - apiGroups: [cdi.kubevirt.io]
     resources: [datavolumes]
     verbs: [get, list, watch, create, update, patch, delete]
+  # kind: AutoScalingGroup compiles to a VirtualMachinePool; the pool controller creates the
+  # member VirtualMachines/DataVolumes, so the provider only manages the pool itself.
+  - apiGroups: [pool.kubevirt.io]
+    resources: [virtualmachinepools]
+    verbs: [get, list, watch, create, update, patch, delete]
   # Chaos Mesh experiments for the kind: FaultInjection (Fault Injection Simulator).
   - apiGroups: [chaos-mesh.org]
     resources: [podchaos, networkchaos, stresschaos, timechaos, iochaos, schedules]
