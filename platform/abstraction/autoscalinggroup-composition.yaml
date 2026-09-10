@@ -136,8 +136,14 @@ spec:
                     selector:
                       matchLabels:
                         openinfra.dev/autoscalinggroup: {{ $name }}
-                    # Members allowed unavailable at once during a proactive refresh (int or "N%").
+                    # Members allowed unavailable at once during a proactive refresh. The pool field is
+                    # int-or-string: a plain count MUST be an integer (a quoted "1" is read as a percent
+                    # and rejected by the pool webhook — "must end with %"); a percentage stays a string.
+                    {{- if hasSuffix "%" $maxUnavail }}
                     maxUnavailable: {{ $maxUnavail | quote }}
+                    {{- else }}
+                    maxUnavailable: {{ $maxUnavail | int }}
+                    {{- end }}
                     updateStrategy:
                       {{ $strategy }}: {}
                     {{- if $replace }}
