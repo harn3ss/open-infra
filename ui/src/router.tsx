@@ -158,6 +158,12 @@ import { IamDashboardPage } from "@/features/iam/iam-dashboard-page";
 import { PolicySimulatorPage } from "@/features/iam/policy-simulator-page";
 import { PkiPage, CertificateAuthorityDetailPage } from "@/features/pki/pki-page";
 import { CreateCaPage } from "@/features/pki/create-ca-page";
+import { ScheduledJobsPage } from "@/features/scheduledjobs/scheduledjobs-page";
+import { ScheduledJobDetailPage } from "@/features/scheduledjobs/scheduledjob-detail-page";
+import { CreateScheduledJobPage } from "@/features/scheduledjobs/create-scheduledjob-page";
+import { AutoScalingGroupsPage } from "@/features/autoscaling/autoscalinggroups-page";
+import { AutoScalingGroupDetailPage } from "@/features/autoscaling/autoscalinggroup-detail-page";
+import { CreateAutoScalingGroupPage } from "@/features/autoscaling/create-autoscalinggroup-page";
 
 const rootRoute = createRootRoute({
   component: AppShell,
@@ -726,6 +732,16 @@ const caDetailRoute = createRoute({
   component: CertificateAuthorityDetailPage,
 });
 
+// kind: ScheduledJob — list, static "/new" (before detail), detail.
+const scheduledJobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/scheduled-jobs", component: ScheduledJobsPage });
+const scheduledJobCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/scheduled-jobs/new", component: CreateScheduledJobPage });
+const scheduledJobDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/scheduled-jobs/$namespace/$name", component: ScheduledJobDetailPage });
+
+// kind: AutoScalingGroup — list, static "/new" (before detail), detail.
+const autoScalingGroupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/auto-scaling-groups", component: AutoScalingGroupsPage });
+const autoScalingGroupCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/auto-scaling-groups/new", component: CreateAutoScalingGroupPage });
+const autoScalingGroupDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/auto-scaling-groups/$namespace/$name", component: AutoScalingGroupDetailPage });
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   applicationsRoute,
@@ -881,6 +897,12 @@ const routeTree = rootRoute.addChildren([
   pkiRoute,
   caCreateRoute,
   caDetailRoute,
+  scheduledJobsRoute,
+  scheduledJobCreateRoute,
+  scheduledJobDetailRoute,
+  autoScalingGroupsRoute,
+  autoScalingGroupCreateRoute,
+  autoScalingGroupDetailRoute,
 ]);
 
 export const router = createRouter({
