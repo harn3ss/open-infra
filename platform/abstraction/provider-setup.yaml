@@ -127,6 +127,8 @@ rules:
       - batchtransforms
       - processingjobs
       - modelmonitors
+      - scheduledjobs
+      - autoscalinggroups
       - featuregroups
       - staticsites
       - parameters

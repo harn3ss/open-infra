@@ -57,6 +57,7 @@ func TestPolicyResourcesMatchBoundary(t *testing.T) {
 		"fileshares", "directories", "migrations", "replications", "dataflows", "streams",
 		"securitygroups", "faultinjections", "queries", "httpapis", "graphqlapis",
 		"databaseproxies", "statemachines", "trainingjobs", "modelpackages", "batchtransforms", "processingjobs", "modelmonitors", "featuregroups",
+		"scheduledjobs", "autoscalinggroups",
 		"staticsites", "parameters", "emailsenders",
 		"tables", "buckets", "queues",
 	}
