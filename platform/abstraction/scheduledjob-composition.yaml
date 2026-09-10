@@ -1,0 +1,167 @@
+# The compiler for kind: ScheduledJob -> a batch/v1 CronJob running an arbitrary container
+# to completion on a schedule. Combines the CronJob shell (schedule / concurrency / history,
+# as kind: ModelMonitor uses) with an arbitrary user-container body (image / command / env /
+# secrets / resources / optional GPU, as kind: TrainingJob uses). Each fire is an ordinary
+# Job; the console reads the CronJob + its child Jobs for run history and logs.
+#
+# The schedule accepts a standard 5-field cron OR AWS-style rate()/cron() sugar, normalized
+# here to a 5-field cron.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: scheduledjob
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XScheduledJob
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $cron := printf "%s-scheduled" $name }}
+            {{- /* Schedule normalization: raw 5-field cron passes through; AWS cron(...) drops the 6th
+                   (year) field and maps ? -> * ; AWS rate(n unit) maps the evenly-dividing cases. */}}
+            {{- $sched := $spec.schedule }}
+            {{- if hasPrefix "cron(" $sched }}
+            {{-   $fields := splitList " " (trim (trimSuffix ")" (trimPrefix "cron(" $sched))) }}
+            {{-   $five := list }}
+            {{-   range $i, $f := $fields }}{{- if lt $i 5 }}{{- $five = append $five (replace "?" "*" $f) }}{{- end }}{{- end }}
+            {{-   $sched = join " " $five }}
+            {{- else if hasPrefix "rate(" $sched }}
+            {{-   $parts := splitList " " (trim (trimSuffix ")" (trimPrefix "rate(" $sched))) }}
+            {{-   if ge (len $parts) 2 }}
+            {{-     $n := index $parts 0 }}
+            {{-     $unit := lower (index $parts 1) }}
+            {{-     if hasPrefix "minute" $unit }}{{- $sched = printf "*/%s * * * *" $n }}
+            {{-     else if hasPrefix "hour" $unit }}{{- $sched = printf "0 */%s * * *" $n }}
+            {{-     else if hasPrefix "day" $unit }}{{- $sched = printf "0 0 */%s * *" $n }}
+            {{-     end }}
+            {{-   end }}
+            {{- end }}
+            {{- /* GPU: gpu=0 is CPU-only. Avoid sprig `default` on gpu (it treats 0 as empty). */}}
+            {{- $gpu := 0 }}{{- if hasKey $spec "gpu" }}{{- $gpu = $spec.gpu }}{{- end }}
+            {{- $useGpu := gt $gpu 0 }}
+            {{- $tier := $spec.gpuTier | default "smallgpu" }}
+            {{- $cpu := $spec.cpu | default "1" }}
+            {{- $mem := $spec.memory | default "512Mi" }}
+            {{- $retries := 2 }}{{- if hasKey $spec "retries" }}{{- $retries = $spec.retries }}{{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: scheduled
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: CronJob
+                  metadata:
+                    name: {{ $cron }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/scheduledjob: {{ $name }} }
+                  spec:
+                    schedule: {{ $sched | quote }}
+                    {{- if $spec.timeZone }}
+                    timeZone: {{ $spec.timeZone | quote }}
+                    {{- end }}
+                    {{- if $spec.suspend }}
+                    suspend: true
+                    {{- end }}
+                    concurrencyPolicy: {{ $spec.concurrencyPolicy | default "Forbid" }}
+                    {{- if hasKey $spec "startingDeadline" }}
+                    startingDeadlineSeconds: {{ $spec.startingDeadline }}
+                    {{- end }}
+                    successfulJobsHistoryLimit: {{ $spec.successfulJobsHistoryLimit | default 3 }}
+                    failedJobsHistoryLimit: {{ $spec.failedJobsHistoryLimit | default 3 }}
+                    jobTemplate:
+                      spec:
+                        backoffLimit: {{ $retries }}
+                        {{- if $spec.timeout }}
+                        activeDeadlineSeconds: {{ $spec.timeout }}
+                        {{- end }}
+                        template:
+                          metadata: { labels: { openinfra.dev/scheduledjob: {{ $name }} } }
+                          spec:
+                            restartPolicy: Never
+                            {{- if $useGpu }}
+                            runtimeClassName: nvidia
+                            affinity:
+                              nodeAffinity:
+                                requiredDuringSchedulingIgnoredDuringExecution:
+                                  nodeSelectorTerms:
+                                    - matchExpressions:
+                                        - key: openinfra.dev/gpu-tier
+                                          operator: In
+                                          {{- if eq $tier "largegpu" }}
+                                          values: [large]
+                                          {{- else }}
+                                          values: [small, large]
+                                          {{- end }}
+                                {{- if eq $tier "smallgpu" }}
+                                preferredDuringSchedulingIgnoredDuringExecution:
+                                  - weight: 100
+                                    preference:
+                                      matchExpressions:
+                                        - { key: openinfra.dev/gpu-tier, operator: In, values: [small] }
+                                {{- end }}
+                            {{- end }}
+                            containers:
+                              - name: job
+                                image: {{ $spec.image }}
+                                {{- if $spec.command }}
+                                command: {{ $spec.command | toJson }}
+                                {{- end }}
+                                {{- if $spec.args }}
+                                args: {{ $spec.args | toJson }}
+                                {{- end }}
+                                {{- if or $spec.env $spec.queues }}
+                                env:
+                                  {{- range $e := ($spec.env | default (list)) }}
+                                  - { name: {{ $e.name | quote }}, value: {{ $e.value | quote }} }
+                                  {{- end }}
+                                  {{- if $spec.queues }}
+                                  - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                                  - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
+                                  {{- end }}
+                                {{- end }}
+                                {{- $envFrom := $spec.secrets | default (list) }}
+                                {{- if gt (len $envFrom) 0 }}
+                                envFrom:
+                                  {{- range $s := $envFrom }}
+                                  - secretRef: { name: {{ $s | quote }} }
+                                  {{- end }}
+                                {{- end }}
+                                resources:
+                                  requests: { cpu: 100m, memory: 128Mi }
+                                  limits:
+                                    cpu: "{{ $cpu }}"
+                                    memory: {{ $mem | quote }}
+                                    {{- if $useGpu }}
+                                    nvidia.com/gpu: {{ $gpu }}
+                                    {{- end }}
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XScheduledJob
+            status:
+              cronJob: {{ $cron }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

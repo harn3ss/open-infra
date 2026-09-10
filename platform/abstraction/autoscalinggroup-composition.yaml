@@ -1,0 +1,407 @@
+# The compiler for kind: AutoScalingGroup -> a KubeVirt VirtualMachinePool: a self-healing
+# fleet of identical VMs kept at a desired capacity. The launchTemplate is the recipe for
+# ONE machine (the same shape as kind: VirtualMachine); the pool keeps `replicas` members
+# running, replaces unhealthy ones (autohealing), and rolls a launchTemplate change through
+# the fleet (updateStrategy). v1 = fixed/scheduled capacity + health replacement + rolling
+# instance-refresh (metric target-tracking is a later addition).
+#
+# The VM recipe below is LIFTED from vm-composition.yaml (same $catalog, cloud-init /
+# cloudbase-init, arch-pin and Longhorn-vs-local-path handling) and placed under the pool's
+# spec.virtualMachineTemplate. Two structural differences from a single VM matter:
+#   * Naming: the VM template must NOT hard-code a single VM name. The pool auto-appends each
+#     member's ordinal to the DataVolume name AND rewrites the matching volume reference
+#     (KubeVirt pool controller indexVMSpec: dataVolumeTemplates + volumes[].dataVolume.name /
+#     persistentVolumeClaim.claimName). So the root DV is named "<name>-root" here and the pool
+#     provisions "<name>-root-0", "<name>-root-1", ... each a unique per-member PVC.
+#   * Labels: the pool selector.matchLabels MUST match spec.virtualMachineTemplate.metadata.labels
+#     AND the inner template.metadata.labels (VMI). All three carry openinfra.dev/autoscalinggroup.
+#
+# Linux members are first-class. WINDOWS is rendered honestly but carries two limits (see the
+# comments on the golden clone + OOBE ConfigMap below): every member clones the ~100Gi golden
+# PVC (N x 100Gi of storage), and all members share ONE Administrator password + one OOBE
+# answer file, because a single Composition cannot fan out a per-member ConfigMap/Secret for a
+# runtime replica count. Windows hostnames are still unique (sysprep generates a random name).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: autoscalinggroup
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XAutoScalingGroup
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $lt := $spec.launchTemplate }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $cpu := $lt.cpu | default 2 }}
+            {{- $memory := $lt.memory | default "2Gi" }}
+            {{- $disk := $lt.diskSize | default "20Gi" }}
+            {{- /* Capacity: desiredCapacity -> replicas, defaulting to minSize. Floored at minSize
+                   always; capped at maxSize ONLY when maxSize is set (unset = no ceiling, so a user
+                   who sets desiredCapacity without maxSize gets exactly that — no silent clamp to a
+                   default max). hasKey guards + int casts because Sprig `default` treats 0 as empty. */}}
+            {{- $min := 1 }}{{- if hasKey $spec "minSize" }}{{- $min = int $spec.minSize }}{{- end }}
+            {{- $replicas := $min }}{{- if hasKey $spec "desiredCapacity" }}{{- $replicas = int $spec.desiredCapacity }}{{- end }}
+            {{- if lt $replicas $min }}{{- $replicas = $min }}{{- end }}
+            {{- if hasKey $spec "maxSize" }}{{- if gt $replicas (int $spec.maxSize) }}{{- $replicas = int $spec.maxSize }}{{- end }}{{- end }}
+            {{- /* Curated OS catalog: os -> disk image + type. KEEP IN SYNC with vm-composition
+                   and the XRD enum. Linux images are ready-made cloud images (containerdisks)
+                   imported by CDI; windows clones the per-version golden image PVC. */}}
+            {{- $catalog := dict
+                  "ubuntu-24.04"    (dict "image" "quay.io/containerdisks/ubuntu:24.04"    "osType" "linux")
+                  "ubuntu-22.04"    (dict "image" "quay.io/containerdisks/ubuntu:22.04"    "osType" "linux")
+                  "fedora-40"       (dict "image" "quay.io/containerdisks/fedora:40"       "osType" "linux")
+                  "debian-12"       (dict "image" "quay.io/containerdisks/debian:12"       "osType" "linux")
+                  "centos-stream-9"     (dict "image" "quay.io/containerdisks/centos-stream:9" "osType" "linux")
+                  "windows-server-2019" (dict "image" "" "osType" "windows")
+                  "windows-server-2022" (dict "image" "" "osType" "windows")
+                  "windows-server-2025" (dict "image" "" "osType" "windows") }}
+            {{- $profile := (index $catalog $lt.os) | default (dict "image" "quay.io/containerdisks/ubuntu:24.04" "osType" "linux") }}
+            {{- $isWin := eq $profile.osType "windows" }}
+            {{- $user := "openinfra" }}
+            {{- /* Shared login secret across the fleet: derived from the XR UID so it is stable
+                   across reconciles. Used for the Linux cloud-init chpasswd and the Windows OOBE
+                   answer file. NB: identical for every member (see header note on Windows). */}}
+            {{- $pass := printf "%s-vmpass" $xr.metadata.uid | sha256sum | trunc 20 }}
+            {{- /* Arch pin: Windows is STRUCTURALLY amd64 (q35 + MBR BIOS + amd64 sysprep) and must
+                   never land on an arm64 node; Linux stays multi-arch unless openinfra.dev/arch on
+                   the AutoScalingGroup targets one. A fleet must not break on arch. */}}
+            {{- $annos := $xr.metadata.annotations | default dict }}
+            {{- $vmArch := index $annos "openinfra.dev/arch" | default "" }}
+            {{- if $isWin }}{{- $vmArch = "amd64" }}{{- end }}
+            {{- /* Windows root disk is FIXED at 100Gi: it clones the generalized golden PVC (~95.4Gi)
+                   and CDI refuses to clone into a smaller target (ErrIncompatiblePVC). Each member
+                   gets its OWN clone -> N x 100Gi. Linux keeps the user's diskSize (cloud-init grows
+                   the rootfs). Bump this if a future golden rebuild grows past 100Gi. */}}
+            {{- if $isWin }}{{- $disk = "100Gi" }}{{- end }}
+            {{- /* macvtap: the only supported direct-LAN mode (bridge is excluded by the XRD enum —
+                   a macvlan sub-iface can't be a KubeVirt bridge port). Gives each member a real LAN
+                   presence + its own DHCP lease. */}}
+            {{- $macvtap := eq ($lt.network | default "masquerade") "macvtap" }}
+            {{- /* highAvailability: per-member root on Longhorn (replicated RWX block) + live migration.
+                   Storage cost scales with fleet size (N replicated disks). */}}
+            {{- $ha := $lt.highAvailability | default false }}
+            {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
+            {{- $cpuModel := $lt.cpuModel | default "" }}
+            {{- /* Health check -> pool autohealing (replace a member whose Ready goes False). */}}
+            {{- $hc := $spec.healthCheck | default dict }}
+            {{- $replace := true }}{{- if hasKey $hc "replaceUnhealthy" }}{{- $replace = $hc.replaceUnhealthy }}{{- end }}
+            {{- /* Instance refresh -> updateStrategy + spec.maxUnavailable. strategy defaults to
+                   proactive; maxUnavailable defaults to "1" (safer than the pool's own 100% default:
+                   a proactive refresh takes one member down at a time). */}}
+            {{- $ir := $spec.instanceRefresh | default dict }}
+            {{- $strategy := $ir.strategy | default "proactive" }}
+            {{- $maxUnavail := $ir.maxUnavailable | default "1" }}
+            ---
+            # --- The VirtualMachinePool. replicas = desiredCapacity (clamped). Each member is a
+            #     VirtualMachine named <name>-<ordinal> with its own persistent root disk from the
+            #     dataVolumeTemplate below (the pool appends the ordinal to the DV name + rewrites the
+            #     volume reference). runStrategy Always keeps every member running. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: pool
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: pool.kubevirt.io/v1beta1
+                  kind: VirtualMachinePool
+                  metadata:
+                    name: {{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/autoscalinggroup: {{ $name }}
+                  spec:
+                    replicas: {{ $replicas }}
+                    # Selector MUST match virtualMachineTemplate.metadata.labels (and the VMI labels).
+                    selector:
+                      matchLabels:
+                        openinfra.dev/autoscalinggroup: {{ $name }}
+                    # Members allowed unavailable at once during a proactive refresh (int or "N%").
+                    maxUnavailable: {{ $maxUnavail | quote }}
+                    updateStrategy:
+                      {{ $strategy }}: {}
+                    {{- if $replace }}
+                    {{- /* autohealing present (even empty {}) = enabled with pool defaults (5m, 3
+                           failures); absent = disabled. So emit {} when no tuning is given. */}}
+                    {{- if or (hasKey $hc "minFailingDuration") (hasKey $hc "startUpFailureThreshold") }}
+                    autohealing:
+                      {{- if hasKey $hc "minFailingDuration" }}
+                      minFailingToStartDuration: {{ $hc.minFailingDuration | quote }}
+                      {{- end }}
+                      {{- if hasKey $hc "startUpFailureThreshold" }}
+                      startUpFailureThreshold: {{ int $hc.startUpFailureThreshold }}
+                      {{- end }}
+                    {{- else }}
+                    autohealing: {}
+                    {{- end }}
+                    {{- end }}
+                    virtualMachineTemplate:
+                      metadata:
+                        labels:
+                          openinfra.dev/autoscalinggroup: {{ $name }}
+                          openinfra.dev/vm: "true"
+                          openinfra.dev/os: {{ $lt.os }}
+                      spec:
+                        runStrategy: Always
+                        # Per-member persistent root disk. The pool appends the member ordinal to this
+                        # name (<name>-root-0, -1, ...) and rewrites the volume reference below to match.
+                        dataVolumeTemplates:
+                          - metadata:
+                              name: {{ $name }}-root
+                            spec:
+                              storage:
+                                accessModes: [{{ if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+                                {{- if $ha }}
+                                volumeMode: Block   # raw block is required for live-migratable Longhorn
+                                {{- end }}
+                                resources:
+                                  requests:
+                                    storage: {{ $disk }}
+                                storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
+                              source:
+                                {{- if $isWin }}
+                                # Clone the per-version golden image (build via kind: VmImage). One clone
+                                # PER MEMBER (N x ~100Gi) — the honest cost of a Windows fleet.
+                                pvc:
+                                  namespace: openinfra-images
+                                  name: {{ $lt.os }}-golden
+                                {{- else }}
+                                registry:
+                                  url: "docker://{{ $profile.image }}"
+                                {{- end }}
+                        template:
+                          metadata:
+                            labels:
+                              openinfra.dev/autoscalinggroup: {{ $name }}
+                              openinfra.dev/vm: "true"
+                              {{- /* SecurityGroup membership: the launcher pod inherits VMI labels, so
+                                     each member is selected by the attached SGs' NetworkPolicies. */}}
+                              {{- range $sg := ($lt.securityGroups | default list) }}
+                              openinfra.dev/sg-{{ $sg }}: ""
+                              {{- end }}
+                            {{- if $lt.subnet }}
+                            annotations:
+                              # Place each member's launcher pod in a kind: Subnet (kube-ovn) — the member
+                              # inherits that subnet's OVN-enforced isolation ("launch in this subnet").
+                              ovn.kubernetes.io/logical_switch: {{ $lt.subnet }}
+                            {{- end }}
+                          spec:
+                            {{- if $vmArch }}
+                            # Pin BOTH the VMI architecture (admission on a non-amd64 CP derives allowed
+                            # machine types from spec.architecture) and the launcher node arch. Windows ->
+                            # amd64 (structural); Linux only when openinfra.dev/arch targets one.
+                            architecture: {{ $vmArch }}
+                            nodeSelector: { kubernetes.io/arch: {{ $vmArch }} }
+                            {{- end }}
+                            {{- if $ha }}
+                            # Drain a node -> live-migrate the member off it instead of killing it.
+                            evictionStrategy: LiveMigrate
+                            {{- end }}
+                            {{- if $macvtap }}
+                            # Direct-LAN members must land where the parent LAN NIC exists.
+                            affinity:
+                              nodeAffinity:
+                                requiredDuringSchedulingIgnoredDuringExecution:
+                                  nodeSelectorTerms:
+                                    - matchExpressions:
+                                        - { key: openinfra.dev/vm-lan, operator: In, values: ["true"] }
+                            {{- end }}
+                            domain:
+                              cpu:
+                                cores: {{ $cpu }}
+                                {{- if $cpuModel }}
+                                model: {{ $cpuModel }}
+                                {{- else if $ha }}
+                                # Live migration needs a CPU model every node supports; host-model pins
+                                # the member to its source node. Nehalem is a universally-safe baseline;
+                                # override per cluster with launchTemplate.cpuModel.
+                                model: Nehalem
+                                {{- end }}
+                              resources:
+                                requests:
+                                  memory: {{ $memory }}
+                              {{- if $isWin }}
+                              # Windows: q35 BIOS (no EFI — matches the MBR golden) + Hyper-V enlightenments.
+                              machine:
+                                type: q35
+                              features:
+                                acpi: {}
+                                apic: {}
+                                hyperv:
+                                  relaxed: {}
+                                  vapic: {}
+                                  spinlocks:
+                                    spinlocks: 8191
+                              clock:
+                                utc: {}
+                                timer:
+                                  hpet:
+                                    present: false
+                                  hyperv: {}
+                              {{- end }}
+                              devices:
+                                disks:
+                                  - name: root
+                                    disk:
+                                      bus: virtio
+                                    bootOrder: 1
+                                  {{- if $isWin }}
+                                  # Per-member OOBE answer file on a sysprep CD. NB: all members mount the
+                                  # SAME <name>-oobe ConfigMap (shared Administrator password) — a single
+                                  # Composition can't fan out a per-member ConfigMap for a runtime replica
+                                  # count. sysprep still assigns each member a unique random hostname.
+                                  - name: sysprep
+                                    cdrom:
+                                      bus: sata
+                                  {{- else }}
+                                  - name: cloudinit
+                                    disk:
+                                      bus: virtio
+                                  {{- end }}
+                                interfaces:
+                                  - name: default
+                                    masquerade: {}
+                                  {{- if $macvtap }}
+                                  # Second NIC on a macvtap device over the LAN NIC (direct LAN + own DHCP).
+                                  - name: lan
+                                    binding:
+                                      name: macvtap
+                                  {{- end }}
+                                networkInterfaceMultiqueue: true
+                            networks:
+                              - name: default
+                                pod: {}
+                              {{- if $macvtap }}
+                              - name: lan
+                                multus:
+                                  networkName: default/openinfra-lan-macvtap
+                              {{- end }}
+                            volumes:
+                              - name: root
+                                # Pool rewrites this to <name>-root-<ordinal> to match the per-member DV.
+                                dataVolume:
+                                  name: {{ $name }}-root
+                              {{- if $isWin }}
+                              - name: sysprep
+                                sysprep:
+                                  configMap:
+                                    name: {{ $name }}-oobe
+                              {{- else }}
+                              - name: cloudinit
+                                cloudInitNoCloud:
+                                  # No `hostname:` here on purpose: a fleet must not share one hostname.
+                                  # Each member takes its VMI name (<name>-<ordinal>) as its hostname from
+                                  # KubeVirt's generated NoCloud meta-data (local-hostname = SanitizeHostname).
+                                  userData: |-
+                                    #cloud-config
+                                    users:
+                                      - name: {{ $user }}
+                                        sudo: ALL=(ALL) NOPASSWD:ALL
+                                        shell: /bin/bash
+                                        lock_passwd: false
+                                        {{- if $lt.sshKey }}
+                                        ssh_authorized_keys:
+                                          - {{ $lt.sshKey }}
+                                        {{- end }}
+                                    ssh_pwauth: true
+                                    chpasswd:
+                                      expire: false
+                                      list: |
+                                        {{ $user }}:{{ $pass }}
+                                    packages:
+                                      - qemu-guest-agent
+                                    {{- if $lt.userData }}
+                                    # EC2 UserData equivalent: the user's first-boot script, run AFTER the
+                                    # base setup so the member stays reachable if the script fails. Every
+                                    # member runs the same script.
+                                    write_files:
+                                      - path: /opt/openinfra-userdata
+                                        permissions: '0755'
+                                        content: |
+                                          {{- $lt.userData | nindent 30 }}
+                                    {{- end }}
+                                    runcmd:
+                                      - [systemctl, enable, --now, qemu-guest-agent]
+                                      {{- if $lt.userData }}
+                                      - [/bin/sh, /opt/openinfra-userdata]
+                                      {{- end }}
+                                  {{- if $macvtap }}
+                                  # DHCP both NICs: eth0 (pod) + eth1 (direct LAN).
+                                  networkData: |
+                                    version: 2
+                                    ethernets:
+                                      eth0: { dhcp4: true }
+                                      eth1: { dhcp4: true }
+                                  {{- end }}
+                              {{- end }}
+            {{- if $isWin }}
+            ---
+            # --- Windows OOBE answer file, SHARED by the whole fleet. The generalized golden reads
+            #     this sysprep CD on first boot to set the Administrator password + enable RDP, then
+            #     auto-completes OOBE. All members share this one ConfigMap (same password); each still
+            #     gets a unique random ComputerName (no <ComputerName> set below). Per-member unique
+            #     OOBE would need spec.nameGeneration.appendIndexToConfigMapRefs + N ConfigMaps, which a
+            #     single Composition can't produce for a runtime replica count. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: oobe
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata: { name: {{ $name }}-oobe, namespace: {{ $ns }} }
+                  data:
+                    # A DEPLOYED generalized image's oobeSystem pass reads `unattend.xml` from removable
+                    # media — NOT `autounattend.xml` (that name is only honored by Setup during windowsPE).
+                    unattend.xml: |
+                      <?xml version="1.0" encoding="utf-8"?>
+                      <unattend xmlns="urn:schemas-microsoft-com:unattend">
+                        <settings pass="oobeSystem">
+                          <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <InputLocale>en-US</InputLocale><SystemLocale>en-US</SystemLocale><UILanguage>en-US</UILanguage><UserLocale>en-US</UserLocale>
+                          </component>
+                          <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+                            <UserAccounts><AdministratorPassword><Value>{{ $pass }}</Value><PlainText>true</PlainText></AdministratorPassword></UserAccounts>
+                            <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><NetworkLocation>Work</NetworkLocation><ProtectYourPC>3</ProtectYourPC></OOBE>
+                            <TimeZone>UTC</TimeZone>
+                            <FirstLogonCommands>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>1</Order><CommandLine>cmd /c reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f</CommandLine></SynchronousCommand>
+                              <SynchronousCommand wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"><Order>2</Order><CommandLine>netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine></SynchronousCommand>
+                            </FirstLogonCommands>
+                          </component>
+                        </settings>
+                      </unattend>
+            {{- end }}
+            ---
+            # --- Composite status: surface the pool name + the resolved desired capacity. ---
+            apiVersion: openinfra.dev/v1
+            kind: XAutoScalingGroup
+            status:
+              poolName: {{ $name }}
+              desiredCapacity: {{ $replicas }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
