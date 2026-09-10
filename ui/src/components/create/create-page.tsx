@@ -23,6 +23,7 @@ import { InfoLink } from "@/components/help/info-link";
 import { LearnMore } from "@/components/help/learn-more";
 import { kindDocsUrl } from "@/lib/kind-docs";
 import { createTemplates } from "@/components/create/rjsf-templates";
+import { customWidgets } from "@/components/create/custom-widgets";
 import type { CredentialSpec, SectionSpec, SizingSpec } from "@/components/create/create-registry";
 import { findInstanceType } from "@/lib/instance-types";
 import { YamlViewer } from "@/components/common/yaml-viewer";
@@ -377,6 +378,7 @@ export function CreatePage(cfg: CreatePageConfig) {
             uiSchema={cfg.uiSchema}
             validator={validator}
             templates={createTemplates}
+            widgets={customWidgets}
             formContext={{ rootId: ROOT_ID, sections: cfg.sections }}
             formData={formData}
             onChange={(e) => setFormData(e.formData as Record<string, unknown>)}
