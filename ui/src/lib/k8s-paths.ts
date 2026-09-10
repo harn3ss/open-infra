@@ -38,6 +38,8 @@ import {
   TUNINGJOBS_PLURAL,
   PROCESSINGJOBS_PLURAL,
   MODELMONITORS_PLURAL,
+  SCHEDULEDJOBS_PLURAL,
+  AUTOSCALINGGROUPS_PLURAL,
   FEATUREGROUPS_PLURAL,
   HTTPAPIS_PLURAL,
   STATICSITES_PLURAL,
@@ -182,6 +184,12 @@ export const openinfraPaths = {
   featuregroups: (ns?: string) => `${oiGV}${nsSegment(ns)}/${FEATUREGROUPS_PLURAL}`,
   featuregroup: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${FEATUREGROUPS_PLURAL}/${name}`,
+  scheduledjobs: (ns?: string) => `${oiGV}${nsSegment(ns)}/${SCHEDULEDJOBS_PLURAL}`,
+  scheduledjob: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${SCHEDULEDJOBS_PLURAL}/${name}`,
+  autoscalinggroups: (ns?: string) => `${oiGV}${nsSegment(ns)}/${AUTOSCALINGGROUPS_PLURAL}`,
+  autoscalinggroup: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${AUTOSCALINGGROUPS_PLURAL}/${name}`,
   // Wave 2 — AWS-console-mimicry kinds (no console UI yet).
   httpapis: (ns?: string) => `${oiGV}${nsSegment(ns)}/${HTTPAPIS_PLURAL}`,
   httpapi: (ns: string, name: string) =>
@@ -217,6 +225,14 @@ const kvGV = `/apis/${KUBEVIRT_GROUP}/${KUBEVIRT_VERSION}`;
 
 // KubeVirt VirtualMachineInstance (live guest IP/phase) + VirtualMachine
 // (installer printableStatus for image builds).
+/* pool.kubevirt.io — an AutoScalingGroup's VirtualMachinePool + its member VMs (kubevirt.io). */
+export const poolPaths = {
+  virtualmachinepool: (ns: string, name: string) =>
+    `/apis/pool.kubevirt.io/v1beta1/namespaces/${ns}/virtualmachinepools/${name}`,
+  // Member VMs the pool creates; filter client-side by label openinfra.dev/autoscalinggroup=<name>.
+  memberVms: (ns: string) => `/apis/kubevirt.io/v1/namespaces/${ns}/virtualmachines`,
+};
+
 export const kubevirtPaths = {
   vmis: (ns?: string) => `${kvGV}${nsSegment(ns)}/virtualmachineinstances`,
   vmi: (ns: string, name: string) =>

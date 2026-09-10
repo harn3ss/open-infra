@@ -14,6 +14,8 @@ const KIND_DOC_FILE: Record<string, string> = {
   Database: "databases.md",
   VirtualMachine: "virtual-machines.md",
   Function: "serverless.md",
+  ScheduledJob: "scheduled-jobs.md",
+  AutoScalingGroup: "auto-scaling-groups.md",
   StateMachine: "state-machines.md",
   Model: "gpu.md",
   TrainingJob: "training-jobs.md",
