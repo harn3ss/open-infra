@@ -534,9 +534,15 @@ export const SCHEDULEDJOB_CREATE: CreateKindSpec = {
     { title: "Resources", fields: ["cpu", "memory", "gpu", "gpuTier"], advanced: true },
   ],
   uiSchema: {
-    schedule: { "ui:placeholder": "0 2 * * *   ·   rate(1 day)   ·   cron(0 12 * * ? *)" },
+    schedule: {
+      "ui:widget": "cronSchedule",
+      "ui:placeholder": "0 2 * * *   ·   rate(1 day)   ·   cron(0 12 * * ? *)",
+    },
     image: { "ui:placeholder": "ghcr.io/me/my-job:latest" },
-    timeZone: { "ui:placeholder": "America/New_York (optional; default UTC)" },
+    timeZone: {
+      "ui:widget": "timezone",
+      "ui:placeholder": "Type to search zones (optional; default UTC)",
+    },
   },
 };
 
