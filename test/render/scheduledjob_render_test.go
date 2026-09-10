@@ -37,12 +37,12 @@ func TestScheduledJob_RendersCronJob(t *testing.T) {
 		"kind: CronJob", "name: nightly-rollup-scheduled", "namespace: shop",
 		`schedule: "0 2 * * *"`,
 		"concurrencyPolicy: Forbid",
-		"backoffLimit: 3",          // retries
+		"backoffLimit: 3",             // retries
 		"activeDeadlineSeconds: 3600", // timeout
 		"image: ghcr.io/x/rollup:latest",
 		`command: ["/bin/rollup"]`,
 		`{ name: "REGION", value: "us" }`,
-		"secretRef: { name: \"shop-db\" }", // envFrom
+		"secretRef: { name: \"shop-db\" }",  // envFrom
 		"cronJob: nightly-rollup-scheduled", // status
 	} {
 		if !strings.Contains(out, want) {
