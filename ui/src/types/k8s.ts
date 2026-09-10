@@ -1021,6 +1021,76 @@ export type FeatureGroup = K8sObject<FeatureGroupSpec, FeatureGroupStatus>;
 export const FEATUREGROUPS_PLURAL = "featuregroups";
 export const FEATUREGROUPS_CRD_NAME = "featuregroups.openinfra.dev";
 
+/* ---------------------- open-infra ScheduledJob CRD ----------------------- */
+// Run an arbitrary container to completion on a schedule (AWS scheduled task).
+export interface ScheduledJobSpec {
+  schedule: string;
+  timeZone?: string;
+  suspend?: boolean;
+  concurrencyPolicy?: "Allow" | "Forbid" | "Replace";
+  startingDeadline?: number;
+  successfulJobsHistoryLimit?: number;
+  failedJobsHistoryLimit?: number;
+  image: string;
+  command?: string[];
+  args?: string[];
+  env?: { name: string; value: string }[];
+  secrets?: string[];
+  queues?: string[];
+  retries?: number;
+  timeout?: number;
+  cpu?: string;
+  memory?: string;
+  gpu?: number;
+  gpuTier?: "smallgpu" | "largegpu";
+}
+export interface ScheduledJobStatus {
+  cronJob?: string;
+  conditions?: Condition[];
+}
+export type ScheduledJob = K8sObject<ScheduledJobSpec, ScheduledJobStatus>;
+export const SCHEDULEDJOBS_PLURAL = "scheduledjobs";
+export const SCHEDULEDJOBS_CRD_NAME = "scheduledjobs.openinfra.dev";
+
+/* ---------------------- open-infra AutoScalingGroup CRD ------------------- */
+// A self-healing group of identical VMs (EC2 Auto Scaling Group) → VirtualMachinePool.
+export interface AutoScalingGroupSpec {
+  minSize?: number;
+  maxSize?: number;
+  desiredCapacity?: number;
+  launchTemplate: {
+    os: string;
+    cpu?: number;
+    memory?: string;
+    diskSize?: string;
+    sshKey?: string;
+    userData?: string;
+    network?: "masquerade" | "macvtap";
+    securityGroups?: string[];
+    subnet?: string;
+    highAvailability?: boolean;
+    cpuModel?: string;
+  };
+  healthCheck?: { replaceUnhealthy?: boolean; startUpFailureThreshold?: number; minFailingDuration?: string };
+  instanceRefresh?: { strategy?: "proactive" | "opportunistic"; maxUnavailable?: string };
+}
+export interface AutoScalingGroupStatus {
+  poolName?: string;
+  desiredCapacity?: number;
+  readyReplicas?: number;
+  conditions?: Condition[];
+}
+export type AutoScalingGroup = K8sObject<AutoScalingGroupSpec, AutoScalingGroupStatus>;
+export const AUTOSCALINGGROUPS_PLURAL = "autoscalinggroups";
+export const AUTOSCALINGGROUPS_CRD_NAME = "autoscalinggroups.openinfra.dev";
+
+/* pool.kubevirt.io VirtualMachinePool — read-only, to surface an AutoScalingGroup's members. */
+export interface VirtualMachinePoolStatus {
+  replicas?: number;
+  readyReplicas?: number;
+}
+export type VirtualMachinePool = K8sObject<{ replicas?: number }, VirtualMachinePoolStatus>;
+
 /* batch/v1 CronJob — read-only, to surface a ModelMonitor's schedule status. */
 export interface CronJobStatus {
   lastScheduleTime?: string;

@@ -3,6 +3,8 @@ import {
   ArrowRightLeft,
   Camera,
   Bomb,
+  CalendarClock,
+  CopyPlus,
   BrainCircuit,
   BrainCog,
   Boxes,
@@ -149,7 +151,9 @@ export const SERVICES: Service[] = [
       { label: "Images", to: "/vms/images", icon: Image, matchPrefix: true },
     ],
   },
+  { label: "Auto Scaling Groups", icon: CopyPlus, category: "Compute", to: "/auto-scaling-groups" }, // EC2 Auto Scaling
   { label: "Functions", icon: Zap, category: "Compute", to: "/functions" }, // Lambda
+  { label: "Scheduled Jobs", icon: CalendarClock, category: "Compute", to: "/scheduled-jobs" }, // EventBridge Scheduler / scheduled tasks
 
   // ── Front-end Web & Mobile ───────────────────────────────────────────────────
   { label: "Static Sites", icon: AppWindow, category: "Front-end Web & Mobile", to: "/staticsites" }, // Amplify
