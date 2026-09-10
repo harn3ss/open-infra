@@ -1,0 +1,134 @@
+# open-infra's "EC2 Auto Scaling Group": kind: AutoScalingGroup — a self-healing group of
+# identical VMs kept at a desired capacity. Compiles to a KubeVirt VirtualMachinePool: the
+# launchTemplate is the recipe for one machine (the same shape as kind: VirtualMachine), and
+# the pool keeps `desiredCapacity` of them running, replaces unhealthy members, and rolls a
+# template change through the fleet. v1 = fixed/scheduled capacity + health replacement +
+# rolling instance-refresh; metric target-tracking autoscaling is a later addition.
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xautoscalinggroups.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XAutoScalingGroup
+    plural: xautoscalinggroups
+  claimNames:
+    kind: AutoScalingGroup   # what users write in infra.yaml
+    plural: autoscalinggroups
+  defaultCompositionRef:
+    name: autoscalinggroup
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [launchTemplate]
+              properties:
+                # ── Capacity (the ASG core) ──
+                minSize:
+                  type: integer
+                  default: 1
+                  minimum: 0
+                  description: "Fewest members to keep running."
+                maxSize:
+                  type: integer
+                  minimum: 0
+                  description: "Most members allowed — the ceiling scheduled/manual scaling may reach. Omit for no ceiling (desiredCapacity is honored as-is); when set, desiredCapacity is clamped down to it."
+                desiredCapacity:
+                  type: integer
+                  minimum: 0
+                  description: "How many members to run now (VirtualMachinePool replicas). Defaults to minSize when omitted; floored at minSize, and capped at maxSize only when maxSize is set."
+                # ── Launch template: the recipe for ONE machine (the kind: VirtualMachine shape) ──
+                launchTemplate:
+                  type: object
+                  required: [os]
+                  description: "The per-member machine recipe — an EC2 launch template. Every member is provisioned from this, with its own persistent root disk."
+                  properties:
+                    os:
+                      type: string
+                      description: "Operating system, from the curated catalog (same as kind: VirtualMachine). Linux entries boot ready-made cloud images; windows-server-* clone a golden image (see honest limits: Windows fleets clone the golden PVC per member)."
+                      enum:
+                        - ubuntu-24.04
+                        - ubuntu-22.04
+                        - fedora-40
+                        - debian-12
+                        - centos-stream-9
+                        - windows-server-2019
+                        - windows-server-2022
+                        - windows-server-2025
+                    cpu:      { type: integer, default: 2, minimum: 1, description: "vCPU cores per member. Default 2." }
+                    memory:   { type: string, default: "2Gi", description: "Guest RAM per member, e.g. 2Gi. Default 2Gi." }
+                    diskSize: { type: string, default: "20Gi", description: "Per-member root disk size. Default 20Gi (Windows uses a fixed 100Gi)." }
+                    sshKey:   { type: string, description: "SSH public key injected via cloud-init (Linux only). Every member gets the same key." }
+                    userData:
+                      type: string
+                      description: "First-boot user data (EC2 UserData), Linux only — a #! shell script run once after base cloud-init. Every member runs the same script."
+                    network:
+                      type: string
+                      enum: [masquerade, macvtap]
+                      default: masquerade
+                      description: "Network attachment per member. masquerade (default) puts each member behind the pod network; macvtap attaches each to the physical LAN (requires vmLan enabled). bridge is excluded (broken on this stack)."
+                    securityGroups:
+                      type: array
+                      items: { type: string }
+                      description: "SecurityGroups (firewall rule sets) applied to every member."
+                    subnet:
+                      type: string
+                      description: "Name of a kind: Subnet (kube-ovn) to place members in — the AWS 'launch in this subnet' model. One subnet (no multi-AZ spread). Omit for the namespace default network."
+                    highAvailability:
+                      type: boolean
+                      default: false
+                      description: "Per-member root on Longhorn (replicated, migratable) + LiveMigrate, vs local-path (node-pinned). Note the storage cost scales with fleet size — see docs."
+                    cpuModel: { type: string, description: "Guest CPU model to require (KubeVirt domain.cpu.model). Empty = host-model." }
+                # ── Health check + replacement (ASG health check → pool autohealing) ──
+                healthCheck:
+                  type: object
+                  description: "How unhealthy members are detected and replaced."
+                  properties:
+                    replaceUnhealthy:
+                      type: boolean
+                      default: true
+                      description: "Replace a member whose VMI stops being ready (the EC2 status-check analog). ELB-type app-level health checks are not available."
+                    startUpFailureThreshold:
+                      type: integer
+                      minimum: 1
+                      description: "Consecutive VMI start failures before a member is replaced (pool default 3)."
+                    minFailingDuration:
+                      type: string
+                      description: "How long a member must be failing before replacement, e.g. \"5m\" (pool default 5m)."
+                # ── Instance refresh (roll a launchTemplate change through the fleet) ──
+                instanceRefresh:
+                  type: object
+                  description: "How a launchTemplate change is rolled out to existing members."
+                  properties:
+                    strategy:
+                      type: string
+                      enum: [proactive, opportunistic]
+                      default: proactive
+                      description: "proactive force-restarts members to apply a change (bounded rolling restart); opportunistic applies it on each member's next natural restart. No staged/canary rollback (see limits)."
+                    maxUnavailable:
+                      type: string
+                      default: "1"
+                      description: "Members that may be unavailable at once during a proactive refresh — an integer (\"1\") or percentage (\"25%\")."
+            status:
+              type: object
+              properties:
+                poolName:        { type: string }
+                desiredCapacity: { type: integer }
+                readyReplicas:   { type: integer }

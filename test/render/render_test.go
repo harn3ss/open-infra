@@ -1189,6 +1189,11 @@ func sprigLite() template.FuncMap {
 			h := sha256.Sum256([]byte(s))
 			return hex.EncodeToString(h[:])
 		},
+		// sprig string helpers (scheduledjob uses these to normalize cron()/rate() schedules).
+		"trim":       strings.TrimSpace,
+		"trimPrefix": func(prefix, s string) string { return strings.TrimPrefix(s, prefix) },
+		"trimSuffix": func(suffix, s string) string { return strings.TrimSuffix(s, suffix) },
+		"splitList":  func(sep, s string) []string { return strings.Split(s, sep) },
 		// sprig: is `needle` an element of `list`? (dataflow uses `has "*" $tables`).
 		"has": func(needle any, list any) bool {
 			rv := reflect.ValueOf(list)
