@@ -516,3 +516,45 @@ export const EMAILSENDER_CREATE: CreateKindSpec = {
     fromName: { "ui:placeholder": "Example App" },
   },
 };
+
+export const SCHEDULEDJOB_CREATE: CreateKindSpec = {
+  kind: "ScheduledJob",
+  crdName: "scheduledjobs.openinfra.dev",
+  description:
+    "Run a container to completion on a schedule (an AWS scheduled task / EventBridge-Scheduler analog) — a CronJob whose runs are Jobs, with retries, a concurrency policy, and a per-run timeout.",
+  sections: [
+    { title: "Schedule", fields: ["schedule", "timeZone", "suspend"] },
+    { title: "Job", fields: ["image", "command", "args"] },
+    { title: "Environment", fields: ["env", "secrets", "queues"], advanced: true },
+    {
+      title: "Run policy",
+      fields: ["concurrencyPolicy", "retries", "timeout", "startingDeadline", "successfulJobsHistoryLimit", "failedJobsHistoryLimit"],
+      advanced: true,
+    },
+    { title: "Resources", fields: ["cpu", "memory", "gpu", "gpuTier"], advanced: true },
+  ],
+  uiSchema: {
+    schedule: { "ui:placeholder": "0 2 * * *   ·   rate(1 day)   ·   cron(0 12 * * ? *)" },
+    image: { "ui:placeholder": "ghcr.io/me/my-job:latest" },
+    timeZone: { "ui:placeholder": "America/New_York (optional; default UTC)" },
+  },
+};
+
+export const AUTOSCALINGGROUP_CREATE: CreateKindSpec = {
+  kind: "AutoScalingGroup",
+  crdName: "autoscalinggroups.openinfra.dev",
+  description:
+    "A self-healing group of identical VMs kept at a desired capacity — an EC2 Auto Scaling Group. Pick a launch template (one machine's recipe) and a capacity; the platform keeps that many members running and replaces unhealthy ones.",
+  sections: [
+    { title: "Capacity", fields: ["desiredCapacity", "minSize", "maxSize"] },
+    { title: "Launch template", fields: ["launchTemplate"] },
+    { title: "Health check", fields: ["healthCheck"], advanced: true },
+    { title: "Instance refresh", fields: ["instanceRefresh"], advanced: true },
+  ],
+  uiSchema: {
+    launchTemplate: {
+      sshKey: { "ui:placeholder": "ssh-ed25519 AAAA… (Linux)" },
+      userData: { "ui:placeholder": "#!/bin/sh … first-boot script (Linux)" },
+    },
+  },
+};
