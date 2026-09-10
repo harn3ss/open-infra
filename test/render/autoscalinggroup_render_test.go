@@ -46,6 +46,24 @@ func TestAutoScalingGroup_LinuxPool(t *testing.T) {
 	if strings.Contains(out, "-golden") || strings.Contains(out, "-oobe") {
 		t.Errorf("Linux ASG must not reference a Windows golden/oobe; got:\n%s", grepCtx(out, "golden"))
 	}
+	// maxUnavailable default "1" must render as an INTEGER (a quoted "1" is read as a percent and
+	// rejected by the pool webhook: "must end with %").
+	if !strings.Contains(out, "maxUnavailable: 1") || strings.Contains(out, `maxUnavailable: "1"`) {
+		t.Errorf("default maxUnavailable must render as integer 1 (not quoted); got:\n%s", grepCtx(out, "maxUnavailable"))
+	}
+}
+
+// A percentage maxUnavailable renders as a quoted string (the int-or-string other branch).
+func TestAutoScalingGroup_MaxUnavailablePercent(t *testing.T) {
+	tmpl := extractInlineTemplate(t, asgCompositionPath)
+	out := render(t, tmpl, asgCtx(map[string]any{
+		"desiredCapacity": int64(4),
+		"launchTemplate":  map[string]any{"os": "ubuntu-24.04"},
+		"instanceRefresh": map[string]any{"maxUnavailable": "25%"},
+	}))
+	if !strings.Contains(out, `maxUnavailable: "25%"`) {
+		t.Errorf("percentage maxUnavailable must render as a quoted string; got:\n%s", grepCtx(out, "maxUnavailable"))
+	}
 }
 
 // The capacity-clamp fix: desiredCapacity WITHOUT maxSize must be honored as-is (no silent clamp to a
