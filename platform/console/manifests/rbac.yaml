@@ -141,6 +141,8 @@ rules:
       - tuningjobs
       - processingjobs
       - modelmonitors
+      - scheduledjobs
+      - autoscalinggroups
       - featuregroups
       - staticsites
       - parameters

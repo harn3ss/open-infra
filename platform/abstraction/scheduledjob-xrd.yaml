@@ -1,0 +1,133 @@
+# open-infra's scheduled-work primitive: kind: ScheduledJob — run an arbitrary container
+# to completion on a cron schedule (the AWS "scheduled task" / EventBridge-Scheduler → job
+# analog). Compiles to a batch/v1 CronJob whose runs are ordinary Jobs, with retries, a
+# concurrency policy, a per-run timeout, and retained run history. This is the general
+# schedule-any-work kind that kind: ModelMonitor only offered for the built-in drift check.
+#
+# Deliberately NOT a field on kind: Function: a Function is a scale-to-zero Knative HTTP
+# service (wrong lifecycle for run-to-completion batch work, and cron-on-Function would need
+# Knative Eventing, which is not installed).
+#
+# KEEP THIS SCHEMA STABLE — it is part of the product's contract.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xscheduledjobs.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XScheduledJob
+    plural: xscheduledjobs
+  claimNames:
+    kind: ScheduledJob       # what users write in infra.yaml
+    plural: scheduledjobs
+  defaultCompositionRef:
+    name: scheduledjob
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [schedule, image]
+              properties:
+                schedule:
+                  type: string
+                  description: >-
+                    When to run. Either a standard 5-field cron expression ("0 2 * * *"), or an
+                    AWS-style rate()/cron() expression: rate(5 minutes) / rate(1 hour) / rate(1 day)
+                    and cron(min hr dom mon dow year) (the 6th "year" field is dropped and "?" maps to
+                    "*"). Non-evenly-dividing rate() values (e.g. rate(90 minutes)) have no faithful
+                    5-field cron and are unsupported — use an explicit cron expression.
+                timeZone:
+                  type: string
+                  description: >-
+                    IANA time zone the schedule is interpreted in (e.g. "America/New_York"). Requires a
+                    Kubernetes control plane >= 1.27; omitted = UTC. Mirrors EventBridge Scheduler's
+                    ScheduleExpressionTimezone.
+                suspend:
+                  type: boolean
+                  default: false
+                  description: "Pause the schedule without deleting it (no new runs are started). Mirrors an EventBridge rule State: DISABLED."
+                concurrencyPolicy:
+                  type: string
+                  enum: [Allow, Forbid, Replace]
+                  default: Forbid
+                  description: "What to do if a run is still going when the next is due. Forbid (default) skips the new run; Allow runs both; Replace cancels the running one."
+                startingDeadline:
+                  type: integer
+                  description: "Seconds a missed run may still be started late (catch-up window). Also avoids the controller's >100-missed-schedules stall after long downtime/suspend."
+                successfulJobsHistoryLimit:
+                  type: integer
+                  default: 3
+                  description: "How many completed runs to retain (for the run-history view)."
+                failedJobsHistoryLimit:
+                  type: integer
+                  default: 3
+                  description: "How many failed runs to retain."
+                image:
+                  type: string
+                  description: "Container image to run each fire (the job body). CI substitutes the tag as elsewhere."
+                command:
+                  type: array
+                  items: { type: string }
+                  description: "Entrypoint override (container command)."
+                args:
+                  type: array
+                  items: { type: string }
+                  description: "Arguments to the entrypoint."
+                env:
+                  type: array
+                  description: "Plain environment variables."
+                  items:
+                    type: object
+                    required: [name, value]
+                    properties:
+                      name:  { type: string }
+                      value: { type: string }
+                secrets:
+                  type: array
+                  items: { type: string }
+                  description: "Names of existing Kubernetes Secrets whose keys are injected as env (envFrom) — e.g. a database app's connection secret."
+                queues:
+                  type: array
+                  items: { type: string }
+                  description: "Names of kind: Queue objects the job may publish to (NATS_URL + OPENINFRA_QUEUES are injected). Also the pragmatic place to write a failure record (there is no dead-letter queue primitive)."
+                retries:
+                  type: integer
+                  default: 2
+                  description: "Times to retry a failed run before the run is marked failed (Job backoffLimit). Default 2, since a scheduled run is unattended."
+                timeout:
+                  type: integer
+                  description: "Hard wall-clock cap for a single run, in seconds (Job activeDeadlineSeconds). Mirrors AWS Batch attemptDurationSeconds."
+                cpu:
+                  type: string
+                  description: "CPU limit as a Kubernetes quantity (e.g. \"1\", \"500m\"). Default 1."
+                memory:
+                  type: string
+                  description: "Memory limit as a Kubernetes quantity (e.g. \"512Mi\", \"2Gi\"). Default 512Mi."
+                gpu:
+                  type: integer
+                  default: 0
+                  description: "GPUs to request. 0 (default) runs CPU-only; >0 schedules on a GPU node of gpuTier."
+                gpuTier:
+                  type: string
+                  enum: [smallgpu, largegpu]
+                  default: smallgpu
+                  description: "GPU class when gpu>0. Ignored when gpu=0."
+            status:
+              type: object
+              properties:
+                cronJob: { type: string }
