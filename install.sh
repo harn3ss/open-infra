@@ -181,6 +181,14 @@ fi
 # see docs/security-and-compliance.md). Do not enable until workloads are PSS-compliant.
 incl hardened "security/hardened-profile.yaml"
 
+# LAN-exposure controller (networking.lanExpose.enabled — nested, so not a components.* key):
+# exclude the manifest unless explicitly enabled. Its site-specific config ConfigMap is
+# rendered at runtime below (like the MetalLB pool), not committed.
+if [ "$(yget networking.lanExpose.enabled)" != "true" ]; then
+  EXCLUDES="${EXCLUDES},networking/lan-expose.yaml"
+  LOG "networking.lanExpose not enabled"
+fi
+
 # MinIO topology: standalone (storage/minio.yaml) by default; HA selects the
 # distributed variant (storage/minio-ha.yaml). Exactly one is included — we do
 # NOT default to HA. (Skip when MinIO is disabled — both already excluded above.)
@@ -267,6 +275,35 @@ apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata: { name: default-l2, namespace: metallb-system }
 spec: { ipAddressPools: [default-pool] }
+EOF
+  fi
+fi
+
+# ── 2a. lan-expose controller config (networking.lanExpose) ──
+# The controller's addressing (LAN CIDR + EIP range) is site-specific, so — like the
+# MetalLB pool — it is rendered into a ConfigMap at runtime, not committed. The
+# Deployment (platform/networking/lan-expose.yaml) is included by the root-app only
+# when enabled (see the exclude above).
+if [ "$(yget networking.lanExpose.enabled)" = "true" ]; then
+  LAN_EXPOSE_CIDR="$(yget networking.lanExpose.lanCIDR)"
+  LAN_EXPOSE_RANGE="$(yget networking.lanExpose.eipRange)"
+  LAN_EXPOSE_SUBNET="$(yget networking.lanExpose.externalSubnet)"; LAN_EXPOSE_SUBNET="${LAN_EXPOSE_SUBNET:-external}"
+  if [ -z "$LAN_EXPOSE_CIDR" ] || [ -z "$LAN_EXPOSE_RANGE" ]; then
+    WARN "networking.lanExpose.enabled but lanCIDR/eipRange unset — controller will crashloop until set."
+  fi
+  LOG "configuring lan-expose: EIP range $LAN_EXPOSE_RANGE on $LAN_EXPOSE_CIDR (subnet $LAN_EXPOSE_SUBNET)"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + apply ConfigMap lan-expose-config (EIP range %s)\n' "$LAN_EXPOSE_RANGE"
+  else
+    cat <<EOF | $KUBECTL apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: lan-expose-config, namespace: kube-system }
+data:
+  LAN_CIDR: "$LAN_EXPOSE_CIDR"
+  EIP_RANGE: "$LAN_EXPOSE_RANGE"
+  EXTERNAL_SUBNET: "$LAN_EXPOSE_SUBNET"
+  DEFAULT_VPC: "ovn-cluster"
 EOF
   fi
 fi
