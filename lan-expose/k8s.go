@@ -22,8 +22,9 @@ const (
 	tokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	caPath    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
-	ovnAPI  = "/apis/kubeovn.io/v1"
-	coreAPI = "/api/v1"
+	ovnAPI    = "/apis/kubeovn.io/v1"
+	coreAPI   = "/api/v1"
+	netpolAPI = "/apis/networking.k8s.io/v1"
 )
 
 type k8sClient struct {
@@ -360,7 +361,66 @@ func (c *k8sClient) delete(ctx context.Context, resourcePath string) error {
 	return fmt.Errorf("delete %s: HTTP %d: %s", resourcePath, code, truncate(string(b), 256))
 }
 
-// ownerLabels tags every CR this controller creates so listing/GC can find them.
+// ownerLabels tags every object this controller creates so listing/GC can find them.
 func ownerLabels() map[string]any {
 	return map[string]any{"app.kubernetes.io/managed-by": "lan-expose"}
+}
+
+// ---- NetworkPolicy (namespaced) ----
+//
+// The abstraction/Application composition attaches a default-deny-except-default/
+// kube-system NetworkPolicy to app pods. A FIP preserves the real LAN client IP, so
+// that policy drops it. We add an additive ipBlock allow for the LAN CIDR (kube-ovn
+// honours ipBlock) so exposed pods accept LAN traffic — without the composition
+// having to carry a site-specific CIDR.
+
+type NetworkPolicy struct {
+	Metadata struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+	} `json:"metadata"`
+}
+
+func (c *k8sClient) listManagedNetpols(ctx context.Context) ([]NetworkPolicy, error) {
+	path := netpolAPI + "/networkpolicies?labelSelector=" + url.QueryEscape("app.kubernetes.io/managed-by=lan-expose")
+	b, code, err := c.do(ctx, http.MethodGet, path, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("list networkpolicies: HTTP %d: %s", code, truncate(string(b), 256))
+	}
+	var list struct {
+		Items []NetworkPolicy `json:"items"`
+	}
+	if err := json.Unmarshal(b, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (c *k8sClient) getNetworkPolicy(ctx context.Context, ns, name string) (bool, error) {
+	_, code, err := c.do(ctx, http.MethodGet, fmt.Sprintf("%s/namespaces/%s/networkpolicies/%s", netpolAPI, ns, name), "", nil)
+	if err != nil {
+		return false, err
+	}
+	return code == http.StatusOK, nil
+}
+
+func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, selector map[string]string, lanCIDR string) error {
+	obj := map[string]any{
+		"apiVersion": "networking.k8s.io/v1",
+		"kind":       "NetworkPolicy",
+		"metadata":   map[string]any{"name": name, "namespace": ns, "labels": ownerLabels()},
+		"spec": map[string]any{
+			"podSelector": map[string]any{"matchLabels": selector},
+			"policyTypes": []string{"Ingress"},
+			"ingress":     []any{map[string]any{"from": []any{map[string]any{"ipBlock": map[string]any{"cidr": lanCIDR}}}}},
+		},
+	}
+	return c.create(ctx, fmt.Sprintf("%s/namespaces/%s/networkpolicies", netpolAPI, ns), name, obj)
+}
+
+func (c *k8sClient) deleteNetworkPolicy(ctx context.Context, ns, name string) error {
+	return c.delete(ctx, fmt.Sprintf("%s/namespaces/%s/networkpolicies/%s", netpolAPI, ns, name))
 }

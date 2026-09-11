@@ -92,6 +92,10 @@ func (c *controller) reconcile(ctx context.Context) {
 		wantResource[rn] = true
 		wantPodIPs = append(wantPodIPs, pod.Status.PodIP)
 
+		if err := c.ensureNetpol(ctx, rn, ns, s.Spec.Selector); err != nil {
+			log.Printf("%s/%s: ensure LAN netpol: %v", ns, name, err)
+		}
+
 		if s.Metadata.Annotations[c.cfg.assignedAnno] != eip {
 			if err := c.client.patchServiceAnnotations(ctx, ns, name, map[string]string{c.cfg.assignedAnno: eip}); err != nil {
 				log.Printf("%s/%s: publish assigned EIP: %v", ns, name, err)
@@ -194,7 +198,24 @@ func (c *controller) ensureFip(ctx context.Context, rn string, pod *Pod) bool {
 	return true
 }
 
-// gc removes the OvnEip/OvnFip pairs we own whose Service is no longer exposed.
+// ensureNetpol adds the additive ipBlock-allow NetworkPolicy for a service's pods so
+// the FIP-preserved LAN client IP isn't dropped by the app's default-deny policy.
+func (c *controller) ensureNetpol(ctx context.Context, rn, ns string, selector map[string]string) error {
+	if len(selector) == 0 {
+		return nil
+	}
+	exists, err := c.client.getNetworkPolicy(ctx, ns, rn)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	return c.client.createLanNetpol(ctx, ns, rn, selector, c.cfg.lanCIDR)
+}
+
+// gc removes the OvnEip/OvnFip pairs and NetworkPolicies we own whose Service is no
+// longer exposed.
 func (c *controller) gc(ctx context.Context, eips []OvnEip, keep map[string]bool) {
 	for _, e := range eips {
 		n := e.Metadata.Name
@@ -204,6 +225,20 @@ func (c *controller) gc(ctx context.Context, eips []OvnEip, keep map[string]bool
 		log.Printf("gc: tearing down %s (no longer exposed)", n)
 		_ = c.client.deleteOvnFip(ctx, n)
 		_ = c.client.deleteOvnEip(ctx, n)
+	}
+	nps, err := c.client.listManagedNetpols(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("list managed netpols: %v", err)
+		}
+		return
+	}
+	for _, np := range nps {
+		if !strings.HasPrefix(np.Metadata.Name, managedPrefix) || keep[np.Metadata.Name] {
+			continue
+		}
+		log.Printf("gc: removing LAN netpol %s/%s", np.Metadata.Namespace, np.Metadata.Name)
+		_ = c.client.deleteNetworkPolicy(ctx, np.Metadata.Namespace, np.Metadata.Name)
 	}
 }
 
