@@ -599,6 +599,10 @@ spec:
                           # DB tier is deliberately NOT an SG member (a SecurityGroup fences the
                           # app's ingress port; on the DB it would blackhole the DB's own ports).
                       spec:
+                        {{- if $spec.database.expose }}
+                        # DB LAN endpoint (distributed FIP) requires the pod on the gateway node.
+                        nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+                        {{- end }}
                         {{- if $spec.database.highAvailability }}
                         affinity:
                           podAntiAffinity:
@@ -671,6 +675,10 @@ spec:
                   kind: MariaDB
                   metadata: { name: {{ $name }}-mysql, namespace: {{ $ns }} }
                   spec:
+                    {{- if $spec.database.expose }}
+                    # DB LAN endpoint (distributed FIP) requires the pod on the gateway node.
+                    nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+                    {{- end }}
                     # DB tier is deliberately NOT an SG member (a SecurityGroup fences the app's
                     # ingress port; on the DB it would blackhole the DB's own ports).
                     rootPasswordSecretKeyRef: { name: {{ $name }}-mysql-app, key: rootPassword }
@@ -773,6 +781,11 @@ spec:
                           app: {{ $name }}-babelfish
                           # DB tier is deliberately NOT an SG member (see the app-tier note).
                       spec:
+                        {{- if $spec.database.expose }}
+                        # A DB LAN endpoint (lan-expose EIP = distributed FIP) is only
+                        # reachable when the DB pod runs on the external-gateway node.
+                        nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+                        {{- end }}
                         securityContext: { fsGroup: 1000 }
                         # Postgres refuses a root-owned data dir; chown the Longhorn PVC first.
                         initContainers:
@@ -886,11 +899,18 @@ spec:
                       annotations:
                         openinfra.dev/encryption-key: {{ $dbEncKey | quote }}
                     {{- end }}
-                    {{- if $spec.database.highAvailability }}
+                    {{- if or $spec.database.highAvailability $spec.database.expose }}
                     affinity:
+                      {{- if $spec.database.highAvailability }}
                       enablePodAntiAffinity: true
                       topologyKey: kubernetes.io/hostname
                       podAntiAffinityType: required
+                      {{- end }}
+                      {{- if $spec.database.expose }}
+                      # A DB LAN endpoint (lan-expose EIP = distributed FIP) requires the
+                      # DB pod on the external-gateway node.
+                      nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+                      {{- end }}
                     {{- end }}
                     # pg_stat_statements: query history powering the database "Peek"
                     # (issue #56 — top running queries). Must be preloaded at server start;
