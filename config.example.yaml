@@ -41,8 +41,11 @@ cluster:
 
 networking:
   # MetalLB needs a small pool of spare LAN IPs OUTSIDE your DHCP range.
-  # Reserve these on your router first. EXAMPLE ONLY — set your own:
-  metallbPool: "192.0.2.240-192.0.2.250"
+  # Reserve these on your router first. If you also enable lanExpose (below), keep
+  # this pool DISJOINT from the lanExpose EIP zone (eipRange + lrpIP + traefikIP +
+  # kourierIP) or MetalLB will grab a FIP IP and fight the OVN ARP responder.
+  # Comma-separate ranges to leave gaps. EXAMPLE ONLY — set your own:
+  metallbPool: "192.0.2.211-192.0.2.229"
 
   # Ingress controller bundled with k3s. Keep traefik for v1.
   ingress: traefik
@@ -65,14 +68,38 @@ networking:
   # return-path policy so the Service's pod is reachable from the LAN on a stable
   # EIP — and re-points automatically when the pod restarts.
   #
-  # Requires the kube-ovn external gateway to be set up on the gateway node, and the
-  # eipRange to be a slice of your static LAN zone that is DISJOINT from metallbPool
-  # (so MetalLB can't grab a FIP IP). EXAMPLE ONLY — set your own:
+  # The eipRange must be a slice of your static LAN zone that is DISJOINT from
+  # metallbPool (so MetalLB can't grab a FIP IP). Requires kube-ovn as the CNI.
+  # install.sh stands up the whole kube-ovn external-gateway substrate below from
+  # this config so LAN exposure survives a from-scratch cluster rebuild — no manual
+  # OVN steps. EXAMPLE ONLY — set your own:
   lanExpose:
     enabled: false
     lanCIDR: "192.0.2.0/24"                 # your LAN subnet (the EIPs live here)
     eipRange: "192.0.2.241-192.0.2.249"     # EIP pool for FIPs (disjoint from metallbPool)
     externalSubnet: external                # the kube-ovn external Subnet name
+
+    # The kube-ovn external gateway. A FIP is a *distributed* NAT whose ARP
+    # responder lives on the exposed pod's own chassis, so exactly one node bridges
+    # the physical LAN and all FIP-exposed pods are pinned there. install.sh renders
+    # the ProviderNetwork/Vlan/Subnet, the pinned router LRP, the gateway ConfigMap,
+    # and the node label. Leave gateway.node blank to skip the substrate (e.g. you
+    # provisioned it by hand). EXAMPLE ONLY — set your own:
+    gateway:
+      node: ""                              # node whose NIC bridges the LAN (blank => skip)
+      interface: eno1                       # that node's physical LAN NIC
+      routerIP: 192.0.2.254                 # your LAN's real default gateway (the router)
+      lrpIP: 192.0.2.250                    # pinned OVN router-port EIP (off the app IPs)
+      # IPs OVN must NOT auto-assign: everything on the /24 except the usable EIP
+      # zone (eipRange + lrpIP + traefikIP + kourierIP — here .230-.250 usable, so
+      # exclude the rest). Comma-separated kube-ovn ranges. EXAMPLE ONLY:
+      subnetExcludeIps: "192.0.2.1..192.0.2.229,192.0.2.251..192.0.2.254"
+
+    # Optional shared-ingress exposure. Pinning traefik (all web apps) and kourier
+    # (all Knative Functions) to the gateway node LAN-exposes the whole platform with
+    # zero per-app work — apps behind them can live anywhere. Blank => leave alone.
+    traefikIP: 192.0.2.232                  # web apps via traefik (blank => skip)
+    kourierIP: 192.0.2.231                  # Knative Functions via kourier (blank => skip)
 
 dns:
   # "sslip"     -> zero-config magic DNS: <app>.<lb-ip>.sslip.io  (great for dev)
