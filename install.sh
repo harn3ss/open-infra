@@ -211,47 +211,43 @@ if command -v k3s >/dev/null 2>&1; then
 else
   LOG "installing k3s (server)…"
   # Traefik ships with k3s; we keep it (see docs). servicelb disabled in favor of MetalLB.
-  # CNI: flannel + the embedded kube-proxy and network-policy controller are all
-  # disabled — Cilium (installed next) replaces all three, giving real ipBlock/CIDR
-  # NetworkPolicy enforcement (the basis for kind: SecurityGroup).
-  RUN "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL='$K3S_CHANNEL' sh -s - server --disable servicelb --flannel-backend=none --disable-network-policy --disable-kube-proxy --write-kubeconfig-mode 0644"
+  # CNI: flannel + the embedded network-policy controller are disabled — kube-ovn
+  # (installed next) is the CNI and enforces NetworkPolicy (incl. ipBlock/CIDR, the
+  # basis for kind: SecurityGroup). kube-proxy is KEPT (kube-ovn relies on it for
+  # ClusterIP services, --enable-lb-svc=false) — unlike a Cilium kube-proxy-replacement.
+  RUN "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL='$K3S_CHANNEL' sh -s - server --disable servicelb --flannel-backend=none --disable-network-policy --write-kubeconfig-mode 0644"
 fi
 
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 KUBECTL="k3s kubectl"
 $KUBECTL version >/dev/null 2>&1 || [ "$DRY_RUN" = 1 ] || DIE "k3s not responding; check: systemctl status k3s"
 
-# ── 1b. Cilium CNI (kube-proxy replacement) ──────────────────
-# Cilium is the cluster CNI: it replaces flannel, kube-proxy, and the embedded
-# network-policy controller (all disabled above). Installed directly (not via Argo)
-# because it IS the network — it must be up before any other pod can get an IP.
-# kube-proxy replacement needs the API endpoint by IP (no kube-proxy yet to route
-# the kubernetes Service), so k8sServiceHost = this node's IP.
-if $KUBECTL -n kube-system get ds/cilium >/dev/null 2>&1; then
-  LOG "Cilium already installed — skipping"
-  # Ensure cni.exclusive=false even on an existing install, so Multus (VM direct-LAN
-  # networking) can layer on top as the primary CNI delegating to Cilium. With
-  # cni.exclusive=true, Cilium evicts Multus's config and NADs never attach.
-  if [ "$($KUBECTL -n kube-system get cm cilium-config -o jsonpath='{.data.cni-exclusive}' 2>/dev/null)" = "true" ]; then
-    RUN "$KUBECTL -n kube-system patch cm cilium-config --type=merge -p '{\"data\":{\"cni-exclusive\":\"false\"}}'"
-    WARN "flipped cilium cni-exclusive=false — restart Cilium to apply: kubectl -n kube-system rollout restart ds/cilium"
-  fi
+# ── 1b. kube-ovn CNI ─────────────────────────────────────────
+# kube-ovn is the cluster CNI (migration #120): it provides pod networking, real
+# NetworkPolicy enforcement (incl. ipBlock/CIDR — the basis for kind: SecurityGroup),
+# and the OVN-native VPC/Subnet/EIP objects that the kind: Vpc/Subnet abstractions and
+# the lan-expose external gateway (§2a-gw) build on. Installed directly (not via Argo)
+# because it IS the network — it must be up before any other pod gets an IP. k3s's
+# kube-proxy is left in place (kube-ovn uses it for ClusterIP services).
+KUBEOVN_VERSION="v1.14.41"       # pinned to the version proven in-cluster
+KUBEOVN_SVC_CIDR="10.43.0.0/16"  # k3s's service CIDR (the installer defaults to 10.96/12)
+if $KUBECTL -n kube-system get ds/kube-ovn-cni >/dev/null 2>&1; then
+  LOG "kube-ovn already installed — skipping"
 elif [ "$DRY_RUN" = 1 ]; then
-  printf '  + install Cilium (kubeProxyReplacement=true, ipam=kubernetes, cni.exclusive=false)\n'
+  printf '  + install kube-ovn %s (POD_CIDR 10.16.0.0/16, SVC_CIDR %s, JOIN 100.64.0.0/16, enable-eip-snat)\n' "$KUBEOVN_VERSION" "$KUBEOVN_SVC_CIDR"
 else
-  LOG "installing Cilium (CNI, kube-proxy replacement)…"
-  NODE_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
-  [ -n "$NODE_IP" ] || NODE_IP="$(hostname -I | awk '{print $1}')"
-  if ! command -v cilium >/dev/null 2>&1; then
-    CILIUM_CLI_VERSION="v0.16.24"
-    ARCH="amd64"; [ "$(uname -m)" = "aarch64" ] && ARCH="arm64"
-    RUN "curl -sL --fail https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${ARCH}.tar.gz | sudo tar xz -C /usr/local/bin cilium"
-  fi
-  # cni.exclusive=false lets Multus be layered on as the primary CNI delegating to Cilium
-  # (VM direct-LAN networking, networking.vmLan). Without it Cilium evicts Multus's config
-  # from the CNI conf dir and NADs never attach.
-  RUN "cilium install --set kubeProxyReplacement=true --set k8sServiceHost='$NODE_IP' --set k8sServicePort=6443 --set ipam.mode=kubernetes --set cni.exclusive=false"
-  RUN "cilium status --wait --wait-duration 5m || true"
+  LOG "installing kube-ovn ${KUBEOVN_VERSION} (CNI)…"
+  # The upstream installer hardcodes its CIDRs (they are NOT env-overridable), so fetch
+  # the pinned script and rewrite SVC_CIDR to k3s's before running. POD_CIDR (10.16/16),
+  # JOIN_CIDR (100.64/16), REGISTRY, VERSION and the control-plane LABEL already match;
+  # ENABLE_EIP_SNAT defaults true — it drives the default-VPC external gateway (§2a-gw).
+  # kubectl resolves via the k3s symlink and KUBECONFIG is exported above.
+  KUBEOVN_INSTALLER="$(mktemp)"
+  curl -sfL "https://raw.githubusercontent.com/kubeovn/kube-ovn/${KUBEOVN_VERSION}/dist/images/install.sh" -o "$KUBEOVN_INSTALLER" \
+    || DIE "failed to download kube-ovn installer ${KUBEOVN_VERSION}"
+  sed -i "s#^SVC_CIDR=.*#SVC_CIDR=\"${KUBEOVN_SVC_CIDR}\"#" "$KUBEOVN_INSTALLER"
+  bash "$KUBEOVN_INSTALLER" || DIE "kube-ovn install failed"
+  rm -f "$KUBEOVN_INSTALLER"
 fi
 
 # ── 2. MetalLB (L2) ──────────────────────────────────────────
