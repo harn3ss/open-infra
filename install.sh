@@ -265,12 +265,20 @@ else
   if [ "$DRY_RUN" = 1 ]; then
     printf '  + apply IPAddressPool(%s) + L2Advertisement\n' "$METALLB_POOL"
   else
+    # metallbPool may be comma-separated (leaving gaps for lanExpose FIP IPs); render
+    # each range as its own addresses[] entry.
+    MLB_ADDR_YAML=""
+    IFS=',' read -ra _mlb <<<"$METALLB_POOL"
+    for a in "${_mlb[@]}"; do
+      MLB_ADDR_YAML="${MLB_ADDR_YAML}    - \"${a}\""$'\n'
+    done
     cat <<EOF | $KUBECTL apply -f -
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata: { name: default-pool, namespace: metallb-system }
-spec: { addresses: ["$METALLB_POOL"] }
----
+spec:
+  addresses:
+$MLB_ADDR_YAML---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata: { name: default-l2, namespace: metallb-system }
@@ -304,6 +312,130 @@ data:
   EIP_RANGE: "$LAN_EXPOSE_RANGE"
   EXTERNAL_SUBNET: "$LAN_EXPOSE_SUBNET"
   DEFAULT_VPC: "ovn-cluster"
+EOF
+  fi
+fi
+
+# ── 2a-gw. lan-expose external-gateway substrate (networking.lanExpose.gateway) ──
+# The kube-ovn default-VPC external gateway that makes the operator's FIPs reachable
+# from the physical LAN — the hand-built recipe in memory kube-ovn-lan-exposure, now
+# config-driven so a from-scratch rebuild reproduces it with no manual OVN steps. All
+# site addressing comes from config.yaml, so this public script carries no site IPs.
+# Guarded on kube-ovn being the CNI (the ProviderNetwork/Subnet/OvnEip CRDs): on a
+# non-kube-ovn cluster it warns and skips instead of erroring.
+GW_NODE="$(yget networking.lanExpose.gateway.node)"
+if [ "$(yget networking.lanExpose.enabled)" = "true" ] && [ -n "$GW_NODE" ]; then
+  GW_IFACE="$(yget networking.lanExpose.gateway.interface)";  GW_IFACE="${GW_IFACE:-eno1}"
+  GW_ROUTER="$(yget networking.lanExpose.gateway.routerIP)"
+  GW_LRP="$(yget networking.lanExpose.gateway.lrpIP)"
+  GW_CIDR="$(yget networking.lanExpose.lanCIDR)"
+  GW_EXCL_IPS="$(yget networking.lanExpose.gateway.subnetExcludeIps)"
+  GW_EXT_SUBNET="$(yget networking.lanExpose.externalSubnet)"; GW_EXT_SUBNET="${GW_EXT_SUBNET:-external}"
+  GW_PREFIX="${GW_CIDR##*/}" # e.g. 192.0.2.0/24 -> 24, for external-gw-addr
+  if [ "$DRY_RUN" != 1 ] && ! $KUBECTL get crd provider-networks.kubeovn.io >/dev/null 2>&1; then
+    WARN "networking.lanExpose.gateway set but kube-ovn CRDs absent — skipping external gateway (kube-ovn must be the CNI)."
+  else
+    LOG "configuring kube-ovn external gateway: node $GW_NODE ($GW_IFACE), router $GW_ROUTER, LRP $GW_LRP"
+    if [ "$DRY_RUN" = 1 ]; then
+      printf '  + label node %s ovn.kubernetes.io/external-gw=true\n' "$GW_NODE"
+      printf '  + apply ProviderNetwork/Vlan/Subnet %s (%s; excludeIps %s)\n' "$GW_EXT_SUBNET" "$GW_CIDR" "$GW_EXCL_IPS"
+      printf '  + apply OvnEip ovn-cluster-external (lrp %s) + vpc.enableExternal + ovn-external-gw-config CM\n' "$GW_LRP"
+    else
+      # Only the gateway node bridges the LAN NIC; label it (the FIP pod-pinning
+      # target) and exclude every other node from the underlay ProviderNetwork.
+      $KUBECTL label node "$GW_NODE" ovn.kubernetes.io/external-gw=true --overwrite
+      GW_EXCL_NODES=""
+      for n in $($KUBECTL get nodes -o name | sed 's#node/##'); do
+        [ "$n" = "$GW_NODE" ] && continue
+        GW_EXCL_NODES="${GW_EXCL_NODES}    - ${n}"$'\n'
+      done
+      GW_EXCL_IPS_YAML=""
+      IFS=',' read -ra _gwips <<<"$GW_EXCL_IPS"
+      for ip in "${_gwips[@]}"; do
+        GW_EXCL_IPS_YAML="${GW_EXCL_IPS_YAML}    - ${ip}"$'\n'
+      done
+      cat <<EOF | $KUBECTL apply -f -
+apiVersion: kubeovn.io/v1
+kind: ProviderNetwork
+metadata: { name: $GW_EXT_SUBNET }
+spec:
+  defaultInterface: $GW_IFACE
+  excludeNodes:
+$GW_EXCL_NODES---
+apiVersion: kubeovn.io/v1
+kind: Vlan
+metadata: { name: vlan0 }
+spec: { id: 0, provider: $GW_EXT_SUBNET }
+---
+apiVersion: kubeovn.io/v1
+kind: Subnet
+metadata: { name: $GW_EXT_SUBNET }
+spec:
+  protocol: IPv4
+  provider: ovn
+  cidrBlock: $GW_CIDR
+  gateway: $GW_ROUTER
+  vlan: vlan0
+  excludeIps:
+$GW_EXCL_IPS_YAML---
+apiVersion: kubeovn.io/v1
+kind: OvnEip
+metadata: { name: ovn-cluster-external }
+spec: { externalSubnet: $GW_EXT_SUBNET, type: lrp, v4Ip: $GW_LRP }
+EOF
+      # enable-eip-snat=true means the default VPC's external gw is driven by this
+      # ConfigMap path; enableExternal wires the LRP to the localnet.
+      $KUBECTL patch vpc ovn-cluster --type merge -p '{"spec":{"enableExternal":true}}'
+      cat <<EOF | $KUBECTL apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: ovn-external-gw-config, namespace: kube-system }
+data:
+  enable-external-gw: "true"
+  external-gw-nodes: "$GW_NODE"
+  type: "centralized"
+  external-gw-nic: "$GW_IFACE"
+  external-gw-addr: "$GW_ROUTER/$GW_PREFIX"
+EOF
+    fi
+  fi
+fi
+
+# ── 2a-web. traefik LAN exposure (networking.lanExpose.traefikIP) ──
+# Pin traefik to the gateway node on :80/:443 as a ClusterIP annotated for the
+# lan-expose operator, so every web app behind traefik is reachable from the LAN on
+# one FIP (apps behind it can live anywhere). k3s reconciles this HelmChartConfig
+# into the traefik release; the site IP comes from config so it survives a rebuild.
+TRAEFIK_IP="$(yget networking.lanExpose.traefikIP)"
+if [ "$(yget networking.lanExpose.enabled)" = "true" ] && [ -n "$TRAEFIK_IP" ]; then
+  LOG "exposing traefik on $TRAEFIK_IP (ClusterIP + lan-expose, pinned to the gateway node)"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + apply HelmChartConfig/traefik (ClusterIP :80/:443, lan-ip %s)\n' "$TRAEFIK_IP"
+  else
+    cat <<EOF | $KUBECTL apply -f -
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata: { name: traefik, namespace: kube-system }
+spec:
+  valuesContent: |-
+    service:
+      type: ClusterIP
+      annotations:
+        openinfra.dev/lan-expose: "true"
+        openinfra.dev/lan-ip: "$TRAEFIK_IP"
+    ports:
+      web:
+        port: 80
+        exposedPort: 80
+      websecure:
+        port: 443
+        exposedPort: 443
+    securityContext:
+      capabilities:
+        add:
+          - NET_BIND_SERVICE
+    nodeSelector:
+      ovn.kubernetes.io/external-gw: "true"
 EOF
   fi
 fi
@@ -511,6 +643,76 @@ else
   sed -e "s#__REPO_URL__#${GITOPS_REPO}#g" -e "s#__PATH__#${GITOPS_PATH}#g" \
     -e "s#__EXCLUDE__#${EXCLUDE_GLOB}#g" \
     "${REPO_DIR}/platform/root-app.yaml" | $KUBECTL apply -f -
+fi
+
+# ── 4a. kourier LAN exposure (networking.lanExpose.kourierIP) ──
+# Kourier's Envoy binds 8080/8443 and is knative-operator-managed, so (unlike traefik)
+# it can't be cheaply rebound to :80/:443. Instead switch it to ClusterIP, set the
+# Function domain to <ip>.sslip.io, and front it with a tiny nginx-stream forwarder
+# pinned to the gateway node + LAN-exposed via the operator — the "LAN LoadBalancer"
+# for kourier. Runs after the app-of-apps so KnativeServing (ArgoCD-managed) can exist;
+# if it hasn't converged yet it warns and skips — just re-run install.sh (idempotent).
+KOURIER_IP="$(yget networking.lanExpose.kourierIP)"
+if [ "$(yget networking.lanExpose.enabled)" = "true" ] && [ -n "$KOURIER_IP" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    LOG "exposing kourier (Knative Functions) on $KOURIER_IP"
+    printf '  + patch KnativeServing (ingress.kourier.service-type ClusterIP, domain %s.sslip.io)\n' "$KOURIER_IP"
+    printf '  + apply kourier-lan-fwd forwarder + kourier-lan Service (lan-ip %s)\n' "$KOURIER_IP"
+  elif ! $KUBECTL -n knative-serving get knativeserving knative-serving >/dev/null 2>&1; then
+    WARN "networking.lanExpose.kourierIP set but KnativeServing not present yet — skipping kourier exposure. Re-run install.sh once the serverless component has converged."
+  else
+    LOG "exposing kourier (Knative Functions) on $KOURIER_IP (ClusterIP + sslip.io domain + LAN forwarder)"
+    $KUBECTL patch knativeserving knative-serving -n knative-serving --type merge \
+      -p "{\"spec\":{\"ingress\":{\"kourier\":{\"service-type\":\"ClusterIP\"}},\"config\":{\"domain\":{\"${KOURIER_IP}.sslip.io\":\"\"}}}}"
+    cat <<EOF | $KUBECTL apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: kourier-lan-fwd, namespace: knative-serving }
+data:
+  nginx.conf: |
+    events {}
+    stream {
+      resolver 10.43.0.10 valid=30s;
+      server { listen 80;  proxy_pass kourier.knative-serving.svc.cluster.local:80; }
+      server { listen 443; proxy_pass kourier.knative-serving.svc.cluster.local:443; }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: kourier-lan-fwd, namespace: knative-serving }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app.kubernetes.io/name: kourier-lan-fwd } }
+  template:
+    metadata: { labels: { app.kubernetes.io/name: kourier-lan-fwd } }
+    spec:
+      nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          ports: [ { containerPort: 80 }, { containerPort: 443 } ]
+          volumeMounts: [ { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf } ]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 200m, memory: 64Mi }
+      volumes: [ { name: conf, configMap: { name: kourier-lan-fwd } } ]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kourier-lan
+  namespace: knative-serving
+  annotations:
+    openinfra.dev/lan-expose: "true"
+    openinfra.dev/lan-ip: "$KOURIER_IP"
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: kourier-lan-fwd }
+  ports:
+    - { name: http,  port: 80,  targetPort: 80 }
+    - { name: https, port: 443, targetPort: 443 }
+EOF
+  fi
 fi
 
 # ── Done ─────────────────────────────────────────────────────
