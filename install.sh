@@ -237,6 +237,13 @@ elif [ "$DRY_RUN" = 1 ]; then
   printf '  + install kube-ovn %s (POD_CIDR 10.16.0.0/16, SVC_CIDR %s, JOIN 100.64.0.0/16, enable-eip-snat)\n' "$KUBEOVN_VERSION" "$KUBEOVN_SVC_CIDR"
 else
   LOG "installing kube-ovn ${KUBEOVN_VERSION} (CNI)…"
+  # A freshly-installed k3s server registers + labels its node a moment AFTER the API
+  # answers, but the kube-ovn installer aborts if it finds no
+  # node-role.kubernetes.io/control-plane node — so wait for the label first.
+  for _i in $(seq 1 30); do
+    [ -n "$($KUBECTL get node -l node-role.kubernetes.io/control-plane -o name 2>/dev/null)" ] && break
+    sleep 2
+  done
   # The upstream installer hardcodes its CIDRs (they are NOT env-overridable), so fetch
   # the pinned script and rewrite SVC_CIDR to k3s's before running. POD_CIDR (10.16/16),
   # JOIN_CIDR (100.64/16), REGISTRY, VERSION and the control-plane LABEL already match;
