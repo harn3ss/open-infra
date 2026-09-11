@@ -80,6 +80,7 @@ jobs:
           - tools/chainforge # chaos chain grammar: validate corpus + generate chains
           - open-appsync # the VTL engine + $util + the docs-anchored resolver probe
           - policyengine # the Cedar-based fine-grained data-plane authz engine (allow/deny/conditions)
+          - lan-expose # the LAN-exposure controller (EIP allocation + policyRoute merge)
     name: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v7
