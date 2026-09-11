@@ -1,0 +1,103 @@
+# lan-expose — the LAN-exposure controller. Watches Services annotated
+# openinfra.dev/lan-expose:"true" and provisions the kube-ovn external-gateway chain
+# (OvnEip + OvnFip + return-path VPC policyRoute) so the Service's pod is reachable
+# from the physical LAN on a stable EIP. Single cluster-wide writer.
+#
+# Site-specific addressing (LAN_CIDR, EIP_RANGE) is NOT in this file — it comes from
+# the lan-expose-config ConfigMap that install.sh renders from config.yaml
+# (networking.lanExpose), keeping this public manifest free of real site IPs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lan-expose
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: lan-expose
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lan-expose
+  labels:
+    app.kubernetes.io/name: lan-expose
+rules:
+  # Discover exposed Services + their backing pods; publish the assigned EIP back
+  # onto the Service (patch annotations only).
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [""]
+    resources: [pods, endpoints]
+    verbs: [get, list, watch]
+  # Own the OvnEip/OvnFip pairs and edit the default VPC's policyRoutes.
+  - apiGroups: [kubeovn.io]
+    resources: [ovn-eips, ovn-fips, vpcs]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lan-expose
+  labels:
+    app.kubernetes.io/name: lan-expose
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lan-expose
+subjects:
+  - kind: ServiceAccount
+    name: lan-expose
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lan-expose
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: lan-expose
+  annotations:
+    argocd.argoproj.io/sync-wave: "3" # after kube-ovn + its CRDs
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # single writer: never run two controllers that could double-drive
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lan-expose
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lan-expose
+    spec:
+      serviceAccountName: lan-expose
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: lan-expose
+          image: ghcr.io/harn3ss/open-infra-lan-expose:latest
+          env:
+            - name: POLL_INTERVAL
+              value: "15"
+          # LAN_CIDR / EIP_RANGE / EXTERNAL_SUBNET / DEFAULT_VPC come from config.yaml
+          # via install.sh-rendered ConfigMap.
+          envFrom:
+            - configMapRef:
+                name: lan-expose-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
