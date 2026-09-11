@@ -113,6 +113,13 @@ spec:
                           ovn.kubernetes.io/logical_switch: {{ $spec.subnet }}
                         {{- end }}
                       spec:
+                        {{- if $spec.expose }}
+                        # A lan-expose EIP is a kube-ovn distributed FIP, reachable from
+                        # the LAN only when the backing pod runs on the external-gateway
+                        # node — so pin exposed apps there. (No gateway node => Pending,
+                        # a clear signal the lan-expose feature isn't set up.)
+                        nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+                        {{- end }}
                         {{- if $assume }}
                         serviceAccountName: {{ $name }}
                         {{- end }}
@@ -310,8 +317,12 @@ spec:
                     ports: [ { port: 80, targetPort: {{ $spec.port }} } ]
             {{- if $spec.expose }}
             ---
-            # --- LAN LoadBalancer (MetalLB): the app's port on a LAN IP, for raw
-            #     TCP / non-HTTP / no-DNS access (alongside any Ingress). ---
+            # --- LAN endpoint: the app's port on a stable LAN IP, for raw TCP /
+            #     non-HTTP / no-DNS access (alongside any Ingress). A ClusterIP Service
+            #     annotated openinfra.dev/lan-expose: the lan-expose controller gives it
+            #     a kube-ovn EIP that actually works from the LAN (plain MetalLB
+            #     LoadBalancer external access is broken under kube-ovn). The app pod is
+            #     pinned to the external-gateway node (below), which the EIP requires. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -326,8 +337,9 @@ spec:
                     name: {{ $name }}-lan
                     namespace: {{ $ns }}
                     labels: { openinfra.dev/app-lan: {{ $name }} }
+                    annotations: { openinfra.dev/lan-expose: "true" }
                   spec:
-                    type: LoadBalancer
+                    type: ClusterIP
                     selector: { app.kubernetes.io/name: {{ $name }} }
                     ports: [ { port: {{ $spec.port }}, targetPort: {{ $spec.port }} } ]
             {{- end }}
@@ -808,7 +820,9 @@ spec:
                           storageClassName: {{ $spec.database.storageClass | default "longhorn" }}   # node-independent; back up with Velero
                           resources: { requests: { storage: {{ $dbSize | default "10Gi" }} } }
             ---
-            # Service — SQL Server (1433) + Postgres (5432). expose => LAN LoadBalancer.
+            # Service — SQL Server (1433) + Postgres (5432). expose => LAN-reachable
+            # via the lan-expose controller (ClusterIP + annotation), not a broken
+            # MetalLB LoadBalancer.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -819,9 +833,14 @@ spec:
                 manifest:
                   apiVersion: v1
                   kind: Service
-                  metadata: { name: {{ $name }}-babelfish, namespace: {{ $ns }} }
+                  metadata:
+                    name: {{ $name }}-babelfish
+                    namespace: {{ $ns }}
+                    {{- if $spec.database.expose }}
+                    annotations: { openinfra.dev/lan-expose: "true" }
+                    {{- end }}
                   spec:
-                    type: {{ if $spec.database.expose }}LoadBalancer{{ else }}ClusterIP{{ end }}
+                    type: ClusterIP
                     selector: { app: {{ $name }}-babelfish }
                     ports:
                       - { name: tds, port: 1433, targetPort: 1433 }
@@ -936,8 +955,9 @@ spec:
                     name: {{ $name }}-db-lan
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/part-of: {{ $name }} }
+                    annotations: { openinfra.dev/lan-expose: "true" }
                   spec:
-                    type: LoadBalancer
+                    type: ClusterIP
                     {{- if eq $dbEngine "mongo" }}
                     selector: { app.kubernetes.io/name: {{ $name }}-mongo }
                     ports: [ { port: 27017, targetPort: 27017 } ]
