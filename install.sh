@@ -95,7 +95,9 @@ audit_preflight
 # path. (console manifests/ are always excluded — deployed by the console child app.)
 # security/apiserver/* is kube-apiserver config read off disk (the audit policy),
 # not a cluster resource — Argo must never try to apply it. See platform/root-app.yaml.
-EXCLUDES="**/manifests/**,security/apiserver/**,abstraction/policy-boundary.yaml"
+# airgap/egress-deny-kubeovn.yaml is a kube-ovn Subnet ACL merge-PATCH (no apiVersion/kind), applied
+# imperatively by install.sh §4b — Argo must never try to apply it as a manifest.
+EXCLUDES="**/manifests/**,security/apiserver/**,abstraction/policy-boundary.yaml,airgap/egress-deny-kubeovn.yaml"
 excl() {
   if [ "$(yget "components.$1")" = "false" ]; then
     EXCLUDES="${EXCLUDES},$2"
@@ -170,7 +172,7 @@ if [ "$(yget components.airgap)" = "true" ] && [ "$(yget airgap.denyPublicEgress
     LOG "air-gap cutoff ELECTED — Calico/Canal detected (projectcalico.org/v3 served); using egress-deny-calico.yaml (GlobalNetworkPolicy)"
     EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml"
   else
-    LOG "air-gap cutoff ELECTED but no Cilium CRD / served projectcalico.org/v3 present — SKIPPING the egress cutoff (front-load only; add egress denial in your CNI)"
+    LOG "air-gap cutoff ELECTED — no Cilium/Calico policy CRD at glob-build time; their manifests are excluded. On kube-ovn the cutoff is applied as ovn-default ACLs once the CNI is up (see the kube-ovn air-gap step below); other CNIs need egress denial added manually."
     EXCLUDES="${EXCLUDES},airgap/egress-deny.yaml,airgap/egress-deny-calico.yaml"
   fi
 else
@@ -716,6 +718,25 @@ spec:
     - { name: https, port: 443, targetPort: 443 }
 EOF
   fi
+fi
+
+# ── 4b. air-gap egress cutoff — kube-ovn variant ─────────────
+# kube-ovn has no cluster-wide egress-policy CRD (unlike Cilium's CCNP / Calico's GNP), so the cutoff
+# is applied as ACLs on the default subnet ovn-default (platform/airgap/egress-deny-kubeovn.yaml) —
+# imperative, since ovn-default is a kube-ovn-managed built-in Argo must not own. Same election as the
+# Cilium/Calico manifests (components.airgap + airgap.denyPublicEgress) plus kube-ovn being the CNI.
+# Runs LAST, deliberately: the internet is cut only after the mirror is front-loaded (docs/airgapping.md).
+# Reversible: `$KUBECTL patch subnet ovn-default --type=merge -p '{"spec":{"acls":[]}}'`.
+if [ "$(yget components.airgap)" = "true" ] && [ "$(yget airgap.denyPublicEgress)" = "true" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + air-gap (kube-ovn): patch ovn-default acls — deny public egress, allow RFC1918/cluster\n'
+  elif $KUBECTL get crd subnets.kubeovn.io >/dev/null 2>&1 && $KUBECTL get subnet ovn-default >/dev/null 2>&1; then
+    WARN "air-gap cutoff ELECTED (kube-ovn): DENYING public-internet egress cluster-wide via ovn-default ACLs — ensure the registry mirror is front-loaded (docs/airgapping.md), or image pulls will fail"
+    $KUBECTL patch subnet ovn-default --type=merge --patch-file "${REPO_DIR}/platform/airgap/egress-deny-kubeovn.yaml" \
+      && LOG "ovn-default egress ACLs applied (public denied; RFC1918/cluster preserved). Reverse: patch its acls back to []" \
+      || WARN "failed to patch ovn-default acls for the air-gap cutoff"
+  fi
+  # Cilium/Calico clusters: their cutoff is the egress-deny*.yaml manifest (included/excluded above), not here.
 fi
 
 # ── Done ─────────────────────────────────────────────────────

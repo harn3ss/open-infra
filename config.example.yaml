@@ -185,6 +185,7 @@ components:
 # separate so you front-load first and cut the internet last — and both are reversible.
 airgap:
   # THE ELECTION. false = internet allowed (default). true = apply the cluster-wide public-egress
-  # cutoff (Cilium deny of 0.0.0.0/0 except RFC1918/CGNAT/link-local). Do NOT set true until the
+  # cutoff (deny 0.0.0.0/0 except RFC1918/CGNAT/link-local) — install.sh applies the form your CNI
+  # needs: Cilium CCNP, Calico/Canal GNP, or kube-ovn ovn-default ACLs. Do NOT set true until the
   # registry mirror is populated (run the prefetch) and nodes point at it, or image pulls will fail.
   denyPublicEgress: false
