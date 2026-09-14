@@ -1,0 +1,39 @@
+# Air-gap egress cutoff — kube-ovn variant. (A MERGE-PATCH for the ovn-default Subnet, NOT a
+# standalone manifest — it has no apiVersion/kind on purpose; see below.)
+#
+# The Cilium variant (egress-deny.yaml, a CiliumClusterwideNetworkPolicy) and the Calico/Canal variant
+# (egress-deny-calico.yaml, a GlobalNetworkPolicy) are cluster-wide policy OBJECTS the CNI applies.
+# kube-ovn has NO cluster-wide egress-policy CRD; its native equivalent is per-Subnet ACLs — OVN ACLs,
+# stateless, priority-ordered (the same primitive behind kind: Subnet spec.acls, the "AWS Network ACL").
+# Every standard pod draws its IP from the default subnet `ovn-default`, so ACLs on that subnet are
+# effectively cluster-wide. The cutoff is therefore applied as a MERGE-PATCH onto ovn-default's
+# spec.acls — install.sh runs `kubectl patch subnet ovn-default --type=merge --patch-file <this>`
+# (imperative, NOT Argo-managed: ovn-default is a kube-ovn-managed built-in Argo must never own).
+#
+# Same intent as the other two variants: deny egress to the PUBLIC internet while keeping the private
+# LAN + cluster reachable — pod / service / join CIDRs live in 10/8, the LAN in 192.168/16, etc. It is
+# ADDITIVE: a higher-priority `allow` for the private ranges plus a lower-priority `drop` of the rest,
+# so no pod becomes default-deny-egress. direction from-lport = traffic LEAVING the pods (egress);
+# ingress (to-lport) is untouched, so LAN clients reaching a Service (e.g. the lan-expose FIPs) still
+# work. `allow-related` is stateful, so return traffic for the permitted flows is allowed by conntrack.
+#
+# THE ELECTION: applied ONLY when components.airgap AND airgap.denyPublicEgress, after the in-cluster
+# registry mirror is front-loaded and nodes point at it (docs/airgapping.md) — otherwise image pulls
+# die once the internet is cut. Reversible: `kubectl patch subnet ovn-default --type=merge -p
+# '{"spec":{"acls":[]}}'` (or flip the flag and re-run) restores public egress immediately.
+#
+# LIMITATION: this covers ovn-default. A cluster that also runs pods on custom kind: Subnet / kind: Vpc
+# networks must carry the same egress ACLs there (kind: Subnet spec.acls) — those are separate OVN
+# switches this ovn-default patch does not reach.
+spec:
+  acls:
+    # Allow egress to the private / cluster ranges (higher priority wins in OVN ACL evaluation).
+    - direction: from-lport
+      priority: 2000
+      match: "ip4.dst == 10.0.0.0/8 || ip4.dst == 172.16.0.0/12 || ip4.dst == 192.168.0.0/16 || ip4.dst == 100.64.0.0/10 || ip4.dst == 169.254.0.0/16"
+      action: allow-related
+    # Drop everything else — i.e. the public internet.
+    - direction: from-lport
+      priority: 1000
+      match: "ip4"
+      action: drop
