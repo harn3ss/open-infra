@@ -23,7 +23,7 @@ import {
   updateIamRoleTags,
 } from "@/lib/api";
 import { TrustEditor, principalLabel } from "./trust-editor";
-import { PendingTab } from "./pending-notice";
+import { AccessAdvisorTab } from "./access-advisor-tab";
 import { TagsTab } from "./tags-tab";
 import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
 import { policyType } from "./policy-type";
@@ -337,13 +337,9 @@ export function RoleDetailPage() {
           />
         </TabsContent>
 
-        {/* Access Advisor — backend-blocked (no per-service last-used data plumbing yet). */}
+        {/* Access Advisor — services the users holding this role have written to (audit-derived). */}
         <TabsContent value="advisor" className="pt-4">
-          <PendingTab title="Access Advisor — services last accessed">
-            Per-service, per-permission last-used data for this role is not available yet. Only
-            aggregate last-seen exists today (in Access Review); the per-service breakdown AWS shows
-            here needs richer audit parsing (k8s-audit + shim logs via Loki, attributed by role).
-          </PendingTab>
+          <AccessAdvisorTab kind="role" name={name} />
         </TabsContent>
 
         {/* Revoke sessions — Part-B blocked (no revoked-before stamp honored by the shim yet). */}
