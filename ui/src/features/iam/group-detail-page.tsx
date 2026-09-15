@@ -32,7 +32,7 @@ import {
   type IamUser,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { PendingTab } from "./pending-notice";
+import { AccessAdvisorTab } from "./access-advisor-tab";
 
 /** What the three shipped console ClusterRoles confer, for the Permissions tab. */
 const BUILTIN_ROLES: Record<string, { label: string; blurb: string }> = {
@@ -435,12 +435,7 @@ export function GroupDetailPage() {
 
         {/* ---------------------------------------------------- Access Advisor */}
         <TabsContent value="advisor" className="pt-4">
-          <PendingTab title="Access Advisor — services last accessed">
-            Per-service last-used data for this group's members (through its bound ClusterRole) is not
-            available yet. Only aggregate last-seen exists today (in Access Review); the per-service
-            breakdown AWS shows here needs richer audit parsing (k8s-audit + shim logs via Loki,
-            attributed to the group's members).
-          </PendingTab>
+          <AccessAdvisorTab kind="group" name={name} />
         </TabsContent>
 
         {/* -------------------------------------------------------- Danger Zone */}

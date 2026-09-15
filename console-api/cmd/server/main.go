@@ -351,6 +351,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/policies/{name}", handleIAMPolicyUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/policies/{name}", handleIAMPolicyDelete(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Put("/iam/policies/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "policies", "policy", policiesAbsPath))
+		// Policy revision — the honest "Policy versions" answer (current generation; history lives in git).
+		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies/{name}/revision", handleIAMPolicyRevision(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles", handleIAMRolesList(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/roles", handleIAMRoleCreate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles/{name}", handleIAMRoleGet(cs, auth, logger))
@@ -387,6 +389,8 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/attestation", handleAttestation(cs, auth, logger))
 		// Access-recertification report — standing access per principal, mapped to activity + review flags (AC-2/AC-6).
 		api.With(middleware.Timeout(25*time.Second)).Get("/iam/access-review", handleAccessReview(cs, auth, logger))
+		// Access Advisor — per-principal "services last accessed" (write activity), the AWS least-privilege surface.
+		api.With(middleware.Timeout(25*time.Second)).Get("/iam/access-advisor", handleIAMAccessAdvisor(cs, auth, logger))
 
 		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
 		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)

@@ -18,7 +18,8 @@ import { deleteIamPolicy, getIamPolicy, listIamRoles, updateIamPolicyTags } from
 import { PermissionsSummary } from "./policy-editor/permissions-summary";
 import { ManagedBadge } from "./attach-policy-picker";
 import { policyType, type PolicyTypeLabel } from "./policy-type";
-import { PendingTab } from "./pending-notice";
+import { AccessAdvisorTab } from "./access-advisor-tab";
+import { PolicyVersionsTab } from "./policy-versions-tab";
 import { TagsTab } from "./tags-tab";
 import { cn } from "@/lib/utils";
 
@@ -326,23 +327,14 @@ export function PolicyDetailPage() {
           />
         </TabsContent>
 
-        {/* Policy versions — backend-blocked (CR generations/revisions not exposed yet). */}
+        {/* Policy versions — the honest open-infra analog: current CR revision + where real history lives. */}
         <TabsContent value="versions" className="pt-4">
-          <PendingTab title="Policy versions">
-            open-infra does not keep AWS's 5-version model. The honest analog is the Policy CR's
-            revision history (generations / GitOps revisions), and the BFF does not expose that yet.
-            When it does, this tab lists prior CR revisions with a "set as current" action — labelled
-            as revisions, not AWS versions.
-          </PendingTab>
+          <PolicyVersionsTab name={name} />
         </TabsContent>
 
-        {/* Access Advisor — backend-blocked (no per-service last-used via this policy yet). */}
+        {/* Access Advisor — services written to by principals this policy applies to (audit-derived). */}
         <TabsContent value="advisor" className="pt-4">
-          <PendingTab title="Access Advisor — services last accessed via this policy">
-            Per-service last-used data attributed to this policy is not available yet. Only aggregate
-            last-seen exists today (in Access Review); the per-service breakdown AWS shows here needs
-            richer audit parsing (k8s-audit + shim logs via Loki).
-          </PendingTab>
+          <AccessAdvisorTab kind="policy" name={name} />
         </TabsContent>
 
         {!managed ? (
