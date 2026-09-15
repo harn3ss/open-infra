@@ -1557,6 +1557,60 @@ export function getAccessReview(): Promise<AccessReview> {
   return request<AccessReview>(`/iam/access-review`);
 }
 
+/* ------------------------------ IAM Access Advisor ------------------------------ */
+// GET /api/iam/access-advisor?kind=&name=&lookbackDays= — the AWS "last accessed / services this identity
+// uses" surface, per principal. HONESTY (surfaced via `coverage`, which the UI MUST render): the activity
+// source is the audit trail, which records MUTATIONS + auth decisions, NOT reads (and not data-plane
+// object access) — so "last accessed" means "last write observed", and a service with no activity means
+// no writes were seen, never "proven unused". `aggregated` is true for group/role/policy (across the
+// users who effectively hold the principal). `activitySourceReachable=false` ⇒ the audit store was down,
+// so a blank result is UNKNOWN, not "no access".
+export interface AccessAdvisorService {
+  service: string;
+  lastAccessed?: string;
+  actions?: string[];
+  eventCount: number;
+  actors?: string[];
+}
+export interface AccessAdvisorReport {
+  kind: string;
+  name: string;
+  actors: string[];
+  lookbackDays: number;
+  generatedAt: string;
+  activitySourceReachable: boolean;
+  aggregated: boolean;
+  services: AccessAdvisorService[];
+  coverage: string;
+  note: string;
+}
+export function getAccessAdvisor(
+  kind: "user" | "group" | "role" | "policy",
+  name: string,
+  lookbackDays?: number,
+): Promise<AccessAdvisorReport> {
+  const q = new URLSearchParams({ kind, name });
+  if (lookbackDays) q.set("lookbackDays", String(lookbackDays));
+  return request<AccessAdvisorReport>(`/iam/access-advisor?${q.toString()}`);
+}
+
+/* ------------------- IAM policy revision (the honest "Policy versions") ------------------- */
+// GET /api/iam/policies/{name}/revision — open-infra keeps only the CURRENT revision in-cluster
+// (metadata.generation); it does NOT implement AWS's 5 immutable rollback-able versions. When the policy
+// is GitOps-managed, real version history lives in git/ArgoCD (`gitOpsManaged`). `note` states this.
+export interface PolicyRevision {
+  generation: number;
+  resourceVersion?: string;
+  createdAt?: string;
+  uid?: string;
+  gitOpsManaged: boolean;
+  gitOpsTrackingId?: string;
+  note: string;
+}
+export function getPolicyRevision(name: string): Promise<PolicyRevision> {
+  return request<PolicyRevision>(`/iam/policies/${encodeURIComponent(name)}/revision`);
+}
+
 /* ------------------------- ML / batch job observability ------------------------- */
 // Logs + metrics for the backing batch/v1 Job of a SageMaker-style job (TrainingJob /
 // ProcessingJob / BatchTransform). {name} is the Job name; the BFF resolves its pods and
