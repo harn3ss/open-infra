@@ -26,7 +26,7 @@ import {
 } from "@/lib/api";
 import { GroupPicker } from "./group-picker";
 import { UserPermissionsTab } from "./user-permissions-tab";
-import { PendingTab } from "./pending-notice";
+import { AccessAdvisorTab } from "./access-advisor-tab";
 import { AccessKeysPanel } from "./access-keys-panel";
 import { TagsTab } from "./tags-tab";
 import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
@@ -446,14 +446,9 @@ export function UserDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* Access Advisor — backend-blocked (no per-service last-used data plumbing yet). */}
+        {/* Access Advisor — services this user has written to (audit-derived, honest write-only coverage). */}
         <TabsContent value="advisor" className="pt-4">
-          <PendingTab title="Access Advisor — services last accessed">
-            Per-service, per-permission last-used data for this user is not available yet. Only
-            aggregate last-seen exists today (in Access Review); the per-service breakdown AWS shows
-            here needs richer audit parsing (k8s-audit + shim logs via Loki, attributed by
-            <code> impersonatedUser</code>).
-          </PendingTab>
+          <AccessAdvisorTab kind="user" name={name} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">
