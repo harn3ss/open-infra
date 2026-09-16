@@ -12,13 +12,13 @@ systems-level **invariant** — not just "did it come back up". This page is gen
 
 **Tally:** 67 scenarios — 🟢 56 pass · 🔴 1 finding · ⚪ 1 inconclusive · ⏳ 9 pending · ⏸️ 0 parked.
 
-**Last nightly:** `capture-kill` 🔴 failure ([2026-09-06](https://github.com/harn3ss/open-infra/actions/runs/34032281035)) · `isolation` 🟢 success ([2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775)) · `latency` 🟢 success ([2026-09-11](https://github.com/harn3ss/open-infra/actions/runs/34601024693)) · `loss` 🟢 success ([2026-09-12](https://github.com/harn3ss/open-infra/actions/runs/34692994163)) · `lottery` 🟢 success ([2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775)) · `partition` 🟢 success ([2026-09-09](https://github.com/harn3ss/open-infra/actions/runs/34354223559)) · `sink-failure` 🟢 success ([2026-09-14](https://github.com/harn3ss/open-infra/actions/runs/34859514792)) · `sink-kill` 🟢 success ([2026-09-01](https://github.com/harn3ss/open-infra/actions/runs/33513849041)) · `sinkkill` 🟢 success ([2026-08-14](https://github.com/harn3ss/open-infra/actions/runs/31763172418)) · `stress-cpu` 🟢 success ([2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775)) · `stress-mem` 🟢 success ([2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775))
+**Last nightly:** `capture-kill` 🔴 failure ([2026-09-06](https://github.com/harn3ss/open-infra/actions/runs/34032281035)) · `isolation` 🟢 success ([2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843)) · `latency` 🟢 success ([2026-09-11](https://github.com/harn3ss/open-infra/actions/runs/34601024693)) · `loss` 🟢 success ([2026-09-12](https://github.com/harn3ss/open-infra/actions/runs/34692994163)) · `lottery` 🟢 success ([2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843)) · `partition` 🟢 success ([2026-09-09](https://github.com/harn3ss/open-infra/actions/runs/34354223559)) · `sink-failure` 🟢 success ([2026-09-14](https://github.com/harn3ss/open-infra/actions/runs/34859514792)) · `sink-kill` 🟢 success ([2026-09-01](https://github.com/harn3ss/open-infra/actions/runs/33513849041)) · `sinkkill` 🟢 success ([2026-08-14](https://github.com/harn3ss/open-infra/actions/runs/31763172418)) · `stress-cpu` 🟢 success ([2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843)) · `stress-mem` 🟢 success ([2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843))
 
-## 🌙 Last night's run — 2026-09-15
+## 🌙 Last night's run — 2026-09-16
 
 The scenarios the scheduled nightly actually exercised last night, diagrams expanded. Each also appears in its batch below; the full catalog is the [index](#scenario-index).
 
-### M24 · lottery (correlation capstone) — THE nightly run &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-15)_
+### M24 · lottery (correlation capstone) — THE nightly run &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-16)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -42,7 +42,7 @@ flowchart LR
 
 </details>
 
-### M04 · partition-isolation &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-15)_
+### M04 · partition-isolation &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-16)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -66,7 +66,7 @@ flowchart LR
 
 </details>
 
-### M11 · stress-cpu &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-15)_
+### M11 · stress-cpu &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-16)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -84,7 +84,7 @@ flowchart LR
 
 </details>
 
-### M12 · stress-mem &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-15)_
+### M12 · stress-mem &nbsp; 🟢 PASS &nbsp; _(nightly 2026-09-16)_
 
 <details open><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -165,15 +165,15 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M01](#s-M01) | app-availability | Application | pool | 🟢 PASS | not recorded · on-demand |
 | [M02](#s-M02) | cnpg-failover | Postgres (HA) | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M03](#s-M03) | partition | Multi-master mesh | 01,02 | 🟢 PASS | 2026-09-09 · nightly-lottery |
-| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS | 2026-09-15 · nightly-lottery |
+| [M04](#s-M04) | partition-isolation | Multi-master mesh | 01,02 | 🟢 PASS | 2026-09-16 · nightly-lottery |
 | [M05](#s-M05) | partition-flapping | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M06](#s-M06) | partition-latency | Multi-master mesh | 01,02 | 🟢 PASS | 2026-09-11 · nightly-lottery |
 | [M07](#s-M07) | partition-loss | Multi-master mesh | 01,02 | 🟢 PASS | 2026-09-12 · nightly-lottery |
 | [M08](#s-M08) | clock-skew | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M09](#s-M09) | healing-order | Multi-master mesh (timing) | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M10](#s-M10) | concurrent (mesh under overlapping chaos) | Multi-master mesh | 01,02 | 🟢 PASS | not recorded · on-demand |
-| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | 2026-09-15 · nightly-lottery |
-| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | 2026-09-15 · nightly-lottery |
+| [M11](#s-M11) | stress-cpu | apply-sink (fault variety) | pool | 🟢 PASS | 2026-09-16 · nightly-lottery |
+| [M12](#s-M12) | stress-mem | Postgres (fault variety) | pool | 🟢 PASS | 2026-09-16 · nightly-lottery |
 | [M13](#s-M13) | sink-kill | apply-sink | pool | 🟢 PASS | 2026-09-01 · nightly-lottery |
 | [M14](#s-M14) | sink-drain-kill | apply-sink (hardest state) | pool | 🟢 PASS | not recorded · on-demand |
 | [M15](#s-M15) | migration | Migration (fidelity) | pool | 🟢 PASS | not recorded · on-demand |
@@ -185,7 +185,7 @@ Shapes: `[(cylinder)]` = database/storage · `[[subroutine]]` = stream/directory
 | [M21](#s-M21) | volume-durable | Volume (Longhorn) | 01,02 | 🟢 PASS | not recorded · on-demand |
 | [M22](#s-M22) | storage-replica-loss | Storage (Longhorn) | 01,02,03 | 🟢 PASS | not recorded · on-demand |
 | [M23](#s-M23) | vm-resilience | Virtual machine | pool | 🟢 PASS | not recorded · on-demand |
-| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-09-15 · nightly-lottery |
+| [M24](#s-M24) | lottery (correlation capstone) — THE nightly run | Multi-master mesh (seeded) | 01,02 | 🟢 PASS | 2026-09-16 · nightly-lottery |
 | [N21](#s-N21) | Subscriptions no-loss under engine kill (open-appsync) | GraphQLApi subscriptions + NATS JetStream | pool | ⏳ PENDING | not recorded · not yet run (pending first green) |
 | [N22](#s-N22) | Async Lambda invoke no-loss under shim kill | Lambda (aws-shim) async invoke + NATS JetStream | pool | ⏳ PENDING | 2026-08-10 · hand-driven live run (green once; pending the nightly streak) |
 | [N23](#s-N23) | Async Lambda invoke delivered (happy path) under shim kill | Lambda (aws-shim) async invoke + Knative Function + NATS JetStream | pool | ⏳ PENDING | 2026-08-10 · hand-driven live run (green once; pending the nightly streak) |
@@ -1502,7 +1502,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** [2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775) · nightly-lottery 🟢
+**Verified:** [2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843) · nightly-lottery 🟢
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1721,7 +1721,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** [2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775) · nightly-lottery 🟢
+**Verified:** [2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843) · nightly-lottery 🟢
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -1746,7 +1746,7 @@ flowchart LR
 
 **Ran on:** scheduler-placed within the sandbox-node-01…03 pool
 
-**Verified:** [2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775) · nightly-lottery 🟢
+**Verified:** [2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843) · nightly-lottery 🟢
 
 <details><summary>diagram — chain, ⚡ fault, oracle</summary>
 
@@ -2082,7 +2082,7 @@ flowchart LR
 
 **Ran on:** sandbox-node-01, sandbox-node-02
 
-**Verified:** [2026-09-15](https://github.com/harn3ss/open-infra/actions/runs/34976007775) · nightly-lottery 🟢
+**Verified:** [2026-09-16](https://github.com/harn3ss/open-infra/actions/runs/35102466843) · nightly-lottery 🟢
 
 > This is what the scheduled nightly actually runs. A seeded, replayable draw (lottery-draw.py) composes 2–4 physically-composable faults each night; a red night reruns with LOTTERY_SEED=<printed seed>. The other nightly-batch scenarios are the library it draws from.
 
