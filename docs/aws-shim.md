@@ -165,14 +165,26 @@ The shim re-fetches the key from Vault periodically (`STS_KEY_REFRESH`, default 
 previous key is retained for one window (verify only). A key rotation therefore does **not** cut
 sessions minted moments before it — they remain verifiable until the previous key ages out.
 
-**Revocation limitation (stated plainly, not hidden).** A stateless sealed token **cannot be revoked
-before its expiry** — the exact trade-off AWS STS session tokens make (there is no session store to
-delete an entry from). The levers, in order: **(a)** short default TTL (1h) bounds the exposure of
-any leaked session; **(b)** **rotating the Vault sealing key is a blunt "revoke-all"** — once the
-rotated-out key leaves the overlap window, every session it sealed fails `aead.Open` and falls
-closed at once (there is no per-session early revoke). A selective per-session deny-list is a
-possible fast-follow, not built. Operators must not assume AWS-style per-session revocation exists;
-size the session TTL to the blast radius you can tolerate between rotations.
+**Revocation (stated plainly, not hidden).** A stateless sealed token carries no server-side session
+entry to delete, so revocation works by making the shim **reject** an otherwise-valid token at verify
+rather than by deleting state. The levers, in order:
+
+- **(a) Short default TTL (1h)** bounds the exposure of any leaked session on its own.
+- **(b) Per-role "Revoke sessions"** — the faithful analog of AWS's `AWSRevokeOlderSessions`. The
+  session token carries its issue time (`iat`); a `kind: Role`'s `spec.revokeSessionsBefore` cutoff
+  (settable to "now" from the console Role → Revoke sessions action) makes the shim reject any session
+  of **that role** issued before the cutoff, while new assumes keep working. Targeted to one role, no
+  global disruption, minimal state (one timestamp per role, self-pruning past expiry). The shim reads
+  the cutoff off the Role on a short cache TTL, so a revoke takes effect within roughly that window,
+  not instantly; a control-plane read blip serves the last-known cutoff rather than un-revoking.
+- **(c) Rotating the Vault sealing key is the blunt "revoke-all"** — once the rotated-out key leaves
+  the overlap window, every session it sealed (all roles and users, including the caller's own) fails
+  `aead.Open` and falls closed at once. Interim / break-glass; disruptive.
+
+Honest edge: there is still **no single-session** revoke (revoking one session of a role without the
+others) — that would need a per-session `jti` deny-list, which makes verification stateful and is not
+built. Size the session TTL to the blast radius you can tolerate, and use (b) to cut a role's current
+sessions without a global rotation.
 
 ### Lambda (built; live proof pending)
 
