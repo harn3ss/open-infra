@@ -6907,6 +6907,15 @@ components:
                 \ can be allowed, no matter what an attached Policy grants (compiled as a Cedar forbid-unless guard, fail-closed).\
                 \ It caps a session already governed at the data plane for a service; it does not itself confer access. A\
                 \ boundary that allows nothing caps to nothing."
+            revokeSessionsBefore:
+              type: string
+              format: date-time
+              description: "\"Revoke sessions\" cutoff (RFC3339), the analog of AWS's AWSRevokeOlderSessions inline policy.\
+                \ Any sts:AssumeRole session of this role that was ISSUED BEFORE this instant is revoked \u2014 the aws-shim\
+                \ rejects it at verify even though its token is otherwise valid and unexpired. Sessions assumed at or after\
+                \ the cutoff are unaffected, so new assumes keep working; it revokes a role's current sessions without rotating\
+                \ the global STS signing key (which would cut every role's sessions at once). Set it to \"now\" via the console\
+                \ \"Revoke sessions\" action."
           required:
           - policies
         status:

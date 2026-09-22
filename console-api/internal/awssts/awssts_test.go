@@ -45,6 +45,17 @@ func TestMintVerify_Roundtrip(t *testing.T) {
 	if sess.SecretKey != sk {
 		t.Error("token must carry the same secret the caller received (stateless verify)")
 	}
+	// IssuedAt (iat) is stamped at mint and recovered on verify — it is what a per-role
+	// revokeSessionsBefore cutoff compares against (polyhedron#147).
+	if sess.IssuedAt.IsZero() {
+		t.Error("session must carry a non-zero IssuedAt")
+	}
+	if d := time.Since(sess.IssuedAt); d < 0 || d > time.Minute {
+		t.Errorf("IssuedAt should be ~now, got %v ago", d)
+	}
+	if !sess.IssuedAt.Before(exp) {
+		t.Errorf("IssuedAt (%v) must precede expiry (%v)", sess.IssuedAt, exp)
+	}
 }
 
 func TestVerify_FailsClosed(t *testing.T) {

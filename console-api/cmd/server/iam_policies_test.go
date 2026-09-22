@@ -94,16 +94,10 @@ func TestNormStatementsDefaults(t *testing.T) {
 }
 
 func TestRolesUsingPolicyAndGroupsUsingClusterRole(t *testing.T) {
-	roles := []crdRole{
-		{Metadata: struct {
-			Name        string            `json:"name"`
-			Annotations map[string]string `json:"annotations,omitempty"`
-		}{Name: "ops"}, Spec: struct {
-			Description string   `json:"description"`
-			Policies    []string `json:"policies"`
-			Trust       []string `json:"trust"`
-		}{Policies: []string{"vmfull", "volread"}}},
-	}
+	var ops crdRole
+	ops.Metadata.Name = "ops"
+	ops.Spec.Policies = []string{"vmfull", "volread"}
+	roles := []crdRole{ops}
 	if got := rolesUsingPolicy(roles, "vmfull"); len(got) != 1 || got[0] != "ops" {
 		t.Errorf("rolesUsingPolicy = %v", got)
 	}
@@ -244,6 +238,18 @@ func TestPolicyAndRoleViewRoundTrip(t *testing.T) {
 	noTrust.Metadata.Name = "x"
 	if b, _ := json.Marshal(roleView(noTrust)); !strings.Contains(string(b), `"trust":[]`) {
 		t.Errorf("empty trust should serialise as [], got %s", b)
+	}
+
+	// The "Revoke sessions" cutoff round-trips into the view, and is omitted when unset so a role
+	// that has never revoked shows nothing (polyhedron#147).
+	var revoked crdRole
+	revoked.Metadata.Name = "rev"
+	revoked.Spec.RevokeSessionsBefore = "2026-09-22T00:00:00Z"
+	if rv := roleView(revoked); rv.RevokeSessionsBefore != "2026-09-22T00:00:00Z" {
+		t.Errorf("roleView dropped revokeSessionsBefore: %q", rv.RevokeSessionsBefore)
+	}
+	if b, _ := json.Marshal(roleView(noTrust)); strings.Contains(string(b), "revokeSessionsBefore") {
+		t.Errorf("a role with no cutoff should omit revokeSessionsBefore, got %s", b)
 	}
 }
 

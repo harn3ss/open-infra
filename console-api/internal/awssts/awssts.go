@@ -11,8 +11,14 @@
 // key simply fails to open and the request falls closed. The sealing key is Vault-custodied and may be
 // rotated: a Minter holds the current key plus one previous key for an overlap window, so a rotation
 // does not cut sessions minted moments before it — but a session sealed by NO held key (the previous
-// key aged out, or a deliberate revoke-all rotation) falls closed, the only revocation lever a
-// stateless token has short of expiry (see docs/aws-shim.md).
+// key aged out, or a deliberate revoke-all rotation) falls closed — the blunt, all-sessions
+// revocation lever a stateless token has short of expiry (see docs/aws-shim.md).
+//
+// For a targeted, AWS-faithful revoke the token also carries its issue time (IssuedAt / "iat"),
+// the analog of the timestamp AWS's "Revoke sessions" writes into an AWSRevokeOlderSessions inline
+// policy. The seal stays stateless; the shim's verify path consults a per-role revokeSessionsBefore
+// cutoff and falls closed for any session minted before it (polyhedron#147), so an operator can
+// revoke exactly one role's outstanding sessions without rotating the global key.
 package awssts
 
 import (
@@ -38,6 +44,7 @@ type Session struct {
 	Caller      string    `json:"caller"` // the principal that assumed the role (audit)
 	AccessKeyID string    `json:"akid"`   // binds the token to its access key id
 	SecretKey   string    `json:"sk"`     // temp secret the shim uses to verify SigV4
+	IssuedAt    time.Time `json:"iat"`    // when the session was minted; the per-role revoke cutoff compares against it
 	Expiry      time.Time `json:"exp"`    // hard expiry; a stale token falls closed
 }
 
@@ -146,10 +153,11 @@ func (m *Minter) Mint(role string, groups []string, sessionName, caller string, 
 		return "", "", "", time.Time{}, err
 	}
 	secretKey = base64.RawStdEncoding.EncodeToString(sk)
-	expiry = time.Now().UTC().Add(ttl)
+	issuedAt := time.Now().UTC()
+	expiry = issuedAt.Add(ttl)
 	sess := Session{
 		RoleName: role, Groups: groups, SessionName: sessionName, Caller: caller,
-		AccessKeyID: accessKeyID, SecretKey: secretKey, Expiry: expiry,
+		AccessKeyID: accessKeyID, SecretKey: secretKey, IssuedAt: issuedAt, Expiry: expiry,
 	}
 	sessionToken, err = m.seal(sess)
 	if err != nil {

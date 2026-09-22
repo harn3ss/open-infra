@@ -165,6 +165,10 @@ func run(logger *slog.Logger) error {
 			stsMinter = m
 			roleRes = &dynRoleResolver{dyn: dyn, ns: rolesNS}
 			auth.sts = stsMinter
+			// Per-role session revoke (polyhedron#147): the verify path consults each role's
+			// revokeSessionsBefore cutoff, read off the Role claim and cached on a short TTL so a
+			// revoke bites already-issued sessions within ~one TTL without a GET per request.
+			auth.revoke = newRoleCutoffCache(dyn, rolesNS, roleCutoffTTL)
 			stsVaultManaged = keySource == "vault"
 			logger.Info("sts:AssumeRole enabled (temporary session credentials)",
 				slog.String("keySource", keySource), slog.String("rolesNamespace", rolesNS))

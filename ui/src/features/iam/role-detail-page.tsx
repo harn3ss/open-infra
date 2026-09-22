@@ -19,6 +19,7 @@ import {
   listIamGroups,
   listIamPolicies,
   listIamUsers,
+  revokeIamRoleSessions,
   updateIamRole,
   updateIamRoleTags,
   k8sList,
@@ -37,6 +38,7 @@ export function RoleDetailPage() {
   const qc = useQueryClient();
   const [forcePrompt, setForcePrompt] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [revokePrompt, setRevokePrompt] = useState(false);
 
   const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
@@ -92,6 +94,15 @@ export function RoleDetailPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
       navigate({ to: "/roles" });
+    },
+  });
+
+  const revoke = useMutation({
+    mutationFn: () => revokeIamRoleSessions(name),
+    onSuccess: () => {
+      setRevokePrompt(false);
+      void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
+      void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
     },
   });
 
@@ -354,7 +365,8 @@ export function RoleDetailPage() {
           <AccessAdvisorTab kind="role" name={name} />
         </TabsContent>
 
-        {/* Revoke sessions — Part-B blocked (no revoked-before stamp honored by the shim yet). */}
+        {/* Revoke sessions — the AWS Revoke-sessions analog: stamps spec.revokeSessionsBefore, which
+            the aws-shim honors on every assumed-role request (polyhedron#147). */}
         <TabsContent value="revoke" className="pt-4">
           <Card>
             <CardContent className="space-y-3 p-5">
@@ -363,22 +375,66 @@ export function RoleDetailPage() {
                 <div className="space-y-1">
                   <h3 className="text-sm font-semibold">Revoke active sessions</h3>
                   <p className="text-sm text-muted-foreground">
-                    AWS revokes in-flight role sessions by denying credentials issued before a cutoff
-                    time. In open-infra the aws-shim issues the session credentials, so the clean fit
-                    is a <code>revokedBefore</code> timestamp the shim honors on <code>AssumeRole</code> —
-                    but that mechanism is not built yet (Part B). The control is shown for structural
-                    parity and is disabled until it lands.
+                    Immediately invalidate every <code>sts:AssumeRole</code> session of this role
+                    issued before now — the aws-shim rejects those credentials on their next request,
+                    even though they have not expired. New assumes are unaffected, so this does not
+                    lock anyone out of re-assuming; it forces current sessions to refresh. It applies
+                    to <b>this role only</b> (unlike a global signing-key rotation, which cuts every
+                    role's sessions at once).
                   </p>
                 </div>
               </div>
-              <Button variant="outline" disabled>
-                <ShieldX className="size-4" /> Revoke active sessions
-              </Button>
-              <p className="text-xs text-muted-foreground">
-                Not available yet — needs the shim session-revocation mechanism.
-              </p>
+
+              {role.revokeSessionsBefore ? (
+                <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm">
+                  <ShieldX className="size-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden />
+                  <span>
+                    Sessions issued before{" "}
+                    <span className="font-medium text-foreground">
+                      {new Date(role.revokeSessionsBefore).toLocaleString()}
+                    </span>{" "}
+                    are revoked.
+                  </span>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No cutoff set — no sessions are currently revoked.
+                </p>
+              )}
+
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                  disabled={revoke.isPending}
+                  onClick={() => setRevokePrompt(true)}
+                >
+                  {revoke.isPending ? <Spinner className="size-4" /> : <ShieldX className="size-4" />}
+                  Revoke active sessions
+                </Button>
+                {revoke.isError ? (
+                  <span className="text-sm text-destructive">{(revoke.error as Error).message}</span>
+                ) : null}
+              </div>
             </CardContent>
           </Card>
+
+          <ConfirmDialog
+            open={revokePrompt}
+            onOpenChange={setRevokePrompt}
+            title="Revoke active sessions?"
+            confirmLabel="Revoke sessions"
+            loading={revoke.isPending}
+            onConfirm={() => revoke.mutate()}
+            description={
+              <>
+                Every current <code>AssumeRole</code> session of{" "}
+                <span className="font-medium text-foreground">{role.name}</span> will stop working on
+                its next request. Anyone using it must re-assume the role to get fresh credentials.
+                New assumes are not blocked.
+              </>
+            }
+          />
         </TabsContent>
 
         {/* Usage — open-infra-native: how the role becomes effective. Kept after the AWS tabs. */}

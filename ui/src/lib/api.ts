@@ -1028,6 +1028,11 @@ export interface IamRole {
   trust?: string[];
   clusterRole: string;
   ready: boolean;
+  /**
+   * "Revoke sessions" cutoff (RFC3339). Assumed-role sessions issued before it are revoked at the
+   * aws-shim; new assumes are unaffected. Absent ⇒ no cutoff (nothing revoked). See polyhedron#147.
+   */
+  revokeSessionsBefore?: string;
   /** Free-form key/value tags (the AWS Tags tab). Always a map (never null) from the BFF. */
   tags: Record<string, string>;
 }
@@ -1101,6 +1106,14 @@ export function deleteIamRole(name: string, force = false): Promise<{ name: stri
   return request(`/iam/roles/${encodeURIComponent(name)}${force ? "?force=true" : ""}`, {
     method: "DELETE",
   });
+}
+/**
+ * "Revoke sessions" — the AWS Revoke-sessions analog. Stamps the role's revokeSessionsBefore cutoff
+ * to now (server-generated); the aws-shim then rejects any assumed-role session of this role issued
+ * before that instant. New assumes keep working. Returns the cutoff that was set. See polyhedron#147.
+ */
+export function revokeIamRoleSessions(name: string): Promise<{ name: string; revokeSessionsBefore: string }> {
+  return request(`/iam/roles/${encodeURIComponent(name)}/revoke-sessions`, { method: "POST" });
 }
 
 /* ------------------------------ IAM tags (the AWS "Tags" tab) ------------------------------ */

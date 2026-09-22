@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/client-go/kubernetes"
@@ -132,9 +133,10 @@ type crdRole struct {
 		Annotations map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata"`
 	Spec struct {
-		Description string   `json:"description"`
-		Policies    []string `json:"policies"`
-		Trust       []string `json:"trust"`
+		Description          string   `json:"description"`
+		Policies             []string `json:"policies"`
+		Trust                []string `json:"trust"`
+		RevokeSessionsBefore string   `json:"revokeSessionsBefore,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		Ready       bool   `json:"ready"`
@@ -246,6 +248,10 @@ type iamRoleView struct {
 	Trust       []string `json:"trust"`
 	ClusterRole string   `json:"clusterRole"`
 	Ready       bool     `json:"ready"`
+	// RevokeSessionsBefore is the "Revoke sessions" cutoff (RFC3339): assumed-role sessions issued
+	// before it are revoked at the shim. Empty means no cutoff (nothing revoked). The console shows
+	// it and the "Revoke sessions" action sets it to now. See polyhedron#147.
+	RevokeSessionsBefore string `json:"revokeSessionsBefore,omitempty"`
 	// Tags are free-form key/value pairs (the AWS Tags tab), read from openinfra.dev/tag-*
 	// annotations. Always a map (never null) so the SPA can iterate it. See iam_tags.go.
 	Tags map[string]string `json:"tags"`
@@ -265,9 +271,10 @@ func policyView(p crdPolicy) iamPolicyView {
 func roleView(r crdRole) iamRoleView {
 	return iamRoleView{
 		Name: r.Metadata.Name, Description: r.Spec.Description, Policies: r.Spec.Policies,
-		Trust:       groupList(r.Spec.Trust),
-		ClusterRole: r.Status.ClusterRole, Ready: r.Status.Ready,
-		Tags: tagsFromAnnotations(r.Metadata.Annotations),
+		Trust:                groupList(r.Spec.Trust),
+		ClusterRole:          r.Status.ClusterRole, Ready: r.Status.Ready,
+		RevokeSessionsBefore: r.Spec.RevokeSessionsBefore,
+		Tags:                 tagsFromAnnotations(r.Metadata.Annotations),
 	}
 }
 
@@ -665,6 +672,35 @@ func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}
 		logger.Info("iam: role updated", "role", name, "by", subjectOf(r))
 		writeJSON(w, http.StatusOK, map[string]string{"name": name})
+	}
+}
+
+// handleIAMRoleRevokeSessions is the "Revoke sessions" action on a Role — the analog of AWS's Revoke
+// sessions, which attaches an AWSRevokeOlderSessions inline policy. It stamps spec.revokeSessionsBefore
+// with the current time; the aws-shim then rejects any assumed-role session of this role that was
+// issued before that instant, while new assumes keep working (polyhedron#147). The cutoff is
+// server-generated (always a valid RFC3339 UTC timestamp), never taken from the request body, so the
+// action cannot be used to set a bogus or future value. Gated on the same "update" authority as
+// editing the role.
+func handleIAMRoleRevokeSessions(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "roles", auth.ns, name) {
+			return
+		}
+		if _, ok := auth.crdRoleByName(r.Context(), name); !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "role not found"})
+			return
+		}
+		cutoff := time.Now().UTC().Format(time.RFC3339)
+		patch := map[string]any{"spec": map[string]any{"revokeSessionsBefore": cutoff}}
+		if err := auth.patchCR(r.Context(), rolesAbsPath(auth.ns)+"/"+name, patch); err != nil {
+			logger.Error("iam: revoke role sessions", "role", name, "error", err.Error())
+			writeIAMErr(w, err)
+			return
+		}
+		logger.Info("iam: role sessions revoked", "role", name, "cutoff", cutoff, "by", subjectOf(r))
+		writeJSON(w, http.StatusOK, map[string]string{"name": name, "revokeSessionsBefore": cutoff})
 	}
 }
 

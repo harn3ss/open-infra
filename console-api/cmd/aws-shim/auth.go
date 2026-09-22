@@ -33,6 +33,7 @@ type authenticator struct {
 	keys    keyLookuper
 	resolve ownerResolver
 	sts     *awssts.Minter // verifies sts:AssumeRole session tokens; nil disables assumed-role auth
+	revoke  sessionRevoker // per-role revokeSessionsBefore cutoff (polyhedron#147); nil disables it
 }
 
 // authenticate proves the caller holds a valid open-infra access key and returns the iam.Claims
@@ -57,6 +58,17 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 		}
 		if err := awssig.Verify(r, cred, sess.SecretKey); err != nil {
 			return iam.Claims{}, errAuth
+		}
+		// Per-role "Revoke sessions" (polyhedron#147): a session minted before the role's
+		// revokeSessionsBefore cutoff is revoked — denied here even though its token is valid and
+		// unexpired, the AWS AWSRevokeOlderSessions analog. Checked AFTER the SigV4 verify so a
+		// forged-signature request never triggers the k8s cutoff read. New assumes (issued at/after
+		// the cutoff) survive; nil revoker leaves behaviour unchanged (fail-open only for that check,
+		// crypto + expiry still enforced — see roleCutoffCache's failure posture).
+		if a.revoke != nil {
+			if cutoff, on := a.revoke.RevokedBefore(ctx, sess.RoleName); on && sess.IssuedAt.Before(cutoff) {
+				return iam.Claims{}, errAuth
+			}
 		}
 		return iam.Claims{
 			Sub:         "assumed-role/" + sess.RoleName + "/" + sess.SessionName,

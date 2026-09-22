@@ -358,6 +358,7 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles/{name}", handleIAMRoleGet(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/roles/{name}", handleIAMRoleUpdate(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/roles/{name}", handleIAMRoleDelete(cs, auth, logger))
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/roles/{name}/revoke-sessions", handleIAMRoleRevokeSessions(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Put("/iam/roles/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "roles", "role", rolesAbsPath))
 		// Policy simulator — a what-if over the current policies (control plane via SAR, data plane
 		// via the Cedar engine). Same SAR gate (list policies) as the endpoints above.
