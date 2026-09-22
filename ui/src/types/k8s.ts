@@ -1235,6 +1235,24 @@ export type UserPool = K8sObject<UserPoolSpec, UserPoolStatus>;
 export const USERPOOLS_PLURAL = "userpools";
 export const USERPOOLS_CRD_NAME = "userpools.openinfra.dev";
 
+/* ---------------- open-infra IdentityProvider CRD (OIDC IdP registry) ----- */
+// An external OIDC identity provider the platform trusts for AssumeRoleWithWebIdentity —
+// the AWS "Identity providers" registry (counterpart to UserPool, which issues tokens).
+// Admin-gated. A Role whose trust names OIDC::<name> may be assumed by this issuer's tokens.
+export interface IdentityProviderSpec {
+  issuerURL?: string; // the OIDC issuer (token `iss`); discovery + JWKS verify signatures
+  audiences?: string[]; // accepted `aud` claim values / client IDs
+  subjectClaim?: string; // claim used as the assumed subject (default sub)
+}
+export interface IdentityProviderStatus {
+  issuer?: string;
+  ready?: boolean;
+  conditions?: Condition[];
+}
+export type IdentityProvider = K8sObject<IdentityProviderSpec, IdentityProviderStatus>;
+export const IDENTITYPROVIDERS_PLURAL = "identityproviders";
+export const IDENTITYPROVIDERS_CRD_NAME = "identityproviders.openinfra.dev";
+
 /* ---------------- open-infra Table CRD (DynamoDB) ------------------------- */
 // A DynamoDB-shaped key/value table registered on the aws-shim DynamoDB layer.
 // Key schema is IMMUTABLE (as in DynamoDB).

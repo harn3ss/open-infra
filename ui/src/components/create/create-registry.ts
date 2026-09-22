@@ -449,6 +449,21 @@ export const USERPOOL_CREATE: CreateKindSpec = {
   },
 };
 
+export const IDENTITYPROVIDER_CREATE: CreateKindSpec = {
+  kind: "IdentityProvider",
+  crdName: "identityproviders.openinfra.dev",
+  description:
+    "An external OIDC identity provider the platform trusts for federated access — the AWS \"Identity providers\" registry (the counterpart to a User Pool, which issues tokens). Register an issuer + audiences; a Role whose trust names OIDC::<name> can then be assumed by that issuer's tokens (AssumeRoleWithWebIdentity). Point it at a User Pool's issuer to close the loop.",
+  sections: [
+    { title: "Provider", fields: ["issuerURL", "audiences"] },
+    { title: "Token mapping", fields: ["subjectClaim"], advanced: true },
+  ],
+  uiSchema: {
+    issuerURL: { "ui:placeholder": "https://issuer.example.com (or a User Pool ISSUER_URL)" },
+    subjectClaim: { "ui:placeholder": "sub" },
+  },
+};
+
 export const FLOWLOG_CREATE: CreateKindSpec = {
   kind: "FlowLog",
   crdName: "flowlogs.openinfra.dev",
