@@ -165,3 +165,73 @@ func TestDataPlaneCheckerForEndToEnd(t *testing.T) {
 		t.Errorf("bob on s3: governed=%v, want false", governed)
 	}
 }
+
+func TestSimulateCustom(t *testing.T) {
+	ctx := context.Background()
+	draft := &draftPolicyInput{
+		AppliesTo: []string{"*"},
+		Statements: []draftStatement{
+			{Effect: "Allow", Actions: []string{"s3:GetObject"}, Resources: []string{"Bucket::assets"}},
+			{Effect: "Deny", Actions: []string{"s3:GetObject"}, Resources: []string{"Bucket::secret"}},
+		},
+	}
+	run := func(resource string, actions ...string) simulateResp {
+		return simulateCustom(ctx, simulateReq{Draft: draft, Resource: resource, Actions: actions}, nonEmpty(actions))
+	}
+
+	r := run("Bucket::assets", "s3:GetObject")
+	if r.Mode != "custom" {
+		t.Fatalf("mode=%q, want custom", r.Mode)
+	}
+	if r.Results[0].Decision != "allow" {
+		t.Errorf("assets: decision=%q, want allow", r.Results[0].Decision)
+	}
+	if r.Results[0].Enforced {
+		t.Error("a custom-mode (unattached draft) result must not be marked enforced")
+	}
+	if got := run("Bucket::secret", "s3:GetObject").Results[0].Decision; got != "deny" {
+		t.Errorf("secret: %q, want deny", got)
+	}
+	if got := run("Bucket::other", "s3:GetObject").Results[0].Decision; got != "deny" {
+		t.Errorf("other (governed default-deny): %q, want deny", got)
+	}
+	if got := run("Table::orders", "dynamodb:Query").Results[0].Decision; got != "not-governed" {
+		t.Errorf("dynamodb not in draft: %q, want not-governed", got)
+	}
+	if got := run("", "volumes:Get").Results[0].Decision; got != "not-evaluable" {
+		t.Errorf("control action in custom mode: %q, want not-evaluable", got)
+	}
+	if got := run("", "bogus").Results[0].Decision; got != "unknown" {
+		t.Errorf("malformed action: %q, want unknown", got)
+	}
+
+	// Empty draft: warns and reports not-governed for a data action.
+	empty := simulateCustom(ctx, simulateReq{Draft: &draftPolicyInput{}, Actions: []string{"s3:GetObject"}}, []string{"s3:GetObject"})
+	if len(empty.Warnings) == 0 {
+		t.Error("an empty draft should warn")
+	}
+	if empty.Results[0].Decision != "not-governed" {
+		t.Errorf("empty draft: %q, want not-governed", empty.Results[0].Decision)
+	}
+
+	// IP condition flows through custom mode: an Allow gated on sourceIp ∈ 10.0.0.0/8.
+	ipDraft := &draftPolicyInput{
+		AppliesTo: []string{"*"},
+		Statements: []draftStatement{{
+			Effect: "Allow", Actions: []string{"s3:GetObject"}, Resources: []string{"Bucket::assets"},
+			IPConditions: []draftIPCondition{{Key: "sourceIp", CIDR: "10.0.0.0/8"}},
+		}},
+	}
+	ipRun := func(ip string) string {
+		return simulateCustom(ctx, simulateReq{
+			Draft: ipDraft, Resource: "Bucket::assets", Actions: []string{"s3:GetObject"},
+			Context: map[string]any{"sourceIp": ip},
+		}, []string{"s3:GetObject"}).Results[0].Decision
+	}
+	if got := ipRun("10.0.0.5"); got != "allow" {
+		t.Errorf("in-CIDR: %q, want allow", got)
+	}
+	if got := ipRun("192.168.1.1"); got != "deny" {
+		t.Errorf("out-of-CIDR (allow shouldn't fire → governed default-deny): %q, want deny", got)
+	}
+}
