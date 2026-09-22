@@ -126,6 +126,31 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# IdentityProvider registry (#136 §2): read the spec-mirror ConfigMaps
+# (openinfra.dev/identity-provider) the IdentityProvider composition renders into this namespace, to
+# build the external-OIDC web-identity verifier registry. ConfigMaps only, this namespace only,
+# read-only — the issuer URLs + audiences are public verification parameters, not secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-idp
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-idp
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-idp }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Console access-key management: the console BFF's "Security credentials" surface mints, lists,
 # deactivates and deletes a User's access keys, so the console SA needs full Secret access in the
 # shim's KEYS namespace — scoped to THIS namespace only (which holds nothing but iam-ak-<id> key

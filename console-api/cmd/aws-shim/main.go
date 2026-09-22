@@ -182,6 +182,18 @@ func run(logger *slog.Logger) error {
 		logger.Info("sts:AssumeRoleWithWebIdentity enabled (workload identity)", slog.String("audience", aud))
 	}
 
+	// External OIDC identity providers (kind: IdentityProvider — #136 §2): a token from a registered
+	// issuer may assume a role whose trust names "OIDC::<provider>". The registry is the spec-mirror
+	// ConfigMaps the IdentityProvider composition renders into the shim namespace (label-selected,
+	// short TTL); verification reuses the same go-oidc path as the AppSync JWT auth. Enabled whenever
+	// AssumeRole is — it does nothing until an operator registers a provider.
+	var oidcWebID oidcVerifier
+	if stsMinter != nil {
+		idpNS := getenv("IDENTITY_PROVIDER_NAMESPACE", "open-infra-aws-shim")
+		oidcWebID = newOIDCWebIdentity(cs, idpNS, time.Minute)
+		logger.Info("sts:AssumeRoleWithWebIdentity: external OIDC providers enabled", slog.String("namespace", idpNS))
+	}
+
 	// Optional OIDC/Cognito JWT auth for the AppSync data plane (the one non-SigV4 path). Enabled when
 	// OIDC_ISSUER is set. Audience is REQUIRED (no unaudienced tokens). The mode is EXPLICIT
 	// (OIDC_MODE, default aws_oidc); the issuer only picks the default groups-claim name.
@@ -265,7 +277,7 @@ func run(logger *slog.Logger) error {
 	lambdaH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
-		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, logger: logger},
+		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":   lambdaH,
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 		"dynamodb": dynamoH,
