@@ -6,7 +6,9 @@ import { Wizard, WizardReview, type WizardStep } from "@/components/create/wizar
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { createIamRole, listIamPolicies, listIamUsers } from "@/lib/api";
+import { createIamRole, k8sList, listIamPolicies, listIamUsers } from "@/lib/api";
+import { openinfraPaths } from "@/lib/k8s-paths";
+import type { IdentityProvider } from "@/types/k8s";
 import { TrustEditor, principalLabel } from "./trust-editor";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -21,6 +23,10 @@ export function CreateRolePage() {
   const qc = useQueryClient();
   const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const users = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers });
+  const idps = useQuery({
+    queryKey: ["identityproviders"],
+    queryFn: () => k8sList<IdentityProvider>(openinfraPaths.identityproviders()),
+  });
 
   const [step, setStep] = useState(0);
   const [trust, setTrust] = useState<string[]>([]);
@@ -66,7 +72,12 @@ export function CreateRolePage() {
         ),
       },
       content: (
-        <TrustEditor value={trust} onChange={setTrust} users={(users.data ?? []).map((u) => u.name)} />
+        <TrustEditor
+          value={trust}
+          onChange={setTrust}
+          users={(users.data ?? []).map((u) => u.name)}
+          identityProviders={(idps.data?.items ?? []).map((p) => p.metadata.name ?? "").filter(Boolean)}
+        />
       ),
     },
     {

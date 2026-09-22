@@ -274,6 +274,7 @@ export const SERVICES: Service[] = [
   },
   { label: "Encryption Keys", icon: KeyRound, category: "Security, Identity & Compliance", to: "/encryption" }, // KMS
   { label: "User Pools", icon: IdCard, category: "Security, Identity & Compliance", to: "/user-pools" }, // Cognito
+  { label: "Identity Providers", icon: Fingerprint, category: "Security, Identity & Compliance", to: "/identity-providers" }, // IAM Identity providers
   { label: "Active Directory", icon: Building2, category: "Security, Identity & Compliance", to: "/directories" }, // Directory Service
   { label: "Certificate Authority", icon: FileBadge, category: "Security, Identity & Compliance", to: "/pki" }, // ACM / Private CA (added to nav)
   { label: "Data Classification", icon: Tags, category: "Security, Identity & Compliance", to: "/data-classification" }, // Macie

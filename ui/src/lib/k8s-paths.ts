@@ -44,6 +44,7 @@ import {
   HTTPAPIS_PLURAL,
   STATICSITES_PLURAL,
   USERPOOLS_PLURAL,
+  IDENTITYPROVIDERS_PLURAL,
   TABLES_PLURAL,
   DATABASEPROXIES_PLURAL,
   PARAMETERS_PLURAL,
@@ -200,6 +201,9 @@ export const openinfraPaths = {
   userpools: (ns?: string) => `${oiGV}${nsSegment(ns)}/${USERPOOLS_PLURAL}`,
   userpool: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${USERPOOLS_PLURAL}/${name}`,
+  identityproviders: (ns?: string) => `${oiGV}${nsSegment(ns)}/${IDENTITYPROVIDERS_PLURAL}`,
+  identityprovider: (ns: string, name: string) =>
+    `${oiGV}/namespaces/${ns}/${IDENTITYPROVIDERS_PLURAL}/${name}`,
   tables: (ns?: string) => `${oiGV}${nsSegment(ns)}/${TABLES_PLURAL}`,
   table: (ns: string, name: string) =>
     `${oiGV}/namespaces/${ns}/${TABLES_PLURAL}/${name}`,

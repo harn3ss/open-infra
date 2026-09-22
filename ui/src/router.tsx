@@ -64,6 +64,9 @@ import { CreateHttpApiPage } from "@/features/httpapi/create-httpapi-page";
 import { UserPoolsPage } from "@/features/userpool/userpools-page";
 import { UserPoolDetailPage } from "@/features/userpool/userpool-detail-page";
 import { CreateUserPoolPage } from "@/features/userpool/create-userpool-page";
+import { IdentityProvidersPage } from "@/features/identityprovider/identityproviders-page";
+import { IdentityProviderDetailPage } from "@/features/identityprovider/identityprovider-detail-page";
+import { CreateIdentityProviderPage } from "@/features/identityprovider/create-identityprovider-page";
 import { StaticSitesPage } from "@/features/staticsites/staticsites-page";
 import { StaticSiteDetailPage } from "@/features/staticsites/staticsite-detail-page";
 import { CreateStaticSitePage } from "@/features/staticsites/create-staticsite-page";
@@ -377,6 +380,9 @@ const httpApiDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: 
 const userPoolsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/user-pools", component: UserPoolsPage });
 const userPoolCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/user-pools/new", component: CreateUserPoolPage });
 const userPoolDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/user-pools/$namespace/$name", component: UserPoolDetailPage });
+const identityProvidersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/identity-providers", component: IdentityProvidersPage });
+const identityProviderCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/identity-providers/new", component: CreateIdentityProviderPage });
+const identityProviderDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/identity-providers/$namespace/$name", component: IdentityProviderDetailPage });
 const staticSitesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/staticsites", component: StaticSitesPage });
 const staticSiteCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/staticsites/new", component: CreateStaticSitePage });
 const staticSiteDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/staticsites/$namespace/$name", component: StaticSiteDetailPage });
@@ -802,6 +808,9 @@ const routeTree = rootRoute.addChildren([
   userPoolsRoute,
   userPoolCreateRoute,
   userPoolDetailRoute,
+  identityProvidersRoute,
+  identityProviderCreateRoute,
+  identityProviderDetailRoute,
   staticSitesRoute,
   staticSiteCreateRoute,
   staticSiteDetailRoute,

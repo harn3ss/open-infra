@@ -21,7 +21,10 @@ import {
   listIamUsers,
   updateIamRole,
   updateIamRoleTags,
+  k8sList,
 } from "@/lib/api";
+import { openinfraPaths } from "@/lib/k8s-paths";
+import type { IdentityProvider } from "@/types/k8s";
 import { TrustEditor, principalLabel } from "./trust-editor";
 import { AccessAdvisorTab } from "./access-advisor-tab";
 import { TagsTab } from "./tags-tab";
@@ -38,6 +41,10 @@ export function RoleDetailPage() {
   const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
   const users = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers });
+  const idps = useQuery({
+    queryKey: ["identityproviders"],
+    queryFn: () => k8sList<IdentityProvider>(openinfraPaths.identityproviders()),
+  });
   const { data: role, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["iam", "role", name],
     queryFn: () => getIamRole(name),
@@ -280,7 +287,12 @@ export function RoleDetailPage() {
                 </p>
               </div>
 
-              <TrustEditor value={trust} onChange={setTrust} users={(users.data ?? []).map((u) => u.name)} />
+              <TrustEditor
+                value={trust}
+                onChange={setTrust}
+                users={(users.data ?? []).map((u) => u.name)}
+                identityProviders={(idps.data?.items ?? []).map((p) => p.metadata.name ?? "").filter(Boolean)}
+              />
 
               <div className="flex items-center gap-3 border-t border-border pt-4">
                 <Button disabled={!trustDirty || saveTrust.isPending} onClick={() => saveTrust.mutate()}>
