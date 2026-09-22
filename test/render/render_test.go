@@ -1420,6 +1420,9 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 		// A UserPool is a customer-facing identity provider that issues tokens the platform trusts —
 		// admin-gated like certificateauthorities, not a poweruser knob (mirrors policy-boundary).
 		"userpools": true,
+		// An IdentityProvider registers an external OIDC issuer the platform trusts for
+		// AssumeRoleWithWebIdentity — admin-gated like userpools, not a poweruser knob.
+		"identityproviders": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")
