@@ -66,3 +66,4 @@ excluded:
   - destructions: "a Destruction crypto-erases data irreversibly — never grantable; a deliberate admin act"
   - certificateauthorities: "a private CA is a trust-minting authority — `update` on it IS the cert issue/revoke capability (ca-issuer), so granting on it is a path to forging trusted certs; keep it admin-gated like encryptionkeys"
   - userpools: "a UserPool is a customer-facing identity provider that issues tokens — granting on it is a path to minting identities the platform trusts; keep it admin-gated like certificateauthorities"
+  - identityproviders: "an IdentityProvider registers an external OIDC issuer the platform TRUSTS for AssumeRoleWithWebIdentity — granting on it is a path to trusting an attacker-controlled issuer and minting assumable identities; keep it admin-gated like userpools"
