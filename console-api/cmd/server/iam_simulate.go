@@ -53,6 +53,30 @@ type simulateReq struct {
 	Resource  string         `json:"resource"`  // optional; typed for data plane, e.g. "Bucket::assets"
 	Namespace string         `json:"namespace"` // optional; control-plane SAR namespace (defaults to console ns)
 	Context   map[string]any `json:"context"`   // optional data-plane condition context (sourceIp, ...)
+	// Draft, when present, switches to CUSTOM mode: evaluate a not-yet-attached draft policy's data
+	// plane against the actions, rather than the principal's stored policies (AWS's "Custom" simulator
+	// mode). Principal becomes optional — the draft's appliesTo governs.
+	Draft *draftPolicyInput `json:"draft,omitempty"`
+}
+
+// draftPolicyInput is a not-yet-attached policy's data plane, in the kind: Policy spec.dataPlane shape.
+type draftPolicyInput struct {
+	AppliesTo  []string         `json:"appliesTo"`
+	Statements []draftStatement `json:"statements"`
+}
+
+type draftStatement struct {
+	Effect       string             `json:"effect"`
+	Actions      []string           `json:"actions"`
+	Resources    []string           `json:"resources"`
+	Condition    map[string]string  `json:"condition"`
+	IPConditions []draftIPCondition `json:"ipConditions"`
+}
+
+type draftIPCondition struct {
+	Key    string `json:"key"`
+	CIDR   string `json:"cidr"`
+	Negate bool   `json:"negate"`
 }
 
 // planeResult is one plane's verdict. Decision is allow|deny|not-governed|indeterminate.
@@ -73,6 +97,7 @@ type simResult struct {
 }
 
 type simulateResp struct {
+	Mode        string      `json:"mode"` // "principal" (stored policies) | "custom" (a pasted draft)
 	Principal   string      `json:"principal"`
 	Resource    string      `json:"resource,omitempty"`
 	Results     []simResult `json:"results"`
@@ -105,16 +130,25 @@ func handleIAMSimulate(cs kubernetes.Interface, auth *authStore, logger *slog.Lo
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 			return
 		}
-		if strings.TrimSpace(in.Principal) == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "principal is required (e.g. User::alice, Group::eng, Role::deployer)"})
-			return
-		}
 		acts := nonEmpty(in.Actions)
 		if len(acts) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one action is required"})
 			return
 		}
 
+		// Custom mode: evaluate a pasted DRAFT policy's data plane (not the stored policies). The
+		// principal is optional here — the draft's appliesTo governs what it applies to.
+		if in.Draft != nil {
+			out := simulateCustom(r.Context(), in, acts)
+			logger.Info("iam: policy simulation (custom)", "actions", len(acts), "by", subjectOf(r))
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+
+		if strings.TrimSpace(in.Principal) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "principal is required (e.g. User::alice, Group::eng, Role::deployer)"})
+			return
+		}
 		sp, code, errMsg := resolveSimPrincipal(r.Context(), auth, in.Principal)
 		if errMsg != "" {
 			writeJSON(w, code, map[string]string{"error": errMsg})
@@ -130,6 +164,7 @@ func handleIAMSimulate(cs kubernetes.Interface, auth *authStore, logger *slog.Lo
 		checker := dataPlaneCheckerFor(auth.listCRDPolicies(r.Context()))
 
 		out := simulateResp{
+			Mode:      "principal",
 			Principal: sp.pType + "::" + sp.name,
 			Resource:  strings.TrimSpace(in.Resource),
 			Results:   make([]simResult, 0, len(acts)),
@@ -324,6 +359,83 @@ func dataPlaneCheckerFor(ps []crdPolicy) *dataplaneauthz.Checker {
 	// spec.policies axis is resolved by the live shim's K8sLoader from kind: Role/User/Group.
 	return dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
 		return dataplaneauthz.Snapshot{Docs: docs}, nil
+	}, time.Minute)
+}
+
+// simulateCustom runs CUSTOM mode: evaluate a not-yet-attached DRAFT policy's data plane against the
+// actions, with no reference to the principal's stored policies — AWS's "Custom" simulator mode
+// ("what would THIS policy decide", before you attach it). Only the data plane is evaluable: a draft
+// control-plane block is Cedar Phase-2 shadow and cannot be SAR-tested unattached, so control actions
+// are reported not-evaluable. Enforced is false throughout — the draft is in force nowhere; only its
+// verdict under the real Cedar engine is shown.
+func simulateCustom(ctx context.Context, in simulateReq, acts []string) simulateResp {
+	pType, pName := parsePrincipal(orDefault(strings.TrimSpace(in.Principal), "User::(draft subject)"))
+	sp := simPrincipal{pType: pType, name: pName, dataType: pType, dataID: pName}
+	checker := draftCheckerFor(in.Draft)
+	reqCtx := simContext(in.Context)
+	resType, resID := splitTyped(in.Resource)
+
+	out := simulateResp{
+		Mode:      "custom",
+		Principal: pType + "::" + pName,
+		Resource:  strings.TrimSpace(in.Resource),
+		Results:   make([]simResult, 0, len(acts)),
+		Warnings:  []string{},
+		Limitations: []string{
+			"Custom mode evaluates the pasted draft's spec.dataPlane with the same Cedar engine the aws-shim enforces — it does not consult the principal's stored/attached policies.",
+			"The draft is not attached, so nothing here is enforced, and the coarse control-plane RBAC gate is not applied (that depends on a bound identity, not the draft).",
+			"Control-plane actions are not evaluable in custom mode: spec.controlPlane is RBAC / Phase-2 shadow and must be attached to test — only the draft's data plane is simulated.",
+		},
+	}
+	if len(in.Draft.Statements) == 0 {
+		out.Warnings = append(out.Warnings, "the draft has no data-plane statements — every data action reports not-governed")
+	}
+
+	for _, action := range acts {
+		plane, _, _, ok := classifyAction(action)
+		switch {
+		case !ok:
+			out.Results = append(out.Results, simResult{
+				Action: action, Plane: "unknown", Decision: "unknown",
+				Reason: "action must be <resource>:<verb> (control) or <service>:<op> for s3/dynamodb/lambda (data)",
+			})
+		case plane == "control":
+			out.Results = append(out.Results, simResult{
+				Action: action, Plane: "control", Decision: "not-evaluable",
+				Reason: "custom mode simulates the draft's data plane; control-plane policy is RBAC / Phase-2 shadow — attach it to test control-plane actions",
+			})
+		default:
+			dp := evalData(ctx, checker, sp, action, resType, resID, reqCtx)
+			out.Results = append(out.Results, simResult{
+				Action: action, Plane: "data", Decision: dp.Decision, Reason: dp.Reason, Enforced: false, DataPlane: &dp,
+			})
+		}
+	}
+	return out
+}
+
+// draftCheckerFor builds a one-shot Cedar checker over a single DRAFT policy's data plane (including any
+// IP conditions), so custom mode evaluates the draft with the exact engine the shim enforces.
+func draftCheckerFor(d *draftPolicyInput) *dataplaneauthz.Checker {
+	appliesTo := nonEmpty(d.AppliesTo)
+	if len(appliesTo) == 0 {
+		appliesTo = []string{"*"}
+	}
+	doc := dataplaneauthz.PolicyDoc{Name: "(draft)", AppliesTo: appliesTo}
+	for _, s := range d.Statements {
+		st := policyengine.Statement{
+			Effect:    policyengine.Effect(canonEffect(s.Effect)),
+			Actions:   s.Actions,
+			Resources: s.Resources,
+			Condition: s.Condition,
+		}
+		for _, c := range s.IPConditions {
+			st.IPConditions = append(st.IPConditions, policyengine.IPCondition{Key: c.Key, CIDR: c.CIDR, Negate: c.Negate})
+		}
+		doc.Statements = append(doc.Statements, st)
+	}
+	return dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
+		return dataplaneauthz.Snapshot{Docs: []dataplaneauthz.PolicyDoc{doc}}, nil
 	}, time.Minute)
 }
 

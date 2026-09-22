@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { FlaskConical, Play } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/select";
 import { ErrorState, LoadingState } from "@/components/common/states";
 import { InfoLink } from "@/components/help/info-link";
-import { getIamConfig, simulatePolicy, type SimulateRequest } from "@/lib/api";
+import { getIamConfig, simulatePolicy, type DraftPolicyInput, type SimulateRequest } from "@/lib/api";
 import { CEDAR_CONDITION_KEYS } from "@/lib/iam-cedar-vocab";
 import { PrincipalPicker, type PrincipalValue } from "./simulator/principal-picker";
 import { ActionPicker } from "./simulator/action-picker";
@@ -32,19 +32,43 @@ import { ResultTable } from "./simulator/result-table";
 export function PolicySimulatorPage() {
   const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
 
+  const [mode, setMode] = useState<"principal" | "custom">("principal");
   const [principal, setPrincipal] = useState<PrincipalValue>({ type: "User", name: "" });
   const [actions, setActions] = useState<string[]>([]);
   const [resource, setResource] = useState("");
   const [namespace, setNamespace] = useState("");
   const [ctx, setCtx] = useState<Record<string, string>>({});
+  const [draftText, setDraftText] = useState("");
   const [attempted, setAttempted] = useState(false);
 
   const sim = useMutation({
     mutationFn: (req: SimulateRequest) => simulatePolicy(req),
   });
 
+  // Custom mode: parse the pasted draft. Accepts a full policy doc ({dataPlane:{…}}), a data-plane block
+  // ({appliesTo,statements}), or a bare statements array — so the AWS-import "Copy dataPlane JSON" output
+  // pastes straight in.
+  const draft = useMemo<{ value: DraftPolicyInput | null; error: string | null }>(() => {
+    if (mode !== "custom" || !draftText.trim()) return { value: null, error: null };
+    try {
+      let block: unknown = JSON.parse(draftText);
+      if (block && typeof block === "object" && !Array.isArray(block) && "dataPlane" in block) {
+        block = (block as { dataPlane: unknown }).dataPlane;
+      }
+      if (Array.isArray(block)) block = { statements: block };
+      const b = block as { appliesTo?: string[]; statements?: unknown } | null;
+      if (!b || typeof b !== "object" || !Array.isArray(b.statements)) {
+        throw new Error("Expected a data-plane block with a statements array (or a bare statements array).");
+      }
+      return { value: { appliesTo: b.appliesTo, statements: b.statements as DraftPolicyInput["statements"] }, error: null };
+    } catch (e) {
+      return { value: null, error: (e as Error).message };
+    }
+  }, [mode, draftText]);
+
   const principalOk = principal.name.trim().length > 0;
   const actionsOk = actions.length > 0;
+  const inputsOk = actionsOk && (mode === "custom" ? Boolean(draft.value) : principalOk);
 
   const buildContext = (): Record<string, unknown> | undefined => {
     const out: Record<string, unknown> = {};
@@ -58,14 +82,22 @@ export function PolicySimulatorPage() {
 
   const run = () => {
     setAttempted(true);
-    if (!principalOk || !actionsOk) return;
-    sim.mutate({
-      principal: `${principal.type}::${principal.name}`,
+    if (!inputsOk) return;
+    const base = {
       actions,
       resource: resource.trim() || undefined,
       namespace: namespace.trim() || undefined,
       context: buildContext(),
-    });
+    };
+    if (mode === "custom") {
+      sim.mutate({
+        ...base,
+        principal: principal.name.trim() ? `${principal.type}::${principal.name}` : undefined,
+        draft: draft.value ?? undefined,
+      });
+    } else {
+      sim.mutate({ ...base, principal: `${principal.type}::${principal.name}` });
+    }
   };
 
   const runButton = (
@@ -89,37 +121,110 @@ export function PolicySimulatorPage() {
         <ErrorState error={cfg.error} onRetry={() => void cfg.refetch()} />
       ) : (
         <>
+          {/* Mode: evaluate the current stored policies (Principal), or a pasted not-yet-attached draft
+              (Custom — AWS's "Custom" simulator mode). */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="inline-flex overflow-hidden rounded-md border border-border text-xs">
+              {(
+                [
+                  ["principal", "Principal — stored policies"],
+                  ["custom", "Custom — a draft policy"],
+                ] as const
+              ).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={[
+                    "px-3 py-1.5 font-medium transition-colors",
+                    mode === m ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-muted",
+                  ].join(" ")}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="text-[11px] text-muted-foreground">
+              {mode === "custom"
+                ? "Simulate a not-yet-attached draft policy's data plane before you attach it."
+                : "Evaluate the principal's current, attached policies."}
+            </span>
+          </div>
+
           <div className="grid gap-6 lg:grid-cols-2">
-            {/* Left — the principal + the request context. */}
+            {/* Left — the principal (or draft) + the request context. */}
             <div className="space-y-6">
-              <Card>
-                <CardContent className="space-y-3 p-4">
-                  <h3 className="flex items-center gap-2 text-sm font-semibold">
-                    Principal
-                    <InfoLink
-                      title="Principal"
-                      body={
-                        <>
-                          <p>
-                            The identity to evaluate. The control plane is checked as this principal via an
-                            impersonated SubjectAccessReview — exactly what the API server would decide for a
-                            real request. Data-plane policies are matched by their <code>appliesTo</code>.
-                          </p>
-                          <p>
-                            A Group evaluates the access its ClusterRole binding confers; a Role evaluates the
-                            union of its policies.
-                          </p>
-                        </>
-                      }
+              {mode === "principal" ? (
+                <Card>
+                  <CardContent className="space-y-3 p-4">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold">
+                      Principal
+                      <InfoLink
+                        title="Principal"
+                        body={
+                          <>
+                            <p>
+                              The identity to evaluate. The control plane is checked as this principal via an
+                              impersonated SubjectAccessReview — exactly what the API server would decide for a
+                              real request. Data-plane policies are matched by their <code>appliesTo</code>.
+                            </p>
+                            <p>
+                              A Group evaluates the access its ClusterRole binding confers; a Role evaluates the
+                              union of its policies.
+                            </p>
+                          </>
+                        }
+                      />
+                    </h3>
+                    <PrincipalPicker value={principal} onChange={setPrincipal} invalid={attempted} />
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card>
+                  <CardContent className="space-y-3 p-4">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold">
+                      Draft policy
+                      <InfoLink
+                        title="Draft policy (custom mode)"
+                        body={
+                          <>
+                            <p>
+                              Paste a not-yet-attached policy's <strong>data plane</strong> and simulate it
+                              directly — "what would this policy decide?" — before attaching it. Accepts a full
+                              document (<code>{"{ dataPlane: { … } }"}</code>), a data-plane block (
+                              <code>{"{ appliesTo, statements }"}</code>), or a bare statements array — so the
+                              "Copy dataPlane JSON" output from Import policy pastes straight in.
+                            </p>
+                            <p>
+                              Only the data plane is simulated in custom mode; control-plane actions are RBAC /
+                              Phase-2 shadow and must be attached to test.
+                            </p>
+                          </>
+                        }
+                      />
+                    </h3>
+                    <textarea
+                      className="h-48 w-full resize-y rounded-md border border-border bg-background p-2.5 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+                      placeholder={'{\n  "appliesTo": ["*"],\n  "statements": [\n    { "effect": "Allow", "actions": ["s3:GetObject"], "resources": ["Bucket::assets"] }\n  ]\n}'}
+                      value={draftText}
+                      onChange={(e) => setDraftText(e.target.value)}
+                      spellCheck={false}
                     />
-                  </h3>
-                  <PrincipalPicker
-                    value={principal}
-                    onChange={setPrincipal}
-                    invalid={attempted}
-                  />
-                </CardContent>
-              </Card>
+                    {draft.error ? (
+                      <p className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+                        {draft.error}
+                      </p>
+                    ) : null}
+                    <div className="space-y-1.5">
+                      <Label>Principal (optional)</Label>
+                      <PrincipalPicker value={principal} onChange={setPrincipal} invalid={false} />
+                      <p className="text-[11px] text-muted-foreground">
+                        Only needed if the draft's <code>appliesTo</code> is scoped to a specific principal.
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               <Card>
                 <CardContent className="space-y-4 p-4">
