@@ -271,8 +271,8 @@ func policyView(p crdPolicy) iamPolicyView {
 func roleView(r crdRole) iamRoleView {
 	return iamRoleView{
 		Name: r.Metadata.Name, Description: r.Spec.Description, Policies: r.Spec.Policies,
-		Trust:                groupList(r.Spec.Trust),
-		ClusterRole:          r.Status.ClusterRole, Ready: r.Status.Ready,
+		Trust:       groupList(r.Spec.Trust),
+		ClusterRole: r.Status.ClusterRole, Ready: r.Status.Ready,
 		RevokeSessionsBefore: r.Spec.RevokeSessionsBefore,
 		Tags:                 tagsFromAnnotations(r.Metadata.Annotations),
 	}
