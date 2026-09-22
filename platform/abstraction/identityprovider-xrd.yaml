@@ -1,0 +1,72 @@
+# kind: IdentityProvider — an external OIDC identity provider the platform TRUSTS for
+# sts:AssumeRoleWithWebIdentity. It registers an OIDC issuer (issuerURL) and the
+# audiences (client IDs) whose tokens may assume a role whose trust policy names it
+# (Role.spec.trust: ["OIDC::<name>"]). The AWS "Identity providers" registry.
+#
+# The counterpart to kind: UserPool, which ISSUES tokens: register a UserPool's
+# ISSUER_URL here and its tokens can assume roles. The aws-shim already verifies OIDC
+# tokens (coreos/go-oidc: JWKS discovery + signature/issuer/audience/expiry) for the
+# AppSync data plane; this registry drives the SAME verification for web-identity.
+#
+# OIDC only — SAML is deferred (polyhedron#136 §2). This is an identity/admin resource:
+# it registers who the platform trusts to mint assumable identities, so it is
+# admin-gated (policy-boundary `excluded`), NOT a data-plane permission a kind: Policy
+# can grant — exactly like kind: UserPool and kind: CertificateAuthority.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2). KEEP THIS SCHEMA STABLE — it is
+# part of the product's contract.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xidentityproviders.openinfra.dev
+  annotations:
+    # Chaos topology tags (consumed by tools/chainforge): role "none" = not a chaos
+    # data-node, so no chaos/grammar.json entry is required.
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names:
+    kind: XIdentityProvider
+    plural: xidentityproviders
+  claimNames:
+    kind: IdentityProvider    # what users write
+    plural: identityproviders
+  defaultCompositionRef:
+    name: identityprovider
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                issuerURL:
+                  type: string
+                  description: "The OIDC issuer URL — the token's `iss` claim value. Its /.well-known/openid-configuration + JWKS are fetched to verify token signatures. e.g. an in-cluster UserPool's ISSUER_URL, or an external OIDC provider."
+                  pattern: '^https?://.+'
+                audiences:
+                  type: array
+                  description: "Accepted token audiences (the `aud` claim / client IDs). A web-identity token is trusted only if its aud is in this list — unaudienced tokens are refused."
+                  items:
+                    type: string
+                  minItems: 1
+                subjectClaim:
+                  type: string
+                  description: "The token claim used as the assumed subject (SubjectFromWebIdentityToken, and the identity a role's trust matches). Defaults to 'sub'."
+                  default: "sub"
+              required:
+                - issuerURL
+                - audiences
+            status:
+              type: object
+              properties:
+                issuer: { type: string }
+                ready: { type: boolean }

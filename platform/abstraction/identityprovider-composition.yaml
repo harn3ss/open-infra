@@ -1,0 +1,66 @@
+# The compiler for kind: IdentityProvider. It renders a non-sensitive spec-mirror
+# ConfigMap in the aws-shim's namespace (issuerURL / audiences / subjectClaim), which
+# the shim reads (label-selected, the Table-registry pattern) to build its per-IdP
+# OIDC web-identity verifier registry. No workload — an IdentityProvider is a registry
+# entry, not a deployment; the token verification reuses the shim's existing go-oidc
+# path. Also echoes the issuer in status.
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: identityprovider
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XIdentityProvider
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $auds := $spec.audiences | default (list) }}
+            ---
+            # Spec-mirror ConfigMap the aws-shim reads (label-selected) to build its OIDC
+            # web-identity verifier for this provider. Non-sensitive: an OIDC issuer URL +
+            # audiences are public verification parameters, not secrets.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: idp-config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-idp-{{ $name }}
+                    namespace: open-infra-aws-shim
+                    labels:
+                      openinfra.dev/identity-provider: {{ $name | quote }}
+                      openinfra.dev/identity-provider-namespace: {{ $ns | quote }}
+                  data:
+                    name: {{ $name | quote }}
+                    issuerURL: {{ $spec.issuerURL | quote }}
+                    audiences: {{ $auds | join "," | quote }}
+                    subjectClaim: "{{ $spec.subjectClaim | default "sub" }}"
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XIdentityProvider
+            status:
+              issuer: {{ $spec.issuerURL | quote }}
+              ready: true
