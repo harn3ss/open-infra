@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   AlertTriangle,
   Braces,
+  Fingerprint,
   Globe,
   List,
   Plus,
@@ -23,17 +24,21 @@ import { cn } from "@/lib/utils";
  *  - `user`           — a bare `kind: User` name (e.g. `"alice"`), assumed via AssumeRole.
  *  - `serviceaccount` — `"system:serviceaccount:<ns>:<name>"`, a workload identity (the IRSA
  *                       analog) assumed via AssumeRoleWithWebIdentity with a projected SA token.
- *  - `custom`         — anything else (e.g. a future `OIDC::<provider>` federation value).
+ *  - `oidc`           — `"OIDC::<provider>"`, a federated web identity: tokens from a registered
+ *                       `kind: IdentityProvider` assume the role via AssumeRoleWithWebIdentity.
+ *  - `custom`         — anything else (an exact subject, or a value authored directly).
  */
-export type PrincipalKind = "user" | "serviceaccount" | "wildcard" | "custom";
+export type PrincipalKind = "user" | "serviceaccount" | "wildcard" | "oidc" | "custom";
 
 const SA_PREFIX = "system:serviceaccount:";
+const OIDC_PREFIX = "OIDC::";
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 /** Classify a stored `spec.trust[]` entry by the form the shim recognizes. */
 export function classifyPrincipal(p: string): PrincipalKind {
   if (p === "*") return "wildcard";
   if (p.startsWith(SA_PREFIX)) return "serviceaccount";
+  if (p.startsWith(OIDC_PREFIX)) return "oidc";
   if (RFC1123.test(p)) return "user";
   return "custom";
 }
@@ -47,6 +52,8 @@ export function principalLabel(p: string): string {
       const [ns, name] = p.slice(SA_PREFIX.length).split(":");
       return name ? `ServiceAccount ${ns}/${name}` : p;
     }
+    case "oidc":
+      return `OIDC provider ${p.slice(OIDC_PREFIX.length)}`;
     case "user":
       return `User ${p}`;
     default:
@@ -58,6 +65,7 @@ const KIND_ICON: Record<PrincipalKind, typeof UserRound> = {
   user: UserRound,
   serviceaccount: Server,
   wildcard: Globe,
+  oidc: Fingerprint,
   custom: Braces,
 };
 
@@ -100,6 +108,11 @@ const CARDS: EntityCard[] = [
     hint: "A pod's ServiceAccount assumes it (web identity) — the IRSA analog.",
   },
   {
+    kind: "oidc",
+    label: "Web identity (OIDC provider)",
+    hint: "Tokens from a registered kind: IdentityProvider assume it (AssumeRoleWithWebIdentity).",
+  },
+  {
     kind: "wildcard",
     label: "Any authenticated",
     hint: "Any authenticated principal may assume the role. Broad — use with care.",
@@ -119,6 +132,7 @@ export function TrustEditor({
   value,
   onChange,
   users = [],
+  identityProviders = [],
   className,
 }: {
   /** Current trust principals (source of truth = `Role.spec.trust[]`). */
@@ -126,6 +140,8 @@ export function TrustEditor({
   onChange: (trust: string[]) => void;
   /** Existing kind: User names, offered as suggestions for the User card. */
   users?: string[];
+  /** Registered kind: IdentityProvider names, offered as suggestions for the Web-identity card. */
+  identityProviders?: string[];
   className?: string;
 }) {
   const [view, setView] = useState<"visual" | "json">("visual");
@@ -133,6 +149,7 @@ export function TrustEditor({
   const [userVal, setUserVal] = useState("");
   const [saNs, setSaNs] = useState("");
   const [saName, setSaName] = useState("");
+  const [idpVal, setIdpVal] = useState("");
   const [customVal, setCustomVal] = useState("");
   const [jsonText, setJsonText] = useState("");
   const [jsonErr, setJsonErr] = useState<string | null>(null);
@@ -354,6 +371,51 @@ export function TrustEditor({
                     add(`${SA_PREFIX}${saNs.trim()}:${saName.trim()}`);
                     setSaNs("");
                     setSaName("");
+                  }}
+                >
+                  <Plus className="size-4" /> Add
+                </Button>
+              </div>
+            ) : null}
+
+            {mode === "oidc" ? (
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-48 flex-1 space-y-1.5">
+                  <Label htmlFor="trust-oidc" className="text-xs">
+                    Identity provider
+                  </Label>
+                  <Input
+                    id="trust-oidc"
+                    list="trust-oidc-options"
+                    value={idpVal}
+                    onChange={(e) => setIdpVal(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (idpVal.trim()) add(`${OIDC_PREFIX}${idpVal.trim()}`);
+                        setIdpVal("");
+                      }
+                    }}
+                    placeholder="google"
+                    className="h-8"
+                  />
+                  <datalist id="trust-oidc-options">
+                    {identityProviders.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                  <p className="text-[11px] text-muted-foreground">
+                    A registered <code>kind: IdentityProvider</code>. Its tokens may then assume this role.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!idpVal.trim()}
+                  onClick={() => {
+                    add(`${OIDC_PREFIX}${idpVal.trim()}`);
+                    setIdpVal("");
                   }}
                 >
                   <Plus className="size-4" /> Add
