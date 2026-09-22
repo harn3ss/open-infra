@@ -35,11 +35,12 @@ type tokenReviewer interface {
 }
 
 type stsHandler struct {
-	account string         // the open-infra "account" id surfaced in the ARN/Account fields
-	minter  *awssts.Minter // mints sts:AssumeRole session tokens; nil disables AssumeRole
-	roles   roleResolver   // resolves a role's trust policy + session groups; nil disables AssumeRole
-	webID   tokenReviewer  // verifies workload SA tokens; nil disables AssumeRoleWithWebIdentity
-	logger  *slog.Logger
+	account   string         // the open-infra "account" id surfaced in the ARN/Account fields
+	minter    *awssts.Minter // mints sts:AssumeRole session tokens; nil disables AssumeRole
+	roles     roleResolver   // resolves a role's trust policy + session groups; nil disables AssumeRole
+	webID     tokenReviewer  // verifies workload SA tokens (IRSA path); nil disables that path
+	oidcWebID oidcVerifier   // verifies EXTERNAL OIDC tokens vs registered kind: IdentityProvider; nil disables
+	logger    *slog.Logger
 }
 
 func (h *stsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
@@ -111,7 +112,7 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 // a k8s TokenReview, then authorizes the SA against the role's trust policy and mints session
 // credentials for the role. No static keys, no SigV4 on this call: the SA token IS the credential.
 func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Request, requestID string) {
-	if h.minter == nil || h.roles == nil || h.webID == nil {
+	if h.minter == nil || h.roles == nil || (h.webID == nil && h.oidcWebID == nil) {
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
 			"sts:AssumeRoleWithWebIdentity is not enabled on this shim", stsXMLNamespace)
 		return
@@ -125,17 +126,33 @@ func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Re
 			"AssumeRoleWithWebIdentity requires RoleArn and WebIdentityToken", stsXMLNamespace)
 		return
 	}
-	username, ok := h.webID.Review(r.Context(), token)
-	if !ok {
+	// Two web-identity paths. First the k8s workload-identity (IRSA) path: a projected SA token verified
+	// by a TokenReview, whose principal is the SA username. If that does not match, the external-OIDC
+	// path: a token from a registered kind: IdentityProvider, verified via go-oidc; its trust principal
+	// is the provider ("OIDC::<name>") and its subject is the token subject. `username` is the assumed
+	// subject; `caller` is what the role's trust policy is matched against.
+	var username, caller string
+	if h.webID != nil {
+		if u, ok := h.webID.Review(r.Context(), token); ok {
+			username, caller = u, u
+		}
+	}
+	if username == "" && h.oidcWebID != nil {
+		if name, sub, ok := h.oidcWebID.verify(r.Context(), token); ok {
+			username, caller = sub, "OIDC::"+name
+		}
+	}
+	if username == "" {
 		// STS's dialect for a bad web-identity token.
 		writeQueryError(w, http.StatusBadRequest, "InvalidIdentityToken", requestID,
 			"the web identity token could not be validated", stsXMLNamespace)
 		return
 	}
 	trust, groups, ok := h.roles.Resolve(r.Context(), roleName)
-	if !ok || !trusted(username, trust) {
+	// For OIDC the trust policy may name either the provider ("OIDC::<name>") or the exact subject.
+	if !ok || !(trusted(caller, trust) || trusted(username, trust)) {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
-			username+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
+			caller+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
 		return
 	}
 	if sessionName == "" {
