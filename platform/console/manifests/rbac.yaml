@@ -152,6 +152,7 @@ rules:
       - encryptionkeys
       - destructions
       - userpools
+      - identityproviders
       - buckets
       - queues
       - tables
