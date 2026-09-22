@@ -1201,6 +1201,48 @@ export function simulatePolicy(req: SimulateRequest): Promise<SimulateResult> {
   });
 }
 
+// POST /api/iam/import — DRY-RUN preview of importing an AWS IAM policy. Paste an AWS policy JSON; the
+// BFF translates it with the same engine the aws-shim enforces and reports what maps faithfully, what is
+// REFUSED (with the reason — never silently dropped), and what translated but is broad. It writes
+// nothing (creates no Policy). Admin-gated. Mirrors console-api/cmd/server/iam_import.go.
+
+/** A source-IP CIDR condition on a translated statement (lowercase, the kind: Policy dataPlane shape). */
+export interface ImportedIpCondition {
+  key: string;
+  cidr: string;
+  negate?: boolean;
+}
+
+/** One translated statement, in the kind: Policy spec.dataPlane shape, plus a `broad` wildcard flag. */
+export interface ImportedStatement {
+  effect: string;
+  actions: string[];
+  resources?: string[];
+  condition?: Record<string, string>;
+  ipConditions?: ImportedIpCondition[];
+  broad: boolean;
+}
+
+/** The import preview. Mirrors the BFF `importResp`. */
+export interface ImportAwsResult {
+  /** Statements honored faithfully, ready to author on spec.dataPlane. */
+  translated: ImportedStatement[];
+  /** Parts that could NOT be honored, each with its reason — shown, never dropped. */
+  refused: string[];
+  /** Translated-but-broad statements (a "*" action or resource) worth a conscious confirmation. */
+  needsReview: string[];
+  /** true iff nothing was refused — the whole document maps onto the data plane. */
+  faithful: boolean;
+  summary: { translated: number; refused: number; needsReview: number };
+}
+
+export function importAwsPolicy(policyDocument: string): Promise<ImportAwsResult> {
+  return request<ImportAwsResult>("/iam/import", {
+    method: "POST",
+    body: JSON.stringify({ policyDocument }),
+  });
+}
+
 /* ------------------------------ Temporal grants ------------------------------ */
 // kind: Grant — just-in-time access with a second-party approval workflow. A grant is a REQUEST: it
 // confers nothing until a different admin approves it (AC-2(2)/AC-5). Admin-gated on the BFF.
