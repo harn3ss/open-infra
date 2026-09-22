@@ -362,6 +362,9 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// Policy simulator — a what-if over the current policies (control plane via SAR, data plane
 		// via the Cedar engine). Same SAR gate (list policies) as the endpoints above.
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/simulate", handleIAMSimulate(cs, auth, logger))
+		// Dry-run AWS-policy import preview ("Actions ▾ → Import policy"): translate a pasted AWS IAM
+		// policy and report Translated / Refused-with-reason / Needs-review. Writes nothing.
+		api.With(middleware.Timeout(15*time.Second)).Post("/iam/import", handleIAMImport(cs, auth, logger))
 		// Temporal Grants (JIT access) with a second-party approval workflow — AC-2(2)/AC-5/AC-6(2).
 		api.With(middleware.Timeout(15*time.Second)).Get("/iam/grants", handleIAMGrantsList(cs, auth, logger))
 		api.With(middleware.Timeout(15*time.Second)).Post("/iam/grants", handleIAMGrantCreate(cs, auth, logger))
