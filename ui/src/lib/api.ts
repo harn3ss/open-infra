@@ -1147,10 +1147,26 @@ export function updateIamPolicyTags(
 // same Cedar engine the aws-shim enforces spec.dataPlane with for the data plane). Nothing is
 // performed. Admin-gated (same SAR as listing policies). Mirrors console-api/cmd/server/iam_simulate.go.
 
-/** What to simulate. `principal` + `actions` are required; the rest are optional inputs. */
+/** One draft data-plane statement (custom mode), in the kind: Policy spec.dataPlane shape. */
+export interface DraftStatement {
+  effect?: string;
+  actions: string[];
+  resources?: string[];
+  condition?: Record<string, string>;
+  ipConditions?: ImportedIpCondition[];
+}
+
+/** A not-yet-attached draft policy's data plane, for custom-mode simulation. */
+export interface DraftPolicyInput {
+  appliesTo?: string[];
+  statements: DraftStatement[];
+}
+
+/** What to simulate. `actions` is always required. Principal mode needs `principal`; custom mode needs
+ *  `draft` (and principal is optional — the draft's appliesTo governs). */
 export interface SimulateRequest {
   /** "User::alice", "Group::eng", "Role::deployer". A bare name ("alice") is treated as a User. */
-  principal: string;
+  principal?: string;
   /** Control-plane "<resource>:<verb>" (e.g. "virtualmachines:Get") and/or data-plane "s3:GetObject". */
   actions: string[];
   /** Optional; typed for the data plane, e.g. "Bucket::assets". */
@@ -1159,6 +1175,8 @@ export interface SimulateRequest {
   namespace?: string;
   /** Optional data-plane condition context, e.g. { sourceIp: "10.0.0.1" }. */
   context?: Record<string, unknown>;
+  /** Present ⇒ CUSTOM mode: simulate this not-yet-attached draft's data plane instead of stored policies. */
+  draft?: DraftPolicyInput;
 }
 
 /** One plane's verdict. `decision` is allow | deny | not-governed | indeterminate. */
@@ -1187,6 +1205,8 @@ export interface SimActionResult {
 
 /** The simulator's full response. Mirrors the BFF `simulateResp`. */
 export interface SimulateResult {
+  /** "principal" (stored policies) | "custom" (the pasted draft). */
+  mode?: string;
   principal: string;
   resource?: string;
   results: SimActionResult[];
