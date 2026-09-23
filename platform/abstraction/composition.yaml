@@ -223,7 +223,11 @@ spec:
                         {{- if or $spec.volumes $assume }}
                         volumes:
                         {{- range $spec.volumes }}
+                          {{- if .volume }}
+                          - { name: {{ .name }}, persistentVolumeClaim: { claimName: {{ .volume }} } }
+                          {{- else }}
                           - { name: {{ .name }}, emptyDir: {} }
+                          {{- end }}
                         {{- end }}
                         {{- if $assume }}
                           - name: openinfra-sts-token
