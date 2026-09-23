@@ -1027,7 +1027,28 @@ spec:
                                 value: us-east-1
                             command: ["/bin/sh", "-c"]
                             args:
-                              - 'for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ join "," $spec.storage.buckets }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+                              - |
+                                set -e
+                                E=http://minio.minio.svc.cluster.local:9000
+                                # Create each declared bucket idempotently but FAIL LOUD (#151): an existing
+                                # bucket is fine; any other error fails the job so the app is never handed a
+                                # credential + endpoint for a bucket that was never created.
+                                for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do
+                                  if out=$(aws --endpoint-url $E s3 mb "s3://$b" 2>&1); then
+                                    echo "created $b"
+                                  else
+                                    case "$out" in
+                                      *BucketAlreadyOwnedByYou*|*BucketAlreadyExists*) echo "$b already exists" ;;
+                                      *) echo "mb failed for $b: $out" >&2; exit 1 ;;
+                                    esac
+                                  fi
+                                done
+                                kubectl create secret generic {{ $name }}-minio -n {{ $ns }} \
+                                  --from-literal=MINIO_ENDPOINT=$E \
+                                  --from-literal=MINIO_BUCKETS={{ join "," $spec.storage.buckets }} \
+                                  --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
+                                  --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
+                                  --dry-run=client -o yaml | kubectl apply -f -
             {{- end }}
             # NOTE: queues (NATS_URL/OPENINFRA_QUEUES) and secrets (envFrom) are
             # injected into the Deployment above; NATS streams are app-declared.

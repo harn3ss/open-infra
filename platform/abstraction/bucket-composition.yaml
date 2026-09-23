@@ -88,12 +88,30 @@ spec:
                               - |
                                 set -e
                                 E=http://minio.minio.svc.cluster.local:9000
+                                # Create idempotently but FAIL LOUD: an already-existing bucket is fine,
+                                # any other error (bad/rotated root creds, server unreachable, quota) fails
+                                # the job so the claim goes NotReady with the reason — never a false green
+                                # that only surfaces later as NoSuchBucket in the app's own logs (#151).
                                 {{- if $lockJson }}
                                 # Object Lock must be enabled AT creation (it auto-enables versioning); can't be added later.
-                                aws --endpoint-url $E s3api create-bucket --bucket {{ $bucket }} --object-lock-enabled-for-bucket 2>/dev/null || true
+                                if out=$(aws --endpoint-url $E s3api create-bucket --bucket {{ $bucket }} --object-lock-enabled-for-bucket 2>&1); then
+                                  echo "created bucket {{ $bucket }}"
+                                else
+                                  case "$out" in
+                                    *BucketAlreadyOwnedByYou*|*BucketAlreadyExists*) echo "bucket {{ $bucket }} already exists" ;;
+                                    *) echo "create-bucket failed for {{ $bucket }}: $out" >&2; exit 1 ;;
+                                  esac
+                                fi
                                 aws --endpoint-url $E s3api put-object-lock-configuration --bucket {{ $bucket }} --object-lock-configuration '{{ $lockJson }}'
                                 {{- else }}
-                                aws --endpoint-url $E s3 mb "s3://{{ $bucket }}" 2>/dev/null || true
+                                if out=$(aws --endpoint-url $E s3 mb "s3://{{ $bucket }}" 2>&1); then
+                                  echo "created bucket {{ $bucket }}"
+                                else
+                                  case "$out" in
+                                    *BucketAlreadyOwnedByYou*|*BucketAlreadyExists*) echo "bucket {{ $bucket }} already exists" ;;
+                                    *) echo "mb failed for {{ $bucket }}: $out" >&2; exit 1 ;;
+                                  esac
+                                fi
                                 {{- end }}
                                 {{- if $spec.versioning }}
                                 aws --endpoint-url $E s3api put-bucket-versioning --bucket {{ $bucket }} --versioning-configuration Status=Enabled
