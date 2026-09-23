@@ -32,6 +32,8 @@ spec:
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $size := $spec.size | default "10Gi" }}
+            {{- /* mode: Block (default) for VM hotplug; Filesystem for a mountable app volume (#152) */}}
+            {{- $mode := $spec.mode | default "Block" }}
             {{- /* migratable -> RWX block on longhorn-migratable (attachable to a live-migratable VM) */}}
             {{- $migratable := $spec.migratable | default false }}
             {{- /* encrypted -> LUKS on longhorn-encrypted; the volume-crypto reconciler keys it from encryptionKey */}}
@@ -63,11 +65,13 @@ spec:
                     # migratable -> RWX so it can attach to a live-migratable (HA) VM without
                     # blocking its live migration; otherwise RWO (single-attach).
                     accessModes: [{{ if and $migratable (not $encrypted) }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
-                    # Block mode is required for reliable KubeVirt hotplug — a
-                    # Filesystem-mode volume attaches to the node but never reaches
-                    # the guest (validated: Filesystem stalls at AttachedToNode;
-                    # Block reaches Ready and the guest sees the raw disk).
-                    volumeMode: Block
+                    # Block mode (the default) is required for reliable KubeVirt hotplug — a
+                    # Filesystem-mode volume attaches to the node but never reaches the guest
+                    # (validated: Filesystem stalls at AttachedToNode; Block reaches Ready and the
+                    # guest sees the raw disk). Filesystem mode (spec.mode) is for mounting the
+                    # volume into a container (kind: Application spec.volumes[].volume, #152), which
+                    # a Block PVC cannot do.
+                    volumeMode: {{ $mode }}
                     # encrypted -> longhorn-encrypted (LUKS; RWO — no encrypted+migratable class);
                     # else migratable -> longhorn-migratable; else longhorn.
                     storageClassName: {{ if $encrypted }}longhorn-encrypted{{ else if $migratable }}longhorn-migratable{{ else }}longhorn{{ end }}
