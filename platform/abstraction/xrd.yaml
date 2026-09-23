@@ -58,12 +58,13 @@ spec:
                       mountPath: { type: string, description: "Path to mount it at inside the container." }
                 volumes:
                   type: array
-                  description: "Shared ephemeral pod volumes (emptyDir), mountable into the primary container and sidecars — an ECS task's shared Volumes. Data lives for the pod's lifetime (scratch/shared space between containers), NOT durable storage (use spec.storage.buckets or a kind: Volume for that)."
+                  description: "Pod volumes, mountable into the primary container and sidecars via spec.volumeMounts. By default each is an ephemeral emptyDir (an ECS task's shared Volumes — scratch/shared space, lost on restart). Set `volume:` on an entry to instead mount a kind: Volume by name — durable, Longhorn-backed storage that survives restarts (#152)."
                   items:
                     type: object
                     required: [name]
                     properties:
                       name: { type: string, description: "Volume name, referenced by volumeMounts." }
+                      volume: { type: string, description: "Optional: name of a kind: Volume (must be mode: Filesystem, same namespace) to mount here as durable storage, instead of an ephemeral emptyDir. Gives a stateful app image a place to keep its data across restarts (#152)." }
                 domain:  { type: string, description: "Hostname to serve the app on — open-infra provisions Ingress, a TLS certificate, and DNS for it (e.g. my-api.example.com)." }
                 subnet:
                   type: string

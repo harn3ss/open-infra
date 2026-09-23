@@ -3832,9 +3832,10 @@ components:
                     description: Path to mount it at inside the container.
             volumes:
               type: array
-              description: "Shared ephemeral pod volumes (emptyDir), mountable into the primary container and sidecars \u2014\
-                \ an ECS task's shared Volumes. Data lives for the pod's lifetime (scratch/shared space between containers),\
-                \ NOT durable storage (use spec.storage.buckets or a kind: Volume for that)."
+              description: "Pod volumes, mountable into the primary container and sidecars via spec.volumeMounts. By default\
+                \ each is an ephemeral emptyDir (an ECS task's shared Volumes \u2014 scratch/shared space, lost on restart).\
+                \ Set `volume:` on an entry to instead mount a kind: Volume by name \u2014 durable, Longhorn-backed storage\
+                \ that survives restarts (#152)."
               items:
                 type: object
                 required:
@@ -3843,6 +3844,11 @@ components:
                   name:
                     type: string
                     description: Volume name, referenced by volumeMounts.
+                  volume:
+                    type: string
+                    description: 'Optional: name of a kind: Volume (must be mode: Filesystem, same namespace) to mount here
+                      as durable storage, instead of an ephemeral emptyDir. Gives a stateful app image a place to keep its
+                      data across restarts (#152).'
             domain:
               type: string
               description: "Hostname to serve the app on \u2014 open-infra provisions Ingress, a TLS certificate, and DNS\
@@ -7930,6 +7936,16 @@ components:
             size:
               type: string
               description: Volume size, e.g. 50Gi (expandable later).
+            mode:
+              type: string
+              enum:
+              - Filesystem
+              - Block
+              default: Block
+              description: "Volume mode. Block (default) exposes a raw device \u2014 required for KubeVirt VM hotplug (kind:\
+                \ VirtualMachine / existingRootClaim), which is the volume's primary use. Filesystem exposes a mountable filesystem\
+                \ \u2014 use this to give a stateful kind: Application durable storage via spec.volumes[].volume (#152). Set\
+                \ at creation."
             migratable:
               type: boolean
               default: false

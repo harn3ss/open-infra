@@ -44,6 +44,16 @@ spec:
                 size:
                   type: string
                   description: "Volume size, e.g. 50Gi (expandable later)."
+                mode:
+                  type: string
+                  enum: [Filesystem, Block]
+                  default: Block
+                  description: >-
+                    Volume mode. Block (default) exposes a raw device — required for KubeVirt VM
+                    hotplug (kind: VirtualMachine / existingRootClaim), which is the volume's primary
+                    use. Filesystem exposes a mountable filesystem — use this to give a stateful
+                    kind: Application durable storage via spec.volumes[].volume (#152). Set at
+                    creation.
                 migratable:
                   type: boolean
                   default: false
