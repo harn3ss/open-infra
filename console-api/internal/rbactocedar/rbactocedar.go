@@ -128,6 +128,14 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 		if len(r.ResourceNames) > 0 {
 			caveats = append(caveats, fmt.Sprintf("resourceNames %v are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce", r.ResourceNames))
 		}
+		// Privilege-escalation prevention: a principal that can CREATE (cluster)rolebindings can bind a
+		// role it has no explicit `bind`/`escalate` grant on, as long as it already holds that role's
+		// permissions. That implicit bind is a runtime RBAC behavior, not a static rule, so it cannot be
+		// mirrored here — and it vanishes once RBAC leaves the authz chain. Flag it so a reviewer adds an
+		// explicit bind/escalate grant where needed (this is the CNPG/CDI class of shadow divergence).
+		if hasAny(r.Verbs, "create", "*") && hasAny(r.Resources, "rolebindings", "clusterrolebindings", "*") {
+			caveats = append(caveats, "grants create on (cluster)rolebindings — under RBAC this principal can bind a role it lacks an explicit bind/escalate grant on (via privilege-escalation prevention, since it holds the role's permissions); that implicit bind is not translated and disappears once RBAC leaves the chain. Add an explicit bind/escalate grant on the roles it binds before enforce.")
+		}
 		stmts = append(stmts, policyengine.Statement{Effect: policyengine.Allow, Actions: r.Verbs, Resources: res})
 	}
 	return stmts, caveats
@@ -159,6 +167,18 @@ func orDefault(xs, def []string) []string {
 		return def
 	}
 	return xs
+}
+
+// hasAny reports whether xs contains any of vals.
+func hasAny(xs []string, vals ...string) bool {
+	for _, x := range xs {
+		for _, v := range vals {
+			if x == v {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func dedupeStatements(in []policyengine.Statement) []policyengine.Statement {

@@ -9,6 +9,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -100,13 +102,19 @@ func policyObject(ns string, g rbactocedar.Grant) map[string]any {
 var nonDNS = regexp.MustCompile(`[^a-z0-9]+`)
 
 // sanitize turns a principal ("ServiceAccount::kube-system/op") into a DNS-safe name fragment.
+// The object name is "cp-"+this and must fit in 63 bytes (the applied limit — longer names were
+// rejected). When the sanitized form is too long, truncate and append a short deterministic hash of
+// the FULL principal, so two principals that share a 51-char prefix still get distinct, stable names
+// (a plain truncation collided and dropped principals from the corpus).
 func sanitize(p string) string {
 	s := strings.ToLower(p)
 	s = strings.NewReplacer("serviceaccount::", "sa-", "group::", "group-", "user::", "user-").Replace(s)
 	s = nonDNS.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
-	if len(s) > 253 {
-		s = s[:253]
+	const max = 60 // 3 ("cp-") + 60 = 63
+	if len(s) > max {
+		sum := sha256.Sum256([]byte(p))
+		s = strings.Trim(s[:max-9], "-") + "-" + hex.EncodeToString(sum[:])[:8] // <=51 + "-" + 8 = <=60
 	}
 	return s
 }
