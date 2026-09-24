@@ -27,7 +27,8 @@ import (
 )
 
 func main() {
-	ns := flag.String("namespace", "open-infra-authz", "namespace for the generated kind: Policy objects")
+	ns := flag.String("namespace", "open-infra-authz", "namespace for the generated objects")
+	asCM := flag.Bool("configmap", false, "emit ONE control-plane-corpus ConfigMap bundle instead of one kind: Policy per principal — a lighter delivery the webhook loader reads (no Crossplane claim per principal). Must land in the open-infra-authz namespace.")
 	flag.Parse()
 
 	cs, err := clientset()
@@ -59,12 +60,52 @@ func main() {
 	fmt.Fprintf(os.Stderr, "generated %d principal grants from %d ClusterRoles / %d ClusterRoleBindings / %d RoleBindings\n",
 		len(grants), len(in.ClusterRoles), len(in.ClusterRoleBindings), len(in.RoleBindings))
 
+	if *asCM {
+		out, err := yaml.Marshal(configMapObject(*ns, grants))
+		must(err)
+		fmt.Print(string(out))
+		return
+	}
 	for _, g := range grants {
 		obj := policyObject(*ns, g)
 		out, err := yaml.Marshal(obj)
 		must(err)
 		fmt.Println("---")
 		fmt.Print(string(out))
+	}
+}
+
+// configMapObject renders the whole corpus as ONE control-plane-corpus ConfigMap (data key
+// corpus.yaml = a list of grants), the lighter delivery the webhook loader reads. Caveats ride along
+// per grant for the reviewer; the loader ignores them.
+func configMapObject(ns string, grants []rbactocedar.Grant) map[string]any {
+	bundle := make([]any, 0, len(grants))
+	for _, g := range grants {
+		stmts := make([]any, 0, len(g.Statements))
+		for _, s := range g.Statements {
+			m := map[string]any{"effect": string(s.Effect), "actions": toAny(s.Actions)}
+			if len(s.Resources) > 0 {
+				m["resources"] = toAny(s.Resources)
+			}
+			stmts = append(stmts, m)
+		}
+		gm := map[string]any{"appliesTo": []any{g.Principal}, "statements": stmts}
+		if len(g.Caveats) > 0 {
+			gm["caveats"] = toAny(g.Caveats)
+		}
+		bundle = append(bundle, gm)
+	}
+	corpus, err := yaml.Marshal(bundle)
+	must(err)
+	return map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name":      "control-plane-corpus",
+			"namespace": ns,
+			"labels":    map[string]any{"openinfra.dev/generated-by": "rbac-to-cedar"},
+		},
+		"data": map[string]any{"corpus.yaml": string(corpus)},
 	}
 }
 
