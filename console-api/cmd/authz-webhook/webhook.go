@@ -81,6 +81,19 @@ func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(&sar)
 		return
 	}
+	// Enforce ONLY once Cedar actually has a corpus. With none loaded — a fresh cluster whose corpus
+	// has not been applied yet, or a cold-start load blip — defer to RBAC (NoOpinion) instead of
+	// denying everything, the same graceful degradation the apiserver's failurePolicy gives a webhook
+	// that is down. Break-glass is already handled above; shadow defers unconditionally below anyway.
+	if h.mode == Enforce && !h.checker.HasCorpus(r.Context()) {
+		h.logger.Warn("no control-plane corpus loaded — deferring to RBAC (not enforcing)",
+			"user", sar.Spec.User, "verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec))
+		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: false,
+			Reason: "control-plane authz: no corpus loaded — deferring to RBAC"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&sar)
+		return
+	}
 	d := h.checker.Evaluate(r.Context(), sar.Spec)
 	// Log every decision — the whole point of shadow mode is the divergence record.
 	h.logger.Info("control-plane authz decision",
