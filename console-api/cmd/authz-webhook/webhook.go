@@ -104,6 +104,9 @@ func verbOf(s authzv1.SubjectAccessReviewSpec) string {
 func resourceOf(s authzv1.SubjectAccessReviewSpec) string {
 	if ra := s.ResourceAttributes; ra != nil {
 		r := ra.Resource
+		if ra.Subresource != "" {
+			r += "/" + ra.Subresource
+		}
 		if ra.Group != "" {
 			r += "." + ra.Group
 		}

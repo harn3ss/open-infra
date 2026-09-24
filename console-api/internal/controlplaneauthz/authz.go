@@ -73,9 +73,19 @@ func (c *Checker) Evaluate(ctx context.Context, spec authzv1.SubjectAccessReview
 func toRequest(spec authzv1.SubjectAccessReviewSpec) policyengine.Request {
 	principal := policyengine.Principal{Type: "User", ID: spec.User}
 	if ra := spec.ResourceAttributes; ra != nil {
-		rtype := ra.Resource
+		// A subresource is a DISTINCT resource, exactly as RBAC treats it: the corpus keys it as
+		// "<resource>/<subresource>.<group>" (e.g. "pods/binding", "daemonsets/status.apps"). Fold the
+		// subresource into the resource type so a subresource grant is neither ignored (which would deny
+		// the scheduler's pods/binding + pods/status) nor collapsed onto the base type (which would
+		// widen a status-only grant into a grant on the whole object). The base subresource string is
+		// also kept in the context for future conditions.
+		res := ra.Resource
+		if ra.Subresource != "" {
+			res = ra.Resource + "/" + ra.Subresource
+		}
+		rtype := res
 		if ra.Group != "" {
-			rtype = ra.Resource + "." + ra.Group
+			rtype = res + "." + ra.Group
 		}
 		id := ra.Name
 		if ra.Namespace != "" {
