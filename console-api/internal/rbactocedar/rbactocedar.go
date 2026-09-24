@@ -73,6 +73,13 @@ func Generate(in Inputs) []Grant {
 			}
 		}
 		for _, s := range rb.Subjects {
+			// A RoleBinding ServiceAccount subject may omit its namespace — Kubernetes then defaults it
+			// to the binding's own namespace. Mirror that, or the grant lands on a malformed principal
+			// ("ServiceAccount::/name") that never matches the "system:serviceaccount:<ns>:name" the API
+			// server sends (this silently dropped argocd's + snapshot-controller's namespaced grants).
+			if s.Kind == "ServiceAccount" && s.Namespace == "" {
+				s.Namespace = rb.Namespace
+			}
 			add(s, rules, rb.Namespace) // namespaced scope
 		}
 	}
