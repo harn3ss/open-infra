@@ -75,19 +75,62 @@ spec:
                       spec:
                         serviceAccountName: openinfra-bucket-setup
                         restartPolicy: OnFailure
+                        volumes:
+                          - { name: mc, emptyDir: {} }
+                        initContainers:
+                          # Bring `mc` in OFFLINE (copied from its image) — for bucket creation
+                          # AND minting the scoped per-app user/policy (#151 faults 1+3).
+                          - name: fetch-mc
+                            image: minio/mc:latest
+                            command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+                            volumeMounts: [{ name: mc, mountPath: /mc }]
                         containers:
                           - name: setup
                             image: alpine/k8s:1.30.0
+                            volumeMounts: [{ name: mc, mountPath: /mc }]
                             env:
-                              - name: AWS_ACCESS_KEY_ID
+                              # Root provisions ONLY (create buckets + mint the scoped user);
+                              # it is never written into the app secret (#151 fault 3).
+                              - name: ROOT_USER
                                 valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
-                              - name: AWS_SECRET_ACCESS_KEY
+                              - name: ROOT_PASS
                                 valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
-                              - name: AWS_DEFAULT_REGION
-                                value: us-east-1
                             command: ["/bin/sh", "-c"]
                             args:
-                              - 'for b in {{ range $buckets }}{{ . }} {{ end }}; do aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3 mb "s3://$b" 2>/dev/null || true; done; kubectl create secret generic {{ $name }}-minio -n {{ $ns }} --from-literal=MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000 --from-literal=MINIO_BUCKETS={{ join "," $buckets }} --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" --dry-run=client -o yaml | kubectl apply -f -'
+                              - |
+                                set -e
+                                MC=/mc/mc
+                                E=http://minio.minio.svc.cluster.local:9000
+                                # alias set validates root up front — a rotated/wrong root key fails
+                                # HERE, loud, instead of a false-green (#151 faults 1+2).
+                                "$MC" alias set m "$E" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+                                # 1. Create each bucket idempotently but FAIL LOUD (#151 fault 1).
+                                for b in {{ range $buckets }}{{ . }} {{ end }}; do
+                                  "$MC" mb --ignore-existing "m/$b"
+                                  echo "bucket $b ready"
+                                done
+                                # 2. Mint a PER-APP, NON-root user scoped to ONLY these buckets (#151 fault 3);
+                                #    reuse the existing key across re-syncs so app creds stay stable.
+                                APPUSER="app-{{ $name }}"
+                                SK=$(kubectl get secret {{ $name }}-minio -n {{ $ns }} -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
+                                [ -n "$SK" ] || SK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+                                "$MC" admin user add m "$APPUSER" "$SK" >/dev/null
+                                RES=""
+                                for b in {{ range $buckets }}{{ . }} {{ end }}; do
+                                  RES="$RES\"arn:aws:s3:::$b\",\"arn:aws:s3:::$b/*\","
+                                done
+                                printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":[%s]}]}' "${RES%,}" > /tmp/pol.json
+                                "$MC" admin policy create m "$APPUSER" /tmp/pol.json >/dev/null 2>&1 \
+                                  || "$MC" admin policy info m "$APPUSER" >/dev/null 2>&1 \
+                                  || { echo "policy create failed for $APPUSER" >&2; exit 1; }
+                                "$MC" admin policy attach m "$APPUSER" --user "$APPUSER" >/dev/null 2>&1 || true
+                                # 3. Hand the app ITS OWN scoped creds — never the root key.
+                                kubectl create secret generic {{ $name }}-minio -n {{ $ns }} \
+                                  --from-literal=MINIO_ENDPOINT=$E \
+                                  --from-literal=MINIO_BUCKETS={{ join "," $buckets }} \
+                                  --from-literal=MINIO_ACCESS_KEY="$APPUSER" \
+                                  --from-literal=MINIO_SECRET_KEY="$SK" \
+                                  --dry-run=client -o yaml | kubectl apply -f -
             {{- end }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2

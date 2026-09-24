@@ -73,10 +73,22 @@ spec:
                       spec:
                         serviceAccountName: openinfra-bucket-setup
                         restartPolicy: OnFailure
+                        volumes:
+                          - { name: mc, emptyDir: {} }
+                        initContainers:
+                          # `mc` (offline copy) mints the scoped per-app user/policy (#151 fault 3);
+                          # the rich bucket config below still uses the aws CLI.
+                          - name: fetch-mc
+                            image: minio/mc:latest
+                            command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+                            volumeMounts: [{ name: mc, mountPath: /mc }]
                         containers:
                           - name: setup
                             image: alpine/k8s:1.30.0
+                            volumeMounts: [{ name: mc, mountPath: /mc }]
                             env:
+                              # Root provisions ONLY (create/configure the bucket + mint the scoped
+                              # user); it is never written into the claim's secret (#151 fault 3).
                               - name: AWS_ACCESS_KEY_ID
                                 valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
                               - name: AWS_SECRET_ACCESS_KEY
@@ -124,11 +136,25 @@ spec:
                                 # (public) principals resolve — AWS-IAM-ARN principals name identities MinIO can't map.
                                 aws --endpoint-url $E s3api put-bucket-policy --bucket {{ $bucket }} --policy '{{ $spec.policy }}'
                                 {{- end }}
+                                # Mint a PER-APP, NON-root user scoped to ONLY this bucket (#151 fault 3);
+                                # reuse the existing key across re-syncs so the claim's creds stay stable.
+                                MC=/mc/mc
+                                "$MC" alias set m "$E" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
+                                APPUSER="app-{{ $name }}"
+                                SK=$(kubectl get secret {{ $name }}-minio -n {{ $ns }} -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
+                                [ -n "$SK" ] || SK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+                                "$MC" admin user add m "$APPUSER" "$SK" >/dev/null
+                                printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::{{ $bucket }}","arn:aws:s3:::{{ $bucket }}/*"]}]}' > /tmp/pol.json
+                                "$MC" admin policy create m "$APPUSER" /tmp/pol.json >/dev/null 2>&1 \
+                                  || "$MC" admin policy info m "$APPUSER" >/dev/null 2>&1 \
+                                  || { echo "policy create failed for $APPUSER" >&2; exit 1; }
+                                "$MC" admin policy attach m "$APPUSER" --user "$APPUSER" >/dev/null 2>&1 || true
+                                # Hand the claim ITS OWN scoped creds — never the root key.
                                 kubectl create secret generic {{ $name }}-minio -n {{ $ns }} \
                                   --from-literal=MINIO_ENDPOINT=$E \
                                   --from-literal=MINIO_BUCKET={{ $bucket }} \
-                                  --from-literal=MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" \
-                                  --from-literal=MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
+                                  --from-literal=MINIO_ACCESS_KEY="$APPUSER" \
+                                  --from-literal=MINIO_SECRET_KEY="$SK" \
                                   --dry-run=client -o yaml | kubectl apply -f -
             ---
             apiVersion: openinfra.dev/v1
