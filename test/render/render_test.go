@@ -810,6 +810,70 @@ func TestQuery_SecurityHardening(t *testing.T) {
 	}
 }
 
+// TestApplicationBuckets_ScopedIdentityNotRoot guards #151 fault 3: spec.storage.buckets once
+// copied the MinIO ROOT key (rootUser/rootPassword) straight into every app's <name>-minio
+// secret, so any app that declared a bucket could read or delete EVERY tenant's data. The
+// bucket-setup Job must now use root ONLY to provision (create buckets + mint a user) and hand
+// the app a per-app, NON-root user (app-<name>) scoped to exactly its declared buckets. A
+// refactor that pipes the root key back into the app secret must turn this red.
+func TestApplicationBuckets_ScopedIdentityNotRoot(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	out := render(t, tmpl, appBucketsCtx())
+
+	// Positive: the app is minted its own scoped identity and handed THAT, not root.
+	for _, want := range []string{
+		`APPUSER="app-myapp"`,                        // the per-app, non-root identity (name from the claim)
+		"admin user add",                             // it is minted...
+		"admin policy create",                        // ...with a policy...
+		`"Action":["s3:*"]`,                          // ...that grants object ops...
+		`arn:aws:s3:::$b`,                            // ...scoped to ONLY the declared buckets (per-bucket ARN)
+		`--from-literal=MINIO_ACCESS_KEY="$APPUSER"`, // the app secret carries the scoped user...
+		`--from-literal=MINIO_SECRET_KEY="$SK"`,      // ...and its key, never root's
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Application storage.buckets lost the scoped-identity guarantee: %q missing "+
+				"from the rendered bucket-setup Job.\n%s", want, grepCtx(out, "APPUSER"))
+		}
+	}
+
+	// Negative: the app's OWN credential must NEVER be the MinIO root key. Root may appear only
+	// as the provisioning env (ROOT_USER/ROOT_PASS); it must not be written into the app secret.
+	for _, forbidden := range []string{
+		`MINIO_ACCESS_KEY="$ROOT_USER"`,
+		`MINIO_SECRET_KEY="$ROOT_PASS"`,
+		`MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID"`, // the exact pre-fix export (#151 fault 3)
+		`MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"`,
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("Application storage.buckets writes the MinIO ROOT key into the app secret "+
+				"(%q) — an app could then reach every tenant's buckets. Hand it the scoped "+
+				"app-<name> user.\n%s", forbidden, grepCtx(out, "MINIO_ACCESS_KEY"))
+		}
+	}
+}
+
+// appBucketsCtx builds the minimal observed composite that reaches the Application's
+// spec.storage.buckets branch: two declared buckets and the claim labels the template reads
+// for $name/$ns. No image/database => the workload and DB sections are skipped.
+func appBucketsCtx() map[string]any {
+	return map[string]any{
+		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{
+				"storage": map[string]any{
+					"buckets": []any{"data", "assets"},
+				},
+			},
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000b0b0b",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "myapp",
+					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}},
+	}
+}
+
 // queryCtx builds the observed composite for the Query composition.
 // TestQuery_ImageArchSuffix pins the arch-select wiring (#42): the first-party query image is
 // :latest on amd64 (default, or ANY missing/empty context — the amd64 path MUST NOT change or break),
