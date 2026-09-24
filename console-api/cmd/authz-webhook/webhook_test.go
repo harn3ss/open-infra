@@ -69,6 +69,33 @@ func TestWebhook_ShadowAlwaysDefers(t *testing.T) {
 	}
 }
 
+// Break-glass floor: system:masters is allowed in enforce even with an EMPTY or UNLOADABLE corpus —
+// the recovery path so removing RBAC can never lock out cluster-admin. Non-break-glass is still
+// default-denied, and shadow still defers.
+func TestWebhook_BreakGlassFloor(t *testing.T) {
+	empty := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) { return nil, nil }, time.Minute)
+	h := &webhookHandler{checker: empty, mode: Enforce, logger: discard(), breakGlass: map[string]bool{"system:masters": true}}
+
+	if st := post(t, h, sar("kubernetes-admin", []string{"system:masters"}, "delete", "", "secrets", "kube-system", "x")); !st.Allowed || st.Denied {
+		t.Fatalf("break-glass must allow system:masters under an empty corpus, got %+v", st)
+	}
+	if st := post(t, h, sar("bob", []string{"devs"}, "get", "", "secrets", "default", "y")); st.Allowed || !st.Denied {
+		t.Fatalf("non-break-glass must be default-denied, got %+v", st)
+	}
+	// A corpus LOAD ERROR must not lock out break-glass (it is decided before the corpus is consulted).
+	h.checker = controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) {
+		return nil, io.ErrUnexpectedEOF
+	}, time.Minute)
+	if st := post(t, h, sar("kubernetes-admin", []string{"system:masters"}, "get", "", "pods", "default", "z")); !st.Allowed {
+		t.Fatalf("break-glass must survive a corpus load error, got %+v", st)
+	}
+	// Shadow never forces an opinion, even for break-glass.
+	h.mode = Shadow
+	if st := post(t, h, sar("kubernetes-admin", []string{"system:masters"}, "get", "", "pods", "default", "z")); st.Allowed || st.Denied {
+		t.Fatalf("shadow must defer even for break-glass, got %+v", st)
+	}
+}
+
 // Enforce mode returns the real Cedar decision: an allow, and an explicit deny for the ungranted.
 func TestWebhook_EnforceReturnsDecision(t *testing.T) {
 	h := &webhookHandler{
