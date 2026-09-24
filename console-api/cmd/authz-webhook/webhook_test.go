@@ -79,8 +79,10 @@ func TestWebhook_BreakGlassFloor(t *testing.T) {
 	if st := post(t, h, sar("kubernetes-admin", []string{"system:masters"}, "delete", "", "secrets", "kube-system", "x")); !st.Allowed || st.Denied {
 		t.Fatalf("break-glass must allow system:masters under an empty corpus, got %+v", st)
 	}
-	if st := post(t, h, sar("bob", []string{"devs"}, "get", "", "secrets", "default", "y")); st.Allowed || !st.Denied {
-		t.Fatalf("non-break-glass must be default-denied, got %+v", st)
+	// With an empty/unusable corpus, a non-break-glass principal is NOT allowed (it is deferred to RBAC
+	// by the corpus gate) — break-glass is the only identity that gets through a broken corpus.
+	if st := post(t, h, sar("bob", []string{"devs"}, "get", "", "secrets", "default", "y")); st.Allowed {
+		t.Fatalf("non-break-glass must not be allowed through an empty corpus, got %+v", st)
 	}
 	// A corpus LOAD ERROR must not lock out break-glass (it is decided before the corpus is consulted).
 	h.checker = controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) {
@@ -93,6 +95,27 @@ func TestWebhook_BreakGlassFloor(t *testing.T) {
 	h.mode = Shadow
 	if st := post(t, h, sar("kubernetes-admin", []string{"system:masters"}, "get", "", "pods", "default", "z")); st.Allowed || st.Denied {
 		t.Fatalf("shadow must defer even for break-glass, got %+v", st)
+	}
+}
+
+// With NO corpus loaded, enforce DEFERS to RBAC (no opinion) instead of denying everything — a fresh
+// cluster whose corpus is not applied yet, or a cold-start load blip, degrades to RBAC, not a lockout.
+// Once a non-empty corpus is present, an ungranted principal is default-denied (real enforce).
+func TestWebhook_EnforceDefersWithoutCorpus(t *testing.T) {
+	empty := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) { return nil, nil }, time.Minute)
+	h := &webhookHandler{checker: empty, mode: Enforce, logger: discard(), breakGlass: map[string]bool{"system:masters": true}}
+	// A normal (non-break-glass) principal with no corpus → defer (no opinion), NOT deny.
+	if st := post(t, h, sar("bob", []string{"devs"}, "get", "", "pods", "default", "p")); st.Allowed || st.Denied {
+		t.Fatalf("no corpus must defer to RBAC (no opinion), got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	// With a non-empty corpus, an ungranted principal is default-denied (real enforce resumes).
+	h.checker = checkerFor([]string{"Group::admins"},
+		policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"pods::*"}})
+	if st := post(t, h, sar("bob", []string{"devs"}, "get", "", "pods", "default", "p")); st.Allowed || !st.Denied {
+		t.Fatalf("with a corpus loaded, an ungranted principal must be denied, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	if st := post(t, h, sar("alice", []string{"admins"}, "get", "", "pods", "default", "p")); !st.Allowed {
+		t.Fatalf("a granted principal should be allowed, got %+v", st)
 	}
 }
 
