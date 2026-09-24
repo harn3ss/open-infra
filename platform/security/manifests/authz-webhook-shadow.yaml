@@ -22,11 +22,32 @@ metadata: { name: open-infra-authz-webhook-policies }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-authz-webhook-policies }
 subjects: [{ kind: ServiceAccount, name: authz-webhook, namespace: open-infra-authz }]
 ---
+# Read the optional compiled corpus bundle (control-plane-corpus ConfigMap). This MUST be allowed
+# here by RBAC so the loader's own read is authorized BEFORE the webhook is consulted — otherwise the
+# read falls through to the webhook and recurses (bootstrap acyclicity), which cancels the load.
+# Scoped to the one ConfigMap, get-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: authz-webhook-corpus-reader, namespace: open-infra-authz }
+rules:
+  - { apiGroups: [""], resources: [configmaps], verbs: [get], resourceNames: [control-plane-corpus] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: authz-webhook-corpus-reader, namespace: open-infra-authz }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: authz-webhook-corpus-reader }
+subjects: [{ kind: ServiceAccount, name: authz-webhook, namespace: open-infra-authz }]
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: authz-webhook, namespace: open-infra-authz, labels: { app: authz-webhook } }
 spec:
   replicas: 1   # shadow spike; HA is a later step (the design calls for multiple replicas)
+  # hostNetwork singleton binds host loopback 127.0.0.1:8099 — a RollingUpdate starts the new pod
+  # before the old frees the port ("bind: address already in use"), wedging the rollout. Recreate:
+  # terminate the old pod first, then start the new one (a brief shadow-webhook gap is harmless —
+  # allows short-circuit at Node/RBAC before the webhook is ever consulted).
+  strategy: { type: Recreate }
   selector: { matchLabels: { app: authz-webhook } }
   template:
     metadata: { labels: { app: authz-webhook } }
