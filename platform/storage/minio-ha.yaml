@@ -24,6 +24,16 @@ spec:
       values: |
         mode: distributed
         replicas: 4
+        # Pin root creds to the operator-managed `minio` Secret (#151 fault 2). Without this the
+        # chart derives them via a Helm `lookup` that preserves the existing Secret — but ArgoCD
+        # renders with `helm template`, which does NOT execute `lookup`, so every sync regenerates
+        # a RANDOM rootUser/rootPassword, writes it to secret/minio, and drifts from the running
+        # server (pods don't restart to re-read it). existingSecret makes the chart MOUNT
+        # secret/minio (keys rootUser/rootPassword) instead of rendering it, so it can't drift.
+        # ROLLOUT: annotate secret/minio with argocd.argoproj.io/sync-options: Prune=false before
+        # syncing — with existingSecret set the chart stops rendering the Secret, and prune would
+        # otherwise delete it. Fresh installs must bootstrap secret/minio (keys rootUser/rootPassword).
+        existingSecret: minio
         persistence:
           enabled: true
           size: 20Gi
