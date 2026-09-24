@@ -74,6 +74,57 @@ func TestEvaluate_ServiceAccountPrincipal(t *testing.T) {
 	}
 }
 
+// A subresource is a distinct resource: a grant on "<resource>/<subresource>" (the corpus/RBAC form)
+// authorizes the subresource request and ONLY it — the base resource is not granted (no widening), and
+// a subresource request is not silently served by a base-resource grant (no collapse). This is the
+// exact shape that let the scheduler's pods/binding + pods/status through once the evaluator keyed the
+// subresource into the resource type.
+func TestEvaluate_SubresourceIsDistinct(t *testing.T) {
+	sub := func(user, verb, group, resource, subresource, ns, name string) authzv1.SubjectAccessReviewSpec {
+		return authzv1.SubjectAccessReviewSpec{
+			User: user,
+			ResourceAttributes: &authzv1.ResourceAttributes{
+				Verb: verb, Group: group, Resource: resource, Subresource: subresource, Namespace: ns, Name: name,
+			},
+		}
+	}
+	docs := []PolicyDoc{{
+		AppliesTo: []string{"User::system:kube-scheduler"},
+		Statements: []policyengine.Statement{
+			{Effect: policyengine.Allow, Actions: []string{"create"}, Resources: []string{"pods/binding::*"}},
+			{Effect: policyengine.Allow, Actions: []string{"patch", "update"}, Resources: []string{"pods/status::*"}},
+			{Effect: policyengine.Allow, Actions: []string{"get", "list", "watch", "delete"}, Resources: []string{"pods::*"}},
+			// A grant on a subresource type in a NAMED group, matching the corpus format.
+			{Effect: policyengine.Allow, Actions: []string{"update"}, Resources: []string{"daemonsets/status.apps::*"}},
+		},
+	}}
+	c := New(fixed(docs, nil), time.Minute)
+	ctx := context.Background()
+	const sched = "system:kube-scheduler"
+
+	// The subresource grants now match (previously collapsed to the base type and were denied).
+	if d := c.Evaluate(ctx, sub(sched, "create", "", "pods", "binding", "crossplane-system", "job-x")); !d.Allowed {
+		t.Errorf("create pods/binding should be allowed by the pods/binding grant: %s", d.Reason)
+	}
+	if d := c.Evaluate(ctx, sub(sched, "patch", "", "pods", "status", "crossplane-system", "job-x")); !d.Allowed {
+		t.Errorf("patch pods/status should be allowed by the pods/status grant: %s", d.Reason)
+	}
+	if d := c.Evaluate(ctx, sub(sched, "update", "apps", "daemonsets", "status", "kubevirt", "virt-handler")); !d.Allowed {
+		t.Errorf("update daemonsets/status.apps should be allowed: %s", d.Reason)
+	}
+	// No widening: the pods/binding + pods/status grants do NOT confer create/patch on the pods object.
+	if d := c.Evaluate(ctx, sub(sched, "create", "", "pods", "", "crossplane-system", "job-x")); d.Allowed {
+		t.Errorf("create on the base pods object must NOT be granted by a subresource grant, got allowed")
+	}
+	if d := c.Evaluate(ctx, sub(sched, "patch", "", "pods", "", "crossplane-system", "job-x")); d.Allowed {
+		t.Errorf("patch on the base pods object must NOT be granted by pods/status, got allowed")
+	}
+	// No collapse: a base grant (delete pods) does not authorize a subresource request.
+	if d := c.Evaluate(ctx, sub(sched, "delete", "", "pods", "binding", "crossplane-system", "job-x")); d.Allowed {
+		t.Errorf("delete pods/binding must not be served by the base pods delete grant, got allowed")
+	}
+}
+
 // A non-resource URL (health, metrics) maps to resource type NonResourceURL by path.
 func TestEvaluate_NonResourceURL(t *testing.T) {
 	docs := []PolicyDoc{{
