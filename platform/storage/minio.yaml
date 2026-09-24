@@ -22,6 +22,13 @@ spec:
         # instead of this file. We don't default to HA.
         mode: standalone
         replicas: 1
+        # Pin root creds to the operator-managed `minio` Secret (#151 fault 2). The chart otherwise
+        # derives them via a Helm `lookup` that ArgoCD's `helm template` render can't run, so every
+        # sync regenerates a RANDOM root and drifts from the running server. existingSecret makes the
+        # chart MOUNT secret/minio (keys rootUser/rootPassword) instead of rendering it.
+        # ROLLOUT: annotate secret/minio with argocd.argoproj.io/sync-options: Prune=false before
+        # syncing (with existingSecret the chart stops rendering the Secret; prune would delete it).
+        existingSecret: minio
         persistence:
           enabled: true
           size: 50Gi
