@@ -874,6 +874,65 @@ func appBucketsCtx() map[string]any {
 	}
 }
 
+// TestNoComposition_ExportsMinioRoot is a repo-wide guard for #151 faults 1 & 3 across EVERY
+// abstraction composition — not just the Application + Bucket paths the finding named. The same
+// antipattern lived in six more (staticsite, model, processingjob, trainingjob, modelmonitor,
+// batchtransform). This scans each composition's text and asserts two invariants everywhere a
+// composition provisions object storage:
+//
+//	fault 3 — no bucket-setup job may copy the MinIO ROOT credential into an app/claim secret
+//	          (MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID" / MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY");
+//	          it must mint a per-app scoped user (app-<name>) instead.
+//	fault 1 — no `s3 mb` may swallow its own failure (2>/dev/null || true), which turns a failed
+//	          bucket creation into a false-green job.
+//
+// A new composition that reintroduces either pattern turns this red. The staticsite serving LOOP
+// uses `s3 sync ... 2>/dev/null || true` — a legitimate poll retry, not a creation success-gate —
+// and does not match the `s3 mb` swallow check.
+func TestNoComposition_ExportsMinioRoot(t *testing.T) {
+	dir := "../../platform/abstraction"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read abstraction dir: %v", err)
+	}
+	mbSwallow := regexp.MustCompile(`s3 mb [^\n]*2>/dev/null \|\| true`)
+	scanned, minting := 0, 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		s := string(b)
+		scanned++
+		if strings.Contains(s, `MINIO_ACCESS_KEY="$AWS_ACCESS_KEY_ID"`) ||
+			strings.Contains(s, `MINIO_SECRET_KEY="$AWS_SECRET_ACCESS_KEY"`) {
+			t.Errorf("%s exports the MinIO ROOT credential into an app/claim secret — an app that "+
+				"declares a bucket could then reach every tenant's data. Mint a per-app scoped "+
+				"app-<name> user instead (#151 fault 3).", e.Name())
+		}
+		if loc := mbSwallow.FindString(s); loc != "" {
+			t.Errorf("%s swallows a bucket-creation failure (%q) — a failed `s3 mb` must fail the "+
+				"job, not report a false-green (#151 fault 1).", e.Name(), loc)
+		}
+		if strings.Contains(s, `APPUSER="app-{{ $name }}"`) {
+			minting++
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("no composition files scanned — is the abstraction path wrong?")
+	}
+	// Sanity: the scoped-user pattern must actually be PRESENT in the bucket-provisioning
+	// compositions, so the two assertions above can't silently pass because the whole mechanism
+	// was renamed away. bucket + application + the six ML/site paths = 8.
+	if minting < 8 {
+		t.Errorf("expected >=8 compositions to mint a scoped app-<name> user; found %d "+
+			"(did a bucket-provisioning path lose its scoped identity?)", minting)
+	}
+}
+
 // queryCtx builds the observed composite for the Query composition.
 // TestQuery_ImageArchSuffix pins the arch-select wiring (#42): the first-party query image is
 // :latest on amd64 (default, or ANY missing/empty context — the amd64 path MUST NOT change or break),
