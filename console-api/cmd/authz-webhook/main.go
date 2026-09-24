@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/controlplaneauthz"
@@ -42,7 +43,10 @@ func main() {
 		os.Exit(1)
 	}
 	checker := controlplaneauthz.New(controlplaneauthz.K8sLoader(dyn), 30*time.Second)
-	h := &webhookHandler{checker: checker, mode: mode, logger: logger}
+	h := &webhookHandler{checker: checker, mode: mode, logger: logger, breakGlass: breakGlassGroups()}
+	if mode == Enforce {
+		logger.Info("break-glass floor active (always-allowed groups, corpus-independent)", "groups", keysOf(h.breakGlass))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/authorize", h.serve)
@@ -77,4 +81,30 @@ func restConfig() (*rest.Config, error) {
 		return clientcmd.BuildConfigFromFlags("", kc)
 	}
 	return rest.InClusterConfig()
+}
+
+// breakGlassGroups is the set of groups ALWAYS allowed in enforce, independent of the Cedar corpus —
+// the recovery floor so removing RBAC can never lock out cluster-admin. Defaults to system:masters
+// (the admin kubeconfig group); override/extend with BREAK_GLASS_GROUPS (comma-separated) to also
+// keep, say, core control-plane components alive through a corpus-load blip.
+func breakGlassGroups() map[string]bool {
+	groups := os.Getenv("BREAK_GLASS_GROUPS")
+	if groups == "" {
+		groups = "system:masters"
+	}
+	out := map[string]bool{}
+	for _, g := range strings.Split(groups, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			out[g] = true
+		}
+	}
+	return out
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

@@ -43,9 +43,20 @@ func verdict(d policyengine.Decision) string {
 // webhookHandler serves the Kubernetes authorization-webhook contract: a SubjectAccessReview in, the
 // same object with its Status filled, out.
 type webhookHandler struct {
-	checker *controlplaneauthz.Checker
-	mode    Mode
-	logger  *slog.Logger
+	checker    *controlplaneauthz.Checker
+	mode       Mode
+	logger     *slog.Logger
+	breakGlass map[string]bool // groups always allowed in enforce, independent of the corpus
+}
+
+// isBreakGlass reports whether the request's identity is in the break-glass floor.
+func (h *webhookHandler) isBreakGlass(spec authzv1.SubjectAccessReviewSpec) bool {
+	for _, g := range spec.Groups {
+		if h.breakGlass[g] {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +67,18 @@ func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
 	var sar authzv1.SubjectAccessReview
 	if err := json.NewDecoder(r.Body).Decode(&sar); err != nil {
 		http.Error(w, "invalid SubjectAccessReview: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Break-glass floor: in enforce, a break-glass group (default system:masters — the admin
+	// kubeconfig) is ALWAYS allowed, decided BEFORE and INDEPENDENT of the Cedar corpus. So removing
+	// RBAC can never lock out cluster-admin, even if the corpus fails to load or is empty — the
+	// recovery path is always open. Not applied in shadow (shadow defers everything to RBAC).
+	if h.mode == Enforce && h.isBreakGlass(sar.Spec) {
+		h.logger.Info("control-plane authz decision", "mode", h.mode, "user", sar.Spec.User,
+			"verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec), "wouldAllow", true, "reason", "break-glass floor")
+		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: true, Reason: "break-glass floor (" + sar.Spec.User + ")"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&sar)
 		return
 	}
 	d := h.checker.Evaluate(r.Context(), sar.Spec)
