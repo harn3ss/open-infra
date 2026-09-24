@@ -42,7 +42,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: authz-webhook, namespace: open-infra-authz, labels: { app: authz-webhook } }
 spec:
-  replicas: 1   # shadow spike; HA is a later step (the design calls for multiple replicas)
+  replicas: 1   # single hostNetwork replica today; HA (>1 control-plane node) is a follow-up. The
+                # RBAC fallback (apiserver failurePolicy: NoOpinion) covers a redeploy/outage gap.
   # hostNetwork singleton binds host loopback 127.0.0.1:8099 — a RollingUpdate starts the new pod
   # before the old frees the port ("bind: address already in use"), wedging the rollout. Recreate:
   # terminate the old pod first, then start the new one (a brief shadow-webhook gap is harmless —
@@ -67,7 +68,19 @@ spec:
           imagePullPolicy: Always
           env:
             - { name: LISTEN_ADDR, value: "127.0.0.1:8099" }   # loopback: only the local API server reaches it
-            - { name: AUTHZ_MODE, value: "shadow" }            # decides NOTHING; logs would-be decisions
+            # ENFORCE: Cedar is the authoritative control-plane authorizer, consulted BEFORE RBAC in the
+            # apiserver's authorization-config (#148). Safe as the committed default because the webhook
+            # enforces ONLY once it has a corpus: with none loaded (fresh cluster, corpus not applied
+            # yet, or a cold-start blip) it returns no-opinion and defers to RBAC rather than denying
+            # everything. Set to "shadow" to only LOG would-be decisions (divergence measurement)
+            # without deciding — do that first on a cluster whose corpus you have not validated.
+            - { name: AUTHZ_MODE, value: "enforce" }
+            # Break-glass floor — groups ALWAYS allowed in enforce, independent of the corpus.
+            # system:masters keeps cluster-admin recovery open even through a broken/empty corpus;
+            # system:serviceaccounts:open-infra-authz lets the webhook's OWN ServiceAccount read its
+            # corpus sources (policies + the control-plane-corpus ConfigMap) so it can bootstrap — its
+            # reads MUST be authorizable without the webhook itself, or enforce deadlocks on first load.
+            - { name: BREAK_GLASS_GROUPS, value: "system:masters,system:serviceaccounts:open-infra-authz" }
             - { name: TLS_CERT_FILE, value: "/tls/tls.crt" }
             - { name: TLS_KEY_FILE, value: "/tls/tls.key" }
           volumeMounts: [{ name: tls, mountPath: /tls, readOnly: true }]

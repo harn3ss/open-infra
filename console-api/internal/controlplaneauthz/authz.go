@@ -41,6 +41,21 @@ type Checker struct {
 // New builds a Checker. A nil loader disables it (Evaluate denies with a clear reason).
 func New(load Loader, ttl time.Duration) *Checker { return &Checker{load: load, ttl: ttl} }
 
+// HasCorpus reports whether a non-empty corpus is currently available (the live snapshot, or the
+// last-good one served through a refresh blip). It is false on a cold start that never loaded, when
+// the corpus is genuinely empty, or when the very first load errored. The webhook uses it to enforce
+// ONLY once Cedar actually has rules: with no corpus it defers to RBAC (NoOpinion) instead of denying
+// everything, so a fresh cluster whose corpus has not been applied yet — or a transient cold-start
+// load error — degrades to RBAC rather than a control-plane-wide lockout. A principal that IS absent
+// from a non-empty corpus is still default-denied by Evaluate; only an empty/unloadable corpus defers.
+func (c *Checker) HasCorpus(ctx context.Context) bool {
+	if c == nil || c.load == nil {
+		return false
+	}
+	docs, _ := c.get(ctx)
+	return len(docs) > 0
+}
+
 // Evaluate returns the Cedar decision for a SubjectAccessReview under default-deny allow-list
 // semantics: a principal with no matching statement is denied. It fails closed on a load/compile
 // error. It does not decide chain placement — the webhook wraps this per mode.
