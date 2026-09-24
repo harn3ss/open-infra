@@ -91,6 +91,44 @@ func TestGenerate_ClusterAndNamespacedGrants(t *testing.T) {
 	}
 }
 
+// A RoleBinding ServiceAccount subject that omits its namespace defaults to the binding's namespace
+// (as Kubernetes does), so the grant lands on the real "ServiceAccount::<ns>/name" principal the API
+// server sends — not a malformed "ServiceAccount::/name" that never matches. This is exactly the shape
+// of argocd's / snapshot-controller's bindings, whose namespaced grants were being dropped.
+func TestGenerate_RoleBindingSAWithoutNamespace(t *testing.T) {
+	in := Inputs{
+		Roles: map[string]rbacv1.Role{
+			"argocd/argocd-server": {
+				ObjectMeta: metav1.ObjectMeta{Name: "argocd-server", Namespace: "argocd"},
+				Rules:      []rbacv1.PolicyRule{{Verbs: []string{"get", "list", "watch"}, APIGroups: []string{""}, Resources: []string{"secrets"}}},
+			},
+		},
+		RoleBindings: []rbacv1.RoleBinding{
+			// Subject omits Namespace — the real argocd RoleBinding shape.
+			{ObjectMeta: metav1.ObjectMeta{Namespace: "argocd"}, RoleRef: rbacv1.RoleRef{Kind: "Role", Name: "argocd-server"},
+				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: "argocd-server"}}},
+		},
+	}
+	byP := map[string]Grant{}
+	for _, g := range Generate(in) {
+		byP[g.Principal] = g
+	}
+	if _, bad := byP["ServiceAccount::/argocd-server"]; bad {
+		t.Fatalf("grant landed on a malformed namespace-less principal; got %v", keys(byP))
+	}
+	g, ok := byP["ServiceAccount::argocd/argocd-server"]
+	if !ok {
+		t.Fatalf("missing ServiceAccount::argocd/argocd-server grant; got %v", keys(byP))
+	}
+	eng, err := policyengine.NewEngine(g.Statements)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if d := eng.Authorize(req("User", "system:serviceaccount:argocd:argocd-server", "list", "secrets", "argocd/s1")); !d.Allowed {
+		t.Errorf("argocd-server should list secrets in argocd: %s", d.Reason)
+	}
+}
+
 // resource "*" in a specific apiGroup is widened + must record a caveat (honest about the loss).
 func TestGenerate_WildcardResourceCaveat(t *testing.T) {
 	in := Inputs{
