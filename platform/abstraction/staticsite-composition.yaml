@@ -69,7 +69,7 @@ spec:
                           # Bring `mc` in OFFLINE (copied from its image) — for bucket creation
                           # AND minting the scoped per-app user/policy (#151 faults 1+3).
                           - name: fetch-mc
-                            image: minio/mc:latest
+                            image: quay.io/minio/mc:latest
                             command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
                             volumeMounts: [{ name: mc, mountPath: /mc }]
                         containers:
