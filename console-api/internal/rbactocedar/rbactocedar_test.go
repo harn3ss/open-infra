@@ -107,6 +107,29 @@ func TestGenerate_WildcardResourceCaveat(t *testing.T) {
 	}
 }
 
+// A principal that can create (cluster)rolebindings must get the escalation-prevention caveat —
+// the CNPG/CDI implicit-bind class the shadow run surfaced (no static bind rule to mirror).
+func TestGenerate_RoleBindingCreatorCaveat(t *testing.T) {
+	build := func(verbs ...string) []Grant {
+		return Generate(Inputs{
+			ClusterRoles: map[string]rbacv1.ClusterRole{
+				"binder": {ObjectMeta: metav1.ObjectMeta{Name: "binder"}, Rules: []rbacv1.PolicyRule{
+					{Verbs: verbs, APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"rolebindings"}},
+				}},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "binder"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "cnpg-system", Name: "cloudnative-pg"}}},
+			},
+		})
+	}
+	if g := build("create", "get"); len(g) != 1 || !strings.Contains(strings.Join(g[0].Caveats, " "), "bind a role it lacks an explicit") {
+		t.Fatalf("a rolebinding creator should get the escalation-prevention caveat, got %#v", g)
+	}
+	if g := build("get", "list", "watch"); len(g) == 1 && strings.Contains(strings.Join(g[0].Caveats, " "), "bind a role it lacks") {
+		t.Errorf("a mere reader of rolebindings must NOT get the escalation caveat: %#v", g[0].Caveats)
+	}
+}
+
 func keys(m map[string]Grant) []string {
 	var k []string
 	for x := range m {
