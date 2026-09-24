@@ -1,0 +1,87 @@
+# Fresh-install bootstrap for the MinIO root credential.
+#
+# storage/minio.yaml + minio-ha.yaml set `existingSecret: minio` so the chart MOUNTS
+# secret/minio instead of rendering it — this is what stops ArgoCD's lookup-less
+# `helm template` render from regenerating a random root on every sync and drifting
+# from the running server (#151 fault 2). The trade-off: the chart no longer CREATES
+# secret/minio, so a clean install / DR has no root secret and the StatefulSet can't start.
+#
+# This one-shot Job creates secret/minio (random rootUser/rootPassword) ONLY IF ABSENT.
+# It never updates or overwrites an existing secret (the ClusterRole grants get+create,
+# not update/patch), so it is a strict no-op on any cluster that already has one — an
+# operator-rotated or reconciled value is always preserved. It runs from kube-system
+# (an always-present namespace, so it can run before the minio namespace exists) at
+# sync-wave 0, ahead of the minio Application (sync-wave 1), and creates the minio
+# namespace if needed.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: minio-root-bootstrap
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: minio-root-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [secrets]
+    # get + create ONLY — never update/patch, so this can never overwrite an existing
+    # root credential (the reconciled/rotated value is always preserved).
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: minio-root-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: minio-root-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: minio-root-bootstrap
+    namespace: kube-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-root-bootstrap
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "0" # after SA/RBAC (-1), before the minio app (1)
+    # Re-run on each sync (harmless no-op once the secret exists); recreate cleanly on change.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      serviceAccountName: minio-root-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.30.0 # has kubectl + sh
+          command: [sh, -c]
+          args:
+            - |
+              set -e
+              kubectl get namespace minio >/dev/null 2>&1 || kubectl create namespace minio
+              if kubectl -n minio get secret minio >/dev/null 2>&1; then
+                echo "secret/minio already exists — leaving it untouched"
+                exit 0
+              fi
+              RU="minio-$(head -c 16 /dev/urandom | base64 | tr -dc 'a-z0-9' | head -c 12)"
+              RP="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)"
+              kubectl -n minio create secret generic minio \
+                --from-literal=rootUser="$RU" --from-literal=rootPassword="$RP"
+              echo "secret/minio bootstrapped (fresh install)"
