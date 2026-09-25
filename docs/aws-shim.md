@@ -391,7 +391,7 @@ the negatives: an asymmetric `CreateKey` refused, a wrong secret rejected on sig
 **encrypt-only principal (granted only `kms:Encrypt` via Cedar) denied `kms:Decrypt`** while still able to
 encrypt.
 
-### Secrets Manager (Vault/KMS-backed; JSON protocol; built, live proof pending)
+### Secrets Manager (Vault/KMS-backed; JSON protocol; probe-proven)
 
 The Secrets Manager front door speaks the AWS **JSON protocol** (`X-Amz-Target: secretsmanager.<Op>`).
 Supported: `CreateSecret`, `GetSecretValue`, `PutSecretValue`, `UpdateSecret`, `DescribeSecret`,
@@ -434,12 +434,11 @@ Secrets, so it does not bypass the shim's `KEYS_NAMESPACE` boundary.
 - **Resource policies** (`PutResourcePolicy`) — authorization is the one Cedar policy world, not a second
   engine that would silently ignore the document.
 
-`probe/aws-shim-secretsmanager.sh` asserts all of this over real SDK round-trips — exact-value read, the
+`probe/aws-shim-secretsmanager.sh` proves all of this over real SDK round-trips — exact-value read, the
 `AWSCURRENT`/`AWSPREVIOUS` move, a `VersionId` read, a byte-identical `SecretBinary`, delete→refuse→restore,
 honest rotation fields, `GetRandomPassword`, the audit record — plus the negatives: wrong secret rejected,
 a **describe-only principal denied the value** while still seeing metadata, and an **A-scoped principal
-denied secret B**. This section says **built, live proof pending** until the probe passes live, and will
-then be updated to *probe-proven*.
+denied secret B**.
 
 ## The compatibility probe
 
