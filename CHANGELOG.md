@@ -7,6 +7,22 @@ the product's public contract.
 ## Unreleased
 
 ### AWS compatibility (shim)
+- **IAM management API + AWS-policy-JSON→Cedar translation (opt-in; SigV4 service `iam`).** The shim now
+  exposes the AWS IAM management verbs — `CreateRole`/`GetRole`/`DeleteRole`/`ListRoles`,
+  `CreatePolicy`/`GetPolicy`/`DeletePolicy`/`ListPolicies`, `AttachRolePolicy`/`DetachRolePolicy`/
+  `PutRolePolicy`/`ListAttachedRolePolicies`, `CreateUser`/`GetUser`/`DeleteUser`/`ListUsers`,
+  `CreateAccessKey`/`DeleteAccessKey`/`ListAccessKeys`/`UpdateAccessKey`, `SimulatePrincipalPolicy` — over the
+  platform's existing `kind: Role`/`Policy`/`User` entities, with **one policy world, no second engine**: a
+  `CreatePolicy` translates the AWS PolicyDocument through `policyengine.ImportAWS` into the SAME Cedar
+  statements the data plane enforces. An assumed IAM role is now an **independent principal whose authority is
+  exactly its attached policies**, evaluated closed/default-deny (a role with no policy can do nothing) — the
+  faithful AWS model. Translation fidelity is guarded: a policy with any part the translator can't honor
+  faithfully — including `NotAction`/`NotResource` — is **refused** (`MalformedPolicyDocument`), never stored
+  as a grant that differs from the JSON. `SimulatePrincipalPolicy` proves the translation both directions, and
+  `CreateAccessKey` yields a key that genuinely authenticates. The **live `AssumeRole`→enforcement round-trip**
+  (the confused-deputy detector) requires STS to be enabled (a Vault `sts/signing-key`); until then
+  `probe/aws-shim-iam.sh` proves everything else and reports that one assertion as gated. See
+  [`docs/aws-shim.md`](docs/aws-shim.md).
 - **Kinesis Data Streams doorway (opt-in).** The shim now fronts a sixteenth service — **Kinesis Data
   Streams** — the ordered, sharded, replayable streaming primitive, deliberately distinct from the unordered
   SQS / no-retention SNS doorways. `CreateStream`/`DescribeStream`/`ListStreams`/`DeleteStream`,
