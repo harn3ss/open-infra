@@ -150,23 +150,32 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 
 // resourceString maps (apiGroup, resource) + scope to a Cedar resource string "<resource>.<group>::<scope>".
 func resourceString(group, resource, scopeNS string) (string, []string) {
-	var caveats []string
-	// A full wildcard matches anything, so scope is moot.
+	scope := "*"
+	if scopeNS != "" {
+		scope = scopeNS + "/*"
+	}
 	if resource == "*" {
-		if group != "" && group != "*" {
-			caveats = append(caveats, fmt.Sprintf("resource \"*\" in apiGroup %q is widened to all groups (the corpus has no group-only wildcard) — tighten before enforce", group))
+		switch {
+		case group != "" && group != "*":
+			// All resources in a SPECIFIC apiGroup: scope the type to that group ("*.<group>") rather
+			// than widening to every group, so Cedar is never broader than the RBAC rule (the type is a
+			// `like`-wildcard the evaluator matches against "<resource>.<group>"). No caveat: faithful.
+			return "*." + group + "::" + scope, nil
+		case group == "":
+			// The core apiGroup: "*" here means all CORE resources, but a like-wildcard cannot exclude
+			// the other groups (core types have no ".<group>" suffix to key on), so this stays a full
+			// wildcard and is a residual over-grant — recorded honestly.
+			return "*", []string{"resource \"*\" in the core apiGroup widens to all groups (a wildcard cannot express core-only) — residual over-grant, tighten upstream (AC-6)"}
+		default:
+			// apiGroups: ["*"] — genuinely all groups; a full wildcard is faithful.
+			return "*", nil
 		}
-		return "*", caveats
 	}
 	t := resource
 	if group != "" && group != "*" {
 		t = resource + "." + group
 	}
-	scope := "*"
-	if scopeNS != "" {
-		scope = scopeNS + "/*"
-	}
-	return t + "::" + scope, caveats
+	return t + "::" + scope, nil
 }
 
 func orDefault(xs, def []string) []string {
