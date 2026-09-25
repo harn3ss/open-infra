@@ -463,6 +463,17 @@ func run(logger *slog.Logger) error {
 	if cognitoH != nil {
 		services["cognito-idp"] = cognitoH
 	}
+	// Step Functions (states.*) — CreateStateMachine/StartExecution/… over kind: StateMachine/Execution,
+	// driven by the singleton statemachine controller. A state machine's roleArn grants its Tasks the
+	// role's authority via a per-execution STS session (polyhedron#172 / the #168 pattern). Requires the
+	// dynamic client; the STS minter/roleResolver enable execution-role authority (nil ⇒ roleless only).
+	if dyn != nil {
+		sfnNS := getenv("STEPFUNCTIONS_NAMESPACE", keysNS)
+		sfnH := newSFNHandler(cs, dyn, stsMinter, roleRes, authzChecker, sfnNS, account, region, logger)
+		services["states"] = sfnH
+		logger.Info("Step Functions front door enabled", slog.String("namespace", sfnNS),
+			slog.Bool("executionRoleAuthority", stsMinter != nil))
+	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")

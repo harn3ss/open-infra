@@ -174,3 +174,19 @@ func TestParallelNotImplemented(t *testing.T) {
 		t.Fatalf("Parallel should fail with States.Runtime, got %+v", res)
 	}
 }
+
+// A cancelled context aborts the run promptly between states (the StopExecution / shutdown path),
+// rather than continuing to walk the state graph.
+func TestRunAbortsOnCancelledContext(t *testing.T) {
+	def := mustDef(t, `{"StartAt":"A","States":{
+		"A":{"Type":"Pass","Result":{"x":1},"Next":"B"},
+		"B":{"Type":"Pass","Result":{"x":2},"Next":"C"},
+		"C":{"Type":"Succeed"}}}`)
+	inv := &fakeInvoker{fn: func(_ string, input any) (any, *taskError) { return input, nil }}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before Run starts
+	res := newTestEngine(def, inv).Run(ctx, "A", mustJSON(t, `{}`))
+	if res.Phase != "Failed" {
+		t.Fatalf("phase=%s, want Failed (cancelled)", res.Phase)
+	}
+}

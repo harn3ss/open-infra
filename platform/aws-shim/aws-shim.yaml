@@ -182,6 +182,65 @@ subjects:
     name: console
     namespace: open-infra-console
 ---
+# Step Functions doorway (polyhedron#172): the shim CREATES/reads/deletes kind: StateMachine (the ASL
+# claim) and kind: Execution (one run) here on an authorized caller's behalf — the caller is gated by the
+# impersonated SAR in the handler, then the shim executes as itself (the same pattern IAM/RDS use). The
+# per-execution STS creds Secret is written via the existing aws-shim-keys Role (secrets in this namespace).
+# Scoped to THIS namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-statemachines
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [statemachines]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [openinfra.dev]
+    resources: [executions]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [openinfra.dev]
+    resources: [executions/status]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-statemachines
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-statemachines }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# Execution-role authority (polyhedron#172): the statemachine controller reads the per-execution STS creds
+# Secret the shim writes here, and injects it into the execution's Tasks so a Task runs under the state
+# machine's role (not the controller's ambient authority — the #168 confused-deputy fix). This grant lives
+# in the shim overlay (not the core controller manifest) because ONLY shim-created executions carry a
+# credentialsSecret; a plain kubectl-created Execution has none and the controller never reads a Secret.
+# Scoped to get secrets in THIS namespace only — the least privilege for cross-namespace creds hand-off.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openinfra-statemachine-creds
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-statemachine-creds
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openinfra-statemachine-creds }
+subjects:
+  - kind: ServiceAccount
+    name: openinfra-statemachine
+    namespace: crossplane-system
+---
 # Owner resolution: read kind: User (NEVER Secrets) in the console namespace, to map an access
 # key's owner to its current groups. get+list only; nothing mutating.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -363,6 +422,10 @@ spec:
             # the account id surfaced in STS GetCallerIdentity ARNs.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
             - { name: ACCOUNT_ID, value: "open-infra" }
+            # Step Functions (polyhedron#172): the namespace kind: StateMachine / Execution and per-execution
+            # STS creds Secrets live in (defaults to this namespace). A Task's function:<name> resolves in
+            # this namespace, so a Function used as a Task target must live here too.
+            - { name: STEPFUNCTIONS_NAMESPACE, value: "open-infra-aws-shim" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is

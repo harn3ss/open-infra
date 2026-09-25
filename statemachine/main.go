@@ -57,9 +57,11 @@ func main() {
 }
 
 type controller struct {
-	client *k8sClient
-	active sync.Map // uid -> struct{}
-	wg     sync.WaitGroup
+	client     *k8sClient
+	active     sync.Map // uid -> struct{}
+	cancels    sync.Map // uid -> context.CancelFunc (per-execution; StopExecution cancels it)
+	stopCauses sync.Map // uid -> string (StopExecution cause, read back by run() on abort)
+	wg         sync.WaitGroup
 }
 
 func (c *controller) reconcile(ctx context.Context) {
@@ -73,7 +75,28 @@ func (c *controller) reconcile(ctx context.Context) {
 	for i := range execs {
 		e := execs[i]
 		switch e.Status.Phase {
-		case "Succeeded", "Failed", "TimedOut":
+		case "Succeeded", "Failed", "TimedOut", "Aborted":
+			continue
+		}
+		// StopExecution: the shim set status.stopRequested. Cancel the running goroutine (it finalizes
+		// Aborted with the cause) — the shim never writes the terminal phase itself, so it can't race us.
+		if e.Status.StopRequested {
+			c.stopCauses.Store(e.Metadata.UID, e.Status.StopCause)
+			if cf, ok := c.cancels.Load(e.Metadata.UID); ok {
+				cf.(context.CancelFunc)()
+			} else if _, busy := c.active.Load(e.Metadata.UID); !busy {
+				// Nothing is driving it (e.g. a stop requested before the goroutine ever picked it up,
+				// across a controller restart). Finalize it directly.
+				cause := e.Status.StopCause
+				if cause == "" {
+					cause = "Execution stopped"
+				}
+				c.finalize(e.Metadata.Namespace, e.Metadata.Name, map[string]any{
+					"phase": "Aborted", "error": "States.ExecutionAborted", "cause": cause,
+					"stoppedAt": time.Now().UTC().Format(time.RFC3339), "currentState": "", "waitUntil": "",
+				})
+				c.stopCauses.Delete(e.Metadata.UID)
+			}
 			continue
 		}
 		if _, busy := c.active.LoadOrStore(e.Metadata.UID, struct{}{}); busy {
@@ -83,12 +106,22 @@ func (c *controller) reconcile(ctx context.Context) {
 		go func(e Execution) {
 			defer c.wg.Done()
 			defer c.active.Delete(e.Metadata.UID)
-			c.run(ctx, e)
+			execCtx, cancel := context.WithCancel(ctx)
+			c.cancels.Store(e.Metadata.UID, cancel)
+			defer func() {
+				cancel()
+				c.cancels.Delete(e.Metadata.UID)
+				c.stopCauses.Delete(e.Metadata.UID)
+			}()
+			c.run(ctx, execCtx, e)
 		}(e)
 	}
 }
 
-func (c *controller) run(ctx context.Context, e Execution) {
+// run drives one execution to completion. mainCtx is the controller's lifetime context (cancelled on
+// shutdown); ctx is this execution's own context (also cancelled by StopExecution). The engine runs on
+// ctx; the split lets run() tell a shutdown (leave Running to resume) apart from a stop (finalize Aborted).
+func (c *controller) run(mainCtx, ctx context.Context, e Execution) {
 	ns := e.Metadata.Namespace
 	name := e.Metadata.Name
 	smName := e.Spec.StateMachineRef.Name
@@ -165,8 +198,25 @@ func (c *controller) run(ctx context.Context, e Execution) {
 		"StateMachine": map[string]any{"Name": smName},
 	}
 
-	// Task states invoke Functions in the execution's namespace.
-	eng := newEngine(def, newHTTPInvoker(ns), ctxObj)
+	// Load the state-machine role's STS session (minted by the shim at StartExecution) so Task
+	// invocations run under the role's authority. A missing/unreadable creds Secret fails the execution
+	// rather than silently running Tasks unauthenticated — a state machine created with a role must run
+	// its Tasks under that role (polyhedron#172/#168).
+	credNS := e.Spec.CredentialsNamespace
+	if credNS == "" {
+		credNS = ns
+	}
+	creds, err := c.client.getCredentials(ctx, credNS, e.Spec.CredentialsSecret)
+	if err != nil {
+		c.finalize(ns, name, map[string]any{
+			"phase": "Failed", "error": ErrRuntime,
+			"cause": "cannot read execution credentials: " + err.Error(), "stoppedAt": now(),
+		})
+		return
+	}
+
+	// Task states invoke Functions in the execution's namespace, under the role's STS session (creds).
+	eng := newEngine(def, newHTTPInvoker(ns, creds), ctxObj)
 	eng.record = func(ev map[string]any) { hist = append(hist, ev) }
 	eng.checkpoint = func(state string, d any, waitUntil *time.Time) error {
 		st := map[string]any{
@@ -193,8 +243,24 @@ func (c *controller) run(ctx context.Context, e Execution) {
 
 	// A controller shutdown mid-run leaves the execution checkpointed as Running so
 	// the next controller resumes it — don't overwrite it with a terminal state.
+	if mainCtx.Err() != nil {
+		log.Printf("execution %s/%s: interrupted by shutdown, left Running for resume", ns, name)
+		return
+	}
+	// The execution's own context was cancelled while the controller is still up ⇒ StopExecution.
+	// Finalize as Aborted (never resumed) with the caller's stop cause.
 	if ctx.Err() != nil {
-		log.Printf("execution %s/%s: interrupted, left Running for resume", ns, name)
+		cause := "Execution stopped"
+		if v, ok := c.stopCauses.Load(e.Metadata.UID); ok {
+			if s, _ := v.(string); s != "" {
+				cause = s
+			}
+		}
+		c.finalize(ns, name, map[string]any{
+			"phase": "Aborted", "error": "States.ExecutionAborted", "cause": cause,
+			"stoppedAt": now(), "currentState": "", "waitUntil": "", "history": trimHistory(hist),
+		})
+		log.Printf("execution %s/%s: aborted (StopExecution)", ns, name)
 		return
 	}
 

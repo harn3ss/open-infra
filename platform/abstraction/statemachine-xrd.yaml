@@ -61,6 +61,15 @@ spec:
                   description: >-
                     Workflow class. Only Standard (durable, checkpointed, full execution
                     history) is implemented in v1; Express is a planned follow-up.
+                roleArn:
+                  type: string
+                  description: >-
+                    Optional execution role — the analogue of aws_sfn_state_machine.role_arn.
+                    An "arn:aws:iam::<acct>:role/<name>" or a bare kind: Role name. When set,
+                    StartExecution (via the aws-shim) mints a temporary STS session for this
+                    role and the engine runs every Task under it, so a Task can do exactly what
+                    the role's policies grant and no more. When empty, Tasks run without an
+                    injected identity (the role governs the workflow, not the controller).
             status:
               type: object
               properties:

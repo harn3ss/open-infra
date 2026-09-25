@@ -36,14 +36,26 @@ type TaskInvoker interface {
 	Invoke(ctx context.Context, resource string, input any, timeoutSeconds int) (any, *taskError)
 }
 
+// taskCreds is the state-machine role's temporary STS session, minted by the aws-shim at StartExecution and
+// injected into every Task invocation so a Task runs under the ROLE's authority — not the controller's
+// ambient position (the confused-deputy fix, polyhedron#172/#168). A Task (Function) reads these and uses
+// them to call AWS; the shim then authorizes as the role. nil ⇒ no role on the state machine (legacy).
+type taskCreds struct {
+	AccessKeyID  string
+	SecretKey    string
+	SessionToken string
+}
+
 type httpInvoker struct {
 	namespace string
 	client    *http.Client
+	creds     *taskCreds
 }
 
-func newHTTPInvoker(namespace string) *httpInvoker {
+func newHTTPInvoker(namespace string, creds *taskCreds) *httpInvoker {
 	return &httpInvoker{
 		namespace: namespace,
+		creds:     creds,
 		// No per-client timeout: each Invoke sets its own deadline via context so
 		// TimeoutSeconds maps to States.Timeout rather than a generic transport error.
 		client: &http.Client{},
@@ -85,6 +97,14 @@ func (h *httpInvoker) Invoke(ctx context.Context, resource string, input any, ti
 		return nil, &taskError{ErrTaskFailed, err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Thread the state-machine role's STS session to the Task so it acts under the ROLE's authority,
+	// not the controller's ambient position. A Task (Function) that calls AWS reads these and signs with
+	// them; the shim then authorizes as the role (the confused-deputy fix, polyhedron#172/#168).
+	if h.creds != nil && h.creds.AccessKeyID != "" {
+		req.Header.Set("X-Openinfra-Task-Access-Key-Id", h.creds.AccessKeyID)
+		req.Header.Set("X-Openinfra-Task-Secret-Access-Key", h.creds.SecretKey)
+		req.Header.Set("X-Openinfra-Task-Session-Token", h.creds.SessionToken)
+	}
 
 	resp, err := h.client.Do(req)
 	if err != nil {

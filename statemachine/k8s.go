@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,6 +70,12 @@ type Execution struct {
 			Name string `json:"name"`
 		} `json:"stateMachineRef"`
 		Input string `json:"input"`
+		// CredentialsSecret/Namespace point at a Secret holding the state-machine role's minted STS
+		// session (accessKeyId/secretAccessKey/sessionToken), written by the aws-shim at StartExecution.
+		// The controller reads it and injects the session into every Task so a Task runs under the role's
+		// authority (polyhedron#172/#168). Empty ⇒ no role on the state machine (legacy behaviour).
+		CredentialsSecret    string `json:"credentialsSecret,omitempty"`
+		CredentialsNamespace string `json:"credentialsNamespace,omitempty"`
 	} `json:"spec"`
 	Status ExecStatus `json:"status"`
 }
@@ -86,6 +93,11 @@ type ExecStatus struct {
 	Context      string           `json:"context,omitempty"`
 	WaitUntil    string           `json:"waitUntil,omitempty"`
 	History      []map[string]any `json:"history,omitempty"`
+	// StopRequested is set by the aws-shim's StopExecution (the analogue of the AWS API). The controller
+	// observes it on its next poll and cancels the running execution, which finalizes as Aborted with
+	// StopCause — the shim never writes a terminal phase itself, so it can't race the running goroutine.
+	StopRequested bool   `json:"stopRequested,omitempty"`
+	StopCause     string `json:"stopCause,omitempty"`
 }
 
 func (c *k8sClient) do(ctx context.Context, method, path string, contentType string, body []byte) ([]byte, int, error) {
@@ -148,6 +160,45 @@ func (c *k8sClient) getStateMachineDefinition(ctx context.Context, ns, name stri
 		return "", fmt.Errorf("state machine has an empty spec.definition")
 	}
 	return sm.Spec.Definition, nil
+}
+
+// getCredentials reads the state-machine role's STS session from a Secret. The Secret's data holds
+// accessKeyId / secretAccessKey / sessionToken (base64, per the core/v1 Secret encoding). Returns nil
+// (no error) when name is empty — a state machine without a role runs Tasks with no injected identity.
+func (c *k8sClient) getCredentials(ctx context.Context, ns, name string) (*taskCreds, error) {
+	if name == "" {
+		return nil, nil
+	}
+	path := fmt.Sprintf("/api/v1/namespaces/%s/secrets/%s", ns, name)
+	b, code, err := c.do(ctx, http.MethodGet, path, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("read credentials secret %s/%s: HTTP %d: %s", ns, name, code, truncate(string(b), 256))
+	}
+	var sec struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(b, &sec); err != nil {
+		return nil, err
+	}
+	dec := func(k string) string {
+		v, err := base64.StdEncoding.DecodeString(sec.Data[k])
+		if err != nil {
+			return ""
+		}
+		return string(v)
+	}
+	creds := &taskCreds{
+		AccessKeyID:  dec("accessKeyId"),
+		SecretKey:    dec("secretAccessKey"),
+		SessionToken: dec("sessionToken"),
+	}
+	if creds.AccessKeyID == "" || creds.SecretKey == "" {
+		return nil, fmt.Errorf("credentials secret %s/%s missing accessKeyId/secretAccessKey", ns, name)
+	}
+	return creds, nil
 }
 
 // patchStatus merge-patches an Execution's status subresource.
