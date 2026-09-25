@@ -1,12 +1,15 @@
-# Control-plane authorization webhook (design + spike, WIP)
+# Control-plane authorization webhook (design + live)
 
-> Status: **shadow run LIVE** (merged to `main`). This is Phase 2 of making Cedar the platform-wide
-> authorization authority ([`docs/policy-engine.md`](policy-engine.md)): the data plane (Phase 1) is
-> deployed and live-verified; this extends the *same* engine and the *same* `kind: Policy` corpus to
-> the Kubernetes control plane, through the API server's authorization-webhook interface. The webhook
-> is now wired into the live k3s API server in **shadow mode** — it observes real SubjectAccessReviews
-> and logs the Cedar decision, but returns *no opinion*, so it changes no authorization outcome. It
-> does **not** yet enforce, and RBAC remains the authority.
+> Status: **enforce LIVE** (merged to `main`, live-verified). This is Phase 2 of making Cedar the
+> platform-wide authorization authority ([`docs/policy-engine.md`](policy-engine.md)): the data plane
+> (Phase 1) is deployed and live-verified; this extends the *same* engine and the *same* `kind: Policy`
+> corpus to the Kubernetes control plane, through the API server's authorization-webhook interface.
+> The webhook is wired into the live k3s API server via the structured `AuthorizationConfiguration`
+> (`Node → Webhook(cedar) → RBAC`) in **enforce** mode: Cedar is the authoritative authorizer for
+> every SubjectAccessReview, deciding before RBAC. RBAC is **retained as a webhook-down fallback**
+> (`failurePolicy: NoOpinion`), not removed — Cedar decides everything while the webhook is up; RBAC
+> catches a webhook outage. Shadow mode (`AUTHZ_MODE=shadow`, log-only) remains available for
+> measuring divergence on a cluster whose corpus has not been validated.
 
 ## The interface (why a webhook, not admission)
 
@@ -65,36 +68,50 @@ and every disagreement is understood. The webhook therefore ships in a **shadow*
   or down cannot break the cluster. This is the safe way to gather the evidence Phase 2 step 2 wants.
 
 Only after the divergence set is empty-or-explained, and with explicit approval, does the webhook
-switch to **enforce** mode (return the real decision) and RBAC leave the chain.
+switch to **enforce** mode (return the real decision) — as it now has. RBAC is kept behind it as the
+webhook-down fallback rather than removed (see the failure posture below); Cedar is nonetheless the
+authority, deciding every request while the webhook is up.
 
 ## The bootstrap problem
 
-The authorizer must not need authorization from itself to start. Two rules make the startup
-acyclic:
+The authorizer must not need authorization from itself to start. Three mechanisms make startup
+acyclic and keep a broken corpus from locking out the cluster:
 
-1. **A static allow ahead of the webhook** for the identities that must always pass: the
-   `system:masters` break-glass group, the API server's own identity, and the webhook's own
-   ServiceAccount (so it can read its policy corpus). These are expressed in the API server's
-   authorization config *before* the webhook entry, not inside Cedar, so a broken or empty corpus
-   can never lock everyone out.
-2. **The corpus loads over a path the webhook does not gate.** The webhook reads `kind: Policy` via
-   the API server; during the shadow/transition phase RBAC still authorizes that read, and in the
-   end state the static allow for its own SA does. It serves last-known policy if the read blips
-   (the same hardening the data-plane loader already has), so a control-plane read stall degrades to
-   stale policy, never to "deny everything."
+1. **A break-glass floor inside the webhook**, decided *before* the corpus is consulted, for the two
+   identities that must always pass in enforce: the webhook's **own ServiceAccount** (auto-derived
+   from the `sub` claim of its projected token — so its reads of its corpus sources are authorizable
+   without the webhook, or it would deadlock on the first load) and the **`system:masters`** group
+   (cluster-admin recovery through a broken/empty corpus). Scoped to exactly those — not the whole
+   namespace. The `Node` authorizer sits first in the chain, so kubelet/node identities never consult
+   the webhook at all.
+2. **Corpus-gating.** The webhook enforces *only* once it has a non-empty corpus. With none loaded —
+   a fresh cluster whose corpus is not applied yet, or a cold-start load blip — it returns no-opinion
+   and **defers to RBAC** rather than denying everything. This is what makes `AUTHZ_MODE=enforce` safe
+   as a committed default. A principal absent from a *non-empty* corpus is still default-denied; only
+   an empty/unloadable corpus defers.
+3. **Last-good serving on a read blip.** The corpus is cached; a transient read error serves the
+   last-known-good snapshot (the same hardening the data-plane loader has), so a control-plane read
+   stall degrades to stale policy, never to "deny everything."
 
 ## Failure and availability posture
 
 The authorizer sits in the **control-plane path**: its latency is the API server's latency and its
-availability is a cluster-wide dependency. Stated decisions, to be evidenced before enforce mode:
+availability is a cluster-wide dependency. The live posture:
 
-- **Fail-closed by construction, with a hard floor.** In enforce mode a webhook error is a deny —
-  except the static-allow floor above, which is evaluated by the API server, not the webhook, so an
-  admin with `system:masters` can always recover a cluster whose authorizer is wedged. This is the
-  emergency bypass, and it is deliberate.
-- **HA.** Multiple replicas behind a Service; the API server retries; a rollout never has zero
-  ready endpoints. It runs in-cluster but its manifest pins it away from the very workloads it
-  gates where the platform allows.
+- **Graceful degradation, not fail-closed.** The failure order is: Cedar decides (webhook up, corpus
+  loaded) → **RBAC** decides (webhook down/timeout — `failurePolicy: NoOpinion`, or corpus not loaded —
+  corpus-gating) → **break-glass** keeps `system:masters` + the webhook's own SA open through a broken
+  corpus. RBAC is deliberately kept in the chain as this fallback rather than removed, so an authorizer
+  outage degrades to RBAC instead of a cluster-wide lockout. (Pure RBAC removal — the fully fail-closed
+  end state — is deferred until the webhook is HA; on a single replica it would brick the cluster on
+  any webhook blip.)
+- **Availability via the fallback, not replicas (single-node reality).** The webhook is a **single
+  `hostNetwork` replica** on the control-plane node, serving loopback-only TLS (`127.0.0.1:8099`) with
+  a `Recreate` rollout — deliberate: the authorizer is reached by the API server *without* depending on
+  cluster networking/CNI (a CNI outage must not wedge authz), and a hostNetwork loopback port cannot be
+  shared by two pods. So HA is **not** multiple replicas behind a Service; availability during a
+  redeploy/outage comes from the RBAC fallback above. True multi-replica HA needs **more than one
+  control-plane node** (this cluster has one) and is a tracked follow-up.
 - **Bounded latency.** Cedar evaluation is in-memory against a compiled policy set; the corpus is
   cached and refreshed, so a decision is a map lookup plus an evaluation, not an API round-trip.
 - **TLS with the validated modules.** The webhook is a network service in the control-plane path,
@@ -125,39 +142,50 @@ cluster-wide Secrets access, and privilege-escalation verbs, and can gate CI wit
 read-only against the live cluster it currently reports 17 `cluster-admin`-equivalent principals —
 exactly the over-privilege signal the CIS benchmark used to give for free, now a generated artifact.
 
+**AC-6 posture on those 17 (`*`-on-`*`).** They are **broad by design**, and the corpus is a faithful
+mirror of their RBAC — it does not widen them. They are: `system:masters` / `crossplane:masters`
+(admin groups); the GitOps engine (`argocd/argocd-application-controller`, which applies arbitrary
+manifests); the Crossplane core (`crossplane-system/crossplane`, which composes arbitrary managed
+resources); backup (`velero/velero-server`, which reads/writes every resource kind); chaos-mesh
+(`chaos-controller-manager`/`-dashboard`/`-dns-server`, which injects faults cluster-wide); the
+virtualization operators (`kubevirt-controller`/`-operator`, `cdi/cdi-operator`/`cdi-sa`); the Knative
+and CNI plumbing (`knative-operator`, `kube-system/multus`); Helm install jobs (`kube-system/helm-traefik(-crd)`);
+and the on-demand diagnostics collector (`longhorn-system/longhorn-support-bundle`). Reducing these is
+**upstream-RBAC hardening**, not a corpus edit: scoping Cedar below a component's RBAC only takes effect
+while the webhook is up (RBAC still grants the breadth on webhook-down) and risks breaking a component
+on an operation it performs rarely, so any scope-down must be **traffic-observed** first, per principal.
+The number is the metric to drive down over time (tracked); it is a documented, justified acceptance,
+not a silent pass.
+
 ## Honest status
 
-- [x] **Design** — this document; the SAR→Cedar model; shadow-first; bootstrap + failure posture.
+- [x] **Design** — this document; the SAR→Cedar model; bootstrap + failure posture.
 - [x] **Implicit-principal enumeration** — observed on the live cluster (above), read-only.
-- [x] **Webhook spike** — a server that accepts a `SubjectAccessReview`, maps it to a
-      `policyengine.Request`, decides via the existing engine, and answers in shadow or enforce mode.
-      Offline, unit-tested; **not wired to any API server**.
-- [ ] **`kind: Policy` `spec.controlPlane`** — the XRD field + the drift-gate mirrors (a real schema
-      change), and a K8s loader for it. The spike reads the block if present; the field is not yet on
-      the XRD.
-- [x] **Live shadow run** — wired into the live k3s API server (`authorization-mode=Node,RBAC,Webhook`,
-      webhook last, shadow/no-opinion), during a planned maintenance window with production offline.
-      Observed: the API server consults it on real traffic (controller SAs' `escalate`/`bind`
-      attempts that RBAC denies were logged as would-DENY), the cluster authorizes identically (no
-      outcome changed — the webhook returns no opinion), and the deployment is `hostNetwork` on the
-      control-plane node serving loopback-only TLS. Manifest: `platform/security/manifests/authz-webhook-shadow.yaml`.
-      Running with an **empty** control-plane corpus, so every decision is a trivial default-deny —
-      the baseline. Meaningful divergence needs the corpus below.
-- [x] **`spec.controlPlane` field + a corpus generator** — the XRD field is live, and
-      **`rbac-to-cedar`** (`console-api/cmd/rbac-to-cedar`, pure core in `internal/rbactocedar`)
-      translates the cluster's RBAC into per-principal `kind: Policy spec.controlPlane` grants,
-      one per principal, mirroring what RBAC allows and recording faithfulness caveats where the
-      translation is lossy (a resource-`*` widening, dropped `resourceNames`) — it never invents a
-      Deny. Verified end-to-end: a generated `controlPlane` policy is Ready with **zero** RBAC
-      side-effects (it is read by the webhook, not compiled to RBAC), and the webhook honors it
-      (a granted principal's SAR returns "would ALLOW"). Generating the corpus is read-only;
-      **applying** it is a deliberate operator step (it is cluster-specific, so it is regenerated
-      rather than committed):
+- [x] **`kind: Policy` `spec.controlPlane`** — the XRD field is live with its drift-gate mirrors; the
+      webhook's K8s loader unions every `kind: Policy spec.controlPlane` block with an optional compiled
+      `control-plane-corpus` ConfigMap bundle (the lighter delivery for a full-cluster corpus).
+- [x] **Corpus generator (`rbac-to-cedar`)** — translates the cluster's RBAC into per-principal grants
+      mirroring what RBAC allows, recording faithfulness caveats where lossy; never invents a Deny.
+      Hardened during the cutover: a subresource is keyed as a distinct `resource/subresource` type
+      (not collapsed onto the base), and a namespace-less RoleBinding ServiceAccount subject defaults to
+      the binding's namespace (both bugs had silently dropped real grants under enforce).
+- [x] **Shadow run** — the divergence-measurement mode (log-only, no-opinion) is retained as
+      `AUTHZ_MODE=shadow`; it was the pre-cutover baseline and stays available for validating a corpus.
+- [x] **Webhook first-in-chain, ENFORCE — LIVE + verified.** Wired into the live k3s API server via the
+      structured `AuthorizationConfiguration` (`Node → Webhook(cedar) → RBAC`); the webhook returns real
+      Cedar decisions before RBAC. Live-verified: 0 legitimate denials in steady state, cluster healthy
+      (nodes Ready, apiserver `readyz` ok, argocd Healthy). `hostNetwork` on the control-plane node,
+      loopback-only TLS, `Recreate`, break-glass floor + corpus-gating (above). Manifest:
+      `platform/security/manifests/authz-webhook-shadow.yaml` (`AUTHZ_MODE=enforce`). Applying the corpus
+      is a deliberate, cluster-specific operator step (regenerated, not committed):
       ```
-      KUBECONFIG=... go run ./cmd/rbac-to-cedar > corpus.yaml   # review, then kubectl apply -f
+      KUBECONFIG=... go run ./cmd/rbac-to-cedar -configmap | kubectl apply --server-side -f -
       ```
-- [ ] **Webhook first-in-chain** — with the corpus applied, move the webhook first (structured
-      `authorization-config`) so it also sees RBAC-*allowed* traffic and the shadow log shows the
-      full divergence (the under-grant direction, not just over-grants). Needs the root config step.
-- [ ] **Enforce + RBAC removal** — only after divergence is understood, every implicit principal has
-      an explicit grant, and the failure posture is evidenced.
+- [ ] **Pure RBAC removal** — RBAC is deliberately retained as the webhook-down fallback; removing it
+      entirely (fully fail-closed) is deferred until the webhook is HA, since on a single replica it
+      would brick the cluster on any webhook blip.
+- [ ] **Multi-replica HA** — needs more than one control-plane node (this cluster has one); the RBAC
+      fallback covers the single-replica redeploy/outage gap in the meantime.
+- [ ] **AC-6 scope-down of the 17 `*`-on-`*` grants** — documented + accepted as broad-by-design
+      (above); reducing them is upstream-RBAC hardening driven by per-principal traffic observation, an
+      ongoing effort, not a corpus edit.
