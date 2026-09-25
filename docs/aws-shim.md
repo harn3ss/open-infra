@@ -556,7 +556,7 @@ verifies the row is present in the restored copy**, and confirms `DeletionProtec
 plus the negatives (wrong secret; `StorageEncrypted`/`MultiAZ`/non-postgres engine refused; a describe-only
 principal denied `CreateDBInstance`).
 
-### CloudWatch Logs (Postgres-backed; JSON protocol; built, live proof pending)
+### CloudWatch Logs (Postgres-backed; JSON protocol; probe-proven)
 
 CloudWatch Logs is where AWS SDKs, agents, and Lambda runtimes write logs **by default**, and — the real
 argument for the doorway — in AWS it is where **audit evidence lands** (NIST 800-53 AU-2/AU-6/AU-9/AU-11).
@@ -603,13 +603,12 @@ unsupported filter-pattern syntaxes above. **Lambda function logs do NOT current
 the CloudWatch Logs API; wiring that path is a documented next step, stated so an operator checking a
 function's logs here is not surprised.
 
-`probe/aws-shim-cloudwatchlogs.sh` asserts all of this over real SDK round-trips — ordered byte-identical
+`probe/aws-shim-cloudwatchlogs.sh` proves all of this over real SDK round-trips — ordered byte-identical
 read-back with original ms timestamps, out-of-order batch rejected, `FilterLogEvents` matches only the
 matching event (empty pattern returns all; a JSON-selector pattern refused), pagination terminates,
 retention reported truthfully (non-allowed value refused) — plus the negatives: wrong secret rejected, a
 **write-only principal denied `GetLogEvents`** while still able to `PutLogEvents`, and an **A-scoped
-principal denied group B**. This section says **built, live proof pending** until it passes live, then
-becomes *probe-proven*.
+principal denied group B**.
 
 ## The compatibility probe
 
