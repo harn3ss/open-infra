@@ -235,6 +235,14 @@ spec:
               # window passes (see docs/aws-shim.md). An operator writes the key once (or a one-shot Job):
               #   vault kv put sts/signing-key key="$(head -c32 /dev/urandom | base64)"
               vault secrets enable -path=sts -version=2 kv 2>/dev/null || echo "  sts KV already enabled"
+              # Write the 32-byte AES sealing key on first bootstrap if absent — this is what ENABLES
+              # sts:AssumeRole (without it the shim answers "no signing key configured"). Only-if-absent, so a
+              # re-run never rotates it (rotation, the session revoke-all lever, is a deliberate separate action).
+              if vault kv get -field=key sts/signing-key >/dev/null 2>&1; then
+                echo "  sts/signing-key already present (STS already enabled)"
+              else
+                vault kv put sts/signing-key key="$(head -c 32 /dev/urandom | base64)" >/dev/null && echo "  wrote sts/signing-key — sts:AssumeRole is now ENABLED"
+              fi
               # KV-v2 read is at sts/data/signing-key (the `data/` infix); grant read there and only there.
               vault policy write aws-shim-sts - <<'POLICY'
               path "sts/data/signing-key" { capabilities = ["read"] }
