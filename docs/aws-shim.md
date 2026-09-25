@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Nineteen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -23,7 +23,9 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > **CloudWatch metrics + alarms** (alarms that genuinely evaluate and fire SNS actions), and **Kinesis Data
 > Streams** (ordered, sharded, replayable), and **Cognito** (user pools issuing real, JWKS-verifiable JWTs),
 > and **IAM** (role/policy/user management with AWS-policy-JSON→Cedar translation), and **Step Functions**
-> (an ASL workflow engine whose Tasks run under the state machine's IAM role via a per-execution STS session).
+> (an ASL workflow engine whose Tasks run under the state machine's IAM role via a per-execution STS session),
+> and **CloudFormation** (the owned cfn engine as a doorway — stacks provision under the caller's own
+> authority via impersonation, the way AWS does it).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -136,6 +138,7 @@ the sections below; the one-line summary:
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
 | **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource + non-S3/DDB/Lambda refused; needs STS |
 | **[Step Functions](#step-functions-kind-statemachine--per-execution-role-authority-probe-proven)** | kind: StateMachine/Execution + singleton controller | JSON 1.0 | Express + Parallel/Map + `.waitForTaskToken`/`.sync` + non-Lambda integrations refused |
+| **[CloudFormation](#cloudformation-the-cfn-engine-as-a-doorway-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine (~50 resource mappings) | query/XML | provisions under the caller's authority (impersonation); nested stacks + custom resources + unmapped types refused |
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
 SES (a `kind: EmailSender` exists), and the rest
@@ -924,6 +927,46 @@ resolves to the assumed role via `GetCallerIdentity`, can GetObject the bucket i
 execution to `ABORTED`; `GetExecutionHistory` reflects the real retry + catch transitions; and the negatives
 (running under a role the caller is not trusted to pass → `AccessDenied`; an unsupported `Parallel` definition
 → `InvalidDefinition`). Per-execution role authority requires STS enabled (a Vault `sts/signing-key`).
+
+### CloudFormation (the cfn engine as a doorway; caller-authority via impersonation; probe-proven)
+
+The AWS CloudFormation API (SigV4 service `cloudformation`, query protocol) over the platform's owned cfn
+engine (`github.com/harn3ss/open-infra/cfn` — the same engine behind the `cfn` CLI, refactored into an
+importable package). Implemented: `CreateStack`/`UpdateStack`/`DeleteStack`, `CreateChangeSet`/
+`DescribeChangeSet`/`ExecuteChangeSet`/`DeleteChangeSet`, `DescribeStacks`/`DescribeStackResources`/
+`ListStacks`, `ValidateTemplate`, and `DetectStackDrift`/`DescribeStackDriftDetectionStatus`/
+`DescribeStackResourceDrifts`. Long operations are asynchronous like AWS (validate synchronously, run the
+engine in the background, poll `DescribeStacks`); the ~50-entry resource-type→kind mapping table (its plan
+contract) lives in `cfn/mapping.go`.
+
+**Authority — the way AWS does it, and the reason a CloudFormation doorway is safe.** CloudFormation is an
+*orchestrator*: it provisions a whole stack of heterogeneous resources on the caller's behalf. AWS never
+uses CloudFormation's own service permissions to create your resources — by default it provisions with the
+**calling principal's** IAM permissions (or, in role mode, a stack `RoleARN` it assumes). This doorway does
+the same: it drives the engine through an Applier that runs **every resource operation impersonating the
+caller** (`Impersonate-User: openinfra:<sub>` + their groups), so the API server's RBAC and the Cedar
+admission webhook bound the entire stack to exactly what the caller may do — the same bounded impersonation
+the console uses on `/api/k8s`, pinned to the four `openinfra:` groups (never `system:masters`). A stack
+therefore *cannot* provision beyond the caller's authority; the confused-deputy blast radius is structurally
+impossible. Only the doorway's own bookkeeping — the stack-record, change-set and drift ConfigMaps in the
+`open-infra-cfn` namespace — is written with the shim's ServiceAccount (the analog of AWS's service-side
+stack metadata, not a customer resource). A stack `roleArn` (AWS's role mode) is the natural follow-on,
+reusing the STS→groups mechanism from Step Functions.
+
+**Refused, not faked.** An unsupported resource type refuses the WHOLE stack at validation, before anything
+is created — partial creation is the failure mode that matters most for an orchestrator. `mapping.go` is the
+honest contract: `Custom::*` and any unmapped type are refused, and types that map at plan but have no
+faithful create translator (an IAM Role, an EFS filesystem, a NAT gateway whose IP the template can't carry)
+are marked plan-recognized-but-not-deployable and refused at deploy. Nested stacks and Lambda-backed custom
+resources are out of scope.
+
+`probe/aws-shim-cloudformation.sh` proves, against the deployed shim + engine: a multi-resource stack
+deploys in **dependency order** (CREATE_COMPLETE); an unsupported type is **refused whole at validation with
+nothing created**; a **change set previews** an update (Add) without applying it, then ExecuteChangeSet
+applies it; **drift** is detected after an out-of-band change; DeleteStack removes what was created; and
+**authority both directions** — an admin's stack provisions, while a *reader's* identical stack ends
+CREATE_FAILED with nothing created, because the engine runs as the reader (who cannot create the resource),
+not as the shim.
 
 ## The compatibility probe
 

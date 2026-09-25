@@ -4,6 +4,12 @@ open-infra can read an AWS CloudFormation template and tell you, resource by res
 whether it can provision it on open-infra — and exactly what it cannot. It can then
 provision the supported ones as a live, tracked stack. This is the `cfn` engine.
 
+The same engine is also fronted by the **AWS CloudFormation API** on the aws-shim, so an
+unmodified `aws cloudformation` client / CDK can drive it (CreateStack, change sets, drift,
+DeleteStack) — there, a stack provisions under the *caller's* own authority via impersonation,
+the way AWS does it. See [`docs/aws-shim.md`](aws-shim.md#cloudformation-the-cfn-engine-as-a-doorway-caller-authority-via-impersonation-probe-proven).
+The CLI below is the operator-run path (it uses your kubeconfig's ambient identity).
+
 For the broader migration picture — CDK, Amplify hosting, and what is deliberately
 out of scope — see [`docs/aws-migration.md`](aws-migration.md).
 
