@@ -7,6 +7,17 @@ the product's public contract.
 ## Unreleased
 
 ### AWS compatibility (shim)
+- **CloudWatch metrics + alarms doorway (opt-in).** The shim now fronts a fifteenth service — **CloudWatch
+  metrics and alarms** (the other half of CloudWatch; Logs shipped in v3.0.0) — over the AWS query protocol.
+  `PutMetricData`/`GetMetricStatistics`/`GetMetricData`/`ListMetrics` with faithful period aggregation
+  (Average/Sum/Minimum/Maximum/SampleCount + percentiles), where a metric's identity is namespace + name +
+  **dimensions**. The crux: alarms **genuinely evaluate** — an in-process evaluator transitions
+  OK/ALARM/INSUFFICIENT_DATA per EvaluationPeriods/DatapointsToAlarm/TreatMissingData/ComparisonOperator and
+  **fires SNS AlarmActions** on entry to ALARM (an alarm that never evaluates is worse than absent, so a
+  non-SNS action target is refused at PutMetricAlarm). Backend is Postgres + the owned evaluator (not
+  Prometheus), for exact AWS semantics. Authorization is at **namespace granularity** (cross-tenant metric
+  read is denied). Dashboards and metric-math expressions are refused. Proven by `probe/aws-shim-cloudwatch.sh`
+  (exit 0 live). See [`docs/aws-shim.md`](docs/aws-shim.md).
 - **API Gateway (HTTP API v2) doorway (opt-in).** The shim now fronts a fourteenth service — **API Gateway
   HTTP APIs** — completing the AWS serverless triad (API Gateway → Lambda → DynamoDB). Two planes: the
   apigatewayv2 **control plane** (restJson1 over REST paths — apis/routes/integrations/stages/authorizers,
