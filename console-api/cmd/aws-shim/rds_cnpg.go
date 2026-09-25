@@ -72,10 +72,6 @@ func (r *rdsCNPG) createInstance(ctx context.Context, p createInstanceParams) er
 	if _, err := r.cs.CoreV1().Secrets(r.ns).Create(ctx, &masterSec, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create master secret: %w", err)
 	}
-	sc := "longhorn"
-	if p.storageEncrypted {
-		sc = "longhorn-encrypted" // genuine at-rest encryption (Longhorn LUKS), not a claimed flag
-	}
 	cl := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Cluster",
@@ -96,7 +92,7 @@ func (r *rdsCNPG) createInstance(ctx context.Context, p createInstanceParams) er
 		},
 		"spec": map[string]any{
 			"instances": int64(1),
-			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", p.allocatedGB), "storageClass": sc},
+			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", p.allocatedGB), "storageClass": "longhorn"},
 			"bootstrap": map[string]any{"initdb": map[string]any{
 				"database": p.dbName,
 				"owner":    p.masterUser,
@@ -125,10 +121,6 @@ func (r *rdsCNPG) createRestoredInstance(ctx context.Context, newID, backupName 
 		dup := secretMasterCred(secretName, r.ns, string(sec.Data["username"]), string(sec.Data["password"]))
 		_, _ = r.cs.CoreV1().Secrets(r.ns).Create(ctx, &dup, metav1.CreateOptions{})
 	}
-	sc := "longhorn"
-	if src.storageEncrypted {
-		sc = "longhorn-encrypted"
-	}
 	cl := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Cluster",
@@ -149,7 +141,7 @@ func (r *rdsCNPG) createRestoredInstance(ctx context.Context, newID, backupName 
 		},
 		"spec": map[string]any{
 			"instances": int64(1),
-			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", src.allocatedGB), "storageClass": sc},
+			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", src.allocatedGB), "storageClass": "longhorn"},
 			"resources": resourcesFor(src.instanceClass),
 			"backup":    map[string]any{"volumeSnapshot": map[string]any{"className": "longhorn-snapshot"}},
 			// Recover from the volume snapshot(s) the Backup produced.
