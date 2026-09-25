@@ -42,6 +42,7 @@ WORKDIR /src
 # (hence the repo-root context).
 COPY dynamodb/ dynamodb/
 COPY policyengine/ policyengine/
+COPY cfn/ cfn/
 
 # Module graph first for layer caching (re-downloads only when go.mod/sum change).
 COPY console-api/go.mod console-api/go.sum console-api/
