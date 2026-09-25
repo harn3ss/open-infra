@@ -177,7 +177,11 @@ ev "$WAK" "$WSK" put-rule --name "$PRULE" --event-pattern '{"source":["probe.app
 CREATED_RULES+=("$PRULE")
 ev "$WAK" "$WSK" put-targets --rule "$PRULE" --targets "Id=t1,Arn=$PATQ_ARN" >/dev/null 2>&1 || fail "put-targets (pattern) failed"
 log "put-events a MATCHING event — must be delivered"
-ev "$WAK" "$WSK" put-events --entries "Source=probe.app,DetailType=OrderPlaced,Detail={\"id\":\"$SFX\"},EventBusName=default" >/dev/null 2>&1 || fail "put-events (match) failed"
+# put-events Detail is a JSON string; the CLI shorthand cannot carry nested JSON, so pass the entries as
+# a JSON document via file:// (this is a CLI-parsing constraint, not a shim behavior).
+MATCH_JSON="$(mktemp)"; printf '[{"Source":"probe.app","DetailType":"OrderPlaced","Detail":"{\\"id\\":\\"%s\\"}","EventBusName":"default"}]' "$SFX" > "$MATCH_JSON"
+ev "$WAK" "$WSK" put-events --entries "file://$MATCH_JSON" >/dev/null 2>"$PWD/.eb_pe" || fail "put-events (match) failed: $(cat "$PWD/.eb_pe")"
+rm -f "$PWD/.eb_pe" "$MATCH_JSON"
 matched=0; md=$(( $(date +%s) + 40 ))
 while [ "$(date +%s)" -lt "$md" ]; do
   while IFS= read -r b; do [ -n "$b" ] && matched=$((matched+1)); done < <(drain "$PATQ_URL")
@@ -186,7 +190,9 @@ done
 [ "$matched" -ge 1 ] || fail "a matching event was NOT delivered to the pattern rule's target"
 log "  ✓ matching event delivered"
 log "put-events a NON-MATCHING event — must NOT be delivered"
-ev "$WAK" "$WSK" put-events --entries "Source=probe.app,DetailType=SomethingElse,Detail={},EventBusName=default" >/dev/null 2>&1 || fail "put-events (nomatch) failed"
+NOMATCH_JSON="$(mktemp)"; printf '[{"Source":"probe.app","DetailType":"SomethingElse","Detail":"{}","EventBusName":"default"}]' > "$NOMATCH_JSON"
+ev "$WAK" "$WSK" put-events --entries "file://$NOMATCH_JSON" >/dev/null 2>&1 || fail "put-events (nomatch) failed"
+rm -f "$NOMATCH_JSON"
 sleep 15; nomatch=0
 while IFS= read -r b; do [ -n "$b" ] && nomatch=$((nomatch+1)); done < <(drain "$PATQ_URL")
 [ "$nomatch" -eq 0 ] || fail "a NON-matching event was delivered ($nomatch) — pattern matched too loosely"
