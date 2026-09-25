@@ -8,9 +8,9 @@ import (
 func TestSecretNameFromID(t *testing.T) {
 	cases := map[string]string{
 		"my-secret": "my-secret",
-		"arn:aws:secretsmanager:us-east-1:open-infra:secret:my-secret-AbCdEf": "my-secret",
+		"arn:aws:secretsmanager:us-east-1:open-infra:secret:my-secret-AbCdEf":           "my-secret",
 		"arn:aws:secretsmanager:us-east-1:open-infra:secret:has-hyphens-in-name-123456": "has-hyphens-in-name",
-		"arn:aws:secretsmanager:us-east-1:open-infra:secret:plainname":                 "plainname",
+		"arn:aws:secretsmanager:us-east-1:open-infra:secret:plainname":                  "plainname",
 	}
 	for in, want := range cases {
 		if got := secretNameFromID(in); got != want {
