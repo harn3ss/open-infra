@@ -33,6 +33,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -87,7 +88,7 @@ func (h *kmsHandler) authFailure(w http.ResponseWriter, _ *http.Request, request
 // (kms:Encrypt vs kms:Decrypt) enforces the exact separation at key granularity.
 func verbForKMSOp(op string) (string, bool) {
 	switch op {
-	case "DescribeKey", "ListKeys", "ListAliases", "GetKeyRotationStatus", "Decrypt":
+	case "DescribeKey", "ListKeys", "ListAliases", "GetKeyRotationStatus", "Decrypt", "GenerateRandom":
 		return "get", true
 	case "CreateKey", "CreateAlias", "UpdateAlias", "Encrypt", "GenerateDataKey",
 		"GenerateDataKeyWithoutPlaintext", "ReEncrypt", "EnableKey", "DisableKey",
@@ -142,15 +143,21 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		}
 	}
 
+	// Carry the resolved open-infra principal on the context so every audit record — allowed OR denied —
+	// records *who*, not just the access-key id (AU-2/AU-9, the compliance stake of this doorway).
+	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+
 	// One policy world: the coarse impersonated SubjectAccessReview (resource-agnostic, as every front door in v1).
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, scopeKeyID); !allowed {
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, scopeKeyID); !allowed {
+		h.auditDeny(ctx, op, scopeKeyID, reason)
 		writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
 	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the key when we have one; this
 	// is where kms:Encrypt is separable from kms:Decrypt for the same principal on the same key.
 	if scopeKeyID != "" {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "kms:"+op, "Key", scopeKeyID, r); denied {
+		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "kms:"+op, "Key", scopeKeyID, r); denied {
+			h.auditDeny(ctx, op, scopeKeyID, reason)
 			writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
 		}
@@ -166,7 +173,6 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 
-	ctx := r.Context()
 	switch op {
 	case "CreateKey":
 		h.createKey(ctx, w, requestID, body)
@@ -190,6 +196,8 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.generateDataKey(ctx, w, requestID, body, true)
 	case "GenerateDataKeyWithoutPlaintext":
 		h.generateDataKey(ctx, w, requestID, body, false)
+	case "GenerateRandom":
+		h.generateRandom(ctx, w, requestID, body)
 	case "ReEncrypt":
 		h.reEncrypt(ctx, w, requestID, body)
 	case "EnableKey":
@@ -252,7 +260,7 @@ func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, reque
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "CreateKey", keyID, "")
+	h.audit(ctx, "CreateKey", keyID)
 	writeKMSJSON(w, requestID, map[string]any{"KeyMetadata": h.keyMetadataJSON(m)})
 }
 
@@ -295,7 +303,7 @@ func (h *kmsHandler) setKeyEnabled(ctx context.Context, w http.ResponseWriter, r
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, map[bool]string{true: "EnableKey", false: "DisableKey"}[enabled], m.KeyID, "")
+	h.audit(ctx, map[bool]string{true: "EnableKey", false: "DisableKey"}[enabled], m.KeyID)
 	writeKMSJSON(w, requestID, map[string]any{})
 }
 
@@ -320,7 +328,7 @@ func (h *kmsHandler) setRotation(ctx context.Context, w http.ResponseWriter, req
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, map[bool]string{true: "EnableKeyRotation", false: "DisableKeyRotation"}[on], m.KeyID, "")
+	h.audit(ctx, map[bool]string{true: "EnableKeyRotation", false: "DisableKeyRotation"}[on], m.KeyID)
 	writeKMSJSON(w, requestID, map[string]any{})
 }
 
@@ -355,7 +363,7 @@ func (h *kmsHandler) scheduleKeyDeletion(ctx context.Context, w http.ResponseWri
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "ScheduleKeyDeletion", m.KeyID, "")
+	h.audit(ctx, "ScheduleKeyDeletion", m.KeyID)
 	writeKMSJSON(w, requestID, map[string]any{
 		"KeyId":               m.KeyID,
 		"DeletionDate":        epoch(deletionDate),
@@ -378,7 +386,7 @@ func (h *kmsHandler) cancelKeyDeletion(ctx context.Context, w http.ResponseWrite
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "CancelKeyDeletion", m.KeyID, "")
+	h.audit(ctx, "CancelKeyDeletion", m.KeyID)
 	writeKMSJSON(w, requestID, map[string]any{"KeyId": m.KeyID, "KeyState": "Disabled"})
 }
 
@@ -402,7 +410,7 @@ func (h *kmsHandler) createAlias(ctx context.Context, w http.ResponseWriter, req
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "CreateAlias", m.KeyID, name)
+	h.audit(ctx, "CreateAlias", m.KeyID, "alias", name)
 	writeKMSJSON(w, requestID, map[string]any{})
 }
 
@@ -422,7 +430,7 @@ func (h *kmsHandler) updateAlias(ctx context.Context, w http.ResponseWriter, req
 		writeKMSError(w, http.StatusBadRequest, "NotFoundException", requestID, "The specified alias does not exist.")
 		return
 	}
-	h.audit(ctx, "UpdateAlias", m.KeyID, name)
+	h.audit(ctx, "UpdateAlias", m.KeyID, "alias", name)
 	writeKMSJSON(w, requestID, map[string]any{})
 }
 
@@ -437,7 +445,7 @@ func (h *kmsHandler) deleteAlias(ctx context.Context, w http.ResponseWriter, req
 		writeKMSError(w, http.StatusBadRequest, "NotFoundException", requestID, "The specified alias does not exist.")
 		return
 	}
-	h.audit(ctx, "DeleteAlias", "", name)
+	h.audit(ctx, "DeleteAlias", "", "alias", name)
 	writeKMSJSON(w, requestID, map[string]any{})
 }
 
@@ -478,6 +486,16 @@ func (h *kmsHandler) encrypt(ctx context.Context, w http.ResponseWriter, request
 		writeKMSError(w, http.StatusBadRequest, "ValidationException", requestID, "Plaintext must not be empty.")
 		return
 	}
+	// AWS caps direct Encrypt at 4 KB of plaintext — the practical reason envelope encryption (GenerateDataKey)
+	// exists. Enforce it so an app hitting the limit gets the real error, never a silent truncation.
+	if raw, derr := base64.StdEncoding.DecodeString(plaintext); derr != nil {
+		writeKMSError(w, http.StatusBadRequest, "ValidationException", requestID, "Plaintext must be valid base64.")
+		return
+	} else if len(raw) > 4096 {
+		writeKMSError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"1 validation error detected: Value at 'plaintext' failed to satisfy constraint: Member must have length less than or equal to 4096.")
+		return
+	}
 	aad, err := encryptionContextAAD(body["EncryptionContext"])
 	if err != nil {
 		writeKMSError(w, http.StatusBadRequest, "ValidationException", requestID, err.Error())
@@ -488,7 +506,7 @@ func (h *kmsHandler) encrypt(ctx context.Context, w http.ResponseWriter, request
 		h.cryptoErr(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "Encrypt", m.KeyID, "")
+	h.audit(ctx, "Encrypt", m.KeyID, "encryptionContext", contextKeys(body["EncryptionContext"]))
 	writeKMSJSON(w, requestID, map[string]any{
 		"CiphertextBlob":      encodeBlob(m.KeyID, ct),
 		"KeyId":               m.Arn,
@@ -532,7 +550,7 @@ func (h *kmsHandler) decrypt(ctx context.Context, w http.ResponseWriter, request
 		h.cryptoErr(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "Decrypt", m.KeyID, "")
+	h.audit(ctx, "Decrypt", m.KeyID, "encryptionContext", contextKeys(body["EncryptionContext"]))
 	writeKMSJSON(w, requestID, map[string]any{
 		"Plaintext":           plaintext, // Vault returns base64; JSON blob == base64
 		"KeyId":               m.Arn,
@@ -576,8 +594,27 @@ func (h *kmsHandler) generateDataKey(ctx context.Context, w http.ResponseWriter,
 	if withPlaintext {
 		out["Plaintext"] = plaintextB64 // JSON blob == base64
 	}
-	h.audit(ctx, "GenerateDataKey", m.KeyID, "")
+	h.audit(ctx, "GenerateDataKey", m.KeyID, "encryptionContext", contextKeys(body["EncryptionContext"]))
 	writeKMSJSON(w, requestID, out)
+}
+
+// generateRandom returns cryptographically-random bytes. It needs no CMK (no key material is involved),
+// so it does not touch Vault Transit — the shim's own crypto/rand is the source, exactly as KMS's own
+// GenerateRandom is unrelated to any key.
+func (h *kmsHandler) generateRandom(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	n := toInt(body["NumberOfBytes"])
+	if n < 1 || n > 1024 {
+		writeKMSError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"NumberOfBytes must be between 1 and 1024.")
+		return
+	}
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	h.audit(ctx, "GenerateRandom", "", "bytes", n)
+	writeKMSJSON(w, requestID, map[string]any{"Plaintext": base64.StdEncoding.EncodeToString(b)})
 }
 
 func (h *kmsHandler) reEncrypt(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -621,7 +658,7 @@ func (h *kmsHandler) reEncrypt(ctx context.Context, w http.ResponseWriter, reque
 		h.cryptoErr(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "ReEncrypt", destM.KeyID, "from:"+srcM.KeyID)
+	h.audit(ctx, "ReEncrypt", destM.KeyID, "from", srcM.KeyID)
 	writeKMSJSON(w, requestID, map[string]any{
 		"CiphertextBlob":                 encodeBlob(destM.KeyID, newCT),
 		"SourceKeyId":                    srcM.Arn,
@@ -762,15 +799,24 @@ func (h *kmsHandler) invalidState(w http.ResponseWriter, requestID, keyID, why s
 		h.keyARN(keyID)+" "+why+".")
 }
 
-// audit emits a structured audit line for a KMS mutation/crypto op (AC-2/AU-2). The scrubbed fields —
-// key id, op, and (for aliases) alias name — never include plaintext or ciphertext.
-func (h *kmsHandler) audit(ctx context.Context, op, keyID, extra string) {
-	args := []any{"service", "kms", "op", op}
+// audit emits a structured audit record for a KMS operation (AC-2/AU-2/AU-9): who (the resolved
+// open-infra principal), which op, which key, the decision, and any op-specific fields (kv pairs) — never
+// plaintext or ciphertext. EncryptionContext is safe to log (KMS itself forbids secrets in it) and is
+// what an auditor correlates on. This is the record a compliance reviewer reads to evidence SC-12.
+func (h *kmsHandler) audit(ctx context.Context, op, keyID string, kv ...any) {
+	args := []any{"service", "kms", "op", op, "decision", "allow", "principal", principalFromCtx(ctx)}
 	if keyID != "" {
 		args = append(args, "keyId", keyID)
 	}
-	if extra != "" {
-		args = append(args, "detail", extra)
+	args = append(args, kv...)
+	h.logger.InfoContext(ctx, "kms audit", args...)
+}
+
+// auditDeny records a denied KMS operation (the other half of "allowed or denied").
+func (h *kmsHandler) auditDeny(ctx context.Context, op, keyID, reason string) {
+	args := []any{"service", "kms", "op", op, "decision", "deny", "principal", principalFromCtx(ctx), "reason", reason}
+	if keyID != "" {
+		args = append(args, "keyId", keyID)
 	}
 	h.logger.InfoContext(ctx, "kms audit", args...)
 }
@@ -794,9 +840,39 @@ func (h *kmsHandler) reapDeleted(ctx context.Context) error {
 			h.logger.Warn("kms metadata delete failed after crypto-erase", "keyId", id, "error", err.Error())
 			continue
 		}
-		h.audit(ctx, "CryptoErase", id, "deletion window elapsed")
+		h.audit(ctx, "CryptoErase", id, "reason", "deletion window elapsed")
 	}
 	return nil
+}
+
+// --- principal on context (for the audit "who") ---
+
+type principalCtxKey struct{}
+
+func withPrincipal(ctx context.Context, principal string) context.Context {
+	return context.WithValue(ctx, principalCtxKey{}, principal)
+}
+
+func principalFromCtx(ctx context.Context) string {
+	if p, ok := ctx.Value(principalCtxKey{}).(string); ok && p != "" {
+		return p
+	}
+	return "unknown"
+}
+
+// contextKeys returns the sorted key names of an EncryptionContext for the audit line (keys, not values,
+// keep the record compact while still letting an auditor see the binding was present). "" when absent.
+func contextKeys(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
 }
 
 // --- pure helpers ---
