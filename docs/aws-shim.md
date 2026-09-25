@@ -12,14 +12,15 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Fourteen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Fifteen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
 > a documentdb Postgres for transactions), **SQS**, **SNS**, **KMS** (Vault Transit), **Secrets Manager**
 > (Vault-KMS-encrypted), **EventBridge** (scheduled + event-driven), **RDS** (real PostgreSQL via
 > CloudNativePG), **CloudWatch Logs**, **SSM Parameter Store** (Vault-KMS-encrypted SecureString), and
-> **API Gateway** (HTTP API v2 — the runtime HTTP→Lambda proxy, completing the serverless triad).
+> **API Gateway** (HTTP API v2 — the runtime HTTP→Lambda proxy, completing the serverless triad), and
+> **CloudWatch metrics + alarms** (alarms that genuinely evaluate and fire SNS actions).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -127,10 +128,11 @@ the sections below; the one-line summary:
 | **[CloudWatch Logs](#cloudwatch-logs-postgres-backed-json-protocol-probe-proven)** | Postgres | JSON 1.1 | Logs Insights refused; retention genuinely enforced |
 | **[SSM Parameter Store](#ssm-parameter-store-postgres--kms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted SecureString | JSON 1.1 | Standard tier only; Advanced/policies refused |
 | **[API Gateway (HTTP API v2)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda proxy | restJson1 (REST paths) | REST API v1 + non-Lambda integrations refused |
+| **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): Kinesis, ECS/EKS, Route 53,
-Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), CloudWatch
-metrics/alarms, and the rest of the AWS surface. Adding a service is one registry entry; it
+Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), and the rest of the AWS
+surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
 service it hasn't made faithful.
 
@@ -739,6 +741,44 @@ status + headers, the 1.0-requires-structured rule, and upstream-error→502) is
 unit tests (`apigateway_test.go`), since the public echo image the probe uses does not emit a JSON
 `statusCode`; the live probe proves the event contract and the response-becomes-the-body (2.0 simplified)
 path. See [`examples/apigw-lambda/`](../examples/apigw-lambda/) for the full handler contract.
+
+### CloudWatch (metrics + alarms; Postgres-backed, owned evaluator; query protocol; probe-proven)
+
+The other half of CloudWatch (Logs shipped above): applications and the AWS SDK emit custom metrics with
+`PutMetricData`, dashboards and autoscaling read them back, and **alarms** turn a metric breach into a
+notification — the operational monitoring an ops team needs to run the platform. Spoken as the AWS **query
+protocol** (form request, XML response), the SNS/RDS family. Implemented: `PutMetricData`,
+`GetMetricStatistics`, `GetMetricData`, `ListMetrics`, `PutMetricAlarm`, `DescribeAlarms`, `DeleteAlarms`,
+`SetAlarmState`.
+
+**Backend decision: Postgres + an owned evaluator, not Prometheus** (the same reasoning as CloudWatch Logs).
+AWS alarm semantics — `EvaluationPeriods` / `DatapointsToAlarm` / `TreatMissingData` / `ComparisonOperator`
++ SNS actions — do not map onto Prometheus recording/alerting rules, and **an alarm that is created but never
+evaluates is worse than absent** (the operator sees it in `DescribeAlarms` and believes they have coverage
+they do not). Datapoints are SQL rows; an in-process evaluator (like the EventBridge scheduler) aggregates
+each alarm over its evaluation window and transitions `OK`/`ALARM`/`INSUFFICIENT_DATA`, firing SNS
+`AlarmActions` on entry to `ALARM`. `SetAlarmState` also fires actions, as AWS does.
+
+Faithful over real round-trips: a metric's identity is **namespace + name + dimensions** (a datapoint on a
+different dimension value is a different time series — never silently merged into a wrong aggregate);
+`GetMetricStatistics` aggregates over the `Period` with `Average`/`Sum`/`Minimum`/`Maximum`/`SampleCount`
+and **percentiles** (`ExtendedStatistics` `pNN`); `StatisticValues` (pre-aggregated min/max/sum/count) are
+honored; millisecond/second timestamps as with Logs. Authorization is the one policy world at **namespace
+granularity** — a tenant cannot write into or **read** another tenant's namespace (cross-tenant
+`GetMetricData` is a data-exposure hole, the same shape as cross-tenant log read).
+
+**Deliberate carve-outs, refused honestly:** dashboards (`PutDashboard`); **metric-math expressions** in
+`GetMetricData` (refused rather than returning wrong math — a dashboard computing the wrong number is worse
+than one that errors); and **alarm actions that are not an SNS topic** are refused at `PutMetricAlarm` rather
+than accepted as an action that never fires. The alarm evaluation is a faithful approximation of AWS's
+M-of-N-with-missing-data algorithm, not a byte-exact reimplementation.
+
+`probe/aws-shim-cloudwatch.sh` proves this end to end — `PutMetricData` then `GetMetricStatistics` returns
+the value aggregated correctly over the period (`Sum`/`Average`/`Maximum`/`Minimum`/`SampleCount`) with a
+**dimension on a different value excluded** from the aggregate, a `p50` percentile computes, an alarm
+**genuinely transitions to `ALARM`** on breaching data and **fires its SNS action** (received through the
+SNS→SQS doorways), and `TreatMissingData=breaching` is honored — plus the negatives: wrong secret →
+signature mismatch, and a **cross-tenant metric read is denied**.
 
 ## The compatibility probe
 
