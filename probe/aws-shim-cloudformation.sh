@@ -43,7 +43,14 @@ AAK=""; ASK=""; RAK=""; RSK=""
 
 cfn()  { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation "$@"; }
 tget() { kubectl -n "$CFN_NS" get tables.openinfra.dev "$@" ; }
-tbl_exists() { tget -l "cfn.openinfra.dev/stack=$1,cfn.openinfra.dev/logical-id=$2" --no-headers 2>/dev/null | grep -q . ; }
+# The engine names a resource k8sName(logicalId) (lowercase); a Crossplane claim keeps the
+# cfn.openinfra.dev/stack label but not the logical-id one. So resolve by physical name + verify the stack.
+lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+tbl_name() { lc "$1"; } # <logicalId> -> physical Table name
+tbl_exists() { # <stack> <logicalId>
+  local s; s="$(kubectl -n "$CFN_NS" get table.openinfra.dev "$(tbl_name "$2")" -o jsonpath='{.metadata.labels.cfn\.openinfra\.dev/stack}' 2>/dev/null || true)"
+  [ "$s" = "$1" ]
+}
 
 cleanup() {
   cfn "$AAK" "$ASK" delete-stack --stack-name "$STACK"  >/dev/null 2>&1 || true
@@ -172,9 +179,7 @@ log "    ✓ UPDATE_COMPLETE, Logs created"
 
 # --- 4. drift after an out-of-band change ----------------------------------------------------------
 log "drift: delete Logs OUT OF BAND (not via CFN) → detect-stack-drift → DRIFTED"
-LOGS_NAME="$(tget -l "cfn.openinfra.dev/stack=$STACK,cfn.openinfra.dev/logical-id=Logs" -o name 2>/dev/null | head -1)"
-[ -n "$LOGS_NAME" ] || fail "could not resolve the Logs table object"
-kubectl -n "$CFN_NS" delete "$LOGS_NAME" --wait=true >/dev/null 2>&1 || fail "could not delete Logs out of band"
+kubectl -n "$CFN_NS" delete table.openinfra.dev "$(tbl_name Logs)" --wait=true >/dev/null 2>&1 || fail "could not delete Logs out of band"
 DID="$(cfn "$AAK" "$ASK" detect-stack-drift --stack-name "$STACK" --query StackDriftDetectionId --output text 2>/dev/null || true)"
 [ -n "$DID" ] && [ "$DID" != "None" ] || fail "detect-stack-drift returned no detection id"
 DSTATUS="$(cfn "$AAK" "$ASK" describe-stack-drift-detection-status --stack-drift-detection-id "$DID" --query StackDriftStatus --output text 2>/dev/null || true)"
