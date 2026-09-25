@@ -336,6 +336,56 @@ bare payload; a `FilterPolicy` and an `https` subscription are both **refused**;
 wrong secret → `SignatureDoesNotMatch`, and a **publish-only principal (granted `sns:Publish` via Cedar)
 is denied `sns:Subscribe`** while still able to publish.
 
+### KMS (Vault Transit-backed; JSON protocol; built, live proof pending)
+
+The KMS front door speaks the AWS **JSON protocol** (`X-Amz-Target: TrentService.<Op>`). A customer master
+key (CMK) is a **HashiCorp Vault Transit key** named `kms-<keyId>`; the shim performs every cryptographic
+operation *in Vault* and the key material **never leaves it**, so the trust boundary is exactly Vault's,
+not this process's. The shim reaches Transit with its **own** ServiceAccount token (k8s-auth role
+`aws-shim-kms`, whose Vault policy is scoped to the `kms-*` key prefix only — it cannot touch the
+platform's encryption/volume-crypto keys). CMK **metadata** (lifecycle state, description, rotation flag,
+aliases) lives in the shared SQS/SNS Postgres; only the metadata, never key bytes.
+
+Supported: `CreateKey`, `DescribeKey`, `ListKeys`, `Create`/`Update`/`Delete`/`ListAliases`, `Encrypt`,
+`Decrypt`, `GenerateDataKey`(`WithoutPlaintext`), `ReEncrypt`, `Enable`/`DisableKey`,
+`Enable`/`DisableKeyRotation`, `GetKeyRotationStatus`, `ScheduleKeyDeletion`, `CancelKeyDeletion`.
+
+Faithful semantics that matter:
+- **Envelope encryption** — `GenerateDataKey` returns a plaintext data key plus its ciphertext under the CMK.
+- **EncryptionContext binds cryptographically.** It is passed to Vault as AEAD **associated-data** on the
+  `aes256-gcm96` cipher, so a `Decrypt` with a different (or absent) context **fails the tag check** —
+  never a silent accept. This is the property emulators most often fake.
+- **Lifecycle state machine** — `Disabled` and `PendingDeletion` keys refuse crypto (`DisabledException`
+  / `KMSInvalidStateException`); `ScheduleKeyDeletion` enforces the 7–30 day window and
+  `CancelKeyDeletion` restores the key. When the window elapses a reaper **crypto-erases** the Vault key
+  (after which no ciphertext under it can ever be decrypted) and drops the metadata.
+- **Rotation is rotate-safe** — `EnableKeyRotation` rotates the Transit key; ciphertext from before a
+  rotation still decrypts.
+- The `CiphertextBlob` is an opaque, self-describing envelope (`base64(json{v,k,c})`) carrying the key id,
+  so `Decrypt` needs no `KeyId` — exactly as AWS.
+- Authorized through the one policy world; **`kms:Encrypt` is separable from `kms:Decrypt`** at key
+  granularity (for `Decrypt` the key is resolved from the ciphertext blob so the fine-grained check still
+  scopes correctly).
+
+**Deliberate divergences, refused honestly (never silently downgraded):**
+- **Symmetric only.** `CreateKey` with an asymmetric/HMAC `KeyUsage`/`KeySpec` (RSA, ECC, SIGN_VERIFY,
+  GENERATE_VERIFY_MAC) is **refused** (`UnsupportedOperationException`); `Sign`/`Verify`/`GetPublicKey`/
+  `GenerateMac` are not implemented. A "symmetric key masquerading as asymmetric" is precisely the
+  unevaluable defect this program refuses.
+- **No KMS key policies / grants.** Authorization is the shim's one policy world (RBAC + Cedar), not a
+  second KMS-native resource-policy engine that would silently ignore a supplied document.
+- **Automatic rotation is coarser than AWS.** Vault has no scheduled rotation, so `EnableKeyRotation`
+  rotates once immediately and records the flag; it is not AWS's yearly cadence. Documented, not hidden.
+- **Multi-Region keys, custom key stores, imported key material, and tags** are not implemented.
+
+`probe/aws-shim-kms.sh` asserts all of the above over real SDK round-trips — round-trip identity, the
+EncryptionContext binding (wrong **and** absent context rejected), envelope-key decrypt, the disable /
+schedule-deletion state machine, rotate-safety — plus the negatives: an asymmetric `CreateKey` refused, a
+wrong secret rejected on signature, and an **encrypt-only principal (granted only `kms:Encrypt` via Cedar)
+denied `kms:Decrypt`** while still able to encrypt. It has not yet been run against a live deployment
+(the `aws-shim-kms` Vault policy must be provisioned first); this section says **built, live proof
+pending** until the probe passes live, and will then be updated to *probe-proven*.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not

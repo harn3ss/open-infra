@@ -372,6 +372,11 @@ spec:
             # Secret) remains an explicit dev/override fallback when Vault is not in play.
             - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
             - { name: STS_VAULT_ROLE, value: "aws-shim-sts" }
+            # KMS front door (polyhedron#160): a CMK is a Vault Transit key named kms-<keyId>; the shim
+            # reaches Transit with its OWN SA token (k8s-auth role aws-shim-kms, policy scoped to kms-*
+            # keys only — provisioned by platform/security/vault.yaml). CMK metadata (lifecycle state,
+            # aliases) shares the SQS Postgres. VAULT_ADDR unset -> KMS answers an honest 501.
+            - { name: KMS_VAULT_ROLE, value: "aws-shim-kms" }
             # AppSync (GraphQL) → the open-appsync engine (components.openAppsync). Our own engine, so
             # no admin secret: the shim conveys the verified principal and open-appsync enforces authz
             # internally. Absent (component disabled) → the appsync service returns 502.

@@ -140,6 +140,7 @@ func run(logger *slog.Logger) error {
 	// unset (defaults to MONGO_PG_URI when that is set) -> the SQS handler answers an honest 501.
 	var sqsSt *sqsStore
 	var snsSt *snsStore
+	var kmsSt *kmsStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -160,7 +161,20 @@ func run(logger *slog.Logger) error {
 		if serr := snsSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("SNS schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS Postgres (queues, messages, topics, subscriptions)")
+		// KMS shares the same Postgres for its CMK METADATA only (lifecycle state, aliases); the
+		// cryptographic material lives in Vault Transit (see kms.go / vault_transit.go).
+		kmsSt = &kmsStore{db: db}
+		if serr := kmsSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("KMS schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS Postgres (queues, messages, topics, subscriptions, key metadata)")
+	}
+
+	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
+	// aws-shim-kms, policy scoped to kms-* keys). nil when VAULT_ADDR is unset -> KMS answers an honest 501.
+	kmsTransit := newVaultTransit()
+	if kmsTransit != nil {
+		logger.Info("KMS crypto backend enabled (Vault Transit)", slog.String("role", kmsTransit.role))
 	}
 
 	auth := &authenticator{
@@ -312,6 +326,8 @@ func run(logger *slog.Logger) error {
 	sqsH.authz = authzChecker
 	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
 	snsH.authz = authzChecker
+	kmsH := newKMSHandler(cs, authzNS, account, region, kmsTransit, kmsSt, logger)
+	kmsH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -320,6 +336,7 @@ func run(logger *slog.Logger) error {
 		"dynamodb": dynamoH,
 		"sqs":      sqsH,
 		"sns":      snsH,
+		"kms":      kmsH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
@@ -369,6 +386,25 @@ func run(logger *slog.Logger) error {
 				case <-t.C:
 					if err := sqsSt.reapExpired(context.Background()); err != nil {
 						logger.Warn("sqs retention reaper error", "error", err.Error())
+					}
+				}
+			}
+		}()
+	}
+	if kmsSt != nil && kmsTransit != nil {
+		// KMS crypto-erase reaper: destroy the Vault key material of CMKs whose deletion window has
+		// elapsed, then drop their metadata (the real, irreversible key-deletion guarantee). Exits when
+		// ctx is cancelled.
+		go func() {
+			t := time.NewTicker(10 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if err := kmsH.reapDeleted(context.Background()); err != nil {
+						logger.Warn("kms crypto-erase reaper error", "error", err.Error())
 					}
 				}
 			}

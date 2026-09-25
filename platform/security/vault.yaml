@@ -244,7 +244,27 @@ spec:
                 bound_service_account_namespaces=open-infra-aws-shim \
                 token_policies=aws-shim-sts token_ttl=20m
 
-              echo "Transit ready; reconciler + destroyer + minio-kes + parameter-reconciler + aws-shim-sts authenticate via Kubernetes auth (no stored secrets)."
+              echo "writing the aws-shim-kms policy (the KMS front door's transit access — kms-* keys only)…"
+              # The aws-shim KMS doorway (polyhedron#160) is Transit-backed: a KMS CMK is a Transit key,
+              # named kms-<keyid>. This policy lets the shim create/read/rotate/delete + encrypt/decrypt +
+              # generate data keys, but ONLY on the kms- prefix — the trailing-glob `transit/keys/kms-*`
+              # (legal only as the final char, same idiom as `sys/mounts/pki-*`) hard-fences it OUT of the
+              # encryptionkey-reconciler / volume-crypto keys. It has NO access to any key without the kms-
+              # prefix, and no access to any other mount. `delete` is included because ScheduleKeyDeletion's
+              # crypto-erase (after the waiting period) must genuinely destroy the CMK — a KMS key deletion
+              # destroys every ciphertext under it, and that authority is deliberately scoped to kms- keys.
+              vault policy write aws-shim-kms - <<'POLICY'
+              path "transit/keys/kms-*"              { capabilities = ["create", "read", "update", "delete"] }
+              path "transit/encrypt/kms-*"           { capabilities = ["update"] }
+              path "transit/decrypt/kms-*"           { capabilities = ["update"] }
+              path "transit/datakey/plaintext/kms-*" { capabilities = ["update"] }
+              POLICY
+              vault write auth/kubernetes/role/aws-shim-kms \
+                bound_service_account_names=aws-shim \
+                bound_service_account_namespaces=open-infra-aws-shim \
+                token_policies=aws-shim-kms token_ttl=20m
+
+              echo "Transit ready; reconciler + destroyer + minio-kes + parameter-reconciler + aws-shim-sts + aws-shim-kms authenticate via Kubernetes auth (no stored secrets)."
 
               # ── kind: CertificateAuthority — PKI engines + least-priv provisioner/issuer split ──
               # Same discipline as Transit above: two identities, each bound to its OWN ServiceAccount
