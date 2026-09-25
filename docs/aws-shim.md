@@ -440,7 +440,7 @@ honest rotation fields, `GetRandomPassword`, the audit record — plus the negat
 a **describe-only principal denied the value** while still seeing metadata, and an **A-scoped principal
 denied secret B**.
 
-### EventBridge (Kubernetes/JetStream-backed; JSON protocol; built, live proof pending)
+### EventBridge (Kubernetes/JetStream-backed; JSON protocol; probe-proven)
 
 The EventBridge front door speaks the AWS **JSON protocol** (`X-Amz-Target: AWSEvents.<Op>`) and drives
 the two dominant patterns: **scheduled** invocation (cron/rate → a target on a schedule) and
@@ -487,13 +487,12 @@ Authorized through the one policy world at rule/bus granularity (`events:PutRule
 reports the true state. Structured `eventbridge audit` records (principal, op, rule, target, decision) →
 Loki, including a `TargetDeliveryFailed` record for a missed delivery.
 
-`probe/aws-shim-eventbridge.sh` observes **real effects** through an SQS sink: a `rate(1 minute)` rule
-delivers **twice** (recurrence) with the correct `aws.events` envelope, `DisableRule` **stops** it, a
-six-field cron fires (a five-field one is refused), an EventPattern **admits** a matching `PutEvents` and
-**excludes** a non-matching one (and `TestEventPattern` agrees) — plus the negatives: wrong secret rejected,
-the **escalation fence** (targeting a Lambda the caller can't invoke is refused), and a DescribeRule-only
-principal denied `PutTargets`. This section says **built, live proof pending** until it passes live, then
-becomes *probe-proven*.
+`probe/aws-shim-eventbridge.sh` proves it by observing **real effects** through an SQS sink: a
+`rate(1 minute)` rule delivers **twice** (recurrence) with the correct `aws.events` envelope, `DisableRule`
+**stops** it, a six-field cron fires (a five-field one is refused), an EventPattern **admits** a matching
+`PutEvents` and **excludes** a non-matching one (and `TestEventPattern` agrees) — plus the negatives: wrong
+secret rejected, the **escalation fence** (targeting a Lambda the caller can't invoke is refused), and a
+DescribeRule-only principal denied `PutTargets`.
 
 ## The compatibility probe
 
