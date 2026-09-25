@@ -4,12 +4,31 @@
 [![Build console](https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml/badge.svg)](https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml)
 [![License: Apache-2.0](https://img.shields.io/github/license/harn3ss/open-infra)](LICENSE)
 
-> A **self-hosted cloud platform** that runs entirely inside your own trust boundary.
-> Declare intent in one `infra.yaml`, `git push`, and get an AWS-like managed surface —
-> autoscaling HTTPS apps, managed databases, object storage and queues, plus **VMs,
-> serverless + GPU inference, an analytics lake, CDC pipelines, and Active Directory** —
-> GitOps-reconciled on hardware you control and built to a **NIST 800-53 control
-> framework**: secure-by-default, least-privilege, fully audited.
+> A **self-hosted cloud that speaks AWS**, running entirely inside your own trust boundary.
+> Point your existing AWS **SDK, CLI, Terraform, or CloudFormation** at it and it answers the way AWS
+> does — SigV4-authenticated, **twelve services and counting, each backed by a real datastore and
+> proven by a real-SDK compatibility probe**. Or declare intent in one `infra.yaml` and `git push`.
+> Either way you get an AWS-like managed surface — autoscaling HTTPS apps, managed databases, object
+> storage, queues, VMs, serverless + GPU inference, an analytics lake, CDC pipelines, Active Directory —
+> GitOps-reconciled on hardware you control and built to a **NIST 800-53 control framework**:
+> secure-by-default, least-privilege, fully audited. The experience feels like AWS; the bill is $0.
+
+**Two ways in, one platform.**
+
+**1 — Your existing AWS tooling, unchanged.** Set one env var and the opt-in shim answers as AWS,
+authenticating each request's SigV4 signature against your open-infra IAM and enforcing the *same* policy
+the console does:
+
+```sh
+export AWS_ENDPOINT_URL=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566
+aws s3 cp ./report.pdf s3://reports/                       # real MinIO, behind SigV4 + RBAC
+aws sqs send-message --queue-url .../jobs --message-body '{"id":42}'
+aws rds create-db-instance --engine postgres --db-instance-identifier orders …  # a real Postgres
+aws secretsmanager get-secret-value --secret-id db/creds   # Vault-encrypted, versioned
+```
+
+**2 — Or declare intent** and let GitOps reconcile the whole desired state (hosting, DB, storage,
+queues, DNS, TLS, autoscaling) — no raw Kubernetes authored by you:
 
 ```yaml
 # infra.yaml — you write intent, the platform produces infrastructure
@@ -27,9 +46,8 @@ spec:
   queues:   [jobs]
 ```
 
-`git push` → GitHub Action builds the image → GitOps controller reconciles the
-whole desired state (hosting, DB, storage, queues, DNS, TLS, autoscaling).
-The experience feels like AWS; the bill is $0.
+Three surfaces, one set of objects and one policy world underneath: the **AWS wire protocol** (the shim),
+**`infra.yaml`/GitOps + Terraform**, and the **web console**.
 
 ---
 
@@ -88,9 +106,11 @@ CNCF projects — not a reinvention of databases or storage.
 
 Full mapping and rationale: [`docs/architecture.md`](docs/architecture.md).
 
-The table above is *concept* parity — an open-infra-native surface that feels like AWS. For apps
-that must speak the AWS **wire protocol** unchanged, an opt-in AWS-SDK shim presents an AWS-shaped
-front door — see [AWS-SDK compatibility](#aws-sdk-compatibility-the-shim) below.
+That table is **concept parity** — an open-infra-native surface that *feels* like AWS. Alongside it is
+**wire parity**: for apps (and IaC) that must speak the AWS protocol unchanged, the opt-in AWS-SDK shim
+answers as AWS for **twelve probe-proven services** — see
+[AWS-SDK compatibility](#aws-sdk-compatibility-the-shim). Concept parity to build native; wire parity to
+lift-and-shift what you already have.
 
 ---
 
@@ -183,48 +203,45 @@ same plan to cover your DNS, TLS and cloud accounts. See
 
 ## AWS-SDK compatibility (the shim)
 
-Most of open-infra is *concept* parity — a native surface that feels like AWS. For apps that must
-speak the AWS **wire protocol** unchanged, an experimental, opt-in **AWS-SDK shim** presents an
-AWS-shaped front door for a **specific, growing set of services** — not the whole AWS API. Point an
-AWS SDK at it (one env var) and it verifies the request's SigV4 signature against an open-infra
-access key, enforces the **same** RBAC + permission boundary as the console (one policy world — not
-a parallel auth), calls the real backend, and re-dresses the response in AWS's exact byte-shape.
-It fronts **S3** (over MinIO), **STS** `GetCallerIdentity`, **Lambda** `Invoke` (over Knative
-`Function`s), **AppSync** (over the open-appsync engine), and **DynamoDB** (create/read/update/
-delete/query/scan and the batch item APIs over FerretDB — transactional and TTL operations still
-return `501`).
-**Every other service — Secrets Manager, Kinesis, and the rest — returns an honest `501`**, never
-a silent fake: it is a per-service front door that graduates one service (and one operation) at a
-time, not a blanket "repoint any call."
-It is **not** an emulator — the services it does front hit durable backends, not fakes, so unlike
-LocalStack its fidelity isn't bounded by what a mock chose to implement. Coverage table and the
-graduation ladder: [`docs/aws-shim.md`](docs/aws-shim.md).
+Point an unmodified AWS SDK, CLI, Terraform, or CloudFormation at open-infra and it answers as AWS. The
+shim verifies each request's SigV4 signature against an open-infra access key, resolves the caller to their
+open-infra principal, enforces the **same** RBAC + permission boundary the console uses (**one policy
+world — not a parallel auth**), calls the real backend, and re-dresses the response in AWS's exact
+byte-shape. It is **not** an emulator: the services it fronts hit **durable backends**, not fakes, so —
+unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
+
+**Twelve services are fronted, and every one is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
+exit 0 live) — not asserted, observed:
+
+| | | |
+|---|---|---|
+| **S3** → MinIO | **SQS** → Postgres | **KMS** → Vault Transit |
+| **STS** (identity + `AssumeRole`) | **SNS** → durable SQS fan-out | **Secrets Manager** → Vault-KMS-encrypted, versioned |
+| **Lambda** → Knative `Function`s | **EventBridge** → scheduled + event-driven | **RDS** → **real PostgreSQL** (CloudNativePG) |
+| **DynamoDB** → FerretDB (+ transactions) | **AppSync** → open-appsync (experimental) | **CloudWatch Logs** → Postgres |
 
 ```sh
 # An unmodified AWS SDK / CLI, aimed at open-infra — one env var.
 export AWS_ENDPOINT_URL=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566
-aws sts get-caller-identity                                            # → your open-infra principal
-aws s3api put-object --bucket my-bucket --key hello.txt --body ./x.txt # → real MinIO, behind SigV4 + RBAC
+aws sts get-caller-identity                            # → your open-infra principal, as an ARN
+aws s3 cp ./x.txt s3://my-bucket/                      # → real MinIO, behind SigV4 + RBAC
+aws kms generate-data-key --key-id alias/app --key-spec AES_256   # → real Vault Transit envelope key
 ```
 
-The access key is verified by **recomputing and constant-time-comparing** the signature — naming a
-key without holding its secret is rejected, exactly as AWS returns `SignatureDoesNotMatch`. Access
-keys are a sub-resource of `kind: User`; authorization is the same impersonated check everything
-else uses.
+The access key is verified by **recomputing and constant-time-comparing** the signature — naming a key
+without holding its secret is rejected, exactly as AWS returns `SignatureDoesNotMatch`. Access keys are a
+sub-resource of `kind: User`; authorization is the same impersonated check everything else uses. Each
+service is a per-service handler that **graduated one at a time** — built → exercised → *proven by a probe*
+→ counted — and several carry **deliberate, documented divergences** (AppSync/open-appsync is experimental;
+RDS refuses MultiAZ/replicas/`StorageEncrypted`; SQS refuses FIFO; and so on — the honest carve-outs are
+listed per service). Services the shim has **not** made faithful — Kinesis, API Gateway, Route 53, and the
+rest of AWS — return an **honest `501`**, never a silent fake: **narrow and proven beats broad and
+hand-wavy**. "Twelve probe-proven services" is not "all of AWS"; it is a specific, verified surface.
 
-The shim is a **router with pluggable per-service handlers** — one front door, many domain experts,
-dispatched by the service each client signs for. It fronts four services today: **S3** (over MinIO),
-**STS** `GetCallerIdentity`, **Lambda** `Invoke` over `kind: Function` (Knative), and **AppSync**
-(GraphQL, over **open-appsync** — a resolver-first, VTL-faithful engine on its own graduation ladder;
-slice 1 runs live but it's **experimental**, not a full AppSync). Only **S3** carries the end-to-end compatibility probe
-so far — real AWS SDK calls asserting byte-identical put/get plus the negatives that earn the trust (a
-wrong secret rejected, a read-only principal's write denied); STS and Lambda are unit-tested and
-verified live, and each graduates to that same probe bar before it counts as proven. Services whose
-backend speaks a different wire protocol (DynamoDB→Mongo, …) are real translation work and return an
-honest `501` until built — **narrow and proven beats broad and hand-wavy**. Enable it with
-`components.awsShim: true`. Full detail —
-client setup, the identity model, the per-service matrix, and the probe — is in
-[`docs/aws-shim.md`](docs/aws-shim.md).
+Opt-in, **OFF by default** — enable with `components.awsShim: true`. Full detail — client setup, the
+identity model, the per-service matrix, the divergences, and the probes — is in
+[`docs/aws-shim.md`](docs/aws-shim.md). (For AWS templates without the wire protocol, the `cfn` engine
+ingests a CloudFormation template directly — [`docs/cloudformation.md`](docs/cloudformation.md).)
 
 (GPU-backed managed inference — `kind: Model`, open-infra's "Bedrock" — is in
 [`docs/gpu.md`](docs/gpu.md).)

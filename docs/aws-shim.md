@@ -1,4 +1,4 @@
-# AWS-SDK shim (experimental)
+# AWS-SDK shim (opt-in)
 
 The AWS shim is an **AWS-shaped front door onto open-infra's real backends**. An unmodified
 application built for the AWS SDK — pointed at the shim's endpoint — believes it is talking to AWS;
@@ -11,18 +11,20 @@ It is **not** an emulator. LocalStack/Floci *fake* AWS for throwaway testing; th
 bounded by what they chose to implement — the same false-green risk open-infra designs against
 everywhere. The shim fronts *durable* backends, not fakes.
 
-> **Status: experimental, opt-in, OFF by default.** The shim is a router with pluggable per-service
-> handlers — one front door, many domain experts. Fronted today: **S3** (over MinIO, proven
-> byte-faithful), **STS** GetCallerIdentity (identity reflection), **Lambda** Invoke (over
-> `kind: Function`/Knative), **AppSync** (GraphQL, over the **open-appsync** engine — a
-> resolver-first, VTL-faithful engine on its own graduation ladder; slice 1 runs live, experimental),
-> and **DynamoDB** (create/read/update/delete/query/scan, the batch item APIs, **atomic
-> `TransactWriteItems`**, and **TTL** — over FerretDB). It is one optional
-> AWS-shaped surface over the platform, never a core
-> dependency. Breadth is a roadmap of *earned* graduations — each service built, probed, and
-> counted the same gated way — never a claim of coverage. Services whose backend speaks a different
-> wire protocol are real translation work and return an honest `501` until
-> built, not a hand-wavy stub.
+> **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twelve
+> services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
+> exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
+> `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
+> a documentdb Postgres for transactions), **SQS**, **SNS**, **KMS** (Vault Transit), **Secrets Manager**
+> (Vault-KMS-encrypted), **EventBridge** (scheduled + event-driven), **RDS** (real PostgreSQL via
+> CloudNativePG), and **CloudWatch Logs**. Every one enforces the *same* SigV4 + one-policy-world (RBAC +
+> Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
+> core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
+> has not made faithful is an honest `501`, never a silent partial. Some carry deliberate, documented
+> **divergences and carve-outs** (AppSync/open-appsync is experimental; several services refuse specific
+> flags rather than fake them) — those are listed per service below. "Fronted and probe-proven" is not
+> "all of AWS": it is a specific, verified surface.
 
 ## Enabling it
 
@@ -103,18 +105,30 @@ The shim dispatches by the AWS service the client signed for (read from the SigV
 scope). Each service is an independent handler with its own decoder, authorization mapping, and
 error dialect.
 
-| Service | Backend | Operations | Status |
-|---|---|---|---|
-| **S3** | MinIO | `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets` | **Faithful, proven live** — byte-identical round-trip + auth/boundary negatives (`probe/aws-shim-s3.sh`) |
-| **STS** | none (identity) | `GetCallerIdentity`; `AssumeRole` + `AssumeRoleWithWebIdentity` (temporary session credentials) | **Faithful** — `GetCallerIdentity` reflects the SigV4-proven principal as an open-infra ARN; `AssumeRole` mints AES-256-GCM-sealed, **stateless** session tokens governed by the assumed `kind: Role`'s trust + data-plane policies (opt-in; sealing key **Vault-custodied**). Unit + e2e tested |
-| **Lambda** | `kind: Function` (Knative) | `Invoke` (RequestResponse + `Event` async + `DryRun`) | **Built + unit-tested** — live proof pending a deployed Function |
-| **AppSync** | open-appsync (resolver-first VTL engine) | GraphQL data plane (`POST {query,variables}`) | **Slice 1 runs live** (SigV4 → VTL resolver → data source → `{data}`, verified on-cluster); runtime **behavior-faithful** (goldens captured from a live AWS AppSync account, CI-green), broader parity experimental. Needs `components.openAppsync` |
-| **DynamoDB** | FerretDB (Mongo-wire) + its documentdb Postgres (transactions) | `CreateTable`, `DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort + pagination), `UpdateItem` (update + condition expressions), `Scan`, `BatchGetItem`, `BatchWriteItem` (capped at DynamoDB's 100/25 limits), **`TransactWriteItems`** (atomic Put/Update/Delete + `ConditionExpression`), **`TransactGetItems`** (consistent multi-item snapshot), **`UpdateTimeToLive`/`DescribeTimeToLive`** (TTL) | **Runs live** — full wire path exercised by live round-trips (`dynamo_integration_test.go`, `dynamo_transact_integration_test.go`, `-tags integration`). **Transactions:** FerretDB has no Mongo transactions, so the whole transaction surface drops to the documentdb Postgres *behind* FerretDB — one `BEGIN/COMMIT` over the same `documentdb_api` calls, with in-transaction reads (a condition/update sees the txn's own consistent state) and `TransactGetItems` on a `REPEATABLE READ` snapshot; a failed `ConditionExpression` rolls back the whole transaction with per-item `CancellationReasons` (needs `MONGO_PG_URI`). Verified live against `postgres-documentdb:17`. **TTL:** a background reaper sweeps expired items (DynamoDB TTL is epoch-number, which a Mongo Date-only TTL index can't act on). Still `501`, refused loudly not faked: `ProjectionExpression`, `ListTables`, `DeleteTable`, streams. Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions) |
-| Secrets Manager, Kinesis, IAM, Bedrock, … | Sealed Secrets, NATS, RBAC, Model | — | **Not fronted** — real protocol translation; returns `501` until built + probed |
+Every fronted service is **probe-proven** — a real AWS-SDK client drives it against a deployed shim and
+asserts the *semantics*, not just a 200 (`probe/aws-shim-<svc>.sh`, exit 0). Full detail per service is in
+the sections below; the one-line summary:
 
-Adding a service is one registry entry; it graduates the same gated way the chaos-oracle adapters
-do — built → exercised → proven by a probe → counted. The shim never claims a service it hasn't
-made faithful: an unsupported service is an honest `501`, not a silent partial.
+| Service | Backend | Protocol | Notable divergences / carve-outs (see section) |
+|---|---|---|---|
+| **[S3](#s3-faithful-proven)** | MinIO | REST/XML | path-style only |
+| **[STS](#sts-faithful)** | identity / Vault-sealed tokens | query/XML | `AssumeRole` opt-in (Vault-custodied sealing key) |
+| **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | qualifiers/versions not resolved |
+| **[AppSync](#appsync-graphql-over-open-appsync--slice-1-runs-live-experimental)** | open-appsync engine | GraphQL | **experimental**; needs `components.openAppsync` |
+| **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression`, streams `501` |
+| **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | FIFO refused (standard only) |
+| **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` protocol only; FilterPolicy/`.fifo`/http refused |
+| **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; grants/key-policies refused |
+| **[Secrets Manager](#secrets-manager-vaultkms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted values | JSON 1.1 | auto-rotation + custom `KmsKeyId` refused |
+| **[EventBridge](#eventbridge-kubernetesjetstream-backed-json-protocol-probe-proven)** | in-proc scheduler + JetStream/SQS delivery | JSON 1.1 | Lambda+SQS targets only; `RoleArn` refused |
+| **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
+| **[CloudWatch Logs](#cloudwatch-logs-postgres-backed-json-protocol-probe-proven)** | Postgres | JSON 1.1 | Logs Insights refused; retention genuinely enforced |
+
+**Still not fronted** (honest `501`, never a silent fake, until built + probed): Kinesis, ECS/EKS, Route 53,
+API Gateway, Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), SSM (a
+`kind: Parameter` exists), and the rest of the AWS surface. Adding a service is one registry entry; it
+graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
+service it hasn't made faithful.
 
 ### S3 (faithful, proven)
 
@@ -186,15 +200,16 @@ others) — that would need a per-session `jti` deny-list, which makes verificat
 built. Size the session TTL to the blast radius you can tolerate, and use (b) to cut a role's current
 sessions without a global rotation.
 
-### Lambda (built; live proof pending)
+### Lambda (Knative Function invoke; probe-proven)
 
 `Invoke` maps onto `kind: Function`: `POST /2015-03-31/functions/{name}/invocations` forwards the
 payload to the Function's cluster-local Knative address (which drives scale-from-zero) and returns
 the response, with Lambda's JSON error dialect and `X-Amz-Function-Error` semantics. Authorization
-is the same impersonated `SubjectAccessReview` (invoke → `get` on `functions`). v1 supports `RequestResponse` (sync),
-`Event` (async — durably queued via JetStream with retries + a per-function DLQ), and `DryRun`,
-resolving Functions in a single configured namespace; version qualifiers and cross-namespace
-resolution are the flagged next steps.
+is the same impersonated `SubjectAccessReview` (invoke → `create` on `functions` — invoking runs code,
+so it is a write, not a read). v1 supports `RequestResponse` (sync), `Event` (async — durably queued via
+JetStream with retries + a per-function DLQ), and `DryRun`, resolving Functions in a single configured
+namespace; version qualifiers and cross-namespace resolution are the flagged next steps. `probe/aws-shim-lambda.sh`
+proves it live (a real SDK `Invoke` of a deployed `kind: Function` round-trips).
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 
@@ -259,6 +274,27 @@ Native/neutral model first; AWS door second. See [open-appsync/README.md](../ope
 
 Each new operation or service graduates the same gated way the chaos-oracle adapters do: built →
 exercised → proven by the probe → counted.
+
+### DynamoDB (FerretDB + documentdb Postgres transactions)
+
+The DynamoDB front door speaks the **AWS JSON protocol** (`X-Amz-Target: DynamoDB_20120810.<Op>`) over
+**FerretDB** (a MongoDB wire front end on a `documentdb`-extension Postgres). Supported: `CreateTable`,
+`DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort +
+pagination), `UpdateItem` (update + condition expressions), `Scan`, `BatchGetItem`, `BatchWriteItem`
+(capped at DynamoDB's 100/25 limits), **`TransactWriteItems`** (atomic Put/Update/Delete +
+`ConditionExpression`), **`TransactGetItems`** (consistent multi-item snapshot), and
+**`UpdateTimeToLive`/`DescribeTimeToLive`**. It runs live — the full wire path is exercised by
+integration round-trips (`dynamo_integration_test.go`, `-tags integration`).
+
+**Transactions:** FerretDB has no Mongo transactions, so the whole transaction surface drops to the
+documentdb Postgres *behind* FerretDB — one `BEGIN/COMMIT` over the same `documentdb_api` calls, with
+in-transaction reads (a condition/update sees the txn's own consistent state) and `TransactGetItems` on a
+`REPEATABLE READ` snapshot; a failed `ConditionExpression` rolls the whole transaction back with per-item
+`CancellationReasons` (needs `MONGO_PG_URI`). **TTL:** a background reaper sweeps expired items (DynamoDB
+TTL is an epoch *number*, which a Mongo Date-only TTL index cannot act on). Declared `kind: Table` objects
+are registered from their spec-mirror ConfigMaps, so a cfn-/GitOps-applied table is usable without a runtime
+`CreateTable`. Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`, `DeleteTable`, and
+streams. Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions).
 
 ### SQS (Postgres-backed; probe-proven)
 
