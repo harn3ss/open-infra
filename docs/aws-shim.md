@@ -260,6 +260,48 @@ Native/neutral model first; AWS door second. See [open-appsync/README.md](../ope
 Each new operation or service graduates the same gated way the chaos-oracle adapters do: built →
 exercised → proven by the probe → counted.
 
+### SQS (Postgres-backed; probe-proven)
+
+The SQS front door speaks the **AWS JSON protocol** (`X-Amz-Target: AmazonSQS.<Op>`, what current
+SDKs and the aws CLI v2 use). Supported: `CreateQueue`, `GetQueueUrl`, `GetQueueAttributes`,
+`SetQueueAttributes`, `DeleteQueue`, `ListQueues`, `SendMessage`, `SendMessageBatch`, `ReceiveMessage`,
+`DeleteMessage`, `DeleteMessageBatch`, `ChangeMessageVisibility`, `PurgeQueue`.
+
+**Backend: Postgres, not JetStream — a deliberate decision.** JetStream is already deployed and is the
+obvious first thought, but SQS's **ReceiptHandle** is a correctness-and-security boundary: a handle is
+issued per receive, and a *stale* handle must never delete a message that has since been redelivered to
+another consumer (that would be silent data loss). Over a row-locked SQL table this is structural — the
+handle is regenerated in the same `UPDATE ... FOR UPDATE SKIP LOCKED` that claims the message, so an old
+handle simply matches no row on delete. Visibility timeout, per-message `ChangeMessageVisibility`
+(including `0` = immediate redeliver), `ApproximateReceiveCount`, and `maxReceiveCount`→DLQ all fall out
+of the same table. JetStream's connection-held ack model does not map cleanly onto SQS's *stateless*
+receive-handle-then-later-delete flow, and engineering an unforgeable, stale-rejecting handle across
+separate HTTP requests is exactly the kind of subtlety that ships a false green. Cost: one small,
+dedicated CNPG Postgres (the shim's own state, never a customer DB). What Postgres does **not** give vs
+JetStream — native push/fan-out — SQS does not need (it is poll-based; fan-out is SNS's job).
+
+Faithful semantics: `MD5OfMessageBody` and `MD5OfMessageAttributes` are computed exactly as AWS defines
+them (SDKs verify both); long polling (`WaitTimeSeconds`) returns an **empty success**, not an error;
+`ReceiveMessage`'s `VisibilityTimeout`/`MaxNumberOfMessages` overrides and the queue defaults are both
+honored; a `RedrivePolicy` genuinely moves a message to its DLQ after `maxReceiveCount` receives, with
+`ApproximateReceiveCount` observable. Authorized through the one policy world — coarse SAR plus Cedar
+`dataPlane` at **queue** granularity, with `sqs:ReceiveMessage` separable from `sqs:DeleteMessage` (a
+receive-but-not-delete consumer is a real configuration).
+
+**Deliberate divergences (refused honestly, never faked):**
+- **FIFO** (`.fifo`) queues are refused at `CreateQueue` — the group-ordering + dedup contract is not
+  implemented, and a FIFO queue that isn't FIFO is worse than an absent one.
+- The **legacy query protocol** is refused — current SDKs use JSON.
+- Standard queues are **at-least-once and unordered**, as AWS's are (we are not stronger than AWS).
+- One shim replica today; the RBAC/data path is single-writer (matches the shim's overall posture).
+
+`probe/aws-shim-sqs.sh` proves it end to end: send→receive→delete with both MD5s verified; a
+received-but-not-deleted message **redelivers** after its visibility timeout (`ApproximateReceiveCount`
+grows); a **stale ReceiptHandle is rejected**; `maxReceiveCount` **dead-letters** a message that is then
+receivable on the DLQ; long-poll returns an empty success; and the negatives — wrong secret →
+`SignatureDoesNotMatch`, and a receive-only principal **denied** `DeleteMessage` while still able to
+receive.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not
