@@ -156,10 +156,12 @@ if [ -z "$STS_GATED" ]; then
   read -r SAK SSK STOK <<<"$CREDS"
   [ -n "$SAK" ] && [ -n "$STOK" ] || fail "assume-role returned no session credentials"
   log "  ALLOW: the session can GetObject ${BUCKET_X}/obj (what the policy grants)"
-  GOT="$(s3op "$SAK" "$SSK" "$STOK" get-object --bucket "$BUCKET_X" --key obj "/tmp/iam_got_$SFX" 2>"$PWD/.iam_g" && cat "/tmp/iam_got_$SFX" 2>/dev/null || true)"
-  rm -f "/tmp/iam_got_$SFX"
-  [ "$GOT" = "hello-from-$BUCKET_X" ] || fail "assumed session could NOT GetObject the granted bucket (allow direction broken): $(cat "$PWD/.iam_g" 2>/dev/null)"
-  rm -f "$PWD/.iam_g"
+  # get-object writes the body to the file AND prints metadata JSON to stdout; assert on the FILE content.
+  s3op "$SAK" "$SSK" "$STOK" get-object --bucket "$BUCKET_X" --key obj "/tmp/iam_got_$SFX" >/dev/null 2>"$PWD/.iam_g" \
+    || fail "assumed session could NOT GetObject the granted bucket (allow direction broken): $(cat "$PWD/.iam_g" 2>/dev/null)"
+  GOT="$(cat "/tmp/iam_got_$SFX" 2>/dev/null || true)"
+  rm -f "/tmp/iam_got_$SFX" "$PWD/.iam_g"
+  [ "$GOT" = "hello-from-$BUCKET_X" ] || fail "granted GetObject returned the wrong content: '$GOT'"
   log "    ✓ allowed"
   log "  DENY (resource fidelity): the session is denied GetObject ${BUCKET_Y}/obj"
   if s3op "$SAK" "$SSK" "$STOK" get-object --bucket "$BUCKET_Y" --key obj "/tmp/iam_y_$SFX" >/dev/null 2>"$PWD/.iam_y"; then
