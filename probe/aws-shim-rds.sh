@@ -32,28 +32,34 @@ SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 PGUSER_M="pgadmin"
 PGPASS_M="Probe${SFX}pw"
 PGDB="appdb"
-PFPORT=15432
+# psql runs from a throwaway IN-CLUSTER pod against the instance's Service DNS endpoint — this proves the
+# real endpoint is reachable (kubectl port-forward is unreliable under this cluster's CNI), which is more
+# faithful than a host-side forward. The CNPG postgres image is already present on the nodes.
+PGIMAGE="${PGIMAGE:-ghcr.io/cloudnative-pg/postgresql:17.4}"
 
 log()  { printf '▸ %s\n' "$*"; }
 fail() { printf '✗ FAIL: %s\n' "$*" >&2; exit 1; }
 inconclusive() { printf '⚠ INCONCLUSIVE: %s\n' "$*" >&2; exit "$EXIT_INCONCLUSIVE"; }
 
 command -v aws     >/dev/null || inconclusive "the aws CLI is required"
-command -v psql    >/dev/null || inconclusive "psql (a real Postgres client) is required"
-command -v kubectl >/dev/null || inconclusive "kubectl is required"
+command -v kubectl >/dev/null || inconclusive "kubectl is required (psql runs from an in-cluster pod)"
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
 INST1="rds-probe-$SFX"
 INST2="rds-probe-restored-$SFX"
 SNAP="rds-probe-snap-$SFX"
-CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); PF_PID=""
+CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=()
 cleanup() {
-  [ -n "$PF_PID" ] && kill "$PF_PID" >/dev/null 2>&1
-  for i in "$INST1" "$INST2"; do
-    aws --endpoint-url "$ENDPOINT" --no-cli-pager --region "$REGION" rds modify-db-instance --db-instance-identifier "$i" --no-deletion-protection >/dev/null 2>&1
-    aws --endpoint-url "$ENDPOINT" --no-cli-pager --region "$REGION" rds delete-db-instance --db-instance-identifier "$i" --skip-final-snapshot >/dev/null 2>&1
-  done
-  aws --endpoint-url "$ENDPOINT" --no-cli-pager --region "$REGION" rds delete-db-snapshot --db-snapshot-identifier "$SNAP" >/dev/null 2>&1
+  kubectl -n "$RDS_NS" delete pod -l "probe=rds-$SFX" --ignore-not-found >/dev/null 2>&1
+  # Use the credentialed rds() helper — bare `aws` calls would be unsigned and silently rejected, leaking
+  # the provisioned clusters.
+  if [ -n "$WAK" ] && [ -n "$WSK" ]; then
+    for i in "$INST1" "$INST2"; do
+      rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$i" --no-deletion-protection >/dev/null 2>&1
+      rds "$WAK" "$WSK" delete-db-instance --db-instance-identifier "$i" --skip-final-snapshot >/dev/null 2>&1
+    done
+    rds "$WAK" "$WSK" delete-db-snapshot --db-snapshot-identifier "$SNAP" >/dev/null 2>&1
+  fi
   for s in "${CREATED_KEYS[@]:-}";     do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1; done
   for u in "${CREATED_USERS[@]:-}";    do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1; done
   for p in "${CREATED_POLICIES[@]:-}"; do [ -n "$p" ] && kubectl -n "$USERS_NS" delete policy.iam.openinfra.dev "$p" --ignore-not-found >/dev/null 2>&1; done
@@ -91,20 +97,14 @@ wait_available() {
   return 1
 }
 
-# pg <svc> <sql> — connect to a CNPG -rw service via a fresh port-forward and run one statement.
+# pg <svc> <sql> — run one psql statement from a throwaway IN-CLUSTER pod against the instance's Service DNS
+# endpoint (the real endpoint the RDS API returns), printing psql's -tA output. Robust to CNI port-forward
+# flakiness because it connects service-to-service inside the cluster.
 pg() {
-  local svc="$1" sql="$2" out
-  [ -n "$PF_PID" ] && kill "$PF_PID" >/dev/null 2>&1
-  kubectl -n "$RDS_NS" port-forward "svc/$svc" "$PFPORT:5432" >/dev/null 2>&1 &
-  PF_PID=$!
-  local ok=""
-  for i in $(seq 1 20); do PGPASSWORD="$PGPASS_M" psql -h 127.0.0.1 -p "$PFPORT" -U "$PGUSER_M" -d "$PGDB" -tAc "SELECT 1" >/dev/null 2>&1 && { ok=1; break; }; sleep 1; done
-  [ -n "$ok" ] || { kill "$PF_PID" >/dev/null 2>&1; PF_PID=""; return 3; }
-  out="$(PGPASSWORD="$PGPASS_M" psql -h 127.0.0.1 -p "$PFPORT" -U "$PGUSER_M" -d "$PGDB" -tAc "$sql" 2>/dev/null)"
-  local rc=$?
-  kill "$PF_PID" >/dev/null 2>&1; wait "$PF_PID" 2>/dev/null; PF_PID=""
-  printf '%s' "$out"
-  return $rc
+  local svc="$1" sql="$2" host="${1}.${RDS_NS}.svc.cluster.local"
+  kubectl -n "$RDS_NS" run "pgp-${SFX}-${RANDOM}" --image="$PGIMAGE" --restart=Never --rm -i \
+    --labels="probe=rds-$SFX" --command --timeout=90s -- \
+    psql "postgresql://${PGUSER_M}:${PGPASS_M}@${host}:5432/${PGDB}" -tAc "$sql" 2>/dev/null
 }
 
 # --- 1. seed principal ---
@@ -129,11 +129,10 @@ read -r EPADDR EPPORT <<<"$(rds "$WAK" "$WSK" --output text --query '[DBInstance
 [ -n "$EPADDR" ] && [ "$EPADDR" != "None" ] || fail "no Endpoint.Address on an available instance"
 [ "$EPPORT" = "5432" ] || fail "unexpected Endpoint.Port: $EPPORT"
 log "  ✓ Endpoint $EPADDR:$EPPORT"
-log "connect with psql, create a table, write a row, read it back"
-pg "${INST1}-rw" "CREATE TABLE probe_t (id int primary key, v text); INSERT INTO probe_t VALUES (1,'hello-$SFX');" >/dev/null || fail "could not connect+write to the database (endpoint not genuinely reachable/Postgres)"
-GOT="$(pg "${INST1}-rw" "SELECT v FROM probe_t WHERE id=1;")"
-[ "$GOT" = "hello-$SFX" ] || fail "row read-back mismatch: '$GOT' != 'hello-$SFX'"
-log "  ✓ real Postgres: wrote and read back 'hello-$SFX'"
+log "connect with psql (in-cluster, to the Service endpoint), create a table, write a row, read it back"
+WOUT="$(pg "${INST1}-rw" "CREATE TABLE probe_t (id int primary key, v text); INSERT INTO probe_t VALUES (1,'hello-$SFX'); SELECT 'WROTE:'||v FROM probe_t WHERE id=1;")"
+printf '%s' "$WOUT" | grep -q "WROTE:hello-$SFX" || fail "could not write+read via the Service endpoint (not genuinely reachable/Postgres); got: $(printf '%s' "$WOUT" | tr '\n' ' ')"
+log "  ✓ real Postgres: wrote and read back 'hello-$SFX' over the Service endpoint"
 
 # --- 4. Snapshot → restore into a NEW instance → verify the row is present ---
 log "create-db-snapshot $SNAP"
@@ -153,8 +152,8 @@ rds "$WAK" "$WSK" restore-db-instance-from-db-snapshot --db-instance-identifier 
 rm -f "$PWD/.rds_r"
 log "  waiting on the SDK waiter for the RESTORED '$INST2' to become available (up to 300s)..."
 wait_available "$WAK" "$WSK" "$INST2" || fail "restored instance $INST2 did not become available"
-RESTORED="$(pg "${INST2}-rw" "SELECT v FROM probe_t WHERE id=1;")"
-[ "$RESTORED" = "hello-$SFX" ] || fail "the RESTORED database did not contain the row ('$RESTORED') — the backup is not a real backup"
+ROUT="$(pg "${INST2}-rw" "SELECT 'ROW:'||v FROM probe_t WHERE id=1;")"
+printf '%s' "$ROUT" | grep -q "ROW:hello-$SFX" || fail "the RESTORED database did not contain the row — the backup is not a real backup; got: $(printf '%s' "$ROUT" | tr '\n' ' ')"
 log "  ✓ restored copy contains the row — snapshot/restore is genuine"
 
 # --- 5. DeletionProtection blocks delete ---
