@@ -147,6 +147,7 @@ func run(logger *slog.Logger) error {
 	var ssmSt *ssmStore
 	var apigwSt *apigwStore
 	var cwSt *cwStore
+	var kinesisSt *kinesisStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -209,7 +210,13 @@ func run(logger *slog.Logger) error {
 		if serr := cwSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("CloudWatch schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch Postgres")
+		// Kinesis Data Streams share the same Postgres for streams/shards/records; a reaper enforces each
+		// stream's retention window (see kinesis.go).
+		kinesisSt = &kinesisStore{db: db}
+		if serr := kinesisSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("Kinesis schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -403,6 +410,9 @@ func run(logger *slog.Logger) error {
 	// fires SNS AlarmActions through the SNS handler.
 	cwmH := newCWHandler(cs, authzNS, account, region, cwSt, snsH, logger)
 	cwmH.authz = authzChecker
+	// Kinesis Data Streams (ordered, sharded, replayable) — Postgres-backed; SigV4 service name "kinesis".
+	kinesisH := newKinesisHandler(cs, authzNS, account, region, kinesisSt, logger)
+	kinesisH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -419,6 +429,7 @@ func run(logger *slog.Logger) error {
 		"ssm":            ssmH,
 		"apigateway":     apigwH,
 		"monitoring":     cwmH,
+		"kinesis":        kinesisH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
@@ -501,6 +512,24 @@ func run(logger *slog.Logger) error {
 		// transitions OK/ALARM/INSUFFICIENT_DATA, and fires SNS AlarmActions on entry to ALARM. Alarms are
 		// persisted, so it resumes after a restart. Exits when ctx is cancelled.
 		cwmH.startEvaluator(ctx, time.Duration(atoiDefault(getenv("CW_ALARM_EVAL_INTERVAL_SECONDS", "20"), 20))*time.Second)
+	}
+	if kinesisSt != nil {
+		// Kinesis retention reaper: genuinely enforce each stream's retention window so the reported
+		// RetentionPeriodHours is truthful (records past the window are trimmed). Exits when ctx is cancelled.
+		go func() {
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if _, err := kinesisSt.reap(context.Background()); err != nil {
+						logger.Warn("kinesis retention reaper error", "error", err.Error())
+					}
+				}
+			}
+		}()
 	}
 	if kmsSt != nil && kmsTransit != nil {
 		// KMS crypto-erase reaper: destroy the Vault key material of CMKs whose deletion window has

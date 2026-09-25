@@ -7,6 +7,17 @@ the product's public contract.
 ## Unreleased
 
 ### AWS compatibility (shim)
+- **Kinesis Data Streams doorway (opt-in).** The shim now fronts a sixteenth service — **Kinesis Data
+  Streams** — the ordered, sharded, replayable streaming primitive, deliberately distinct from the unordered
+  SQS / no-retention SNS doorways. `CreateStream`/`DescribeStream`/`ListStreams`/`DeleteStream`,
+  `PutRecord`/`PutRecords` (per-record partial failure + the 1 MiB limit), `GetShardIterator`/`GetRecords`/
+  `ListShards`, and retention changes. A record is assigned to a shard by a stable `PartitionKey` hash and
+  gets a strictly monotonic per-shard `SequenceNumber`; records replay within the retention window
+  (`TRIM_HORIZON` re-reads from the start); `GetRecords` reports `MillisBehindLatest`. Backend is Postgres +
+  a retention reaper (not JetStream), for exact ordering/sequence/replay semantics. Authorization is at
+  **stream granularity** (cross-tenant read denied; read separable from write). Resharding and enhanced
+  fan-out are refused. Proven by `probe/aws-shim-kinesis.sh` (exit 0 live); a producer/consumer example lives
+  in [`examples/kinesis-pipeline/`](examples/kinesis-pipeline/). See [`docs/aws-shim.md`](docs/aws-shim.md).
 - **CloudWatch metrics + alarms doorway (opt-in).** The shim now fronts a fifteenth service — **CloudWatch
   metrics and alarms** (the other half of CloudWatch; Logs shipped in v3.0.0) — over the AWS query protocol.
   `PutMetricData`/`GetMetricStatistics`/`GetMetricData`/`ListMetrics` with faithful period aggregation
