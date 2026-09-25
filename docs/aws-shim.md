@@ -12,13 +12,14 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twelve
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Thirteen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
 > a documentdb Postgres for transactions), **SQS**, **SNS**, **KMS** (Vault Transit), **Secrets Manager**
 > (Vault-KMS-encrypted), **EventBridge** (scheduled + event-driven), **RDS** (real PostgreSQL via
-> CloudNativePG), and **CloudWatch Logs**. Every one enforces the *same* SigV4 + one-policy-world (RBAC +
+> CloudNativePG), **CloudWatch Logs**, and **SSM Parameter Store** (Vault-KMS-encrypted SecureString).
+> Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
 > has not made faithful is an honest `501`, never a silent partial. Some carry deliberate, documented
@@ -123,10 +124,11 @@ the sections below; the one-line summary:
 | **[EventBridge](#eventbridge-kubernetesjetstream-backed-json-protocol-probe-proven)** | in-proc scheduler + JetStream/SQS delivery | JSON 1.1 | Lambda+SQS targets only; `RoleArn` refused |
 | **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
 | **[CloudWatch Logs](#cloudwatch-logs-postgres-backed-json-protocol-probe-proven)** | Postgres | JSON 1.1 | Logs Insights refused; retention genuinely enforced |
+| **[SSM Parameter Store](#ssm-parameter-store-postgres--kms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted SecureString | JSON 1.1 | Standard tier only; Advanced/policies refused |
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): Kinesis, ECS/EKS, Route 53,
-API Gateway, Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), SSM (a
-`kind: Parameter` exists), and the rest of the AWS surface. Adding a service is one registry entry; it
+API Gateway, Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), CloudWatch
+metrics/alarms, and the rest of the AWS surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
 service it hasn't made faithful.
 
@@ -645,6 +647,44 @@ matching event (empty pattern returns all; a JSON-selector pattern refused), pag
 retention reported truthfully (non-allowed value refused) — plus the negatives: wrong secret rejected, a
 **write-only principal denied `GetLogEvents`** while still able to `PutLogEvents`, and an **A-scoped
 principal denied group B**.
+
+### SSM Parameter Store (Postgres + KMS-backed; JSON protocol; probe-proven)
+
+The SSM Parameter Store front door speaks the AWS **JSON 1.1 protocol** (`X-Amz-Target: AmazonSSM.<Op>`)
+and is where AWS SDKs, agents, and IaC read application configuration and secrets **by default** — a
+hierarchical `/app/prod/db/host` name tree with versions, labels, and encrypted `SecureString` values.
+Backed by the shared SQS/KMS Postgres for the name/version/label tree; `SecureString` values are genuinely
+encrypted under the shim's own KMS doorway (Vault Transit key `kms-aws-ssm`, the analog of AWS's `aws/ssm`
+managed key, with the parameter name bound as AEAD associated-data) — the plaintext never sits in Postgres.
+
+Implemented, and faithful over real round-trips: `PutParameter`/`GetParameter`/`GetParameters`/
+`GetParametersByPath` (recursive vs immediate-level), `DeleteParameter`(s), `DescribeParameters`,
+`GetParameterHistory`, `LabelParameterVersion`, `AddTagsToResource`/`RemoveTagsFromResource`/
+`ListTagsForResource`. `String`, `StringList`, and `SecureString` types; sequential integer versioning with
+`Overwrite` semantics (a create on an existing name without `Overwrite` is refused `ParameterAlreadyExists`);
+reads by `name`, `name:version`, and `name:label`. A `GetParameter` with `WithDecryption=false` on a
+`SecureString` returns the **ciphertext verbatim** (exactly as AWS does); `WithDecryption=true` is a
+**two-permission** action — additive to `ssm:GetParameter`, it is subject to a `kms:Decrypt` check on the
+managed key, so a principal whose policy denies `kms:Decrypt` reads the ciphertext but is denied the
+plaintext. Authorization is the one policy world: coarse impersonated `SubjectAccessReview` plus the
+fine-grained Cedar dataPlane at **per-parameter / per-path-prefix** granularity (a principal scoped to
+`Parameter::/app/a/*` is denied `/app/b/*`).
+
+**Deliberate carve-outs, refused honestly:** the **Advanced tier** and **Intelligent-Tiering** (and the
+parameter policies — expiration / no-change-notification — that only exist there) are refused
+(`ValidationException`); Standard tier only, with the real 4 KB value cap. A caller-supplied non-default
+`KeyId` on a `SecureString` is refused rather than accepted-and-ignored. This is a Vault/KMS-backed parameter
+store; it is not generic read access to Kubernetes Secrets and does not bypass the shim's `KEYS_NAMESPACE`
+boundary. A pre-existing `kind: Parameter` CRD models declared parameters; this doorway is the runtime AWS
+API over the same store idea.
+
+`probe/aws-shim-ssm.sh` proves all of this over real SDK round-trips — exact value at Version 1, no-overwrite
+refused then overwrite→Version 2 with `:1` still returning v1 (version history), `StringList` round-trip,
+`SecureString` returned as `vault:…` ciphertext without decryption and plaintext with it, `GetParametersByPath`
+recursive vs immediate counts, label read-back, delete→`ParameterNotFound`, Advanced tier refused, and a
+`GetParameter` audit record naming the principal — plus the negatives: wrong secret rejected, a **path-scoped
+principal denied a sibling path**, and the **two-permission split** (a decrypt-denied principal reads the
+ciphertext but is denied the plaintext).
 
 ## The compatibility probe
 
