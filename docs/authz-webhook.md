@@ -110,8 +110,9 @@ availability is a cluster-wide dependency. The live posture:
   a `Recreate` rollout — deliberate: the authorizer is reached by the API server *without* depending on
   cluster networking/CNI (a CNI outage must not wedge authz), and a hostNetwork loopback port cannot be
   shared by two pods. So HA is **not** multiple replicas behind a Service; availability during a
-  redeploy/outage comes from the RBAC fallback above. True multi-replica HA needs **more than one
-  control-plane node** (this cluster has one) and is a tracked follow-up.
+  redeploy/outage comes from the RBAC fallback above. The single replica is pinned
+  `system-cluster-critical` so it is not evicted/preempted under node pressure. True multi-replica HA
+  needs **more than one control-plane node** (this cluster has one) and is a tracked follow-up.
 - **Bounded latency.** Cedar evaluation is in-memory against a compiled policy set; the corpus is
   cached and refreshed, so a decision is a map lookup plus an evaluation, not an API round-trip.
 - **TLS with the validated modules.** The webhook is a network service in the control-plane path,
@@ -139,18 +140,19 @@ posture used to inherit from the CIS benchmark becomes a Cedar-corpus check the 
 now started as **`corpus-check`** (`console-api/cmd/corpus-check`, core in `internal/corpuscheck`):
 it audits the generated corpus for `cluster-admin`-equivalent grants, wildcard-resource grants,
 cluster-wide Secrets access, and privilege-escalation verbs, and can gate CI with `-strict`. Run
-read-only against the live cluster it currently reports 17 `cluster-admin`-equivalent principals —
-exactly the over-privilege signal the CIS benchmark used to give for free, now a generated artifact.
+read-only against the live cluster it first reported **17** `cluster-admin`-equivalent principals;
+faithful de-widening (below) brought this to **6** — exactly the over-privilege signal the CIS benchmark
+used to give for free, now a generated artifact.
 
-**AC-6 posture on those 17 (`*`-on-`*`).** They are **broad by design**, and the corpus is a faithful
-mirror of their RBAC — it does not widen them. They are: `system:masters` / `crossplane:masters`
-(admin groups); the GitOps engine (`argocd/argocd-application-controller`, which applies arbitrary
-manifests); the Crossplane core (`crossplane-system/crossplane`, which composes arbitrary managed
-resources); backup (`velero/velero-server`, which reads/writes every resource kind); chaos-mesh
-(`chaos-controller-manager`/`-dashboard`/`-dns-server`, which injects faults cluster-wide); the
-virtualization operators (`kubevirt-controller`/`-operator`, `cdi/cdi-operator`/`cdi-sa`); the Knative
-and CNI plumbing (`knative-operator`, `kube-system/multus`); Helm install jobs (`kube-system/helm-traefik(-crd)`);
-and the on-demand diagnostics collector (`longhorn-system/longhorn-support-bundle`). Reducing these is
+**AC-6 posture (`*`-on-`*`).** The generator does not widen RBAC, and one faithfulness bug that *did*
+over-grant was fixed: `resources:["*"]` in a **specific** apiGroup is now keyed as `*.<group>` (all
+resources in that group) rather than `*` (every group), and an `apiGroups:["*"]` concrete resource
+(e.g. HPA's `*/scale`) matches every group's form, not just the core one. That dropped the
+`cluster-admin`-equivalent count from 17 to **6 genuine holders** of `apiGroups:[*],resources:[*]`
+bindings: `system:masters` (admin group), the GitOps engine `argocd/argocd-application-controller`
+(applies arbitrary manifests), backup `velero/velero-server` (reads/writes every resource kind), the
+`kube-system/helm-traefik(-crd)` install jobs, and the on-demand `longhorn-system/longhorn-support-bundle`.
+These are **broad by design** and the corpus faithfully mirrors their RBAC. Reducing them further is
 **upstream-RBAC hardening**, not a corpus edit: scoping Cedar below a component's RBAC only takes effect
 while the webhook is up (RBAC still grants the breadth on webhook-down) and risks breaking a component
 on an operation it performs rarely, so any scope-down must be **traffic-observed** first, per principal.
@@ -186,6 +188,8 @@ not a silent pass.
       would brick the cluster on any webhook blip.
 - [ ] **Multi-replica HA** — needs more than one control-plane node (this cluster has one); the RBAC
       fallback covers the single-replica redeploy/outage gap in the meantime.
-- [ ] **AC-6 scope-down of the 17 `*`-on-`*` grants** — documented + accepted as broad-by-design
-      (above); reducing them is upstream-RBAC hardening driven by per-principal traffic observation, an
-      ongoing effort, not a corpus edit.
+- [x] **AC-6 de-widening** — the faithful group-scoping fix dropped `cluster-admin`-equivalent grants
+      from 17 to 6, and the single replica is pinned `system-cluster-critical`.
+- [ ] **AC-6 further scope-down of the remaining 6** — they hold genuine `apiGroups:[*],resources:[*]`
+      bindings and are broad-by-design (above); reducing them is upstream-RBAC hardening driven by
+      per-principal traffic observation, an ongoing effort tracked as the corpus-check HIGH count.
