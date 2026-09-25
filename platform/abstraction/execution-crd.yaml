@@ -51,6 +51,20 @@ spec:
                     The execution input as a JSON string (passed to StartAt). Defaults to
                     "{}". A string keeps arbitrary JSON expressible without a fixed schema —
                     the console sends jsonencode(...) here.
+                credentialsSecret:
+                  type: string
+                  description: >-
+                    Set by the aws-shim at StartExecution, not by users. Names a Secret holding
+                    the state-machine role's minted STS session (keys accessKeyId /
+                    secretAccessKey / sessionToken). The controller reads it and injects the
+                    session into every Task so the Task runs under the role's authority. Empty
+                    when the state machine has no roleArn (Tasks run without an injected identity).
+                credentialsNamespace:
+                  type: string
+                  description: >-
+                    Namespace of credentialsSecret (defaults to the Execution's own namespace).
+                    The shim writes per-execution credential Secrets in its own namespace so the
+                    controller's Secret-read grant stays scoped to one namespace.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

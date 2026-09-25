@@ -82,6 +82,13 @@ func (e *Engine) Run(ctx context.Context, startState string, data any) Result {
 	e.start = e.now()
 	state := startState
 	for {
+		// Honor cancellation between states (controller shutdown or an explicit StopExecution,
+		// which cancels this execution's context). States that block — Task, Wait — already return
+		// on ctx cancellation; this makes a cancel between quick states (Pass/Choice) prompt too.
+		// run() distinguishes shutdown (resume later) from an explicit stop (finalize Aborted).
+		if ctx.Err() != nil {
+			return Result{Phase: "Failed", Error: ErrRuntime, Cause: "cancelled: " + ctx.Err().Error()}
+		}
 		s, ok := e.def.States[state]
 		if !ok {
 			return Result{Phase: "Failed", Error: ErrRuntime, Cause: fmt.Sprintf("no such state %q", state)}
