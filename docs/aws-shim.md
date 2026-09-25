@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Sixteen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Seventeen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -21,7 +21,7 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > CloudNativePG), **CloudWatch Logs**, **SSM Parameter Store** (Vault-KMS-encrypted SecureString), and
 > **API Gateway** (HTTP API v2 — the runtime HTTP→Lambda proxy, completing the serverless triad), and
 > **CloudWatch metrics + alarms** (alarms that genuinely evaluate and fire SNS actions), and **Kinesis Data
-> Streams** (ordered, sharded, replayable).
+> Streams** (ordered, sharded, replayable), and **Cognito** (user pools issuing real, JWKS-verifiable JWTs).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -131,14 +131,15 @@ the sections below; the one-line summary:
 | **[API Gateway (HTTP API v2)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda proxy | restJson1 (REST paths) | REST API v1 + non-Lambda integrations refused |
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
+| **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
 
 **IAM management** (SigV4 service `iam`) is fronted and its management ops + policy translation are live, but
 it is held out of the probe-proven count above until its **live `AssumeRole`→enforcement** round-trip can run
 (gated on STS enablement) — see [IAM (management API + JSON→Cedar)](#iam-management-api--jsoncedar-translation-partial-live) below.
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
-Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), Step Functions (an owned
-`kind: StateMachine` engine exists), and the rest of the AWS surface. Adding a service is one registry entry; it
+SES (a `kind: EmailSender` exists), Step Functions (an owned `kind: StateMachine` engine exists), and the rest
+of the AWS surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
 service it hasn't made faithful.
 
@@ -820,6 +821,42 @@ the start** (replay), distinct keys **distribute across shards**, `MillisBehindL
 `PutRecords` partial failure surfaces **per record** — plus the negatives: wrong secret → signature mismatch,
 a **cross-tenant stream read is denied**, and a **read-only principal is denied `PutRecord`** while still able
 to read.
+
+### Cognito (user pools; real RS256 JWTs; probe-proven)
+
+User-pool authentication for applications whose end users sign in with Cognito. Speaks AWS JSON 1.1
+(`X-Amz-Target: AWSCognitoIdentityProviderService.<Op>`). Implemented: `CreateUserPool`/`DescribeUserPool`/
+`DeleteUserPool`, `CreateUserPoolClient`, `SignUp`/`ConfirmSignUp`, `AdminCreateUser`/`AdminConfirmSignUp`/
+`AdminSetUserPassword`, `InitiateAuth`/`AdminInitiateAuth` (`USER_PASSWORD_AUTH` + `REFRESH_TOKEN_AUTH`),
+`GetUser`/`AdminGetUser`, `GlobalSignOut`, plus each pool's **JWKS** and OIDC discovery endpoints.
+
+**Two trust domains, not conflated.** The **control plane** (`CreateUserPool`, `CreateUserPoolClient`, the
+`Admin*` ops) is privileged, SigV4-signed by an open-infra principal, authorized by the one policy world
+(coarse SAR + Cedar `cognito-idp:<Op>`). The pool's **end-user auth** (`SignUp`/`InitiateAuth`/`GetUser`/
+`GlobalSignOut`) is the *application's* users — unauthenticated at the SigV4 layer (the user has no AWS creds),
+routed to the handler anonymously; the admin ops are refused from that path.
+
+**The token contract is the heart, and it's real.** `InitiateAuth` returns genuine **RS256 JWTs** (id / access
+/ refresh) signed by the shim's RSA key (persisted in a Secret so tokens survive a restart) and **verifiable
+against the pool's JWKS** — the pool's issuer is `<shim>/cognito/<pool-id>` and its JWKS/discovery are served
+there, so the API Gateway JWT authorizer (#169) and any app verify these tokens. Passwords are **bcrypt**; the
+configured **password policy is genuinely enforced** at `SignUp`/`AdminSetUserPassword` (a weak password is
+`InvalidPasswordException`, not silently accepted — an IA-5 false green); a wrong password is
+`NotAuthorizedException`; **`GlobalSignOut` genuinely invalidates** (a per-user `tokens_valid_after` cutoff, so
+every already-issued token fails verification afterward — ties to the session-revocation model of #147).
+
+**Deliberate carve-outs, refused honestly:** **SRP** (`USER_SRP_AUTH`) and custom auth (a broken SRP handshake
+looks like an app bug — refused at `CreateUserPoolClient`); **MFA** (a pool that advertises MFA it doesn't
+enforce is an IA-2 false green — refused at `CreateUserPool`); identity pools; the hosted UI; Lambda triggers.
+No email/SMS delivery, so `SignUp` confirmation codes aren't verified — `AdminConfirmSignUp` is the reliable
+path (never claims a code was verified when it wasn't).
+
+`probe/aws-shim-cognito.sh` proves this end to end — a pool + client; the password policy enforced at sign-up;
+sign-up + confirm + `InitiateAuth` returning a JWT with faithful claims; the pool's JWKS/discovery served; **an
+API Gateway JWT authorizer pointed at the pool ADMITS the issued token and rejects a garbage one** (the real
+cryptographic verification, Cognito→API Gateway); `GlobalSignOut` invalidating the token — plus the negatives
+(control-plane wrong secret → signature mismatch; a non-admin principal denied `AdminCreateUser`). See
+[`examples/cognito-app/`](../examples/cognito-app/).
 
 ### IAM (management API + JSON→Cedar translation; partial-live)
 
