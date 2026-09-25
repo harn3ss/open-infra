@@ -31,9 +31,11 @@ the product's public contract.
   faithful AWS model. Translation fidelity is guarded: a policy with any part the translator can't honor
   faithfully — including `NotAction`/`NotResource` — is **refused** (`MalformedPolicyDocument`), never stored
   as a grant that differs from the JSON. `SimulatePrincipalPolicy` proves the translation both directions, and
-  `CreateAccessKey` yields a key that genuinely authenticates. The **live `AssumeRole`→enforcement round-trip**
-  (the confused-deputy detector) requires STS to be enabled (a Vault `sts/signing-key`); until then
-  `probe/aws-shim-iam.sh` proves everything else and reports that one assertion as gated. See
+  `CreateAccessKey` yields a key that genuinely authenticates. The **live `AssumeRole`→S3 round-trip** (the
+  end-to-end confused-deputy detector) is verified: an STS-assumed session does exactly what its policy grants
+  and is denied everything it does not, authorized on the role — not the shim's backend credentials. The
+  eighteenth probe-proven service, `probe/aws-shim-iam.sh` exit 0 live. (`sts:AssumeRole` is enabled via a
+  Vault `sts/signing-key`, written by the security setup Job on bootstrap.) See
   [`docs/aws-shim.md`](docs/aws-shim.md).
 - **Kinesis Data Streams doorway (opt-in).** The shim now fronts a sixteenth service — **Kinesis Data
   Streams** — the ordered, sharded, replayable streaming primitive, deliberately distinct from the unordered
