@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Seventeen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Eighteen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -132,10 +132,7 @@ the sections below; the one-line summary:
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
-
-**IAM management** (SigV4 service `iam`) is fronted and its management ops + policy translation are live, but
-it is held out of the probe-proven count above until its **live `AssumeRole`→enforcement** round-trip can run
-(gated on STS enablement) — see [IAM (management API + JSON→Cedar)](#iam-management-api--jsoncedar-translation-partial-live) below.
+| **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource + non-S3/DDB/Lambda refused; needs STS |
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
 SES (a `kind: EmailSender` exists), Step Functions (an owned `kind: StateMachine` engine exists), and the rest
@@ -858,7 +855,7 @@ cryptographic verification, Cognito→API Gateway); `GlobalSignOut` invalidating
 (control-plane wrong secret → signature mismatch; a non-admin principal denied `AdminCreateUser`). See
 [`examples/cognito-app/`](../examples/cognito-app/).
 
-### IAM (management API + JSON→Cedar translation; partial-live)
+### IAM (management API + JSON→Cedar translation; probe-proven)
 
 The AWS IAM management verbs over the platform's existing `kind: Role`/`Policy`/`User` entities (SigV4 service
 `iam`, query protocol). This is the API-compatible branch (Branch A): an application's existing AWS IAM
@@ -884,15 +881,14 @@ are rejected explicitly. Deny statements translate to Cedar `forbid` (forbid ove
 covers S3/DynamoDB/Lambda actions + a narrow condition set (authenticated, sourceIp); anything outside that is
 refused, not narrowed.
 
-**Status: partial-live.** `probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy`
-(JSON→Cedar) + `CreateRole` (trust) + `AttachRolePolicy`; `SimulatePrincipalPolicy` faithful **both
-directions** (allow `s3:GetObject` on the granted bucket; deny it on another bucket = resource fidelity; deny
-`s3:ListBucket` = action fidelity; explicit `Deny` → `explicitDeny` = forbid fidelity — the exact Cedar query
-the data plane runs for a `Role` principal); `CreateAccessKey` yields a key that authenticates; and the
-negatives (wrong secret → signature mismatch, `NotAction` refused). The **live `AssumeRole`→S3 round-trip**
-(the end-to-end confused-deputy detector) requires **STS to be enabled** (a Vault `sts/signing-key`, the same
-operator bootstrap as KMS); until then the probe reports that one assertion as gated (exit 42) rather than
-faking it. IAM is therefore not yet counted in the probe-proven service tally above.
+`probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy` (JSON→Cedar) + `CreateRole` (trust)
++ `AttachRolePolicy`; the **live `AssumeRole`→S3 round-trip** — an STS-assumed session does **exactly** what
+its translated policy grants (GetObject the granted bucket) and is **denied everything it does not** (another
+bucket = resource fidelity; `ListBucket` = action fidelity) — the end-to-end confused-deputy detector, proving
+the session is authorized on the *role*, not the shim's backend credentials; `SimulatePrincipalPolicy` agrees
+in both directions and reports an explicit `Deny` as `explicitDeny` (forbid fidelity); `CreateAccessKey`
+yields a key that authenticates; and the negatives (wrong secret → signature mismatch, `NotAction` refused).
+The live round-trip requires STS enabled (a Vault `sts/signing-key`, the same operator bootstrap as KMS).
 
 ## The compatibility probe
 
