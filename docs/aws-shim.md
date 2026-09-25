@@ -302,6 +302,40 @@ receivable on the DLQ; long-poll returns an empty success; and the negatives —
 `SignatureDoesNotMatch`, and a receive-only principal **denied** `DeleteMessage` while still able to
 receive.
 
+### SNS (query protocol; durable SQS fan-out; probe-proven)
+
+The SNS front door speaks the AWS **query protocol** (form-encoded request, XML response) — unlike SQS's
+JSON. Supported: `CreateTopic`, `DeleteTopic`, `ListTopics`, `Get`/`SetTopicAttributes`, `Subscribe`,
+`Unsubscribe`, `List`/`ListSubscriptionsByTopic`, `Get`/`SetSubscriptionAttributes`, `Publish`.
+
+Its core value is the canonical AWS pattern — a topic **fanning out to N SQS queues** — and it is
+**durable by construction**: `Publish` inserts the (enveloped) message into each subscribed queue via the
+SQS store *before* it returns, so a returned `MessageId` always means the message was persisted for every
+current subscription. It is never the fire-and-forget publish SNS makes easy. Delivery uses the default
+**wrapped envelope** (`Type`, `MessageId`, `TopicArn`, `Message`, `Timestamp`, `UnsubscribeURL`), or the
+bare payload when a subscription sets `RawMessageDelivery=true`. Authorized through the one policy world;
+`sns:Subscribe` is **separable from `sns:Publish`** — Subscribe points the platform's outbound delivery
+at a destination and is independently grantable.
+
+**Deliberate divergences, refused honestly (never accepted-and-dropped):**
+- v1 supports the **`sqs`** subscription protocol only. `lambda`, `http`/`https` (an egress surface that
+  needs a confirmation handshake + destination allowlist), `email`, `sms`, `application`, `firehose` are
+  refused at `Subscribe` — a subscription that exists but never delivers is worse than a rejected one.
+- **Message `FilterPolicy`** is refused (accepting-and-ignoring would deliver messages a subscriber
+  explicitly filtered out — a correctness + privacy defect).
+- **`.fifo` topics** are refused.
+- A **topic resource `Policy`** on `SetTopicAttributes` is refused — this is a one-policy-world (Cedar),
+  not a second authorization engine that would silently ignore the document.
+- The delivered envelope **omits** the message `Signature`/`SigningCertURL` rather than emitting a
+  meaningless one — subscribers cannot cryptographically verify, and the docs say so rather than teach a
+  false "verified".
+
+`probe/aws-shim-sns.sh` proves it: one topic with **two** SQS subscriptions delivers to **both**; the
+default wrapped envelope's `.Message` is the published body while `RawMessageDelivery=true` yields the
+bare payload; a `FilterPolicy` and an `https` subscription are both **refused**; and the negatives —
+wrong secret → `SignatureDoesNotMatch`, and a **publish-only principal (granted `sns:Publish` via Cedar)
+is denied `sns:Subscribe`** while still able to publish.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not
