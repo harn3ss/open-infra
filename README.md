@@ -6,7 +6,7 @@
 
 > A **self-hosted cloud that speaks AWS**, running entirely inside your own trust boundary.
 > Point your existing AWS **SDK, CLI, Terraform, or CloudFormation** at it and it answers the way AWS
-> does — SigV4-authenticated, **twelve services and counting, each backed by a real datastore and
+> does — SigV4-authenticated, **thirteen services and counting, each backed by a real datastore and
 > proven by a real-SDK compatibility probe**. Or declare intent in one `infra.yaml` and `git push`.
 > Either way you get an AWS-like managed surface — autoscaling HTTPS apps, managed databases, object
 > storage, queues, VMs, serverless + GPU inference, an analytics lake, CDC pipelines, Active Directory —
@@ -108,7 +108,7 @@ Full mapping and rationale: [`docs/architecture.md`](docs/architecture.md).
 
 That table is **concept parity** — an open-infra-native surface that *feels* like AWS. Alongside it is
 **wire parity**: for apps (and IaC) that must speak the AWS protocol unchanged, the opt-in AWS-SDK shim
-answers as AWS for **twelve probe-proven services** — see
+answers as AWS for **thirteen probe-proven services** — see
 [AWS-SDK compatibility](#aws-sdk-compatibility-the-shim). Concept parity to build native; wire parity to
 lift-and-shift what you already have.
 
@@ -210,7 +210,7 @@ world — not a parallel auth**), calls the real backend, and re-dresses the res
 byte-shape. It is **not** an emulator: the services it fronts hit **durable backends**, not fakes, so —
 unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 
-**Twelve services are fronted, and every one is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
+**Thirteen services are fronted, and every one is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 exit 0 live) — not asserted, observed:
 
 | | | |
@@ -219,6 +219,7 @@ exit 0 live) — not asserted, observed:
 | **STS** (identity + `AssumeRole`) | **SNS** → durable SQS fan-out | **Secrets Manager** → Vault-KMS-encrypted, versioned |
 | **Lambda** → Knative `Function`s | **EventBridge** → scheduled + event-driven | **RDS** → **real PostgreSQL** (CloudNativePG) |
 | **DynamoDB** → FerretDB (+ transactions) | **AppSync** → open-appsync (experimental) | **CloudWatch Logs** → Postgres |
+| **SSM Parameter Store** → Postgres + KMS-encrypted `SecureString` | | |
 
 ```sh
 # An unmodified AWS SDK / CLI, aimed at open-infra — one env var.
@@ -236,7 +237,7 @@ service is a per-service handler that **graduated one at a time** — built → 
 RDS refuses MultiAZ/replicas/`StorageEncrypted`; SQS refuses FIFO; and so on — the honest carve-outs are
 listed per service). Services the shim has **not** made faithful — Kinesis, API Gateway, Route 53, and the
 rest of AWS — return an **honest `501`**, never a silent fake: **narrow and proven beats broad and
-hand-wavy**. "Twelve probe-proven services" is not "all of AWS"; it is a specific, verified surface.
+hand-wavy**. "Thirteen probe-proven services" is not "all of AWS"; it is a specific, verified surface.
 
 Opt-in, **OFF by default** — enable with `components.awsShim: true`. Full detail — client setup, the
 identity model, the per-service matrix, the divergences, and the probes — is in
