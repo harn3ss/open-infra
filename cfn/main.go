@@ -14,7 +14,7 @@
 //	0  PROVISIONABLE or PROVISIONABLE_WITH_CAVEATS
 //	1  REJECTED (unsupported type/intrinsic, macro, missing param, broken ref, or cycle)
 //	2  usage or parse error
-package main
+package cfn
 
 import (
 	"context"
@@ -26,7 +26,9 @@ import (
 	"time"
 )
 
-func main() {
+// Main is the cfn CLI entrypoint, invoked by cfn/cmd/cfn. Split out so the engine is an
+// importable library (the aws-shim CloudFormation doorway imports this package) while the CLI stays.
+func Main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
