@@ -556,6 +556,61 @@ verifies the row is present in the restored copy**, and confirms `DeletionProtec
 plus the negatives (wrong secret; `StorageEncrypted`/`MultiAZ`/non-postgres engine refused; a describe-only
 principal denied `CreateDBInstance`).
 
+### CloudWatch Logs (Postgres-backed; JSON protocol; built, live proof pending)
+
+CloudWatch Logs is where AWS SDKs, agents, and Lambda runtimes write logs **by default**, and — the real
+argument for the doorway — in AWS it is where **audit evidence lands** (NIST 800-53 AU-2/AU-6/AU-9/AU-11).
+The front door speaks the AWS **JSON protocol** (`X-Amz-Target: Logs_20140328.<Op>`). Supported:
+`CreateLogGroup`, `CreateLogStream`, `PutLogEvents`, `DescribeLogGroups`, `DescribeLogStreams`,
+`PutRetentionPolicy`, `DeleteLogGroup`, `DeleteLogStream`, `TagLogGroup`, `GetLogEvents`, `FilterLogEvents`.
+
+**Backend decision: Postgres, not Loki.** The cluster runs Loki, but the CloudWatch Logs API contract needs
+ordered byte-identical read-back with original millisecond timestamps, terminating pagination, and — the
+compliance pivot — **genuine per-group retention at AWS's day granularity**, which a reaper over SQL rows
+enforces exactly and Loki's global retention does not. So this API is Postgres-backed; **Loki remains the
+cluster's own log/observability stack** (pod logs, the shim's own audit lines). They are deliberately
+separate concerns.
+
+**`PutLogEvents`' strict contract is enforced:** events must be **chronological** by timestamp (else
+`InvalidParameterException`); timestamps are **milliseconds** since epoch; events more than 2 hours in the
+future or past a group's retention are **rejected** and reported in `rejectedLogEventsInfo` (not silently
+stored); batch limits (10,000 events, 1 MB, 256 KB/event) return the real error. **Sequence tokens** follow
+AWS's current relaxed behavior — accepted with or without, always echoed back as `nextSequenceToken`, never
+rejected on mismatch (settled this way because current SDKs no longer require them and older ones only need
+the token echoed).
+
+**Retention is enforced, so the reported number is the truth.** `PutRetentionPolicy` accepts only AWS's
+fixed day set; a background reaper deletes events past each group's `retentionInDays`, and
+`DescribeLogGroups` reports it — never a `retentionInDays` nothing honors (an auditor reading it for AU-11
+gets the truth in both directions).
+
+**Reads return what was written.** `GetLogEvents` returns events with their original timestamps and
+messages in order, with forward/backward tokens that **terminate** (the forward token stabilizes when the
+stream is exhausted, so a client loop ends). `FilterLogEvents` genuinely filters on term/quoted-phrase
+matching (AND); the **JSON-selector (`{…}`) and metric-filter (`[…]`) pattern syntaxes, and the `?`/`-`
+operators, are refused** (`InvalidParameterException`) rather than silently returning unfiltered data.
+
+Authorized through the one policy world at **log-group** granularity: **`logs:PutLogEvents` (write) is
+separable from `logs:GetLogEvents` (read)** — an app can emit logs it cannot read back — and a principal
+scoped to group A **cannot read group B** (logs carry sensitive data; cross-tenant read is the risk).
+**`logs:DeleteLogGroup` is an audit-integrity operation** (AU-9): its own audit record is marked
+`AUDIT-INTEGRITY` and goes to the shim's audit sink (Loki), which the deleter cannot reach.
+
+**Deliberate carve-outs, refused honestly:** CloudWatch Logs **Insights** (`StartQuery`/`GetQueryResults`/
+`StopQuery`) — a query language that returned approximate results would be worse than absent; the
+unsupported filter-pattern syntaxes above. **Lambda function logs do NOT currently land in
+`/aws/lambda/<name>`** in this store — a Knative function's stdout goes to the cluster log stack (Loki), not
+the CloudWatch Logs API; wiring that path is a documented next step, stated so an operator checking a
+function's logs here is not surprised.
+
+`probe/aws-shim-cloudwatchlogs.sh` asserts all of this over real SDK round-trips — ordered byte-identical
+read-back with original ms timestamps, out-of-order batch rejected, `FilterLogEvents` matches only the
+matching event (empty pattern returns all; a JSON-selector pattern refused), pagination terminates,
+retention reported truthfully (non-allowed value refused) — plus the negatives: wrong secret rejected, a
+**write-only principal denied `GetLogEvents`** while still able to `PutLogEvents`, and an **A-scoped
+principal denied group B**. This section says **built, live proof pending** until it passes live, then
+becomes *probe-proven*.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not
