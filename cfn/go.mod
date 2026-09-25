@@ -1,4 +1,4 @@
-module cfn
+module github.com/harn3ss/open-infra/cfn
 
 go 1.26.4
 
