@@ -377,23 +377,32 @@ func (h *snsHandler) publish(ctx context.Context, w http.ResponseWriter, r *http
 		writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "Topic does not exist.", snsXMLNamespace)
 		return
 	}
-	subs, err := h.store.subscriptionsForTopic(ctx, topicArn)
+	msgID, err := h.publishMessage(ctx, topicArn, subject, message)
 	if err != nil {
-		h.internal(w, requestID, err)
+		h.internal(w, requestID, err) // durable delivery failed -> not a success
 		return
 	}
+	h.writeResult(w, requestID, "Publish", map[string]string{"MessageId": msgID})
+}
+
+// publishMessage fans a message out to a topic's sqs subscriptions durably (a row INSERT per subscriber
+// BEFORE returning), returning the MessageId. It is the programmatic Publish path — used by the HTTP
+// Publish handler above AND by the CloudWatch alarm evaluator firing an SNS AlarmAction (polyhedron#170).
+// The caller must have already confirmed the topic exists. An error means at least one durable delivery
+// failed, so the caller must not treat the publish as succeeded.
+func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, message string) (string, error) {
+	subs, err := h.store.subscriptionsForTopic(ctx, topicArn)
+	if err != nil {
+		return "", err
+	}
 	msgID := uuidLike()
-	// DURABLE fan-out: deliver to every sqs subscription synchronously (a row INSERT via the SQS store)
-	// BEFORE acknowledging. If any delivery fails, Publish reports failure — never a MessageId for a
-	// message that was not persisted for its subscribers.
 	for _, sub := range subs {
 		if sub.Protocol != "sqs" {
 			continue // v1: only sqs is a deliverable protocol; others were refused at Subscribe
 		}
 		url, ok, err := h.sqs.queueURLByName(ctx, nameFromArn(sub.Endpoint))
 		if err != nil {
-			h.internal(w, requestID, err)
-			return
+			return "", err
 		}
 		if !ok {
 			// The target queue was deleted after subscribe; skip but do not fail the whole publish.
@@ -417,11 +426,10 @@ func (h *snsHandler) publish(ctx context.Context, w http.ResponseWriter, r *http
 			body = string(b)
 		}
 		if _, err := h.sqs.sendMessage(ctx, url, body, md5Hex(body), "", nil, 0); err != nil {
-			h.internal(w, requestID, err) // durable delivery failed -> not a success
-			return
+			return "", err
 		}
 	}
-	h.writeResult(w, requestID, "Publish", map[string]string{"MessageId": msgID})
+	return msgID, nil
 }
 
 // --- XML response writers ---
