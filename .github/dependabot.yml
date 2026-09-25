@@ -69,6 +69,13 @@ updates:
       # peer conflicts. Hold the major until it's done deliberately, then remove this.
       - dependency-name: "@rjsf/*"
         update-types: ["version-update:semver-major"]
+      # @tanstack/react-table v9 is a breaking API change and the type is used across ~47
+      # list pages (ColumnDef everywhere; the table instantiation is centralized). The v9
+      # bump fails the UI build as-is and needs a deliberate migration + a table-behaviour
+      # click-through, with no security/feature pressure to move. Hold the major (minors/
+      # patches still flow); do the migration deliberately, then remove this.
+      - dependency-name: "@tanstack/react-table"
+        update-types: ["version-update:semver-major"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
