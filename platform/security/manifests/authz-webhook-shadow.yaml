@@ -75,12 +75,13 @@ spec:
             # everything. Set to "shadow" to only LOG would-be decisions (divergence measurement)
             # without deciding — do that first on a cluster whose corpus you have not validated.
             - { name: AUTHZ_MODE, value: "enforce" }
-            # Break-glass floor — groups ALWAYS allowed in enforce, independent of the corpus.
-            # system:masters keeps cluster-admin recovery open even through a broken/empty corpus;
-            # system:serviceaccounts:open-infra-authz lets the webhook's OWN ServiceAccount read its
-            # corpus sources (policies + the control-plane-corpus ConfigMap) so it can bootstrap — its
-            # reads MUST be authorizable without the webhook itself, or enforce deadlocks on first load.
-            - { name: BREAK_GLASS_GROUPS, value: "system:masters,system:serviceaccounts:open-infra-authz" }
+            # Break-glass floor — always allowed in enforce, independent of the corpus. Scoped tight:
+            # only system:masters (cluster-admin recovery through a broken/empty corpus) as a GROUP, and
+            # the webhook's OWN ServiceAccount as a USER (auto-derived from its projected token — no env
+            # needed) so its corpus-source reads are authorizable without the webhook and it can
+            # bootstrap. The corpus-auditor SA in this namespace is granted by the corpus like any other
+            # principal, so the old namespace-wide bypass is gone. Extra users via BREAK_GLASS_USERS.
+            - { name: BREAK_GLASS_GROUPS, value: "system:masters" }
             - { name: TLS_CERT_FILE, value: "/tls/tls.crt" }
             - { name: TLS_KEY_FILE, value: "/tls/tls.key" }
           volumeMounts: [{ name: tls, mountPath: /tls, readOnly: true }]
