@@ -138,6 +138,31 @@ func TestWebhook_BreakGlassUser(t *testing.T) {
 	}
 }
 
+// A ServiceAccount in a defer namespace is governed by RBAC (NoOpinion), even with a corpus loaded that
+// would otherwise default-deny it — so a dynamically-provisioned CNPG cluster's fresh SA is not
+// dead-locked. A SA outside the defer set, and a regular user, are still enforced.
+func TestWebhook_DeferServiceAccountNamespace(t *testing.T) {
+	h := &webhookHandler{
+		checker: checkerFor([]string{"Group::admins"},
+			policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"clusters.postgresql.cnpg.io::*"}}),
+		mode: Enforce, logger: discard(),
+		breakGlass:        map[string]bool{"system:masters": true},
+		deferSANamespaces: map[string]bool{"open-infra-rds": true},
+	}
+	// An (ungranted) CNPG cluster SA in the defer namespace → defer to RBAC (not allowed, not denied).
+	if st := post(t, h, sar("system:serviceaccount:open-infra-rds:rds-smoke", []string{"system:serviceaccounts:open-infra-rds"}, "get", "postgresql.cnpg.io", "clusters", "open-infra-rds", "rds-smoke")); st.Allowed || st.Denied {
+		t.Fatalf("a defer-namespace SA must defer to RBAC, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	// A SA in a DIFFERENT namespace is still enforced (ungranted → explicit deny).
+	if st := post(t, h, sar("system:serviceaccount:default:other", []string{"system:serviceaccounts:default"}, "get", "postgresql.cnpg.io", "clusters", "default", "x")); !st.Denied {
+		t.Fatalf("a non-defer-namespace SA must be enforced (denied), got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	// A regular USER is never a deferred SA — still enforced.
+	if st := post(t, h, sar("bob", []string{"devs"}, "get", "postgresql.cnpg.io", "clusters", "open-infra-rds", "x")); !st.Denied {
+		t.Fatalf("a non-SA user must be enforced, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+}
+
 // Enforce mode returns the real Cedar decision: an allow, and an explicit deny for the ungranted.
 func TestWebhook_EnforceReturnsDecision(t *testing.T) {
 	h := &webhookHandler{

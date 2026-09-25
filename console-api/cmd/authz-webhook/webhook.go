@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/harn3ss/open-infra/console-api/internal/controlplaneauthz"
 	"github.com/harn3ss/open-infra/policyengine"
@@ -48,6 +49,23 @@ type webhookHandler struct {
 	logger          *slog.Logger
 	breakGlass      map[string]bool // groups always allowed in enforce, independent of the corpus
 	breakGlassUsers map[string]bool // users always allowed in enforce (the webhook's own SA, for bootstrap)
+	// deferSANamespaces holds namespaces whose ServiceAccounts are governed by their own operator-authored
+	// RBAC, not Cedar. Cedar ABSTAINS (NoOpinion → RBAC) for those SAs. This is for dynamically-created
+	// infrastructure SAs the corpus cannot know in advance (e.g. a CloudNativePG cluster the RDS front door
+	// provisions mints a new SA per instance). It is NOT allow — RBAC still decides, and it is scoped to
+	// ServiceAccounts in these fenced namespaces only, never users/console/apps.
+	deferSANamespaces map[string]bool
+}
+
+// isDeferredServiceAccount reports whether the identity is a ServiceAccount in a defer namespace. The
+// Kubernetes username form is system:serviceaccount:<namespace>:<name>.
+func (h *webhookHandler) isDeferredServiceAccount(user string) bool {
+	const p = "system:serviceaccount:"
+	if !strings.HasPrefix(user, p) {
+		return false
+	}
+	ns, _, ok := strings.Cut(user[len(p):], ":")
+	return ok && h.deferSANamespaces[ns]
 }
 
 // isBreakGlass reports whether the request's identity is in the break-glass floor — by exact user
@@ -96,6 +114,21 @@ func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
 			"user", sar.Spec.User, "verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec))
 		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: false,
 			Reason: "control-plane authz: no corpus loaded — deferring to RBAC"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&sar)
+		return
+	}
+	// Operator-managed infrastructure ServiceAccounts in fenced namespaces are governed by the operator's
+	// own tight per-resource RBAC, not Cedar. A dynamically-provisioned resource (e.g. an RDS = a
+	// CloudNativePG cluster) mints a new SA the corpus cannot know in advance, so Cedar ABSTAINS
+	// (NoOpinion → RBAC decides) rather than denying it and dead-locking provisioning. This does NOT relax
+	// Cedar over users, the console, or applications — only ServiceAccounts in these fenced namespaces.
+	if h.mode == Enforce && h.isDeferredServiceAccount(sar.Spec.User) {
+		h.logger.Info("control-plane authz decision", "mode", h.mode, "user", sar.Spec.User,
+			"verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec), "wouldAllow", "defer",
+			"reason", "operator-managed infra SA — deferring to RBAC")
+		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: false,
+			Reason: "control-plane authz: operator-managed infra ServiceAccount — deferring to RBAC"}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(&sar)
 		return
