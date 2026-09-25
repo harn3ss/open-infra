@@ -5,7 +5,7 @@
 // algorithm gives a stable topological order (ties broken by template order, so the plan is
 // deterministic). A cycle is a hard error — CloudFormation refuses circular dependencies and
 // so do we.
-package main
+package cfn
 
 import (
 	"fmt"
