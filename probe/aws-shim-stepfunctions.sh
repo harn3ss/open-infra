@@ -166,7 +166,8 @@ cat > "$TMP/def.json" <<JSON
   "States": {
     "Classify": { "Type": "Choice",
       "Choices": [ {"Variable":"\$.mode","StringEquals":"faily","Next":"Faily"},
-                   {"Variable":"\$.mode","StringEquals":"wait","Next":"LongWait"} ],
+                   {"Variable":"\$.mode","StringEquals":"wait","Next":"LongWait"},
+                   {"Variable":"\$.mode","StringEquals":"waitshort","Next":"ShortWait"} ],
       "Default": "Echo" },
     "Echo":  { "Type":"Task","Resource":"function:${ECHO_NAME}","ResultPath":"\$.echo","Next":"Done" },
     "Faily": { "Type":"Task","Resource":"function:sfn-nonexistent-${SFX}",
@@ -174,6 +175,7 @@ cat > "$TMP/def.json" <<JSON
       "Catch":[{"ErrorEquals":["States.ALL"],"Next":"Recovered"}], "End":true },
     "Recovered": { "Type":"Pass","Result":{"recovered":true},"Next":"Done" },
     "LongWait":  { "Type":"Wait","Seconds":120,"Next":"Done" },
+    "ShortWait": { "Type":"Wait","Seconds":45,"Next":"Done" },
     "Done": { "Type":"Succeed" }
   } }
 JSON
@@ -261,6 +263,24 @@ EVN="$(sfn get-execution-history --execution-arn "$FEXARN" --query 'length(event
 [ "${EVN:-0}" -gt 0 ] 2>/dev/null || fail "GetExecutionHistory returned no events"
 log "    ✓ retry + catch happened and are reflected in the history (${EVN} events)"
 
+# --- 7b. DURABILITY: a Wait execution survives a controller restart (resumes from checkpoint) --------
+# Only run if we can restart the controller (needs kubectl rights on the crossplane-system deployment).
+SM_CTRL_NS="${SM_CONTROLLER_NS:-crossplane-system}"
+SM_CTRL="${SM_CONTROLLER_DEPLOY:-openinfra-statemachine}"
+if kubectl -n "$SM_CTRL_NS" get deploy "$SM_CTRL" >/dev/null 2>&1; then
+  log "durability: start-execution (mode=waitshort) → restart the controller mid-Wait → still SUCCEEDS"
+  DEXARN="$(start_exec waitshort)"
+  poll_status "$DEXARN" RUNNING 30 >/dev/null || fail "waitshort execution never reached RUNNING (nothing to resume)"
+  sleep 6 # let it checkpoint at the Wait state
+  log "  restarting the statemachine controller (simulated crash) while the Wait is in flight..."
+  kubectl -n "$SM_CTRL_NS" rollout restart deploy/"$SM_CTRL" >/dev/null 2>&1 || fail "could not restart the controller"
+  kubectl -n "$SM_CTRL_NS" rollout status deploy/"$SM_CTRL" --timeout=120s >/dev/null 2>&1 || inconclusive "controller did not come back after restart"
+  ST="$(poll_status "$DEXARN" SUCCEEDED 90)" || fail "the Wait execution did NOT resume after the controller restart (durability broken; status=$ST)"
+  log "    ✓ resumed from checkpoint after restart and completed (durable execution)"
+else
+  log "durability: SKIPPED (no rights to restart ${SM_CTRL_NS}/${SM_CTRL})"
+fi
+
 # --- 8. STOP: a long-running (Wait) execution can be aborted ----------------------------------------
 log "start-execution (mode=wait) → StopExecution → status ABORTED"
 WEXARN="$(start_exec wait)"
@@ -290,5 +310,14 @@ if sfn create-state-machine --name "sfn-bad-$SFX" --definition "file://$TMP/bad.
 fi
 grep -qiE 'InvalidDefinition|not supported|Parallel' "$TMP/bad" || fail "unsupported-ASL refusal had the wrong error: $(cat "$TMP/bad")"
 log "    ✓ refused"
+
+# --- 11. NEGATIVE: a wrong secret is rejected (shared SigV4 auth actually fires) --------------------
+log "negative: a valid key ID with a WRONG secret must be rejected (SignatureDoesNotMatch)"
+if AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="wrong-secret-not-the-real-one" AWS_REGION="$REGION" \
+   aws --endpoint-url "$ENDPOINT" --no-cli-pager stepfunctions list-state-machines >/dev/null 2>"$TMP/ws"; then
+  fail "a wrong secret was accepted on a states call"
+fi
+grep -qiE 'Signature|does not match|InvalidSignature|AccessDenied' "$TMP/ws" || fail "wrong-secret rejection had the wrong error: $(cat "$TMP/ws")"
+log "    ✓ rejected on signature mismatch"
 
 printf '\n✓ PASS — aws-shim Step Functions is faithful: an AWS-authored ASL workflow runs (Task/Choice/Wait/Retry/Catch), a Task executes under the state machine ROLE (injected STS session = the assumed role, doing exactly what the role grants and denied what it does not — the confused-deputy fix), StopExecution aborts, the history reflects real transitions, and the negatives (untrusted-role pass, unsupported ASL) are refused.\n'
