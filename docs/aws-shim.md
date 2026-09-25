@@ -494,6 +494,65 @@ Loki, including a `TargetDeliveryFailed` record for a missed delivery.
 secret rejected, the **escalation fence** (targeting a Lambda the caller can't invoke is refused), and a
 DescribeRule-only principal denied `PutTargets`.
 
+### RDS (real PostgreSQL via CloudNativePG; query protocol; built, live proof pending)
+
+RDS is a **different shape** from the other doorways. For S3/DynamoDB/SQS the SDK call *is* the data path;
+for RDS the AWS SDK touches only the **control plane** (`CreateDBInstance`, `DescribeDBInstances`,
+`CreateDBSnapshot`) — once an instance exists, applications connect over the **native Postgres wire
+protocol** with a normal driver and the SDK is out of the picture. So the two halves are scoped separately:
+
+- **Data path (real Postgres, no emulation):** a DB instance is a genuine **CloudNativePG (CNPG) Cluster**
+  — actual PostgreSQL, with real transactions, isolation, constraints, and the query planner. "Is this a
+  real Postgres?" is answered by construction. Customer databases live in their own namespace
+  (`open-infra-rds`), deliberately separate from the shim's internal SQS Postgres and from any
+  platform-internal database — a multi-tenant customer DB never shares the shim's own state.
+- **Control plane (query protocol, XML):** `CreateDBInstance`, `DescribeDBInstances`, `ModifyDBInstance`,
+  `DeleteDBInstance`, `CreateDBSnapshot`, `DescribeDBSnapshots`, `DeleteDBSnapshot`,
+  `RestoreDBInstanceFromDBSnapshot`.
+
+**Provisioning is genuinely asynchronous.** `CreateDBInstance` returns `creating`; `DescribeDBInstances`
+reports the *real* CNPG state and only reports `available` — with an `Endpoint` — once the database truly
+accepts connections, so an SDK waiter works. The `Endpoint.Address` is the CNPG `-rw` Service DNS
+(`<id>-rw.open-infra-rds.svc.cluster.local:5432`) — genuinely reachable and stable across restarts/failover.
+The `MasterUsername`/`MasterUserPassword` genuinely become the database owner's credentials (via a
+CNPG basic-auth secret) and are **never** returned by `DescribeDBInstances`.
+
+**Snapshots and restore are real** (the highest-stakes item — a backup that has never been restored is not
+a backup). `CreateDBSnapshot` is a CNPG **volumeSnapshot** Backup on the Longhorn CSI; `RestoreDB
+InstanceFromDBSnapshot` bootstraps a **new** Cluster recovered from that snapshot. The probe proves it by
+restoring and reading a row back from the restored copy.
+
+**Honored capability flags** (mapped to reality, never accept-and-ignore): `DBInstanceClass` → real pod
+requests/limits (an unrecognized class is **refused**, never quietly under-provisioned); `AllocatedStorage`
+→ PVC size; `StorageEncrypted: true` → the `longhorn-encrypted` (LUKS) storage class — **genuine**
+at-rest encryption, not a claimed flag; `DeletionProtection` → actually blocks `DeleteDBInstance`;
+`SkipFinalSnapshot: false` + `FinalDBSnapshotIdentifier` → really takes that snapshot before deleting.
+
+**Refused honestly, never faked:** a non-`postgres` `Engine` (PostgreSQL only in v1); `MultiAZ: true` (a
+single failure domain cannot provide multi-AZ durability — claiming it would be a dangerous false green);
+read replicas; point-in-time recovery (`DescribeDBInstances` does **not** report a `LatestRestorableTime`
+that cannot be honored); and custom parameter groups. Each returns a real error at the call, not a silent
+downgrade.
+
+**Authorization — and where the policy world ends.** Control-plane ops use the same one policy world as the
+other front doors (coarse impersonated SubjectAccessReview on `applications` + fine-grained Cedar `rds:*`
+at instance granularity; `rds:DeleteDBInstance`/`rds:RestoreDBInstanceFromDBSnapshot` independently
+grantable). The shim's own ServiceAccount holds the scoped CNPG-management RBAC in `open-infra-rds`.
+**But once a caller has the endpoint and credentials, they connect straight to Postgres and the Cedar
+policy world is not in that path at all** — in-database authorization is Postgres's own roles and grants.
+That is not a defect (it is equally true of real RDS), but it is stated plainly here rather than left as an
+overclaim of "one policy world." (Operationally, because each instance mints a new CNPG cluster
+ServiceAccount the Cedar corpus cannot know in advance, the control-plane authz webhook **defers those
+`open-infra-rds` infra ServiceAccounts to RBAC** — CNPG's own tight per-cluster RBAC governs them — without
+relaxing Cedar over users, the console, or applications.)
+
+`probe/aws-shim-rds.sh` crosses the boundary the other probes do not: it creates an instance, waits on the
+SDK's own waiter until `available`, **connects with a real `psql` client**, writes and reads a row (proving
+the endpoint is genuinely reachable and genuinely Postgres), then snapshots it, **restores the snapshot
+into a new instance and verifies the row is present in the restored copy**, and confirms `DeletionProtection`
+blocks a delete — plus the negatives (wrong secret; a describe-only principal denied `CreateDBInstance`).
+This section says **built, live proof pending** until it passes live, then becomes *probe-proven*.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not
