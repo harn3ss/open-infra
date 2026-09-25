@@ -86,6 +86,12 @@ spec:
             # bootstrap. The corpus-auditor SA in this namespace is granted by the corpus like any other
             # principal, so the old namespace-wide bypass is gone. Extra users via BREAK_GLASS_USERS.
             - { name: BREAK_GLASS_GROUPS, value: "system:masters" }
+            # Defer-to-RBAC (NoOpinion, NOT allow) for operator-managed infrastructure ServiceAccounts in
+            # fenced namespaces the corpus cannot enumerate in advance — the RDS front door provisions a
+            # CloudNativePG cluster per DB instance, each minting a new SA governed by CNPG's own tightly
+            # scoped per-cluster RBAC. Cedar abstains for those SAs so RBAC decides; users/console/apps are
+            # unaffected. Comma-separated; "-" disables. (polyhedron#162)
+            - { name: DEFER_TO_RBAC_NAMESPACES, value: "open-infra-rds" }
             - { name: TLS_CERT_FILE, value: "/tls/tls.crt" }
             - { name: TLS_KEY_FILE, value: "/tls/tls.key" }
           volumeMounts: [{ name: tls, mountPath: /tls, readOnly: true }]

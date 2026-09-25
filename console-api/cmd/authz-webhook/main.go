@@ -46,10 +46,15 @@ func main() {
 	}
 	checker := controlplaneauthz.New(controlplaneauthz.K8sLoader(dyn), 30*time.Second)
 	h := &webhookHandler{checker: checker, mode: mode, logger: logger,
-		breakGlass: breakGlassGroups(), breakGlassUsers: breakGlassUsers()}
+		breakGlass: breakGlassGroups(), breakGlassUsers: breakGlassUsers(),
+		deferSANamespaces: deferSANamespaces()}
 	if mode == Enforce {
 		logger.Info("break-glass floor active (corpus-independent)",
 			"groups", keysOf(h.breakGlass), "users", keysOf(h.breakGlassUsers))
+		if len(h.deferSANamespaces) > 0 {
+			logger.Info("defer-to-RBAC for operator-managed infra ServiceAccounts",
+				"namespaces", keysOf(h.deferSANamespaces))
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -85,6 +90,25 @@ func restConfig() (*rest.Config, error) {
 		return clientcmd.BuildConfigFromFlags("", kc)
 	}
 	return rest.InClusterConfig()
+}
+
+// deferSANamespaces is the set of namespaces whose ServiceAccounts Cedar defers to RBAC for (NoOpinion),
+// because their SAs are operator-managed infrastructure the corpus cannot enumerate in advance — e.g. the
+// customer-database namespace where the RDS front door provisions a CloudNativePG cluster (a new SA per
+// instance), each governed by CNPG's own tightly-scoped per-cluster RBAC. Defaults to open-infra-rds;
+// override with DEFER_TO_RBAC_NAMESPACES (comma-separated), or set it to "-" to disable.
+func deferSANamespaces() map[string]bool {
+	v := os.Getenv("DEFER_TO_RBAC_NAMESPACES")
+	if v == "" {
+		v = "open-infra-rds"
+	}
+	out := map[string]bool{}
+	for _, ns := range strings.Split(v, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" && ns != "-" {
+			out[ns] = true
+		}
+	}
+	return out
 }
 
 // breakGlassGroups is the set of GROUPS always allowed in enforce, independent of the Cedar corpus —
