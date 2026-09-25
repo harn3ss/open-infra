@@ -143,6 +143,7 @@ func run(logger *slog.Logger) error {
 	var kmsSt *kmsStore
 	var secretsSt *secretsStore
 	var ebSt *ebStore
+	var cwlSt *cwlStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -181,7 +182,13 @@ func run(logger *slog.Logger) error {
 		if serr := ebSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("EventBridge schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge Postgres")
+		// CloudWatch Logs shares the same Postgres for log groups/streams/events; a reaper enforces
+		// genuine per-group retention (see cloudwatchlogs.go).
+		cwlSt = &cwlStore{db: db}
+		if serr := cwlSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("CloudWatch Logs schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -359,6 +366,8 @@ func run(logger *slog.Logger) error {
 	}
 	rdsH := newRDSHandler(cs, rdsCnpg, authzNS, account, region, logger)
 	rdsH.authz = authzChecker
+	cwlH := newCWLHandler(cs, authzNS, account, region, cwlSt, logger)
+	cwlH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -371,6 +380,7 @@ func run(logger *slog.Logger) error {
 		"secretsmanager": secretsH,
 		"events":         ebH,
 		"rds":            rdsH,
+		"logs":           cwlH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
@@ -420,6 +430,24 @@ func run(logger *slog.Logger) error {
 				case <-t.C:
 					if err := sqsSt.reapExpired(context.Background()); err != nil {
 						logger.Warn("sqs retention reaper error", "error", err.Error())
+					}
+				}
+			}
+		}()
+	}
+	if cwlSt != nil {
+		// CloudWatch Logs retention reaper: genuinely enforce each log group's retentionInDays so the
+		// value DescribeLogGroups reports is the truth, not a claim (AU-11). Exits when ctx is cancelled.
+		go func() {
+			t := time.NewTicker(15 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if err := cwlSt.reapExpired(context.Background(), time.Now()); err != nil {
+						logger.Warn("cloudwatchlogs retention reaper error", "error", err.Error())
 					}
 				}
 			}
