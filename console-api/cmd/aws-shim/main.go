@@ -146,6 +146,7 @@ func run(logger *slog.Logger) error {
 	var cwlSt *cwlStore
 	var ssmSt *ssmStore
 	var apigwSt *apigwStore
+	var cwSt *cwStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -202,7 +203,13 @@ func run(logger *slog.Logger) error {
 		if serr := apigwSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("API Gateway schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway Postgres")
+		// CloudWatch metrics + alarms share the same Postgres; the in-process evaluator (started below)
+		// reads datapoints from here and fires SNS alarm actions.
+		cwSt = &cwStore{db: db}
+		if serr := cwSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("CloudWatch schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -392,6 +399,10 @@ func run(logger *slog.Logger) error {
 	apigwInvokeBase := getenv("APIGW_INVOKE_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
 	apigwH := newAPIGWHandler(cs, authzNS, account, region, fnNS, svcSuffix, apigwInvokeBase, apigwSt, logger)
 	apigwH.authz = authzChecker
+	// CloudWatch metrics + alarms (SigV4 service name "monitoring"). The alarm evaluator (started below)
+	// fires SNS AlarmActions through the SNS handler.
+	cwmH := newCWHandler(cs, authzNS, account, region, cwSt, snsH, logger)
+	cwmH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -407,6 +418,7 @@ func run(logger *slog.Logger) error {
 		"logs":           cwlH,
 		"ssm":            ssmH,
 		"apigateway":     apigwH,
+		"monitoring":     cwmH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
@@ -483,6 +495,12 @@ func run(logger *slog.Logger) error {
 		// EventBridge scheduler: fires enabled rate()/cron() rules and delivers to their targets on the
 		// durable path. Rules are persisted, so it resumes after a restart. Exits when ctx is cancelled.
 		go ebH.runScheduler(ctx)
+	}
+	if cwSt != nil {
+		// CloudWatch alarm evaluator: periodically evaluates every alarm against its metric datapoints,
+		// transitions OK/ALARM/INSUFFICIENT_DATA, and fires SNS AlarmActions on entry to ALARM. Alarms are
+		// persisted, so it resumes after a restart. Exits when ctx is cancelled.
+		cwmH.startEvaluator(ctx, time.Duration(atoiDefault(getenv("CW_ALARM_EVAL_INTERVAL_SECONDS", "20"), 20))*time.Second)
 	}
 	if kmsSt != nil && kmsTransit != nil {
 		// KMS crypto-erase reaper: destroy the Vault key material of CMKs whose deletion window has
