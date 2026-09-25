@@ -336,7 +336,7 @@ bare payload; a `FilterPolicy` and an `https` subscription are both **refused**;
 wrong secret → `SignatureDoesNotMatch`, and a **publish-only principal (granted `sns:Publish` via Cedar)
 is denied `sns:Subscribe`** while still able to publish.
 
-### KMS (Vault Transit-backed; JSON protocol; built, live proof pending)
+### KMS (Vault Transit-backed; JSON protocol; probe-proven)
 
 The KMS front door speaks the AWS **JSON protocol** (`X-Amz-Target: TrentService.<Op>`). A customer master
 key (CMK) is a **HashiCorp Vault Transit key** named `kms-<keyId>`; the shim performs every cryptographic
@@ -378,13 +378,11 @@ Faithful semantics that matter:
   rotates once immediately and records the flag; it is not AWS's yearly cadence. Documented, not hidden.
 - **Multi-Region keys, custom key stores, imported key material, and tags** are not implemented.
 
-`probe/aws-shim-kms.sh` asserts all of the above over real SDK round-trips — round-trip identity, the
-EncryptionContext binding (wrong **and** absent context rejected), envelope-key decrypt, the disable /
-schedule-deletion state machine, rotate-safety — plus the negatives: an asymmetric `CreateKey` refused, a
-wrong secret rejected on signature, and an **encrypt-only principal (granted only `kms:Encrypt` via Cedar)
-denied `kms:Decrypt`** while still able to encrypt. It has not yet been run against a live deployment
-(the `aws-shim-kms` Vault policy must be provisioned first); this section says **built, live proof
-pending** until the probe passes live, and will then be updated to *probe-proven*.
+`probe/aws-shim-kms.sh` proves it over real SDK round-trips — round-trip identity, the EncryptionContext
+binding (wrong **and** absent context rejected), envelope-key decrypt, the disable / schedule-deletion
+state machine, rotate-safety — plus the negatives: an asymmetric `CreateKey` refused, a wrong secret
+rejected on signature, and an **encrypt-only principal (granted only `kms:Encrypt` via Cedar) denied
+`kms:Decrypt`** while still able to encrypt.
 
 ## The compatibility probe
 
