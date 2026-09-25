@@ -55,7 +55,15 @@ s3op() { local ak="$1" sk="$2" tok="${3:-}"; shift 3; AWS_ACCESS_KEY_ID="$ak" AW
 cleanup() {
   sfn delete-state-machine --state-machine-arn "arn:aws:states:${REGION}:${ACCOUNT}:stateMachine:${SM_NAME}" >/dev/null 2>&1 || true
   sfn delete-state-machine --state-machine-arn "arn:aws:states:${REGION}:${ACCOUNT}:stateMachine:${SM_NOTRUST}" >/dev/null 2>&1 || true
-  for e in "${CREATED_EXECS[@]:-}"; do [ -n "$e" ] && kubectl -n "$SHIM_NS" delete execution.openinfra.dev "$e" --ignore-not-found >/dev/null 2>&1 || true; done
+  # Delete this probe's executions by their stateMachineRef — NOT via an array mutated inside start_exec,
+  # which runs in a $(...) subshell so the parent's array never sees the appends.
+  kubectl -n "$SHIM_NS" get execution.openinfra.dev -o json 2>/dev/null \
+    | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+for i in d.get("items",[]):
+  sm=str(i.get("spec",{}).get("stateMachineRef",{}).get("name",""))
+  if sm in (sys.argv[1],sys.argv[2]): print(i["metadata"]["name"])' "$SM_NAME" "$SM_NOTRUST" 2>/dev/null \
+    | while read -r e; do [ -n "$e" ] && kubectl -n "$SHIM_NS" delete execution.openinfra.dev "$e" --ignore-not-found >/dev/null 2>&1 || true; done
   kubectl -n "$SHIM_NS" delete secret -l openinfra.dev/statemachine-creds=true >/dev/null 2>&1 || true
   kubectl -n "$SHIM_NS" delete deployment,service "$ECHO_NAME" --ignore-not-found >/dev/null 2>&1 || true
   iam delete-role --role-name "$ROLE" >/dev/null 2>&1 || true
