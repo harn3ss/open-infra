@@ -524,15 +524,17 @@ restoring and reading a row back from the restored copy.
 
 **Honored capability flags** (mapped to reality, never accept-and-ignore): `DBInstanceClass` → real pod
 requests/limits (an unrecognized class is **refused**, never quietly under-provisioned); `AllocatedStorage`
-→ PVC size; `StorageEncrypted: true` → the `longhorn-encrypted` (LUKS) storage class — **genuine**
-at-rest encryption, not a claimed flag; `DeletionProtection` → actually blocks `DeleteDBInstance`;
-`SkipFinalSnapshot: false` + `FinalDBSnapshotIdentifier` → really takes that snapshot before deleting.
+→ PVC size; `DeletionProtection` → actually blocks `DeleteDBInstance`; `SkipFinalSnapshot: false` +
+`FinalDBSnapshotIdentifier` → really takes that snapshot before deleting.
 
 **Refused honestly, never faked:** a non-`postgres` `Engine` (PostgreSQL only in v1); `MultiAZ: true` (a
 single failure domain cannot provide multi-AZ durability — claiming it would be a dangerous false green);
 read replicas; point-in-time recovery (`DescribeDBInstances` does **not** report a `LatestRestorableTime`
-that cannot be honored); and custom parameter groups. Each returns a real error at the call, not a silent
-downgrade.
+that cannot be honored); custom parameter groups; and **`StorageEncrypted: true`** — genuine at-rest
+encryption needs per-volume LUKS key provisioning (and key propagation across snapshot/restore) that the
+RDS path does not yet wire, so v1 refuses it rather than reporting `StorageEncrypted: true` over storage
+that is not genuinely encrypted (that field is read directly by compliance tooling — a false one is worse
+than absent). Each returns a real error at the call, not a silent downgrade.
 
 **Authorization — and where the policy world ends.** Control-plane ops use the same one policy world as the
 other front doors (coarse impersonated SubjectAccessReview on `applications` + fine-grained Cedar `rds:*`
