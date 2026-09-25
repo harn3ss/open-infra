@@ -119,6 +119,25 @@ func TestWebhook_EnforceDefersWithoutCorpus(t *testing.T) {
 	}
 }
 
+// Break-glass by exact USER: the webhook's own ServiceAccount is always allowed in enforce (so it can
+// bootstrap its corpus), scoped to that one identity — NOT the whole namespace. A different SA in the
+// same namespace is not break-glass and is governed by the corpus.
+func TestWebhook_BreakGlassUser(t *testing.T) {
+	empty := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) { return nil, nil }, time.Minute)
+	h := &webhookHandler{checker: empty, mode: Enforce, logger: discard(),
+		breakGlass:      map[string]bool{"system:masters": true},
+		breakGlassUsers: map[string]bool{"system:serviceaccount:open-infra-authz:authz-webhook": true}}
+	// The webhook's own SA is allowed even with an empty corpus (bootstrap).
+	if st := post(t, h, sar("system:serviceaccount:open-infra-authz:authz-webhook", []string{"system:serviceaccounts:open-infra-authz"}, "list", "iam.openinfra.dev", "policies", "", "")); !st.Allowed {
+		t.Fatalf("the webhook's own SA must be break-glass (bootstrap), got %+v", st)
+	}
+	// A DIFFERENT SA in the same namespace is NOT break-glass (the namespace is no longer a blanket
+	// bypass) — with no corpus it defers to RBAC (not allowed, not denied).
+	if st := post(t, h, sar("system:serviceaccount:open-infra-authz:corpus-auditor", []string{"system:serviceaccounts:open-infra-authz"}, "list", "iam.openinfra.dev", "policies", "", "")); st.Allowed {
+		t.Fatalf("a different namespace SA must not be break-glass, got %+v", st)
+	}
+}
+
 // Enforce mode returns the real Cedar decision: an allow, and an explicit deny for the ungranted.
 func TestWebhook_EnforceReturnsDecision(t *testing.T) {
 	h := &webhookHandler{

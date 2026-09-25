@@ -12,6 +12,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -43,9 +45,11 @@ func main() {
 		os.Exit(1)
 	}
 	checker := controlplaneauthz.New(controlplaneauthz.K8sLoader(dyn), 30*time.Second)
-	h := &webhookHandler{checker: checker, mode: mode, logger: logger, breakGlass: breakGlassGroups()}
+	h := &webhookHandler{checker: checker, mode: mode, logger: logger,
+		breakGlass: breakGlassGroups(), breakGlassUsers: breakGlassUsers()}
 	if mode == Enforce {
-		logger.Info("break-glass floor active (always-allowed groups, corpus-independent)", "groups", keysOf(h.breakGlass))
+		logger.Info("break-glass floor active (corpus-independent)",
+			"groups", keysOf(h.breakGlass), "users", keysOf(h.breakGlassUsers))
 	}
 
 	mux := http.NewServeMux()
@@ -83,10 +87,9 @@ func restConfig() (*rest.Config, error) {
 	return rest.InClusterConfig()
 }
 
-// breakGlassGroups is the set of groups ALWAYS allowed in enforce, independent of the Cedar corpus —
+// breakGlassGroups is the set of GROUPS always allowed in enforce, independent of the Cedar corpus —
 // the recovery floor so removing RBAC can never lock out cluster-admin. Defaults to system:masters
-// (the admin kubeconfig group); override/extend with BREAK_GLASS_GROUPS (comma-separated) to also
-// keep, say, core control-plane components alive through a corpus-load blip.
+// (the admin kubeconfig group); override with BREAK_GLASS_GROUPS (comma-separated).
 func breakGlassGroups() map[string]bool {
 	groups := os.Getenv("BREAK_GLASS_GROUPS")
 	if groups == "" {
@@ -99,6 +102,50 @@ func breakGlassGroups() map[string]bool {
 		}
 	}
 	return out
+}
+
+// breakGlassUsers is the set of exact USERS always allowed in enforce. It ALWAYS includes the
+// webhook's own ServiceAccount (auto-derived from its projected token, below): the authorizer's own
+// identity MUST be authorizable without the authorizer, or it deadlocks loading its corpus on the
+// first enforce request. This replaces break-glassing the whole open-infra-authz namespace (which also
+// covered the corpus-auditor SA — that one is granted by the corpus like any other principal, so it
+// no longer needs a bypass). Extend with BREAK_GLASS_USERS (comma-separated) if ever needed.
+func breakGlassUsers() map[string]bool {
+	out := map[string]bool{}
+	if self := selfServiceAccountUser(); self != "" {
+		out[self] = true
+	}
+	for _, u := range strings.Split(os.Getenv("BREAK_GLASS_USERS"), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			out[u] = true
+		}
+	}
+	return out
+}
+
+// selfServiceAccountUser returns the webhook's own ServiceAccount username
+// ("system:serviceaccount:<ns>:<name>") from the "sub" claim of its projected SA token — its own
+// token, so the claim is read, not verified. Returns "" off-cluster (e.g. unit tests / local runs).
+func selfServiceAccountUser() string {
+	b, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.TrimSpace(string(b)), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	return claims.Sub
 }
 
 func keysOf(m map[string]bool) []string {

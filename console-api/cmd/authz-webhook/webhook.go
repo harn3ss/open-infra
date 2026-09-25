@@ -43,14 +43,20 @@ func verdict(d policyengine.Decision) string {
 // webhookHandler serves the Kubernetes authorization-webhook contract: a SubjectAccessReview in, the
 // same object with its Status filled, out.
 type webhookHandler struct {
-	checker    *controlplaneauthz.Checker
-	mode       Mode
-	logger     *slog.Logger
-	breakGlass map[string]bool // groups always allowed in enforce, independent of the corpus
+	checker         *controlplaneauthz.Checker
+	mode            Mode
+	logger          *slog.Logger
+	breakGlass      map[string]bool // groups always allowed in enforce, independent of the corpus
+	breakGlassUsers map[string]bool // users always allowed in enforce (the webhook's own SA, for bootstrap)
 }
 
-// isBreakGlass reports whether the request's identity is in the break-glass floor.
+// isBreakGlass reports whether the request's identity is in the break-glass floor — by exact user
+// (the webhook's own ServiceAccount, so it can bootstrap its corpus) or by group (system:masters, for
+// cluster-admin recovery through a broken/empty corpus).
 func (h *webhookHandler) isBreakGlass(spec authzv1.SubjectAccessReviewSpec) bool {
+	if h.breakGlassUsers[spec.User] {
+		return true
+	}
 	for _, g := range spec.Groups {
 		if h.breakGlass[g] {
 			return true
