@@ -142,6 +142,7 @@ func run(logger *slog.Logger) error {
 	var snsSt *snsStore
 	var kmsSt *kmsStore
 	var secretsSt *secretsStore
+	var ebSt *ebStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -174,7 +175,13 @@ func run(logger *slog.Logger) error {
 		if serr := secretsSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("Secrets Manager schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager Postgres (queues, messages, topics, subscriptions, key + secret metadata)")
+		// EventBridge shares the same Postgres for buses, rules, and targets; the in-process scheduler
+		// reloads rules from here after a restart. Delivery rides the durable Lambda(async)/SQS paths.
+		ebSt = &ebStore{db: db}
+		if serr := ebSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("EventBridge schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -339,6 +346,10 @@ func run(logger *slog.Logger) error {
 	// is encrypted under the transit key kms-aws-secretsmanager, so no separate Vault policy is needed.
 	secretsH := newSecretsHandler(cs, authzNS, account, region, kmsTransit, secretsSt, logger)
 	secretsH.authz = authzChecker
+	// EventBridge reuses the async invoker (durable Lambda target delivery) and the SQS store (SQS target
+	// delivery). Its in-process scheduler is started below once the run context exists.
+	ebH := newEBHandler(cs, authzNS, fnNS, account, region, ebSt, asyncInv, sqsSt, logger)
+	ebH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -349,6 +360,7 @@ func run(logger *slog.Logger) error {
 		"sns":            snsH,
 		"kms":            kmsH,
 		"secretsmanager": secretsH,
+		"events":         ebH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
@@ -402,6 +414,11 @@ func run(logger *slog.Logger) error {
 				}
 			}
 		}()
+	}
+	if ebSt != nil {
+		// EventBridge scheduler: fires enabled rate()/cron() rules and delivers to their targets on the
+		// durable path. Rules are persisted, so it resumes after a restart. Exits when ctx is cancelled.
+		go ebH.runScheduler(ctx)
 	}
 	if kmsSt != nil && kmsTransit != nil {
 		// KMS crypto-erase reaper: destroy the Vault key material of CMKs whose deletion window has

@@ -440,6 +440,61 @@ honest rotation fields, `GetRandomPassword`, the audit record — plus the negat
 a **describe-only principal denied the value** while still seeing metadata, and an **A-scoped principal
 denied secret B**.
 
+### EventBridge (Kubernetes/JetStream-backed; JSON protocol; built, live proof pending)
+
+The EventBridge front door speaks the AWS **JSON protocol** (`X-Amz-Target: AWSEvents.<Op>`) and drives
+the two dominant patterns: **scheduled** invocation (cron/rate → a target on a schedule) and
+**event-driven** routing (`PutEvents` → pattern-match → a target). Supported ops: `PutRule`, `DeleteRule`,
+`DescribeRule`, `ListRules`, `EnableRule`, `DisableRule`, `PutTargets`, `RemoveTargets`,
+`ListTargetsByRule`, `PutEvents`, `CreateEventBus`, `DeleteEventBus`, `ListEventBuses`, `TestEventPattern`.
+
+**Invocation authority — the sharp security question, answered explicitly.** A rule target is an
+instruction for the platform to invoke something *on the caller's behalf, when no one is present* — a
+privilege-escalation surface. In this shim a triggered invocation runs under the **rule creator's
+authority**, and `PutTargets` verifies, with the caller's live claims, that they may invoke/send to each
+target — the same check they would face invoking it directly. **You cannot wire a rule to a target you
+could not invoke yourself**, so a rule is not an escalation path. It is **never** the shim's own ambient
+authority. A `RoleArn` on a target is refused in v1. Every fire is audited to the creating principal.
+(Divergence from AWS: authority is verified at `PutTargets`, not re-checked per fire; documented, not hidden.)
+
+**Scheduling.** `rate(N unit)` and six-field AWS `cron(min hour dom month dow year)` are parsed
+deliberately — AWS cron is **not** Unix cron: it has a year field, uses `?` for "no specific value", and
+numbers day-of-week **1=Sun..7=Sat**. A five-field Unix expression, or any expression that cannot be
+faithfully evaluated, is **refused at `PutRule`** (`ValidationException`) rather than mis-scheduled.
+Schedules are evaluated in **UTC**. An **in-process scheduler** fires due rules; rules are persisted, so it
+resumes after a restart. Divergence: it is single-replica and does **not** catch up a fire that a restart
+straddles — but a missed fire is logged/metered, never silent.
+
+**Event patterns** are a real matching language, not string compare: exact-match by default, arrays as
+OR-lists, nested objects, and the content filters `prefix`, `suffix`, `anything-but`, `numeric`, `exists`,
+`cidr`, `equals-ignore-case`, `wildcard`. A pattern using any **other** operator is **refused at
+`PutRule`** (`InvalidEventPatternException`). `TestEventPattern` uses the exact same matcher the router
+uses, so it can never give a different answer.
+
+**Targets — decided set, rest refused.** **Lambda** (delivered durably via the JetStream async invoker —
+retry + dead-letter) and **SQS** (durable Postgres queue) are supported. Any other target type is
+**refused at `PutTargets`**, never accepted into a rule that then silently never fires. `InputPath` and
+`InputTransformer` are refused (a constant `Input` is honored); delivering a raw event to a handler
+expecting a transformed one is the kind of silent shape-mismatch this refuses. Max **5 targets per rule**.
+
+**`PutEvents`** publishes custom events (1..10 entries, 256 KB each) with per-entry `FailedEntryCount`.
+The delivered event carries the AWS envelope (`version`, `id`, `detail-type`, `source`, `account`, `time`,
+`region`, `resources`, `detail`); a scheduled fire carries `source: aws.events`, `detail-type: Scheduled
+Event`. The `default` bus always exists; custom buses are a tenancy boundary.
+
+Authorized through the one policy world at rule/bus granularity (`events:PutRule`, `events:PutTargets`,
+`events:PutEvents`, `events:DescribeRule`, …); `DisableRule` genuinely stops the rule and `DescribeRule`
+reports the true state. Structured `eventbridge audit` records (principal, op, rule, target, decision) →
+Loki, including a `TargetDeliveryFailed` record for a missed delivery.
+
+`probe/aws-shim-eventbridge.sh` observes **real effects** through an SQS sink: a `rate(1 minute)` rule
+delivers **twice** (recurrence) with the correct `aws.events` envelope, `DisableRule` **stops** it, a
+six-field cron fires (a five-field one is refused), an EventPattern **admits** a matching `PutEvents` and
+**excludes** a non-matching one (and `TestEventPattern` agrees) — plus the negatives: wrong secret rejected,
+the **escalation fence** (targeting a Lambda the caller can't invoke is refused), and a DescribeRule-only
+principal denied `PutTargets`. This section says **built, live proof pending** until it passes live, then
+becomes *probe-proven*.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not
