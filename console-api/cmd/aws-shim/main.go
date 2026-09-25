@@ -148,6 +148,7 @@ func run(logger *slog.Logger) error {
 	var apigwSt *apigwStore
 	var cwSt *cwStore
 	var kinesisSt *kinesisStore
+	var cognitoSt *cognitoStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -216,7 +217,12 @@ func run(logger *slog.Logger) error {
 		if serr := kinesisSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("Kinesis schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis Postgres")
+		// Cognito user pools share the same Postgres for pools/clients/users (bcrypt password hashes).
+		cognitoSt = &cognitoStore{db: db}
+		if serr := cognitoSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("Cognito schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -419,6 +425,20 @@ func run(logger *slog.Logger) error {
 	if dyn != nil {
 		iamH = newIAMHandler(cs, dyn, awskeys.NewStore(cs, keysNS), authzChecker, usersNS, account, region, logger)
 	}
+	// Cognito user pools: real RS256 JWT-issuing pools. The signing key is persisted in a Secret (so tokens
+	// survive a restart); the pool issuer/JWKS is served by this shim so the API Gateway JWT authorizer (#169)
+	// and apps can verify. nil signer/store → honest 5xx.
+	var cognitoH *cognitoHandler
+	if cognitoSt != nil {
+		signer, serr := loadOrCreateSigner(context.Background(), cs, keysNS)
+		if serr != nil {
+			logger.Warn("cognito signing key unavailable; Cognito will answer 5xx", "error", serr.Error())
+		} else {
+			cognitoIssuerBase := getenv("COGNITO_ISSUER_BASE", apigwInvokeBase)
+			cognitoH = newCognitoHandler(cs, authzNS, account, region, cognitoIssuerBase, cognitoSt, signer, logger)
+			cognitoH.authz = authzChecker
+		}
+	}
 	services := map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -439,6 +459,9 @@ func run(logger *slog.Logger) error {
 	}
 	if iamH != nil {
 		services["iam"] = iamH
+	}
+	if cognitoH != nil {
+		services["cognito-idp"] = cognitoH
 	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
