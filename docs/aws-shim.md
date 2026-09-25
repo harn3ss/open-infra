@@ -347,7 +347,7 @@ platform's encryption/volume-crypto keys). CMK **metadata** (lifecycle state, de
 aliases) lives in the shared SQS/SNS Postgres; only the metadata, never key bytes.
 
 Supported: `CreateKey`, `DescribeKey`, `ListKeys`, `Create`/`Update`/`Delete`/`ListAliases`, `Encrypt`,
-`Decrypt`, `GenerateDataKey`(`WithoutPlaintext`), `ReEncrypt`, `Enable`/`DisableKey`,
+`Decrypt`, `GenerateDataKey`(`WithoutPlaintext`), `GenerateRandom`, `ReEncrypt`, `Enable`/`DisableKey`,
 `Enable`/`DisableKeyRotation`, `GetKeyRotationStatus`, `ScheduleKeyDeletion`, `CancelKeyDeletion`.
 
 Faithful semantics that matter:
@@ -366,6 +366,11 @@ Faithful semantics that matter:
 - Authorized through the one policy world; **`kms:Encrypt` is separable from `kms:Decrypt`** at key
   granularity (for `Decrypt` the key is resolved from the ciphertext blob so the fine-grained check still
   scopes correctly).
+- **Every operation writes a structured audit record** (`kms audit`): the resolved open-infra principal
+  (the *who*, not the access-key id), the op, the key, the decision (allow/deny), and the EncryptionContext
+  keys — the trail an auditor reads for AU-2/AU-9 and SC-12. It flows to Loki with the rest of the platform
+  audit. `Encrypt` enforces AWS's **4 KB** plaintext limit (`ValidationException`), and a tampered or
+  foreign ciphertext fails **`InvalidCiphertextException`**, never a garbage plaintext.
 
 **Deliberate divergences, refused honestly (never silently downgraded):**
 - **Symmetric only.** `CreateKey` with an asymmetric/HMAC `KeyUsage`/`KeySpec` (RSA, ECC, SIGN_VERIFY,
@@ -379,10 +384,12 @@ Faithful semantics that matter:
 - **Multi-Region keys, custom key stores, imported key material, and tags** are not implemented.
 
 `probe/aws-shim-kms.sh` proves it over real SDK round-trips — round-trip identity, the EncryptionContext
-binding (wrong **and** absent context rejected), envelope-key decrypt, the disable / schedule-deletion
-state machine, rotate-safety — plus the negatives: an asymmetric `CreateKey` refused, a wrong secret
-rejected on signature, and an **encrypt-only principal (granted only `kms:Encrypt` via Cedar) denied
-`kms:Decrypt`** while still able to encrypt.
+binding (wrong **and** absent context rejected), a **tampered** ciphertext rejected
+(`InvalidCiphertextException`), envelope-key decrypt, `GenerateRandom`, the disable / schedule-deletion
+state machine, rotate-safety, and that the `Encrypt` **wrote an audit record naming the principal** — plus
+the negatives: an asymmetric `CreateKey` refused, a wrong secret rejected on signature, and an
+**encrypt-only principal (granted only `kms:Encrypt` via Cedar) denied `kms:Decrypt`** while still able to
+encrypt.
 
 ## The compatibility probe
 

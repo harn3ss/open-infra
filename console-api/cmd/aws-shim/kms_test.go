@@ -88,6 +88,17 @@ func TestVerbForKMSOp(t *testing.T) {
 	}
 }
 
+func TestContextKeys(t *testing.T) {
+	if got := contextKeys(map[string]any{"b": "2", "a": "1"}); got != "a,b" {
+		t.Errorf("contextKeys not sorted/joined: %q", got)
+	}
+	for _, v := range []any{nil, map[string]any{}} {
+		if got := contextKeys(v); got != "" {
+			t.Errorf("empty context should give empty string, got %q", got)
+		}
+	}
+}
+
 func TestKeyName(t *testing.T) {
 	if keyName("abc") != "kms-abc" {
 		t.Errorf("keyName wrong: %q", keyName("abc"))
