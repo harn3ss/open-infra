@@ -131,14 +131,16 @@ func TestChecker_RoleAttachedPolicyGovernsSession(t *testing.T) {
 	if a, g, _ := c.Authorize(ctx, "Role", "reports-ro", nil, "s3:PutObject", "Bucket", "reports", nil); a || !g {
 		t.Errorf("assumed role PutObject reports: allowed=%v governed=%v, want false/true", a, g)
 	}
-	// A DIFFERENT role with no attachment is NOT governed for s3 ⇒ the coarse RBAC decision stands.
-	if a, g, _ := c.Authorize(ctx, "Role", "other", nil, "s3:GetObject", "Bucket", "reports", nil); !a || g {
-		t.Errorf("unattached role: allowed=%v governed=%v, want true/false", a, g)
+	// A DIFFERENT role with no attachment is CLOSED (an assumed Role is an independent principal whose
+	// authority is exactly its policies): with no policy it is default-DENIED, not "coarse decides". A role
+	// with no policy can do nothing (AWS model / polyhedron#168).
+	if a, g, _ := c.Authorize(ctx, "Role", "other", nil, "s3:GetObject", "Bucket", "reports", nil); a || !g {
+		t.Errorf("unattached role: allowed=%v governed=%v, want false/true (closed, default-deny)", a, g)
 	}
-	// Detaching (empty Attach) ⇒ the Policy no longer names the role by any axis ⇒ ungoverned again.
+	// Detaching (empty Attach) ⇒ the role has no policies by any axis ⇒ closed default-deny ⇒ denied.
 	c2 := New(fixedLoader(Snapshot{Docs: snap.Docs}, nil), time.Minute)
-	if a, g, _ := c2.Authorize(ctx, "Role", "reports-ro", nil, "s3:GetObject", "Bucket", "reports", nil); !a || g {
-		t.Errorf("after detach: allowed=%v governed=%v, want true/false", a, g)
+	if a, g, _ := c2.Authorize(ctx, "Role", "reports-ro", nil, "s3:GetObject", "Bucket", "reports", nil); a || !g {
+		t.Errorf("after detach: allowed=%v governed=%v, want false/true (closed, default-deny)", a, g)
 	}
 }
 

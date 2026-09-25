@@ -413,7 +413,13 @@ func run(logger *slog.Logger) error {
 	// Kinesis Data Streams (ordered, sharded, replayable) — Postgres-backed; SigV4 service name "kinesis".
 	kinesisH := newKinesisHandler(cs, authzNS, account, region, kinesisSt, logger)
 	kinesisH.authz = authzChecker
-	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
+	// IAM management (roles/policies/users/access-keys) — creates the kind: Role/Policy/User CRDs via the
+	// dynamic client and translates AWS policy JSON → Cedar (polyhedron#168/#174). nil dyn → honest 5xx.
+	var iamH *iamHandler
+	if dyn != nil {
+		iamH = newIAMHandler(cs, dyn, awskeys.NewStore(cs, keysNS), authzChecker, usersNS, account, region, logger)
+	}
+	services := map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":         lambdaH,
@@ -430,7 +436,11 @@ func run(logger *slog.Logger) error {
 		"apigateway":     apigwH,
 		"monitoring":     cwmH,
 		"kinesis":        kinesisH,
-	})
+	}
+	if iamH != nil {
+		services["iam"] = iamH
+	}
+	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")
 	srv := &http.Server{

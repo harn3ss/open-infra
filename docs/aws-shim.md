@@ -132,6 +132,10 @@ the sections below; the one-line summary:
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 
+**IAM management** (SigV4 service `iam`) is fronted and its management ops + policy translation are live, but
+it is held out of the probe-proven count above until its **live `AssumeRole`→enforcement** round-trip can run
+(gated on STS enablement) — see [IAM (management API + JSON→Cedar)](#iam-management-api--jsoncedar-translation-partial-live) below.
+
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
 Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), Step Functions (an owned
 `kind: StateMachine` engine exists), and the rest of the AWS surface. Adding a service is one registry entry; it
@@ -816,6 +820,42 @@ the start** (replay), distinct keys **distribute across shards**, `MillisBehindL
 `PutRecords` partial failure surfaces **per record** — plus the negatives: wrong secret → signature mismatch,
 a **cross-tenant stream read is denied**, and a **read-only principal is denied `PutRecord`** while still able
 to read.
+
+### IAM (management API + JSON→Cedar translation; partial-live)
+
+The AWS IAM management verbs over the platform's existing `kind: Role`/`Policy`/`User` entities (SigV4 service
+`iam`, query protocol). This is the API-compatible branch (Branch A): an application's existing AWS IAM
+Terraform/CDK creates roles and policies against the shim. Implemented: `CreateRole`/`GetRole`/`DeleteRole`/
+`ListRoles`, `CreatePolicy`/`GetPolicy`/`DeletePolicy`/`ListPolicies`, `AttachRolePolicy`/`DetachRolePolicy`/
+`PutRolePolicy`/`ListAttachedRolePolicies`, `CreateUser`/`GetUser`/`DeleteUser`/`ListUsers`, the access-key
+verbs, and `SimulatePrincipalPolicy`.
+
+**One policy world, no second engine.** `CreatePolicy` translates the AWS PolicyDocument through
+`policyengine.ImportAWS` into the SAME Cedar statements the data plane already enforces, stored on a
+`kind: Policy`'s `spec.dataPlane`. A role assumed via the STS doorway is then an **independent principal whose
+authority is exactly its attached policies**, evaluated **closed / default-deny** (a role with no policy can
+do nothing) — the faithful AWS model, and a deliberate departure from the additive-over-coarse-RBAC model a
+User gets. The coarse k8s-RBAC gate does not apply to an assumed role (k8s RBAC is not the role's authority);
+its policies are. This is the authority model of polyhedron#168/#174: the Cedar query carries the assumed
+session as the principal, the shim's backend credentials are never the authorization subject (a confused
+deputy would pass the allow case and fail every deny), and a session may only narrow.
+
+**Translation fidelity is guarded, not assumed.** `ImportAWS` reports (never silently drops) anything it can't
+honor, and the doorway **refuses** a policy with any unsupported part (`MalformedPolicyDocument`) rather than
+storing a grant that differs from the JSON. `NotAction`/`NotResource` — which the importer drops silently —
+are rejected explicitly. Deny statements translate to Cedar `forbid` (forbid overrides permit). The importer
+covers S3/DynamoDB/Lambda actions + a narrow condition set (authenticated, sourceIp); anything outside that is
+refused, not narrowed.
+
+**Status: partial-live.** `probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy`
+(JSON→Cedar) + `CreateRole` (trust) + `AttachRolePolicy`; `SimulatePrincipalPolicy` faithful **both
+directions** (allow `s3:GetObject` on the granted bucket; deny it on another bucket = resource fidelity; deny
+`s3:ListBucket` = action fidelity; explicit `Deny` → `explicitDeny` = forbid fidelity — the exact Cedar query
+the data plane runs for a `Role` principal); `CreateAccessKey` yields a key that authenticates; and the
+negatives (wrong secret → signature mismatch, `NotAction` refused). The **live `AssumeRole`→S3 round-trip**
+(the end-to-end confused-deputy detector) requires **STS to be enabled** (a Vault `sts/signing-key`, the same
+operator bootstrap as KMS); until then the probe reports that one assertion as gated (exit 42) rather than
+faking it. IAM is therefore not yet counted in the probe-proven service tally above.
 
 ## The compatibility probe
 

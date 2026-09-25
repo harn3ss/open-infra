@@ -111,9 +111,13 @@ metadata:
   name: aws-shim-keys
   namespace: open-infra-aws-shim
 rules:
+  # get: authenticate access keys (the SigV4 path). create/update/list/delete: the IAM CreateAccessKey/
+  # ListAccessKeys/DeleteAccessKey/UpdateAccessKey doorway (polyhedron#168/#174) writes the iam-ak-* Secrets
+  # here via the shared awskeys.Store — the same store the console BFF uses. Scoped to this namespace only;
+  # the shim still has NO secret access in the console namespace.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get]
+    verbs: [get, list, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -186,9 +190,13 @@ metadata:
   name: aws-shim-users
   namespace: open-infra-console
 rules:
+  # IAM management doorway (polyhedron#168/#174): the shim CREATES/updates/deletes kind: Role/Policy/User
+  # here on an authorized caller's behalf (the caller is gated by the impersonated SAR in the handler; the
+  # shim then executes as itself, the same pattern RDS uses to provision CNPG clusters). Cluster-wide GET/
+  # LIST for the dataPlane loader stays on the open-infra-aws-shim-policies ClusterRole above.
   - apiGroups: [iam.openinfra.dev]
-    resources: [users]
-    verbs: [get, list]
+    resources: [users, roles, policies]
+    verbs: [get, list, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

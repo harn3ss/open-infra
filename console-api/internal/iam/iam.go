@@ -130,6 +130,16 @@ func CanDo(ctx context.Context, cs kubernetes.Interface, c Claims,
 	if !ok {
 		return false, "no identity"
 	}
+	// An assumed IAM Role is an independent principal whose authority is EXACTLY its attached policies (AWS
+	// model, polyhedron#168/#174): the coarse k8s-RBAC SubjectAccessReview is a User-identity gate, not the
+	// role's authority, so it does not apply to an assumed-role session. The role's real, complete authority
+	// is enforced by the data-plane policy engine in CLOSED/default-deny mode (internal/dataplaneauthz: a
+	// Role principal is always governed, denied unless a policy permits). This is NOT a widening: a role
+	// starts from deny-all and can only reach what its policies grant, and only shim STS sessions ever carry
+	// AssumedRole (the console never sets it, so its authorization is unchanged).
+	if c.AssumedRole != "" {
+		return true, ""
+	}
 	sar := &authzv1.SubjectAccessReview{
 		Spec: authzv1.SubjectAccessReviewSpec{
 			User:   user,

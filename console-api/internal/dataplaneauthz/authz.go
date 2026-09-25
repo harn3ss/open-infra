@@ -115,6 +115,13 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 			add(d)
 		}
 	}
+	// An assumed IAM Role is an INDEPENDENT principal (AWS model): its authority is EXACTLY its attached
+	// policies, evaluated default-deny across every service — not the additive-over-coarse-RBAC model a User
+	// gets. So a Role principal is always "closed": we always run the engine (default-deny), even for a
+	// service none of its statements name, and even when it has no statements at all (a role with no policy
+	// can do nothing). A User stays additive: an S3 policy never governs DynamoDB for a User. This realizes
+	// polyhedron#168/#174's rule that a session's authority is exactly its policies and may only narrow.
+	closed := principalType == "Role"
 	governs := false
 	for _, s := range stmts {
 		if coversService(s.Actions, service) {
@@ -122,7 +129,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 			break
 		}
 	}
-	if !governs {
+	if !governs && !closed {
 		return true, false, "no data-plane policy governs " + service + " for this principal"
 	}
 	// Permission boundary (§4): if this principal (its User, or the Role it assumed) carries a
