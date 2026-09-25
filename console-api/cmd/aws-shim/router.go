@@ -66,6 +66,14 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Cognito pool JWKS + OIDC discovery are PUBLIC endpoints (verifiers — the API Gateway JWT authorizer,
+	// apps — fetch them unauthenticated), exactly like a real pool's execute-api-hosted JWKS URL.
+	if cog, ok := rt.services["cognito-idp"].(*cognitoHandler); ok {
+		if cog.wellKnown(w, r) {
+			return
+		}
+	}
+
 	authHdr := r.Header.Get("Authorization")
 	cred, err := awssig.ParseAuthorization(authHdr)
 	if err != nil {
@@ -75,6 +83,14 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if isWebIdentityAssume(r) {
 			if sts, ok := rt.services["sts"].(*stsHandler); ok {
 				sts.assumeRoleWithWebIdentity(w, r, requestID)
+				return
+			}
+		}
+		// Cognito end-user ops (SignUp/InitiateAuth/…) are UNAUTHENTICATED at the SigV4 layer — the user has
+		// no AWS creds yet — so route them here anonymously; the handler refuses the admin ops from this path.
+		if cog, ok := rt.services["cognito-idp"].(*cognitoHandler); ok {
+			if strings.HasPrefix(r.Header.Get("X-Amz-Target"), "AWSCognitoIdentityProviderService.") {
+				cog.serveAnonymous(w, r, requestID)
 				return
 			}
 		}
