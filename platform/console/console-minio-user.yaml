@@ -55,7 +55,7 @@ spec:
       initContainers:
         # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
         - name: fetch-mc
-          image: quay.io/minio/mc:latest
+          image: ghcr.io/harn3ss/open-infra-mc:latest
           command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
           volumeMounts: [{ name: mc, mountPath: /mc }]
       containers:
