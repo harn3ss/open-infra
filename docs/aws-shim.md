@@ -494,7 +494,7 @@ Loki, including a `TargetDeliveryFailed` record for a missed delivery.
 secret rejected, the **escalation fence** (targeting a Lambda the caller can't invoke is refused), and a
 DescribeRule-only principal denied `PutTargets`.
 
-### RDS (real PostgreSQL via CloudNativePG; query protocol; built, live proof pending)
+### RDS (real PostgreSQL via CloudNativePG; query protocol; probe-proven)
 
 RDS is a **different shape** from the other doorways. For S3/DynamoDB/SQS the SDK call *is* the data path;
 for RDS the AWS SDK touches only the **control plane** (`CreateDBInstance`, `DescribeDBInstances`,
@@ -548,12 +548,13 @@ ServiceAccount the Cedar corpus cannot know in advance, the control-plane authz 
 `open-infra-rds` infra ServiceAccounts to RBAC** — CNPG's own tight per-cluster RBAC governs them — without
 relaxing Cedar over users, the console, or applications.)
 
-`probe/aws-shim-rds.sh` crosses the boundary the other probes do not: it creates an instance, waits on the
-SDK's own waiter until `available`, **connects with a real `psql` client**, writes and reads a row (proving
-the endpoint is genuinely reachable and genuinely Postgres), then snapshots it, **restores the snapshot
-into a new instance and verifies the row is present in the restored copy**, and confirms `DeletionProtection`
-blocks a delete — plus the negatives (wrong secret; a describe-only principal denied `CreateDBInstance`).
-This section says **built, live proof pending** until it passes live, then becomes *probe-proven*.
+`probe/aws-shim-rds.sh` proves it, crossing the boundary the other probes do not: it creates an instance,
+waits on the SDK's own waiter until `available`, **connects with a real `psql` client** (from an in-cluster
+pod to the instance's Service DNS endpoint), writes and reads a row (proving the endpoint is genuinely
+reachable and genuinely Postgres), then snapshots it, **restores the snapshot into a new instance and
+verifies the row is present in the restored copy**, and confirms `DeletionProtection` blocks a delete —
+plus the negatives (wrong secret; `StorageEncrypted`/`MultiAZ`/non-postgres engine refused; a describe-only
+principal denied `CreateDBInstance`).
 
 ## The compatibility probe
 
