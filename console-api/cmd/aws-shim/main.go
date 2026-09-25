@@ -141,6 +141,7 @@ func run(logger *slog.Logger) error {
 	var sqsSt *sqsStore
 	var snsSt *snsStore
 	var kmsSt *kmsStore
+	var secretsSt *secretsStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -167,7 +168,13 @@ func run(logger *slog.Logger) error {
 		if serr := kmsSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("KMS schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS Postgres (queues, messages, topics, subscriptions, key metadata)")
+		// Secrets Manager shares the same Postgres for secret METADATA + the version/staging-label map;
+		// the values themselves are stored as KMS ciphertext (never plaintext), see secrets.go.
+		secretsSt = &secretsStore{db: db}
+		if serr := secretsSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("Secrets Manager schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager Postgres (queues, messages, topics, subscriptions, key + secret metadata)")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -328,15 +335,20 @@ func run(logger *slog.Logger) error {
 	snsH.authz = authzChecker
 	kmsH := newKMSHandler(cs, authzNS, account, region, kmsTransit, kmsSt, logger)
 	kmsH.authz = authzChecker
+	// Secrets Manager reuses the SAME Vault Transit client as KMS (role aws-shim-kms): every secret value
+	// is encrypted under the transit key kms-aws-secretsmanager, so no separate Vault policy is needed.
+	secretsH := newSecretsHandler(cs, authzNS, account, region, kmsTransit, secretsSt, logger)
+	secretsH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
-		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
-		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
-		"lambda":   lambdaH,
-		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
-		"dynamodb": dynamoH,
-		"sqs":      sqsH,
-		"sns":      snsH,
-		"kms":      kmsH,
+		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
+		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
+		"lambda":         lambdaH,
+		"appsync":        newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
+		"dynamodb":       dynamoH,
+		"sqs":            sqsH,
+		"sns":            snsH,
+		"kms":            kmsH,
+		"secretsmanager": secretsH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")

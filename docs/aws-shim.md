@@ -391,6 +391,56 @@ the negatives: an asymmetric `CreateKey` refused, a wrong secret rejected on sig
 **encrypt-only principal (granted only `kms:Encrypt` via Cedar) denied `kms:Decrypt`** while still able to
 encrypt.
 
+### Secrets Manager (Vault/KMS-backed; JSON protocol; built, live proof pending)
+
+The Secrets Manager front door speaks the AWS **JSON protocol** (`X-Amz-Target: secretsmanager.<Op>`).
+Supported: `CreateSecret`, `GetSecretValue`, `PutSecretValue`, `UpdateSecret`, `DescribeSecret`,
+`ListSecrets`, `ListSecretVersionIds`, `DeleteSecret`, `RestoreSecret`, `TagResource`, `UntagResource`,
+`UpdateSecretVersionStage`, `GetRandomPassword`.
+
+**The KMS relationship is real, not a wrapper.** Every secret value is encrypted through the shim's own
+**KMS doorway** — under the Vault Transit key `kms-aws-secretsmanager` (the analog of AWS's
+`aws/secretsmanager` managed key), with the **secret name bound as AEAD associated-data**. The value never
+sits in Postgres as plaintext; a database compromise yields only ciphertext undecryptable without Vault.
+A caller-supplied non-default `KmsKeyId` is **refused** (`InvalidParameterException`), never
+accepted-and-ignored — the caller must not believe they chose a key we did not use.
+
+**Versioning + staging labels are implemented faithfully** — the part most often collapsed to "latest
+wins". Each `PutSecretValue` creates a new version; promoting it moves the `AWSCURRENT` label and demotes
+the prior version to `AWSPREVIOUS`, so in-flight clients keep working across a switch and a new credential
+can sit as `AWSPENDING` before it becomes what clients receive. Vault KV has version numbers but no staging
+labels, so the label→version map is maintained in Postgres, atomically (a single transaction per move).
+`GetSecretValue` honors `VersionId` or `VersionStage` and never silently falls back to `AWSCURRENT` when a
+specific version was asked for. `SecretString` and `SecretBinary` are stored and returned as written —
+never transcoded.
+
+**Deletion has a real recovery window** (7–30 days, default 30): a deleted secret fails `GetSecretValue`
+with `InvalidRequestException` while `RestoreSecret` still brings it back; `ForceDeleteWithoutRecovery`
+skips the window. ARNs carry AWS's six-character random suffix, stable for the secret's life.
+
+Authorized through the one policy world at **per-secret** granularity: **`secretsmanager:GetSecretValue`
+is separable from `secretsmanager:DescribeSecret`** (metadata-read is a different privilege from
+value-read), and a principal scoped to secret A cannot read secret B. Every operation writes a structured
+`secretsmanager audit` record (principal, op, secret, version/stage, decision) → Loki. This doorway is
+Vault/KMS-backed with its own path scoping; it is deliberately **not** generic read access to Kubernetes
+Secrets, so it does not bypass the shim's `KEYS_NAMESPACE` boundary.
+
+**Deliberate carve-outs, refused honestly (never silently ignored):**
+- **Automatic/scheduled rotation** — `RotateSecret`/`CancelRotateSecret` are refused
+  (`InvalidRequestException`). The versioning + staging machinery that *makes* rotation possible is
+  implemented, but a secret reporting `RotationEnabled: true` while nothing rotates is a compliance
+  false-green, so `DescribeSecret` reports `RotationEnabled: false` — the truth.
+- **Custom `KmsKeyId`** — refused (see above); all secrets use the default managed key.
+- **Resource policies** (`PutResourcePolicy`) — authorization is the one Cedar policy world, not a second
+  engine that would silently ignore the document.
+
+`probe/aws-shim-secretsmanager.sh` asserts all of this over real SDK round-trips — exact-value read, the
+`AWSCURRENT`/`AWSPREVIOUS` move, a `VersionId` read, a byte-identical `SecretBinary`, delete→refuse→restore,
+honest rotation fields, `GetRandomPassword`, the audit record — plus the negatives: wrong secret rejected,
+a **describe-only principal denied the value** while still seeing metadata, and an **A-scoped principal
+denied secret B**. This section says **built, live proof pending** until the probe passes live, and will
+then be updated to *probe-proven*.
+
 ## The compatibility probe
 
 `probe/aws-shim-s3.sh` is the trust-earning artifact (it makes the support matrix *verified*, not
