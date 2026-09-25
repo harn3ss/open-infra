@@ -11,7 +11,7 @@
 //     then re-apply every resource the prior stack had (restoring modified specs and
 //     re-creating deleted ones). The stack ends UPDATE_ROLLBACK_COMPLETE, matching the state
 //     it had before the update — no orphans, no half-applied change.
-package main
+package cfn
 
 import (
 	"context"

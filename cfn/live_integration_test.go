@@ -10,7 +10,7 @@
 //
 // Requires the platform's backing services (MinIO for Bucket, Knative for Function) on the target
 // cluster. Each test cleans up its own stack.
-package main
+package cfn
 
 import (
 	"context"

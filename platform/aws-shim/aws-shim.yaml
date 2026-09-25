@@ -182,6 +182,69 @@ subjects:
     name: console
     namespace: open-infra-console
 ---
+# CloudFormation doorway (polyhedron#175): the way AWS does it — a stack op provisions under the CALLER's
+# own authority, never the shim's. The shim's cfn front door drives the owned cfn engine through an Applier
+# that IMPERSONATES the caller for every resource op, so the API server's RBAC + Cedar admission bound the
+# whole stack to exactly what the caller may do. This is the SAME bounded impersonation the console uses on
+# /api/k8s: impersonate-GROUPS is pinned by resourceNames to the four openinfra groups (the pin is what
+# bounds privilege — the holder can never impersonate system:masters); usernames stay unconstrained because
+# every identity is minted openinfra:<user> and no RBAC binds a bare name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-impersonator
+rules:
+  - apiGroups: [""]
+    resources: [groups]
+    verbs: [impersonate]
+    resourceNames: [openinfra:admins, openinfra:powerusers, openinfra:readers, openinfra:users]
+  - apiGroups: [""]
+    resources: [users]
+    verbs: [impersonate]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: open-infra-aws-shim-impersonator
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-impersonator }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# The CloudFormation stack namespace: kind resources a stack provisions land here (created UNDER the
+# caller's impersonated authority), and the doorway keeps its own bookkeeping here — the stack-record,
+# change-set and drift ConfigMaps (cfn-stack-*/cfn-changeset-*/cfn-drift-*). Those are the doorway's
+# internal state (the analog of AWS's service-side stack metadata), so they are written with the SHIM's
+# ServiceAccount, not impersonated — which is why the shim SA needs configmap access HERE and only here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-cfn
+  labels:
+    openinfra.dev/component: aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-cfn-records
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-cfn-records
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-cfn-records }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Step Functions doorway (polyhedron#172): the shim CREATES/reads/deletes kind: StateMachine (the ASL
 # claim) and kind: Execution (one run) here on an authorized caller's behalf — the caller is gated by the
 # impersonated SAR in the handler, then the shim executes as itself (the same pattern IAM/RDS use). The
@@ -426,6 +489,10 @@ spec:
             # STS creds Secrets live in (defaults to this namespace). A Task's function:<name> resolves in
             # this namespace, so a Function used as a Task target must live here too.
             - { name: STEPFUNCTIONS_NAMESPACE, value: "open-infra-aws-shim" }
+            # CloudFormation (polyhedron#175): the namespace stacks provision into + the doorway's own
+            # stack-record/change-set/drift ConfigMaps live in. Resources are created under the CALLER's
+            # impersonated authority; the bookkeeping ConfigMaps are shim-written (RBAC: aws-shim-cfn-records).
+            - { name: CFN_NAMESPACE, value: "open-infra-cfn" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is

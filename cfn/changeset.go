@@ -6,7 +6,7 @@
 // CloudFormation model: diff the new template against the current stack, not against live
 // cluster drift — that is Phase 5's job). Computing a change set is read-only; `cfn update`
 // applies one.
-package main
+package cfn
 
 import (
 	"bytes"

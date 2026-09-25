@@ -10,7 +10,7 @@
 // The honest consequence: the set of types with a create translator is much smaller than the
 // plan-level mapping table, and each translator is strict. A type that maps at plan time but
 // has no translator here is refused at deploy time — plan-supported is not create-faithful.
-package main
+package cfn
 
 import (
 	"encoding/base64"

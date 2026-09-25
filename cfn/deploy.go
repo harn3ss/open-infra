@@ -14,7 +14,7 @@
 //
 // Stack state is persisted as a ConfigMap (cfn-stack-<name>) so later phases (update, delete,
 // drift) have a record of what was created; every applied resource is labeled with its stack.
-package main
+package cfn
 
 import (
 	"context"

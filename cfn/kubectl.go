@@ -1,7 +1,7 @@
 // The live Applier: shells out to kubectl. Kept deliberately thin — all deploy ordering,
 // state, and rollback logic lives in deploy.go and is tested against a fake Applier; this file
 // is the only part that touches a real cluster.
-package main
+package cfn
 
 import (
 	"bytes"

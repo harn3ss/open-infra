@@ -8,7 +8,7 @@
 // ordering. Resolved values are best-effort placeholders — Phase 1 is read-only and has no
 // live attribute values — since the plan's job is to surface findings and ordering, not to
 // produce final property values.
-package main
+package cfn
 
 import (
 	"encoding/base64"

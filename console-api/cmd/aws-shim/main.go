@@ -474,6 +474,20 @@ func run(logger *slog.Logger) error {
 		logger.Info("Step Functions front door enabled", slog.String("namespace", sfnNS),
 			slog.Bool("executionRoleAuthority", stsMinter != nil))
 	}
+	// CloudFormation (cloudformation.*) — CreateStack/…/DetectStackDrift over the owned cfn engine
+	// (github.com/harn3ss/open-infra/cfn). AUTHORITY the way AWS does it: a stack op provisions under the
+	// CALLER's own authority via k8s impersonation (the impersonatingApplier), never the shim's — the
+	// stack's blast radius is exactly the caller's RBAC + Cedar (polyhedron#175). Requires the dynamic
+	// client (shim SA client for stack-record bookkeeping) + the in-cluster rest.Config (to impersonate).
+	if dyn != nil {
+		cfnNS := getenv("CFN_NAMESPACE", "default")
+		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, logger); cerr != nil {
+			logger.Warn("CloudFormation front door disabled", slog.String("error", cerr.Error()))
+		} else {
+			services["cloudformation"] = cfnH
+			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
+		}
+	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")

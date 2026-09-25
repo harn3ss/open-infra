@@ -9,7 +9,7 @@
 // composition fills in defaults the stack never set (a Function's port, a scaler's target);
 // those are not drift, and flagging them would be noise that hides real drift. A field the
 // stack set that has since changed, or the whole resource deleted out of band, is drift.
-package main
+package cfn
 
 import (
 	"bytes"

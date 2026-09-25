@@ -14,7 +14,7 @@
 //	              surfaced loudly and the type is NOT claimed as full CFN compatibility.
 //	gated       — a backing kind is not yet available (blocked on another issue); refused.
 //	unsupported — no backing kind, or explicitly out of scope for v1; refused.
-package main
+package cfn
 
 import "strings"
 
@@ -37,10 +37,16 @@ type MapEntry struct {
 // here — a type is added only once it has a backing kind and a faithful mapping.
 var mappingTable = map[string]MapEntry{
 	// --- supported: a faithful backing kind ---
-	"AWS::Lambda::Function":            {Kind: "Function", Status: Supported, Note: "scale-to-zero Function"},
-	"AWS::StepFunctions::StateMachine": {Kind: "StateMachine", Status: Supported, Note: "Amazon States Language engine"},
+	"AWS::Lambda::Function": {Kind: "Function", Status: Supported, Note: "scale-to-zero Function"},
+	// Partial, not Supported: the ASL is translated byte-for-byte for the SUPPORTED subset (Task via
+	// function:<name>, Choice/Wait/Pass/Succeed/Fail, Retry with backoff, Catch), but the create
+	// translator REFUSES what the engine does not run — matching the aws-shim Step Functions doorway's
+	// own carve-outs (polyhedron#172): EXPRESS type, Parallel/Map states, the .waitForTaskToken/.sync
+	// callback patterns, non-Lambda service integrations, and AWS-ARN/S3-location Task definitions. A
+	// template using any of those blocks at the translate gate rather than being planned as full parity.
+	"AWS::StepFunctions::StateMachine": {Kind: "StateMachine", Status: Partial, Note: "Amazon States Language engine; the supported subset (Task->function:<name>, Choice/Wait/Pass/Succeed/Fail, Retry/Catch) translates byte-for-byte, and EXPRESS/Parallel/Map/.waitForTaskToken/.sync/non-Lambda integrations REFUSE at the translate gate (the #172 doorway carve-outs)"},
 	"AWS::AppSync::GraphQLApi":         {Kind: "GraphQLApi", Status: Supported, Note: "resolver-first GraphQL"},
-	"AWS::IAM::Role":                   {Kind: "Role", Status: Partial, Note: "kind: Role is now a first-class assumable identity (a trust policy + attached data-plane Policies; sts:AssumeRole issues temporary session credentials on the aws-shim — #111). But there is no CFN CREATE translator yet: an inline role policy document (service:Action + conditions) still has no faithful automatic form, and the trust policy must be authored natively. Plan-recognized, not create-deployable (Deployable=false)."},
+	"AWS::IAM::Role":                   {Kind: "Role", Status: Partial, Note: "kind: Role is a first-class assumable identity (trust policy + attached data-plane Policies; sts:AssumeRole issues temporary session credentials on the aws-shim — #111/#174). The IAM management doorway now translates an AWS policy DOCUMENT to enforced Cedar via policyengine.ImportAWS (#174), but there is still no CFN CREATE translator for a Role: the trust policy (who may assume) has no template-derivable form here and inline/attached policy docs beyond the ImportAWS-supported subset (s3/dynamodb/lambda actions, no conditions) don't transfer. Plan-recognized, not create-deployable (Deployable=false) — author the Role natively or create it through the aws-shim IAM API."},
 	"AWS::IAM::ManagedPolicy":          {Kind: "Policy", Status: Supported, Note: "like IAM::Policy: a create translator imports the DATA-PLANE part into an enforced kind: Policy spec.dataPlane when the ManagedPolicy carries inline Groups/Users/Roles attachments (a Roles attachment governs the assumed sts:AssumeRole session, #111); a standalone ManagedPolicy (attached via ManagedPolicyArns) has no principal here and BLOCKS, as does any control-plane/unmappable/conditioned part"},
 	"AWS::IAM::Policy":                 {Kind: "Policy", Status: Supported, Note: "inline policy -> a Policy; a create translator imports the DATA-PLANE part (s3/dynamodb/lambda actions on recognizable ARNs, no conditions) into an enforced kind: Policy spec.dataPlane, and BLOCKS anything it can't honor faithfully (control-plane/unmappable/conditioned parts) — narrow the policy or author it natively"},
 	"AWS::IAM::User":                   {Kind: "User", Status: Supported},
@@ -83,15 +89,17 @@ var mappingTable = map[string]MapEntry{
 	"AWS::AppSync::GraphQLSchema":         {Kind: "GraphQLApi", Status: Supported, Note: "faithfully translated as part of its parent GraphQLApi (schema SDL); not standalone — a bare one refuses"},
 	"AWS::DynamoDB::Table":                {Kind: "Table", Status: Partial, Note: "table via kind: Table — registers name + key schema, TTL, and global secondary indexes on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, local secondary indexes, streams, or per-table SSE — those block."},
 
-	// --- unsupported: explicitly out of scope for v1 ---
-	"AWS::Cognito::UserPool":              {Kind: "UserPool", Status: Partial, Note: "a hosted OIDC pool (Keycloak realm); Cognito-specific config (MFA, Lambda triggers, schema) does not transfer"},
-	"AWS::Cognito::UserPoolClient":        {Kind: "UserPool(client)", Status: Partial, Note: "the pool's app client is created with the UserPool; a standalone client resource has no separate kind"},
-	"AWS::SSM::Parameter":                 {Kind: "Parameter", Status: Partial, Note: "SSM Parameter Store -> kind: Parameter (Vault KV-v2): Name->path, Value, Type (SecureString held encrypted at rest, materialized into the namespace Secret). StringList stores a plain comma-separated string; Description/AllowedPattern/DataType/Tags are advisory caveats; an Expiration policy maps to spec.expiresAt (reaper-enforced); notification policies are caveats."},
+	// --- partial: a doorway/backing kind exists; the mapping is lossy or collated ---
+	"AWS::Cognito::UserPool":       {Kind: "UserPool", Status: Partial, Note: "a managed user pool -> kind: UserPool (PoolName->realm; an in-stack UserPoolClient collates into spec.clientId). Cognito-specific config — MfaConfiguration ON/OPTIONAL, LambdaConfig triggers, custom schema — is REFUSED (blocked at the translate gate), not silently dropped. The runtime user-pool data plane (SignUp/InitiateAuth, RS256 JWTs) is the aws-shim cognito-idp doorway (#171)."},
+	"AWS::Cognito::UserPoolClient": {Kind: "UserPool(client)", Status: Partial, Note: "the pool's app client collates into its in-stack UserPool (ClientName->clientId); a standalone client, a second client, or one naming an out-of-stack pool refuses. OAuth flows/scopes/callbacks/GenerateSecret are caveats."},
+	"AWS::SSM::Parameter":          {Kind: "Parameter", Status: Partial, Note: "SSM Parameter Store -> kind: Parameter (Vault KV-v2): Name->path, Value, Type (SecureString held encrypted at rest, materialized into the namespace Secret). StringList stores a plain comma-separated string; Description/AllowedPattern/DataType/Tags are advisory caveats; an Expiration policy maps to spec.expiresAt (reaper-enforced); notification policies are caveats. The runtime Parameter Store API is the aws-shim ssm doorway (#167)."},
+	"AWS::ECS::Service":            {Kind: "Application", Status: Partial, Note: "a Service + its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA). Multi-container tasks map to a multi-container Pod (primary + sidecars) with per-container CPU/memory and shared scratch Volumes (emptyDir) + MountPoints. The LB's HTTP target port maps to the Service port (set Application.domain for Ingress+TLS). TaskRoleArn maps to workload identity (the app assumes the kind: Role via sts:AssumeRoleWithWebIdentity — #111). NetworkConfiguration's awsvpc subnet places the app in a kind: Subnet (real OVN isolation, #120; a raw subnet- id refuses). Security-group isolation maps via kind: SecurityGroup (CFN SG translation is a follow-on); host-path/EFS volumes, container DependsOn ordering, and ExecutionRoleArn do NOT transfer."},
+	"AWS::ECS::TaskDefinition":     {Kind: "Application (container)", Status: Partial, Note: "the container spec — collated into the referencing Service's Application (containers->pod containers, Cpu/Memory->requests/limits, shared Volumes->emptyDir + MountPoints); a bare TaskDefinition provisions nothing"},
+	"AWS::ECS::Cluster":            {Kind: "(implicit)", Status: Partial, Note: "a grouping with no open-infra counterpart (the k3s cluster is the cluster) — provisions nothing"},
+
+	// --- unsupported: no backing kind / explicitly out of scope for v1 (refused) ---
 	"AWS::CloudFormation::Stack":          {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
 	"AWS::CloudFormation::CustomResource": {Status: Unsupported, Note: "Lambda-backed custom resources are out of scope for v1"},
-	"AWS::ECS::Service":                   {Kind: "Application", Status: Partial, Note: "a Service + its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA). Multi-container tasks map to a multi-container Pod (primary + sidecars) with per-container CPU/memory and shared scratch Volumes (emptyDir) + MountPoints. The LB's HTTP target port maps to the Service port (set Application.domain for Ingress+TLS). TaskRoleArn maps to workload identity (the app assumes the kind: Role via sts:AssumeRoleWithWebIdentity — #111). NetworkConfiguration's awsvpc subnet places the app in a kind: Subnet (real OVN isolation, #120; a raw subnet- id refuses). Security-group isolation maps via kind: SecurityGroup (CFN SG translation is a follow-on); host-path/EFS volumes, container DependsOn ordering, and ExecutionRoleArn do NOT transfer."},
-	"AWS::ECS::TaskDefinition":            {Kind: "Application (container)", Status: Partial, Note: "the container spec — collated into the referencing Service's Application (containers->pod containers, Cpu/Memory->requests/limits, shared Volumes->emptyDir + MountPoints); a bare TaskDefinition provisions nothing"},
-	"AWS::ECS::Cluster":                   {Kind: "(implicit)", Status: Partial, Note: "a grouping with no open-infra counterpart (the k3s cluster is the cluster) — provisions nothing"},
 }
 
 // Lookup returns the mapping entry for a CFN resource type. An unknown type — or any

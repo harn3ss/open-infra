@@ -10,7 +10,7 @@
 //
 // Deletes are not reversible, so there is no rollback: a delete that fails leaves the stack
 // DELETE_FAILED with the resources that remain, and stops.
-package main
+package cfn
 
 import (
 	"context"

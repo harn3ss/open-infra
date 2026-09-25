@@ -14,7 +14,7 @@
 //
 // The cardinal rule: never silently drop or approximate something we cannot model. If
 // in doubt, REJECT and say exactly why.
-package main
+package cfn
 
 import (
 	"fmt"

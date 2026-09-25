@@ -3,7 +3,7 @@
 // !Sub, …) — into a uniform map[string]any, then into a typed Template. Everything
 // downstream (intrinsics, mapping, ordering) works on the normalized structure, so JSON
 // and YAML templates are handled identically.
-package main
+package cfn
 
 import (
 	"encoding/json"
