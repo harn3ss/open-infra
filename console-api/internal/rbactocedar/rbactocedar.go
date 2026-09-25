@@ -128,7 +128,7 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 		for _, grp := range orDefault(r.APIGroups, []string{""}) {
 			for _, rsc := range r.Resources {
 				rs, cav := resourceString(grp, rsc, scopeNS)
-				res = append(res, rs)
+				res = append(res, rs...)
 				caveats = append(caveats, cav...)
 			}
 		}
@@ -148,8 +148,11 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 	return stmts, caveats
 }
 
-// resourceString maps (apiGroup, resource) + scope to a Cedar resource string "<resource>.<group>::<scope>".
-func resourceString(group, resource, scopeNS string) (string, []string) {
+// resourceString maps (apiGroup, resource) + scope to Cedar resource strings "<resource>.<group>::<scope>".
+// It returns a SLICE because an apiGroup wildcard needs two patterns (core + grouped) — the evaluator
+// keys a request as "<resource>.<group>" (grouped) or "<resource>" (core), and one like-pattern cannot
+// span both.
+func resourceString(group, resource, scopeNS string) ([]string, []string) {
 	scope := "*"
 	if scopeNS != "" {
 		scope = scopeNS + "/*"
@@ -158,24 +161,32 @@ func resourceString(group, resource, scopeNS string) (string, []string) {
 		switch {
 		case group != "" && group != "*":
 			// All resources in a SPECIFIC apiGroup: scope the type to that group ("*.<group>") rather
-			// than widening to every group, so Cedar is never broader than the RBAC rule (the type is a
-			// `like`-wildcard the evaluator matches against "<resource>.<group>"). No caveat: faithful.
-			return "*." + group + "::" + scope, nil
+			// than widening to every group, so Cedar is never broader than the RBAC rule. Faithful.
+			return []string{"*." + group + "::" + scope}, nil
 		case group == "":
 			// The core apiGroup: "*" here means all CORE resources, but a like-wildcard cannot exclude
 			// the other groups (core types have no ".<group>" suffix to key on), so this stays a full
 			// wildcard and is a residual over-grant — recorded honestly.
-			return "*", []string{"resource \"*\" in the core apiGroup widens to all groups (a wildcard cannot express core-only) — residual over-grant, tighten upstream (AC-6)"}
+			return []string{"*"}, []string{"resource \"*\" in the core apiGroup widens to all groups (a wildcard cannot express core-only) — residual over-grant, tighten upstream (AC-6)"}
 		default:
-			// apiGroups: ["*"] — genuinely all groups; a full wildcard is faithful.
-			return "*", nil
+			// apiGroups: ["*"] with resources:["*"] — genuinely all resources in all groups.
+			return []string{"*"}, nil
 		}
 	}
-	t := resource
-	if group != "" && group != "*" {
-		t = resource + "." + group
+	// A concrete resource (possibly a subresource like "pods/log" or "*/scale").
+	switch group {
+	case "":
+		// Core apiGroup: the type is just "<resource>".
+		return []string{resource + "::" + scope}, nil
+	case "*":
+		// apiGroups:["*"] with a concrete resource — the resource in ANY group: the core form
+		// (<resource>) AND the grouped form (<resource>.<group>). Without both, a grouped request like
+		// "deployments/scale.apps" would miss a "*/scale" grant (this is what masked the HPA scale grant
+		// until the group-"*" widening was removed).
+		return []string{resource + "::" + scope, resource + ".*::" + scope}, nil
+	default:
+		return []string{resource + "." + group + "::" + scope}, nil
 	}
-	return t + "::" + scope, nil
 }
 
 func orDefault(xs, def []string) []string {

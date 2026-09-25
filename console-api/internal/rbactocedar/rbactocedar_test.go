@@ -167,6 +167,42 @@ func TestGenerate_WildcardResourceScopedToGroup(t *testing.T) {
 	}
 }
 
+// apiGroups:["*"] with a concrete (sub)resource must match that resource in ANY group — the core form
+// AND the grouped form. This is the HPA "*/scale" grant: it has to authorize get on
+// "deployments/scale.apps" (grouped), not just core-group scale.
+func TestGenerate_AllGroupsConcreteResource(t *testing.T) {
+	in := Inputs{
+		ClusterRoles: map[string]rbacv1.ClusterRole{
+			"hpa": {ObjectMeta: metav1.ObjectMeta{Name: "hpa"}, Rules: []rbacv1.PolicyRule{
+				{Verbs: []string{"get", "update"}, APIGroups: []string{"*"}, Resources: []string{"*/scale"}},
+			}},
+		},
+		ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+			{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "hpa"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "kube-system", Name: "hpa"}}},
+		},
+	}
+	g := Generate(in)
+	if len(g) != 1 {
+		t.Fatalf("expected 1 grant, got %d: %#v", len(g), g)
+	}
+	eng, err := policyengine.NewEngine(g[0].Statements)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Grouped scale subresource (apps) — the case that regressed.
+	if d := eng.Authorize(req("ServiceAccount", "kube-system/hpa", "get", "deployments/scale.apps", "default/web")); !d.Allowed {
+		t.Errorf("should allow get on deployments/scale.apps (scale in any group): %s", d.Reason)
+	}
+	// Core-group scale subresource.
+	if d := eng.Authorize(req("ServiceAccount", "kube-system/hpa", "update", "replicationcontrollers/scale", "default/rc")); !d.Allowed {
+		t.Errorf("should allow update on core replicationcontrollers/scale: %s", d.Reason)
+	}
+	// But NOT the base object (scale grant is subresource-only).
+	if d := eng.Authorize(req("ServiceAccount", "kube-system/hpa", "get", "deployments.apps", "default/web")); d.Allowed {
+		t.Errorf("must NOT allow get on the deployments.apps object from a */scale grant")
+	}
+}
+
 // A principal that can create (cluster)rolebindings must get the escalation-prevention caveat —
 // the CNPG/CDI implicit-bind class the shadow run surfaced (no static bind rule to mirror).
 func TestGenerate_RoleBindingCreatorCaveat(t *testing.T) {
