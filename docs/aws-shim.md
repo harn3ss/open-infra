@@ -12,13 +12,14 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Thirteen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Fourteen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
 > a documentdb Postgres for transactions), **SQS**, **SNS**, **KMS** (Vault Transit), **Secrets Manager**
 > (Vault-KMS-encrypted), **EventBridge** (scheduled + event-driven), **RDS** (real PostgreSQL via
-> CloudNativePG), **CloudWatch Logs**, and **SSM Parameter Store** (Vault-KMS-encrypted SecureString).
+> CloudNativePG), **CloudWatch Logs**, **SSM Parameter Store** (Vault-KMS-encrypted SecureString), and
+> **API Gateway** (HTTP API v2 — the runtime HTTP→Lambda proxy, completing the serverless triad).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -125,9 +126,10 @@ the sections below; the one-line summary:
 | **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
 | **[CloudWatch Logs](#cloudwatch-logs-postgres-backed-json-protocol-probe-proven)** | Postgres | JSON 1.1 | Logs Insights refused; retention genuinely enforced |
 | **[SSM Parameter Store](#ssm-parameter-store-postgres--kms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted SecureString | JSON 1.1 | Standard tier only; Advanced/policies refused |
+| **[API Gateway (HTTP API v2)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda proxy | restJson1 (REST paths) | REST API v1 + non-Lambda integrations refused |
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): Kinesis, ECS/EKS, Route 53,
-API Gateway, Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), CloudWatch
+Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), CloudWatch
 metrics/alarms, and the rest of the AWS surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
 service it hasn't made faithful.
@@ -685,6 +687,58 @@ recursive vs immediate counts, label read-back, delete→`ParameterNotFound`, Ad
 `GetParameter` audit record naming the principal — plus the negatives: wrong secret rejected, a **path-scoped
 principal denied a sibling path**, and the **two-permission split** (a decrypt-denied principal reads the
 ciphertext but is denied the plaintext).
+
+### API Gateway (HTTP API v2; two-plane; runtime→Lambda proxy; probe-proven)
+
+API Gateway is the REST/HTTP complement to AppSync that completes the AWS serverless triad — **API Gateway →
+Lambda → DynamoDB**. Scoped to **HTTP API (v2)**; REST API (v1) is a much larger, deliberately refused
+surface. Like RDS it splits into **two planes**:
+
+- **Control plane** — the apigatewayv2 management API, spoken as **restJson1 over REST paths** (`POST /v2/apis`,
+  `POST /v2/apis/{apiId}/routes`, …), *not* `X-Amz-Target` dispatch. `CreateApi`/`GetApi(s)`/`DeleteApi`,
+  `CreateRoute`/`GetRoutes`, `CreateIntegration`, `CreateStage`/`GetStages`, `CreateDeployment`,
+  `CreateAuthorizer`. Authenticated by the shared SigV4 path; authorized by the one policy world (coarse
+  `SubjectAccessReview` + Cedar `apigateway:<Op>`). This is **platform-admin** authorization — who may create
+  APIs. State (apis/routes/integrations/stages/authorizers) is on the shared Postgres.
+- **Data plane — the runtime proxy IS the product.** A real HTTP request to the API's invoke URL is translated
+  into the **API Gateway v2 proxy event** (`version`, `routeKey`, `rawPath`, `rawQueryString`, `headers`,
+  `queryStringParameters`, `pathParameters`, `requestContext.http`, `body`, `isBase64Encoded`, `cookies`) and
+  proxied to a Lambda (a Knative `Function`, reached cluster-locally the same way the Lambda doorway does).
+  The Lambda's returned **`{statusCode, headers, body, isBase64Encoded}`** becomes the actual HTTP response;
+  a 2.0 response *without* `statusCode` is the "simplified" form (the whole payload is the body, 200). Both
+  payload format **2.0 (default)** and **1.0** are honored per integration. Route matching follows AWS
+  precedence: more static segments win, then path variables (`{id}`), then the greedy `{proxy+}`, then the
+  `$default` route; an exact method beats `ANY`.
+
+**Two distinct auth layers, never conflated.** The control-plane check above governs *open-infra principals*
+managing the API. The API's **own** request auth — a **JWT authorizer** — gates the *application's end users*
+at the deployed API, a different trust domain. JWT authorizers validate a bearer token against an issuer +
+audience using the **same coreos/go-oidc** JWKS-discovery + signature/issuer/audience/expiry verification the
+STS web-identity path uses (tying to the OIDC IdP registry, polyhedron#136 §2). They **fail closed**: a
+missing/unsigned/expired/wrong-audience token is `401`. REQUEST/Lambda authorizers are refused rather than
+faked (an authorizer that admits everything is an authentication false green). **CORS** is first-class:
+preflight `OPTIONS` is answered by the gateway itself, and `Access-Control-Allow-*` headers are applied to
+responses.
+
+**Invoke URL (documented divergence):** AWS uses `https://<api-id>.execute-api.<region>.amazonaws.com/`, which
+would need per-API wildcard DNS + TLS. The shim returns a stable, in-cluster-routable
+`…/_apigw/<api-id>/<path>` as `apiEndpoint` (the `$default` stage serves at the root; a named stage is the
+leading path segment) and **also** accepts the AWS-shaped `<api-id>.execute-api.…` `Host` for a client that
+overrides endpoint resolution. **Deliberate carve-outs, refused honestly:** REST API v1; non-`AWS_PROXY`
+integrations (`HTTP_PROXY` etc.) refused at `CreateIntegration` rather than accepted into a route that 502s;
+REQUEST/Lambda authorizers.
+
+`probe/aws-shim-apigateway.sh` proves this end to end — a real SDK builds the API/integration/route/stage, a
+real HTTP POST to the invoke URL confirms the Lambda received the faithful **2.0 event** (path parameter,
+method, query, body) and that its returned payload became the HTTP response body, a **JWT authorizer**
+(against a throwaway RSA OIDC issuer) **rejects missing/unsigned/expired and admits a valid** token, and a
+**CORS preflight** succeeds — plus the negatives: wrong secret → signature mismatch, a `HTTP_PROXY`
+integration refused, and a principal **denied `apigateway:CreateApi`** refused. The **structured
+proxy-response translation** (a handler's `{statusCode, headers, body, isBase64Encoded}` → the real HTTP
+status + headers, the 1.0-requires-structured rule, and upstream-error→502) is covered by the deterministic
+unit tests (`apigateway_test.go`), since the public echo image the probe uses does not emit a JSON
+`statusCode`; the live probe proves the event contract and the response-becomes-the-body (2.0 simplified)
+path. See [`examples/apigw-lambda/`](../examples/apigw-lambda/) for the full handler contract.
 
 ## The compatibility probe
 

@@ -145,6 +145,7 @@ func run(logger *slog.Logger) error {
 	var ebSt *ebStore
 	var cwlSt *cwlStore
 	var ssmSt *ssmStore
+	var apigwSt *apigwStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -195,7 +196,13 @@ func run(logger *slog.Logger) error {
 		if serr := ssmSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("SSM schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM Postgres")
+		// API Gateway (HTTP API v2) shares the same Postgres for apis/routes/integrations/stages/
+		// authorizers; the data plane (the runtime HTTP→Lambda proxy) reads it on every invoke.
+		apigwSt = &apigwStore{db: db}
+		if serr := apigwSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("API Gateway schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -379,6 +386,12 @@ func run(logger *slog.Logger) error {
 	// values are encrypted under the transit key kms-aws-ssm, so no separate Vault policy is needed.
 	ssmH := newSSMHandler(cs, authzNS, account, region, kmsTransit, ssmSt, logger)
 	ssmH.authz = authzChecker
+	// API Gateway (HTTP API v2): control plane (apigatewayv2 mgmt) + the runtime HTTP→Lambda proxy. The
+	// proxy reaches Functions the same cluster-local way lambdaH does (fnNS/svcSuffix). APIGW_INVOKE_BASE
+	// is the public base for the invoke URL returned as apiEndpoint.
+	apigwInvokeBase := getenv("APIGW_INVOKE_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
+	apigwH := newAPIGWHandler(cs, authzNS, account, region, fnNS, svcSuffix, apigwInvokeBase, apigwSt, logger)
+	apigwH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -393,6 +406,7 @@ func run(logger *slog.Logger) error {
 		"rds":            rdsH,
 		"logs":           cwlH,
 		"ssm":            ssmH,
+		"apigateway":     apigwH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
