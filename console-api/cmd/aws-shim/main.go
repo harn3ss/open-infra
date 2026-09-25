@@ -135,6 +135,28 @@ func run(logger *slog.Logger) error {
 		logger.Info("connected to the documentdb Postgres for DynamoDB transactions")
 	}
 
+	// SQS front door state (queues + messages), Postgres-backed for faithful visibility-timeout and
+	// receipt-handle (stale-rejection) semantics — see sqs_store.go and polyhedron#158. Optional:
+	// unset (defaults to MONGO_PG_URI when that is set) -> the SQS handler answers an honest 501.
+	var sqsSt *sqsStore
+	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
+		db, serr := sql.Open("postgres", sqsURI)
+		if serr != nil {
+			return serr
+		}
+		sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		serr = db.PingContext(sctx)
+		cancel()
+		if serr != nil {
+			return fmt.Errorf("SQS_PG_URI set but the SQS Postgres is unreachable: %w", serr)
+		}
+		sqsSt = &sqsStore{db: db}
+		if serr := sqsSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("SQS schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS Postgres (queues + messages)")
+	}
+
 	auth := &authenticator{
 		keys:    awskeys.NewStore(cs, keysNS),
 		resolve: newOwnerResolver(cs, usersNS),
@@ -279,12 +301,15 @@ func run(logger *slog.Logger) error {
 	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-console"), 30*time.Second)
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
+	sqsH := newSQSHandler(cs, authzNS, account, getenv("AWS_REGION", "us-east-1"), sqsSt, logger)
+	sqsH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":   lambdaH,
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 		"dynamodb": dynamoH,
+		"sqs":      sqsH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
@@ -320,6 +345,24 @@ func run(logger *slog.Logger) error {
 	if asyncInv != nil {
 		go asyncInv.run(ctx) // durable async-invoke delivery worker; exits when ctx is cancelled
 		defer asyncInv.Close()
+	}
+	if sqsSt != nil {
+		// Message retention reaper: delete messages past their queue's MessageRetentionPeriod. Exits
+		// when ctx is cancelled.
+		go func() {
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if err := sqsSt.reapExpired(context.Background()); err != nil {
+						logger.Warn("sqs retention reaper error", "error", err.Error())
+					}
+				}
+			}
+		}()
 	}
 	// When the sealing key is Vault-custodied, re-fetch it periodically and rotate the Minter so an
 	// operator's key rotation is picked up without a restart; the previous key is retained for one
