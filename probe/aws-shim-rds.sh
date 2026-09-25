@@ -113,23 +113,22 @@ read -r WAK WSK <<<"$(mint_key "rds-probe-$SFX" "powerusers")"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
-# --- 2. CreateDBInstance (postgres, encrypted) ---
-log "create-db-instance $INST1 (postgres, db.t3.micro, StorageEncrypted)"
+# --- 2. CreateDBInstance (postgres) ---
+log "create-db-instance $INST1 (postgres, db.t3.micro)"
 rds "$WAK" "$WSK" create-db-instance --db-instance-identifier "$INST1" --engine postgres \
   --db-instance-class db.t3.micro --allocated-storage 1 --db-name "$PGDB" \
-  --master-username "$PGUSER_M" --master-user-password "$PGPASS_M" --storage-encrypted >/dev/null 2>"$PWD/.rds_c" \
+  --master-username "$PGUSER_M" --master-user-password "$PGPASS_M" >/dev/null 2>"$PWD/.rds_c" \
   || inconclusive "create-db-instance failed (is the RDS/CNPG backend configured?): $(cat "$PWD/.rds_c")"
 rm -f "$PWD/.rds_c"
 log "  waiting on the SDK waiter for '$INST1' to become available (up to 300s)..."
 wait_available "$WAK" "$WSK" "$INST1" || fail "instance $INST1 did not become available"
 log "  ✓ available"
 
-# --- 3. Endpoint present + encrypted; connect and write/read a row ---
-read -r EPADDR EPPORT ENC <<<"$(rds "$WAK" "$WSK" --output text --query '[DBInstances[0].Endpoint.Address,DBInstances[0].Endpoint.Port,DBInstances[0].StorageEncrypted]' describe-db-instances --db-instance-identifier "$INST1" 2>/dev/null)"
+# --- 3. Endpoint present; connect and write/read a row ---
+read -r EPADDR EPPORT <<<"$(rds "$WAK" "$WSK" --output text --query '[DBInstances[0].Endpoint.Address,DBInstances[0].Endpoint.Port]' describe-db-instances --db-instance-identifier "$INST1" 2>/dev/null)"
 [ -n "$EPADDR" ] && [ "$EPADDR" != "None" ] || fail "no Endpoint.Address on an available instance"
 [ "$EPPORT" = "5432" ] || fail "unexpected Endpoint.Port: $EPPORT"
-[ "$ENC" = "True" ] || [ "$ENC" = "true" ] || fail "StorageEncrypted not honored: $ENC"
-log "  ✓ Endpoint $EPADDR:$EPPORT, StorageEncrypted=$ENC"
+log "  ✓ Endpoint $EPADDR:$EPPORT"
 log "connect with psql, create a table, write a row, read it back"
 pg "${INST1}-rw" "CREATE TABLE probe_t (id int primary key, v text); INSERT INTO probe_t VALUES (1,'hello-$SFX');" >/dev/null || fail "could not connect+write to the database (endpoint not genuinely reachable/Postgres)"
 GOT="$(pg "${INST1}-rw" "SELECT v FROM probe_t WHERE id=1;")"
@@ -177,6 +176,29 @@ grep -qiE 'SignatureDoesNotMatch|Signature' "$PWD/.rds_neg" || fail "wrong secre
 rm -f "$PWD/.rds_neg"
 log "  ✓ rejected on signature mismatch"
 
+# --- 6a2. negative: unsupported capability flags are REFUSED (not accepted-and-ignored) ---
+log "negative: StorageEncrypted and MultiAZ must be REFUSED honestly (not silently downgraded)"
+if rds "$WAK" "$WSK" create-db-instance --db-instance-identifier "rds-enc-$SFX" --engine postgres --db-instance-class db.t3.micro --allocated-storage 1 --master-username x --master-user-password xxxxxxxxx --storage-encrypted >/dev/null 2>"$PWD/.rds_enc"; then
+  rds "$WAK" "$WSK" delete-db-instance --db-instance-identifier "rds-enc-$SFX" --skip-final-snapshot >/dev/null 2>&1
+  fail "StorageEncrypted was accepted (would claim encryption that is not applied)"
+fi
+grep -qiE 'StorageEncrypted|not supported|InvalidParameterCombination' "$PWD/.rds_enc" || fail "StorageEncrypted refusal had the wrong error: $(cat "$PWD/.rds_enc")"
+rm -f "$PWD/.rds_enc"
+if rds "$WAK" "$WSK" create-db-instance --db-instance-identifier "rds-maz-$SFX" --engine postgres --db-instance-class db.t3.micro --allocated-storage 1 --master-username x --master-user-password xxxxxxxxx --multi-az >/dev/null 2>"$PWD/.rds_maz"; then
+  rds "$WAK" "$WSK" delete-db-instance --db-instance-identifier "rds-maz-$SFX" --skip-final-snapshot >/dev/null 2>&1
+  fail "MultiAZ was accepted (would claim HA it does not have)"
+fi
+grep -qiE 'MultiAZ|not supported|InvalidParameterCombination' "$PWD/.rds_maz" || fail "MultiAZ refusal had the wrong error: $(cat "$PWD/.rds_maz")"
+rm -f "$PWD/.rds_maz"
+# a non-postgres engine is refused, too.
+if rds "$WAK" "$WSK" create-db-instance --db-instance-identifier "rds-my-$SFX" --engine mysql --db-instance-class db.t3.micro --allocated-storage 1 --master-username x --master-user-password xxxxxxxxx >/dev/null 2>"$PWD/.rds_my"; then
+  rds "$WAK" "$WSK" delete-db-instance --db-instance-identifier "rds-my-$SFX" --skip-final-snapshot >/dev/null 2>&1
+  fail "a mysql engine was accepted (PostgreSQL only)"
+fi
+grep -qiE 'not supported|PostgreSQL|postgres' "$PWD/.rds_my" || fail "mysql refusal had the wrong error: $(cat "$PWD/.rds_my")"
+rm -f "$PWD/.rds_my"
+log "  ✓ StorageEncrypted, MultiAZ, and non-postgres engine all refused honestly"
+
 # --- 6b. describe-only principal denied CreateDBInstance ---
 log "a describe-only principal (Cedar rds:DescribeDBInstances) must be DENIED CreateDBInstance"
 read -r DAK DSK <<<"$(mint_key "rds-probe-desc-$SFX" "powerusers")"
@@ -203,4 +225,4 @@ grep -qiE 'AccessDenied|denied' "$PWD/.rds_dc" || fail "CreateDBInstance denial 
 rm -f "$PWD/.rds_dc"
 log "  ✓ describe-only principal denied CreateDBInstance"
 
-printf '\n✓ PASS — aws-shim RDS provisions real PostgreSQL (reachable endpoint, genuine Postgres), snapshots and restores it for real (row present in the restored copy), honors StorageEncrypted + DeletionProtection, and enforces auth.\n'
+printf '\n✓ PASS — aws-shim RDS provisions real PostgreSQL (reachable endpoint, genuine Postgres), snapshots and restores it for real (row present in the restored copy), enforces DeletionProtection, refuses unsupported flags honestly, and enforces auth.\n'

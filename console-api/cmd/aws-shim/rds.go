@@ -156,6 +156,14 @@ func (h *rdsHandler) createDBInstance(ctx context.Context, w http.ResponseWriter
 			"MultiAZ is not supported on this deployment (a single failure domain cannot provide multi-AZ durability); requesting it would be a false green.", rdsXMLNamespace)
 		return
 	}
+	if boolForm(r, "StorageEncrypted") {
+		// Genuine at-rest encryption needs per-volume LUKS key provisioning (and key propagation across
+		// snapshot/restore) that the RDS path does not yet wire; rather than report StorageEncrypted=true
+		// over storage that is not genuinely encrypted (a compliance false green), refuse it in v1.
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+			"StorageEncrypted is not supported by the open-infra shim RDS front door in v1; omit it (a claimed-but-absent encryption flag would be a compliance false green).", rdsXMLNamespace)
+		return
+	}
 	class := r.PostFormValue("DBInstanceClass")
 	if !knownInstanceClass(class) {
 		h.paramErr(w, requestID, "DBInstanceClass '"+class+"' is not recognized; provisioning an unrecognized class would be a capacity surprise. Known: db.t3.micro/small/medium/large, db.m5.large/xlarge.")
@@ -190,7 +198,7 @@ func (h *rdsHandler) createDBInstance(ctx context.Context, w http.ResponseWriter
 	p := createInstanceParams{
 		id: id, masterUser: user, masterPass: pass, dbName: dbName,
 		instanceClass: class, allocatedGB: storage,
-		storageEncrypted:  boolForm(r, "StorageEncrypted"),
+		storageEncrypted:  false, // refused above; storage is plain longhorn in v1
 		deletionProtected: boolForm(r, "DeletionProtection"),
 		tags:              tagsFromForm(r),
 	}
