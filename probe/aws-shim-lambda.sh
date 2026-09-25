@@ -68,6 +68,15 @@ spec: { image: "mendhak/http-https-echo:37", port: 8080, expose: false }
 YAML
 MADE_FN=1
 log "waiting for the Knative service to be ready"
+# The kind: Function composition creates the ksvc ASYNCHRONOUSLY (Function claim → XFunction →
+# provider-kubernetes Object → Knative Service), so the ksvc does not exist the instant the claim is
+# applied — there is a few-second composition latency. `kubectl wait --for=condition=Ready` on a
+# not-yet-created object errors NotFound and exits immediately (it does not wait for the object to
+# appear), which would report a false INCONCLUSIVE. Wait for the ksvc to be CREATED first, then for it
+# to become Ready.
+for _ in $(seq 1 60); do kubectl -n "$FN_NS" get ksvc "$FN_NAME" >/dev/null 2>&1 && break; sleep 2; done
+kubectl -n "$FN_NS" get ksvc "$FN_NAME" >/dev/null 2>&1 \
+  || inconclusive "Function ${FN_NAME} ksvc was not created (composition did not reconcile in time)"
 kubectl -n "$FN_NS" wait --for=condition=Ready ksvc/"$FN_NAME" --timeout=180s >/dev/null 2>&1 \
   || inconclusive "Function ${FN_NAME} did not become Ready (Knative)"
 
