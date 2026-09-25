@@ -139,6 +139,7 @@ func run(logger *slog.Logger) error {
 	// receipt-handle (stale-rejection) semantics — see sqs_store.go and polyhedron#158. Optional:
 	// unset (defaults to MONGO_PG_URI when that is set) -> the SQS handler answers an honest 501.
 	var sqsSt *sqsStore
+	var snsSt *snsStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -154,7 +155,12 @@ func run(logger *slog.Logger) error {
 		if serr := sqsSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("SQS schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS Postgres (queues + messages)")
+		// SNS shares the same Postgres (topics + subscriptions); delivery fans out into SQS queues.
+		snsSt = &snsStore{db: db}
+		if serr := snsSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("SNS schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS Postgres (queues, messages, topics, subscriptions)")
 	}
 
 	auth := &authenticator{
@@ -301,8 +307,11 @@ func run(logger *slog.Logger) error {
 	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-console"), 30*time.Second)
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
-	sqsH := newSQSHandler(cs, authzNS, account, getenv("AWS_REGION", "us-east-1"), sqsSt, logger)
+	region := getenv("AWS_REGION", "us-east-1")
+	sqsH := newSQSHandler(cs, authzNS, account, region, sqsSt, logger)
 	sqsH.authz = authzChecker
+	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
+	snsH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":       &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":      &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -310,6 +319,7 @@ func run(logger *slog.Logger) error {
 		"appsync":  newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
 		"dynamodb": dynamoH,
 		"sqs":      sqsH,
+		"sns":      snsH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")
