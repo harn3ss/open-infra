@@ -1,0 +1,26 @@
+# Dedicated Postgres for the aws-shim SQS front door (polyhedron#158).
+#
+# SQS is Postgres-backed rather than JetStream-backed because its ReceiptHandle is a
+# correctness-and-security boundary: a per-receive opaque handle regenerated in the same row-locked
+# UPDATE makes a stale handle delete nothing, and visibility timeout, per-message visibility change,
+# ApproximateReceiveCount, and maxReceiveCount->DLQ are all trivially correct in SQL. This is the
+# shim's OWN internal state — never a customer database — so it is a small single instance co-located
+# with the shim; the CNPG-generated `aws-shim-sqs-app` Secret carries the connection URI the shim reads
+# via SQS_PG_URI (see aws-shim.yaml).
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: aws-shim-sqs
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim, component: sqs-backend }
+spec:
+  instances: 1
+  storage:
+    size: 2Gi
+  bootstrap:
+    initdb:
+      database: sqs
+      owner: sqs
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }

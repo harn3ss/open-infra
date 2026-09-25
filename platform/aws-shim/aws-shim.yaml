@@ -355,6 +355,12 @@ spec:
             # the account id surfaced in STS GetCallerIdentity ARNs.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
             - { name: ACCOUNT_ID, value: "open-infra" }
+            # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
+            # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
+            # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is
+            # the in-cluster non-TLS path CNPG's default pg_hba allows. Unset -> SQS answers an honest 501.
+            - { name: SQS_PG_URI, valueFrom: { secretKeyRef: { name: aws-shim-sqs-app, key: uri } } }
+            - { name: PGSSLMODE, value: "disable" }
             # sts:AssumeRole session-token sealing key — Vault-custodied (#111 §1). The shim logs into
             # Vault with its OWN SA token (k8s-auth role aws-shim-sts, provisioned by
             # platform/security/vault.yaml) and reads the 32-byte AES key from sts/signing-key — no raw
