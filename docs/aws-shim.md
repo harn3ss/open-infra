@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Eighteen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Nineteen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -21,7 +21,9 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > CloudNativePG), **CloudWatch Logs**, **SSM Parameter Store** (Vault-KMS-encrypted SecureString), and
 > **API Gateway** (HTTP API v2 — the runtime HTTP→Lambda proxy, completing the serverless triad), and
 > **CloudWatch metrics + alarms** (alarms that genuinely evaluate and fire SNS actions), and **Kinesis Data
-> Streams** (ordered, sharded, replayable), and **Cognito** (user pools issuing real, JWKS-verifiable JWTs).
+> Streams** (ordered, sharded, replayable), and **Cognito** (user pools issuing real, JWKS-verifiable JWTs),
+> and **IAM** (role/policy/user management with AWS-policy-JSON→Cedar translation), and **Step Functions**
+> (an ASL workflow engine whose Tasks run under the state machine's IAM role via a per-execution STS session).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -133,9 +135,10 @@ the sections below; the one-line summary:
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
 | **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource + non-S3/DDB/Lambda refused; needs STS |
+| **[Step Functions](#step-functions-kind-statemachine--per-execution-role-authority-probe-proven)** | kind: StateMachine/Execution + singleton controller | JSON 1.0 | Express + Parallel/Map + `.waitForTaskToken`/`.sync` + non-Lambda integrations refused |
 
 **Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
-SES (a `kind: EmailSender` exists), Step Functions (an owned `kind: StateMachine` engine exists), and the rest
+SES (a `kind: EmailSender` exists), and the rest
 of the AWS surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
 service it hasn't made faithful.
@@ -889,6 +892,38 @@ the session is authorized on the *role*, not the shim's backend credentials; `Si
 in both directions and reports an explicit `Deny` as `explicitDeny` (forbid fidelity); `CreateAccessKey`
 yields a key that authenticates; and the negatives (wrong secret → signature mismatch, `NotAction` refused).
 The live round-trip requires STS enabled (a Vault `sts/signing-key`, the same operator bootstrap as KMS).
+
+### Step Functions (kind: StateMachine + per-execution role authority; probe-proven)
+
+The AWS Step Functions API (SigV4 service `states`, JSON 1.0) over the platform's existing owned ASL engine —
+`kind: StateMachine` (the workflow) and `kind: Execution` (one run), driven by the singleton statemachine
+controller. Implemented: `CreateStateMachine`/`UpdateStateMachine`/`DeleteStateMachine`/`DescribeStateMachine`/
+`ListStateMachines`, and `StartExecution`/`DescribeExecution`/`StopExecution`/`GetExecutionHistory`/
+`ListExecutions`. An AWS-authored definition runs unchanged: a Lambda Task `Resource` (a Lambda ARN or
+`arn:aws:states:::lambda:invoke`) is translated to the engine's `function:<name>` form.
+
+**Refused, not faked.** `CreateStateMachine` validates the ASL and **rejects** (`InvalidDefinition`) what the
+engine does not implement — `EXPRESS` type, `Parallel`/`Map` states, the `.waitForTaskToken`/`.sync` callback
+patterns, and non-Lambda service integrations — rather than storing a definition that would fail or silently
+mis-run later. The v1 workflow surface is Standard workflows with Task/Choice/Wait/Pass/Succeed/Fail +
+Retry (with backoff)/Catch and JSONPath data shaping.
+
+**Per-execution role authority — the same authority model as IAM/STS above.** A state machine created with a
+`roleArn` gets, at `StartExecution`, a freshly minted STS session for that role, stored in a per-execution
+Secret the controller injects into every Task. A Task therefore runs under the **role's** authority — it can
+do exactly what the role's policies grant and no more — instead of the controller's ambient position (a
+confused deputy would let a Task act with the controller's credentials). Running a state machine under a role
+requires the caller to be trusted to pass it (fail closed if the role is unknown or its trust does not name
+the caller). `StopExecution` aborts cooperatively through the controller, which writes the terminal `ABORTED`
+state, so the shim never races the running execution.
+
+`probe/aws-shim-stepfunctions.sh` proves, against the deployed shim + controller: an AWS-authored workflow
+runs (Task/Choice/Wait/Retry/Catch → `SUCCEEDED`); a Task **runs under the role** — the injected session
+resolves to the assumed role via `GetCallerIdentity`, can GetObject the bucket its policy grants, and is
+**denied** a bucket it does not (the confused-deputy detector, both directions); `StopExecution` drives an
+execution to `ABORTED`; `GetExecutionHistory` reflects the real retry + catch transitions; and the negatives
+(running under a role the caller is not trusted to pass → `AccessDenied`; an unsupported `Parallel` definition
+→ `InvalidDefinition`). Per-execution role authority requires STS enabled (a Vault `sts/signing-key`).
 
 ## The compatibility probe
 
