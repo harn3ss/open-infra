@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Fifteen
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Sixteen
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -20,7 +20,8 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > (Vault-KMS-encrypted), **EventBridge** (scheduled + event-driven), **RDS** (real PostgreSQL via
 > CloudNativePG), **CloudWatch Logs**, **SSM Parameter Store** (Vault-KMS-encrypted SecureString), and
 > **API Gateway** (HTTP API v2 — the runtime HTTP→Lambda proxy, completing the serverless triad), and
-> **CloudWatch metrics + alarms** (alarms that genuinely evaluate and fire SNS actions).
+> **CloudWatch metrics + alarms** (alarms that genuinely evaluate and fire SNS actions), and **Kinesis Data
+> Streams** (ordered, sharded, replayable).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -129,10 +130,11 @@ the sections below; the one-line summary:
 | **[SSM Parameter Store](#ssm-parameter-store-postgres--kms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted SecureString | JSON 1.1 | Standard tier only; Advanced/policies refused |
 | **[API Gateway (HTTP API v2)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda proxy | restJson1 (REST paths) | REST API v1 + non-Lambda integrations refused |
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
+| **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 
-**Still not fronted** (honest `501`, never a silent fake, until built + probed): Kinesis, ECS/EKS, Route 53,
-Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), and the rest of the AWS
-surface. Adding a service is one registry entry; it
+**Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
+Cognito (a separate `kind: UserPool` exists), SES (a `kind: EmailSender` exists), Step Functions (an owned
+`kind: StateMachine` engine exists), and the rest of the AWS surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
 service it hasn't made faithful.
 
@@ -779,6 +781,41 @@ the value aggregated correctly over the period (`Sum`/`Average`/`Maximum`/`Minim
 **genuinely transitions to `ALARM`** on breaching data and **fires its SNS action** (received through the
 SNS→SQS doorways), and `TreatMissingData=breaching` is honored — plus the negatives: wrong secret →
 signature mismatch, and a **cross-tenant metric read is denied**.
+
+### Kinesis Data Streams (Postgres-backed; ordered, sharded, replayable; probe-proven)
+
+Kinesis is the **ordered, sharded, replayable** streaming primitive — deliberately distinct from the
+unordered SQS and no-retention SNS doorways. Anything that needs ordered replay or multiple independent
+readers of the same stream needs this, not the messaging doorways. Speaks AWS JSON 1.1
+(`X-Amz-Target: Kinesis_20131202.<Op>`): `CreateStream`/`DescribeStream`/`DescribeStreamSummary`/`ListStreams`/
+`DeleteStream`, `PutRecord`/`PutRecords`, `GetShardIterator`/`GetRecords`/`ListShards`, and retention changes.
+
+**Backend decision: Postgres, not JetStream.** Kinesis's contract is strict per-shard ordering with monotonic
+`SequenceNumber`s, replay within a retention window, and shard iterators that advance and report
+`MillisBehindLatest`. JetStream's per-subject ordering does not map to the shard / partition-key + explicit
+`SequenceNumber` contract for free, so — as with the CloudWatch doorways — SQL rows keyed `(stream, shard,
+seq)` give exact control: the `SequenceNumber` is a per-shard monotonic counter (atomic, persisted → stable
+across restarts), order is the seq order, and replay is a re-read from an earlier seq. A record is assigned
+to a shard by a stable hash of its `PartitionKey`, so the same key always keeps its order in one shard while
+different keys distribute across shards; `DescribeStream`/`ListShards` report the contiguous 2^128 hash-key
+topology truthfully. Retention (default 24h, extendable) is genuinely enforced by a reaper, so the reported
+`RetentionPeriodHours` is truthful (compliance-adjacent, like Logs). `PutRecords` reports partial failure
+**per record** (`FailedRecordCount` + per-entry `ErrorCode`, including the real 1 MiB per-record limit), never
+collapsed into a whole-request error. Authorization is the one policy world at **stream granularity** — a
+tenant cannot read another tenant's stream, and read (`Get*`) is separable from write (`Put*`).
+
+**Deliberate carve-outs, refused honestly:** resharding (`SplitShard`/`MergeShards`) — the shard count is
+fixed at create (`DescribeStream` still reports the topology truthfully); enhanced fan-out
+(`SubscribeToShard`) and KCL lease coordination; the shard/`SequenceNumber` mapping is the shim's own
+(documented) shape, not AWS's exact 128-bit hash-range assignment (same same-key-same-shard + distribution
+properties). See [`examples/kinesis-pipeline/`](../examples/kinesis-pipeline/) for a producer/consumer.
+
+`probe/aws-shim-kinesis.sh` proves the ordering/replay semantics that distinguish this service — records with
+the same `PartitionKey` return **in order with monotonic `SequenceNumber`s**, `TRIM_HORIZON` **re-reads from
+the start** (replay), distinct keys **distribute across shards**, `MillisBehindLatest` is reported, and a
+`PutRecords` partial failure surfaces **per record** — plus the negatives: wrong secret → signature mismatch,
+a **cross-tenant stream read is denied**, and a **read-only principal is denied `PutRecord`** while still able
+to read.
 
 ## The compatibility probe
 
