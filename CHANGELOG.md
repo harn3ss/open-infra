@@ -7,6 +7,17 @@ the product's public contract.
 ## Unreleased
 
 ### AWS compatibility (shim)
+- **API Gateway (HTTP API v2) doorway (opt-in).** The shim now fronts a fourteenth service — **API Gateway
+  HTTP APIs** — completing the AWS serverless triad (API Gateway → Lambda → DynamoDB). Two planes: the
+  apigatewayv2 **control plane** (restJson1 over REST paths — apis/routes/integrations/stages/authorizers,
+  authorized by the one policy world with `apigateway:<Op>` Cedar actions) and the **data plane**, a real
+  runtime HTTP→Lambda proxy that builds the API Gateway v2 proxy event (payload format 2.0 default + 1.0),
+  matches routes with AWS precedence (`{id}`, `{proxy+}`, `$default`), and turns the Lambda's
+  `{statusCode,headers,body}` back into the HTTP response. **JWT authorizers** (validated against the OIDC IdP
+  registry, fail-closed) gate the application's end users — a trust domain kept distinct from the platform
+  principals — and **CORS** is first-class. REST API v1, non-Lambda integrations, and REQUEST/Lambda
+  authorizers are refused honestly. Proven by `probe/aws-shim-apigateway.sh` (exit 0 live). A canonical
+  handler lives in [`examples/apigw-lambda/`](examples/apigw-lambda/). See [`docs/aws-shim.md`](docs/aws-shim.md).
 - **SSM Parameter Store doorway (opt-in).** The AWS-SDK shim now fronts a thirteenth service —
   **SSM Parameter Store** (`AmazonSSM.<Op>`, JSON 1.1) — over the same SigV4 + one-policy-world path as
   the rest. It backs the hierarchical parameter tree (versions, labels, `String`/`StringList`/
