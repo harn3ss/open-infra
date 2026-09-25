@@ -144,6 +144,7 @@ func run(logger *slog.Logger) error {
 	var secretsSt *secretsStore
 	var ebSt *ebStore
 	var cwlSt *cwlStore
+	var ssmSt *ssmStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
 		if serr != nil {
@@ -188,7 +189,13 @@ func run(logger *slog.Logger) error {
 		if serr := cwlSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("CloudWatch Logs schema init failed: %w", serr)
 		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs Postgres")
+		// SSM Parameter Store shares the same Postgres for the parameter tree + versions + labels; a
+		// SecureString value is stored as KMS ciphertext (never plaintext), see ssm.go.
+		ssmSt = &ssmStore{db: db}
+		if serr := ssmSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("SSM schema init failed: %w", serr)
+		}
+		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
@@ -368,6 +375,10 @@ func run(logger *slog.Logger) error {
 	rdsH.authz = authzChecker
 	cwlH := newCWLHandler(cs, authzNS, account, region, cwlSt, logger)
 	cwlH.authz = authzChecker
+	// SSM Parameter Store reuses the SAME Vault Transit client as KMS (role aws-shim-kms): SecureString
+	// values are encrypted under the transit key kms-aws-ssm, so no separate Vault policy is needed.
+	ssmH := newSSMHandler(cs, authzNS, account, region, kmsTransit, ssmSt, logger)
+	ssmH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -381,6 +392,7 @@ func run(logger *slog.Logger) error {
 		"events":         ebH,
 		"rds":            rdsH,
 		"logs":           cwlH,
+		"ssm":            ssmH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")

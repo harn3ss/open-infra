@@ -4,6 +4,19 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
+## Unreleased
+
+### AWS compatibility (shim)
+- **SSM Parameter Store doorway (opt-in).** The AWS-SDK shim now fronts a thirteenth service —
+  **SSM Parameter Store** (`AmazonSSM.<Op>`, JSON 1.1) — over the same SigV4 + one-policy-world path as
+  the rest. It backs the hierarchical parameter tree (versions, labels, `String`/`StringList`/
+  `SecureString`) on the shared Postgres; `SecureString` values are genuinely encrypted under the shim's
+  KMS doorway (Vault Transit key `kms-aws-ssm`, parameter name bound as AEAD data) — plaintext never sits
+  in Postgres. `WithDecryption` is a two-permission action (`ssm:GetParameter` + `kms:Decrypt`), and Cedar
+  authorizes at per-parameter / per-path-prefix granularity. Standard tier only; Advanced tier / parameter
+  policies / a custom SecureString `KeyId` are refused honestly rather than faked. Proven by
+  `probe/aws-shim-ssm.sh` (exit 0 live). See [`docs/aws-shim.md`](docs/aws-shim.md).
+
 ## v3.0.0 — 2026-09-25
 
 open-infra now speaks the **AWS wire protocol** as a first-class surface. The opt-in AWS-SDK shim fronts
