@@ -115,6 +115,36 @@ DEC="$(printf '%s' "$DEC_B64" | base64 -d 2>/dev/null || true)"
 rm -f "$TMP_PT" "$TMP_CT"
 log "  ✓ plaintext round-tripped through Encrypt/Decrypt"
 
+# --- 3b. A TAMPERED ciphertext blob must fail InvalidCiphertextException (never return garbage) ----
+log "tampered ciphertext must fail InvalidCiphertextException (not decrypt to garbage)"
+TAMPERED="$(python3 - "$CT" <<'PY'
+import base64, json, sys
+env = json.loads(base64.b64decode(sys.argv[1]))
+c = env["c"]                       # "vault:v1:<base64 ciphertext+tag>"
+pre, payload = c.rsplit(":", 1)
+i = len(payload) // 2              # flip one char in the middle of the AEAD payload
+payload = payload[:i] + ("A" if payload[i] != "A" else "B") + payload[i+1:]
+env["c"] = pre + ":" + payload
+print(base64.b64encode(json.dumps(env).encode()).decode())
+PY
+)"
+TMP_TMP="$(mktemp)"; printf '%s' "$TAMPERED" | base64 -d > "$TMP_TMP"
+if awsk "$WAK" "$WSK" decrypt --ciphertext-blob "fileb://$TMP_TMP" >/dev/null 2>"$PWD/.kms_tamp"; then
+  fail "a tampered ciphertext blob DECRYPTED (returned data instead of failing) — integrity not enforced"
+fi
+grep -qiE 'InvalidCiphertext|not valid' "$PWD/.kms_tamp" || fail "tampered blob rejected with the wrong error: $(cat "$PWD/.kms_tamp")"
+rm -f "$TMP_TMP" "$PWD/.kms_tamp"
+log "  ✓ tampered ciphertext rejected (InvalidCiphertextException)"
+
+# --- 3c. The Encrypt produced a structured AUDIT record naming who/op/key (AU-2/AU-9) -------------
+log "audit: the Encrypt must have written a structured audit record (principal + op + key + decision)"
+sleep 1
+AUDIT="$(kubectl -n "$SHIM_NS" logs deploy/aws-shim --since=300s 2>/dev/null | grep '"msg":"kms audit"' | grep '"op":"Encrypt"' | grep "$KID" | tail -1)"
+[ -n "$AUDIT" ] || fail "no KMS audit record found for the Encrypt — the compliance trail (AU-2/AU-9) is not written"
+printf '%s' "$AUDIT" | grep -q "\"principal\":\"User::kms-probe-$SFX\"" || fail "audit record does not name the resolved principal (who): $AUDIT"
+printf '%s' "$AUDIT" | grep -q '"decision":"allow"' || fail "audit record missing the decision: $AUDIT"
+log "  ✓ audit record present — names the principal, op, key, and decision"
+
 # --- 4. EncryptionContext BINDS ---------------------------------------------------------------
 log "EncryptionContext must bind: decrypt with a DIFFERENT context must FAIL"
 TMP_PT="$(mktemp)"; printf '%s' "$PT" > "$TMP_PT"
@@ -153,6 +183,14 @@ BYTES="$(printf '%s' "$DK_PT" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
 [ "$BYTES" = "32" ] || fail "AES_256 data key should be 32 bytes, got $BYTES"
 rm -f "$TMP_DK"
 log "  ✓ envelope encryption holds (32-byte data key, ciphertext decrypts to it)"
+
+# --- 5b. GenerateRandom -----------------------------------------------------------------------
+log "generate-random — returns exactly the requested number of random bytes"
+RND="$(awsk "$WAK" "$WSK" generate-random --number-of-bytes 24 --query Plaintext 2>/dev/null || true)"
+[ -n "$RND" ] && [ "$RND" != "None" ] || fail "generate-random returned nothing"
+RBYTES="$(printf '%s' "$RND" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+[ "$RBYTES" = "24" ] || fail "generate-random returned $RBYTES bytes, want 24"
+log "  ✓ 24 random bytes"
 
 # --- 6. Disable → refuse → Enable -------------------------------------------------------------
 log "disable-key — Encrypt/Decrypt must then be refused (DisabledException)"
