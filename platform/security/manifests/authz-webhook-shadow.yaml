@@ -54,6 +54,10 @@ spec:
     metadata: { labels: { app: authz-webhook } }
     spec:
       serviceAccountName: authz-webhook
+      # The authorizer is in the API server's critical path; keep the single replica from being
+      # evicted/preempted under node pressure (an eviction drops to the RBAC fallback — safe, but stops
+      # Cedar enforcing). Availability otherwise rests on that fallback until multi-CP-node HA exists.
+      priorityClassName: system-cluster-critical
       # Reachable by the API server WITHOUT cluster networking (authorizers are called early):
       # hostNetwork on the control-plane node, listening on loopback only.
       hostNetwork: true

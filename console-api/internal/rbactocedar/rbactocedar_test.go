@@ -129,8 +129,9 @@ func TestGenerate_RoleBindingSAWithoutNamespace(t *testing.T) {
 	}
 }
 
-// resource "*" in a specific apiGroup is widened + must record a caveat (honest about the loss).
-func TestGenerate_WildcardResourceCaveat(t *testing.T) {
+// resource "*" in a SPECIFIC apiGroup is scoped to that group ("*.<group>"), NOT widened to every
+// group — Cedar is never broader than the RBAC rule. (This is the AC-6 de-widening fix.)
+func TestGenerate_WildcardResourceScopedToGroup(t *testing.T) {
 	in := Inputs{
 		ClusterRoles: map[string]rbacv1.ClusterRole{
 			"appsall": {ObjectMeta: metav1.ObjectMeta{Name: "appsall"}, Rules: []rbacv1.PolicyRule{{Verbs: []string{"get"}, APIGroups: []string{"apps"}, Resources: []string{"*"}}}},
@@ -140,8 +141,29 @@ func TestGenerate_WildcardResourceCaveat(t *testing.T) {
 		},
 	}
 	g := Generate(in)
-	if len(g) != 1 || !strings.Contains(strings.Join(g[0].Caveats, " "), "widened to all groups") {
-		t.Fatalf("expected a widening caveat, got %#v", g)
+	if len(g) != 1 {
+		t.Fatalf("expected 1 grant, got %d: %#v", len(g), g)
+	}
+	if strings.Contains(strings.Join(g[0].Caveats, " "), "widened to all groups") {
+		t.Errorf("must NOT widen a specific-group * to all groups: %#v", g[0].Caveats)
+	}
+	eng, err := policyengine.NewEngine(g[0].Statements)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	// Matches any resource IN the apps group (the group wildcard)...
+	if d := eng.Authorize(req("Group", "g", "get", "deployments.apps", "ns/x")); !d.Allowed {
+		t.Errorf("should allow get on deployments.apps: %s", d.Reason)
+	}
+	if d := eng.Authorize(req("Group", "g", "get", "statefulsets.apps", "ns/y")); !d.Allowed {
+		t.Errorf("should allow get on statefulsets.apps: %s", d.Reason)
+	}
+	// ...but NOT a resource in ANOTHER group (no widening — this is the whole point).
+	if d := eng.Authorize(req("Group", "g", "get", "secrets", "ns/s")); d.Allowed {
+		t.Errorf("must NOT allow core secrets from an apps-group grant (no widening)")
+	}
+	if d := eng.Authorize(req("Group", "g", "get", "databases.openinfra.dev", "ns/db")); d.Allowed {
+		t.Errorf("must NOT allow databases.openinfra.dev from an apps-group grant (no widening)")
 	}
 }
 
