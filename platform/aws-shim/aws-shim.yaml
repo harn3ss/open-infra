@@ -377,6 +377,10 @@ spec:
             # keys only — provisioned by platform/security/vault.yaml). CMK metadata (lifecycle state,
             # aliases) shares the SQS Postgres. VAULT_ADDR unset -> KMS answers an honest 501.
             - { name: KMS_VAULT_ROLE, value: "aws-shim-kms" }
+            # RDS front door (polyhedron#162): customer PostgreSQL instances are CloudNativePG Clusters in
+            # this dedicated namespace (never shared with the shim's own SQS Postgres). The shim's SA has
+            # scoped CNPG-management RBAC there (platform/aws-shim/rds-provisioning.yaml).
+            - { name: RDS_NAMESPACE, value: "open-infra-rds" }
             # AppSync (GraphQL) → the open-appsync engine (components.openAppsync). Our own engine, so
             # no admin secret: the shim conveys the verified principal and open-appsync enforces authz
             # internally. Absent (component disabled) → the appsync service returns 502.

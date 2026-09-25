@@ -350,6 +350,15 @@ func run(logger *slog.Logger) error {
 	// delivery). Its in-process scheduler is started below once the run context exists.
 	ebH := newEBHandler(cs, authzNS, fnNS, account, region, ebSt, asyncInv, sqsSt, logger)
 	ebH.authz = authzChecker
+	// RDS provisions real PostgreSQL via CloudNativePG (the data path is Postgres by construction). The
+	// shim's SA holds the CNPG-management RBAC in RDS_NAMESPACE; requires the dynamic client.
+	var rdsCnpg *rdsCNPG
+	if dyn != nil {
+		rdsCnpg = &rdsCNPG{dyn: dyn, cs: cs, ns: getenv("RDS_NAMESPACE", "open-infra-rds")}
+		logger.Info("RDS front door enabled (CloudNativePG Postgres)", slog.String("namespace", rdsCnpg.ns))
+	}
+	rdsH := newRDSHandler(cs, rdsCnpg, authzNS, account, region, logger)
+	rdsH.authz = authzChecker
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, map[string]awsService{
 		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
 		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
@@ -361,6 +370,7 @@ func run(logger *slog.Logger) error {
 		"kms":            kmsH,
 		"secretsmanager": secretsH,
 		"events":         ebH,
+		"rds":            rdsH,
 	})
 
 	addr := getenv("LISTEN_ADDR", ":4566")

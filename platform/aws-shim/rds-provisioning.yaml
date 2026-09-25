@@ -1,0 +1,45 @@
+# RDS front door provisioning surface (polyhedron#162).
+#
+# An RDS "DB instance" is a real CloudNativePG (CNPG) Cluster — actual PostgreSQL. Customer databases live
+# in their OWN namespace (open-infra-rds), deliberately separate from the shim's internal SQS Postgres
+# (open-infra-aws-shim) and from any platform-internal database: a multi-tenant customer DB must never
+# share the shim's own state store.
+#
+# Authorization for CreateDBInstance/etc. is the shim's one policy world (coarse impersonated SAR on
+# applications + fine-grained Cedar rds:*), exactly as the other front doors. This RBAC is only what the
+# shim's SERVICE ACCOUNT needs to DO the provisioning once a caller is authorized — scoped to this one
+# namespace, to CNPG Clusters/Backups and the master-credential Secrets, and nothing else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-rds
+  labels:
+    app.kubernetes.io/part-of: open-infra
+    openinfra.dev/purpose: rds-customer-databases
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-rds
+  namespace: open-infra-rds
+rules:
+  # Provision and manage the CNPG Clusters (DB instances) and Backups (snapshots).
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters, backups]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The master-credential Secret (basic-auth) the shim creates so the caller's MasterUserPassword becomes
+  # the database owner's password. Scoped to this namespace only.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-rds
+  namespace: open-infra-rds
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-rds }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
