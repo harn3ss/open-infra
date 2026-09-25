@@ -7,6 +7,18 @@ the product's public contract.
 ## Unreleased
 
 ### AWS compatibility (shim)
+- **Cognito user pools doorway (opt-in; SigV4 service `cognito-idp`).** The shim now fronts **Cognito user
+  pools** — the seventeenth probe-proven service. `CreateUserPool`/`CreateUserPoolClient`, `SignUp`/
+  `ConfirmSignUp`, the `Admin*` user-lifecycle ops, `InitiateAuth`/`AdminInitiateAuth` (`USER_PASSWORD_AUTH` +
+  `REFRESH_TOKEN_AUTH`), `GetUser`, `GlobalSignOut`, and each pool's JWKS + OIDC discovery endpoints. The token
+  contract is real: `InitiateAuth` returns genuine **RS256 JWTs** (id/access/refresh) signed by the shim's RSA
+  key and **verifiable against the pool's JWKS** — an API Gateway JWT authorizer (the #169 doorway) pointed at
+  the pool admits them end to end. Passwords are bcrypt; the configured **password policy is genuinely
+  enforced**; **`GlobalSignOut` genuinely invalidates** already-issued tokens (a per-user cutoff). The
+  control-plane (admin) surface and the pool's end-user auth are kept as distinct trust domains. SRP, MFA,
+  identity pools, and the hosted UI are refused rather than faked. Proven by `probe/aws-shim-cognito.sh` (exit 0
+  live); a boto3 sign-in example lives in [`examples/cognito-app/`](examples/cognito-app/). See
+  [`docs/aws-shim.md`](docs/aws-shim.md).
 - **IAM management API + AWS-policy-JSON→Cedar translation (opt-in; SigV4 service `iam`).** The shim now
   exposes the AWS IAM management verbs — `CreateRole`/`GetRole`/`DeleteRole`/`ListRoles`,
   `CreatePolicy`/`GetPolicy`/`DeletePolicy`/`ListPolicies`, `AttachRolePolicy`/`DetachRolePolicy`/
