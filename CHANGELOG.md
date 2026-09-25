@@ -4,7 +4,16 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
-## Unreleased
+## v3.0.0 — 2026-09-25
+
+open-infra now speaks the **AWS wire protocol** as a first-class surface. The opt-in AWS-SDK shim fronts
+**twelve services, each proven by a real-AWS-SDK compatibility probe**, over one SigV4 +
+one-policy-world (RBAC + Cedar) path — so you can point your existing AWS **SDK, CLI, Terraform, or
+CloudFormation** at open-infra, or keep declaring intent in `infra.yaml`. This is a milestone bump: the
+product's center of gravity now includes AWS-wire compatibility alongside its concept-parity native
+surface. The shift is **additive** — the AWS shim is opt-in and OFF by default, and nothing on the
+existing stable surface changes — so despite the major version there are no breaking changes to the
+`openinfra.dev` kinds. Maturity tiers are unchanged and stated per capability (see the README).
 
 ### Observability
 - **Distributed tracing (experimental).** open-infra now ships the AWS X-Ray-shaped signal to sit
@@ -82,6 +91,37 @@ the product's public contract.
   [`docs/auth-migration.md`](docs/auth-migration.md).
 
 ### AWS compatibility
+- **The AWS-SDK shim graduates to twelve probe-proven services.** Point an unmodified AWS SDK, CLI,
+  Terraform, or CloudFormation at open-infra and it answers as AWS — SigV4-authenticated against your
+  open-infra IAM, enforced by the *same* RBAC + Cedar permission boundary the console uses (one policy
+  world, never a parallel auth), against **durable backends** (not an emulator). New this release, each
+  built one at a time and each proven by a **real-AWS-SDK compatibility probe** (byte/behaviour assertions
+  plus the auth negatives, not merely a `200`):
+  - **SQS** — Postgres-backed: visibility timeout, per-receive receipt handles, DLQ redrive, long polling
+    (FIFO refused, standard queues only).
+  - **SNS** — durable fan-out to SQS queues, wrapped + raw delivery (`sqs` protocol only;
+    FilterPolicy / `.fifo` / http refused).
+  - **KMS** — HashiCorp Vault Transit: envelope encryption (`GenerateDataKey`), EncryptionContext bound as
+    AEAD, the key lifecycle state machine, rotate-safe rotation, and crypto-erase (symmetric only; grants
+    and key policies refused).
+  - **Secrets Manager** — versioned secrets with `AWSCURRENT`/`AWSPREVIOUS` staging labels, each value
+    KMS-encrypted; a 7–30 day recovery window (auto-rotation and custom `KmsKeyId` refused).
+  - **EventBridge** — scheduled rules (six-field AWS cron, evaluated in UTC) and event-pattern routing to
+    Lambda/SQS targets with durable delivery; a triggered target runs under the **rule creator's**
+    authority, verified at `PutTargets`, never the shim's own.
+  - **RDS** — **real PostgreSQL** via CloudNativePG: asynchronous provisioning with a genuine
+    `available` state, a reachable Service endpoint, and real snapshot → restore (MultiAZ, read replicas,
+    point-in-time recovery, and `StorageEncrypted` are refused rather than faked; in-database
+    authorization is Postgres's own, outside the Cedar policy world — documented, not hidden).
+  - **CloudWatch Logs** — ordered, byte-identical read-back with original millisecond timestamps,
+    terminating pagination, and **genuinely-enforced** per-group retention (Logs Insights refused).
+  - **STS** additionally gains `AssumeRole` / `AssumeRoleWithWebIdentity` (stateless, Vault-custodied
+    sealing key), and the **DynamoDB** front door gains atomic `TransactWriteItems`/`TransactGetItems`
+    (over the documentdb Postgres behind FerretDB) and TTL.
+
+  Each service carries deliberate, documented **divergences** rather than silent approximations; a service
+  the shim has not made faithful still returns an honest `501`. Opt-in, OFF by default
+  (`components.awsShim: true`). See [`docs/aws-shim.md`](docs/aws-shim.md).
 - **CloudFormation engine (`cfn`).** Read a CloudFormation template — or CDK's synthesized
   output, which is CloudFormation JSON — and provision the corresponding open-infra resources.
   `cfn plan` is a read-only dry-run that maps each resource onto a kind and reports what it can
@@ -105,9 +145,10 @@ the product's public contract.
   `Scan`, and the batch item APIs `BatchGetItem` / `BatchWriteItem` (non-transactional and capped at
   DynamoDB's 100/25 limits, like the real service), sharing the same expression evaluator as the
   AppSync data source. Every call is authorized through the platform's own IAM (SigV4 →
-  `SubjectAccessReview`), and the operations outside the built slice — transactional writes,
-  projection expressions, TTL, and streams — return an honest `501` rather than a silent
-  approximation. Opt-in, off by default. See [`docs/aws-shim.md`](docs/aws-shim.md).
+  `SubjectAccessReview`). Atomic transactions (`TransactWriteItems`/`TransactGetItems`) and TTL are now
+  supported (see the shim-doorways entry above); the operations still outside the built slice —
+  `ProjectionExpression`, `ListTables`, `DeleteTable`, and streams — return an honest `501` rather than a
+  silent approximation. Opt-in, off by default. See [`docs/aws-shim.md`](docs/aws-shim.md).
 
 ## v2.7.0 — 2026-08-31
 
