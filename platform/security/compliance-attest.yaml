@@ -116,7 +116,7 @@ spec:
               # minio/mc binary (which ships without world-read); that is rejected under cluster-wide
               # `restricted` PSA (a hardened/FIPS build), which silently broke every attestation snapshot.
               # This init does nothing but stage a binary into an emptyDir for the hardened store container.
-              image: ghcr.io/harn3ss/open-infra-mc:latest
+              image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
               securityContext:
                 runAsNonRoot: true
                 runAsUser: 65532

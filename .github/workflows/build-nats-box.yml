@@ -2,6 +2,10 @@
 # queue/stream/dataflow/migration/replication setup Jobs run it without a reconcile-time pull of the
 # mutable public natsio/nats-box:latest (polyhedron#165). Same supply-chain treatment as the other
 # first-party images (Trivy-scanned + cosign-signed).
+#
+# NOTE (#165): consumers pin this image by its immutable index DIGEST, not :latest. After this workflow
+# pushes a new :latest, re-run `./hack/pin-tool-image-digests.sh` and commit to repoint the manifests at
+# the new digest — until then the cluster keeps running the previously pinned, known digest (by design).
 name: build-nats-box
 
 on:

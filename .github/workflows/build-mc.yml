@@ -1,6 +1,10 @@
 # Build the open-infra-mc image — the MinIO client with a world-readable /usr/bin/mc, so the non-root
 # fetch-mc init containers in the WORM audit / attestation / crypto-erase jobs stage it without root
 # (restricted-PSA clean). Same supply-chain treatment as the other images (Trivy-scanned + cosign-signed).
+#
+# NOTE (#165): consumers pin this image by its immutable index DIGEST, not :latest. After this workflow
+# pushes a new :latest, re-run `./hack/pin-tool-image-digests.sh` and commit to repoint the manifests at
+# the new digest — until then the cluster keeps running the previously pinned, known digest (by design).
 name: build-mc
 
 on:

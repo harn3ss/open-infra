@@ -254,7 +254,7 @@ spec:
                         securityContext: { fsGroup: 185 }
                         initContainers:
                           - name: ensure-stream
-                            image: ghcr.io/harn3ss/open-infra-nats-box:latest
+                            image: ghcr.io/harn3ss/open-infra-nats-box@sha256:40719f9bd2f77e14db7a7741abd07f90e983d46bdf78cb884b61a92fb96c4780
                             command: ["sh","-c","nats stream info {{ $stream }} >/dev/null 2>&1 || nats stream add {{ $stream }} --subjects='{{ $prefix }}.>' --storage=file --replicas=1 --max-bytes=512MB --discard=old --defaults"]
                             env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
                         containers:
@@ -447,7 +447,7 @@ spec:
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         initContainers:
                           - name: ensure-stream
-                            image: ghcr.io/harn3ss/open-infra-nats-box:latest
+                            image: ghcr.io/harn3ss/open-infra-nats-box@sha256:40719f9bd2f77e14db7a7741abd07f90e983d46bdf78cb884b61a92fb96c4780
                             command: ["sh","-c","nats stream info {{ $ostream }} >/dev/null 2>&1 || nats stream add {{ $ostream }} --subjects='{{ $oprefix }}.>' --storage=file --replicas=1 --max-bytes=512MB --discard=old --defaults"]
                             env: [{ name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }]
                         containers:

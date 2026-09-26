@@ -71,7 +71,7 @@ spec:
                           # Bring `mc` in OFFLINE (copied from its image) — for bucket creation
                           # AND minting the scoped per-app user/policy (#151 faults 1+3).
                           - name: fetch-mc
-                            image: ghcr.io/harn3ss/open-infra-mc:latest
+                            image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
                             command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
                             volumeMounts: [{ name: mc, mountPath: /mc }]
                         containers:

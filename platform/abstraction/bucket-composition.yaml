@@ -79,7 +79,7 @@ spec:
                           # `mc` (offline copy) mints the scoped per-app user/policy (#151 fault 3);
                           # the rich bucket config below still uses the aws CLI.
                           - name: fetch-mc
-                            image: ghcr.io/harn3ss/open-infra-mc:latest
+                            image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
                             command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
                             volumeMounts: [{ name: mc, mountPath: /mc }]
                         containers:
