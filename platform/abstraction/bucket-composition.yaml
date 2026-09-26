@@ -157,6 +157,27 @@ spec:
                                   --from-literal=MINIO_SECRET_KEY="$SK" \
                                   --dry-run=client -o yaml | kubectl apply -f -
             ---
+            # Readiness gate (#165 part 3): the claim is Ready only once the setup Job has SUCCEEDED,
+            # not merely once the Object was applied. The durable success signal is the per-bucket creds
+            # Secret the Job writes on success (it persists, unlike the ttl-GC'd Job — so no readiness
+            # flip-flop, and an already-provisioned bucket whose Secret exists stays Ready). This Observe
+            # Object is Ready (DeriveFromCelQuery) only when that Secret exists; function-auto-ready then
+            # gates the XR on it. A failed/blocked setup (bad creds, registry unreachable, quota) leaves
+            # no Secret → the claim honestly reports NotReady instead of a false green.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-ready-gate
+            spec:
+              managementPolicies: ["Observe"]
+              readiness: { policy: DeriveFromCelQuery, celQuery: "object.metadata.uid != ''" }
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $name }}-minio, namespace: {{ $ns }} }
+            ---
             apiVersion: openinfra.dev/v1
             kind: XBucket
             status:
