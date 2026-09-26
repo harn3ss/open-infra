@@ -71,7 +71,7 @@ spec:
         # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
         - name: fetch-mc
           # open-infra-mc = minio/mc with a world-readable binary → non-root copy (restricted-PSA clean).
-          image: ghcr.io/harn3ss/open-infra-mc:latest
+          image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532

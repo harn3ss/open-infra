@@ -55,7 +55,7 @@ spec:
       initContainers:
         # Bring `mc` in OFFLINE (copied from the image) so a hung download never blocks sync.
         - name: fetch-mc
-          image: ghcr.io/harn3ss/open-infra-mc:latest
+          image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
           command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
           volumeMounts: [{ name: mc, mountPath: /mc }]
       containers:
