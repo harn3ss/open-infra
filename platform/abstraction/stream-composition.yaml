@@ -201,7 +201,7 @@ spec:
                         securityContext: { fsGroup: 185 }
                         initContainers:
                           - name: ensure-stream
-                            image: natsio/nats-box:latest
+                            image: ghcr.io/harn3ss/open-infra-nats-box:latest
                             env:
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
                             command:

@@ -64,7 +64,7 @@ spec:
                         restartPolicy: OnFailure
                         initContainers:
                           - name: stream
-                            image: natsio/nats-box:latest
+                            image: ghcr.io/harn3ss/open-infra-nats-box:latest
                             command: [/bin/sh, -ceu]
                             args:
                               - |

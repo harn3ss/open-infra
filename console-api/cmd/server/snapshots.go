@@ -36,7 +36,7 @@ const (
 	snapBucket   = "db-snapshots"
 	snapImage    = "ghcr.io/cloudnative-pg/postgresql:17.0" // pg_dump/pg_restore (postgres + mongo backend)
 	mariadbImage = "mariadb:11.4"                           // mariadb-dump/mariadb (mysql)
-	mcImage      = "minio/mc:latest"
+	mcImage      = "ghcr.io/harn3ss/open-infra-mc:latest" // first-party offline mc — not docker.io minio/mc:latest (#165)
 	snapEndpoint = "http://minio.minio.svc.cluster.local:9000"
 )
 
