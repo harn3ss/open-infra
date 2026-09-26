@@ -123,7 +123,7 @@ spec:
               # the pod's uid 65532. The stock minio/mc binary is NOT world-readable and broke this init
               # (Init:Error "cp: cannot open '/usr/bin/mc': Permission denied"), which stalled every
               # crypto-erase destruction certificate.
-              image: ghcr.io/harn3ss/open-infra-mc:latest
+              image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities: { drop: [ALL] }

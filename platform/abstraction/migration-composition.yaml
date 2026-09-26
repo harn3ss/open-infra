@@ -230,7 +230,7 @@ spec:
                         securityContext: { fsGroup: 185 }
                         initContainers:
                           - name: ensure-stream
-                            image: ghcr.io/harn3ss/open-infra-nats-box:latest
+                            image: ghcr.io/harn3ss/open-infra-nats-box@sha256:40719f9bd2f77e14db7a7741abd07f90e983d46bdf78cb884b61a92fb96c4780
                             command:
                               - sh
                               - -c
