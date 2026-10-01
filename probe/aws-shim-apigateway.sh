@@ -271,4 +271,42 @@ fi
 grep -qiE 'AccessDenied|denied' "$WORK/neg3" || fail "CreateApi denial had the wrong error: $(cat "$WORK/neg3")"
 log "  ✓ denied principal refused"
 
-printf '\n✓ PASS — aws-shim API Gateway (HTTP API v2) is semantically faithful: control plane + the runtime AWS_PROXY→Lambda proxy (faithful 2.0 event; Lambda payload becomes the response), a real JWT authorizer (reject missing/unsigned/expired, admit valid), CORS, and the auth/refusal boundaries. (The structured {statusCode,headers} response translation is unit-proven — apigateway_test.go.)\n'
+# --- 7d. Negative: the #185 escalation fence — an apigateway-capable principal may NOT wire a Lambda it is
+#         not authorized to invoke, at BOTH CreateIntegration and the CreateApi quick-create target. A plain
+#         API with no Lambda target still succeeds, so the fence is scoped to the wiring, not a blanket deny.
+#         Without the fence, an apigateway-only principal could expose ANY function via a NONE-auth route and
+#         bypass the Lambda doorway's lambda:InvokeFunction gate (polyhedron#185).
+log "negative (#185): a principal that cannot invoke a Lambda must be refused when WIRING it (integration + quick-create)"
+read -r NAK NSK <<<"$(mint_key "agw-probe-nolambda-$SFX" "powerusers")"
+cat <<YAML | kubectl apply -f - >/dev/null
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata: { name: "agw-nolambda-$SFX", namespace: "${USERS_NS}" }
+spec:
+  dataPlane:
+    appliesTo: ["User::agw-probe-nolambda-$SFX"]
+    statements:
+      - { effect: Deny, actions: ["lambda:InvokeFunction"], resources: ["*"] }
+YAML
+CREATED_POLICIES+=("agw-nolambda-$SFX")
+log "  waiting ~35s for the data-plane policy loader to pick it up..."
+sleep 35
+# (a) precision: a plain API with NO Lambda target still works — the fence only gates the wiring.
+PLAINAPI="$(agw "$NAK" "$NSK" create-api --name "agw-nolambda-plain-$SFX" --protocol-type HTTP --query ApiId 2>/dev/null)" \
+  || fail "#185 fence OVER-blocked: a plain create-api (no target) was refused for an apigateway-capable principal"
+{ [ -n "$PLAINAPI" ] && [ "$PLAINAPI" != "None" ]; } && CREATED_APIS+=("$PLAINAPI") || fail "#185: plain create-api returned no ApiId"
+# (b) CreateIntegration to a Lambda the caller cannot invoke -> DENIED.
+if agw "$NAK" "$NSK" create-integration --api-id "$PLAINAPI" --integration-type AWS_PROXY \
+    --integration-uri "arn:aws:lambda:${REGION}:open-infra:function:${FN}" --payload-format-version 2.0 >/dev/null 2>"$WORK/neg185i"; then
+  fail "#185 HOLE: a principal that cannot invoke ${FN} created an integration to it"
+fi
+grep -qiE 'AccessDenied|not authorized to integrate|denied' "$WORK/neg185i" || fail "#185 CreateIntegration denial had the wrong error: $(cat "$WORK/neg185i")"
+# (c) the quick-create path (CreateApi --target) must apply the SAME fence.
+if agw "$NAK" "$NSK" create-api --name "agw-nolambda-qc-$SFX" --protocol-type HTTP \
+    --target "arn:aws:lambda:${REGION}:open-infra:function:${FN}" >/dev/null 2>"$WORK/neg185q"; then
+  fail "#185 HOLE: quick-create wired ${FN} for a principal that cannot invoke it"
+fi
+grep -qiE 'AccessDenied|not authorized to integrate|denied' "$WORK/neg185q" || fail "#185 quick-create denial had the wrong error: $(cat "$WORK/neg185q")"
+log "  ✓ #185 fence holds: unauthorized Lambda wiring refused at CreateIntegration AND quick-create; plain API still allowed"
+
+printf '\n✓ PASS — aws-shim API Gateway (HTTP API v2) is semantically faithful: control plane + the runtime AWS_PROXY→Lambda proxy (faithful 2.0 event; Lambda payload becomes the response), a real JWT authorizer (reject missing/unsigned/expired, admit valid), CORS, the #185 wiring-time escalation fence (an apigateway-only principal cannot wire a Lambda it cannot invoke), and the auth/refusal boundaries. (The structured {statusCode,headers} response translation is unit-proven — apigateway_test.go.)\n'

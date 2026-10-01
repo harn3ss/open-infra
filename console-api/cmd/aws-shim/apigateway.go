@@ -131,7 +131,7 @@ func (h *apigwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.
 
 	switch op {
 	case "CreateApi":
-		h.createApi(ctx, w, requestID, body)
+		h.createApi(ctx, w, r, claims, requestID, body)
 	case "GetApis":
 		h.getApis(ctx, w, requestID)
 	case "GetApi":
@@ -143,7 +143,7 @@ func (h *apigwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.
 	case "GetRoutes":
 		h.getRoutes(ctx, w, requestID, apiID)
 	case "CreateIntegration":
-		h.createIntegration(ctx, w, requestID, apiID, body)
+		h.createIntegration(ctx, w, r, claims, requestID, apiID, body)
 	case "CreateStage":
 		h.createStage(ctx, w, requestID, apiID, body)
 	case "GetStages":
@@ -157,7 +157,7 @@ func (h *apigwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.
 	}
 }
 
-func (h *apigwHandler) createApi(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *apigwHandler) createApi(ctx context.Context, w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string, body map[string]any) {
 	name, _ := body["name"].(string)
 	proto, _ := body["protocolType"].(string)
 	if name == "" || proto == "" {
@@ -169,6 +169,18 @@ func (h *apigwHandler) createApi(ctx context.Context, w http.ResponseWriter, req
 			"the open-infra shim supports protocolType HTTP (API Gateway v2 / HTTP API) only; WEBSOCKET and REST API (v1) are not fronted.")
 		return
 	}
+	// Quick-create can wire a Lambda target; fence it BEFORE anything is created so an unauthorized target
+	// fails the whole CreateApi atomically (no half-created API). Same wiring-time fence as CreateIntegration:
+	// a caller may only wire a function it is itself authorized to invoke (polyhedron#185).
+	target, _ := body["target"].(string)
+	if target != "" {
+		fn := functionFromURI(target)
+		if reason, ok := h.authorizeIntegrationTarget(ctx, r, claims, fn); !ok {
+			h.auditDeny(ctx, "CreateApi", name, reason)
+			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
+			return
+		}
+	}
 	api := agwAPI{ID: shortID(10), Name: name, ProtocolType: proto}
 	if c, ok := body["corsConfiguration"].(map[string]any); ok {
 		api.CORS = c
@@ -178,8 +190,8 @@ func (h *apigwHandler) createApi(ctx context.Context, w http.ResponseWriter, req
 		return
 	}
 	// Quick-create: a Target (a Lambda) with an optional RouteKey wires a default integration + route +
-	// $default stage in one call, exactly as AWS does.
-	if target, _ := body["target"].(string); target != "" {
+	// $default stage in one call, exactly as AWS does. (Target authority was fenced above.)
+	if target != "" {
 		routeKey, _ := body["routeKey"].(string)
 		if routeKey == "" {
 			routeKey = "$default"
@@ -284,7 +296,23 @@ func (h *apigwHandler) getRoutes(ctx context.Context, w http.ResponseWriter, req
 	writeAGWJSON(w, http.StatusOK, requestID, map[string]any{"items": items})
 }
 
-func (h *apigwHandler) createIntegration(ctx context.Context, w http.ResponseWriter, requestID, apiID string, body map[string]any) {
+// authorizeIntegrationTarget fences an AWS_PROXY integration at WIRING time: a caller may only wire a Lambda
+// it is itself authorized to invoke. The API Gateway data-plane invoke path is unsigned by design (invokes
+// carry no SigV4), so target authority is enforced here — when the route is wired — not per-invoke, exactly
+// as EventBridge enforces target authority at PutTargets (authorizeTarget, eventbridge.go). Without this an
+// apigateway-only principal could expose ANY function through a NONE-auth route and bypass the Lambda
+// doorway's lambda:InvokeFunction gate (polyhedron#185).
+func (h *apigwHandler) authorizeIntegrationTarget(ctx context.Context, r *http.Request, claims iam.Claims, fn string) (string, bool) {
+	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
+		return reason, false
+	}
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, fn); !allowed {
+		return reason, false
+	}
+	return "", true
+}
+
+func (h *apigwHandler) createIntegration(ctx context.Context, w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID, apiID string, body map[string]any) {
 	if _, ok := h.mustAPI(ctx, w, requestID, apiID); !ok {
 		return
 	}
@@ -299,6 +327,14 @@ func (h *apigwHandler) createIntegration(ctx context.Context, w http.ResponseWri
 		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "CreateIntegration (AWS_PROXY) requires integrationUri (a Lambda function ARN or name).")
 		return
 	}
+	// Wiring-time escalation fence: a caller may only integrate a Lambda it is authorized to invoke, since the
+	// data-plane invoke path is unsigned by design (polyhedron#185). Mirrors EventBridge's authorizeTarget.
+	fn := functionFromURI(uri)
+	if reason, ok := h.authorizeIntegrationTarget(ctx, r, claims, fn); !ok {
+		h.auditDeny(ctx, "CreateIntegration", apiID, reason)
+		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
+		return
+	}
 	pfv, _ := body["payloadFormatVersion"].(string)
 	if pfv == "" {
 		pfv = "2.0"
@@ -307,7 +343,7 @@ func (h *apigwHandler) createIntegration(ctx context.Context, w http.ResponseWri
 		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "payloadFormatVersion must be '2.0' or '1.0'.")
 		return
 	}
-	integ := agwIntegration{ID: shortID(10), IntegrationType: itype, IntegrationURI: functionFromURI(uri), PayloadFormatVersion: pfv}
+	integ := agwIntegration{ID: shortID(10), IntegrationType: itype, IntegrationURI: fn, PayloadFormatVersion: pfv}
 	if err := h.store.createIntegration(ctx, apiID, integ); err != nil {
 		h.internal(w, requestID, err)
 		return

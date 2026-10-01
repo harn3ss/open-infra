@@ -1,11 +1,36 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
+
+// TestAuthorizeIntegrationTarget_FencesUnauthorizedLambda proves the polyhedron#185 fix: the wiring-time
+// fence denies a caller who cannot invoke/create the target Lambda (so an apigateway-only principal cannot
+// expose an arbitrary function through a NONE-auth route), and permits one who can.
+func TestAuthorizeIntegrationTarget_FencesUnauthorizedLambda(t *testing.T) {
+	ctx := context.Background()
+	req := httptest.NewRequest("POST", "/v2/apis/abc/integrations", nil)
+	claims := iam.Claims{Sub: "lowpriv", Groups: []string{"openinfra:users"}}
+
+	// authz nil => Cedar is a no-op for this ungoverned user, so the CanDo "functions" gate decides — exactly
+	// the EventBridge-style fence. A caller who cannot create/invoke functions must be DENIED wiring one.
+	deny := &apigwHandler{cs: csWithSAR(false), fnNS: "default"}
+	if reason, ok := deny.authorizeIntegrationTarget(ctx, req, claims, "victim-fn"); ok {
+		t.Fatalf("fence must DENY wiring a Lambda the caller cannot invoke; got allowed (reason=%q)", reason)
+	}
+
+	// A caller authorized over functions may wire one.
+	allow := &apigwHandler{cs: csWithSAR(true), fnNS: "default"}
+	if reason, ok := allow.authorizeIntegrationTarget(ctx, req, claims, "my-fn"); !ok {
+		t.Fatalf("fence must ALLOW wiring a Lambda the caller can invoke; got denied (reason=%q)", reason)
+	}
+}
 
 func TestAgwOpFromRequest(t *testing.T) {
 	cases := []struct {
