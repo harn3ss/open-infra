@@ -17,6 +17,11 @@ spec:
   instances: 1
   storage:
     size: 2Gi
+    # Longhorn (replicated), NOT the cluster-default local-path: local-path pins the PV to one node, so when
+    # that node was powered off the volume was stranded and the whole shim went down for days with no failover.
+    # Longhorn replicates the data across nodes so a single node loss can't strand it (polyhedron#186). Pinned
+    # explicitly so it can never silently fall back to the default local-path again.
+    storageClass: longhorn
   bootstrap:
     initdb:
       database: sqs
