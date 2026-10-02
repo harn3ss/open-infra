@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-three
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-four
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -1126,6 +1126,60 @@ returns `[]` because Iceberg's hidden partitioning exposes no Hive-style partiti
 projects to the Glue shape (`table_type=ICEBERG`, an `s3://` `metadata_location` + `Location`, schema-translated
 `Columns`) with `GetPartitions` empty; a **reader's** `CreateDatabase` is refused with nothing created;
 `CreateTable` and `StartCrawler` are refused honestly; and a wrong secret is rejected on signature.
+
+### Athena (SQL over the Trino/Iceberg lakehouse; JSON protocol; probe-proven)
+
+The AWS Athena API (SigV4 service `athena`, AWS **JSON 1.1**, `X-Amz-Target: AmazonAthena.<Op>`) executes SQL
+against the platform's **Trino** engine (`trino.lakehouse`, the `/v1/statement` REST protocol) over the
+`iceberg` catalog — an Athena query **is** a Trino query, so the doorway submits SQL rather than embedding an
+executor. Pairs with `glue.*` (the catalog) exactly as Athena pairs with Glue in AWS.
+
+Implemented (the async query flow): `StartQueryExecution` (returns a `QueryExecutionId` immediately),
+`GetQueryExecution` (state `QUEUED`→`RUNNING`→`SUCCEEDED`/`FAILED`/`CANCELLED`, `StatementType`, timings),
+`GetQueryResults` (the AWS convention — the **first Row is the column-name header**, then one Row per result
+row, a SQL `NULL` cell carries no `VarCharValue`; offset pagination via `NextToken`), `StopQueryExecution`,
+and `GetWorkGroup`/`ListWorkGroups` (the built-in `primary` workgroup).
+
+**Trino scale-to-zero cooperation.** Trino runs scale-to-zero (the console `trino-autostop` reconciler scales
+it 0↔1). Athena does **not** pin it on: `StartQueryExecution` scales Trino up and stamps an
+`athena.openinfra.dev/last-query` annotation on the Deployment that the autostop honors (same idle window), so
+Trino stays up while a query runs and **idles back to 0 at rest** — preserving the platform's resource
+conservation. `StartQueryExecution` returns immediately; the Trino **cold start is absorbed in the `QUEUED`
+state** (the query waits for the engine to warm, exactly as AWS Athena queues), so a default-timeout SDK client
+is never blocked.
+
+**Authorization is the one policy world**: coarse impersonated `SubjectAccessReview` on
+`openinfra.dev/applications` (submit → `create`, reads → `get`, stop → `delete`) + additive Cedar `athena:<Op>`
+at workgroup granularity. A reader cannot submit a query.
+
+**Refused, not faked** (400 `InvalidRequestException` naming the op + why): workgroup CUD (only `primary`
+exists), named/saved queries, prepared statements, data-catalog management, and the **Athena
+catalog-metadata API** (`GetDatabase`/`ListDatabases`/`GetTableMetadata`/`ListTableMetadata` → served by
+`glue.*`, use it).
+
+**SQL dialect — Trino's, passed VERBATIM (the issue's standing caveat).** The doorway does **no** Athena→Trino
+rewriting: a query is sent to Trino unchanged, so where a query is valid Athena SQL but not valid Trino SQL it
+fails as a `FAILED` query carrying **Trino's own error**, never silently rewritten. Known divergences a user
+should expect (Athena is a fork of an older Presto/Trino, so most SQL is portable, but not all):
+- the default catalog is **`iceberg`**, not Athena's `AwsDataCatalog` (set it via `QueryExecutionContext`);
+- **`UNLOAD`**, Athena's `CREATE TABLE AS`/`INSERT` S3-output semantics, and the `$path`/`$file`/`$partition`
+  hidden columns behave as **Trino's**, which differ from Athena's;
+- Athena-specific/Lambda-backed functions (e.g. some geospatial and ML `USING FUNCTION` forms) are **not**
+  present in Trino and will error;
+- DDL that writes new Iceberg tables runs through Trino's Iceberg connector (that is also the supported way to
+  **create** a table the `glue.*` doorway then lists — Glue `CreateTable` is deliberately refused).
+
+**Honest v1 limitations (flagged graduation steps):** query executions are held **in memory** (lost on a shim
+restart; a TTL reaper bounds growth) rather than persisted; results are returned via `GetQueryResults` and the
+`ResultConfiguration.OutputLocation` is **echoed but not yet written** to S3 (the S3 result-file write is the
+graduation step); and a result is capped (100k rows / 128 MiB) to protect the shim's memory — a larger query
+fails with a clear message rather than risking the process.
+
+`probe/aws-shim-athena.sh` proves it: a `SELECT` over the Iceberg catalog returns a `QueryExecutionId`, is
+`QUEUED` through the real Trino cold start, then `SUCCEEDED`, and `GetQueryResults` returns the header row +
+data; the Trino Deployment is scaled to 1 with the activity annotation; a **reader's** `StartQueryExecution`
+is refused; `CreateWorkGroup` and the Athena metadata API are refused (pointing at `glue.*`);
+`StopQueryExecution` is wired; and a wrong secret is rejected on signature.
 
 ## The compatibility probe
 
