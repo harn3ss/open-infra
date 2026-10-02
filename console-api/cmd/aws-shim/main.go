@@ -488,6 +488,20 @@ func run(logger *slog.Logger) error {
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}
 	}
+	// ECS (ecs.*) — RegisterTaskDefinition/CreateService/… over the owned cfn engine: an ECS service +
+	// its task definition collate into one kind: Application. AUTHORITY the way AWS does it: a service op
+	// provisions under the CALLER's own authority via k8s impersonation (the impersonatingApplier), never
+	// the shim's (polyhedron#177, the #175 seam). Requires the dynamic client (shim SA, for the doorway's
+	// task-def/cluster/service bookkeeping) + the in-cluster rest.Config (to impersonate).
+	if dyn != nil {
+		ecsNS := getenv("ECS_NAMESPACE", "default")
+		if ecsH, eerr := newECSDoorway(kc.Config, dyn, cs, authzChecker, authzNS, account, region, ecsNS, logger); eerr != nil {
+			logger.Warn("ECS doorway disabled", slog.String("error", eerr.Error()))
+		} else {
+			services["ecs"] = ecsH
+			logger.Info("ECS front door enabled", slog.String("namespace", ecsNS))
+		}
+	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")
