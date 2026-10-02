@@ -58,7 +58,7 @@ metadata:
 spec:
   # Starts stopped; the console's trino-autostop reconciler scales this 0↔1 on demand
   # based on recent engine=trino query activity, so idle Trino costs nothing.
-  replicas: 0
+  replicas: 1 # Athena doorway (polyhedron#179) executes against Trino; keep it up (ArgoCD self-heals a manual scale)
   selector: { matchLabels: { app: trino } }
   template:
     metadata: { labels: { app: trino } }
