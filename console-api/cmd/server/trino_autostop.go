@@ -60,6 +60,17 @@ func trinoAutostopOnce(host *url.URL, transport http.RoundTripper, cs kubernetes
 	if err != nil {
 		return // Trino not installed / not reachable — nothing to manage
 	}
+	// Athena queries (the aws-shim athena.* doorway) also count as Trino activity: the doorway stamps
+	// athena.openinfra.dev/last-query (RFC3339) on this Deployment at each StartQueryExecution. Honor it so
+	// Trino is not scaled down out from under an in-flight Athena query — the aws-shim and this reconciler
+	// are separate processes, and the annotation is their shared activity signal (same idle window).
+	if want == 0 {
+		if ts := dep.Annotations["athena.openinfra.dev/last-query"]; ts != "" {
+			if t, perr := time.Parse(time.RFC3339, ts); perr == nil && time.Since(t) < idle {
+				want = 1
+			}
+		}
+	}
 	var cur int32 = 1
 	if dep.Spec.Replicas != nil {
 		cur = *dep.Spec.Replicas
