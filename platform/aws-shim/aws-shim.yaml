@@ -245,6 +245,39 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# ECS doorway (polyhedron#177): an ECS service + its task definition collate into a kind: Application
+# provisioned under the CALLER's impersonated authority (the #175 seam), but the doorway's own bookkeeping —
+# task-definition, cluster, and service-pointer ConfigMaps (ecs-taskdef-*/ecs-cluster-*/ecs-service-*) — is
+# written with the SHIM's ServiceAccount, so the shim SA needs configmap access in the ECS namespace, and
+# ONLY here. Dedicated namespace, exactly like open-infra-cfn.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-ecs
+  labels:
+    openinfra.dev/component: aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-ecs-records
+  namespace: open-infra-ecs
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-ecs-records
+  namespace: open-infra-ecs
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-ecs-records }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Step Functions doorway (polyhedron#172): the shim CREATES/reads/deletes kind: StateMachine (the ASL
 # claim) and kind: Execution (one run) here on an authorized caller's behalf — the caller is gated by the
 # impersonated SAR in the handler, then the shim executes as itself (the same pattern IAM/RDS use). The
@@ -493,6 +526,7 @@ spec:
             # stack-record/change-set/drift ConfigMaps live in. Resources are created under the CALLER's
             # impersonated authority; the bookkeeping ConfigMaps are shim-written (RBAC: aws-shim-cfn-records).
             - { name: CFN_NAMESPACE, value: "open-infra-cfn" }
+            - { name: ECS_NAMESPACE, value: "open-infra-ecs" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is

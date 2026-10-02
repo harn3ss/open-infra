@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-one
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -25,7 +25,9 @@ everywhere. The shim fronts *durable* backends, not fakes.
 > and **IAM** (role/policy/user management with AWS-policy-JSON→Cedar translation), and **Step Functions**
 > (an ASL workflow engine whose Tasks run under the state machine's IAM role via a per-execution STS session),
 > and **CloudFormation** (the owned cfn engine as a doorway — stacks provision under the caller's own
-> authority via impersonation, the way AWS does it).
+> authority via impersonation, the way AWS does it), and **ECS** (an ECS service + its task definition
+> collate into one `kind: Application` via that same cfn engine — provisioned under the caller's own
+> authority via impersonation; one-off tasks and un-translatable launch specifics refused).
 > Every one enforces the *same* SigV4 + one-policy-world (RBAC +
 > Cedar) path — never a parallel auth. It is one optional AWS-shaped surface over the platform, never a
 > core dependency. Each service is **built, probed, and counted** the same gated way; a service the shim
@@ -139,8 +141,9 @@ the sections below; the one-line summary:
 | **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource + non-S3/DDB/Lambda refused; needs STS |
 | **[Step Functions](#step-functions-kind-statemachine--per-execution-role-authority-probe-proven)** | kind: StateMachine/Execution + singleton controller | JSON 1.0 | Express + Parallel/Map + `.waitForTaskToken`/`.sync` + non-Lambda integrations refused |
 | **[CloudFormation](#cloudformation-the-cfn-engine-as-a-doorway-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine (~50 resource mappings) | query/XML | provisions under the caller's authority (impersonation); nested stacks + custom resources + unmapped types refused |
+| **[ECS](#ecs-service-and-task-definition-collate-into-one-kind-application-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine → `kind: Application` | JSON 1.1 | provisions under the caller's authority (impersonation); RunTask/StartTask, Fargate/raw subnets, host-path/EFS volumes, Command/EntryPoint overrides, external task-def ARNs refused |
 
-**Still not fronted** (honest `501`, never a silent fake, until built + probed): ECS/EKS, Route 53,
+**Still not fronted** (honest `501`, never a silent fake, until built + probed): EKS, Route 53,
 SES (a `kind: EmailSender` exists), and the rest
 of the AWS surface. Adding a service is one registry entry; it
 graduates the same gated way — built → exercised → **proven by a probe** → counted. The shim never claims a
@@ -967,6 +970,80 @@ applies it; **drift** is detected after an out-of-band change; DeleteStack remov
 **authority both directions** — an admin's stack provisions, while a *reader's* identical stack ends
 CREATE_FAILED with nothing created, because the engine runs as the reader (who cannot create the resource),
 not as the shim.
+
+### ECS (service and task definition collate into one kind: Application; caller-authority via impersonation; probe-proven)
+
+The AWS ECS API (SigV4 service `ecs`, AWS **JSON 1.1**, `X-Amz-Target:
+AmazonEC2ContainerServiceV20141113.<Op>`) over the platform's owned cfn engine — the **same doorway seam as
+CloudFormation** (polyhedron#175), one service deep. An ECS service is a long-lived container workload with
+a desired count behind a load balancer, which is exactly a `kind: Application` (Deployment + Service +
+Ingress + HPA). ECS splits that across three resources, so the doorway **collates**: a `RegisterTaskDefinition`
+is kept as a bookkeeping record (it provisions nothing on its own), and a `CreateService` synthesizes a
+minimal CloudFormation template — an `AWS::ECS::Service` plus its referenced `AWS::ECS::TaskDefinition` — that
+the engine's existing `cfn/mapping.go` collation turns into **one** `kind: Application`. `CreateService` →
+`cfn.Deploy`, `UpdateService` → `cfn.Update`, `DeleteService` → `cfn.Destroy`.
+
+Implemented: `RegisterTaskDefinition`/`DescribeTaskDefinition`/`DeregisterTaskDefinition`;
+`CreateService`/`UpdateService`/`DeleteService`/`DescribeServices`/`ListServices`;
+`CreateCluster`/`DeleteCluster`/`DescribeClusters`/`ListClusters`. Services and task definitions are the
+substance; a **cluster is an inert grouping** (the k3s cluster is the cluster, per `cfn/mapping.go`) — its
+records exist only so the cluster verbs report something faithful and a named cluster can be validated at
+`CreateService`. The service's authoritative state is the **live `kind: Application`** (read back for
+`Describe`/`ListServices`), never a shadow copy — `DescribeServices` reports `runningCount == desiredCount`
+only once the composite is actually Ready (its backing Deployment's replicas available), so it is an honest
+report of readiness, not a fabricated live count.
+
+**Authority — the way AWS does it, the reason the doorway is safe.** Exactly as the CloudFormation doorway:
+every resource mutation (`CreateService`/`UpdateService`/`DeleteService`) runs through an Applier that
+**impersonates the caller** (`Impersonate-User: openinfra:<sub>` + their groups, pinned to the four
+`openinfra:` groups, never `system:masters`), so the API server's RBAC and the Cedar admission webhook bound
+the whole service to exactly what the caller may do. A service therefore *cannot* provision beyond the
+caller's authority; the confused-deputy blast radius is structurally impossible. Only the doorway's own
+bookkeeping — the task-definition / cluster / service-pointer ConfigMaps in the ECS namespace — is written
+with the shim's ServiceAccount (the analog of AWS's service-side metadata, never a customer resource). Both
+authorization layers are the one policy world: the coarse impersonated `SubjectAccessReview` on
+`openinfra.dev/applications` (Register/Create/Update/Run → `create`, Describe/List → `get`, Delete/Deregister
+→ `delete`) and the additive fine-grained Cedar `ecs:<Op>` at service/task-def/cluster granularity.
+
+**What translates faithfully** (via the engine's `AWS::ECS::*` mappings): the container image, `PortMappings`
+→ the Service port, `Environment` → env vars, per-container `Cpu`/`Memory` → requests/limits, `DesiredCount`
+→ a fixed replica count, and a **multi-container task** → a multi-container Pod (the load-balanced container
+is primary, the rest become sidecars with shared scratch `emptyDir` volumes + `MountPoints`). `TaskRoleArn`
+maps to workload identity (the app assumes the named `kind: Role` via `sts:AssumeRoleWithWebIdentity`), and a
+`LoadBalancers` HTTP target port maps to the app's in-cluster Service port — to expose it over HTTPS set
+`Application.domain` (the ELB DNS name does not transfer as a hostname).
+
+**Refused, not faked** — the gate is **synchronous and fail-closed** (`BuildPlan` + the engine's translate
+gate via `BuildChangeSet`, which applies nothing), so each of these returns a 400 at the call with **no
+`kind: Application` and no service record created**:
+
+- **`RunTask` / `StartTask`** — a one-off task has no long-lived `kind: Application` form, so it is refused
+  (`InvalidParameterException`) rather than faked; use `CreateService`.
+- **Fargate launch specifics the translator cannot honor** — a raw/opaque awsvpc `subnet-…` id is refused
+  (name an open-infra `kind: Subnet`, or reference an in-stack `AWS::EC2::Subnet`); `LaunchType`,
+  `PlatformVersion`, `ServiceRegistries`, task `Cpu`/`Memory`, `ExecutionRoleArn`, network mode and
+  launch-compatibility are dropped as declared caveats (they have no faithful Application field).
+- **host-path (`Host.SourcePath`), EFS, and Docker-volume mounts** — refused rather than silently downgraded
+  to an ephemeral `emptyDir` (a durable-mount false green); only a shared *scratch* task Volume maps (to an
+  `emptyDir`). EFS belongs on a `kind: FileShare` natively.
+- **container `Command` / `EntryPoint` overrides** — refused (the Application runs the image's entrypoint);
+  and container **`DependsOn`** startup ordering has no same-pod equivalent, so it is refused, not dropped.
+- **an external task-definition ARN** — a `CreateService` must reference a task definition **registered via
+  this shim** (`RegisterTaskDefinition`); an external ARN has no open-infra form and is refused.
+- **`NetworkConfiguration` SecurityGroups** are dropped with a SECURITY caveat (attach a `kind:
+  SecurityGroup` natively; CFN SG translation is a follow-on) — never assume the isolation they implied.
+- **`LogConfiguration`, `Secrets`, and `HealthCheck`** on a container are **accepted but not translated** by
+  the underlying engine today: they pass the gate (they are known keys, not refused) but map to no
+  Application field yet — stated plainly so an operator is not surprised that a configured log driver or
+  container health check did not take effect.
+
+`probe/aws-shim-ecs.sh` proves it against the deployed shim + engine: a `RegisterTaskDefinition` (one
+public-image container + a `containerPort`) returns a task-def ARN at `:1`; `CreateService` provisions a
+`kind: Application` that becomes Ready, and `DescribeServices` reports `desiredCount == runningCount == 1`;
+`DeleteService` removes the Application; a **reader's** identical `CreateService` provisions **nothing** (it
+runs as the reader, who cannot create applications — never as the shim, closing the confused-deputy blast
+radius); a Fargate service with a **raw awsvpc subnet** is refused at the gate and **`RunTask`** is refused,
+both with nothing created; and a wrong secret is rejected on signature.
 
 ## The compatibility probe
 
