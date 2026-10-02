@@ -200,6 +200,26 @@ func (a *impersonatingApplier) GetSpec(ctx context.Context, apiVersion, kind, na
 	return spec, true, nil
 }
 
+// GetReady reports whether a resource's Ready condition is True (or status.ready), read via the CALLER —
+// so a doorway can report a workload's readiness without the shim SA needing read access to the workload.
+func (a *impersonatingApplier) GetReady(ctx context.Context, apiVersion, kind, name string) (ready, found bool, err error) {
+	gvr, gerr := a.gvrFor(apiVersion, kind)
+	if gerr != nil {
+		return false, false, gerr
+	}
+	u, gerr := a.caller.Resource(gvr).Namespace(a.ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(gerr) {
+		return false, false, nil
+	}
+	if gerr != nil {
+		return false, false, gerr
+	}
+	if rd, ok, _ := unstructured.NestedBool(u.Object, "status", "ready"); ok && rd {
+		return true, true, nil
+	}
+	return readyCondition(u.Object) == "True", true, nil
+}
+
 // GetStack reads the doorway's own stack-record ConfigMap (shim-owned bookkeeping) via the shim client.
 func (a *impersonatingApplier) GetStack(ctx context.Context, stackName string) (*cfn.StackRecord, bool, error) {
 	gvr := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
