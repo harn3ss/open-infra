@@ -29,7 +29,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const (
@@ -37,9 +36,6 @@ const (
 	ecsManagedBy    = "ecs" // app.kubernetes.io/managed-by value on every ECS doorway record
 )
 
-// applicationGVR is the kind: Application composite the ECS service collation produces — read for
-// DescribeServices/ListServices (service state is the live CRD, never a shadow copy).
-var applicationGVR = schema.GroupVersionResource{Group: "openinfra.dev", Version: "v1", Resource: "applications"}
 
 // ecsInvalidName matches everything a CloudFormation logical id / k8s object name may NOT contain.
 // It mirrors cfn.k8sName exactly ([^a-z0-9-] -> "-", trimmed) so an ECS service name sanitizes to the

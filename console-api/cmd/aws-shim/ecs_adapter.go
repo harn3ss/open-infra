@@ -26,8 +26,6 @@ import (
 
 	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // ecsTDLogicalID is the fixed logical id of the inlined task definition in every synthesized
@@ -310,12 +308,11 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		}
 		desired := specScalingMin(spec)
 		running := 0
-		if u, gerr := h.shimDyn.Resource(applicationGVR).Namespace(h.ns).Get(ctx, appName, metav1.GetOptions{}); gerr == nil {
-			// The composite is Ready only when its backing Deployment's replicas are available, so
-			// runningCount == desiredCount is an honest report of Ready, not a fabricated live count.
-			if ready, _, _ := unstructured.NestedBool(u.Object, "status", "ready"); ready || readyCondition(u.Object) == "True" {
-				running = desired
-			}
+		// Readiness is read via the CALLER (ap, caller-authority) like the spec above — not the shim SA — so
+		// the doorway needs no read access to the caller's workload. The composite is Ready only when its
+		// Deployment's replicas are available, so runningCount == desiredCount is an honest report of Ready.
+		if rdy, _, _ := ap.GetReady(ctx, ecsAppAPIVersion, "Application", appName); rdy {
+			running = desired
 		}
 		services = append(services, h.serviceObject(svcName, cluster, tdRef, desired, running, "ACTIVE", "", ""))
 	}
