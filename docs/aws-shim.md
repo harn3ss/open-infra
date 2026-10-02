@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-four
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-five
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -1180,6 +1180,42 @@ fails with a clear message rather than risking the process.
 data; the Trino Deployment is scaled to 1 with the activity annotation; a **reader's** `StartQueryExecution`
 is refused; `CreateWorkGroup` and the Athena metadata API are refused (pointing at `glue.*`);
 `StopQueryExecution` is wired; and a wrong secret is rejected on signature.
+
+### EKS (API-shape compatibility; `DescribeCluster` for kubeconfig; restJson1; probe-proven)
+
+The AWS EKS API (SigV4 service `eks`, **restJson1** — REST paths + methods, like API Gateway, not the JSON-1.1
+X-Amz-Target form). open-infra **is** Kubernetes, so EKS is the **least-additive** doorway: there is no cluster
+to create or destroy — the platform already is the cluster. Its whole value is **API-shape compatibility** so
+tooling that drives EKS works, above all **`DescribeCluster`** returning the cluster's **real** connection
+details (endpoint, CA, version) so `aws eks update-kubeconfig --name open-infra` produces a **working
+kubeconfig** pointed at the open-infra API server.
+
+Implemented: `GET /clusters` (**ListClusters** → the one cluster); `GET /clusters/{name}` (**DescribeCluster** →
+the faithful `Cluster` object — `endpoint` from the shim's in-cluster API host, `certificateAuthority.data` =
+the service-account CA the shim already trusts, `version` from the live discovery API; `roleArn` and
+`resourcesVpcConfig` are synthetic-but-present so the SDK model is satisfied, `status: ACTIVE`); `GET
+.../node-groups` (**ListNodegroups** → an honest **empty** set — open-infra nodes exist but are not
+EKS-managed node groups).
+
+**Refused, not faked** (400 `InvalidRequestException` naming the op + why): `CreateCluster`/`DeleteCluster`
+(the platform substrate is not born or killed through the EKS API — the cluster already exists, use
+`DescribeCluster`), `UpdateCluster{Version,Config}` (a substrate/platform operation), node group CUD +
+`DescribeNodegroup` (`ResourceNotFoundException` — no EKS-managed node groups), **Fargate profiles** (no
+analog), **add-ons** (install platform components directly), and **access entries / identity-provider configs**
+(cluster access is governed by the platform's RBAC + Cedar, not EKS access entries). Any other path →
+`NotFoundException`. Authorization is the one policy world (coarse `SubjectAccessReview` on
+`openinfra.dev/applications` + additive Cedar `eks:<Op>` at cluster granularity; reads are `get`).
+
+**v1 note (documented):** the returned `endpoint` defaults to the shim's **in-cluster** API host (so the
+generated kubeconfig works for in-cluster clients and for `kubectl` behind a port-forward); for external
+clients set `EKS_CLUSTER_ENDPOINT` out-of-band to the externally-reachable API URL (kept out of the public
+manifest).
+
+`probe/aws-shim-eks.sh` proves it: `DescribeCluster` returns `ACTIVE`, an `https` endpoint, a
+`certificateAuthority.data` that base64-decodes to a real PEM certificate, and a `version` that **matches the
+live Kubernetes server version**; `aws eks update-kubeconfig` generates a kubeconfig whose server + CA match
+`DescribeCluster`; `ListClusters` lists it; `CreateCluster` and the node-group surface are refused honestly;
+and a wrong secret is rejected on signature.
 
 ## The compatibility probe
 
