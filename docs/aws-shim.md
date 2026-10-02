@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-two
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-three
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -1090,6 +1090,42 @@ credential that decodes to `AWS:<pw>` + a `proxyEndpoint`; `CreateRepository` re
 `DescribeImages` (a real, non-zero size); `DeleteRepository` refuses the non-empty repo without `force` and
 succeeds with it; a **reader's** `CreateRepository` is refused with **no record created**; `PutLifecyclePolicy`
 is refused honestly; and a wrong secret is rejected on signature.
+
+### Glue Data Catalog (over the existing Iceberg REST catalog; JSON protocol; probe-proven)
+
+The AWS Glue API (SigV4 service `glue`, AWS **JSON 1.1**, `X-Amz-Target: AWSGlue.<Op>`) fronting the
+platform's **existing** Iceberg REST catalog (`iceberg-rest.lakehouse`) — the real metastore Trino and
+DataFlow already use. This doorway does **not** re-implement a catalog; the mapping is direct: a Glue
+**database is an Iceberg namespace**, a Glue **table is an Iceberg table**. The one real translation it
+performs is projecting an Iceberg table's current schema into the Glue `Column` shape, with
+`Parameters.table_type = ICEBERG` and the current `metadata_location` — which is exactly how AWS Glue itself
+represents an Iceberg table, so an Athena/Glue client sees a faithful Iceberg table.
+
+Implemented: `GetDatabases`/`GetDatabase`/`CreateDatabase`/`DeleteDatabase` (← namespaces);
+`GetTables`/`GetTable`/`GetPartitions`/`DeleteTable` (← Iceberg tables). The Iceberg→Glue/Hive type mapping
+(`int→int`, `long→bigint`, nested `struct<…>`/`array<…>`/`map<…,…>`, `decimal(P,S)`, identity-transform
+partition keys) is a pure, exhaustively unit-tested module; an unrecognized type is passed through verbatim
+so a column is never dropped.
+
+**Authorization is the one policy world**: coarse impersonated `SubjectAccessReview` on
+`openinfra.dev/applications` (reads → `get`, `CreateDatabase` → `create`, deletions → `delete`) + additive
+Cedar `glue:<Op>` at database/table granularity. The control plane is caller-gated — a reader cannot create
+or delete databases. A pure pass-through: no k8s bookkeeping, no new namespace or RBAC.
+
+**Refused, not faked** (400 `InvalidInputException` naming the op + why): **`CreateTable`/`UpdateTable`** — a
+Glue `StorageDescriptor` cannot faithfully specify an Iceberg table's schema and data layout; create Iceberg
+tables via **Athena DDL** (`CREATE TABLE`) or the query engine, which own that. Hive-style **partition CRUD**
+(Iceberg partitions internally). **Crawlers** (nothing to crawl — the catalog is fronted directly). **ETL
+jobs** (Apache Spark — a different product). Everything else Glue falls to the catch-all not-implemented path.
+
+**v1 divergences (documented, not papered over):** single-level namespaces only — a Glue database name is one
+Iceberg namespace level, and multi-level Iceberg namespaces are omitted from listings; and `GetPartitions`
+returns `[]` because Iceberg's hidden partitioning exposes no Hive-style partition values.
+
+`probe/aws-shim-glue.sh` proves it: a database is created → read → listed → deleted; a **real** catalog table
+projects to the Glue shape (`table_type=ICEBERG`, an `s3://` `metadata_location` + `Location`, schema-translated
+`Columns`) with `GetPartitions` empty; a **reader's** `CreateDatabase` is refused with nothing created;
+`CreateTable` and `StartCrawler` are refused honestly; and a wrong secret is rejected on signature.
 
 ## The compatibility probe
 
