@@ -36,7 +36,6 @@ const (
 	ecsManagedBy    = "ecs" // app.kubernetes.io/managed-by value on every ECS doorway record
 )
 
-
 // ecsInvalidName matches everything a CloudFormation logical id / k8s object name may NOT contain.
 // It mirrors cfn.k8sName exactly ([^a-z0-9-] -> "-", trimmed) so an ECS service name sanitizes to the
 // SAME value the cfn engine derives for the Application it creates — the round-trip Describe relies on.
