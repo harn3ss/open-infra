@@ -12,7 +12,7 @@ bounded by what they chose to implement — the same false-green risk open-infra
 everywhere. The shim fronts *durable* backends, not fakes.
 
 > **Status: opt-in, OFF by default.** The shim is a router with pluggable per-service handlers — one
-> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-one
+> front door, many domain experts, each dispatched by the AWS service the client signs for. **Twenty-two
 > services are fronted and each is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
 > exit 0 live): **S3** (MinIO), **STS** (identity + `AssumeRole`/web-identity), **Lambda** (Knative
 > `Function`s), **AppSync** (over the **open-appsync** engine — experimental), **DynamoDB** (FerretDB +
@@ -1044,6 +1044,52 @@ public-image container + a `containerPort`) returns a task-def ARN at `:1`; `Cre
 runs as the reader, who cannot create applications — never as the shim, closing the confused-deputy blast
 radius); a Fargate service with a **raw awsvpc subnet** is refused at the gate and **`RunTask`** is refused,
 both with nothing created; and a wrong secret is rejected on signature.
+
+### ECR (MinIO-backed OCI registry; two-plane; JSON protocol; probe-proven)
+
+The AWS ECR API (SigV4 service `ecr`, AWS **JSON 1.1**, `X-Amz-Target:
+AmazonEC2ContainerRegistry_V20150921.<Op>`) fronting a real in-cluster registry. ECR has **two planes**, and
+the shim keeps them separate the way AWS does. The **control plane** — `GetAuthorizationToken`, repositories,
+image listing/description/deletion — is the `ecr.*` API answered here. The **data plane** — `docker
+login`/`push`/`pull` — is the **standard OCI Distribution protocol spoken directly to the registry** at the
+`proxyEndpoint`; the shim never proxies image bytes. The backend (`platform/aws-shim/ecr-registry.yaml`) is
+CNCF **distribution** (digest-pinned, non-root, read-only-rootfs) with its S3 storage driver pointed at the
+in-cluster MinIO under a **bucket-scoped, non-root identity** — image blobs live in MinIO, nothing else is
+reachable. `GetAuthorizationToken` hands back the registry's htpasswd credential (base64 `AWS:<pw>`), so
+`aws ecr get-login-password | docker login` and then `docker push` work against the `proxyEndpoint`.
+
+Implemented: `GetAuthorizationToken`; `CreateRepository`/`DescribeRepositories`/`DeleteRepository`;
+`ListImages`/`DescribeImages`/`BatchDeleteImage`. A repository is a declaration + metadata record (a
+shim-owned ConfigMap; the registry auto-creates the repo on first push), so image facts — tags, digests, a
+real config+layers **size** — are answered from the **backing registry's `/v2` API**, never fabricated.
+`DeleteRepository` refuses a non-empty repo without `force` (`RepositoryNotEmptyException`) and with `force`
+deletes each distinct manifest before the record.
+
+**Authorization is the one policy world** every front door uses: the coarse impersonated `SubjectAccessReview`
+on `openinfra.dev/applications` (repository create/config → `create`, reads/token → `get`, deletions →
+`delete`) plus the additive fine-grained Cedar `ecr:<Op>` at repository granularity. The **control plane is
+therefore caller-gated** — a reader cannot create or delete repositories. The doorway's own records are
+written with the shim ServiceAccount (the analog of AWS's service-side metadata, never a customer resource).
+
+**Refused, not faked** (each returns a 400 `InvalidParameterException` naming the op + why): **image scanning**
+(no scanner backend), **lifecycle policies**, **cross-region replication**, **repository/registry resource
+policies** (authorization is the shim's one RBAC + Cedar world, not a second ECR-native policy language),
+**pull-through cache**, the **ECR internal layer-upload API** (`PutImage`/`InitiateLayerUpload`/… — the data
+plane is standard OCI at the `proxyEndpoint`, not this), and **resource tags**.
+
+**Honest v1 limitations (the flagged graduation steps).** The data plane is **coarse**: `GetAuthorizationToken`
+is gated at read level, so any principal who can obtain a token can `push`/`pull` **any** repository —
+per-repo, per-caller push scoping (the Docker registry **bearer-token protocol** with the shim as the token
+server) is the graduation step. And the `proxyEndpoint` is the **in-cluster** Service in v1 (reachable by
+in-cluster workloads and by `docker` behind a port-forward); **LAN/TLS exposure** for external clients is the
+other graduation step. Both are stated plainly rather than papered over.
+
+`probe/aws-shim-ecr.sh` proves it against the deployed shim + registry: `GetAuthorizationToken` yields a
+credential that decodes to `AWS:<pw>` + a `proxyEndpoint`; `CreateRepository` returns a faithful
+`repositoryUri`; an image **pushed** with that credential appears in `ListImages` (tag + digest) and
+`DescribeImages` (a real, non-zero size); `DeleteRepository` refuses the non-empty repo without `force` and
+succeeds with it; a **reader's** `CreateRepository` is refused with **no record created**; `PutLifecyclePolicy`
+is refused honestly; and a wrong secret is rejected on signature.
 
 ## The compatibility probe
 
