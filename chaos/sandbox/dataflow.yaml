@@ -10,6 +10,8 @@ metadata:
   name: df
   namespace: chaos-sandbox
 spec:
+  # Chaos sandbox: capture offsets on local-path (tainted chaos nodes lack Longhorn — polyhedron#187).
+  storageClass: local-path
   nodes:
     - name: pg-a
       role: database

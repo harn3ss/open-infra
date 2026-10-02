@@ -9,6 +9,10 @@ metadata:
   name: evt
   namespace: chaos-sandbox
 spec:
+  # Chaos sandbox: Debezium capture offsets on local-path so the pod attaches on the tainted chaos
+  # nodes (Longhorn doesn't run there — polyhedron#187). No-loss is unaffected (a lost offset makes
+  # Debezium re-snapshot → re-deliver, never drop acknowledged changes).
+  storageClass: local-path
   source:
     engine: postgres
     host: evt-src.chaos-sandbox.svc.cluster.local
