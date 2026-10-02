@@ -527,6 +527,15 @@ spec:
             # impersonated authority; the bookkeeping ConfigMaps are shim-written (RBAC: aws-shim-cfn-records).
             - { name: CFN_NAMESPACE, value: "open-infra-cfn" }
             - { name: ECS_NAMESPACE, value: "open-infra-ecs" }
+            # ECR (polyhedron#177): the doorway fronts the in-cluster distribution registry (MinIO-backed,
+            # platform/aws-shim/ecr-registry.yaml). GetAuthorizationToken hands back the credential in
+            # ecr-registry-auth (RBAC: aws-shim-ecr-auth-reader); per-repo records are ConfigMaps in
+            # ECR_NAMESPACE (RBAC: aws-shim-ecr-records). proxyEndpoint is the in-cluster svc for v1;
+            # LAN exposure for external docker clients is the flagged graduation step.
+            - { name: ECR_NAMESPACE, value: "open-infra-ecr" }
+            - { name: ECR_REGISTRY_URL, value: "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000" }
+            - { name: ECR_PROXY_ENDPOINT, value: "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000" }
+            - { name: ECR_AUTH_SECRET, value: "ecr-registry-auth" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is
