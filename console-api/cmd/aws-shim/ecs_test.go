@@ -47,6 +47,18 @@ func simpleTD() map[string]any {
 // (a) The adapter synthesizes a CloudFormation template the cfn engine ACCEPTS for a plain
 // single-container service — proving the camelCase->PascalCase mapping lands on the translator's
 // `known` property names and the TaskDefinition !Ref resolves in-stack.
+func TestECS_SpecScalingMinReadsInt64(t *testing.T) {
+	// Regression: unstructured.NestedMap (live-object reads) surfaces JSON integers as int64, so
+	// DescribeServices read desiredCount=0 until toInt handled int64. Lock the exact path.
+	spec := map[string]any{"scaling": map[string]any{"min": int64(3), "max": int64(3)}}
+	if got := specScalingMin(spec); got != 3 {
+		t.Fatalf("specScalingMin with int64 min = %d, want 3 (toInt must handle int64 from unstructured)", got)
+	}
+	if got := toInt(int64(5)); got != 5 {
+		t.Fatalf("toInt(int64(5)) = %d, want 5", got)
+	}
+}
+
 func TestECS_AdapterAcceptsSimpleService(t *testing.T) {
 	svc := map[string]any{"serviceName": "web", "taskDefinition": "app:1", "desiredCount": 3}
 	tmpl, err := buildECSTemplate("web", svc, simpleTD())

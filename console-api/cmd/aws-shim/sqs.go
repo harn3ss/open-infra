@@ -740,6 +740,13 @@ func toInt(v any) int {
 		return int(n)
 	case int:
 		return n
+	case int64:
+		// Kubernetes unstructured reads (unstructured.NestedMap) surface JSON integers as int64,
+		// so any value read back from a live object's spec lands here — not float64.
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
 	case string:
 		i, _ := strconv.Atoi(n)
 		return i
