@@ -229,6 +229,12 @@ type athenaStartParams struct {
 	WorkGroup      string
 	OutputLocation string
 	User           string // the principal, carried as X-Trino-User
+	// Trino readiness is awaited in the async run (so StartQueryExecution returns immediately): the query
+	// sits QUEUED until Trino reports ready. Nil CS skips the wait (unit tests that point straight at a fake).
+	CS           kubernetes.Interface
+	TrinoNS      string
+	TrinoDeploy  string
+	ReadyTimeout time.Duration
 }
 
 // start creates a QUEUED execution with a fresh UUID and launches its run goroutine. The goroutine runs on
@@ -268,6 +274,19 @@ func (s *athenaExecStore) start(client *trinoClient, p athenaStartParams) *athen
 // an error object appeared; any transport/engine error is a FAILED exec with a clear reason.
 func (s *athenaExecStore) runExec(ctx context.Context, ex *athenaExec, client *trinoClient, p athenaStartParams) {
 	start := time.Now()
+
+	// Absorb the Trino cold start HERE (not in StartQueryExecution, which returned immediately): the query
+	// sits QUEUED until Trino reports ready, exactly as AWS Athena queues while the engine warms. A real
+	// readiness timeout is an honest FAILED exec, not a fabricated result.
+	if p.CS != nil {
+		if err := waitTrinoReady(ctx, p.CS, p.TrinoNS, p.TrinoDeploy, p.ReadyTimeout); err != nil {
+			if ctx.Err() != nil && ex.isCancelled() {
+				return
+			}
+			s.fail(ex, "Trino did not become ready: "+err.Error(), start)
+			return
+		}
+	}
 
 	q, err := client.submit(ctx, p.Query, p.User, p.Catalog, p.Database)
 	if err != nil {
@@ -406,6 +425,16 @@ func scaleTrinoUp(ctx context.Context, cs kubernetes.Interface, ns, deploy strin
 
 	if timeout <= 0 {
 		return nil
+	}
+	return waitTrinoReady(ctx, cs, ns, deploy, timeout)
+}
+
+// waitTrinoReady polls until the Trino Deployment reports a ready replica, bounded by timeout. It is called
+// from the async run (not StartQueryExecution), so a cold-start query simply sits QUEUED until Trino warms —
+// StartQueryExecution returns immediately, as AWS Athena does.
+func waitTrinoReady(ctx context.Context, cs kubernetes.Interface, ns, deploy string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = athenaReadyTimeout
 	}
 	wctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
