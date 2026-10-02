@@ -1,0 +1,323 @@
+# Elastic Container Registry backend — the OCI registry that the aws-shim's `ecr.*` front door fronts
+# (polyhedron#177). ECR has two planes: a control plane (the SigV4 `ecr.*` API: GetAuthorizationToken,
+# CreateRepository, DescribeRepositories, …) handled by the shim doorway, and a data plane (the OCI
+# distribution protocol `/v2/`: docker login / push / pull) served DIRECTLY by this registry — the shim
+# never proxies image bytes, exactly as ECR's registry endpoint is separate from its API endpoint.
+#
+# Backend: CNCF distribution (registry:3) with its S3 storage driver pointed at the in-cluster MinIO, so
+# image blobs live in MinIO (stateless registry pods, no PVC) under a NON-root, bucket-scoped identity —
+# the registry can touch only the `ecr-registry` bucket, nothing else in MinIO. Auth is htpasswd (user
+# `AWS`, the password GetAuthorizationToken hands back); the control plane (who may obtain that token,
+# create/delete repos) is Cedar/RBAC-gated at the shim. v1 data-plane authority is therefore coarse: any
+# principal the shim issues a token to can push/pull any repo — per-repo push scoping (the Docker registry
+# bearer-token protocol with the shim as token server) is the flagged graduation step. See docs/aws-shim.md.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-ecr
+  labels:
+    app.kubernetes.io/part-of: aws-shim
+    openinfra.dev/component: ecr-registry
+---
+# =====================================================================================================
+# MinIO scoped identity + bucket (one-shot mint; same pattern as aws-shim-iam-setup, but with a
+# BUCKET-SCOPED policy rather than canned readwrite — the registry gets `ecr-registry` and nothing else).
+# Also mints the registry's htpasswd credential (ecr-registry-auth) that GetAuthorizationToken returns.
+# =====================================================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ecr-registry-setup
+  namespace: minio
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ecr-registry-setup
+  namespace: minio
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get] # read the MinIO root secret to provision
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ecr-registry-setup
+  namespace: minio
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: ecr-registry-setup }
+subjects:
+  - kind: ServiceAccount
+    name: ecr-registry-setup
+    namespace: minio
+---
+# Cross-namespace: let the (minio-ns) setup SA write ONLY the two registry Secrets into open-infra-ecr.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ecr-registry-creds-writer
+  namespace: open-infra-ecr
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, update, patch]
+    resourceNames: [ecr-registry-minio, ecr-registry-auth]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create] # create needs no resourceName (the object doesn't exist yet)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ecr-registry-creds-writer
+  namespace: open-infra-ecr
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: ecr-registry-creds-writer }
+subjects:
+  - kind: ServiceAccount
+    name: ecr-registry-setup
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ecr-registry-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      serviceAccountName: ecr-registry-setup
+      restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        # Bring `mc` in OFFLINE (copied from the first-party image) so a hung download never blocks sync.
+        - name: fetch-mc
+          image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+      containers:
+        - name: setup
+          image: alpine/k8s:1.30.0 # kubectl (native); mc from the shared volume
+          command: [/bin/sh, -c]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+          env:
+            - { name: ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
+            - { name: DEST_NS, value: "open-infra-ecr" }
+            - { name: BUCKET, value: "ecr-registry" }
+          args:
+            - |
+              set -eu
+              [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASS" ] || { echo "waiting for MinIO secret…"; exit 1; }
+              MC=/mc/mc
+              "$MC" alias set m "$MINIO_URL" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+              echo "ensuring registry bucket + bucket-scoped identity…"
+
+              "$MC" mb --ignore-existing "m/$BUCKET" >/dev/null
+
+              # Bucket-scoped policy: full S3 CRUD on ONLY the ecr-registry bucket (least privilege).
+              cat >/tmp/pol.json <<EOF
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  { "Effect": "Allow",
+                    "Action": ["s3:*"],
+                    "Resource": ["arn:aws:s3:::$BUCKET", "arn:aws:s3:::$BUCKET/*"] }
+                ]
+              }
+              EOF
+              "$MC" admin policy create m ecr-registry-rw /tmp/pol.json >/dev/null 2>&1 || \
+                "$MC" admin policy create m ecr-registry-rw /tmp/pol.json >/dev/null 2>&1 || true
+
+              AK="openinfra-ecr-registry"
+              # Reuse existing creds across reruns for stability; else generate.
+              SK=$(kubectl get secret ecr-registry-minio -n "$DEST_NS" -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d || true)
+              [ -n "$SK" ] || SK=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              "$MC" admin user add m "$AK" "$SK" >/dev/null 2>&1 || "$MC" admin user add m "$AK" "$SK" >/dev/null
+              "$MC" admin policy attach m ecr-registry-rw --user "$AK" >/dev/null 2>&1 || true
+              kubectl create secret generic ecr-registry-minio -n "$DEST_NS" \
+                --from-literal=accessKey="$AK" --from-literal=secretKey="$SK" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+              # The registry's htpasswd credential: username AWS (ECR convention), a stable random password
+              # that GetAuthorizationToken hands back. Reuse across reruns so issued tokens keep working.
+              # httpSecret shares upload state across registry replicas (REGISTRY_HTTP_SECRET).
+              PW=$(kubectl get secret ecr-registry-auth -n "$DEST_NS" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)
+              [ -n "$PW" ] || PW=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              HS=$(kubectl get secret ecr-registry-auth -n "$DEST_NS" -o jsonpath='{.data.httpSecret}' 2>/dev/null | base64 -d || true)
+              [ -n "$HS" ] || HS=$(head -c 48 /dev/urandom | md5sum | cut -c1-32)
+              kubectl create secret generic ecr-registry-auth -n "$DEST_NS" \
+                --from-literal=username="AWS" --from-literal=password="$PW" --from-literal=httpSecret="$HS" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+              echo "ecr-registry MinIO identity ($AK, bucket-scoped) + htpasswd credential ready"
+---
+# =====================================================================================================
+# The registry itself: distribution (registry:3), S3 storage -> MinIO, htpasswd auth.
+# =====================================================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ecr-registry
+  namespace: open-infra-ecr
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecr-registry-config
+  namespace: open-infra-ecr
+data:
+  config.yml: |
+    version: 0.1
+    log:
+      level: info
+      fields:
+        service: registry
+    storage:
+      s3:
+        region: us-east-1
+        regionendpoint: http://minio.minio.svc.cluster.local:9000
+        bucket: ecr-registry
+        forcepathstyle: true
+        secure: false
+        rootdirectory: /
+      delete:
+        enabled: true
+      maintenance:
+        uploadpurging:
+          enabled: true
+          age: 168h
+          interval: 24h
+          dryrun: false
+      cache:
+        blobdescriptor: inmemory
+    http:
+      addr: :5000
+      headers:
+        X-Content-Type-Options: [nosniff]
+    auth:
+      htpasswd:
+        realm: openinfra-ecr
+        path: /auth/htpasswd
+    health:
+      storagedriver:
+        enabled: true
+        interval: 10s
+        threshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecr-registry
+  namespace: open-infra-ecr
+  labels: { app: ecr-registry }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ecr-registry }
+  template:
+    metadata:
+      labels: { app: ecr-registry }
+    spec:
+      serviceAccountName: ecr-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - { name: config, configMap: { name: ecr-registry-config } }
+        - { name: auth, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+      initContainers:
+        # Generate the bcrypt htpasswd file from the minted plaintext credential. Kept out of the image so
+        # the password rotates with the Secret, never baked into a layer.
+        - name: gen-htpasswd
+          image: docker.io/library/httpd:2.4-alpine@sha256:4e585da9d0125dec36d4500a9f5c5df7b2c0a01f67cb47865a91a4b05bdbec1b
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -eu
+              htpasswd -Bbc /auth/htpasswd "$ECR_USER" "$ECR_PASS"
+              chmod 0644 /auth/htpasswd
+          env:
+            - { name: ECR_USER, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: username } } }
+            - { name: ECR_PASS, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: password } } }
+            - { name: TMPDIR, value: /tmp } # htpasswd needs a writable temp dir (rootfs is read-only)
+          volumeMounts:
+            - { name: auth, mountPath: /auth }
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: registry
+          image: ghcr.io/distribution/distribution@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
+          args: [serve, /etc/distribution/config.yml]
+          ports: [{ name: http, containerPort: 5000 }]
+          env:
+            - { name: REGISTRY_STORAGE_S3_ACCESSKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: accessKey } } }
+            - { name: REGISTRY_STORAGE_S3_SECRETKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: secretKey } } }
+            - { name: REGISTRY_HTTP_SECRET, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: httpSecret } } }
+          volumeMounts:
+            - { name: config, mountPath: /etc/distribution }
+            - { name: auth, mountPath: /auth }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecr-registry
+  namespace: open-infra-ecr
+  labels: { app: ecr-registry }
+spec:
+  type: ClusterIP
+  selector: { app: ecr-registry }
+  ports:
+    - { name: http, port: 5000, targetPort: http }
+---
+# Let the aws-shim SA read the registry credential so GetAuthorizationToken can hand it back. Scoped to
+# the single Secret (resourceNames), cross-namespace from open-infra-aws-shim.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-ecr-auth-reader
+  namespace: open-infra-ecr
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+    resourceNames: [ecr-registry-auth]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-ecr-auth-reader
+  namespace: open-infra-ecr
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-ecr-auth-reader }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
