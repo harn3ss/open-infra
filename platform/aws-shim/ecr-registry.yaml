@@ -321,3 +321,27 @@ subjects:
   - kind: ServiceAccount
     name: aws-shim
     namespace: open-infra-aws-shim
+---
+# The ECR doorway keeps per-repository bookkeeping records as ConfigMaps (ecr-repo-<name>) in this
+# namespace, written with the shim's OWN ServiceAccount — the doorway's internal metadata, the analog of
+# ECS's service-side repository record. (Image bytes live in MinIO via the registry, not here.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-ecr-records
+  namespace: open-infra-ecr
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-ecr-records
+  namespace: open-infra-ecr
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-ecr-records }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim

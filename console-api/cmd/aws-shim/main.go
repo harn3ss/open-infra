@@ -502,6 +502,21 @@ func run(logger *slog.Logger) error {
 			logger.Info("ECS front door enabled", slog.String("namespace", ecsNS))
 		}
 	}
+	// ECR (ecr.*) — GetAuthorizationToken / Create·Describe·DeleteRepository / ListImages / DescribeImages /
+	// BatchDeleteImage fronting the in-cluster MinIO-backed distribution registry
+	// (platform/aws-shim/ecr-registry.yaml). The control plane (who may obtain a token, create/delete repos)
+	// is Cedar/RBAC-gated here; the data plane (docker login/push/pull) is the standard OCI protocol spoken
+	// DIRECTLY to the registry at the proxyEndpoint. Only the typed clientset is needed (credential +
+	// bookkeeping reads), so it enables whenever the shim has cluster access.
+	{
+		ecrNS := getenv("ECR_NAMESPACE", "open-infra-ecr")
+		ecrURL := getenv("ECR_REGISTRY_URL", "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000")
+		ecrH := newECRHandler(cs, authzNS, account, region, ecrNS, ecrURL,
+			getenv("ECR_PROXY_ENDPOINT", ecrURL), getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
+		ecrH.authz = authzChecker
+		services["ecr"] = ecrH
+		logger.Info("ECR front door enabled", slog.String("namespace", ecrNS))
+	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")
