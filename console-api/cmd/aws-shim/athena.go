@@ -260,12 +260,13 @@ func (h *athenaHandler) startQueryExecution(ctx context.Context, w http.Response
 		wg = "primary"
 	}
 
-	// Scale Trino up (+ stamp the autostop annotation) and wait for it to be ready. Trino runs
-	// scale-to-zero, so a cold start is the documented first-query latency.
-	if err := scaleTrinoUp(ctx, h.cs, h.trinoNS, h.trinoDeploy, athenaReadyTimeout, h.logger); err != nil {
-		h.logger.ErrorContext(ctx, "athena: trino did not become ready", "error", err.Error())
+	// Scale Trino up + stamp the autostop activity annotation — a QUICK patch (timeout 0, no readiness wait),
+	// so StartQueryExecution returns immediately as AWS does. The cold-start wait is absorbed asynchronously in
+	// the run (the query sits QUEUED until Trino is ready). A patch failure (e.g. missing RBAC) surfaces now.
+	if err := scaleTrinoUp(ctx, h.cs, h.trinoNS, h.trinoDeploy, 0, h.logger); err != nil {
+		h.logger.ErrorContext(ctx, "athena: could not scale trino", "error", err.Error())
 		writeAthenaError(w, http.StatusInternalServerError, "InternalServerException", requestID,
-			"Trino did not become ready to accept the query.")
+			"Could not start the query engine.")
 		return
 	}
 
@@ -277,6 +278,10 @@ func (h *athenaHandler) startQueryExecution(ctx context.Context, w http.Response
 		WorkGroup:      wg,
 		OutputLocation: output,
 		User:           principalFromCtx(ctx),
+		CS:             h.cs,
+		TrinoNS:        h.trinoNS,
+		TrinoDeploy:    h.trinoDeploy,
+		ReadyTimeout:   athenaReadyTimeout,
 	})
 	h.audit(ctx, "StartQueryExecution", wg, "allow", "id="+ex.Id)
 	writeAthenaJSON(w, requestID, map[string]any{"QueryExecutionId": ex.Id})
