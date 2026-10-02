@@ -517,6 +517,18 @@ func run(logger *slog.Logger) error {
 		services["ecr"] = ecrH
 		logger.Info("ECR front door enabled", slog.String("namespace", ecrNS))
 	}
+	// Glue (glue.*) — the Data Catalog fronting the platform's EXISTING Iceberg REST catalog (lakehouse ns):
+	// a Glue database IS an Iceberg namespace, a Glue table IS an Iceberg table (marked table_type=ICEBERG +
+	// metadata_location, the way AWS Glue itself represents Iceberg). Read + database-lifecycle; crawlers, ETL
+	// (Spark), and table creation are refused honestly (tables are created via Athena DDL). A pure pass-through
+	// to the in-cluster catalog — only the typed clientset is needed (for the SAR gate) (polyhedron#179).
+	{
+		glueH := newGlueHandler(cs, authzNS, account, region,
+			getenv("GLUE_CATALOG_URL", "http://iceberg-rest.lakehouse.svc.cluster.local:8181"), logger)
+		glueH.authz = authzChecker
+		services["glue"] = glueH
+		logger.Info("Glue front door enabled", slog.String("catalog", "iceberg-rest"))
+	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")

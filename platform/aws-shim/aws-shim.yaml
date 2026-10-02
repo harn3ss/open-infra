@@ -536,6 +536,10 @@ spec:
             - { name: ECR_REGISTRY_URL, value: "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000" }
             - { name: ECR_PROXY_ENDPOINT, value: "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000" }
             - { name: ECR_AUTH_SECRET, value: "ecr-registry-auth" }
+            # Glue (polyhedron#179): the Data Catalog doorway fronts the platform's existing Iceberg REST
+            # catalog (lakehouse ns) — Glue databases ← Iceberg namespaces, Glue tables ← Iceberg tables.
+            # Read + database-lifecycle only; in-cluster, no auth. (Athena, over Trino, is the next slice.)
+            - { name: GLUE_CATALOG_URL, value: "http://iceberg-rest.lakehouse.svc.cluster.local:8181" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is
