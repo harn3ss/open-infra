@@ -529,6 +529,20 @@ func run(logger *slog.Logger) error {
 		services["glue"] = glueH
 		logger.Info("Glue front door enabled", slog.String("catalog", "iceberg-rest"))
 	}
+	// Athena (athena.*) — executes SQL against the platform's Trino engine (lakehouse ns) over /v1/statement,
+	// async: StartQueryExecution scales Trino up (it runs scale-to-zero; the doorway stamps an activity
+	// annotation the console trino-autostop honors) and launches a background run; Get/Stop poll/cancel it;
+	// GetQueryResults reads it back. SQL is passed to Trino verbatim (no dialect rewrite). Query metadata is
+	// the glue.* doorway's job. Needs the typed clientset (SAR gate + scaling the trino Deployment) (#179).
+	{
+		trinoURL := getenv("ATHENA_TRINO_URL", "http://trino.lakehouse.svc.cluster.local:8080")
+		athenaH := newAthenaHandler(cs, authzNS, account, region, trinoURL,
+			getenv("ATHENA_TRINO_NAMESPACE", "lakehouse"), getenv("ATHENA_TRINO_DEPLOYMENT", "trino"),
+			getenv("ATHENA_CATALOG", "iceberg"), getenv("ATHENA_DEFAULT_OUTPUT", "s3://lakehouse/athena-results/"), logger)
+		athenaH.authz = authzChecker
+		services["athena"] = athenaH
+		logger.Info("Athena front door enabled", slog.String("trino", trinoURL))
+	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 
 	addr := getenv("LISTEN_ADDR", ":4566")

@@ -245,6 +245,34 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Athena doorway (polyhedron#179): Trino runs scale-to-zero (console trino-autostop). The doorway scales
+# Trino up on StartQueryExecution and stamps the athena.openinfra.dev/last-query annotation the autostop
+# honors — so it needs get/list/patch on the ONE trino Deployment in the lakehouse namespace, nothing more.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-trino-scaler
+  namespace: lakehouse
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, patch]
+    resourceNames: [trino]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [list] # list needs no resourceName
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-trino-scaler
+  namespace: lakehouse
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-trino-scaler }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # ECS doorway (polyhedron#177): an ECS service + its task definition collate into a kind: Application
 # provisioned under the CALLER's impersonated authority (the #175 seam), but the doorway's own bookkeeping —
 # task-definition, cluster, and service-pointer ConfigMaps (ecs-taskdef-*/ecs-cluster-*/ecs-service-*) — is
@@ -540,6 +568,15 @@ spec:
             # catalog (lakehouse ns) — Glue databases ← Iceberg namespaces, Glue tables ← Iceberg tables.
             # Read + database-lifecycle only; in-cluster, no auth. (Athena, over Trino, is the next slice.)
             - { name: GLUE_CATALOG_URL, value: "http://iceberg-rest.lakehouse.svc.cluster.local:8181" }
+            # Athena (polyhedron#179): executes SQL against Trino (lakehouse ns) over /v1/statement. Trino is
+            # scale-to-zero (trino-autostop); the doorway scales it up on query + stamps an activity annotation
+            # the autostop honors (RBAC aws-shim-trino-scaler below). Results via GetQueryResults; SQL passed
+            # to Trino verbatim (no dialect rewrite). Default result location echoed, not yet written to S3.
+            - { name: ATHENA_TRINO_URL, value: "http://trino.lakehouse.svc.cluster.local:8080" }
+            - { name: ATHENA_TRINO_NAMESPACE, value: "lakehouse" }
+            - { name: ATHENA_TRINO_DEPLOYMENT, value: "trino" }
+            - { name: ATHENA_CATALOG, value: "iceberg" }
+            - { name: ATHENA_DEFAULT_OUTPUT, value: "s3://lakehouse/athena-results/" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is
