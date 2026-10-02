@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -542,6 +544,32 @@ func run(logger *slog.Logger) error {
 		athenaH.authz = authzChecker
 		services["athena"] = athenaH
 		logger.Info("Athena front door enabled", slog.String("trino", trinoURL))
+	}
+	// EKS (eks.*) — the least-additive container doorway: open-infra IS Kubernetes, so there is no cluster to
+	// create or destroy. The value is API-shape compatibility — DescribeCluster returns the real API-server
+	// endpoint + CA + version so `aws eks update-kubeconfig` yields a working kubeconfig; cluster CRUD / node
+	// groups / Fargate / addons are refused honestly. Endpoint defaults to the shim's in-cluster API host
+	// (override EKS_CLUSTER_ENDPOINT out-of-band for external reachability); CA = the SA cert the shim already
+	// trusts; version from discovery (polyhedron#177).
+	{
+		eksName := getenv("EKS_CLUSTER_NAME", "open-infra")
+		eksEndpoint := getenv("EKS_CLUSTER_ENDPOINT", kc.Config.Host)
+		var eksCA string
+		if len(kc.Config.CAData) > 0 {
+			eksCA = base64.StdEncoding.EncodeToString(kc.Config.CAData)
+		} else if kc.Config.CAFile != "" {
+			if b, rerr := os.ReadFile(kc.Config.CAFile); rerr == nil {
+				eksCA = base64.StdEncoding.EncodeToString(b)
+			}
+		}
+		eksVersion := ""
+		if sv, verr := cs.Discovery().ServerVersion(); verr == nil {
+			eksVersion = strings.TrimSuffix(sv.Major, "+") + "." + strings.TrimSuffix(sv.Minor, "+")
+		}
+		eksH := newEKSHandler(cs, authzNS, account, region, eksName, eksEndpoint, eksCA, eksVersion, logger)
+		eksH.authz = authzChecker
+		services["eks"] = eksH
+		logger.Info("EKS front door enabled", slog.String("cluster", eksName), slog.String("endpoint", eksEndpoint))
 	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
 

@@ -577,6 +577,11 @@ spec:
             - { name: ATHENA_TRINO_DEPLOYMENT, value: "trino" }
             - { name: ATHENA_CATALOG, value: "iceberg" }
             - { name: ATHENA_DEFAULT_OUTPUT, value: "s3://lakehouse/athena-results/" }
+            # EKS (polyhedron#177): the least-additive doorway — open-infra IS the cluster. DescribeCluster
+            # returns its real endpoint/CA/version so `aws eks update-kubeconfig` works; cluster CRUD / node
+            # groups / Fargate / addons refused. Endpoint defaults to the in-cluster API host (no site
+            # hostname in this public repo); set EKS_CLUSTER_ENDPOINT out-of-band for external reachability.
+            - { name: EKS_CLUSTER_NAME, value: "open-infra" }
             # SQS front door (polyhedron#158): queues + messages live in a dedicated CNPG Postgres
             # (aws-shim-sqs), chosen for faithful visibility-timeout + receipt-handle (stale-rejection)
             # semantics. The connection URI comes from the CNPG-generated app secret; sslmode=disable is
