@@ -57,7 +57,8 @@ curl -sS -m 5 -o /dev/null "${REGISTRY}/v2/" 2>/dev/null   || inconclusive "regi
 
 REPO="ecrprobe-$SFX/app"
 READER_REPO="ecrprobe-reader-$SFX/app"
-CREATED_USERS=(); CREATED_KEYS=()
+ADMIN_USER="ecrprobe-admin-$SFX"
+READER_USER="ecrprobe-reader-$SFX"
 AAK=""; ASK=""; RAK=""; RSK=""
 
 ecr() { # <ak> <sk> -- <ecr args...>
@@ -100,8 +101,10 @@ cleanup() {
       -o jsonpath="{range .items[?(@.data.repositoryName=='$rn')]}{.metadata.name}{'\n'}{end}" 2>/dev/null || true)"
     [ -n "$cm" ] && kubectl -n "$ECR_NS" delete configmap $cm --ignore-not-found >/dev/null 2>&1 || true
   done
-  for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
-  for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1 || true; done
+  # Users + key secrets are named deterministically / derived from the captured access keys — mint_key runs
+  # in a command-substitution subshell, so an array it appended to would not survive to here.
+  for u in "$ADMIN_USER" "$READER_USER"; do kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
+  for ak in "$AAK" "$RAK"; do [ -n "$ak" ] && kubectl -n "$SHIM_NS" delete secret "$(secret_name "$ak")" --ignore-not-found >/dev/null 2>&1 || true; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -117,18 +120,16 @@ kind: User
 metadata: { name: "${owner}", namespace: "${USERS_NS}" }
 spec: { displayName: "${owner}", groups: ["${group}"], source: local }
 YAML
-  CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
-  CREATED_KEYS+=("$name")
   printf '%s %s' "$ak" "$sk"
 }
 
 # --- seed callers -----------------------------------------------------------------------------------
 log "seeding an openinfra:admins caller and an openinfra:readers caller"
-read -r AAK ASK <<<"$(mint_key "ecrprobe-admin-$SFX"  "admins")"
-read -r RAK RSK <<<"$(mint_key "ecrprobe-reader-$SFX" "readers")"
+read -r AAK ASK <<<"$(mint_key "$ADMIN_USER"  "admins")"
+read -r RAK RSK <<<"$(mint_key "$READER_USER" "readers")"
 [ -n "$AAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint caller keys"
 sleep 2
 
