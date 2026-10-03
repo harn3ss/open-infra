@@ -161,6 +161,32 @@ func policyRoutesEqual(a, b []PolicyRoute) bool {
 	return true
 }
 
+// sameCIDRSet reports whether two CIDR lists describe the same set, ignoring order,
+// duplicates, and blank entries. Used by the netpol reconcile to decide whether an
+// existing managed netpol's ingress ipBlocks have drifted from the configured
+// return-path CIDRs (and therefore need an update).
+func sameCIDRSet(a, b []string) bool {
+	norm := func(in []string) map[string]bool {
+		m := make(map[string]bool, len(in))
+		for _, s := range in {
+			if s = strings.TrimSpace(s); s != "" {
+				m[s] = true
+			}
+		}
+		return m
+	}
+	ma, mb := norm(a), norm(b)
+	if len(ma) != len(mb) {
+		return false
+	}
+	for k := range ma {
+		if !mb[k] {
+			return false
+		}
+	}
+	return true
+}
+
 // resourceName builds the deterministic name for the OvnEip/OvnFip backing a given
 // Service, e.g. lanexpose-default-otf-phoneformat. Kept DNS-label-safe and stable so
 // reconcile is idempotent.

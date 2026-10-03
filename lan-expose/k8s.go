@@ -400,19 +400,51 @@ func (c *k8sClient) listManagedNetpols(ctx context.Context) ([]NetworkPolicy, er
 	return list.Items, nil
 }
 
-func (c *k8sClient) getNetworkPolicy(ctx context.Context, ns, name string) (bool, error) {
-	_, code, err := c.do(ctx, http.MethodGet, fmt.Sprintf("%s/namespaces/%s/networkpolicies/%s", netpolAPI, ns, name), "", nil)
+// getLanNetpolCIDRs returns the ingress ipBlock CIDRs of a managed LAN netpol, and
+// whether it exists. Used by the reconcile so an existing netpol whose ipBlocks have
+// drifted from the configured return-path CIDRs can be updated, not just created.
+func (c *k8sClient) getLanNetpolCIDRs(ctx context.Context, ns, name string) ([]string, bool, error) {
+	body, code, err := c.do(ctx, http.MethodGet, fmt.Sprintf("%s/namespaces/%s/networkpolicies/%s", netpolAPI, ns, name), "", nil)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	return code == http.StatusOK, nil
+	if code == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if code != http.StatusOK {
+		return nil, false, fmt.Errorf("get netpol %s/%s: HTTP %d: %s", ns, name, code, truncate(string(body), 256))
+	}
+	var doc struct {
+		Spec struct {
+			Ingress []struct {
+				From []struct {
+					IPBlock struct {
+						CIDR string `json:"cidr"`
+					} `json:"ipBlock"`
+				} `json:"from"`
+			} `json:"ingress"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, true, fmt.Errorf("parse netpol %s/%s: %w", ns, name, err)
+	}
+	var cidrs []string
+	for _, ing := range doc.Spec.Ingress {
+		for _, f := range ing.From {
+			if f.IPBlock.CIDR != "" {
+				cidrs = append(cidrs, f.IPBlock.CIDR)
+			}
+		}
+	}
+	return cidrs, true, nil
 }
 
-func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, selector map[string]string, lanCIDRs []string) error {
-	// One ipBlock per return-path CIDR, so a FIP client on ANY admitted LAN VLAN is
-	// allowed past the app's default-deny — not just clients on the EIP's own subnet
-	// (polyhedron #126 residual 2). The FIP is dnat_and_snat, so the pod sees the
-	// client's real LAN IP, which must fall in one of these blocks.
+// lanIngressFrom builds the NetworkPolicy ingress `from` list: one ipBlock per
+// return-path CIDR, so a FIP client on ANY admitted LAN VLAN is allowed past the app's
+// default-deny — not just clients on the EIP's own subnet (polyhedron #126 residual 2).
+// The FIP is dnat_and_snat, so the pod sees the client's real LAN IP, which must fall in
+// one of these blocks. Shared by create and update so the two never diverge.
+func lanIngressFrom(lanCIDRs []string) []any {
 	from := make([]any, 0, len(lanCIDRs))
 	for _, cidr := range lanCIDRs {
 		if strings.TrimSpace(cidr) == "" {
@@ -420,6 +452,10 @@ func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, select
 		}
 		from = append(from, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
 	}
+	return from
+}
+
+func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, selector map[string]string, lanCIDRs []string) error {
 	obj := map[string]any{
 		"apiVersion": "networking.k8s.io/v1",
 		"kind":       "NetworkPolicy",
@@ -427,10 +463,26 @@ func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, select
 		"spec": map[string]any{
 			"podSelector": map[string]any{"matchLabels": selector},
 			"policyTypes": []string{"Ingress"},
-			"ingress":     []any{map[string]any{"from": from}},
+			"ingress":     []any{map[string]any{"from": lanIngressFrom(lanCIDRs)}},
 		},
 	}
 	return c.create(ctx, fmt.Sprintf("%s/namespaces/%s/networkpolicies", netpolAPI, ns), name, obj)
+}
+
+// updateLanNetpolCIDRs reconciles an existing managed netpol's ingress ipBlocks to the
+// configured return-path CIDRs (merge-patch replaces the ingress array). It leaves the
+// podSelector untouched. This is what makes a returnPathCIDRs change propagate to
+// already-created netpols instead of needing a manual patch.
+func (c *k8sClient) updateLanNetpolCIDRs(ctx context.Context, ns, name string, lanCIDRs []string) error {
+	body, _ := json.Marshal(map[string]any{"spec": map[string]any{"ingress": []any{map[string]any{"from": lanIngressFrom(lanCIDRs)}}}})
+	b, code, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("%s/namespaces/%s/networkpolicies/%s", netpolAPI, ns, name), "application/merge-patch+json", body)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK {
+		return fmt.Errorf("patch netpol %s/%s ingress: HTTP %d: %s", ns, name, code, truncate(string(b), 256))
+	}
+	return nil
 }
 
 func (c *k8sClient) deleteNetworkPolicy(ctx context.Context, ns, name string) error {
