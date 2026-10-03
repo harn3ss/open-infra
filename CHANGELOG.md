@@ -4,9 +4,61 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
-## Unreleased
+## v3.1.0 — 2026-10-02
+
+The AWS-SDK shim now fronts **twenty-five probe-proven services** (up from twelve at v3.0.0), each proven
+by a real-AWS-SDK compatibility probe over the one SigV4 + one-policy-world (RBAC + Cedar) path. This
+release adds thirteen doorways since v3.0.0 — the AWS **orchestration and data** surfaces (CloudFormation,
+Step Functions, ECS, ECR, EKS, Glue, Athena) alongside the **identity, serverless, and messaging** doorways
+(IAM, Cognito, API Gateway, CloudWatch metrics + alarms, Kinesis, SSM) — plus supply-chain hardening. It is
+**additive**: the shim is opt-in and OFF by default, and nothing in the native `openinfra.dev` surface
+changes.
 
 ### AWS compatibility (shim)
+- **EKS doorway (opt-in; SigV4 service `eks`).** The shim fronts **EKS** — the twenty-fifth probe-proven
+  service — as a connection-information doorway, not a cluster-provisioning emulation: the open-infra cluster
+  IS the cluster. `DescribeCluster` returns the real endpoint and certificate authority so an
+  `aws eks update-kubeconfig` flow yields a working kubeconfig; `ListClusters`/`DescribeCluster` are served
+  and cluster-lifecycle verbs (`CreateCluster`/`DeleteCluster`/node groups) are **refused honestly** rather
+  than faked, because the platform does not create throwaway clusters on demand. Proven by
+  `probe/aws-shim-eks.sh` (exit 0 live). See [`docs/aws-shim.md`](docs/aws-shim.md).
+- **Athena doorway (opt-in; SigV4 service `athena`).** The shim fronts **Athena** — the twenty-fourth
+  service — over **Trino** against the lakehouse. `StartQueryExecution`/`GetQueryExecution`/
+  `GetQueryResults`/`StopQueryExecution` run real SQL over the Iceberg tables; `StartQueryExecution` returns
+  immediately and the execution absorbs Trino's **scale-from-zero cold start** asynchronously (it cooperates
+  with the Trino autostop rather than pinning replicas). Proven by `probe/aws-shim-athena.sh` (exit 0 live).
+  See [`docs/aws-shim.md`](docs/aws-shim.md).
+- **Glue Data Catalog doorway (opt-in; SigV4 service `glue`).** The shim fronts **Glue** — the twenty-third
+  service — mapping the Glue Data Catalog (`GetDatabases`/`GetTables`/`GetPartitions` and their create/delete
+  verbs) onto the **Iceberg REST catalog** that backs the lakehouse, so the catalog an Athena/Trino query
+  reads is the same one Glue describes — one catalog, not a parallel copy. Proven by
+  `probe/aws-shim-glue.sh` (exit 0 live). See [`docs/aws-shim.md`](docs/aws-shim.md).
+- **ECR doorway (opt-in; SigV4 service `ecr`).** The shim fronts **ECR** — the twenty-second service — over a
+  **MinIO-backed OCI registry**. `GetAuthorizationToken`, `CreateRepository`/`DescribeRepositories`/
+  `DeleteRepository`, and the image-manifest verbs back a registry a standard `docker login` + push/pull
+  works against; authorization is at repository granularity. Proven by `probe/aws-shim-ecr.sh` (exit 0 live,
+  self-cleaning). See [`docs/aws-shim.md`](docs/aws-shim.md).
+- **ECS doorway (opt-in; SigV4 service `ecs`).** The shim fronts **ECS** — the twenty-first service — over the
+  CloudFormation engine, **under caller authority**: `RunTask`/`CreateService`/`UpdateService`/
+  `DescribeServices`/`DescribeTasks` land real workloads on the platform, and `DescribeServices` reads the
+  workload's readiness **through the caller's own identity**, not the shim's service account, so a caller
+  cannot read a service it is not authorized to see. Proven by `probe/aws-shim-ecs.sh` (exit 0 live). See
+  [`docs/aws-shim.md`](docs/aws-shim.md).
+- **CloudFormation doorway (opt-in; SigV4 service `cloudformation`).** The shim fronts **CloudFormation** —
+  the twentieth service — over open-infra's owned CFN engine: `CreateStack`/`UpdateStack`/`DeleteStack`,
+  `CreateChangeSet`/`ExecuteChangeSet`, `DescribeStacks`/`DescribeStackResources`, and
+  `DetectStackDrift`/`DescribeStackDriftDetectionStatus`. A stack is applied **under the caller's authority**
+  (impersonation), and each resource's physical name is the deterministic `k8sName(logicalId)`, so
+  `aws cloudformation deploy` of a supported template is real end to end. The engine translates the subset it
+  can honor faithfully and refuses the rest rather than silently dropping resources. Proven by
+  `probe/aws-shim-cloudformation.sh` (exit 0 live). See [`docs/aws-shim.md`](docs/aws-shim.md).
+- **Step Functions doorway (opt-in; SigV4 service `states`).** The shim fronts **Step Functions** — the
+  nineteenth service — over an owned **Amazon States Language** engine (`kind: StateMachine` + `Execution`):
+  `CreateStateMachine`, `StartExecution`/`DescribeExecution`/`GetExecutionHistory`, and a cooperative
+  `StopExecution`. Each execution carries a **per-execution STS role authority** into its Task states, so a
+  state machine's tasks act with exactly the execution role's permissions — not the engine's. Proven by
+  `probe/aws-shim-stepfunctions.sh` (exit 0 live, including a Wait-survives-restart case). See
+  [`docs/aws-shim.md`](docs/aws-shim.md).
 - **Cognito user pools doorway (opt-in; SigV4 service `cognito-idp`).** The shim now fronts **Cognito user
   pools** — the seventeenth probe-proven service. `CreateUserPool`/`CreateUserPoolClient`, `SignUp`/
   `ConfirmSignUp`, the `Admin*` user-lifecycle ops, `InitiateAuth`/`AdminInitiateAuth` (`USER_PASSWORD_AUTH` +
@@ -79,6 +131,20 @@ the product's public contract.
   authorizes at per-parameter / per-path-prefix granularity. Standard tier only; Advanced tier / parameter
   policies / a custom SecureString `KeyId` are refused honestly rather than faked. Proven by
   `probe/aws-shim-ssm.sh` (exit 0 live). See [`docs/aws-shim.md`](docs/aws-shim.md).
+
+### Supply chain & hardening
+- **First-party tool images, digest-pinned.** The setup Jobs no longer pull mutable public `:latest` tool
+  images: the MinIO client and NATS tooling are now first-party images (`open-infra-mc`, `nats-box`) pinned by
+  digest, so a bootstrap's tool versions are fixed and reproducible rather than whatever `:latest` resolved to
+  that day.
+- **Bucket/queue readiness gated on setup success, not apply.** A `kind: Bucket`/`kind: Queue` claim now
+  reports Ready only once its setup Job has genuinely succeeded (a durable-secret readiness gate), closing a
+  false-green where a claim read Ready at apply time before its backing resource existed.
+- **API Gateway integrations fenced by the caller's invoke authority.** An API Gateway integration target is
+  now checked against the caller's own `lambda:InvokeFunction` authority, so a caller cannot wire a route to a
+  function it is not permitted to invoke — a confused-deputy fence on the serverless data plane.
+- **SQS store pinned to durable storage.** The aws-shim SQS CNPG store is pinned to Longhorn rather than
+  ephemeral local-path, so queued messages survive a node's loss.
 
 ## v3.0.0 — 2026-09-25
 
