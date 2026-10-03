@@ -204,14 +204,21 @@ func (c *controller) ensureNetpol(ctx context.Context, rn, ns string, selector m
 	if len(selector) == 0 {
 		return nil
 	}
-	exists, err := c.client.getNetworkPolicy(ctx, ns, rn)
+	cur, exists, err := c.client.getLanNetpolCIDRs(ctx, ns, rn)
 	if err != nil {
 		return err
 	}
-	if exists {
-		return nil
+	if !exists {
+		return c.client.createLanNetpol(ctx, ns, rn, selector, c.cfg.lanCIDRs)
 	}
-	return c.client.createLanNetpol(ctx, ns, rn, selector, c.cfg.lanCIDRs)
+	// Reconcile on drift: if the existing netpol's ingress ipBlocks no longer match the
+	// configured return-path CIDRs (e.g. returnPathCIDRs changed), update it in place so
+	// the change propagates to already-created netpols without a manual patch.
+	if !sameCIDRSet(cur, c.cfg.lanCIDRs) {
+		log.Printf("%s/%s: netpol ipBlocks %v drifted from return-path CIDRs %v, updating", ns, rn, cur, c.cfg.lanCIDRs)
+		return c.client.updateLanNetpolCIDRs(ctx, ns, rn, c.cfg.lanCIDRs)
+	}
+	return nil
 }
 
 // gc removes the OvnEip/OvnFip pairs and NetworkPolicies we own whose Service is no
