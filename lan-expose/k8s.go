@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -407,7 +408,18 @@ func (c *k8sClient) getNetworkPolicy(ctx context.Context, ns, name string) (bool
 	return code == http.StatusOK, nil
 }
 
-func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, selector map[string]string, lanCIDR string) error {
+func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, selector map[string]string, lanCIDRs []string) error {
+	// One ipBlock per return-path CIDR, so a FIP client on ANY admitted LAN VLAN is
+	// allowed past the app's default-deny — not just clients on the EIP's own subnet
+	// (polyhedron #126 residual 2). The FIP is dnat_and_snat, so the pod sees the
+	// client's real LAN IP, which must fall in one of these blocks.
+	from := make([]any, 0, len(lanCIDRs))
+	for _, cidr := range lanCIDRs {
+		if strings.TrimSpace(cidr) == "" {
+			continue
+		}
+		from = append(from, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
+	}
 	obj := map[string]any{
 		"apiVersion": "networking.k8s.io/v1",
 		"kind":       "NetworkPolicy",
@@ -415,7 +427,7 @@ func (c *k8sClient) createLanNetpol(ctx context.Context, ns, name string, select
 		"spec": map[string]any{
 			"podSelector": map[string]any{"matchLabels": selector},
 			"policyTypes": []string{"Ingress"},
-			"ingress":     []any{map[string]any{"from": []any{map[string]any{"ipBlock": map[string]any{"cidr": lanCIDR}}}}},
+			"ingress":     []any{map[string]any{"from": from}},
 		},
 	}
 	return c.create(ctx, fmt.Sprintf("%s/namespaces/%s/networkpolicies", netpolAPI, ns), name, obj)

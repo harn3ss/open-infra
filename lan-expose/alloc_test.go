@@ -49,47 +49,76 @@ func TestRangeContains(t *testing.T) {
 }
 
 func TestMergePolicyRoutesPreservesForeignAndReplacesOwn(t *testing.T) {
-	const cidr = "192.0.2.0/24"
+	cidrs := []string{"192.0.2.0/24"}
 	const prio = 29500
 	existing := []PolicyRoute{
-		{Priority: 31000, Match: "ip4.dst == 100.64.0.0/16", Action: "allow"},         // foreign, keep
-		{Priority: prio, Match: ownedPolicyMatch("10.16.0.5", cidr), Action: "allow"}, // ours, stale — drop
+		{Priority: 31000, Match: "ip4.dst == 100.64.0.0/16", Action: "allow"},                      // foreign, keep
+		{Priority: prio, Match: ownedPolicyMatch("10.16.0.5", "192.0.2.0/24"), Action: "allow"},    // ours, stale — drop
+		{Priority: prio, Match: ownedPolicyMatch("10.16.0.5", "198.51.100.0/24"), Action: "allow"}, // ours, stale for a now-removed CIDR — still dropped (shape-recognised)
 	}
-	got := mergePolicyRoutes(existing, []string{"10.16.112.153", "10.16.112.153", ""}, prio, cidr)
-	// foreign preserved
+	got := mergePolicyRoutes(existing, []string{"10.16.112.153", "10.16.112.153", ""}, prio, cidrs)
 	var foreign, ours int
 	for _, p := range got {
 		if p.Priority == 31000 {
 			foreign++
 		}
-		if isOwnedPolicy(p, prio, cidr) {
+		if isOwnedPolicy(p, prio) {
 			ours++
 		}
 	}
 	if foreign != 1 {
 		t.Fatalf("foreign policy not preserved: %+v", got)
 	}
-	if ours != 1 {
-		t.Fatalf("want exactly 1 owned policy (deduped, no empty), got %d: %+v", ours, got)
+	if ours != 1 { // deduped pod IP × 1 CIDR, both stale ours removed (incl. the removed-CIDR one)
+		t.Fatalf("want exactly 1 owned policy, got %d: %+v", ours, got)
 	}
 	for _, p := range got {
-		if isOwnedPolicy(p, prio, cidr) && p.Match != ownedPolicyMatch("10.16.112.153", cidr) {
+		if isOwnedPolicy(p, prio) && p.Match != ownedPolicyMatch("10.16.112.153", "192.0.2.0/24") {
 			t.Fatalf("owned policy has wrong match: %q", p.Match)
 		}
 	}
 }
 
-func TestMergePolicyRoutesStableAndEqual(t *testing.T) {
-	const cidr = "192.0.2.0/24"
+// Two return-path CIDRs → one owned allow route per (pod IP × CIDR), so a reply to
+// either VLAN takes the allow path (polyhedron #126 residual 2).
+func TestMergePolicyRoutesMultiCIDR(t *testing.T) {
+	cidrs := []string{"10.0.10.0/24", "10.0.20.0/24"}
 	const prio = 29500
-	a := mergePolicyRoutes(nil, []string{"10.16.0.9", "10.16.0.3"}, prio, cidr)
-	b := mergePolicyRoutes(nil, []string{"10.16.0.3", "10.16.0.9"}, prio, cidr)
+	got := mergePolicyRoutes(nil, []string{"10.16.1.7"}, prio, cidrs)
+	want := map[string]bool{
+		ownedPolicyMatch("10.16.1.7", "10.0.10.0/24"): false,
+		ownedPolicyMatch("10.16.1.7", "10.0.20.0/24"): false,
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 routes (1 pod × 2 CIDRs), got %d: %+v", len(got), got)
+	}
+	for _, p := range got {
+		if !isOwnedPolicy(p, prio) {
+			t.Fatalf("route not recognised as owned: %+v", p)
+		}
+		if _, ok := want[p.Match]; !ok {
+			t.Fatalf("unexpected match %q", p.Match)
+		}
+		want[p.Match] = true
+	}
+	for m, seen := range want {
+		if !seen {
+			t.Fatalf("missing expected route %q", m)
+		}
+	}
+}
+
+func TestMergePolicyRoutesStableAndEqual(t *testing.T) {
+	cidrs := []string{"192.0.2.0/24"}
+	const prio = 29500
+	a := mergePolicyRoutes(nil, []string{"10.16.0.9", "10.16.0.3"}, prio, cidrs)
+	b := mergePolicyRoutes(nil, []string{"10.16.0.3", "10.16.0.9"}, prio, cidrs)
 	if !policyRoutesEqual(a, b) {
 		t.Fatalf("merge not order-stable:\n a=%+v\n b=%+v", a, b)
 	}
 	// removing all wanted IPs clears our entries but keeps foreign ones
 	foreign := []PolicyRoute{{Priority: 10, Match: "x", Action: "reroute", NextHopIP: "1.2.3.4"}}
-	cleared := mergePolicyRoutes(append(foreign, a...), nil, prio, cidr)
+	cleared := mergePolicyRoutes(append(foreign, a...), nil, prio, cidrs)
 	if len(cleared) != 1 || cleared[0].Priority != 10 {
 		t.Fatalf("clearing should leave only the foreign route, got %+v", cleared)
 	}

@@ -17,12 +17,12 @@ import (
 )
 
 type config struct {
-	exposeAnno     string // Service annotation that opts a Service in ("true")
-	ipAnno         string // optional annotation requesting a specific EIP
-	assignedAnno   string // annotation we write back with the assigned EIP
-	externalSubnet string // kube-ovn external Subnet name (default "external")
-	lanCIDR        string // the LAN /24 the EIPs live on
-	defaultVPC     string // the default VPC router name (ovn-cluster)
+	exposeAnno     string   // Service annotation that opts a Service in ("true")
+	ipAnno         string   // optional annotation requesting a specific EIP
+	assignedAnno   string   // annotation we write back with the assigned EIP
+	externalSubnet string   // kube-ovn external Subnet name (default "external")
+	lanCIDRs       []string // the LAN subnets allowed to reach FIPs (return-path + netpol ingress); the EIP's own subnet first, plus any other client VLANs
+	defaultVPC     string   // the default VPC router name (ovn-cluster)
 	eipRange       ipRange
 	policyPriority int
 }
@@ -211,7 +211,7 @@ func (c *controller) ensureNetpol(ctx context.Context, rn, ns string, selector m
 	if exists {
 		return nil
 	}
-	return c.client.createLanNetpol(ctx, ns, rn, selector, c.cfg.lanCIDR)
+	return c.client.createLanNetpol(ctx, ns, rn, selector, c.cfg.lanCIDRs)
 }
 
 // gc removes the OvnEip/OvnFip pairs and NetworkPolicies we own whose Service is no
@@ -252,7 +252,7 @@ func (c *controller) reconcilePolicy(ctx context.Context, wantPodIPs []string) {
 		}
 		return
 	}
-	desired := mergePolicyRoutes(vpc.Spec.PolicyRoutes, wantPodIPs, c.cfg.policyPriority, c.cfg.lanCIDR)
+	desired := mergePolicyRoutes(vpc.Spec.PolicyRoutes, wantPodIPs, c.cfg.policyPriority, c.cfg.lanCIDRs)
 	if policyRoutesEqual(sortRoutes(vpc.Spec.PolicyRoutes), desired) {
 		return
 	}

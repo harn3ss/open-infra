@@ -301,10 +301,15 @@ if [ "$(yget networking.lanExpose.enabled)" = "true" ]; then
   LAN_EXPOSE_CIDR="$(yget networking.lanExpose.lanCIDR)"
   LAN_EXPOSE_RANGE="$(yget networking.lanExpose.eipRange)"
   LAN_EXPOSE_SUBNET="$(yget networking.lanExpose.externalSubnet)"; LAN_EXPOSE_SUBNET="${LAN_EXPOSE_SUBNET:-external}"
+  # returnPathCIDRs (comma-separated): the LAN subnets allowed to reach FIPs — the
+  # return-path VPC policyRoutes AND the per-service ingress netpol ipBlock. Lets clients
+  # on a VLAN other than the EIP's own subnet reach FIPs (polyhedron #126 residual 2).
+  # Optional: when empty the controller falls back to just LAN_CIDR (the EIP's subnet).
+  LAN_EXPOSE_RETURN="$(yget networking.lanExpose.returnPathCIDRs)"
   if [ -z "$LAN_EXPOSE_CIDR" ] || [ -z "$LAN_EXPOSE_RANGE" ]; then
     WARN "networking.lanExpose.enabled but lanCIDR/eipRange unset — controller will crashloop until set."
   fi
-  LOG "configuring lan-expose: EIP range $LAN_EXPOSE_RANGE on $LAN_EXPOSE_CIDR (subnet $LAN_EXPOSE_SUBNET)"
+  LOG "configuring lan-expose: EIP range $LAN_EXPOSE_RANGE on $LAN_EXPOSE_CIDR (subnet $LAN_EXPOSE_SUBNET)${LAN_EXPOSE_RETURN:+; return-path CIDRs $LAN_EXPOSE_RETURN}"
   if [ "$DRY_RUN" = 1 ]; then
     printf '  + apply ConfigMap lan-expose-config (EIP range %s)\n' "$LAN_EXPOSE_RANGE"
   else
@@ -314,6 +319,7 @@ kind: ConfigMap
 metadata: { name: lan-expose-config, namespace: kube-system }
 data:
   LAN_CIDR: "$LAN_EXPOSE_CIDR"
+  RETURN_PATH_CIDRS: "$LAN_EXPOSE_RETURN"
   EIP_RANGE: "$LAN_EXPOSE_RANGE"
   EXTERNAL_SUBNET: "$LAN_EXPOSE_SUBNET"
   DEFAULT_VPC: "ovn-cluster"

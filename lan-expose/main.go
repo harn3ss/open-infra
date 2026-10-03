@@ -7,8 +7,8 @@
 // or the VPC CR, so it never has to exec into OVN.
 //
 // Env: POLL_INTERVAL (s, default 15), EXPOSE_ANNOTATION, IP_ANNOTATION,
-// ASSIGNED_ANNOTATION, EXTERNAL_SUBNET, LAN_CIDR, EIP_RANGE, DEFAULT_VPC,
-// POLICY_PRIORITY.
+// ASSIGNED_ANNOTATION, EXTERNAL_SUBNET, LAN_CIDR, RETURN_PATH_CIDRS, EIP_RANGE,
+// DEFAULT_VPC, POLICY_PRIORITY.
 package main
 
 import (
@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -56,12 +57,29 @@ func main() {
 	if err != nil {
 		log.Fatalf("EIP_RANGE: %v", err)
 	}
+
+	// returnPathCIDRs: the LAN subnets allowed to reach FIPs — used both for the
+	// return-path VPC policyRoutes and the per-service ingress NetworkPolicy ipBlock.
+	// Defaults to just LAN_CIDR (the EIP's own subnet = pre-#126 behaviour). Set
+	// RETURN_PATH_CIDRS (comma-separated) to also admit other client VLANs so clients
+	// on a different VLAN than the EIP can reach FIPs (polyhedron #126 residual 2). The
+	// EIP's own subnet is always included first.
+	lanCIDRs := []string{lanCIDR}
+	seen := map[string]bool{lanCIDR: true}
+	for _, c := range strings.Split(os.Getenv("RETURN_PATH_CIDRS"), ",") {
+		c = strings.TrimSpace(c)
+		if c != "" && !seen[c] {
+			seen[c] = true
+			lanCIDRs = append(lanCIDRs, c)
+		}
+	}
+
 	cfg := config{
 		exposeAnno:     env("EXPOSE_ANNOTATION", "openinfra.dev/lan-expose"),
 		ipAnno:         env("IP_ANNOTATION", "openinfra.dev/lan-ip"),
 		assignedAnno:   env("ASSIGNED_ANNOTATION", "openinfra.dev/lan-ip-assigned"),
 		externalSubnet: env("EXTERNAL_SUBNET", "external"),
-		lanCIDR:        lanCIDR,
+		lanCIDRs:       lanCIDRs,
 		defaultVPC:     env("DEFAULT_VPC", "ovn-cluster"),
 		eipRange:       rng,
 		policyPriority: envInt("POLICY_PRIORITY", 29500),
@@ -79,8 +97,8 @@ func main() {
 	ticker := time.NewTicker(time.Duration(poll) * time.Second)
 	defer ticker.Stop()
 
-	log.Printf("lan-expose: watching Services[%s=true] cluster-wide; EIP range %s on subnet %q; polling every %ds",
-		cfg.exposeAnno, eipRangeStr, cfg.externalSubnet, poll)
+	log.Printf("lan-expose: watching Services[%s=true] cluster-wide; EIP range %s on subnet %q; return-path CIDRs %v; polling every %ds",
+		cfg.exposeAnno, eipRangeStr, cfg.externalSubnet, cfg.lanCIDRs, poll)
 	ctrl.reconcile(ctx)
 	for {
 		select {
