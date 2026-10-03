@@ -124,6 +124,24 @@ func TestMergePolicyRoutesStableAndEqual(t *testing.T) {
 	}
 }
 
+func TestSameCIDRSet(t *testing.T) {
+	cases := []struct {
+		a, b []string
+		want bool
+	}{
+		{[]string{"10.0.10.0/24", "10.0.20.0/24"}, []string{"10.0.20.0/24", "10.0.10.0/24"}, true}, // order-insensitive
+		{[]string{"10.0.10.0/24"}, []string{"10.0.10.0/24", "10.0.20.0/24"}, false},                // drift: CIDR added
+		{[]string{"10.0.10.0/24", "10.0.20.0/24"}, []string{"10.0.10.0/24"}, false},                // drift: CIDR removed
+		{[]string{"10.0.10.0/24", "", "10.0.10.0/24"}, []string{"10.0.10.0/24"}, true},             // blanks + dups ignored
+		{nil, nil, true},
+	}
+	for i, c := range cases {
+		if got := sameCIDRSet(c.a, c.b); got != c.want {
+			t.Errorf("case %d: sameCIDRSet(%v,%v)=%v want %v", i, c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestResourceName(t *testing.T) {
 	if got := resourceName("default", "otf-phoneformat"); got != "lanexpose-default-otf-phoneformat" {
 		t.Fatalf("resourceName = %q", got)
