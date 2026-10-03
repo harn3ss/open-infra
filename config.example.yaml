@@ -78,6 +78,12 @@ networking:
     lanCIDR: "192.0.2.0/24"                 # your LAN subnet (the EIPs live here)
     eipRange: "192.0.2.241-192.0.2.249"     # EIP pool for FIPs (disjoint from metallbPool)
     externalSubnet: external                # the kube-ovn external Subnet name
+    # Optional, comma-separated. The LAN subnets allowed to reach FIPs — used for BOTH
+    # the return-path VPC policyRoutes and the per-service ingress NetworkPolicy ipBlock.
+    # Defaults to just lanCIDR (the EIP's own subnet). Add other client VLANs here so a
+    # client on a different VLAN than the EIP can reach FIPs (otherwise the subnet's
+    # natOutgoing hijacks the reply). Include lanCIDR plus each client VLAN, e.g.:
+    # returnPathCIDRs: "192.0.2.0/24,198.51.100.0/24"
 
     # The kube-ovn external gateway. A FIP is a *distributed* NAT whose ARP
     # responder lives on the exposed pod's own chassis, so exactly one node bridges
