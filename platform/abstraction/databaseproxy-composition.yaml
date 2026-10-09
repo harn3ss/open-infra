@@ -65,6 +65,7 @@ spec:
             {{- $backend := printf "%s-%s.%s.svc.cluster.local:1433" $target $engine $ns }}
             {{- $tls := $spec.tls | default dict }}
             {{- $tlsOn := $tls.terminate | default false }}
+            {{- $txMux := $spec.transactionMultiplexing | default false }}
             ---
             # The pooler Deployment.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -99,6 +100,9 @@ spec:
                               - -metrics=:9114
                               - -pool-max={{ $poolMax }}
                               - -acquire-timeout-ms={{ $acquireMs }}
+                              {{- if $txMux }}
+                              - -tx-multiplex
+                              {{- end }}
                               {{- if $tlsOn }}
                               - -tls-cert=/tls/tls.crt
                               - -tls-key=/tls/tls.key
