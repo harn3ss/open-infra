@@ -38,9 +38,45 @@ spec:
           properties:
             spec:
               type: object
-              required: [image]
+              # Exactly one of spec.image (BYO container) or spec.code (a handler on a managed
+              # runtime base image) — enforced in the composition. image is no longer required at
+              # the schema level so a code-only Function validates; existing image Functions are
+              # unaffected.
               properties:
-                image: { type: string, description: "Container image that serves HTTP (CI replaces the tag)" }
+                image: { type: string, description: "Container image that serves HTTP (CI replaces the tag). Use this OR spec.code." }
+                code:
+                  type: object
+                  description: >-
+                    Run handler CODE on a managed runtime base image instead of a BYO container (the
+                    Lambda Zip+handler model). open-infra injects the handler into a first-party
+                    runtime image whose shim serves it over HTTP. Use this OR spec.image.
+                  required: [runtime, handler]
+                  properties:
+                    runtime:
+                      type: string
+                      enum: [python3.12]
+                      description: "Managed runtime for the handler. v1: python3.12 (more to follow)."
+                    handler:
+                      type: string
+                      description: "Entrypoint '<module>.<function>', e.g. 'app.handler' -> function handler in app.py."
+                    source:
+                      type: object
+                      description: >-
+                        Where the handler code lives. Exactly one of configMap (inline source files,
+                        for small handlers) or bucket+key (a .zip object the runtime unpacks at start).
+                      properties:
+                        configMap:
+                          type: string
+                          description: "Name of a ConfigMap whose keys are the handler source files (mounted read-only at /var/task)."
+                        bucket:
+                          type: string
+                          description: "MinIO/S3 bucket holding the code .zip (an init-container fetches + unzips it into /var/task)."
+                        key:
+                          type: string
+                          description: "Object key of the .zip within the bucket."
+                        secret:
+                          type: string
+                          description: "Secret with S3 creds for the bucket (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL / BUCKET) — e.g. an Application bucket's connection secret."
                 port:  { type: integer, default: 8080, description: "Container port the function listens on" }
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
                 memory:  { type: string, description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob. Set as both request and limit. Unset = cluster default." }

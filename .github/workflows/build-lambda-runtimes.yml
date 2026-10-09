@@ -1,0 +1,97 @@
+# Build open-infra's first-party Lambda runtime base images and push them to GHCR.
+#
+# A kind: Function with spec.code runs a user's HANDLER (a Zip/source) on one of these
+# prebuilt runtime images: the image carries the runtime + bootstrap.py (the shim that
+# serves handler(event, context) over HTTP), and the handler code is injected at runtime
+# (a ConfigMap mount, or an in-shim fetch+unzip of the code bucket object). Same signed +
+# scanned supply-chain treatment as the console / babelfish images. v1: python3.12.
+name: build-lambda-runtimes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "lambda-runtime/**"
+      - ".github/workflows/build-lambda-runtimes.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # cosign keyless signing (Sigstore OIDC)
+  security-events: write # upload Trivy results to the Security tab
+
+concurrency:
+  group: build-lambda-runtimes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Gate: don't build/push unless the test suite passes on this ref.
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runtime: [python]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/open-infra-lambda-${{ matrix.runtime }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: lambda-runtime/${{ matrix.runtime }}
+          file: lambda-runtime/${{ matrix.runtime }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy vulnerability scan (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-lambda-${{ matrix.runtime }}@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: "true"
+          limit-severities-for-sarif: "true"
+        env:
+          TRIVY_CACHE_DIR: .trivycache
+
+      - name: Upload Trivy results to the Security tab
+        uses: github/codeql-action/upload-sarif@v4.38.1
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-lambda-${{ matrix.runtime }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless, Sigstore)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/open-infra-lambda-${{ matrix.runtime }}@${{ steps.build.outputs.digest }}

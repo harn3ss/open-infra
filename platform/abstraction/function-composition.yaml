@@ -35,6 +35,20 @@ spec:
             {{- /* expose defaults true; hasKey check (Sprig default treats false
                    as empty). false -> cluster-local (in-cluster only). */}}
             {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
+            {{- /* image | code: EXACTLY one. code => run a handler on a managed runtime base image. */}}
+            {{- $code := $spec.code }}
+            {{- if and (not $spec.image) (not $code) }}{{- fail "kind: Function requires exactly one of spec.image or spec.code (neither set)" }}{{- end }}
+            {{- if and $spec.image $code }}{{- fail "kind: Function: set spec.image OR spec.code, not both" }}{{- end }}
+            {{- $img := $spec.image }}
+            {{- $csrc := dict }}
+            {{- if $code }}
+            {{-   $csrc = $code.source | default dict }}
+            {{-   if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function: unknown spec.code.runtime %q" $code.runtime) }}{{- end }}
+            {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "kind: Function spec.code.source: set configMap OR bucket+key, not both" }}{{- end }}
+            {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "kind: Function spec.code.source: set configMap (inline) or bucket+key (zip)" }}{{- end }}
+            {{- end }}
             ---
             # --- Knative Service: the scale-to-zero "Function" ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -81,10 +95,18 @@ spec:
                         nodeSelector: { openinfra.dev/gpu: "true" }
                         {{- end }}
                         containers:
-                          - image: {{ $spec.image }}
+                          - image: {{ $img }}
                             ports: [ { containerPort: {{ $spec.port | default 8080 }} } ]
-                            {{- if or $spec.env $spec.queues }}
+                            {{- if or $code $spec.env $spec.queues }}
                             env:
+                            {{- if $code }}
+                              - { name: OPENINFRA_HANDLER, value: "{{ $code.handler }}" }
+                              - { name: OPENINFRA_FUNCTION_NAME, value: "{{ $name }}" }
+                              {{- if $csrc.bucket }}
+                              - { name: OPENINFRA_CODE_BUCKET, value: "{{ $csrc.bucket }}" }
+                              - { name: OPENINFRA_CODE_KEY, value: "{{ $csrc.key }}" }
+                              {{- end }}
+                            {{- end }}
                             {{- range $spec.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
                             {{- end }}
@@ -93,11 +115,18 @@ spec:
                               - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
                             {{- end }}
                             {{- end }}
-                            {{- if $spec.secrets }}
+                            {{- if or $spec.secrets (and $code $csrc.bucket $csrc.secret) }}
                             envFrom:
+                            {{- if and $code $csrc.bucket $csrc.secret }}
+                              - secretRef: { name: {{ $csrc.secret }} }
+                            {{- end }}
                             {{- range $spec.secrets }}
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
+                            {{- end }}
+                            {{- if and $code $csrc.configMap }}
+                            volumeMounts:
+                              - { name: openinfra-code, mountPath: /var/task, readOnly: true }
                             {{- end }}
                             {{- if or $spec.memory (gt (int $gpu) 0) }}
                             # memory → guaranteed container memory (the AWS Lambda memory knob); gpu → device limit.
@@ -113,6 +142,11 @@ spec:
                                 nvidia.com/gpu: {{ $gpu }}
                                 {{- end }}
                             {{- end }}
+                        {{- if and $code $csrc.configMap }}
+                        volumes:
+                          - name: openinfra-code
+                            configMap: { name: {{ $csrc.configMap }} }
+                        {{- end }}
             {{- if $spec.trigger }}
             {{- $tstream := $spec.trigger.stream }}
             {{- $tsubject := $spec.trigger.subject | default (printf "cdc.%s.>" $tstream) }}
