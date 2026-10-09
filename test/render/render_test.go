@@ -470,6 +470,87 @@ func TestFunction_MemoryAndTimeout(t *testing.T) {
 	}
 }
 
+// kind: Function spec.code — the Lambda Zip/handler ingestion model: a handler shipped
+// as code (inline ConfigMap, or a zip in a bucket) runs on the managed python runtime
+// base image. Covers both sources and the fail-loud image|code / source guards.
+func TestFunction_Code(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	ctx := func(spec map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{"labels": map[string]any{
+				"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "team-a"}},
+		}}}}
+	}
+
+	// Inline (ConfigMap) source: handler mounted at /var/task on the python runtime image.
+	t.Run("configMap", func(t *testing.T) {
+		out := render(t, tmpl, ctx(map[string]any{
+			"expose": false,
+			"code": map[string]any{"runtime": "python3.12", "handler": "app.handler",
+				"source": map[string]any{"configMap": "fn-code"}},
+		}))
+		for _, want := range []string{
+			"image: ghcr.io/harn3ss/open-infra-lambda-python:latest",
+			"name: OPENINFRA_HANDLER", `value: "app.handler"`,
+			"name: OPENINFRA_FUNCTION_NAME",
+			"mountPath: /var/task", "name: openinfra-code",
+			"configMap: { name: fn-code }",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("configMap-source render missing %q; got:\n%s", want, out)
+			}
+		}
+		// Inline source must NOT inject a code-bucket env.
+		if strings.Contains(out, "OPENINFRA_CODE_BUCKET") {
+			t.Errorf("configMap source must not set a code bucket:\n%s", out)
+		}
+	})
+
+	// Zip (bucket+key) source: the shim fetches+unzips the object; creds via the source secret.
+	t.Run("bucket", func(t *testing.T) {
+		out := render(t, tmpl, ctx(map[string]any{
+			"code": map[string]any{"runtime": "python3.12", "handler": "main.handle",
+				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"}},
+		}))
+		for _, want := range []string{
+			"name: OPENINFRA_CODE_BUCKET", `value: "fn-artifacts"`,
+			"name: OPENINFRA_CODE_KEY", `value: "f.zip"`,
+			"secretRef: { name: fn-s3 }",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("bucket-source render missing %q; got:\n%s", want, out)
+			}
+		}
+		// Zip source mounts no code ConfigMap volume.
+		if strings.Contains(out, "mountPath: /var/task") {
+			t.Errorf("bucket source must not mount a code configMap:\n%s", out)
+		}
+	})
+
+	// Fail-loud guards: each malformed spec must abort the render rather than mis-emit.
+	for _, bad := range []struct {
+		name string
+		spec map[string]any
+	}{
+		{"neither", map[string]any{}},
+		{"both", map[string]any{"image": "x", "code": map[string]any{"runtime": "python3.12",
+			"handler": "a.b", "source": map[string]any{"configMap": "c"}}}},
+		{"bad-runtime", map[string]any{"code": map[string]any{"runtime": "ruby",
+			"handler": "a.b", "source": map[string]any{"configMap": "c"}}}},
+		{"both-sources", map[string]any{"code": map[string]any{"runtime": "python3.12",
+			"handler": "a.b", "source": map[string]any{"configMap": "c", "bucket": "b"}}}},
+		{"no-source", map[string]any{"code": map[string]any{"runtime": "python3.12",
+			"handler": "a.b", "source": map[string]any{}}}},
+	} {
+		t.Run("guard/"+bad.name, func(t *testing.T) {
+			if err := renderErr(tmpl, ctx(bad.spec)); err == nil {
+				t.Errorf("expected the %s guard to abort the render, but it succeeded", bad.name)
+			}
+		})
+	}
+}
+
 // A resolver with a caching block renders its ttl + keys into config.json.
 func TestGraphQLApi_ResolverCaching(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
@@ -1236,6 +1317,16 @@ func render(t *testing.T, tmplStr string, ctx any) string {
 	return buf.String()
 }
 
+// renderErr parses + executes like render but returns the execute error instead of
+// failing the test — for asserting a composition's fail-loud guards actually abort.
+func renderErr(tmplStr string, ctx any) error {
+	tmpl, err := template.New("comp").Funcs(sprigLite()).Parse(tmplStr)
+	if err != nil {
+		return err
+	}
+	return tmpl.Execute(&bytes.Buffer{}, ctx)
+}
+
 // extractInlineTemplate pulls the `template: |` block-scalar body out of the
 // composition YAML and dedents it, reproducing the exact string the go-templating
 // function receives — no YAML dependency needed.
@@ -1302,6 +1393,9 @@ func grepCtx(s, needle string) string {
 // matching Sprig semantics (piped last-arg convention).
 func sprigLite() template.FuncMap {
 	return template.FuncMap{
+		// sprig: abort the render with a message (function-composition uses it for
+		// the fail-loud image|code and source guards). Returning an error halts Execute.
+		"fail": func(msg string) (string, error) { return "", fmt.Errorf("%s", msg) },
 		"default": func(d any, given ...any) any {
 			if len(given) == 0 || isEmpty(given[0]) {
 				return d

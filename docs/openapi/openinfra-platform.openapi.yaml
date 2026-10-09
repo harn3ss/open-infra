@@ -4745,6 +4745,14 @@ components:
               default: 1
               minimum: 1
               description: Proxy Deployment replicas (each keeps its own pool; size the cap accordingly).
+            transactionMultiplexing:
+              type: boolean
+              default: false
+              description: 'Multiplex clients onto fewer backend connections at TRANSACTION granularity (RDS-Proxy-style;
+                the tds-proxy -tx-multiplex path). Off by default: a borrowed backend is returned only when the client left
+                no unsharable state (connection-level reuse). On: autocommit statements return the backend per-transaction
+                so more clients share the bounded pool; a client that opens unsharable state (explicit txn, temp table, prepared
+                handle, cursor) is pinned to a dedicated backend for the rest of its session.'
             tls:
               type: object
               description: "Terminate client TLS at the proxy (issue #6). Off by default. When enabled the proxy presents\
@@ -5183,12 +5191,45 @@ components:
           $ref: '#/components/schemas/ObjectMeta'
         spec:
           type: object
-          required:
-          - image
           properties:
             image:
               type: string
-              description: Container image that serves HTTP (CI replaces the tag)
+              description: Container image that serves HTTP (CI replaces the tag). Use this OR spec.code.
+            code:
+              type: object
+              description: Run handler CODE on a managed runtime base image instead of a BYO container (the Lambda Zip+handler
+                model). open-infra injects the handler into a first-party runtime image whose shim serves it over HTTP. Use
+                this OR spec.image.
+              required:
+              - runtime
+              - handler
+              properties:
+                runtime:
+                  type: string
+                  enum:
+                  - python3.12
+                  description: 'Managed runtime for the handler. v1: python3.12 (more to follow).'
+                handler:
+                  type: string
+                  description: Entrypoint '<module>.<function>', e.g. 'app.handler' -> function handler in app.py.
+                source:
+                  type: object
+                  description: Where the handler code lives. Exactly one of configMap (inline source files, for small handlers)
+                    or bucket+key (a .zip object the runtime unpacks at start).
+                  properties:
+                    configMap:
+                      type: string
+                      description: Name of a ConfigMap whose keys are the handler source files (mounted read-only at /var/task).
+                    bucket:
+                      type: string
+                      description: MinIO/S3 bucket holding the code .zip (an init-container fetches + unzips it into /var/task).
+                    key:
+                      type: string
+                      description: Object key of the .zip within the bucket.
+                    secret:
+                      type: string
+                      description: "Secret with S3 creds for the bucket (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL\
+                        \ / BUCKET) \u2014 e.g. an Application bucket's connection secret."
             port:
               type: integer
               default: 8080
