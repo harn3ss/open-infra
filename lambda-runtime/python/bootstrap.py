@@ -69,8 +69,15 @@ def _fetch_code():
         import zipfile
 
         import boto3  # lazy: only the bucket source needs it
+        from botocore.config import Config
 
-        s3 = boto3.client("s3", endpoint_url=os.environ.get("AWS_ENDPOINT_URL") or None)
+        endpoint = os.environ.get("AWS_ENDPOINT_URL") or None
+        # A custom endpoint (MinIO / any S3-compatible gateway) needs PATH-style
+        # addressing; boto3's default "virtual-hosted" style resolves the bucket as a
+        # DNS subdomain of the endpoint (bucket.minio.minio.svc…), which does not exist
+        # in-cluster. On real AWS (no endpoint_url) the default is left untouched.
+        cfg = Config(s3={"addressing_style": "path"}) if endpoint else None
+        s3 = boto3.client("s3", endpoint_url=endpoint, config=cfg)
         body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
         os.makedirs(TASK_DIR, exist_ok=True)
         with zipfile.ZipFile(io.BytesIO(body)) as z:
