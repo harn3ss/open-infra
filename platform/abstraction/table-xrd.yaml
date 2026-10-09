@@ -10,9 +10,11 @@
 # schema is IMMUTABLE, exactly as in DynamoDB — you cannot change a table's hash/range key after
 # it is created; delete and recreate instead.
 #
-# NOT modelled (blocked at the CFN translator, absent here): read/write capacity, secondary
-# indexes (the store scans; it has no GSIs), streams, per-table SSE. Reach for a real managed
-# database (kind: Application.database) when you need those.
+# GLOBAL secondary indexes AND TTL ARE modelled — spec.globalSecondaryIndexes (backed by real
+# Mongo indexes) + spec.ttlAttribute (shim reaper). NOT modelled: read/write capacity (billingMode
+# is advisory CFN-round-trip metadata only — the FerretDB store has no capacity model), LOCAL
+# secondary indexes, streams, PITR/continuous-backup, per-table SSE. Reach for a real managed
+# database (kind: Application.database) when you need the rest.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
