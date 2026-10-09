@@ -80,6 +80,16 @@ spec:
                   default: 1
                   minimum: 1
                   description: Proxy Deployment replicas (each keeps its own pool; size the cap accordingly).
+                transactionMultiplexing:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Multiplex clients onto fewer backend connections at TRANSACTION granularity
+                    (RDS-Proxy-style; the tds-proxy -tx-multiplex path). Off by default: a borrowed
+                    backend is returned only when the client left no unsharable state (connection-level
+                    reuse). On: autocommit statements return the backend per-transaction so more clients
+                    share the bounded pool; a client that opens unsharable state (explicit txn, temp table,
+                    prepared handle, cursor) is pinned to a dedicated backend for the rest of its session.
                 tls:
                   type: object
                   description: >-
