@@ -82,6 +82,20 @@ func TestBuildDynamoRecoveryCluster(t *testing.T) {
 	}
 }
 
+func TestBuildDynamoRecoveryCluster_LatestOmitsRecoveryTarget(t *testing.T) {
+	// An empty targetTime means "recover to the latest restorable point" → recoveryTarget is OMITTED
+	// (CNPG recovers to the end of the WAL archive). A present-but-empty recoveryTarget would set an
+	// unparseable recovery_target_time, which this PostgreSQL rejects.
+	c := buildDynamoRecoveryCluster("ns", "dynamo-docdb", "dynamo-docdb-store", "dynamo-restore-l", "", "src", dynamoClusterSpec{})
+	rec := mapAt(t, c, "spec", "bootstrap", "recovery")
+	if rec["source"] != "dynamo-docdb" {
+		t.Errorf("recovery.source = %v", rec["source"])
+	}
+	if _, set := rec["recoveryTarget"]; set {
+		t.Errorf("recoveryTarget must be omitted for a latest-point recovery, got %v", rec["recoveryTarget"])
+	}
+}
+
 func TestBuildDynamoRecoveryCluster_StorageDefaults(t *testing.T) {
 	// A source with no storage size/class gets sane defaults rather than an empty (invalid) spec.
 	c := buildDynamoRecoveryCluster("ns", "dynamo-docdb", "dynamo-docdb-store", "dynamo-restore-x", "t", "src", dynamoClusterSpec{})
@@ -196,6 +210,11 @@ func TestParseRestoreArgs(t *testing.T) {
 	if _, err := parseRestoreArgs([]string{"--source", "a"}); err == nil {
 		t.Errorf("expected an error when required flags are missing")
 	}
+	// target-time is OPTIONAL (empty = latest restorable point).
+	lp, err := parseRestoreArgs([]string{"--source", "a", "--target", "b", "--restore-id", "id1", "--namespace", "ns"})
+	if err != nil || lp.targetTime != "" {
+		t.Errorf("target-time should be optional (latest); got targetTime=%q err=%v", lp.targetTime, err)
+	}
 }
 
 func TestSwapMongoHost(t *testing.T) {
@@ -216,33 +235,18 @@ func TestResolveRestoreTargetTime(t *testing.T) {
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 	window := 7 * 24 * time.Hour
 
-	// UseLatestRestorableTime -> now.
-	tt, rfc, err := resolveRestoreTargetTime(map[string]any{"UseLatestRestorableTime": true}, now, window)
-	if err != nil || !tt.Equal(now) || rfc != "2026-10-10T12:00:00Z" {
-		t.Fatalf("latest: %v %q %v", tt, rfc, err)
+	// UseLatestRestorableTime -> "" (recover to the latest restorable point; CNPG omits recoveryTarget).
+	tgt, err := resolveRestoreTargetTime(map[string]any{"UseLatestRestorableTime": true}, now, window)
+	if err != nil || tgt != "" {
+		t.Fatalf("latest: want (\"\", nil) got (%q, %v)", tgt, err)
 	}
 
-	// A valid epoch within the window.
-	within := float64(now.Add(-24 * time.Hour).Unix())
-	_, rfc, err = resolveRestoreTargetTime(map[string]any{"RestoreDateTime": within}, now, window)
-	if err != nil || rfc != "2026-10-09T12:00:00Z" {
-		t.Fatalf("within: %q %v", rfc, err)
-	}
-
-	// In the future -> error.
-	if _, _, err := resolveRestoreTargetTime(map[string]any{"RestoreDateTime": float64(now.Add(time.Hour).Unix())}, now, window); err == nil {
-		t.Errorf("future time should be rejected")
-	}
-	// Older than the window -> error.
-	if _, _, err := resolveRestoreTargetTime(map[string]any{"RestoreDateTime": float64(now.Add(-8 * 24 * time.Hour).Unix())}, now, window); err == nil {
-		t.Errorf("out-of-window time should be rejected")
+	// A specific RestoreDateTime is REFUSED today (not faked) — the recovery_target_time GUC issue.
+	if _, err := resolveRestoreTargetTime(map[string]any{"RestoreDateTime": float64(now.Add(-24 * time.Hour).Unix())}, now, window); err == nil {
+		t.Errorf("a specific RestoreDateTime must be refused until the recovery_target_time path is fixed")
 	}
 	// Neither field -> error.
-	if _, _, err := resolveRestoreTargetTime(map[string]any{}, now, window); err == nil {
+	if _, err := resolveRestoreTargetTime(map[string]any{}, now, window); err == nil {
 		t.Errorf("missing time fields should be rejected")
-	}
-	// Wrong type -> error.
-	if _, _, err := resolveRestoreTargetTime(map[string]any{"RestoreDateTime": "nope"}, now, window); err == nil {
-		t.Errorf("non-numeric RestoreDateTime should be rejected")
 	}
 }

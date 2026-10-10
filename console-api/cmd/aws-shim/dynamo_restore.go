@@ -63,14 +63,15 @@ func parseRestoreArgs(args []string) (restoreParams, error) {
 	var p restoreParams
 	fs.StringVar(&p.source, "source", "", "source table name")
 	fs.StringVar(&p.target, "target", "", "target table name")
-	fs.StringVar(&p.targetTime, "target-time", "", "RFC3339 recovery target time")
+	fs.StringVar(&p.targetTime, "target-time", "", "recovery target time (empty = latest restorable point)")
 	fs.StringVar(&p.restoreID, "restore-id", "", "unique restore id")
 	fs.StringVar(&p.namespace, "namespace", "", "DynamoDB backend namespace")
 	if err := fs.Parse(args); err != nil {
 		return p, err
 	}
-	if p.source == "" || p.target == "" || p.targetTime == "" || p.restoreID == "" || p.namespace == "" {
-		return p, errors.New("restore-pitr requires --source --target --target-time --restore-id --namespace")
+	// target-time is optional: empty means recover to the latest restorable point.
+	if p.source == "" || p.target == "" || p.restoreID == "" || p.namespace == "" {
+		return p, errors.New("restore-pitr requires --source --target --restore-id --namespace")
 	}
 	return p, nil
 }
@@ -213,6 +214,17 @@ type dynamoClusterSpec struct {
 	} `json:"spec"`
 }
 
+// recoveryBootstrap builds the bootstrap.recovery block. With an empty targetTime it recovers to the
+// LATEST available WAL (no recoveryTarget); with a specific targetTime it sets recoveryTarget.targetTime
+// (kept for when the recovery_target_time GUC incompatibility is resolved — see buildDynamoRecoveryCluster).
+func recoveryBootstrap(src, targetTime string) map[string]any {
+	rec := map[string]any{"source": src}
+	if targetTime != "" {
+		rec["recoveryTarget"] = map[string]any{"targetTime": targetTime}
+	}
+	return rec
+}
+
 func cnpgClusterAbsPath(ns, name string) string {
 	p := "/apis/postgresql.cnpg.io/v1/namespaces/" + ns + "/clusters"
 	if name != "" {
@@ -257,12 +269,13 @@ func buildDynamoRecoveryCluster(ns, src, store, newName, targetTime, srcTable st
 				"size":         strOrDefault(s.Spec.Storage.Size, "10Gi"),
 				"storageClass": strOrDefault(s.Spec.Storage.StorageClass, "local-path"),
 			},
-			// Replay the source's archive to the requested instant.
+			// Replay the source's archive. An empty targetTime recovers to the LATEST available WAL (the
+			// "latest restorable point") by OMITTING recoveryTarget — CNPG canonicalizes a recoveryTarget
+			// targetTime to a trailing-"Z" recovery_target_time that this PostgreSQL's GUC parser rejects,
+			// so a specific past instant is a tracked follow-on; the front door only accepts
+			// UseLatestRestorableTime today.
 			"bootstrap": map[string]any{
-				"recovery": map[string]any{
-					"source":         src,
-					"recoveryTarget": map[string]any{"targetTime": targetTime},
-				},
+				"recovery": recoveryBootstrap(src, targetTime),
 			},
 			// Where to read the archive from: the source's barman ObjectStore, via the CNPG-I plugin.
 			"externalClusters": []any{
