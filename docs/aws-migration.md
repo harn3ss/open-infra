@@ -47,29 +47,21 @@ table covers it; everything else is either re-expressed as kinds/Terraform by ha
 loudly. The value is migration-in and dev-stack standup from templates you already have — not
 CloudFormation-as-a-service.
 
-## Amplify hosting + build jobs
-
-**Decision: an Amplify-equivalent frontend-hosting-and-build story is out of scope for
-open-infra, and is documented as deployer-external.**
+## Amplify hosting + build
 
 Amplify bundles three things: static frontend hosting (CDN + TLS for a built SPA), a managed
-build/CI pipeline (git push → build → deploy), and a backend-provisioning layer. open-infra is
-the **backend/infrastructure** layer — it provisions the APIs, functions, data, and identity a
-frontend talks to. It deliberately does not try to be a static-site host or a frontend CI system:
+build/CI pipeline (git push → build → deploy), and a backend-provisioning layer.
 
-- **Static frontend hosting** (a built `dist/` behind a CDN) is a solved, commoditized problem
-  that an adopter's existing tooling handles better — their own object storage + CDN (including
-  the `Application` `storage.buckets` for the artifacts if they want them on-cluster), or any
-  static host. open-infra does not ship a managed CDN/edge product to compete with that.
-- **The build pipeline** (git → build → deploy) is the adopter's CI (GitHub Actions, GitLab CI,
-  etc.), which builds the SPA and pushes it wherever they host it, and applies open-infra kinds
-  (or `cfn` / Terraform) for the backend. There is no open-infra-managed build service, and none
-  is planned.
+- **Static frontend hosting** is ported: **`kind: StaticSite`** serves a built `dist/` from MinIO
+  with an SPA fallback and TLS (see [static-sites.md](static-sites.md)).
+- **The managed build pipeline** (git → build → deploy) is a **decided build** (git repo + build
+  command → sandboxed build Job → publish the output to the StaticSite bucket, on push). Until it
+  lands, the build half is the adopter's own CI pushing artifacts to the StaticSite bucket.
+- **Backend provisioning** is the core of open-infra — the APIs, functions, data, and identity the
+  frontend talks to, expressed as open-infra kinds (or via `cfn`/Terraform where the template maps).
 
-So a Cognito+AppSync+DynamoDB app migrating in would: express its **backend** as open-infra kinds
-(or via `cfn` where the template maps), and keep its **frontend hosting + build** on its own
-static-hosting + CI. Nothing here implies Amplify parity; the frontend-hosting half is explicitly
-not an open-infra responsibility.
+So a Cognito+AppSync+DynamoDB+Amplify app migrating in expresses its backend as open-infra kinds and
+hosts its frontend on `StaticSite`; the git-push-to-build step is the one piece still being built.
 
 ## Terraform (via open-transform): the neutral-resource mapping
 
@@ -90,6 +82,22 @@ The point of the disposition is that a report of "untranslatable" should carry t
 next step* — "map to `kind: Role`," "model isolation with Security Groups," — rather than a
 bare "unsupported." Mapping the neutral `role`/`queue` classes to these targets is
 open-transform's job, not the platform's.
+
+## Declared non-goals (boundary decisions)
+
+Some AWS services are **deliberately out of scope** — not unfinished work. Where an estate depends
+on one, the honest answer is the boundary + the substitute, not a half-built lookalike:
+
+| AWS service | Disposition | Substitute / rationale |
+|---|---|---|
+| **Route 53** (authoritative DNS) | **Non-goal** | DNS stays external/BYO (registrar / Cloudflare / sslip.io). A single cluster can't mirror globally-anycast authoritative DNS; the platform doesn't try. |
+| **GuardDuty** (threat detection) | **Non-goal** | The raw signals are present — the API-server audit log in Loki, `kind: FlowLog`, DNS — for a **BYO SIEM**. The platform ships no managed detection/ML layer. |
+| **Organizations** (multi-account) | **Non-goal** | Tenancy is **namespaces + RBAC + Cedar**, not an account hierarchy. Mapping: namespace ≈ account, a namespace subtree ≈ an OU, a Cedar/RBAC deny-ceiling ≈ an SCP. No account layer is built. |
+| **SES managed deliverability** (DKIM/SPF/DMARC, reputation, suppression) | **Non-goal** | `kind: EmailSender` sends SES-shaped mail over a relay; deliverability (which needs DNS control, itself BYO) stays the operator's responsibility on their relay + DNS. |
+| **Babelfish HA** (SQL-Server-compatible engine) | **Experimental, no HA** | Single-instance StatefulSet on Longhorn with start/stop + snapshot/restore (durability = Longhorn + Velero). It is not under CloudNativePG, so streaming-replication HA would mean a re-platform — out of scope while the engine is experimental. |
+
+These are decisions, not gaps: revisit the boundary (as with the CNI/VPC and API Gateway calls)
+if the estate's dependence proves load-bearing enough to justify crossing it.
 
 ## What still blocks a full AppSync-app migration
 
