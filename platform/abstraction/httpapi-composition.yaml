@@ -125,6 +125,11 @@ spec:
                       {{-   range $meth := $route.methods }}{{- $mm = append $mm (printf "Method(`%s`)" $meth) }}{{- end }}
                       {{-   $m = printf "%s && (%s)" $m (join " || " $mm) }}
                       {{- end }}
+                      {{- /* Request validation (required params): the route matches only when the
+                             required headers/query params are present, so a request missing them never
+                             reaches the backend (the API Gateway required-parameter validator). */}}
+                      {{- range $h := ($route.requiredHeaders | default list) }}{{- $m = printf "%s && HeaderRegexp(`%s`, `.+`)" $m $h }}{{- end }}
+                      {{- range $q := ($route.requiredQueryParams | default list) }}{{- $m = printf "%s && QueryRegexp(`%s`, `.+`)" $m $q }}{{- end }}
                       - kind: Rule
                         match: {{ $m | quote }}
                         services:
