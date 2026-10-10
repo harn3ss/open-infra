@@ -449,9 +449,14 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 			return
 		}
 		defer resp.Body.Close()
-		fnOut, _ := io.ReadAll(io.LimitReader(resp.Body, 6<<20))
-		h.logger.Info("apigw v1 invoke", "api", apiID, "stage", stage, "method", r.Method, "path", routePath, "integration", "AWS_PROXY", "function", integ.URI)
-		writeProxyResponse(w, pfv, resp.StatusCode, fnOut, requestID)
+		h.logger.Info("apigw v1 invoke", "api", apiID, "stage", stage, "method", r.Method, "path", routePath, "integration", "AWS_PROXY", "function", integ.URI, "pfv", pfv)
+		// open-infra's Lambda runtime ALREADY translates a handler's {statusCode,headers,body} proxy
+		// response into the HTTP response at the Function URL (see lambda-runtime/*/bootstrap), exactly
+		// as the Lambda doorway returns it verbatim — so the Function URL hands back the already-unwrapped
+		// HTTP response. Pass it through rather than re-applying the AWS proxy-response translation (which
+		// would see no {statusCode} wrapper and 502 under the 1.0 rule). The handler still receives the
+		// faithful proxy event we built above.
+		h.copyResponse(w, resp, requestID)
 	case "HTTP", "HTTP_PROXY":
 		h.proxyHTTP(w, r, integ, routePath, reqBody, requestID)
 	case "MOCK":
@@ -493,6 +498,13 @@ func (h *apigwV1Handler) proxyHTTP(w http.ResponseWriter, r *http.Request, integ
 		return
 	}
 	defer resp.Body.Close()
+	h.copyResponse(w, resp, requestID)
+}
+
+// copyResponse streams an upstream HTTP response (status + headers + body) through to the client. Used
+// for both HTTP(S) origins and open-infra Lambda Functions, whose runtime already produced the HTTP
+// response from the handler's proxy return.
+func (h *apigwV1Handler) copyResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
