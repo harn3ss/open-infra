@@ -1,0 +1,24 @@
+# DynamoDB data layer for the aws-shim.
+#
+# The shim's DynamoDB front door (kind: Table / the `dynamodb` API) needs a Mongo-wire backend:
+# FerretDB on a DocumentDB-extension Postgres (MONGO_URI for the data path, MONGO_PG_URI for atomic
+# TransactWriteItems/TransactGetItems). That stack is exactly what a data-only kind: Application with
+# engine: mongo provisions, so the shim's data layer reuses the same tested composition rather than a
+# bespoke copy. It emits the `dynamo-mongo-app` Secret (MONGODB_URI + POSTGRESQL_URL) that
+# aws-shim.yaml wires into the shim as MONGO_URI / MONGO_PG_URI.
+#
+# Without this, the shim answers every DynamoDB call with an honest 501 ("data layer not
+# configured"); with it, kind: Table / GSI / LSI / Query / transactions work on the live cluster.
+# Single Postgres instance on the engine-default StorageClass (the stateless FerretDB proxy is the
+# part that scales); storage-tier HA is the tracked DocumentDB-in-CNPG follow-up.
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: dynamo
+  namespace: open-infra-aws-shim
+  annotations:
+    # It is a composite CR kind; keep the root app-of-apps from dry-run-deadlocking on a fresh/DR sync.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  database:
+    engine: mongo
