@@ -21,8 +21,10 @@ RUN pip install --no-cache-dir "boto3>=1.34,<2" && rm -rf /root/.cache/pip
 COPY bootstrap.py /opt/open-infra/bootstrap.py
 
 # /var/task is the handler code root — a mountpoint at runtime (ConfigMap or the
-# fetched+unzipped code). Create it owned by the non-root runtime user.
-RUN install -d -o 1000 -g 1000 /var/task
+# fetched+unzipped code). /opt is the Lambda LAYER root — the shim extracts layer
+# zips there at cold start. Both owned by the non-root runtime user so it can write
+# them (the shim at /opt/open-infra stays root-owned + world-readable).
+RUN install -d -o 1000 -g 1000 /var/task /opt /opt/python
 
 ENV OPENINFRA_TASK_DIR=/var/task \
     PORT=8080 \
