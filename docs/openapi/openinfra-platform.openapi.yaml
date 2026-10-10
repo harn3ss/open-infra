@@ -5892,6 +5892,19 @@ components:
                       - OPTIONS
                     description: HTTP methods this route accepts (the API Gateway per-method route equivalent). Omit to accept
                       all methods. A request whose method isn't listed doesn't match this route.
+                  requiredHeaders:
+                    type: array
+                    items:
+                      type: string
+                    description: "Request-validation (the API Gateway required-parameter validator): header names that MUST\
+                      \ be present (any value). A request missing any of them does not match this route, so it never reaches\
+                      \ the backend. Body-schema (model) validation is plugin-gated \u2014 see docs/api-gateway-coverage.md."
+                  requiredQueryParams:
+                    type: array
+                    items:
+                      type: string
+                    description: 'Request-validation: query-parameter names that MUST be present (any value). A request missing
+                      any does not match this route.'
                   backend:
                     type: object
                     description: "Where this route forwards. Set EXACTLY ONE of: name (an in-cluster kind: Function / Application)\

@@ -218,6 +218,25 @@ func TestHttpApi_SingleDomainUnchanged(t *testing.T) {
 	}
 }
 
+// Request validation (required params): a route gains HeaderRegexp/QueryRegexp matchers so a
+// request missing a required header/query param doesn't match (never reaches the backend).
+func TestHttpApi_RequiredParams(t *testing.T) {
+	spec := baseHttpApiSpec()
+	spec["routes"] = []any{
+		map[string]any{"path": "/orders", "backend": map[string]any{"name": "fn"},
+			"requiredHeaders":     []any{"X-Api-Key"},
+			"requiredQueryParams": []any{"tenant"}},
+	}
+	tmpl := extractInlineTemplate(t, httpapiCompositionPath)
+	out := render(t, tmpl, httpapiCtx(spec))
+	if !strings.Contains(out, "HeaderRegexp(`X-Api-Key`, `.+`)") {
+		t.Errorf("required header should add a HeaderRegexp matcher; got:\n%s", grepCtx(out, "match"))
+	}
+	if !strings.Contains(out, "QueryRegexp(`tenant`, `.+`)") {
+		t.Errorf("required query param should add a QueryRegexp matcher; got:\n%s", grepCtx(out, "match"))
+	}
+}
+
 // External backend (the API Gateway HTTP_PROXY integration): backend.url renders a per-route
 // ExternalName Service and an IngressRoute service entry with the parsed scheme + port.
 func TestHttpApi_ExternalBackend(t *testing.T) {
