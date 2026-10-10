@@ -54,41 +54,67 @@ class LambdaContext:
         return max(0, int((self._deadline - time.time()) * 1000))
 
 
+OPT_DIR = os.environ.get("OPENINFRA_OPT_DIR", "/opt")  # Lambda layer root (AWS extracts layers here)
+
+
+def _s3_client():
+    """A boto3 S3 client wired for MinIO / any S3-compatible gateway (path-style addressing when a
+    custom AWS_ENDPOINT_URL is set; untouched on real AWS). boto3 is imported lazily so the
+    inline-ConfigMap path never pays for it."""
+    import boto3
+    from botocore.config import Config
+
+    endpoint = os.environ.get("AWS_ENDPOINT_URL") or None
+    cfg = Config(s3={"addressing_style": "path"}) if endpoint else None
+    return boto3.client("s3", endpoint_url=endpoint, config=cfg)
+
+
+def _fetch_unzip(s3, bucket, key, dest):
+    import io
+    import zipfile
+
+    body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    os.makedirs(dest, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        z.extractall(dest)
+    sys.stderr.write(f"open-infra-runtime: unpacked s3://{bucket}/{key} ({len(body)} bytes) into {dest}\n")
+
+
 def _fetch_code():
-    """If a code bucket is declared, fetch + unzip the handler .zip into /var/task at
-    cold start (the Lambda S3-code model). boto3 is imported lazily so the ConfigMap
-    (inline) path never pays for it. Creds/endpoint come from the injected S3 secret
-    (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL). A failure here
-    crashes the pod (exit 2) rather than serving an empty handler dir."""
+    """Fetch + unzip the handler .zip into /var/task (the Lambda S3-code model) and any declared
+    layers into /opt (the Lambda layer model) at cold start. Creds/endpoint come from the injected
+    S3 secret (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL). A failure here crashes
+    the pod (exit 2) rather than serving a broken handler. No-op when the handler is ConfigMap-mounted
+    and no layers are declared."""
     bucket = os.environ.get("OPENINFRA_CODE_BUCKET")
-    if not bucket:
-        return  # ConfigMap-mounted (or otherwise pre-populated) /var/task
-    key = os.environ.get("OPENINFRA_CODE_KEY", "")
+    layers_raw = os.environ.get("OPENINFRA_LAYERS", "")
+    if not bucket and not layers_raw:
+        return  # ConfigMap-mounted (or otherwise pre-populated) /var/task, no layers
     try:
-        import io
-        import zipfile
-
-        import boto3  # lazy: only the bucket source needs it
-        from botocore.config import Config
-
-        endpoint = os.environ.get("AWS_ENDPOINT_URL") or None
-        # A custom endpoint (MinIO / any S3-compatible gateway) needs PATH-style
-        # addressing; boto3's default "virtual-hosted" style resolves the bucket as a
-        # DNS subdomain of the endpoint (bucket.minio.minio.svc…), which does not exist
-        # in-cluster. On real AWS (no endpoint_url) the default is left untouched.
-        cfg = Config(s3={"addressing_style": "path"}) if endpoint else None
-        s3 = boto3.client("s3", endpoint_url=endpoint, config=cfg)
-        body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
-        os.makedirs(TASK_DIR, exist_ok=True)
-        with zipfile.ZipFile(io.BytesIO(body)) as z:
-            z.extractall(TASK_DIR)
-        sys.stderr.write(
-            f"open-infra-runtime: unpacked s3://{bucket}/{key} ({len(body)} bytes) into {TASK_DIR}\n"
-        )
+        s3 = _s3_client()
+        if bucket:  # the handler zip
+            _fetch_unzip(s3, bucket, os.environ.get("OPENINFRA_CODE_KEY", ""), TASK_DIR)
+        if layers_raw:  # layers: a JSON list of {bucket, key}, extracted (merged, in order) into /opt
+            for layer in json.loads(layers_raw):
+                _fetch_unzip(s3, layer["bucket"], layer.get("key", ""), OPT_DIR)
     except Exception:
-        sys.stderr.write(f"open-infra-runtime: failed to fetch/unzip s3://{bucket}/{key}:\n")
+        sys.stderr.write("open-infra-runtime: failed to fetch/unzip handler or layer code:\n")
         traceback.print_exc()
         sys.exit(2)
+
+
+def _add_layer_paths():
+    """Put the Lambda layer directories on sys.path, the AWS way: a python layer's zip carries a
+    `python/` (and/or python/lib/<ver>/site-packages/) tree extracted under /opt, so a handler can
+    import modules the layer provides."""
+    import glob
+
+    candidates = [os.path.join(OPT_DIR, "python"),
+                  os.path.join(OPT_DIR, "python", "lib", "python3.12", "site-packages")]
+    candidates += glob.glob(os.path.join(OPT_DIR, "python", "lib", "python*", "site-packages"))
+    for p in candidates:
+        if os.path.isdir(p) and p not in sys.path:
+            sys.path.insert(0, p)
 
 
 def _load_handler():
@@ -178,6 +204,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global HANDLER
     _fetch_code()
+    _add_layer_paths()  # layer modules importable before the handler loads
     HANDLER = _load_handler()
     sys.stderr.write(
         f"open-infra-runtime: serving {os.environ.get('OPENINFRA_HANDLER')} on :{PORT} "
