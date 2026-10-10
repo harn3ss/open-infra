@@ -182,32 +182,11 @@ subjects:
     name: console
     namespace: open-infra-console
 ---
-# DynamoDB declarative table-sync (kind: Table): the table-spec ConfigMaps the Table composition
-# renders live in open-infra-console (TABLE_CONFIG_NAMESPACE). The shim lists them to register each
-# declared table in its FerretDB registry — so without this Role, `kind: Table` / `cfn deploy` of a
-# DynamoDB table silently never registers (the sync logs a `configmaps forbidden` warning every
-# interval, and only runtime CreateTable works). Read-only, scoped to configmaps in this one
-# namespace; `list` can't be label-narrowed in RBAC, exactly like the idp Role above.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: aws-shim-dynamo-tables
-  namespace: open-infra-console
-rules:
-  - apiGroups: [""]
-    resources: [configmaps]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: aws-shim-dynamo-tables
-  namespace: open-infra-console
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-dynamo-tables }
-subjects:
-  - kind: ServiceAccount
-    name: aws-shim
-    namespace: open-infra-aws-shim
+# (The DynamoDB declarative table-sync reads its spec-mirror ConfigMaps from the shim's OWN
+# namespace now — see TABLE_CONFIG_NAMESPACE above and the aws-shim-idp Role, which already grants
+# configmaps there. No cross-namespace Role into open-infra-console: the control-plane authorizer
+# fences the shim out of that IAM/console namespace by design, and the DynamoDB service owning its
+# own table registry is the AWS-shaped arrangement.)
 ---
 # CloudFormation doorway (polyhedron#175): the way AWS does it — a stack op provisions under the CALLER's
 # own authority, never the shim's. The shim's cfn front door drives the owned cfn engine through an Applier
@@ -578,6 +557,11 @@ spec:
             # dynamo-mongo-app Secret). Without these the dynamodb front door answers an honest 501.
             - { name: MONGO_URI, valueFrom: { secretKeyRef: { name: dynamo-mongo-app, key: MONGODB_URI } } }
             - { name: MONGO_PG_URI, valueFrom: { secretKeyRef: { name: dynamo-mongo-app, key: POSTGRESQL_URL } } }
+            # Declarative table-sync (kind: Table): the Table composition writes its spec-mirror
+            # ConfigMaps into THIS namespace (the shim's own — the DynamoDB service's domain), which
+            # the shim already reads (aws-shim-idp Role). Deliberately NOT open-infra-console: the
+            # control-plane authorizer fences the shim out of that IAM/console namespace.
+            - { name: TABLE_CONFIG_NAMESPACE, value: "open-infra-aws-shim" }
             # Step Functions (polyhedron#172): the namespace kind: StateMachine / Execution and per-execution
             # STS creds Secrets live in (defaults to this namespace). A Task's function:<name> resolves in
             # this namespace, so a Function used as a Task target must live here too.

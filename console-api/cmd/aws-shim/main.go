@@ -375,7 +375,7 @@ func run(logger *slog.Logger) error {
 	// Register declared kind: Table resources (spec-mirror ConfigMaps) into the table registry, so a
 	// cfn-deployed / GitOps-applied table is usable without a runtime CreateTable. No-op when the
 	// data layer is unset. TABLE_CONFIG_NAMESPACE is where the Table composition writes its mirrors.
-	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-console"), 30*time.Second)
+	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-aws-shim"), 30*time.Second)
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
 	region := getenv("AWS_REGION", "us-east-1")
