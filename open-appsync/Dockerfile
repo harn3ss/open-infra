@@ -6,6 +6,7 @@ ARG GOFIPS140=v1.0.0   # Go native FIPS 140-3 module — amd64 default; build-ar
 ENV GOFIPS140=${GOFIPS140}
 WORKDIR /src
 COPY dynamodb/ dynamodb/
+COPY vtl/ vtl/
 COPY open-appsync/go.mod open-appsync/go.sum open-appsync/
 WORKDIR /src/open-appsync
 RUN go mod download
