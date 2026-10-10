@@ -436,7 +436,7 @@ func run(logger *slog.Logger) error {
 	apigwH.authz = authzChecker
 	// REST API (v1) shares the "apigateway" SigV4 signing name with HTTP API (v2); one mux path-routes
 	// /restapis/... to v1 and /v2/apis/... to v2 (and picks the right data plane by api id on invoke).
-	apigwV1H := newAPIGWV1Handler(cs, authzNS, fnNS, svcSuffix, apigwV1St, authzChecker, logger)
+	apigwV1H := newAPIGWV1Handler(cs, authzNS, fnNS, svcSuffix, getenv("COGNITO_ISSUER_BASE", apigwInvokeBase), apigwV1St, authzChecker, logger)
 	apigwMuxH := &apigwMux{v1: apigwV1H, v2: apigwH}
 	// CloudWatch metrics + alarms (SigV4 service name "monitoring"). The alarm evaluator (started below)
 	// fires SNS AlarmActions through the SNS handler.

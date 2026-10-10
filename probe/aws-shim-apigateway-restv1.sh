@@ -36,12 +36,16 @@ command -v aws     >/dev/null || inconclusive "the aws CLI is required"
 command -v kubectl >/dev/null || inconclusive "kubectl is required"
 command -v curl    >/dev/null || inconclusive "curl is required"
 command -v python3 >/dev/null || inconclusive "python3 is required"
+command -v openssl >/dev/null || inconclusive "openssl is required (to mint the OIDC test issuer for the authorizer check)"
 kubectl get ksvc >/dev/null 2>&1 || inconclusive "Knative Serving not installed"
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
 WORK="$(mktemp -d)"
-CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); CREATED_APIS=(); MADE_FN=""; MADE_CM=""
+CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); CREATED_APIS=(); MADE_FN=""; MADE_CM=""; MADE_OIDC=""
 cleanup() {
+  [ -n "$MADE_OIDC" ] && { kubectl -n "$SHIM_NS" delete pod "$MADE_OIDC" --ignore-not-found >/dev/null 2>&1; kubectl -n "$SHIM_NS" delete svc "$MADE_OIDC" --ignore-not-found >/dev/null 2>&1; } || true
   for a in "${CREATED_APIS[@]:-}"; do [ -n "$a" ] && AWS_ACCESS_KEY_ID="${WAK:-}" AWS_SECRET_ACCESS_KEY="${WSK:-}" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager apigateway delete-rest-api --rest-api-id "$a" >/dev/null 2>&1 || true; done
   [ -n "$MADE_FN" ] && kubectl -n "$FN_NS" delete function.openinfra.dev "$MADE_FN" --ignore-not-found >/dev/null 2>&1 || true
   [ -n "$MADE_CM" ] && kubectl -n "$FN_NS" delete configmap "$MADE_CM" --ignore-not-found >/dev/null 2>&1 || true
@@ -178,6 +182,63 @@ assert r.get("mapped") is True, f'mapped={r.get("mapped")} — response template
 print("  ✓ non-proxy AWS: requestTemplates wrapped the body, the Lambda echoed it, responseTemplates lifted the mapped fields back (BOTH templates ran)")
 PY
 
+# --- 4c. COGNITO_USER_POOLS method authorizer: reject missing/garbage/expired, admit a valid JWT ---
+# The shim validates the caller's JWT against the authorizer's issuer/JWKS (same coreos/go-oidc path as
+# the v2 authorizer). A throwaway RSA OIDC issuer stands in for a Cognito pool; the COGNITO_USER_POOLS
+# authorizer takes the issuer URL as its providerARN (the shim accepts a pool ARN OR a bare issuer URL).
+log "COGNITO_USER_POOLS method authorizer: reject missing/garbage/expired, admit valid"
+openssl genrsa -out "$WORK/key.pem" 2048 >/dev/null 2>&1 || inconclusive "openssl genrsa failed"
+MOD_HEX="$(openssl rsa -in "$WORK/key.pem" -noout -modulus 2>/dev/null | sed 's/Modulus=//')"
+KID="probe-key-$SFX"; AUD="agwv1-aud-$SFX"
+MADE_OIDC="agwv1-oidc-$SFX"
+ISS="http://${MADE_OIDC}.${SHIM_NS}.svc.cluster.local"
+N="$(python3 -c "import binascii,base64;print(base64.urlsafe_b64encode(binascii.unhexlify('$MOD_HEX')).decode().rstrip('='))")"
+JWKS="{\"keys\":[{\"kty\":\"RSA\",\"use\":\"sig\",\"alg\":\"RS256\",\"kid\":\"$KID\",\"n\":\"$N\",\"e\":\"AQAB\"}]}"
+DISC="{\"issuer\":\"$ISS\",\"jwks_uri\":\"$ISS/jwks\",\"authorization_endpoint\":\"$ISS/auth\",\"response_types_supported\":[\"id_token\"],\"subject_types_supported\":[\"public\"],\"id_token_signing_alg_values_supported\":[\"RS256\"]}"
+OIDC_SERVER='import os
+from http.server import BaseHTTPRequestHandler,HTTPServer
+D=os.environ["DISC"].encode();J=os.environ["JWKS"].encode()
+class H(BaseHTTPRequestHandler):
+ def do_GET(s):
+  b=D if s.path.startswith("/.well-known/openid-configuration") else (J if s.path.rstrip("/")=="/jwks" else b"{}")
+  s.send_response(200);s.send_header("Content-Type","application/json");s.send_header("Content-Length",str(len(b)));s.end_headers();s.wfile.write(b)
+ def log_message(s,*a):pass
+HTTPServer(("0.0.0.0",80),H).serve_forever()'
+kubectl -n "$SHIM_NS" run "$MADE_OIDC" --image=python:3.12-alpine --restart=Never \
+  --labels="app=$MADE_OIDC" --env="DISC=$DISC" --env="JWKS=$JWKS" \
+  --command -- python3 -c "$OIDC_SERVER" >/dev/null 2>&1 || inconclusive "could not start the OIDC issuer pod"
+kubectl -n "$SHIM_NS" expose pod "$MADE_OIDC" --port=80 --name="$MADE_OIDC" >/dev/null 2>&1 || inconclusive "could not expose the OIDC issuer"
+kubectl -n "$SHIM_NS" wait pod "$MADE_OIDC" --for=condition=Ready --timeout=60s >/dev/null 2>&1 || inconclusive "OIDC issuer pod not Ready"
+sleep 2
+mk_jwt() { # <exp_epoch> -> a signed RS256 JWT
+  local exp="$1" now; now="$(date +%s)"
+  local h p sig
+  h="$(printf '{"alg":"RS256","typ":"JWT","kid":"%s"}' "$KID" | b64url)"
+  p="$(printf '{"iss":"%s","aud":"%s","sub":"probe-user","iat":%s,"exp":%s}' "$ISS" "$AUD" "$now" "$exp" | b64url)"
+  sig="$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -sign "$WORK/key.pem" -binary | b64url)"
+  printf '%s.%s.%s' "$h" "$p" "$sig"
+}
+VALID_JWT="$(mk_jwt "$(( $(date +%s) + 3600 ))")"
+EXPIRED_JWT="$(mk_jwt "$(( $(date +%s) - 60 ))")"
+SECRES="$(agw "$WAK" "$WSK" create-resource --rest-api-id "$API" --parent-id "$ROOT" --path-part secure --query id 2>/dev/null)" || fail "create-resource secure failed"
+AUTHID="$(agw "$WAK" "$WSK" create-authorizer --rest-api-id "$API" --name "agwv1-cog-$SFX" \
+  --type COGNITO_USER_POOLS --provider-arns "$ISS" --identity-source method.request.header.Authorization \
+  --query id 2>/dev/null)" || fail "create-authorizer (COGNITO_USER_POOLS) failed"
+[ -n "$AUTHID" ] && [ "$AUTHID" != "None" ] || fail "create-authorizer returned no id"
+agw "$WAK" "$WSK" put-method --rest-api-id "$API" --resource-id "$SECRES" --http-method POST \
+  --authorization-type COGNITO_USER_POOLS --authorizer-id "$AUTHID" >/dev/null 2>&1 || fail "put-method (secure) failed"
+agw "$WAK" "$WSK" put-integration --rest-api-id "$API" --resource-id "$SECRES" --http-method POST \
+  --type AWS_PROXY --integration-http-method POST \
+  --uri "arn:aws:lambda:${REGION}:open-infra:function:${FN}" >/dev/null 2>&1 || fail "put-integration (secure) failed"
+agw "$WAK" "$WSK" create-deployment --rest-api-id "$API" --stage-name prod >/dev/null 2>&1 || fail "redeploy (secure) failed"
+sec_code() { curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$@" -d '{}' "${ENDPOINT}/_apigw/${API}/prod/secure" 2>/dev/null || true; }
+[ "$(sec_code)" = "401" ] || fail "a request with NO token to a COGNITO_USER_POOLS-gated method was not 401"
+[ "$(sec_code -H 'Authorization: Bearer not.a.real.jwt')" = "401" ] || fail "a garbage token was not rejected (401)"
+[ "$(sec_code -H "Authorization: Bearer $EXPIRED_JWT")" = "401" ] || fail "an EXPIRED token was admitted (must be 401)"
+VCODE="$(sec_code -H "Authorization: Bearer $VALID_JWT")"
+[ "$VCODE" = "200" ] || fail "a VALID JWT was NOT admitted (got '$VCODE', want 200) — issuer discovery/verify failed"
+log "  ✓ COGNITO_USER_POOLS authorizer: rejects missing/garbage/expired, admits valid"
+
 # --- 5a. negative: wrong SigV4 secret on a management call ---
 log "negative: a wrong secret on a management call must be rejected"
 if agw "$WAK" "wrong-secret-xyz" get-rest-apis >/dev/null 2>"$WORK/n1"; then fail "a wrong secret was accepted"; fi
@@ -213,4 +274,4 @@ fi
 grep -qiE 'AccessDenied|not authorized to integrate|denied' "$WORK/n2" || fail "#185 denial error wrong: $(cat "$WORK/n2")"
 log "  ✓ #185 fence holds for REST v1 (plain API allowed; unauthorized Lambda wiring refused)"
 
-printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), and the auth + #185 wiring-fence boundaries.\n'
+printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), a COGNITO_USER_POOLS method authorizer (reject missing/garbage/expired, admit valid), and the auth + #185 wiring-fence boundaries.\n'
