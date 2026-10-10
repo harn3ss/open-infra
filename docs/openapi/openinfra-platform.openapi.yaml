@@ -5214,7 +5214,9 @@ components:
                   type: string
                   enum:
                   - python3.12
-                  description: 'Managed runtime for the handler. v1: python3.12 (more to follow).'
+                  - nodejs20
+                  description: 'Managed runtime base image the handler runs on: python3.12 (handler ''<module>.<function>'')
+                    or nodejs20 (handler ''<file>.<export>'', CommonJS). .NET + more to follow.'
                 handler:
                   type: string
                   description: Entrypoint '<module>.<function>', e.g. 'app.handler' -> function handler in app.py.

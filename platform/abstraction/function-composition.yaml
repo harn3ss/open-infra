@@ -45,7 +45,7 @@ spec:
             {{- $csrc := dict }}
             {{- if $code }}
             {{-   $csrc = $code.source | default dict }}
-            {{-   if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function: unknown spec.code.runtime %q" $code.runtime) }}{{- end }}
+            {{-   if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else if eq $code.runtime "nodejs20" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function: unknown spec.code.runtime %q" $code.runtime) }}{{- end }}
             {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "kind: Function spec.code.source: set configMap OR bucket+key, not both" }}{{- end }}
             {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "kind: Function spec.code.source: set configMap (inline) or bucket+key (zip)" }}{{- end }}
             {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
