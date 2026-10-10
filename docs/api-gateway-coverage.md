@@ -57,10 +57,19 @@ this page describes).
 
 > **Note (boundary revisited for REST v1):** because a large real estate depends on the API Gateway
 > **REST API (v1)** control plane, stages, deployment promote/rollback, and VTL request/response
-> mapping are being **built on the aws-shim's REST API (v1) surface** — a separate path from
-> `kind: HttpApi`, reusing the v2 shim's stage/deployment machinery and the open-appsync VTL engine.
-> The non-goals above still describe the declarative `HttpApi` model, which stays stage-less and
-> transformation-free by design; the v1 wire API is where that lifecycle lives.
+> mapping are **built on the aws-shim's REST API (v1) surface** — a separate path from
+> `kind: HttpApi`, reaching it over the AWS SDK/CLI (`aws apigateway …`), reusing the v2 shim's
+> stage/deployment machinery. Shipped there: the resource tree + per-resource methods + integrations,
+> an immutable deployment snapshot and stages, `AWS_PROXY`→Lambda (faithful 1.0 proxy event) and
+> `HTTP_PROXY` origin proxying, and **non-proxy `AWS`/`HTTP` VTL body mapping** —
+> `requestTemplates` on the integration and `responseTemplates` on a per-status **IntegrationResponse**
+> (`put-integration-response`), exactly as AWS models them. The VTL engine is the shared
+> `github.com/harn3ss/open-infra/vtl` module — the *same* parser/evaluator open-appsync uses for
+> GraphQL resolvers, so the two front doors can never drift on Velocity semantics; only the injected
+> `$util`/variable surface differs (`$input`/`$context`/`$stageVariables` here). Honest gaps still open
+> on v1: non-`NONE` method authorizers (refused at invoke today, never bypassed) and a CFN/Terraform
+> resource type. The non-goals above still describe the declarative `HttpApi` model, which stays
+> stage-less and transformation-free by design; the v1 wire API is where that lifecycle lives.
 
 ## In-cluster WAF (`spec.waf`)
 
