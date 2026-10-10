@@ -145,21 +145,29 @@ func TestSTS_UnknownActionIsQueryError(t *testing.T) {
 
 func TestLambda_ParseInvokePath(t *testing.T) {
 	cases := []struct {
-		method, path, want string
-		ok                 bool
+		method, path, want, wantQual string
+		ok                           bool
 	}{
-		{"POST", "/2015-03-31/functions/hello/invocations", "hello", true},
-		{"POST", "/2015-03-31/functions/my-fn/invocations", "my-fn", true},
-		{"GET", "/2015-03-31/functions/hello/invocations", "", false}, // wrong method
-		{"POST", "/2015-03-31/functions/hello", "", false},            // missing /invocations
-		{"POST", "/hello/invocations", "", false},                     // wrong prefix
-		{"POST", "/2015-03-31/functions//invocations", "", false},     // empty name
+		{"POST", "/2015-03-31/functions/hello/invocations", "hello", "", true},
+		{"POST", "/2015-03-31/functions/my-fn/invocations", "my-fn", "", true},
+		{"GET", "/2015-03-31/functions/hello/invocations", "", "", false}, // wrong method
+		{"POST", "/2015-03-31/functions/hello", "", "", false},            // missing /invocations
+		{"POST", "/hello/invocations", "", "", false},                     // wrong prefix
+		{"POST", "/2015-03-31/functions//invocations", "", "", false},     // empty name
+		// Qualifier (Lambda alias) via the path colon and via ?Qualifier=.
+		{"POST", "/2015-03-31/functions/hello:prod/invocations", "hello", "prod", true},
+		{"POST", "/2015-03-31/functions/hello/invocations?Qualifier=prod", "hello", "prod", true},
+		{"POST", "/2015-03-31/functions/hello:$LATEST/invocations", "hello", "$LATEST", true},
+		// Conflicting path vs query qualifier is rejected.
+		{"POST", "/2015-03-31/functions/hello:prod/invocations?Qualifier=stage", "", "", false},
+		// A qualifier that isn't a safe DNS label (would poison the URL authority) is rejected.
+		{"POST", "/2015-03-31/functions/hello:evil.com#/invocations", "", "", false},
 	}
 	for _, c := range cases {
 		req := httptest.NewRequest(c.method, "http://lambda"+c.path, nil)
-		got, ok := parseInvokePath(req)
-		if ok != c.ok || got != c.want {
-			t.Errorf("%s %s: got (%q,%v) want (%q,%v)", c.method, c.path, got, ok, c.want, c.ok)
+		got, qual, ok := parseInvokePath(req)
+		if ok != c.ok || got != c.want || qual != c.wantQual {
+			t.Errorf("%s %s: got (%q,%q,%v) want (%q,%q,%v)", c.method, c.path, got, qual, ok, c.want, c.wantQual, c.ok)
 		}
 	}
 }

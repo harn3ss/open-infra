@@ -36,7 +36,9 @@ var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 // Invocation types: RequestResponse (synchronous), Event (asynchronous — durably queued via
 // asyncInvoker), and DryRun (authorize-only) are all supported. Functions are resolved in a single
 // configured namespace; a downstream HTTP error is surfaced as Lambda's X-Amz-Function-Error.
-// Qualifiers/versions and cross-namespace resolution are the flagged next steps.
+// Qualifiers are supported for the synchronous path: an alias (or $LATEST) routes to the Knative
+// traffic tag the Function composition publishes at <alias>-<name>. Cross-namespace resolution and
+// qualified async delivery are the flagged next steps.
 type lambdaHandler struct {
 	cs        kubernetes.Interface
 	client    *http.Client
@@ -64,12 +66,15 @@ func (h *lambdaHandler) authFailure(w http.ResponseWriter, _ *http.Request, requ
 }
 
 func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
-	name, ok := parseInvokePath(r)
+	name, qualifier, ok := parseInvokePath(r)
 	if !ok {
 		writeLambdaError(w, http.StatusNotImplemented, "InvalidAction", requestID,
-			"only POST /2015-03-31/functions/{name}/invocations is implemented")
+			"only POST /2015-03-31/functions/{name}[:{qualifier}]/invocations is implemented")
 		return
 	}
+	// A non-default qualifier (a Lambda alias) routes to the Knative traffic tag the Function
+	// composition publishes at <alias>-<name>; $LATEST / unset is the default (100%) route.
+	qualified := qualifier != "" && qualifier != "$LATEST"
 
 	// Authorize through the shared impersonated SubjectAccessReview — one policy world. Invoking EXECUTES
 	// the function's code (with side effects — pointedly for async Event invokes), so it maps to `create`
@@ -101,6 +106,13 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 				"asynchronous (Event) invocation requires the event bus (set NATS_URL on the shim)")
 			return
 		}
+		if qualified {
+			// Async delivery resolves the function by name at the pump; alias/qualifier routing is a
+			// sync-only capability today. Refuse rather than silently invoke the default route.
+			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
+				"asynchronous (Event) invocation with a qualifier/alias is not supported; invoke the alias synchronously, or invoke the unqualified function asynchronously")
+			return
+		}
 		// Async payloads are read into a durable queue message; cap at AWS's 256 KB async limit.
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256*1024))
 		if err != nil {
@@ -120,8 +132,13 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	}
 
 	// Resolve to the Function's cluster-local Knative address and forward the payload. Hitting the
-	// cluster-local URL is what drives Knative scale-from-zero.
-	target := "http://" + name + "." + h.fnNS + "." + h.svcSuffix + "/"
+	// cluster-local URL is what drives Knative scale-from-zero. A qualifier routes to the alias's
+	// Knative traffic tag (<alias>-<name>); $LATEST / unset hits the default route.
+	host := name
+	if qualified {
+		host = qualifier + "-" + name
+	}
+	target := "http://" + host + "." + h.fnNS + "." + h.svcSuffix + "/"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, r.Body)
 	if err != nil {
 		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not build upstream request")
@@ -155,20 +172,40 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// parseInvokePath matches POST /2015-03-31/functions/{name}/invocations and returns {name}.
-func parseInvokePath(r *http.Request) (string, bool) {
+// parseInvokePath matches POST /2015-03-31/functions/{name}/invocations (optionally
+// /2015-03-31/functions/{name}:{qualifier}/invocations) and returns {name} + {qualifier}. The
+// qualifier is a Lambda alias (or $LATEST); it may also come from ?Qualifier=. Both name and a
+// non-$LATEST qualifier are validated as RFC-1123 labels because BOTH feed the constructed
+// cluster-local URL authority (<qualifier>-<name>.<ns>.<suffix>) — the same off-cluster-redirect
+// guard the bare name already has — and their combined DNS label must fit in 63 bytes.
+func parseInvokePath(r *http.Request) (name, qualifier string, ok bool) {
 	if r.Method != http.MethodPost {
-		return "", false
+		return "", "", false
 	}
 	p := strings.TrimPrefix(r.URL.Path, "/2015-03-31/functions/")
 	if p == r.URL.Path { // prefix wasn't present
-		return "", false
+		return "", "", false
 	}
-	name, rest, found := strings.Cut(p, "/")
-	if !found || rest != "invocations" || !fnNameRE.MatchString(name) {
-		return "", false
+	fn, rest, found := strings.Cut(p, "/")
+	if !found || rest != "invocations" {
+		return "", "", false
 	}
-	return name, true
+	name, qualifier, _ = strings.Cut(fn, ":") // "name" or "name:qualifier"
+	if q := r.URL.Query().Get("Qualifier"); q != "" {
+		if qualifier != "" && qualifier != q { // conflicting path vs query qualifier
+			return "", "", false
+		}
+		qualifier = q
+	}
+	if !fnNameRE.MatchString(name) {
+		return "", "", false
+	}
+	if qualifier != "" && qualifier != "$LATEST" {
+		if !fnNameRE.MatchString(qualifier) || len(qualifier)+1+len(name) > 63 {
+			return "", "", false
+		}
+	}
+	return name, qualifier, true
 }
 
 // writeLambdaError writes Lambda's JSON error dialect: the error class in the x-amzn-errortype
