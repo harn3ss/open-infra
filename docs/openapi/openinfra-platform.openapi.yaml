@@ -7538,6 +7538,23 @@ components:
                         - N
                         - B
                         description: 'Scalar key type: S / N / B. Quote it in YAML.'
+            streamSpecification:
+              type: object
+              description: "DynamoDB Streams \u2014 emit an ordered change record (INSERT/MODIFY/REMOVE) for every item write,\
+                \ readable via the dynamodbstreams API (DescribeStream/GetShardIterator/GetRecords). Off unless set. v1: a\
+                \ single shard; captures single-item PutItem/UpdateItem/DeleteItem."
+              required:
+              - streamViewType
+              properties:
+                streamViewType:
+                  type: string
+                  enum:
+                  - KEYS_ONLY
+                  - NEW_IMAGE
+                  - OLD_IMAGE
+                  - NEW_AND_OLD_IMAGES
+                  description: 'What each change record carries: KEYS_ONLY (just the key), NEW_IMAGE (item after), OLD_IMAGE
+                    (item before), or NEW_AND_OLD_IMAGES (both).'
             localSecondaryIndexes:
               type: array
               description: "Local secondary indexes \u2014 query the table by an alternate sort key under the SAME partition\
