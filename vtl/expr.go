@@ -1,6 +1,7 @@
 package vtl
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -13,10 +14,10 @@ import (
 // $util method calls, collection/string methods, the boolean/comparison operators, and map/list
 // literals) — widened as the probe corpus grows.
 
-// env is an evaluation scope: #set/#foreach variables + the $util namespace.
+// env is an evaluation scope: #set/#foreach variables + the injected $util namespace.
 type env struct {
 	vars map[string]any
-	util *Util
+	util Util
 }
 
 // --- expression AST ---
@@ -199,7 +200,7 @@ func evalUtilChain(chain []accessor, e *env) (any, error) {
 			if path != "" {
 				full = path + "." + a.name
 			}
-			res, cerr, ok := e.util.call(full, args)
+			res, cerr, ok := e.util.Invoke(full, args)
 			if cerr != nil {
 				return nil, cerr
 			}
@@ -226,9 +227,31 @@ func evalArgs(nodes []exprNode, e *env) ([]any, error) {
 	return out, nil
 }
 
+// Receiver lets a host program expose a value whose properties ($x.prop) and methods ($x.m(args))
+// the engine resolves by calling back into the host, rather than through the built-in map/list/string
+// behaviour. It is how a non-AppSync dialect plugs host-specific accessors into the generic Velocity
+// core without the engine knowing anything about them — e.g. API Gateway's $input, whose .body is a
+// property and whose .json(path)/.params(name) are methods. A value that does not implement Receiver,
+// or whose handler returns ok=false, falls through to the built-in behaviour. AppSync values are plain
+// maps/slices/scalars and never implement it, so this changes nothing for the resolver engine.
+type Receiver interface {
+	GetProp(name string) (value any, ok bool)
+	CallMethod(name string, args []any) (value any, ok bool)
+}
+
 // memberOrMethod does map property access, or a small set of Java/Velocity collection & string
 // methods that resolver templates rely on. Unknown members → nil (quiet, Velocity-like).
 func memberOrMethod(recv any, name string, args []any) any {
+	// Host-supplied dynamic receivers get first crack (both property and method forms).
+	if rv, ok := recv.(Receiver); ok {
+		if args != nil {
+			if v, handled := rv.CallMethod(name, args); handled {
+				return v
+			}
+		} else if v, handled := rv.GetProp(name); handled {
+			return v
+		}
+	}
 	// Method call (args != nil signals a call; note zero-arg calls pass an empty non-nil slice).
 	if args != nil {
 		switch v := recv.(type) {
@@ -367,4 +390,41 @@ func valuesEqual(a, b any) bool {
 		return a == nil && b == nil
 	}
 	return reflect.DeepEqual(a, b)
+}
+
+// jsonString marshals a value to a compact, DETERMINISTIC JSON string (encoding/json sorts map keys),
+// so template output is byte-stable. Used by toStr for map/list values.
+func jsonString(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "null"
+	}
+	return string(b)
+}
+
+// arg returns the i-th call argument, or nil when fewer were supplied.
+func arg(args []any, i int) any {
+	if i < len(args) {
+		return args[i]
+	}
+	return nil
+}
+
+// numStr renders a number the way DynamoDB/AppSync/API Gateway expect: integers without a trailing
+// ".0".
+func numStr(v any) string {
+	switch x := v.(type) {
+	case float64:
+		if x == float64(int64(x)) {
+			return strconv.FormatInt(int64(x), 10)
+		}
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(x)
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case string:
+		return x
+	}
+	return fmt.Sprintf("%v", v)
 }

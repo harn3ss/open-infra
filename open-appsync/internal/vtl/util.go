@@ -102,6 +102,11 @@ func (u *Util) call(path string, args []any) (result any, err error, ok bool) {
 	return nil, nil, false
 }
 
+// Invoke is the 3-value form the shared vtl engine calls for a `$util.<path>(args)` reference (it
+// satisfies vtl.Util alongside Call). ok=false means "no such $util method" so the engine reports an
+// honest error. It simply forwards to the unexported dispatcher.
+func (u *Util) Invoke(path string, args []any) (any, error, bool) { return u.call(path, args) }
+
 // Call invokes a $util method by path (e.g. "toJson", "autoId", "time.nowISO8601") for a runtime that
 // is NOT VTL — the JS runtime reuses this exact dispatcher so the two runtimes can never drift. A
 // $util.error surfaces as a *ThrowError; an unknown path is an error.

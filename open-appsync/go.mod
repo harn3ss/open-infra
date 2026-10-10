@@ -1,6 +1,6 @@
 module github.com/harn3ss/open-infra/open-appsync
 
-go 1.26.0
+go 1.26.4
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
@@ -42,6 +42,7 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/harn3ss/open-infra/dynamodb v0.0.0
+	github.com/harn3ss/open-infra/vtl v0.0.0-00010101000000-000000000000
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
@@ -66,3 +67,5 @@ require (
 )
 
 replace github.com/harn3ss/open-infra/dynamodb => ../dynamodb
+
+replace github.com/harn3ss/open-infra/vtl => ../vtl
