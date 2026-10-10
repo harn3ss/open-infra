@@ -143,6 +143,41 @@ EXTCODE="$(curl -sS -o "$WORK/ext" -w '%{http_code}' "${ENDPOINT}/_apigw/${API}/
 [ "$EXTCODE" = "200" ] || fail "HTTP_PROXY invoke status '$EXTCODE' want 200 (origin not reached). body: $(head -c 300 "$WORK/ext")"
 log "  ✓ HTTP_PROXY reached the origin (200)"
 
+# --- 4b. non-proxy AWS (Lambda) integration with VTL request + response mapping (increment 2) ---
+# requestTemplates wrap the body and lift $.name; the echo Lambda returns json.dumps(event); then the
+# per-status IntegrationResponse responseTemplates lift those mapped fields back out. finalName=="erin"
+# can ONLY be true if BOTH the request template (built "pick") and the response template (read it) ran.
+log "non-proxy AWS integration: VTL requestTemplates + IntegrationResponse responseTemplates (end to end)"
+MAPRES="$(agw "$WAK" "$WSK" create-resource --rest-api-id "$API" --parent-id "$ROOT" --path-part mapped --query id 2>/dev/null)" || fail "create-resource mapped failed"
+agw "$WAK" "$WSK" put-method --rest-api-id "$API" --resource-id "$MAPRES" --http-method POST --authorization-type NONE >/dev/null 2>&1 || fail "put-method mapped failed"
+python3 - "$WORK" "$API" "$MAPRES" "$REGION" "$FN" <<'PY'
+import json, sys
+work, api, res, region, fn = sys.argv[1:6]
+req  = "{\"wrapped\":$input.json('$'),\"pick\":$input.json('$.name')}"
+resp = "{\"finalName\":$input.json('$.pick'),\"wrappedName\":$input.json('$.wrapped.name'),\"mapped\":true}"
+json.dump({"restApiId": api, "resourceId": res, "httpMethod": "POST",
+           "type": "AWS", "integrationHttpMethod": "POST",
+           "uri": f"arn:aws:lambda:{region}:open-infra:function:{fn}",
+           "requestTemplates": {"application/json": req}}, open(f"{work}/int.json", "w"))
+json.dump({"restApiId": api, "resourceId": res, "httpMethod": "POST", "statusCode": "200",
+           "responseTemplates": {"application/json": resp}}, open(f"{work}/intresp.json", "w"))
+PY
+agw "$WAK" "$WSK" put-integration --cli-input-json "file://$WORK/int.json" >/dev/null 2>"$WORK/pie" || fail "put-integration (AWS non-proxy) failed: $(cat "$WORK/pie")"
+agw "$WAK" "$WSK" put-integration-response --cli-input-json "file://$WORK/intresp.json" >/dev/null 2>"$WORK/pire" || fail "put-integration-response failed: $(cat "$WORK/pire")"
+agw "$WAK" "$WSK" create-deployment --rest-api-id "$API" --stage-name prod >/dev/null 2>&1 || fail "redeploy (mapped) failed"
+MB="$WORK/mapped"
+MCODE="$(curl -sS -o "$MB" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"erin","n":1}' \
+  "${ENDPOINT}/_apigw/${API}/prod/mapped" 2>/dev/null || true)"
+[ "$MCODE" = "200" ] || fail "non-proxy AWS invoke status '$MCODE' want 200. body: $(head -c 400 "$MB")"
+python3 - "$MB" <<'PY' || fail "VTL request/response mapping did not apply end to end"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r.get("finalName") == "erin", f'finalName={r.get("finalName")} — request template did not run (pick absent)'
+assert r.get("wrappedName") == "erin", f'wrappedName={r.get("wrappedName")} — $.wrapped.name not mapped'
+assert r.get("mapped") is True, f'mapped={r.get("mapped")} — response template did not run'
+print("  ✓ non-proxy AWS: requestTemplates wrapped the body, the Lambda echoed it, responseTemplates lifted the mapped fields back (BOTH templates ran)")
+PY
+
 # --- 5a. negative: wrong SigV4 secret on a management call ---
 log "negative: a wrong secret on a management call must be rejected"
 if agw "$WAK" "wrong-secret-xyz" get-rest-apis >/dev/null 2>"$WORK/n1"; then fail "a wrong secret was accepted"; fi
@@ -178,4 +213,4 @@ fi
 grep -qiE 'AccessDenied|not authorized to integrate|denied' "$WORK/n2" || fail "#185 denial error wrong: $(cat "$WORK/n2")"
 log "  ✓ #185 fence holds for REST v1 (plain API allowed; unauthorized Lambda wiring refused)"
 
-printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, and the auth + #185 wiring-fence boundaries.\n'
+printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), and the auth + #185 wiring-fence boundaries.\n'

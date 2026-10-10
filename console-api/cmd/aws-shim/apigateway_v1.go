@@ -12,7 +12,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -104,6 +106,8 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		h.putMethod(ctx, w, requestID, v.APIID, v.ResourceID, v.HTTPMethod, body)
 	case "PutIntegration":
 		h.putIntegration(ctx, w, r, claims, requestID, v.APIID, v.ResourceID, v.HTTPMethod, body)
+	case "PutIntegrationResponse":
+		h.putIntegrationResponse(ctx, w, requestID, v.APIID, v.ResourceID, v.HTTPMethod, v.StatusCode, body)
 	case "CreateDeployment":
 		h.createDeployment(ctx, w, requestID, v.APIID, body)
 	case "CreateStage":
@@ -302,17 +306,40 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 		pfv = "1.0" // REST v1 Lambda proxy events are format 1.0
 	}
 	ihm, _ := body["integrationHttpMethod"].(string)
-	// requestTemplates/responseTemplates (contentType → VTL) drive non-proxy AWS/HTTP body mapping.
+	// requestTemplates (contentType → VTL) drive non-proxy AWS/HTTP REQUEST body mapping. The RESPONSE
+	// side is set separately by PutIntegrationResponse, exactly as AWS models it.
 	reqTmpls := stringMap(body["requestTemplates"])
-	respTmpls := stringMap(body["responseTemplates"])
 	if err := h.store.putIntegration(ctx, apiID, restIntegration{
 		ResourceID: resID, HTTPMethod: httpMethod, Type: itype, URI: uri, IntegrationHTTPMethod: ihm, PayloadFormatVersion: pfv,
-		RequestTemplates: reqTmpls, ResponseTemplates: respTmpls,
+		RequestTemplates: reqTmpls,
 	}); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{"type": itype, "uri": uri})
+}
+
+// putIntegrationResponse records an IntegrationResponse (PutIntegrationResponse): the responseTemplates
+// (contentType → VTL) for one statusCode that map the backend response body. The integration must
+// already exist (AWS semantics); a missing one is a NotFoundException.
+func (h *apigwV1Handler) putIntegrationResponse(ctx context.Context, w http.ResponseWriter, requestID, apiID, resID, httpMethod, statusCode string, body map[string]any) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	if statusCode == "" {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "PutIntegrationResponse requires a statusCode.")
+		return
+	}
+	respTmpls := stringMap(body["responseTemplates"])
+	if err := h.store.putIntegrationResponse(ctx, apiID, resID, httpMethod, statusCode, respTmpls); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "no integration on "+httpMethod+" "+resID+" to attach a response to (call PutIntegration first).")
+			return
+		}
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{"statusCode": statusCode})
 }
 
 func (h *apigwV1Handler) createDeployment(ctx context.Context, w http.ResponseWriter, requestID, apiID string, body map[string]any) {
@@ -563,13 +590,15 @@ func (h *apigwV1Handler) mapRequestBody(w http.ResponseWriter, r *http.Request, 
 	return []byte(out), true
 }
 
-// writeMappedResponse reads the upstream response body and applies the matching responseTemplates
-// template (pass-through, copying status+headers, if none matches). A mapped response is written as
-// application/json with the upstream status.
+// writeMappedResponse reads the upstream response body and applies the IntegrationResponse that matches
+// the backend status (exact statusCode → "200"/default → any). The matched response's statusCode
+// becomes the method response status and its responseTemplates (keyed by content-type) map the body.
+// With no IntegrationResponse configured at all it is pass-through, copying the upstream status +
+// headers + body (so an AWS/HTTP integration with no response mapping still works).
 func (h *apigwV1Handler) writeMappedResponse(w http.ResponseWriter, r *http.Request, integ restIntegration, resp *http.Response, apiID, stage, routePath, requestID string, pathParams, stageVars map[string]string) {
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
-	tmpl, matched := pickMappingTemplate(integ.ResponseTemplates, resp.Header.Get("Content-Type"))
-	if !matched {
+	mappedStatus, tmpls, ok := pickIntegrationResponse(integ.IntegrationResponses, resp.StatusCode)
+	if !ok {
 		// pass-through: copy the upstream status + headers + (already-read) body.
 		for k, vs := range resp.Header {
 			for _, v := range vs {
@@ -581,13 +610,20 @@ func (h *apigwV1Handler) writeMappedResponse(w http.ResponseWriter, r *http.Requ
 		_, _ = w.Write(respBody)
 		return
 	}
-	out, err := renderMappingTemplate(tmpl, respBody, mergeInputParams(r, pathParams), stageVars, h.vtlContext(r, apiID, stage, routePath, requestID))
-	if err != nil {
-		h.logger.Warn("apigw v1 response template error", "api", apiID, "path", routePath, "error", err.Error())
-		writeAGWError(w, http.StatusInternalServerError, "InternalServerException", requestID, "response mapping template error")
-		return
+	out := string(respBody)
+	if tmpl, matched := pickMappingTemplate(tmpls, resp.Header.Get("Content-Type")); matched {
+		rendered, err := renderMappingTemplate(tmpl, respBody, mergeInputParams(r, pathParams), stageVars, h.vtlContext(r, apiID, stage, routePath, requestID))
+		if err != nil {
+			h.logger.Warn("apigw v1 response template error", "api", apiID, "path", routePath, "error", err.Error())
+			writeAGWError(w, http.StatusInternalServerError, "InternalServerException", requestID, "response mapping template error")
+			return
+		}
+		out = rendered
 	}
-	status := resp.StatusCode
+	status := mappedStatus
+	if status == 0 {
+		status = resp.StatusCode
+	}
 	if status == 0 {
 		status = http.StatusOK
 	}

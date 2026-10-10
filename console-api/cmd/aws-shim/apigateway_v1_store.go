@@ -37,12 +37,16 @@ type restMethod struct {
 type restIntegration struct {
 	ResourceID            string            `json:"resourceId"`
 	HTTPMethod            string            `json:"httpMethod"`
-	Type                  string            `json:"type"`                        // AWS | AWS_PROXY | HTTP | HTTP_PROXY | MOCK
-	URI                   string            `json:"uri"`                         // Lambda ARN/name, or an http(s) origin
-	IntegrationHTTPMethod string            `json:"integrationHttpMethod"`       // for HTTP/HTTP_PROXY
-	PayloadFormatVersion  string            `json:"payloadFormatVersion"`        // Lambda proxy event format (default 1.0 for REST)
-	RequestTemplates      map[string]string `json:"requestTemplates,omitempty"`  // contentType → VTL (non-proxy AWS/HTTP)
-	ResponseTemplates     map[string]string `json:"responseTemplates,omitempty"` // contentType → VTL (non-proxy AWS/HTTP)
+	Type                  string            `json:"type"`                       // AWS | AWS_PROXY | HTTP | HTTP_PROXY | MOCK
+	URI                   string            `json:"uri"`                        // Lambda ARN/name, or an http(s) origin
+	IntegrationHTTPMethod string            `json:"integrationHttpMethod"`      // for HTTP/HTTP_PROXY
+	PayloadFormatVersion  string            `json:"payloadFormatVersion"`       // Lambda proxy event format (default 1.0 for REST)
+	RequestTemplates      map[string]string `json:"requestTemplates,omitempty"` // contentType → VTL (non-proxy AWS/HTTP)
+	// IntegrationResponses holds the per-status response mapping (PutIntegrationResponse), as AWS models
+	// it: statusCode → (contentType → VTL responseTemplate). The matched response's statusCode becomes
+	// the method response status; its templates map the backend body. selectionPattern is not modelled
+	// (the default/200 entry catches every backend response — documented honest subset).
+	IntegrationResponses map[string]map[string]string `json:"integrationResponses,omitempty"`
 }
 
 // restSnapshot is the immutable picture a deployment freezes and a stage serves.
@@ -83,8 +87,8 @@ CREATE TABLE IF NOT EXISTS rest_integrations (
     uri            text NOT NULL DEFAULT '',
     integration_http_method text NOT NULL DEFAULT '',
     payload_format_version  text NOT NULL DEFAULT '1.0',
-    request_templates  jsonb,
-    response_templates jsonb,
+    request_templates     jsonb,
+    integration_responses jsonb,
     PRIMARY KEY (api_id, resource_id, http_method)
 );
 CREATE TABLE IF NOT EXISTS rest_deployments (
@@ -102,11 +106,11 @@ CREATE TABLE IF NOT EXISTS rest_stages (
     created       timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (api_id, stage_name)
 );
--- increment 2 (non-proxy VTL mapping): add the template columns in place so an already-live
+-- increment 2 (non-proxy VTL mapping): add the mapping columns in place so an already-live
 -- rest_integrations table (increment 1) gains them. CREATE TABLE IF NOT EXISTS above is a no-op on an
 -- existing table, so the ALTERs are what migrate it; both are no-ops on a freshly created table.
-ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS request_templates  jsonb;
-ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS response_templates jsonb;`)
+ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS request_templates     jsonb;
+ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS integration_responses jsonb;`)
 	return err
 }
 
@@ -222,22 +226,46 @@ func (s *apigwV1Store) putMethod(ctx context.Context, apiID string, m restMethod
 }
 
 func (s *apigwV1Store) putIntegration(ctx context.Context, apiID string, i restIntegration) error {
-	reqT := marshalTemplates(i.RequestTemplates)
-	respT := marshalTemplates(i.ResponseTemplates)
+	reqT := marshalJSONB(i.RequestTemplates)
+	// PutIntegration carries the request side; the response side (integration_responses) is written by
+	// PutIntegrationResponse, so DO NOT clobber it here — COALESCE keeps any responses already set.
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO rest_integrations (api_id, resource_id, http_method, type, uri, integration_http_method, payload_format_version, request_templates, response_templates)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		`INSERT INTO rest_integrations (api_id, resource_id, http_method, type, uri, integration_http_method, payload_format_version, request_templates)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 ON CONFLICT (api_id, resource_id, http_method)
 		 DO UPDATE SET type=EXCLUDED.type, uri=EXCLUDED.uri,
 		   integration_http_method=EXCLUDED.integration_http_method, payload_format_version=EXCLUDED.payload_format_version,
-		   request_templates=EXCLUDED.request_templates, response_templates=EXCLUDED.response_templates`,
-		apiID, i.ResourceID, i.HTTPMethod, i.Type, i.URI, i.IntegrationHTTPMethod, i.PayloadFormatVersion, reqT, respT)
+		   request_templates=EXCLUDED.request_templates`,
+		apiID, i.ResourceID, i.HTTPMethod, i.Type, i.URI, i.IntegrationHTTPMethod, i.PayloadFormatVersion, reqT)
 	return err
 }
 
-// marshalTemplates encodes a contentType→template map for a jsonb column (nil when empty, so the
-// column stays NULL rather than "{}").
-func marshalTemplates(m map[string]string) []byte {
+// putIntegrationResponse records a single IntegrationResponse (PutIntegrationResponse): it merges the
+// {contentType → VTL} templates for one statusCode into the integration's integration_responses map.
+// AWS requires the integration to exist first; a missing one returns sql.ErrNoRows so the handler can
+// map it to NotFoundException.
+func (s *apigwV1Store) putIntegrationResponse(ctx context.Context, apiID, resID, method, statusCode string, templates map[string]string) error {
+	tj, err := json.Marshal(templates)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE rest_integrations
+		   SET integration_responses = jsonb_set(COALESCE(integration_responses, '{}'::jsonb), ARRAY[$4], $5::jsonb, true)
+		 WHERE api_id=$1 AND resource_id=$2 AND http_method=$3`,
+		apiID, resID, method, statusCode, string(tj))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// marshalJSONB encodes a value for a jsonb column (nil when empty, so the column stays NULL rather
+// than "{}"/"null").
+func marshalJSONB[T any](m map[string]T) []byte {
 	if len(m) == 0 {
 		return nil
 	}
@@ -263,7 +291,7 @@ func (s *apigwV1Store) listMethods(ctx context.Context, apiID string) ([]restMet
 }
 
 func (s *apigwV1Store) listIntegrations(ctx context.Context, apiID string) ([]restIntegration, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT resource_id, http_method, type, uri, integration_http_method, payload_format_version, request_templates, response_templates FROM rest_integrations WHERE api_id=$1`, apiID)
+	rows, err := s.db.QueryContext(ctx, `SELECT resource_id, http_method, type, uri, integration_http_method, payload_format_version, request_templates, integration_responses FROM rest_integrations WHERE api_id=$1`, apiID)
 	if err != nil {
 		return nil, err
 	}
@@ -271,15 +299,15 @@ func (s *apigwV1Store) listIntegrations(ctx context.Context, apiID string) ([]re
 	var out []restIntegration
 	for rows.Next() {
 		var i restIntegration
-		var reqT, respT []byte
-		if err := rows.Scan(&i.ResourceID, &i.HTTPMethod, &i.Type, &i.URI, &i.IntegrationHTTPMethod, &i.PayloadFormatVersion, &reqT, &respT); err != nil {
+		var reqT, intResp []byte
+		if err := rows.Scan(&i.ResourceID, &i.HTTPMethod, &i.Type, &i.URI, &i.IntegrationHTTPMethod, &i.PayloadFormatVersion, &reqT, &intResp); err != nil {
 			return nil, err
 		}
 		if len(reqT) > 0 {
 			_ = json.Unmarshal(reqT, &i.RequestTemplates)
 		}
-		if len(respT) > 0 {
-			_ = json.Unmarshal(respT, &i.ResponseTemplates)
+		if len(intResp) > 0 {
+			_ = json.Unmarshal(intResp, &i.IntegrationResponses)
 		}
 		out = append(out, i)
 	}
