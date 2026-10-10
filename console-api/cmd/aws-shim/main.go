@@ -531,9 +531,11 @@ func run(logger *slog.Logger) error {
 			getenv("ECR_PROXY_ENDPOINT", ecrURL), getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
 		ecrH.authz = authzChecker
 		// Per-repo data-plane auth (the Docker bearer-token protocol). The signing key lives in the
-		// shim's own namespace (keysNS). tokenAuth is gated by ECR_TOKEN_AUTH so GetAuthorizationToken
-		// keeps returning the htpasswd cred until the registry is cut over to token auth (set together).
-		if sgn, serr := loadOrCreateECRTokenSigner(context.Background(), cs, keysNS); serr != nil {
+		// REGISTRY's namespace (ecrNS by default) so the registry mounts its cert (rootcertbundle)
+		// same-namespace. tokenAuth is gated by ECR_TOKEN_AUTH so GetAuthorizationToken keeps returning
+		// the htpasswd cred until the registry is cut over to token auth (set together).
+		ecrKeyNS := getenv("ECR_TOKEN_KEY_NAMESPACE", ecrNS)
+		if sgn, serr := loadOrCreateECRTokenSigner(context.Background(), cs, ecrKeyNS); serr != nil {
 			logger.Warn("ECR token signer unavailable; per-repo token auth disabled", "error", serr.Error())
 		} else {
 			ecrH.signer = sgn
