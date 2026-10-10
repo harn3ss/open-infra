@@ -201,9 +201,16 @@ data:
       headers:
         X-Content-Type-Options: [nosniff]
     auth:
-      htpasswd:
-        realm: openinfra-ecr
-        path: /auth/htpasswd
+      # Per-repo bearer-token auth (the AWS/ECR model): the registry redirects docker to the shim's
+      # token endpoint (realm), which mints a JWT scoped to only the repos the caller may push/pull;
+      # the registry verifies that JWT against the shim's signing cert (rootcertbundle, mounted from
+      # the ecr-token-cert ConfigMap the shim publishes). Replaces the single shared htpasswd identity.
+      token:
+        realm: http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/ecr/token
+        service: ecr-registry
+        issuer: openinfra-ecr
+        rootcertbundle: /token-cert/cert.pem
+        autoredirect: false
     health:
       storagedriver:
         enabled: true
@@ -235,6 +242,9 @@ spec:
         - { name: config, configMap: { name: ecr-registry-config } }
         - { name: auth, emptyDir: {} }
         - { name: tmp, emptyDir: {} }
+        # The per-repo token-auth trust anchor: the shim's signing cert (published by the shim as this
+        # ConfigMap), mounted as the registry's token rootcertbundle.
+        - { name: token-cert, configMap: { name: ecr-token-cert } }
       initContainers:
         # Generate the bcrypt htpasswd file from the minted plaintext credential. Kept out of the image so
         # the password rotates with the Secret, never baked into a layer.
@@ -270,6 +280,7 @@ spec:
             - { name: config, mountPath: /etc/distribution }
             - { name: auth, mountPath: /auth }
             - { name: tmp, mountPath: /tmp }
+            - { name: token-cert, mountPath: /token-cert, readOnly: true }
           readinessProbe:
             httpGet: { path: /, port: http }
             initialDelaySeconds: 5
