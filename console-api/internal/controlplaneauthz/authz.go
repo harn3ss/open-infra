@@ -96,6 +96,13 @@ func (c *Checker) Evaluate(ctx context.Context, spec authzv1.SubjectAccessReview
 // It fails SAFE toward current behavior: with authz disabled or a corpus load error it returns true,
 // so Evaluate still runs and fails closed as before — only the clean "corpus healthy, principal named
 // nowhere" case changes from deny to defer.
+//
+// "Named" here means SPECIFICALLY named — a grant on the principal itself (ServiceAccount::ns/name or
+// User::x) or on a scoped group — NOT a match on an "everyone" baseline group every ServiceAccount
+// belongs to (system:serviceaccounts, system:authenticated). Those blanket grants carry only a minimal
+// shared baseline (OIDC discovery, CDI image clone), so a freshly-minted SA that matches ONLY them is
+// not individually curated and must still defer to RBAC — otherwise the baseline would make every SA
+// look "governed" and defeat the corpus-miss defer entirely.
 func (c *Checker) PrincipalGoverned(ctx context.Context, spec authzv1.SubjectAccessReviewSpec) bool {
 	if c == nil || c.load == nil {
 		return true
@@ -105,8 +112,48 @@ func (c *Checker) PrincipalGoverned(ctx context.Context, spec authzv1.SubjectAcc
 		return true
 	}
 	for _, d := range docs {
-		if principalMatches(d.AppliesTo, spec) {
+		if principalSpecificallyNamed(d.AppliesTo, spec) {
 			return true
+		}
+	}
+	return false
+}
+
+// blanketGroups are "everyone" groups every ServiceAccount (or user) belongs to. A grant on one of
+// these is a shared baseline, not per-principal curation, so it does not count toward whether a
+// principal is specifically governed (see PrincipalGoverned).
+var blanketGroups = map[string]bool{
+	"system:serviceaccounts": true,
+	"system:authenticated":   true,
+}
+
+// principalSpecificallyNamed is principalMatches but ignores the blanket "everyone" groups, so a
+// principal covered ONLY by a shared baseline is not treated as specifically curated.
+func principalSpecificallyNamed(list []string, spec authzv1.SubjectAccessReviewSpec) bool {
+	for _, e := range list {
+		t, val, ok := strings.Cut(e, "::")
+		if !ok {
+			continue
+		}
+		switch t {
+		case "User":
+			if val == spec.User {
+				return true
+			}
+		case "ServiceAccount":
+			if ns, name, ok := strings.Cut(val, "/"); ok && spec.User == "system:serviceaccount:"+ns+":"+name {
+				return true
+			}
+		case "Group":
+			want := strings.TrimPrefix(val, "openinfra:")
+			if blanketGroups[want] {
+				continue
+			}
+			for _, g := range spec.Groups {
+				if strings.TrimPrefix(g, "openinfra:") == want {
+					return true
+				}
+			}
 		}
 	}
 	return false
