@@ -52,6 +52,7 @@ jobs:
           - { image: open-infra-attest,        context: ".",           file: console-api/Dockerfile.attest }
           - { image: open-infra-audit-offsite, context: ".",           file: console-api/Dockerfile.audit-offsite }
           - { image: open-infra-aws-shim,      context: ".",           file: console-api/Dockerfile.aws-shim }
+          - { image: open-infra-apigw-validator, context: ".",         file: console-api/Dockerfile.apigw-validator }
           - { image: open-infra-ca-issuer,     context: ".",           file: console-api/Dockerfile.ca-issuer }
           - { image: open-infra-apply-sink,    context: apply-sink,    file: apply-sink/Dockerfile }
           - { image: open-infra-statemachine,  context: statemachine,  file: statemachine/Dockerfile }

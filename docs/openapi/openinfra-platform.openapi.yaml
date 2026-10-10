@@ -5965,6 +5965,14 @@ components:
                       type: string
                     description: 'Request-validation: query-parameter names that MUST be present (any value). A request missing
                       any does not match this route.'
+                  requestModel:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    description: 'Request-body validation Model (the API Gateway Model/Request-Validator analog): a JSON Schema
+                      the request body must satisfy. When set, this route is sent through the apigw-validator tier, which
+                      validates the body AND any requiredHeaders/requiredQueryParams at the gateway and returns 400 before
+                      the backend (so required-param failures become a proper 400 here, not a 404). Supported JSON Schema
+                      keywords: type, required, properties, items, enum, minimum/maximum, minLength/maxLength, pattern, additionalProperties:false.'
                   backend:
                     type: object
                     description: "Where this route forwards. Set EXACTLY ONE of: name (an in-cluster kind: Function / Application)\
