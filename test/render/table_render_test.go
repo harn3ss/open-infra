@@ -50,6 +50,24 @@ func TestTable_LocalSecondaryIndex(t *testing.T) {
 	}
 }
 
+// streamSpecification renders the view type into the spec-mirror ConfigMap, so the shim opens a
+// change stream for the table.
+func TestTable_StreamSpecification(t *testing.T) {
+	tmpl := extractInlineTemplate(t, tableCompositionPath)
+	out := render(t, tmpl, tableCtx(map[string]any{
+		"hashKey":             map[string]any{"name": "id", "type": "S"},
+		"streamSpecification": map[string]any{"streamViewType": "NEW_AND_OLD_IMAGES"},
+	}))
+	if !strings.Contains(out, "streamViewType:") || !strings.Contains(out, "NEW_AND_OLD_IMAGES") {
+		t.Errorf("streamSpecification should render streamViewType; got:\n%s", grepCtx(out, "stream"))
+	}
+	// No streamSpecification → no streamViewType field.
+	bare := render(t, tmpl, tableCtx(map[string]any{"hashKey": map[string]any{"name": "id", "type": "S"}}))
+	if strings.Contains(bare, "streamViewType:") {
+		t.Errorf("a table without a stream must not render streamViewType; got:\n%s", grepCtx(bare, "stream"))
+	}
+}
+
 // An LSI needs the table to have a range key (DynamoDB rule) — rendering must fail loud, not emit
 // a half-formed index.
 func TestTable_LSIRequiresRangeKey(t *testing.T) {

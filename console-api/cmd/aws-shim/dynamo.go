@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -47,7 +48,73 @@ type dynamoHandler struct {
 	pg      *sql.DB                 // the documentdb Postgres behind FerretDB; nil disables Transact* (honest 501)
 	dbName  string                  // the documentdb database name (== the mongo DB name) for documentdb_api calls
 	authz   *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
+	stream  *ddbStreamStore         // DynamoDB Streams change-record log (Postgres); nil disables streams
+	account string                  // for stream ARNs (DescribeTable LatestStreamArn)
+	region  string
 	logger  *slog.Logger
+}
+
+// tableStream returns a table's DynamoDB Streams view type ("" if streams are not enabled for it).
+func (h *dynamoHandler) tableStream(ctx context.Context, table string) string {
+	var doc struct {
+		Stream struct {
+			ViewType string `bson:"viewType"`
+		} `bson:"stream"`
+	}
+	if err := h.registry().FindOne(ctx, bson.M{"_id": table}).Decode(&doc); err != nil {
+		return ""
+	}
+	return doc.Stream.ViewType
+}
+
+// openTableStream records a table's stream view type in the registry and initializes its Postgres
+// change-record log. Best-effort on the log (a stream-store failure is logged, never fatal — the
+// table still works, it just won't emit).
+func (h *dynamoHandler) openTableStream(ctx context.Context, table, viewType string) {
+	if viewType == "" || h.stream == nil {
+		return
+	}
+	if err := h.stream.openStream(ctx, table, viewType); err != nil {
+		h.logger.Warn("dynamodb stream open failed", "table", table, "err", err)
+	}
+}
+
+// readImage reads an item and returns it AV-shaped (nil if it does not exist) — used to capture the
+// old/new image for a stream change record. Errors are swallowed (best-effort capture).
+func (h *dynamoHandler) readImage(ctx context.Context, table string, key map[string]any) map[string]any {
+	res, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "GetItem", "key": key})
+	if err != nil {
+		return nil
+	}
+	internal, _ := res.(map[string]any)
+	if internal == nil {
+		return nil
+	}
+	return dynamodb.ToItem(internal)
+}
+
+// emitStreamRecord appends a DynamoDB Streams change record for a write when the table has a stream
+// (viewType != ""). Best-effort: any failure is logged, NEVER propagated — a write must not fail
+// because its stream append did. keys/oldImage/newImage are AV-shaped maps (nil when absent/omitted).
+func (h *dynamoHandler) emitStreamRecord(ctx context.Context, table, viewType, eventName string, keys, oldImage, newImage map[string]any) {
+	if viewType == "" || h.stream == nil {
+		return
+	}
+	payload := map[string]any{"Keys": keys, "StreamViewType": viewType}
+	if (viewType == "NEW_IMAGE" || viewType == "NEW_AND_OLD_IMAGES") && newImage != nil {
+		payload["NewImage"] = newImage
+	}
+	if (viewType == "OLD_IMAGE" || viewType == "NEW_AND_OLD_IMAGES") && oldImage != nil {
+		payload["OldImage"] = oldImage
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		h.logger.Warn("dynamodb stream marshal failed", "table", table, "err", err)
+		return
+	}
+	if _, err := h.stream.appendRecord(ctx, table, eventName, string(b), time.Now().UnixMilli()); err != nil {
+		h.logger.Warn("dynamodb stream append failed", "table", table, "err", err)
+	}
 }
 
 func newDynamoHandler(cs kubernetes.Interface, authzNS string, db *mongo.Database, pg *sql.DB, dbName string, logger *slog.Logger) *dynamoHandler {
@@ -172,12 +239,16 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 	}
 	gsis := gsisFromCreateTable(body)
 	lsis := lsisFromCreateTable(body)
+	streamView := streamViewFromSpec(body["StreamSpecification"])
 	entry := bson.M{"_id": table, "keyAttrs": keyAttrs}
 	if len(gsis) > 0 {
 		entry["gsi"] = gsis
 	}
 	if len(lsis) > 0 {
 		entry["lsi"] = lsis
+	}
+	if streamView != "" {
+		entry["stream"] = bson.M{"viewType": streamView}
 	}
 	_, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table}, entry, options.Replace().SetUpsert(true))
 	if err != nil {
@@ -186,6 +257,7 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 	}
 	h.ensureGSIIndexes(ctx, table, gsis)
 	h.ensureLSIIndexes(ctx, table, lsis)
+	h.openTableStream(ctx, table, streamView)
 	desc := map[string]any{
 		"TableName": table, "TableStatus": "ACTIVE", "KeySchema": body["KeySchema"], "ItemCount": float64(0),
 	}
@@ -194,6 +266,11 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 	}
 	if len(lsis) > 0 {
 		desc["LocalSecondaryIndexes"] = lsiDescriptions(lsis)
+	}
+	if streamView != "" {
+		desc["StreamSpecification"] = map[string]any{"StreamEnabled": true, "StreamViewType": streamView}
+		desc["LatestStreamArn"] = dynamoStreamARN(h.region, h.account, table)
+		desc["LatestStreamLabel"] = table
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": desc})
 }
@@ -219,6 +296,11 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 	}
 	if lsis := h.tableLSIs(ctx, table); len(lsis) > 0 {
 		tbl["LocalSecondaryIndexes"] = lsiDescriptions(lsis)
+	}
+	if sv := h.tableStream(ctx, table); sv != "" {
+		tbl["StreamSpecification"] = map[string]any{"StreamEnabled": true, "StreamViewType": sv}
+		tbl["LatestStreamArn"] = dynamoStreamARN(h.region, h.account, table)
+		tbl["LatestStreamLabel"] = table
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"Table": tbl})
 }
@@ -263,9 +345,22 @@ func (h *dynamoHandler) putItem(ctx context.Context, w http.ResponseWriter, requ
 			"One of the required keys was not given a value: "+missing)
 		return
 	}
+	// Stream capture: read the prior item first (to distinguish INSERT vs MODIFY + carry OLD_IMAGE).
+	sv := h.tableStream(ctx, table)
+	var oldImg map[string]any
+	if sv != "" {
+		oldImg = h.readImage(ctx, table, key)
+	}
 	if _, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "PutItem", "key": key, "attributeValues": item}); err != nil {
 		h.internal(w, requestID, err)
 		return
+	}
+	if sv != "" {
+		ev := "INSERT"
+		if oldImg != nil {
+			ev = "MODIFY"
+		}
+		h.emitStreamRecord(ctx, table, sv, ev, key, oldImg, item)
 	}
 	writeDynamoJSON(w, requestID, map[string]any{}) // PutItem returns {} without ReturnValues
 }
@@ -276,9 +371,19 @@ func (h *dynamoHandler) deleteItem(ctx context.Context, w http.ResponseWriter, r
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "DeleteItem requires a Key.")
 		return
 	}
+	// Stream capture: read the item before deleting it, so REMOVE can carry its OLD_IMAGE.
+	sv := h.tableStream(ctx, table)
+	var oldImg map[string]any
+	if sv != "" {
+		oldImg = h.readImage(ctx, table, key)
+	}
 	if _, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "DeleteItem", "key": key}); err != nil {
 		h.internal(w, requestID, err)
 		return
+	}
+	// A delete emits REMOVE only when something was actually there (matches DynamoDB).
+	if sv != "" && oldImg != nil {
+		h.emitStreamRecord(ctx, table, sv, "REMOVE", key, oldImg, nil)
 	}
 	writeDynamoJSON(w, requestID, map[string]any{}) // returns {} without ReturnValues
 }
@@ -373,10 +478,27 @@ func (h *dynamoHandler) updateItem(ctx context.Context, w http.ResponseWriter, r
 	if ce, ok := body["ConditionExpression"].(string); ok && ce != "" {
 		op["condition"] = exprBlock(ce, names, values)
 	}
+	// Stream capture: read the prior item before updating (INSERT-vs-MODIFY + OLD_IMAGE).
+	sv := h.tableStream(ctx, table)
+	var oldImg map[string]any
+	if sv != "" {
+		oldImg = h.readImage(ctx, table, key)
+	}
 	res, err := h.store(table).Execute(ctx, op)
 	if err != nil {
 		h.mapStoreError(w, requestID, err)
 		return
+	}
+	if sv != "" {
+		var newImg map[string]any
+		if item, ok := res.(map[string]any); ok {
+			newImg = dynamodb.ToItem(item)
+		}
+		ev := "MODIFY"
+		if oldImg == nil {
+			ev = "INSERT" // an update that created the item (upsert)
+		}
+		h.emitStreamRecord(ctx, table, sv, ev, key, oldImg, newImg)
 	}
 	// ReturnValues: NONE (default) → {}; ALL_NEW / UPDATED_NEW → the updated item.
 	if rv, _ := body["ReturnValues"].(string); rv == "ALL_NEW" || rv == "UPDATED_NEW" {

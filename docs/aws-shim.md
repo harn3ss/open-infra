@@ -125,7 +125,7 @@ the sections below; the one-line summary:
 | **[STS](#sts-faithful)** | identity / Vault-sealed tokens | query/XML | `AssumeRole` opt-in (Vault-custodied sealing key) |
 | **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | qualifiers/versions not resolved |
 | **[AppSync](#appsync-graphql-over-open-appsync--slice-1-runs-live-experimental)** | open-appsync engine | GraphQL | **experimental**; needs `components.openAppsync` |
-| **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression`, streams `501` |
+| **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
 | **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | FIFO refused (standard only) |
 | **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` protocol only; FilterPolicy/`.fifo`/http refused |
 | **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; grants/key-policies refused |
@@ -312,8 +312,11 @@ in-transaction reads (a condition/update sees the txn's own consistent state) an
 `CancellationReasons` (needs `MONGO_PG_URI`). **TTL:** a background reaper sweeps expired items (DynamoDB
 TTL is an epoch *number*, which a Mongo Date-only TTL index cannot act on). Declared `kind: Table` objects
 are registered from their spec-mirror ConfigMaps, so a cfn-/GitOps-applied table is usable without a runtime
-`CreateTable`. Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`, `DeleteTable`, and
-streams. Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions).
+`CreateTable`. **Streams:** a table with a `StreamSpecification` (or `kind: Table` `spec.streamSpecification`)
+emits an ordered INSERT/MODIFY/REMOVE change record per item write, read via the **dynamodbstreams** API
+(`DescribeStream`/`GetShardIterator`/`GetRecords`) — Postgres-backed shard log, one shard in v1, 24h retention
+(needs `MONGO_PG_URI`). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`, `DeleteTable`.
+Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions and streams).
 
 ### SQS (Postgres-backed; probe-proven)
 
