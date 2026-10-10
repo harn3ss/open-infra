@@ -171,9 +171,13 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	gsis := gsisFromCreateTable(body)
+	lsis := lsisFromCreateTable(body)
 	entry := bson.M{"_id": table, "keyAttrs": keyAttrs}
 	if len(gsis) > 0 {
 		entry["gsi"] = gsis
+	}
+	if len(lsis) > 0 {
+		entry["lsi"] = lsis
 	}
 	_, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table}, entry, options.Replace().SetUpsert(true))
 	if err != nil {
@@ -181,11 +185,15 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	h.ensureGSIIndexes(ctx, table, gsis)
+	h.ensureLSIIndexes(ctx, table, lsis)
 	desc := map[string]any{
 		"TableName": table, "TableStatus": "ACTIVE", "KeySchema": body["KeySchema"], "ItemCount": float64(0),
 	}
 	if len(gsis) > 0 {
 		desc["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
+	}
+	if len(lsis) > 0 {
+		desc["LocalSecondaryIndexes"] = lsiDescriptions(lsis)
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": desc})
 }
@@ -208,6 +216,9 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 	tbl := map[string]any{"TableName": table, "TableStatus": "ACTIVE", "KeySchema": schema}
 	if gsis := h.tableGSIs(ctx, table); len(gsis) > 0 {
 		tbl["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
+	}
+	if lsis := h.tableLSIs(ctx, table); len(lsis) > 0 {
+		tbl["LocalSecondaryIndexes"] = lsiDescriptions(lsis)
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"Table": tbl})
 }
@@ -283,12 +294,19 @@ func (h *dynamoHandler) query(ctx context.Context, w http.ResponseWriter, reques
 	}
 	names, values := body["ExpressionAttributeNames"], body["ExpressionAttributeValues"]
 	op := dynamodb.Operation{"operation": "Query", "query": exprBlock(kce, names, values)}
-	// A GSI query: validate IndexName against the table's declared indexes, then let the store
-	// resolve the key condition against the index's attributes (the same runQuery path).
+	// A secondary-index query (GSI or LSI): validate IndexName against the table's declared
+	// indexes, then let the store resolve the key condition against the index's attributes (the
+	// same runQuery path).
 	if idx, _ := body["IndexName"].(string); idx != "" {
 		known := false
 		for _, g := range h.tableGSIs(ctx, table) {
 			if g.Name == idx {
+				known = true
+				break
+			}
+		}
+		for _, l := range h.tableLSIs(ctx, table) {
+			if l.Name == idx {
 				known = true
 				break
 			}

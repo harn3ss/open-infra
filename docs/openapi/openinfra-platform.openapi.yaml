@@ -7538,6 +7538,38 @@ components:
                         - N
                         - B
                         description: 'Scalar key type: S / N / B. Quote it in YAML.'
+            localSecondaryIndexes:
+              type: array
+              description: "Local secondary indexes \u2014 query the table by an alternate sort key under the SAME partition\
+                \ (HASH) key. Declared at table creation (immutable, as in DynamoDB), each backed by a real Mongo index on\
+                \ (table hashKey, this rangeKey). Requires the table to have a rangeKey. Like GSIs, projection is effectively\
+                \ ALL (the store keeps full items)."
+              items:
+                type: object
+                required:
+                - name
+                - rangeKey
+                properties:
+                  name:
+                    type: string
+                    description: "Index name \u2014 the Query IndexName."
+                  rangeKey:
+                    type: object
+                    description: The index's sort key (the partition key is the table's hashKey).
+                    required:
+                    - name
+                    - type
+                    properties:
+                      name:
+                        type: string
+                        description: Attribute name of the index sort key.
+                      type:
+                        type: string
+                        enum:
+                        - S
+                        - N
+                        - B
+                        description: 'Scalar key type: S / N / B. Quote it in YAML (type: "N").'
         status:
           type: object
           properties:
