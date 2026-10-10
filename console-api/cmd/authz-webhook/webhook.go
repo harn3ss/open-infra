@@ -68,6 +68,13 @@ func (h *webhookHandler) isDeferredServiceAccount(user string) bool {
 	return ok && h.deferSANamespaces[ns]
 }
 
+// isServiceAccountUser reports whether the identity is a Kubernetes ServiceAccount
+// (system:serviceaccount:<namespace>:<name>) — a machine identity, as opposed to a human user or a
+// group. Corpus-miss defer-to-RBAC is scoped to these, so users/console/apps stay strictly enforced.
+func isServiceAccountUser(user string) bool {
+	return strings.HasPrefix(user, "system:serviceaccount:")
+}
+
 // isBreakGlass reports whether the request's identity is in the break-glass floor — by exact user
 // (the webhook's own ServiceAccount, so it can bootstrap its corpus) or by group (system:masters, for
 // cluster-admin recovery through a broken/empty corpus).
@@ -129,6 +136,26 @@ func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
 			"reason", "operator-managed infra SA — deferring to RBAC")
 		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: false,
 			Reason: "control-plane authz: operator-managed infra ServiceAccount — deferring to RBAC"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&sar)
+		return
+	}
+	// AWS-faithful corpus-miss handling for ServiceAccounts: a ServiceAccount the corpus names NOWHERE
+	// is a freshly-minted machine identity the snapshot has not been regenerated for yet (a new
+	// CloudNativePG cluster SA, an operator plugin SA, any new component). Defer it to RBAC — its
+	// attached-at-creation policy — rather than default-denying and deadlocking provisioning. This
+	// generalizes deferSANamespaces beyond a fixed namespace list: an allow-list snapshot can never
+	// again deadlock a machine identity it simply has not been regenerated for (the "RBAC-fallback /
+	// must not deadlock" intent). It is SCOPED TO ServiceAccounts on purpose — users, the console, and
+	// applications stay under strict default-deny enforcement below (the AC-6 tightening is untouched),
+	// and a ServiceAccount the corpus DOES name is also still fully enforced (named-but-tightened → the
+	// ungranted action is denied).
+	if h.mode == Enforce && isServiceAccountUser(sar.Spec.User) && !h.checker.PrincipalGoverned(r.Context(), sar.Spec) {
+		h.logger.Info("control-plane authz decision", "mode", h.mode, "user", sar.Spec.User,
+			"verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec), "wouldAllow", "defer",
+			"reason", "ServiceAccount not in corpus — deferring to RBAC")
+		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: false,
+			Reason: "control-plane authz: ServiceAccount not in corpus — deferring to RBAC"}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(&sar)
 		return
