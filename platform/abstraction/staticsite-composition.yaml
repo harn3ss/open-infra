@@ -41,6 +41,12 @@ spec:
             {{- $interval := $spec.syncIntervalSeconds | default 30 }}
             {{- $tls := true }}{{- if hasKey $spec "tls" }}{{- $tls = $spec.tls }}{{- end }}
             {{- $spa := true }}{{- if hasKey $spec "spa" }}{{- $spa = $spec.spa }}{{- end }}
+            {{- /* Amplify-style build: derive the poll cron (pollSeconds -> whole minutes, min 1). */}}
+            {{- $build := $spec.build | default dict }}
+            {{- $pollMin := 5 }}
+            {{- if $build.pollSeconds }}{{- $pollMin = div (int $build.pollSeconds) 60 }}{{- if lt $pollMin 1 }}{{- $pollMin = 1 }}{{- end }}{{- end }}
+            {{- $bbranch := $build.branch | default "main" }}
+            {{- $boutput := $build.outputDir | default "dist" }}
             ---
             # Bucket + connection secret: one Job (aws-cli + kubectl) creates the
             # bucket and writes <name>-minio into the app namespace, in the minio ns
@@ -113,6 +119,105 @@ spec:
                                   --from-literal=MINIO_ACCESS_KEY="$APPUSER" \
                                   --from-literal=MINIO_SECRET_KEY="$SK" \
                                   --dry-run=client -o yaml | kubectl apply -f -
+            {{- if $spec.build }}
+            ---
+            # Amplify-style managed build: a CronJob polls the git repo and, ONLY when the branch
+            # HEAD changed since the last build (tracked as s3://<bucket>/.build/last-sha), clones,
+            # runs the build command in a SANDBOXED step (non-root, no cluster credentials), and
+            # publishes the output dir to the site bucket — the server then picks it up on its sync.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: build
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: CronJob
+                  metadata: { name: {{ $name }}-site-build, namespace: {{ $ns }} }
+                  spec:
+                    schedule: "*/{{ $pollMin }} * * * *"
+                    concurrencyPolicy: Forbid
+                    successfulJobsHistoryLimit: 1
+                    failedJobsHistoryLimit: 3
+                    jobTemplate:
+                      spec:
+                        backoffLimit: 1
+                        activeDeadlineSeconds: 1800
+                        ttlSecondsAfterFinished: 600
+                        template:
+                          spec:
+                            # Untrusted repo code runs here: no cluster credentials, non-root, capped.
+                            automountServiceAccountToken: false
+                            restartPolicy: Never
+                            securityContext: { runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532, seccompProfile: { type: RuntimeDefault } }
+                            volumes:
+                              - { name: ws, emptyDir: {} }
+                            initContainers:
+                              # 1. Read the last-built SHA marker from the bucket.
+                              - name: prev
+                                image: alpine/k8s:1.30.0
+                                command: [/bin/sh, -c]
+                                args: ['aws --endpoint-url "$MINIO_ENDPOINT" s3 cp "s3://{{ $bucket }}/.build/last-sha" /ws/.prev 2>/dev/null || echo none > /ws/.prev']
+                                env:
+                                  - { name: MINIO_ENDPOINT, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } } }
+                                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } } }
+                                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } } }
+                                  - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+                                volumeMounts: [{ name: ws, mountPath: /ws }]
+                              # 2. ls-remote the branch HEAD; clone only if it changed (else .skip).
+                              - name: clone
+                                image: alpine/git:2.45.2
+                                command: [/bin/sh, -c]
+                                args:
+                                  - |
+                                    set -e
+                                    AUTH=""
+                                    {{- if $build.secret }}
+                                    [ -n "$GIT_TOKEN" ] && AUTH="${GIT_TOKEN}@"
+                                    {{- end }}
+                                    URL=$(printf '%s' "{{ $build.repo }}" | sed -E "s#^https://#https://${AUTH}#")
+                                    HEAD=$(git ls-remote "$URL" "{{ $bbranch }}" | awk '{print $1}' | head -1)
+                                    printf '%s' "$HEAD" > /ws/.head
+                                    if [ -n "$HEAD" ] && [ "$HEAD" = "$(cat /ws/.prev)" ]; then touch /ws/.skip; echo "no new commit ($HEAD)"; else git clone --depth 1 -b "{{ $bbranch }}" "$URL" /ws/src; fi
+                                env:
+                                  {{- if $build.secret }}
+                                  - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: {{ $build.secret }}, key: GIT_TOKEN, optional: true } } }
+                                  {{- end }}
+                                volumeMounts: [{ name: ws, mountPath: /ws }]
+                              # 3. Build (sandboxed) in the repo root, into the output dir.
+                              - name: build
+                                image: {{ $build.image | default "node:20-alpine" }}
+                                workingDir: /ws/src
+                                command: [/bin/sh, -c]
+                                args: ['if [ -f /ws/.skip ]; then exit 0; fi; {{ $build.buildCommand | default "npm ci && npm run build" }}']
+                                securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: [ALL] } }
+                                env:
+                                  - { name: HOME, value: /ws }
+                                  - { name: CI, value: "true" }
+                                  {{- range $e := ($build.env | default list) }}
+                                  - { name: {{ $e.name }}, value: {{ $e.value | quote }} }
+                                  {{- end }}
+                                volumeMounts: [{ name: ws, mountPath: /ws }]
+                            containers:
+                              # 4. Publish the output to the bucket + record the new SHA marker.
+                              - name: publish
+                                image: alpine/k8s:1.30.0
+                                command: [/bin/sh, -c]
+                                args:
+                                  - |
+                                    if [ -f /ws/.skip ]; then echo "unchanged — nothing to publish"; exit 0; fi
+                                    aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "/ws/src/{{ $boutput }}/" "s3://{{ $bucket }}/" --delete --exclude ".build/*"
+                                    aws --endpoint-url "$MINIO_ENDPOINT" s3 cp /ws/.head "s3://{{ $bucket }}/.build/last-sha"
+                                    echo "published {{ $boutput }} -> {{ $bucket }}"
+                                env:
+                                  - { name: MINIO_ENDPOINT, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } } }
+                                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } } }
+                                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } } }
+                                  - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+                                volumeMounts: [{ name: ws, mountPath: /ws }]
+            {{- end }}
             ---
             # nginx server config: SPA history-fallback (try_files -> index) or a
             # plain multi-file site with an optional error document.

@@ -32,6 +32,40 @@ The server re-syncs every `spec.syncIntervalSeconds` (default 30s), so a new upl
 without redeploying. For a plain multi-file site (no client-side router), set `spec.spa: false` and
 optionally `spec.errorDocument: 404.html`.
 
+## Managed build (`spec.build`) — the Amplify analog
+
+> AWS equivalent: **Amplify Hosting's connected-repo build** (git push → build → deploy).
+
+Instead of uploading pre-built assets, point a site at a git repo and let the platform build it:
+
+```yaml
+apiVersion: openinfra.dev/v1
+kind: StaticSite
+metadata: { name: web, namespace: team-a }
+spec:
+  domain: app.example.com
+  build:
+    repo: https://github.com/me/app.git
+    branch: main                         # default main
+    buildCommand: npm ci && npm run build # default
+    outputDir: dist                       # default — published to the bucket
+    image: node:20-alpine                 # build toolchain
+    pollSeconds: 300                      # how often to check for new commits
+    # secret: web-git   # optional: Secret with key GIT_TOKEN for a private repo
+    # env: [{ name: VITE_API, value: https://api.example.com }]
+```
+
+A CronJob polls `branch` and, **only when its HEAD changed** since the last build (tracked as a
+small marker object in the bucket), clones the repo, runs `buildCommand`, and publishes `outputDir`
+to the site bucket — the server then serves it on its next sync. The first build runs on the first
+poll.
+
+The build step runs **sandboxed**: non-root, **no cluster credentials**
+(`automountServiceAccountToken: false`), capability-dropped, and resource-capped — your repo's build
+command is untrusted code and is treated as such. It can reach the git host and the site bucket; a
+tighter egress NetworkPolicy and build-time secret injection are follow-ons. Omit `spec.build`
+entirely to keep uploading assets yourself (above).
+
 ## Per-PR preview environments (a CI recipe, not a controller)
 
 Previews are a **CI pattern**, not a platform controller — deliberately, so the preview lifecycle

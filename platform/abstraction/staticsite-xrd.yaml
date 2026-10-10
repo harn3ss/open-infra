@@ -61,6 +61,46 @@ spec:
                   type: integer
                   default: 30
                   description: "How often the server re-syncs the bucket to pick up new uploads."
+                build:
+                  type: object
+                  required: [repo]
+                  description: "Amplify-style managed build: poll a git repo and, on a new commit, clone it, run the build command in a sandboxed Job, and publish the output directory to the site bucket (the server then picks it up). Omit to upload pre-built assets yourself."
+                  properties:
+                    repo:
+                      type: string
+                      description: "Git repository URL (https), e.g. https://github.com/me/app.git."
+                    branch:
+                      type: string
+                      default: main
+                      description: "Branch to build."
+                    buildCommand:
+                      type: string
+                      default: "npm ci && npm run build"
+                      description: "Shell command run at the repo root to produce the output (runs in the build image)."
+                    outputDir:
+                      type: string
+                      default: dist
+                      description: "Directory (relative to the repo root) whose contents are published to the bucket."
+                    image:
+                      type: string
+                      default: node:20-alpine
+                      description: "Build container image — must carry the toolchain buildCommand needs. Runs sandboxed (non-root, no cluster credentials)."
+                    pollSeconds:
+                      type: integer
+                      default: 300
+                      description: "How often to poll the repo for new commits (a rebuild runs only when the branch HEAD changes). The first build runs on the first poll."
+                    secret:
+                      type: string
+                      description: "Optional Secret (this namespace) with git credentials for a private repo: key GIT_TOKEN (https token/PAT)."
+                    env:
+                      type: array
+                      description: "Build-time environment variables passed to the build command."
+                      items:
+                        type: object
+                        required: [name, value]
+                        properties:
+                          name: { type: string }
+                          value: { type: string }
             status:
               type: object
               properties:
