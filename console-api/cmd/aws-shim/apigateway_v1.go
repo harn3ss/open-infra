@@ -267,13 +267,15 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 	itype, _ := body["type"].(string)
 	uri, _ := body["uri"].(string)
 	switch itype {
-	case "AWS_PROXY":
+	case "AWS_PROXY", "AWS":
+		// AWS_PROXY proxies the raw proxy event; AWS (non-proxy, increment 2) transforms the body
+		// through VTL request/response templates. Both invoke a Lambda, so both take the same
+		// wiring-time escalation fence (polyhedron#185): a caller may only integrate a Lambda it is
+		// authorized to invoke, since the data-plane invoke path is unsigned by design.
 		if uri == "" {
-			writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "AWS_PROXY integration requires uri (a Lambda ARN or name).")
+			writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, itype+" integration requires uri (a Lambda ARN or name).")
 			return
 		}
-		// Wiring-time escalation fence (polyhedron#185): a caller may only integrate a Lambda it is
-		// authorized to invoke, since the data-plane invoke path is unsigned by design.
 		fn := functionFromURI(uri)
 		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
 			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
@@ -292,7 +294,7 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 		// no uri
 	default:
 		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID,
-			"integration type must be AWS_PROXY, HTTP, HTTP_PROXY, or MOCK (AWS and non-proxy VTL mapping are a tracked follow-on).")
+			"integration type must be AWS, AWS_PROXY, HTTP, HTTP_PROXY, or MOCK.")
 		return
 	}
 	pfv, _ := body["payloadFormatVersion"].(string)
@@ -300,8 +302,12 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 		pfv = "1.0" // REST v1 Lambda proxy events are format 1.0
 	}
 	ihm, _ := body["integrationHttpMethod"].(string)
+	// requestTemplates/responseTemplates (contentType → VTL) drive non-proxy AWS/HTTP body mapping.
+	reqTmpls := stringMap(body["requestTemplates"])
+	respTmpls := stringMap(body["responseTemplates"])
 	if err := h.store.putIntegration(ctx, apiID, restIntegration{
 		ResourceID: resID, HTTPMethod: httpMethod, Type: itype, URI: uri, IntegrationHTTPMethod: ihm, PayloadFormatVersion: pfv,
+		RequestTemplates: reqTmpls, ResponseTemplates: respTmpls,
 	}); err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -391,7 +397,7 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 		writeAGWError(w, http.StatusForbidden, "MissingAuthenticationTokenException", requestID, "Missing Authentication Token")
 		return
 	}
-	depID, _, sok, err := h.store.getStage(r.Context(), apiID, stage)
+	depID, stageVars, sok, err := h.store.getStage(r.Context(), apiID, stage)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -457,7 +463,14 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 		// would see no {statusCode} wrapper and 502 under the 1.0 rule). The handler still receives the
 		// faithful proxy event we built above.
 		h.copyResponse(w, resp, requestID)
-	case "HTTP", "HTTP_PROXY":
+	case "AWS":
+		// Non-proxy Lambda (increment 2): VTL request template → event body, VTL response template →
+		// HTTP response body.
+		h.invokeAWSIntegration(w, r, integ, apiID, stage, routePath, requestID, pathParams, stageVars, reqBody)
+	case "HTTP":
+		// Non-proxy HTTP: VTL request/response body mapping around an http(s) origin.
+		h.invokeHTTPIntegration(w, r, integ, apiID, stage, routePath, requestID, pathParams, stageVars, reqBody)
+	case "HTTP_PROXY":
 		h.proxyHTTP(w, r, integ, routePath, reqBody, requestID)
 	case "MOCK":
 		w.Header().Set("x-amzn-RequestId", requestID)
@@ -465,6 +478,156 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 	default:
 		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
 	}
+}
+
+// --- non-proxy VTL body mapping (increment 2) ---
+
+// invokeAWSIntegration serves a non-proxy "AWS" (Lambda) integration: it maps the request body with the
+// matching requestTemplates VTL template (pass-through if none), POSTs the result to the Function's URL,
+// then maps the response body with the matching responseTemplates template (pass-through if none).
+func (h *apigwV1Handler) invokeAWSIntegration(w http.ResponseWriter, r *http.Request, integ restIntegration, apiID, stage, routePath, requestID string, pathParams, stageVars map[string]string, reqBody []byte) {
+	eventBody, ok := h.mapRequestBody(w, r, integ, apiID, stage, routePath, requestID, pathParams, stageVars, reqBody)
+	if !ok {
+		return
+	}
+	target := "http://" + functionFromURI(integ.URI) + "." + h.fnNS + "." + h.svcSuffix + "/"
+	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(eventBody))
+	if err != nil {
+		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
+		return
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	resp, err := h.client.Do(upReq)
+	if err != nil {
+		h.logger.Warn("apigw v1 upstream unreachable", "function", integ.URI, "error", err.Error())
+		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
+		return
+	}
+	defer resp.Body.Close()
+	h.logger.Info("apigw v1 invoke", "api", apiID, "stage", stage, "method", r.Method, "path", routePath, "integration", "AWS", "function", integ.URI)
+	h.writeMappedResponse(w, r, integ, resp, apiID, stage, routePath, requestID, pathParams, stageVars)
+}
+
+// invokeHTTPIntegration serves a non-proxy "HTTP" integration: same request/response VTL mapping as AWS,
+// around an http(s) origin instead of a Lambda.
+func (h *apigwV1Handler) invokeHTTPIntegration(w http.ResponseWriter, r *http.Request, integ restIntegration, apiID, stage, routePath, requestID string, pathParams, stageVars map[string]string, reqBody []byte) {
+	fwdBody, ok := h.mapRequestBody(w, r, integ, apiID, stage, routePath, requestID, pathParams, stageVars, reqBody)
+	if !ok {
+		return
+	}
+	method := integ.IntegrationHTTPMethod
+	if method == "" {
+		method = r.Method
+	}
+	target := strings.TrimRight(integ.URI, "/")
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	upReq, err := http.NewRequestWithContext(r.Context(), method, target, bytes.NewReader(fwdBody))
+	if err != nil {
+		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
+		return
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	for k, vs := range r.Header {
+		if strings.EqualFold(k, "Host") || strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vs {
+			upReq.Header.Add(k, v)
+		}
+	}
+	resp, err := h.client.Do(upReq)
+	if err != nil {
+		h.logger.Warn("apigw v1 http upstream unreachable", "uri", integ.URI, "error", err.Error())
+		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
+		return
+	}
+	defer resp.Body.Close()
+	h.writeMappedResponse(w, r, integ, resp, apiID, stage, routePath, requestID, pathParams, stageVars)
+}
+
+// mapRequestBody applies the matching requestTemplates template to the request body (pass-through if
+// none matches); on a template render error it writes a 500 and returns ok=false.
+func (h *apigwV1Handler) mapRequestBody(w http.ResponseWriter, r *http.Request, integ restIntegration, apiID, stage, routePath, requestID string, pathParams, stageVars map[string]string, reqBody []byte) ([]byte, bool) {
+	tmpl, matched := pickMappingTemplate(integ.RequestTemplates, r.Header.Get("Content-Type"))
+	if !matched {
+		return reqBody, true // pass-through
+	}
+	out, err := renderMappingTemplate(tmpl, reqBody, mergeInputParams(r, pathParams), stageVars, h.vtlContext(r, apiID, stage, routePath, requestID))
+	if err != nil {
+		h.logger.Warn("apigw v1 request template error", "api", apiID, "path", routePath, "error", err.Error())
+		writeAGWError(w, http.StatusInternalServerError, "InternalServerException", requestID, "request mapping template error")
+		return nil, false
+	}
+	return []byte(out), true
+}
+
+// writeMappedResponse reads the upstream response body and applies the matching responseTemplates
+// template (pass-through, copying status+headers, if none matches). A mapped response is written as
+// application/json with the upstream status.
+func (h *apigwV1Handler) writeMappedResponse(w http.ResponseWriter, r *http.Request, integ restIntegration, resp *http.Response, apiID, stage, routePath, requestID string, pathParams, stageVars map[string]string) {
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	tmpl, matched := pickMappingTemplate(integ.ResponseTemplates, resp.Header.Get("Content-Type"))
+	if !matched {
+		// pass-through: copy the upstream status + headers + (already-read) body.
+		for k, vs := range resp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.Header().Set("x-amzn-RequestId", requestID)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(respBody)
+		return
+	}
+	out, err := renderMappingTemplate(tmpl, respBody, mergeInputParams(r, pathParams), stageVars, h.vtlContext(r, apiID, stage, routePath, requestID))
+	if err != nil {
+		h.logger.Warn("apigw v1 response template error", "api", apiID, "path", routePath, "error", err.Error())
+		writeAGWError(w, http.StatusInternalServerError, "InternalServerException", requestID, "response mapping template error")
+		return
+	}
+	status := resp.StatusCode
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("x-amzn-RequestId", requestID)
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(out))
+}
+
+// vtlContext builds the minimal $context map a mapping template can read (honest subset).
+func (h *apigwV1Handler) vtlContext(r *http.Request, apiID, stage, routePath, requestID string) map[string]any {
+	return map[string]any{
+		"apiId":        apiID,
+		"stage":        stage,
+		"httpMethod":   r.Method,
+		"path":         r.URL.Path,
+		"resourcePath": routePath,
+		"requestId":    requestID,
+		"identity":     map[string]any{"sourceIp": clientIP(r), "userAgent": r.UserAgent()},
+	}
+}
+
+// mergeInputParams flattens path, query, and header parameters into the single name→value map that
+// $input.params(name) resolves against, with AWS's precedence (path > query > header).
+func mergeInputParams(r *http.Request, pathParams map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, vs := range r.Header {
+		if len(vs) > 0 {
+			out[k] = vs[0]
+		}
+	}
+	for k, vs := range r.URL.Query() {
+		if len(vs) > 0 {
+			out[k] = vs[0]
+		}
+	}
+	for k, v := range pathParams {
+		out[k] = v
+	}
+	return out
 }
 
 // proxyHTTP forwards the request to an HTTP(S) origin (the HTTP / HTTP_PROXY integration). For a

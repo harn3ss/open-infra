@@ -1,8 +1,9 @@
-// Package vtl is a focused interpreter for AWS AppSync resolver mapping templates (Apache Velocity
-// + AppSync's $util/$context). It is the heart of open-appsync: on a field
-// hit, the REQUEST template turns GraphQL args into a data-source operation, and the RESPONSE
-// template turns the raw result into the GraphQL shape. Fidelity lives or dies in $util (see
-// util.go). Scoped to the constructs real resolver templates use; widened as the probe corpus grows.
+// Package vtl is a focused interpreter for Apache Velocity (VTL) mapping templates — the
+// AppSync-agnostic Velocity core shared by open-appsync's resolver engine and the aws-shim's API
+// Gateway request/response mapping. The template-specific `$util` helper library is NOT baked in: a
+// caller injects its own via the Util interface (open-appsync supplies AppSync's $util; the aws-shim
+// supplies API Gateway's), so the two front doors share one parser/evaluator and can never drift on
+// the Velocity semantics. Scoped to the constructs real templates use; widened as the corpus grows.
 package vtl
 
 import (
@@ -10,19 +11,38 @@ import (
 	"strings"
 )
 
-// Engine renders VTL templates. Reuse one; it is stateless apart from its $util providers.
-type Engine struct{ util *Util }
+// Util is the injectable `$util` namespace. The engine itself knows no helper methods; a caller plugs
+// in the surface its template dialect expects. Invoke is what the engine calls when it evaluates a
+// `$util.<path>(args)` reference: ok=false means "no such method" so the engine can report an honest
+// error rather than silently returning nil. Call is the 2-value convenience form a non-VTL runtime
+// (e.g. open-appsync's JS runtime) uses via Engine.Util().
+type Util interface {
+	Invoke(path string, args []any) (result any, err error, ok bool)
+	Call(path string, args []any) (any, error)
+}
 
-// New returns an Engine with real $util providers. For deterministic probes, set engine.Util fields.
-func New() *Engine { return &Engine{util: NewUtil()} }
+// Engine renders VTL templates. Reuse one; it is stateless apart from the injected $util.
+type Engine struct{ util Util }
 
-// Util exposes the $util providers so a probe can pin autoId/time.* for byte-exact assertions.
-func (e *Engine) Util() *Util { return e.util }
+// New returns an Engine backed by the given $util implementation.
+func New(util Util) *Engine { return &Engine{util: util} }
+
+// Util exposes the injected $util so a caller (or a probe) can reach the concrete implementation — to
+// pin autoId/time.* for byte-exact assertions, or to reuse the same $util from a non-VTL runtime.
+func (e *Engine) Util() Util { return e.util }
 
 // Render evaluates a template against a resolver context (available as $ctx / $context). It returns
 // the rendered string (usually a JSON document), or a *ThrowError if the template called
 // $util.error. ctx is typically {"args": {...}, "identity": {...}, "source": {...}, "result":...}.
 func (e *Engine) Render(tmpl string, ctx map[string]any) (string, error) {
+	return e.RenderVars(tmpl, map[string]any{"ctx": ctx, "context": ctx})
+}
+
+// RenderVars evaluates a template with an explicit top-level variable binding ($name → vars["name"]).
+// Render is the AppSync-shaped convenience (it binds the single $ctx/$context object); a different
+// dialect — API Gateway's $input/$context/$stageVariables — binds its own set of top-level variables
+// through here. $util is always the injected namespace regardless of the binding.
+func (e *Engine) RenderVars(tmpl string, vars map[string]any) (string, error) {
 	items, err := scanTemplate(tmpl)
 	if err != nil {
 		return "", err
@@ -31,7 +51,10 @@ func (e *Engine) Render(tmpl string, ctx map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	env := &env{vars: map[string]any{"ctx": ctx, "context": ctx}, util: e.util}
+	if vars == nil {
+		vars = map[string]any{}
+	}
+	env := &env{vars: vars, util: e.util}
 	var b strings.Builder
 	if err := renderNodes(nodes, env, &b); err != nil {
 		return "", err

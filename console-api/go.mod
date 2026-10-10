@@ -9,6 +9,7 @@ require (
 	github.com/go-ldap/ldap/v3 v3.4.14
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/harn3ss/open-infra/cfn v0.0.0-00010101000000-000000000000
+	github.com/harn3ss/open-infra/vtl v0.0.0-00010101000000-000000000000
 	github.com/lib/pq v1.12.3
 	github.com/microsoft/go-mssqldb v1.11.0
 	github.com/minio/minio-go/v7 v7.3.0
@@ -123,3 +124,5 @@ replace github.com/harn3ss/open-infra/dynamodb => ../dynamodb
 replace github.com/harn3ss/open-infra/policyengine => ../policyengine
 
 replace github.com/harn3ss/open-infra/cfn => ../cfn
+
+replace github.com/harn3ss/open-infra/vtl => ../vtl
