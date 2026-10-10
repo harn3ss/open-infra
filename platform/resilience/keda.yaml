@@ -1,0 +1,31 @@
+# KEDA — event/metric-driven autoscaling. Installed so a managed database can autoscale its
+# CloudNativePG replica count (the Aurora replica-autoscaling analog): the Application composition
+# emits a keda.sh ScaledObject that targets the CNPG Cluster's /scale subresource
+# (.spec.instances) and tracks a CPU utilization target between min and max. KEDA also backs
+# future event-driven Function/queue scaling. Operator only; ScaledObjects are per-app (Crossplane).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1" # an operator/CRD provider — install before the CRs that use it
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: 2.15.1 # KEDA 2.15.1
+    helm:
+      values: |
+        resources:
+          operator:
+            requests: { cpu: 100m, memory: 128Mi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    # ServerSideApply so KEDA's large CRDs aren't dropped by the 256KB last-applied-config
+    # annotation limit on client-side apply (same as the CNPG operator).
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

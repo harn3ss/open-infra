@@ -114,6 +114,21 @@ func TestManagedDB_Replicas(t *testing.T) {
 	if !strings.Contains(four, "instances: 4") {
 		t.Errorf("explicit replicas must override highAvailability's implied 2; got:\n%s", grepCtx(four, "instances:"))
 	}
+
+	// autoscaling: KEDA ScaledObject emitted, instances OMITTED (autoscaler owns /scale), reader on.
+	auto := render(t, tmpl, mk(map[string]any{
+		"readerEndpoint": true,
+		"autoscaling":    map[string]any{"minReplicas": int64(2), "maxReplicas": int64(6), "targetCPUPercent": int64(65)},
+	}))
+	for _, want := range []string{"kind: ScaledObject", "kind: Cluster", "minReplicaCount: 2", "maxReplicaCount: 6", `value: "65"`, "DATABASE_RO_HOST"} {
+		if !strings.Contains(auto, want) {
+			t.Errorf("autoscaling render missing %q; got:\n%s", want, grepCtx(auto, "ScaledObject"))
+		}
+	}
+	// The CNPG Cluster must NOT hardcode instances when the autoscaler owns the count.
+	if strings.Contains(auto, "instances:") {
+		t.Errorf("with autoscaling the Cluster must omit instances (KEDA owns /scale); got:\n%s", grepCtx(auto, "instances"))
+	}
 }
 
 // TestFileShare_NodeIPExternalIPs guards the masquerade-VM escape hatch: when a
