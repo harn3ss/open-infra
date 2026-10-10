@@ -76,6 +76,20 @@ spec:
               {{- $dbCpu = ($spec.database.cpu | default "") }}
               {{- $dbMem = ($spec.database.memory | default "") }}
             {{- end }}
+            {{- /* database.replicas: explicit CNPG instance count (1 primary + N-1 hot standbys) —
+                   the Aurora replica-count knob. highAvailability is shorthand for replicas:2. A
+                   multi-instance DB (replicas>1 or HA) gets streaming replication, anti-affinity,
+                   and the reader endpoint. Clamp to >=1. */}}
+            {{- $dbInstances := 1 }}
+            {{- if $spec.database }}
+              {{- if $spec.database.highAvailability }}{{ $dbInstances = 2 }}{{- end }}
+              {{- if $spec.database.replicas }}
+                {{- $r := int $spec.database.replicas }}
+                {{- if lt $r 1 }}{{ $r = 1 }}{{- end }}
+                {{- $dbInstances = $r }}
+              {{- end }}
+            {{- end }}
+            {{- $dbMultiNode := gt $dbInstances 1 }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
                    image is given. An Application may be database-only — just declare
                    a `database:` block and the platform provisions the DB, no app. */}}
@@ -175,10 +189,10 @@ spec:
                               - name: DATABASE_URL
                                 valueFrom:
                                   secretKeyRef: { name: {{ $name }}-db-app, key: uri }
-                              {{- if and $spec.database.readerEndpoint $spec.database.highAvailability }}
+                              {{- if and $spec.database.readerEndpoint $dbMultiNode }}
                               # Reader endpoint (the Aurora reader-endpoint analog): CNPG's -ro Service
                               # load-balances reads across the replicas. Combine with the DATABASE_URL
-                              # credentials. Opt-in (database.readerEndpoint) + HA-only (no replica = no reader).
+                              # credentials. Opt-in (database.readerEndpoint) + needs standbys (HA or replicas>1).
                               - name: DATABASE_RO_HOST
                                 value: "{{ $name }}-db-ro.{{ $ns }}.svc.cluster.local"
                               {{- end }}
@@ -901,7 +915,7 @@ spec:
                     # replication, automatic failover. local-path PVs are node-local,
                     # so anti-affinity (one instance per node) is what makes the DB
                     # survive a node loss — the standby is promoted automatically.
-                    instances: {{ if $spec.database.highAvailability }}2{{ else }}1{{ end }}
+                    instances: {{ $dbInstances }}
                     {{- if $dbEncrypted }}
                     # Propagate the encryption-key annotation onto every PVC CNPG creates, so the
                     # volume-crypto reconciler materializes each <pvc>-crypto LUKS secret from the
@@ -910,9 +924,9 @@ spec:
                       annotations:
                         openinfra.dev/encryption-key: {{ $dbEncKey | quote }}
                     {{- end }}
-                    {{- if or $spec.database.highAvailability $spec.database.expose }}
+                    {{- if or $dbMultiNode $spec.database.expose }}
                     affinity:
-                      {{- if $spec.database.highAvailability }}
+                      {{- if $dbMultiNode }}
                       enablePodAntiAffinity: true
                       topologyKey: kubernetes.io/hostname
                       podAntiAffinityType: required
