@@ -14,6 +14,7 @@ type restV1Op struct {
 	APIID      string
 	ResourceID string
 	HTTPMethod string
+	StatusCode string // PutIntegrationResponse
 }
 
 // restV1OpFromRequest maps a /restapis/... path + method to an op. REST v1 paths:
@@ -24,6 +25,7 @@ type restV1Op struct {
 //	/restapis/{id}/resources/{parentId}                               POST CreateResource (child of parent)
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}        PUT PutMethod
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration  PUT PutIntegration
+//	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration/responses/{statusCode}  PUT PutIntegrationResponse
 //	/restapis/{id}/deployments                                        POST CreateDeployment
 //	/restapis/{id}/stages                                             POST CreateStage / GET GetStages
 func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
@@ -75,6 +77,10 @@ func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 	case 7: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration
 		if segs[2] == "resources" && segs[4] == "methods" && segs[6] == "integration" && r.Method == http.MethodPut {
 			return restV1Op{Op: "PutIntegration", APIID: segs[1], ResourceID: segs[3], HTTPMethod: strings.ToUpper(segs[5])}, true
+		}
+	case 9: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration/responses/{statusCode}
+		if segs[2] == "resources" && segs[4] == "methods" && segs[6] == "integration" && segs[7] == "responses" && r.Method == http.MethodPut {
+			return restV1Op{Op: "PutIntegrationResponse", APIID: segs[1], ResourceID: segs[3], HTTPMethod: strings.ToUpper(segs[5]), StatusCode: segs[8]}, true
 		}
 	}
 	return restV1Op{}, false
