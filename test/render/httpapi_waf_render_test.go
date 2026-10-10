@@ -170,6 +170,54 @@ func TestHttpApi_Authorizer(t *testing.T) {
 	}
 }
 
+// Multiple domains (custom-domains equivalent): every route's Host match is an OR over all
+// domains, and the TLS certificate carries them all as SANs.
+func TestHttpApi_MultiDomain(t *testing.T) {
+	spec := baseHttpApiSpec()
+	spec["domains"] = []any{"www.example.com", "legacy.example.com"}
+	tmpl := extractInlineTemplate(t, httpapiCompositionPath)
+	out := render(t, tmpl, httpapiCtx(spec))
+	if !strings.Contains(out, "(Host(`api.example.com`) || Host(`www.example.com`) || Host(`legacy.example.com`))") {
+		t.Errorf("multi-domain route match should OR all hosts; got:\n%s", grepCtx(out, "match"))
+	}
+	if !strings.Contains(out, "dnsNames: [ api.example.com, www.example.com, legacy.example.com ]") {
+		t.Errorf("cert SANs should include all domains; got:\n%s", grepCtx(out, "dnsNames"))
+	}
+}
+
+// Base-path mapping: routes match under the prefix and a StripPrefix middleware removes it
+// before the backend, attached LAST in the chain.
+func TestHttpApi_BasePath(t *testing.T) {
+	spec := baseHttpApiSpec()
+	spec["basePath"] = "/v1"
+	spec["routes"] = []any{
+		map[string]any{"path": "/users", "backend": map[string]any{"name": "fn"}},
+	}
+	tmpl := extractInlineTemplate(t, httpapiCompositionPath)
+	out := render(t, tmpl, httpapiCtx(spec))
+	if !strings.Contains(out, "PathPrefix(`/v1/users`)") {
+		t.Errorf("route should match under the base path; got:\n%s", grepCtx(out, "match"))
+	}
+	if !strings.Contains(out, "name: httpapi-api-stripbase") || !strings.Contains(out, "stripPrefix:") || !strings.Contains(out, `prefixes: [ "/v1" ]`) {
+		t.Errorf("base path should render a StripPrefix middleware; got:\n%s", grepCtx(out, "stripPrefix"))
+	}
+	if !strings.Contains(out, "middlewares:") {
+		t.Errorf("base path should attach the strip middleware to the route; got:\n%s", grepCtx(out, "middlewares"))
+	}
+}
+
+// Single-domain output is unchanged (no paren-wrap, no base-path prefix) — backward compatibility.
+func TestHttpApi_SingleDomainUnchanged(t *testing.T) {
+	tmpl := extractInlineTemplate(t, httpapiCompositionPath)
+	out := render(t, tmpl, httpapiCtx(baseHttpApiSpec()))
+	if !strings.Contains(out, "Host(`api.example.com`) && PathPrefix(`/`)") || strings.Contains(out, "(Host(`api.example.com`))") {
+		t.Errorf("single domain must render a bare Host() match; got:\n%s", grepCtx(out, "match"))
+	}
+	if strings.Contains(out, "stripbase") {
+		t.Errorf("no basePath must render no strip middleware; got:\n%s", grepCtx(out, "stripbase"))
+	}
+}
+
 // External backend (the API Gateway HTTP_PROXY integration): backend.url renders a per-route
 // ExternalName Service and an IngressRoute service entry with the parsed scheme + port.
 func TestHttpApi_ExternalBackend(t *testing.T) {
