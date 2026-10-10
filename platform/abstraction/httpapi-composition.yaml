@@ -56,6 +56,15 @@ spec:
             {{-   if and .backend.name .backend.url }}{{- fail "kind: HttpApi route backend: set backend.name OR backend.url, not both" }}{{- end }}
             {{-   if and (not .backend.name) (not .backend.url) }}{{- fail "kind: HttpApi route backend: set backend.name (in-cluster) or backend.url (external)" }}{{- end }}
             {{- end }}
+            {{- /* Multi-domain: the primary domain plus any extras (the custom-domains equivalent) —
+                   added to every route's Host match and to the TLS certificate SANs. */}}
+            {{- $domains := list $spec.domain }}
+            {{- range $d := ($spec.domains | default list) }}{{- $domains = append $domains $d }}{{- end }}
+            {{- /* Base-path mapping: mount the whole API under a prefix and strip it before the
+                   backend (so backends see their declared paths). The strip is the LAST middleware
+                   in the chain — after auth/waf, which see the full incoming path. */}}
+            {{- $basePath := $spec.basePath | default "" }}
+            {{- if $basePath }}{{- $mwnames = append $mwnames (printf "httpapi-%s-stripbase" $name) }}{{- end }}
             {{- if $tls }}
             ---
             # --- TLS: cert-manager issues the cert into the secret the IngressRoute references.
@@ -77,7 +86,7 @@ spec:
                   spec:
                     secretName: httpapi-{{ $name }}-tls
                     issuerRef: { name: openinfra-issuer, kind: ClusterIssuer }
-                    dnsNames: [ {{ $spec.domain }} ]
+                    dnsNames: [ {{ join ", " $domains }} ]
             {{- end }}
             ---
             # --- The API Gateway front door: one Traefik IngressRoute, one route per declared
@@ -101,11 +110,16 @@ spec:
                     entryPoints: [ {{ if $tls }}websecure{{ else }}web{{ end }} ]
                     routes:
                       {{- range $i, $route := $spec.routes }}
-                      {{- /* Build the match: Host && (PathPrefix|Path) && optional (Method || ...) */}}
-                      {{- $m := printf "Host(`%s`)" $spec.domain }}
+                      {{- /* Build the match: (Host||Host) && (PathPrefix|Path) && optional (Method || ...).
+                             Path is prefixed by basePath (mounted under it); Host is an OR of all domains. */}}
+                      {{- $hosts := list }}
+                      {{- range $d := $domains }}{{- $hosts = append $hosts (printf "Host(`%s`)" $d) }}{{- end }}
+                      {{- $m := index $hosts 0 }}
+                      {{- if gt (len $hosts) 1 }}{{- $m = printf "(%s)" (join " || " $hosts) }}{{- end }}
                       {{- $pt := $route.pathType | default "Prefix" }}
-                      {{- if eq $pt "Exact" }}{{- $m = printf "%s && Path(`%s`)" $m $route.path }}
-                      {{- else }}{{- $m = printf "%s && PathPrefix(`%s`)" $m $route.path }}{{- end }}
+                      {{- $rp := printf "%s%s" $basePath $route.path }}
+                      {{- if eq $pt "Exact" }}{{- $m = printf "%s && Path(`%s`)" $m $rp }}
+                      {{- else }}{{- $m = printf "%s && PathPrefix(`%s`)" $m $rp }}{{- end }}
                       {{- if $route.methods }}
                       {{-   $mm := list }}
                       {{-   range $meth := $route.methods }}{{- $mm = append $mm (printf "Method(`%s`)" $meth) }}{{- end }}
@@ -283,6 +297,28 @@ spec:
                     rateLimit:
                       average: {{ $spec.rateLimit.average | default 100 }}
                       burst: {{ $spec.rateLimit.burst | default 50 }}
+            {{- end }}
+            {{- if $basePath }}
+            ---
+            # Base-path mapping: strip the API's mount prefix before the request reaches the backend,
+            # so backends see their declared paths (the API Gateway base-path-mapping equivalent).
+            # Last in the per-route middleware chain, so auth/waf still see the full incoming path.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: stripbase-middleware
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: traefik.io/v1alpha1
+                  kind: Middleware
+                  metadata:
+                    name: httpapi-{{ $name }}-stripbase
+                    namespace: {{ $ns }}
+                  spec:
+                    stripPrefix:
+                      prefixes: [ "{{ $basePath }}" ]
             {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }

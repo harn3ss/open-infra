@@ -38,7 +38,15 @@ spec:
               properties:
                 domain:
                   type: string
-                  description: "Hostname the API is served on, e.g. api.example.com."
+                  description: "Primary hostname the API is served on, e.g. api.example.com."
+                domains:
+                  type: array
+                  items: { type: string }
+                  description: "Additional hostnames this API answers on (the API Gateway multi-domain / custom-domains equivalent). Each is added to the route Host match and the TLS certificate SANs alongside `domain`."
+                basePath:
+                  type: string
+                  pattern: "^/[A-Za-z0-9._~/-]*[A-Za-z0-9._~-]$"
+                  description: "Optional base path the whole API is mounted under (the API Gateway base-path-mapping equivalent), e.g. /v1. Routes match under this prefix and it is stripped before the request reaches the backend, so backends see their declared paths."
                 tls:
                   type: boolean
                   default: true

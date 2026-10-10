@@ -34,7 +34,7 @@ pure orchestration onto one Ingress.
 | **WAF (L7)** | **Partial (opt-in, experimental)** | `spec.waf: true` attaches a Traefik Coraza / OWASP CRS middleware. Off by default; requires the `coraza` Traefik plugin enabled on the cluster (see below) |
 | Request/response mapping (VTL) | **Non-goal** | an L7 path proxy, not a transformation layer; VTL request/response mapping is not modeled (use the backend, or `GraphQLApi`'s VTL for GraphQL) |
 | CORS | **Covered** | `spec.cors` (origins/methods/headers/credentials/max-age) renders a Traefik headers middleware — the API Gateway CORS-equivalent, preflight included |
-| Custom domain | **Partial** | one IngressRoute host + TLS; no APIGW base-path mapping / multi-domain |
+| Custom domain | **Covered** | `spec.domain` + `spec.domains[]` (multiple hostnames, all on the route Host match + TLS SANs) and `spec.basePath` (base-path mapping — routes mount under the prefix, stripped before the backend) |
 | Integrations | **Partial** | in-cluster `Function`/`Application`, plus **external HTTP origins** via `backend.url` (the API Gateway `HTTP_PROXY` integration — opt-in, cluster-toggle-gated, see below); no AWS-service / VPC-link |
 
 ## The honest read for an adopter
