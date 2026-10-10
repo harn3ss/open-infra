@@ -64,3 +64,6 @@ spec:
             status:
               issuer: {{ $spec.issuerURL | quote }}
               ready: true
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

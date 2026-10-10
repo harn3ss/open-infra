@@ -56,3 +56,6 @@ spec:
             kind: XDestruction
             status:
               phase: Pending
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

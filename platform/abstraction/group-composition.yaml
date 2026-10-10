@@ -68,3 +68,6 @@ spec:
             status:
               ready: {{ $ready }}
               boundTo: "openinfra:{{ $name }}"
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

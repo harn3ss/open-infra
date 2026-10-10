@@ -78,3 +78,6 @@ spec:
               # for a group-less user, which fails the XRD's array schema and made the ENTIRE
               # status-apply error out — so status.ready never landed. (polyhedron#102)
               groups: {{ $groups | toJson }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

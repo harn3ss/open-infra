@@ -86,3 +86,6 @@ spec:
               ready: true
               clusterRole: openinfra-policy-{{ $name }}
               ruleCount: {{ len $rules }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
