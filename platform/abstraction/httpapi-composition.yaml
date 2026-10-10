@@ -65,6 +65,12 @@ spec:
                    in the chain — after auth/waf, which see the full incoming path. */}}
             {{- $basePath := $spec.basePath | default "" }}
             {{- if $basePath }}{{- $mwnames = append $mwnames (printf "httpapi-%s-stripbase" $name) }}{{- end }}
+            {{- /* Request-body validation (the API Gateway Model / Request-Validator analog): any route
+                   with a requestModel is sent through the apigw-validator tier, which validates the body
+                   (and that route's required params) at the gateway and returns 400 before the backend. */}}
+            {{- $hasValidated := false }}
+            {{- range $spec.routes }}{{- if .requestModel }}{{- $hasValidated = true }}{{- end }}{{- end }}
+            {{- $validatorSvc := printf "httpapi-%s-validator" $name }}
             {{- if $tls }}
             ---
             # --- TLS: cert-manager issues the cert into the secret the IngressRoute references.
@@ -125,15 +131,24 @@ spec:
                       {{-   range $meth := $route.methods }}{{- $mm = append $mm (printf "Method(`%s`)" $meth) }}{{- end }}
                       {{-   $m = printf "%s && (%s)" $m (join " || " $mm) }}
                       {{- end }}
-                      {{- /* Request validation (required params): the route matches only when the
-                             required headers/query params are present, so a request missing them never
-                             reaches the backend (the API Gateway required-parameter validator). */}}
+                      {{- /* Request validation (required params): for a route WITHOUT a model, the route
+                             matches only when the required headers/query params are present, so a missing
+                             one never reaches the backend (Traefik returns 404). For a route WITH a model,
+                             the match does NOT gate on params — the request is sent to the validator, which
+                             checks params AND body and returns a proper 400. */}}
+                      {{- if not $route.requestModel }}
                       {{- range $h := ($route.requiredHeaders | default list) }}{{- $m = printf "%s && HeaderRegexp(`%s`, `.+`)" $m $h }}{{- end }}
                       {{- range $q := ($route.requiredQueryParams | default list) }}{{- $m = printf "%s && QueryRegexp(`%s`, `.+`)" $m $q }}{{- end }}
+                      {{- end }}
                       - kind: Rule
                         match: {{ $m | quote }}
                         services:
-                          {{- if $route.backend.url }}
+                          {{- if $route.requestModel }}
+                          {{- /* Model route: forward to the apigw-validator tier, which validates then
+                                 proxies to this route's real backend (configured in its ConfigMap below). */}}
+                          - name: {{ $validatorSvc }}
+                            port: 8080
+                          {{- else if $route.backend.url }}
                           {{- /* External backend (HTTP_PROXY): forward to the per-route ExternalName
                                  Service rendered below. scheme + port are parsed from the origin URL. */}}
                           {{- $u := $route.backend.url }}
@@ -194,6 +209,101 @@ spec:
                       - port: {{ $port }}
                         targetPort: {{ $port }}
             {{- end }}
+            {{- end }}
+            {{- if $hasValidated }}
+            {{- /* Build the validator's route table: each model route's backend upstream + rules. The
+                   validator sits behind Traefik, so it sees the base-path-STRIPPED path (the stripbase
+                   middleware already ran) — pathPrefix is the route's own path. */}}
+            {{- $vroutes := list }}
+            {{- range $route := $spec.routes }}
+            {{-   if $route.requestModel }}
+            {{-     $upstream := "" }}
+            {{-     if $route.backend.url }}{{- $upstream = ($route.backend.url | trimSuffix "/") }}
+            {{-     else }}{{- $upstream = printf "http://%s.%s.svc.cluster.local:%v" $route.backend.name $ns ($route.backend.port | default 80) }}{{- end }}
+            {{-     $vr := dict "methods" ($route.methods | default list) "pathPrefix" $route.path "upstream" $upstream "requiredHeaders" ($route.requiredHeaders | default list) "requiredQuery" ($route.requiredQueryParams | default list) "bodySchema" $route.requestModel }}
+            {{-     $vroutes = append $vroutes $vr }}
+            {{-   end }}
+            {{- end }}
+            {{- $vconfig := dict "routes" $vroutes | toJson }}
+            ---
+            # --- API Gateway request validation: the apigw-validator tier for routes with a request
+            # Model. It validates the body (JSON Schema) + required params at the gateway and returns a
+            # 400 before the backend, then proxies valid requests to each route's real backend. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: validator-config
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $validatorSvc }}-config
+                    namespace: {{ $ns }}
+                  data:
+                    routes.json: {{ $vconfig | quote }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: validator-deploy
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: {{ $validatorSvc }}
+                    namespace: {{ $ns }}
+                    labels: { app: {{ $validatorSvc }} }
+                  spec:
+                    replicas: 1
+                    selector: { matchLabels: { app: {{ $validatorSvc }} } }
+                    template:
+                      metadata:
+                        labels: { app: {{ $validatorSvc }} }
+                        # Roll the pods when the route table changes (a ConfigMap edit alone won't restart them).
+                        annotations: { openinfra.dev/config-hash: "{{ $vconfig | sha256sum | trunc 16 }}" }
+                      spec:
+                        securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+                        containers:
+                          - name: validator
+                            image: ghcr.io/harn3ss/open-infra-apigw-validator:latest
+                            ports: [ { containerPort: 8080 } ]
+                            env:
+                              - { name: ROUTES_CONFIG, value: /config/routes.json }
+                            securityContext:
+                              readOnlyRootFilesystem: true
+                              allowPrivilegeEscalation: false
+                              capabilities: { drop: [ALL] }
+                            readinessProbe: { httpGet: { path: /healthz, port: 8080 }, initialDelaySeconds: 2, periodSeconds: 10 }
+                            resources:
+                              requests: { cpu: 25m, memory: 32Mi }
+                              limits: { cpu: 250m, memory: 128Mi }
+                            volumeMounts: [ { name: config, mountPath: /config, readOnly: true } ]
+                        volumes:
+                          - name: config
+                            configMap: { name: {{ $validatorSvc }}-config }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: validator-svc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $validatorSvc }}
+                    namespace: {{ $ns }}
+                  spec:
+                    selector: { app: {{ $validatorSvc }} }
+                    ports: [ { port: 8080, targetPort: 8080 } ]
             {{- end }}
             {{- if $authz }}
             ---

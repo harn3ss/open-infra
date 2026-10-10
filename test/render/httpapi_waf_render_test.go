@@ -314,3 +314,59 @@ func TestHttpApi_MiddlewareChainOrder(t *testing.T) {
 			iCors, iAuth, iRate, iWaf, grepCtx(out, "middlewares"))
 	}
 }
+
+// A route with a requestModel is routed through the apigw-validator tier (body/param validation →
+// 400 at the gateway), which proxies to the route's real backend; routes without a model are
+// unaffected and still target their backend directly.
+func TestHttpApi_RequestModel(t *testing.T) {
+	tmpl := extractInlineTemplate(t, httpapiCompositionPath)
+	spec := map[string]any{
+		"domain": "api.example.com",
+		"routes": []any{
+			map[string]any{
+				"path":            "/orders",
+				"methods":         []any{"POST"},
+				"backend":         map[string]any{"name": "orders"},
+				"requiredHeaders": []any{"x-api-key"},
+				"requestModel": map[string]any{
+					"type":     "object",
+					"required": []any{"item"},
+					"properties": map[string]any{
+						"item": map[string]any{"type": "string"},
+					},
+				},
+			},
+			map[string]any{"path": "/health", "backend": map[string]any{"name": "fn"}},
+		},
+	}
+	out := render(t, tmpl, httpapiCtx(spec))
+
+	// Validator tier rendered. The routes.json value is a JSON string embedded in the ConfigMap, so
+	// its inner quotes are YAML-escaped — assert on bare tokens that survive escaping.
+	for _, want := range []string{
+		"open-infra-apigw-validator",
+		"name: httpapi-api-validator\n",
+		"name: httpapi-api-validator-config",
+		"orders.default.svc.cluster.local:80", // the resolved backend upstream in routes.json
+		"pathPrefix",
+		"bodySchema",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("requestModel route should render the validator tier; missing %q\n%s", want, grepCtx(out, "validator"))
+		}
+	}
+	// The /orders route forwards to the validator Service, not straight to the backend.
+	if !strings.Contains(out, "name: httpapi-api-validator\n                            port: 8080") &&
+		!strings.Contains(out, "- name: httpapi-api-validator") {
+		t.Errorf("model route should target the validator service; got:\n%s", grepCtx(out, "services"))
+	}
+	// A model route must NOT gate its Traefik match on the required header (the validator does that,
+	// returning 400 instead of a 404 non-match).
+	if strings.Contains(out, "HeaderRegexp(`x-api-key`") {
+		t.Errorf("a model route must not add a HeaderRegexp match predicate (validator handles params → 400)")
+	}
+	// The non-model /health route is unaffected.
+	if !strings.Contains(out, "name: fn") {
+		t.Errorf("non-model route should still target its backend; got:\n%s", grepCtx(out, "name: fn"))
+	}
+}
