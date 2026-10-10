@@ -3922,6 +3922,12 @@ components:
                   default: false
                   description: 'Run the database highly available (postgres: primary + standby on separate nodes with automatic
                     failover). Needs 2 or more nodes. Default false = single instance (fine for dev).'
+                readerEndpoint:
+                  type: boolean
+                  default: false
+                  description: 'Surface a read-only reader endpoint (the Aurora reader-endpoint analog): inject DATABASE_RO_HOST
+                    pointing at the HA database''s replica-balancing service, for routing reads off the primary. Use with
+                    the DATABASE_URL credentials. postgres + highAvailability only; default off.'
                 vector:
                   type: boolean
                   default: false

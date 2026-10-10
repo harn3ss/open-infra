@@ -994,6 +994,35 @@ func TestApplicationBuckets_ScopedIdentityNotRoot(t *testing.T) {
 // appBucketsCtx builds the minimal observed composite that reaches the Application's
 // spec.storage.buckets branch: two declared buckets and the claim labels the template reads
 // for $name/$ns. No image/database => the workload and DB sections are skipped.
+// Aurora reader endpoint: opt-in (database.readerEndpoint) + HA injects DATABASE_RO_HOST pointing
+// at CNPG's replica-balancing -ro service — and, crucially, is a NO-OP for existing apps (default
+// off / non-HA), so the load-bearing Application composition is unchanged for everyone else.
+func TestApplication_ReaderEndpoint(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	appCtx := func(db map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{"image": "ghcr.io/x/app:latest", "database": db},
+			"metadata": map[string]any{"uid": "00000000-0000-0000-0000-0000000a0a0a",
+				"labels": map[string]any{"crossplane.io/claim-name": "myapp", "crossplane.io/claim-namespace": "default"}},
+		}}}}
+	}
+	// Opt-in + HA: the reader host is injected.
+	on := render(t, tmpl, appCtx(map[string]any{"engine": "postgres", "highAvailability": true, "readerEndpoint": true}))
+	if !strings.Contains(on, "name: DATABASE_RO_HOST") || !strings.Contains(on, "myapp-db-ro.default.svc.cluster.local") {
+		t.Errorf("readerEndpoint+HA should inject DATABASE_RO_HOST at the -ro service; got:\n%s", grepCtx(on, "DATABASE_RO"))
+	}
+	// No-churn: an HA postgres app WITHOUT readerEndpoint gets NO reader env (existing apps unchanged).
+	off := render(t, tmpl, appCtx(map[string]any{"engine": "postgres", "highAvailability": true}))
+	if strings.Contains(off, "DATABASE_RO_HOST") {
+		t.Errorf("readerEndpoint off must not inject the reader host (no churn for existing apps); got:\n%s", grepCtx(off, "DATABASE_RO"))
+	}
+	// HA-only: opt-in without HA has no replica to read from → no reader env.
+	noHA := render(t, tmpl, appCtx(map[string]any{"engine": "postgres", "readerEndpoint": true}))
+	if strings.Contains(noHA, "DATABASE_RO_HOST") {
+		t.Errorf("readerEndpoint without HA must not inject a reader host; got:\n%s", grepCtx(noHA, "DATABASE_RO"))
+	}
+}
+
 func appBucketsCtx() map[string]any {
 	return map[string]any{
 		"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
