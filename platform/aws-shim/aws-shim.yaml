@@ -546,6 +546,11 @@ spec:
             # the account id surfaced in STS GetCallerIdentity ARNs.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
             - { name: ACCOUNT_ID, value: "open-infra" }
+            # DynamoDB data layer: FerretDB (Mongo wire) for the data path + the DocumentDB Postgres
+            # behind it for atomic Transact* — both provisioned by dynamodb-backend.yaml (the
+            # dynamo-mongo-app Secret). Without these the dynamodb front door answers an honest 501.
+            - { name: MONGO_URI, valueFrom: { secretKeyRef: { name: dynamo-mongo-app, key: MONGODB_URI } } }
+            - { name: MONGO_PG_URI, valueFrom: { secretKeyRef: { name: dynamo-mongo-app, key: POSTGRESQL_URL } } }
             # Step Functions (polyhedron#172): the namespace kind: StateMachine / Execution and per-execution
             # STS creds Secrets live in (defaults to this namespace). A Task's function:<name> resolves in
             # this namespace, so a Function used as a Task target must live here too.
