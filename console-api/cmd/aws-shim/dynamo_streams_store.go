@@ -14,8 +14,10 @@ import (
 	"database/sql"
 )
 
-// ddbStreamShard is the single shard id every DynamoDB stream uses in v1.
-const ddbStreamShard = "shardId-000000000000"
+// ddbStreamShard is the single shard id every DynamoDB stream uses in v1. The DynamoDB Streams SDK
+// validates ShardId at a 28-char minimum (longer than Kinesis's shardId-%012d), so this is padded
+// to a valid length.
+const ddbStreamShard = "shardId-00000000000000000000000001"
 
 // ddbStreamRetentionHours is DynamoDB Streams' fixed 24h retention.
 const ddbStreamRetentionHours = 24
