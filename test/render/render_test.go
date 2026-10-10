@@ -470,6 +470,43 @@ func TestFunction_MemoryAndTimeout(t *testing.T) {
 	}
 }
 
+// reservedConcurrency (the Lambda reserved-concurrency analog) must be a HARD cap:
+// containerConcurrency 1 + max-scale = N + target 1, overriding scaling.max/target.
+func TestFunction_ReservedConcurrency(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	mk := func(spec map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{"labels": map[string]any{
+				"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "team-a"}},
+		}}}}
+	}
+
+	// Set: hard cap. max-scale pinned to the reservation, one request per instance.
+	out := render(t, tmpl, mk(map[string]any{
+		"image":               "ghcr.io/x/fn:latest",
+		"reservedConcurrency": int64(5),
+		"scaling":             map[string]any{"max": int64(10), "target": int64(100)}, // must be overridden
+	}))
+	for _, want := range []string{`max-scale: "5"`, `target: "1"`, "containerConcurrency: 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("reservedConcurrency render missing %q; got:\n%s", want, grepCtx(out, "scale"))
+		}
+	}
+	if strings.Contains(out, `max-scale: "10"`) {
+		t.Errorf("reservedConcurrency must override scaling.max (saw max-scale 10):\n%s", grepCtx(out, "scale"))
+	}
+
+	// Unset: request-driven scaling, no hard per-pod cap.
+	out = render(t, tmpl, mk(map[string]any{"image": "ghcr.io/x/fn:latest"}))
+	if strings.Contains(out, "containerConcurrency:") {
+		t.Errorf("without reservedConcurrency there must be no containerConcurrency:\n%s", grepCtx(out, "scale"))
+	}
+	if !strings.Contains(out, `max-scale: "10"`) {
+		t.Errorf("without reservedConcurrency, default max-scale 10 expected:\n%s", grepCtx(out, "scale"))
+	}
+}
+
 // kind: Function spec.code — the Lambda Zip/handler ingestion model: a handler shipped
 // as code (inline ConfigMap, or a zip in a bucket) runs on the managed python runtime
 // base image. Covers both sources and the fail-loud image|code / source guards.
