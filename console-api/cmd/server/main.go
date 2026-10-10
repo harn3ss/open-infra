@@ -283,6 +283,7 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 			Post("/databases/{namespace}/{name}/snapshot", handleSnapshotCreate(*client.Clientset, auth, logger))
 		api.With(middleware.Timeout(20*time.Second)).Get("/snapshots", handleSnapshotList(*client.Clientset, logger))
 		api.With(middleware.Timeout(20*time.Second)).Post("/snapshots/restore", handleSnapshotRestore(*client.Clientset, auth, logger))
+		api.With(middleware.Timeout(20*time.Second)).Post("/databases/{namespace}/{name}/backtrack", handleBacktrack(*client.Clientset, auth, logger))
 		api.With(middleware.Timeout(20*time.Second)).Delete("/snapshots", handleSnapshotDelete(*client.Clientset, auth, logger))
 
 		// VM snapshots — same "final snapshot before deprovision", for Longhorn-rooted VMs: a
