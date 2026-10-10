@@ -175,35 +175,20 @@ type dynamoRegistryDoc struct {
 	Status string `bson:"status"`
 }
 
-// resolveRestoreTargetTime resolves the RestoreTableToPointInTime target instant from the request and
-// validates it against the restorable window [now-window, now]. UseLatestRestorableTime wins if set;
-// otherwise RestoreDateTime (DynamoDB sends it as an epoch-second number) is required. It returns the
-// resolved time, its RFC3339 (UTC) rendering (what CNPG recoveryTarget.targetTime wants), or a
-// validation error whose message is safe to surface to the caller. Pure, so it is unit-testable.
-func resolveRestoreTargetTime(body map[string]any, now time.Time, window time.Duration) (time.Time, string, error) {
-	now = now.UTC()
-	earliest := now.Add(-window)
+// resolveRestoreTargetTime resolves the RestoreTableToPointInTime target from the request. It returns
+// the CNPG recoveryTarget.targetTime string, where "" means "recover to the latest restorable point"
+// (CNPG omits recoveryTarget). Today only UseLatestRestorableTime is honored: a specific RestoreDateTime
+// is REFUSED, not faked — CNPG canonicalizes a recoveryTarget targetTime to a trailing-"Z"
+// recovery_target_time that this PostgreSQL's GUC parser rejects, so point-in-time-to-a-past-instant is
+// a tracked follow-on. Pure, so it is unit-testable.
+func resolveRestoreTargetTime(body map[string]any, now time.Time, window time.Duration) (string, error) {
 	if latest, ok := body["UseLatestRestorableTime"].(bool); ok && latest {
-		return now, now.Format(time.RFC3339), nil
+		return "", nil // "" => recover to the latest restorable point
 	}
-	raw, present := body["RestoreDateTime"]
-	if !present {
-		return time.Time{}, "", fmt.Errorf("either RestoreDateTime or UseLatestRestorableTime must be specified")
+	if _, present := body["RestoreDateTime"]; present {
+		return "", fmt.Errorf("a specific RestoreDateTime is not yet supported by the shim — set UseLatestRestorableTime=true to restore to the latest recoverable point (point-in-time-to-a-past-instant is a tracked follow-on)")
 	}
-	secs, ok := raw.(float64)
-	if !ok {
-		return time.Time{}, "", fmt.Errorf("RestoreDateTime must be a number (epoch seconds)")
-	}
-	t := time.Unix(int64(secs), 0).UTC()
-	if t.After(now) {
-		return time.Time{}, "", fmt.Errorf("RestoreDateTime cannot be in the future")
-	}
-	if t.Before(earliest) {
-		return time.Time{}, "", fmt.Errorf(
-			"RestoreDateTime is outside the restorable window [%s, %s]",
-			earliest.Format(time.RFC3339), now.Format(time.RFC3339))
-	}
-	return t, t.Format(time.RFC3339), nil
+	return "", fmt.Errorf("either RestoreDateTime or UseLatestRestorableTime must be specified")
 }
 
 // restoreTableToPointInTime — DynamoDB_20120810.RestoreTableToPointInTime. The synchronous front door:
@@ -239,16 +224,11 @@ func (h *dynamoHandler) restoreTableToPointInTime(ctx context.Context, w http.Re
 		return
 	}
 
-	resolved, targetTime, err := resolveRestoreTargetTime(body, time.Now(), pitrWindow())
+	// targetTime == "" means recover to the latest restorable point (the only mode supported today; a
+	// specific RestoreDateTime is refused inside resolveRestoreTargetTime).
+	targetTime, err := resolveRestoreTargetTime(body, time.Now(), pitrWindow())
 	if err != nil {
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, err.Error())
-		return
-	}
-	// Reject a target earlier than the backend can actually restore to (no base backup covers it) — an
-	// honest up-front error, not a slow CREATE_FAILED after the recovery cluster fails to bootstrap.
-	if earliest, ok := h.earliestRestorable(ctx); ok && resolved.Before(earliest) {
-		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
-			"RestoreDateTime is before the earliest restorable time "+earliest.Format(time.RFC3339)+" (no base backup covers it)")
 		return
 	}
 
