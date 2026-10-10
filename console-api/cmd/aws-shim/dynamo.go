@@ -51,7 +51,14 @@ type dynamoHandler struct {
 	stream  *ddbStreamStore         // DynamoDB Streams change-record log (Postgres); nil disables streams
 	account string                  // for stream ARNs (DescribeTable LatestStreamArn)
 	region  string
-	logger  *slog.Logger
+	// restoreNS is the namespace the DynamoDB backend (CNPG cluster, FerretDB, the dynamo-mongo-app
+	// Secret) lives in — where RestoreTableToPointInTime launches its recovery Job + temp resources.
+	// Defaults (when unset) to DYNAMO_BACKEND_NAMESPACE / KEYS_NAMESPACE / open-infra-aws-shim.
+	restoreNS string
+	// restoreImage is the image the restore Job runs (the shim's own image). Set from AWS_SHIM_IMAGE;
+	// defaults to defaultAWSShimImage when unset.
+	restoreImage string
+	logger       *slog.Logger
 }
 
 // tableStream returns a table's DynamoDB Streams view type ("" if streams are not enabled for it).
@@ -227,7 +234,7 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	case "UpdateContinuousBackups":
 		h.updateContinuousBackups(ctx, w, requestID, table, body)
 	case "RestoreTableToPointInTime":
-		h.restoreTableToPointInTime(w, requestID)
+		h.restoreTableToPointInTime(ctx, w, requestID, body)
 	default:
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"DynamoDB "+op+" is recognized but not yet implemented by the open-infra shim.")
@@ -288,15 +295,7 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 			"Requested resource not found: Table: "+table+" not found")
 		return
 	}
-	schema := make([]any, 0, len(keyAttrs))
-	for i, a := range keyAttrs {
-		kt := "HASH"
-		if i == 1 {
-			kt = "RANGE"
-		}
-		schema = append(schema, map[string]any{"AttributeName": a, "KeyType": kt})
-	}
-	tbl := map[string]any{"TableName": table, "TableStatus": "ACTIVE", "KeySchema": schema}
+	tbl := map[string]any{"TableName": table, "TableStatus": h.tableStatus(ctx, table), "KeySchema": keySchemaFromAttrs(keyAttrs)}
 	if gsis := h.tableGSIs(ctx, table); len(gsis) > 0 {
 		tbl["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
 	}
@@ -752,6 +751,36 @@ func (h *dynamoHandler) tableKeyAttrs(ctx context.Context, table string) ([]stri
 		return nil, false
 	}
 	return doc.KeyAttrs, len(doc.KeyAttrs) > 0
+}
+
+// tableStatus returns a table's lifecycle status from the registry. A table with no recorded status
+// (the common case — created directly and ready) is ACTIVE; a table being restored reports CREATING
+// until its Job completes, then ACTIVE, or CREATE_FAILED if the restore failed.
+func (h *dynamoHandler) tableStatus(ctx context.Context, table string) string {
+	var doc struct {
+		Status string `bson:"status"`
+	}
+	if err := h.registry().FindOne(ctx, bson.M{"_id": table}).Decode(&doc); err != nil {
+		return "ACTIVE"
+	}
+	if doc.Status == "" {
+		return "ACTIVE"
+	}
+	return doc.Status
+}
+
+// keySchemaFromAttrs renders the DynamoDB KeySchema ([{AttributeName,KeyType}]) from ordered key
+// attribute names (HASH first, then an optional RANGE) — the inverse of keyAttrsFromSchema.
+func keySchemaFromAttrs(keyAttrs []string) []any {
+	schema := make([]any, 0, len(keyAttrs))
+	for i, a := range keyAttrs {
+		kt := "HASH"
+		if i == 1 {
+			kt = "RANGE"
+		}
+		schema = append(schema, map[string]any{"AttributeName": a, "KeyType": kt})
+	}
+	return schema
 }
 
 func (h *dynamoHandler) internal(w http.ResponseWriter, requestID string, err error) {

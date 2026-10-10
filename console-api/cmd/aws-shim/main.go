@@ -59,6 +59,13 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	// Subcommand dispatch: `aws-shim restore-pitr ...` runs the one-shot DynamoDB point-in-time restore
+	// orchestrator (launched as a Job by the RestoreTableToPointInTime front door) and exits — the HTTP
+	// server never starts for it. See dynamo_restore.go.
+	if len(os.Args) > 1 && os.Args[1] == "restore-pitr" {
+		return runRestorePITR(os.Args[2:])
+	}
+
 	// Kubernetes client: the shim's ServiceAccount RBAC — never this process — is the authority.
 	// It is used for the impersonated SubjectAccessReview, reading access-key Secrets, and
 	// resolving an access key's owning kind: User.
@@ -388,6 +395,10 @@ func run(logger *slog.Logger) error {
 	dynamoH.stream = ddbStreamSt // DynamoDB Streams change-record log (nil unless the shim Postgres is set)
 	dynamoH.account = account    // for DescribeTable LatestStreamArn
 	dynamoH.region = getenv("AWS_REGION", "us-east-1")
+	// Where RestoreTableToPointInTime launches its recovery Job + temp FerretDB (the DynamoDB backend's
+	// own namespace — where the dynamo-docdb CNPG cluster + dynamo-mongo-app Secret live).
+	dynamoH.restoreNS = getenv("DYNAMO_BACKEND_NAMESPACE", keysNS)
+	dynamoH.restoreImage = getenv("AWS_SHIM_IMAGE", defaultAWSShimImage)
 	dynamoH.startTTLReaper(context.Background(), 60*time.Second) // no-op when the data layer is unset
 	// Register declared kind: Table resources (spec-mirror ConfigMaps) into the table registry, so a
 	// cfn-deployed / GitOps-applied table is usable without a runtime CreateTable. No-op when the
