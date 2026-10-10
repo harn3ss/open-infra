@@ -83,6 +83,35 @@ func (c *Checker) Evaluate(ctx context.Context, spec authzv1.SubjectAccessReview
 	return eng.Authorize(toRequest(spec))
 }
 
+// PrincipalGoverned reports whether the loaded corpus names this principal in ANY grant. The corpus
+// is generated from RBAC (rbac-to-cedar) as an allow-list snapshot, so a principal it names nowhere
+// is one the snapshot has not been (re)generated for yet — e.g. a freshly-minted ServiceAccount (a new
+// CloudNativePG cluster, an operator plugin, any new component). The webhook defers absent
+// ServiceAccounts to RBAC (their attached-at-creation Kubernetes policy) instead of default-denying
+// them, so a stale snapshot can never deadlock a new machine identity — the AWS model, where a
+// principal's policy is live at creation rather than gated behind a periodic rebuild. A principal the
+// corpus DOES name stays under full default-deny allow-list enforcement (the AC-6 tightening is
+// preserved exactly), and the webhook applies this defer only to ServiceAccounts (never users).
+//
+// It fails SAFE toward current behavior: with authz disabled or a corpus load error it returns true,
+// so Evaluate still runs and fails closed as before — only the clean "corpus healthy, principal named
+// nowhere" case changes from deny to defer.
+func (c *Checker) PrincipalGoverned(ctx context.Context, spec authzv1.SubjectAccessReviewSpec) bool {
+	if c == nil || c.load == nil {
+		return true
+	}
+	docs, err := c.get(ctx)
+	if err != nil {
+		return true
+	}
+	for _, d := range docs {
+		if principalMatches(d.AppliesTo, spec) {
+			return true
+		}
+	}
+	return false
+}
+
 // toRequest maps a SubjectAccessReview onto a policyengine.Request: the k8s verb is the action, the
 // resource is "<resource>.<group>" (id "<namespace>/<name>"), and a non-resource URL is its path.
 func toRequest(spec authzv1.SubjectAccessReviewSpec) policyengine.Request {
