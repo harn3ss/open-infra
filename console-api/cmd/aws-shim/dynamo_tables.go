@@ -76,7 +76,7 @@ func (h *dynamoHandler) syncDeclaredTables(ctx context.Context, namespace string
 				h.logger.Warn("table sync: ignoring malformed lsi declaration", "configMap", cm.Name, "err", err)
 			}
 		}
-		if err := h.registerDeclaredTable(ctx, table, keyAttrs, cm.Data["ttlAttribute"], gsis, lsis); err != nil {
+		if err := h.registerDeclaredTable(ctx, table, keyAttrs, cm.Data["ttlAttribute"], gsis, lsis, cm.Data["streamViewType"]); err != nil {
 			h.logger.Warn("table sync: registration failed", "table", table, "err", err)
 		}
 	}
@@ -85,7 +85,7 @@ func (h *dynamoHandler) syncDeclaredTables(ctx context.Context, namespace string
 // registerDeclaredTable upserts a table's registry entry (name + key schema, the exact shape
 // CreateTable writes) and, when a TTL attribute is declared, its TTL config — so the declared
 // table behaves identically to one created at runtime.
-func (h *dynamoHandler) registerDeclaredTable(ctx context.Context, table string, keyAttrs []string, ttlAttr string, gsis, lsis []gsiDef) error {
+func (h *dynamoHandler) registerDeclaredTable(ctx context.Context, table string, keyAttrs []string, ttlAttr string, gsis, lsis []gsiDef, streamView string) error {
 	entry := bson.M{"_id": table, "keyAttrs": keyAttrs}
 	if ttlAttr != "" {
 		entry["ttl"] = bson.M{"enabled": true, "attribute": ttlAttr}
@@ -96,10 +96,14 @@ func (h *dynamoHandler) registerDeclaredTable(ctx context.Context, table string,
 	if len(lsis) > 0 {
 		entry["lsi"] = lsis
 	}
+	if streamView != "" {
+		entry["stream"] = bson.M{"viewType": streamView}
+	}
 	if _, err := h.registry().ReplaceOne(ctx, bson.M{"_id": table}, entry, options.Replace().SetUpsert(true)); err != nil {
 		return err
 	}
 	h.ensureGSIIndexes(ctx, table, gsis)
 	h.ensureLSIIndexes(ctx, table, lsis)
+	h.openTableStream(ctx, table, streamView)
 	return nil
 }

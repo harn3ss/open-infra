@@ -150,6 +150,7 @@ func run(logger *slog.Logger) error {
 	var apigwSt *apigwStore
 	var cwSt *cwStore
 	var kinesisSt *kinesisStore
+	var ddbStreamSt *ddbStreamStore
 	var cognitoSt *cognitoStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		db, serr := sql.Open("postgres", sqsURI)
@@ -218,6 +219,12 @@ func run(logger *slog.Logger) error {
 		kinesisSt = &kinesisStore{db: db}
 		if serr := kinesisSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("Kinesis schema init failed: %w", serr)
+		}
+		// DynamoDB Streams share the same Postgres for per-table change-record logs (its own tables, so
+		// it never pollutes Kinesis ListStreams); a reaper enforces the 24h retention (see dynamo_streams.go).
+		ddbStreamSt = &ddbStreamStore{db: db}
+		if serr := ddbStreamSt.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("DynamoDB Streams schema init failed: %w", serr)
 		}
 		// Cognito user pools share the same Postgres for pools/clients/users (bcrypt password hashes).
 		cognitoSt = &cognitoStore{db: db}
@@ -371,6 +378,9 @@ func run(logger *slog.Logger) error {
 	// authorization mapping, and error dialect; SigV4 authentication is shared, done once.
 	dynamoH := newDynamoHandler(cs, authzNS, mongoDB, pg, getenv("MONGO_DB", "open_infra_dynamodb"), logger)
 	dynamoH.authz = authzChecker
+	dynamoH.stream = ddbStreamSt // DynamoDB Streams change-record log (nil unless the shim Postgres is set)
+	dynamoH.account = account    // for DescribeTable LatestStreamArn
+	dynamoH.region = getenv("AWS_REGION", "us-east-1")
 	dynamoH.startTTLReaper(context.Background(), 60*time.Second) // no-op when the data layer is unset
 	// Register declared kind: Table resources (spec-mirror ConfigMaps) into the table registry, so a
 	// cfn-deployed / GitOps-applied table is usable without a runtime CreateTable. No-op when the
@@ -379,6 +389,9 @@ func run(logger *slog.Logger) error {
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
 	region := getenv("AWS_REGION", "us-east-1")
+	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).
+	ddbStreamsH := newDDBStreamsHandler(cs, authzNS, account, region, ddbStreamSt, dynamoH, logger)
+	ddbStreamsH.authz = authzChecker
 	sqsH := newSQSHandler(cs, authzNS, account, region, sqsSt, logger)
 	sqsH.authz = authzChecker
 	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
@@ -442,22 +455,23 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	services := map[string]awsService{
-		"s3":             &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
-		"sts":            &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
-		"lambda":         lambdaH,
-		"appsync":        newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
-		"dynamodb":       dynamoH,
-		"sqs":            sqsH,
-		"sns":            snsH,
-		"kms":            kmsH,
-		"secretsmanager": secretsH,
-		"events":         ebH,
-		"rds":            rdsH,
-		"logs":           cwlH,
-		"ssm":            ssmH,
-		"apigateway":     apigwH,
-		"monitoring":     cwmH,
-		"kinesis":        kinesisH,
+		"s3":              &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
+		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
+		"lambda":          lambdaH,
+		"appsync":         newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
+		"dynamodb":        dynamoH,
+		"dynamodbstreams": ddbStreamsH,
+		"sqs":             sqsH,
+		"sns":             snsH,
+		"kms":             kmsH,
+		"secretsmanager":  secretsH,
+		"events":          ebH,
+		"rds":             rdsH,
+		"logs":            cwlH,
+		"ssm":             ssmH,
+		"apigateway":      apigwH,
+		"monitoring":      cwmH,
+		"kinesis":         kinesisH,
 	}
 	if iamH != nil {
 		services["iam"] = iamH
@@ -667,6 +681,23 @@ func run(logger *slog.Logger) error {
 				case <-t.C:
 					if _, err := kinesisSt.reap(context.Background()); err != nil {
 						logger.Warn("kinesis retention reaper error", "error", err.Error())
+					}
+				}
+			}
+		}()
+	}
+	if ddbStreamSt != nil {
+		// DynamoDB Streams retention reaper: trim change records past the fixed 24h window.
+		go func() {
+			t := time.NewTicker(10 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if _, err := ddbStreamSt.reap(context.Background()); err != nil {
+						logger.Warn("dynamodb streams retention reaper error", "error", err.Error())
 					}
 				}
 			}

@@ -51,6 +51,9 @@ spec:
               {{- $lka := list $spec.hashKey.name $l.rangeKey.name }}
               {{- $lsis = append $lsis (dict "name" $l.name "keyAttrs" $lka) }}
             {{- end }}
+            {{- /* DynamoDB Streams: record the view type so the shim opens a change stream for the table. */}}
+            {{- $streamView := "" }}
+            {{- if $spec.streamSpecification }}{{- $streamView = $spec.streamSpecification.streamViewType }}{{- end }}
             ---
             # Spec mirror the aws-shim reads (label-selected) to register the table's registry entry.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -84,6 +87,9 @@ spec:
                     {{- end }}
                     {{- if $lsis }}
                     lsi: {{ $lsis | toJson | quote }}
+                    {{- end }}
+                    {{- if $streamView }}
+                    streamViewType: {{ $streamView | quote }}
                     {{- end }}
             ---
             apiVersion: openinfra.dev/v1
