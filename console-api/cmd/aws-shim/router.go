@@ -129,6 +129,14 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		svc.authFailure(w, r, requestID)
 		return
 	}
+	// DynamoDB Streams shares the "dynamodb" SigV4 signing name but carries a DynamoDBStreams_
+	// X-Amz-Target, so it arrives under the dynamodb service; route it to its own front door.
+	if cred.Service == "dynamodb" && strings.HasPrefix(r.Header.Get("X-Amz-Target"), "DynamoDBStreams_") {
+		if ds, ok := rt.services["dynamodbstreams"]; ok {
+			ds.serve(w, r, claims, requestID)
+			return
+		}
+	}
 	svc.serve(w, r, claims, requestID)
 }
 
