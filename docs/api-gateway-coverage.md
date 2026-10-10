@@ -52,7 +52,15 @@ metered product; open-infra's answer is different by design: a route is a live d
 (promote/rollback is the GitOps or `cfn` change flow), throttling is per-source rather than
 per-key, and transformation belongs in the backend (or, for GraphQL, in `GraphQLApi`'s VTL). This
 note makes no parity claim to the contrary; the boundary is where "an HTTP front door" ends and "an
-API product-management plane" begins.
+API product-management plane" begins — **for `kind: HttpApi`** (the declarative, v2-style front door
+this page describes).
+
+> **Note (boundary revisited for REST v1):** because a large real estate depends on the API Gateway
+> **REST API (v1)** control plane, stages, deployment promote/rollback, and VTL request/response
+> mapping are being **built on the aws-shim's REST API (v1) surface** — a separate path from
+> `kind: HttpApi`, reusing the v2 shim's stage/deployment machinery and the open-appsync VTL engine.
+> The non-goals above still describe the declarative `HttpApi` model, which stays stage-less and
+> transformation-free by design; the v1 wire API is where that lifecycle lives.
 
 ## In-cluster WAF (`spec.waf`)
 
