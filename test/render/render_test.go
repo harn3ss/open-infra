@@ -71,6 +71,51 @@ func TestManagedDB_HAInstancesAndAntiAffinity(t *testing.T) {
 	}
 }
 
+// database.replicas (the Aurora replica-count knob): explicit CNPG instance count. A value >1
+// implies standbys → anti-affinity + reader endpoint, independent of the highAvailability flag.
+func TestManagedDB_Replicas(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	mk := func(db map[string]any) map[string]any {
+		db["engine"] = "postgres"
+		db["name"] = "appdb"
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{"image": "ghcr.io/x/app:latest", "database": db},
+			"metadata": map[string]any{"uid": "00000000-0000-0000-0000-000000000abc", "labels": map[string]any{
+				"crossplane.io/claim-name": "myapp", "crossplane.io/claim-namespace": "default"}},
+		}}}}
+	}
+
+	// replicas: 3 (no HA flag) → instances 3 + anti-affinity + reader endpoint when opted in.
+	three := render(t, tmpl, mk(map[string]any{"replicas": int64(3), "readerEndpoint": true}))
+	if !strings.Contains(three, "instances: 3") {
+		t.Errorf("replicas:3 must render instances: 3; got:\n%s", grepCtx(three, "instances:"))
+	}
+	if !strings.Contains(three, "enablePodAntiAffinity: true") {
+		t.Errorf("a multi-instance DB (replicas>1) must set anti-affinity even without the HA flag")
+	}
+	if !strings.Contains(three, "DATABASE_RO_HOST") {
+		t.Errorf("readerEndpoint + replicas>1 must inject DATABASE_RO_HOST; got:\n%s", grepCtx(three, "DATABASE_RO"))
+	}
+
+	// replicas: 1 → single instance, no standbys, no reader endpoint even if requested.
+	one := render(t, tmpl, mk(map[string]any{"replicas": int64(1), "readerEndpoint": true}))
+	if !strings.Contains(one, "instances: 1") {
+		t.Errorf("replicas:1 must render instances: 1; got:\n%s", grepCtx(one, "instances:"))
+	}
+	if strings.Contains(one, "enablePodAntiAffinity") {
+		t.Errorf("replicas:1 must not declare anti-affinity")
+	}
+	if strings.Contains(one, "DATABASE_RO_HOST") {
+		t.Errorf("replicas:1 (no standbys) must not inject a reader endpoint")
+	}
+
+	// replicas overrides the highAvailability shorthand (HA=true would be 2; replicas:4 wins).
+	four := render(t, tmpl, mk(map[string]any{"highAvailability": true, "replicas": int64(4)}))
+	if !strings.Contains(four, "instances: 4") {
+		t.Errorf("explicit replicas must override highAvailability's implied 2; got:\n%s", grepCtx(four, "instances:"))
+	}
+}
+
 // TestFileShare_NodeIPExternalIPs guards the masquerade-VM escape hatch: when a
 // FileShare sets spec.nodeIP, the Service must also bind SMB 445 on that node IP
 // (externalIPs) so a NAT'd VM can mount it; without nodeIP it must not.
