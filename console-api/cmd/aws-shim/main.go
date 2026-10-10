@@ -530,18 +530,22 @@ func run(logger *slog.Logger) error {
 		ecrH := newECRHandler(cs, authzNS, account, region, ecrNS, ecrURL,
 			getenv("ECR_PROXY_ENDPOINT", ecrURL), getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
 		ecrH.authz = authzChecker
-		// Per-repo data-plane auth (the Docker bearer-token protocol). The signing key lives in the
-		// REGISTRY's namespace (ecrNS by default) so the registry mounts its cert (rootcertbundle)
-		// same-namespace. tokenAuth is gated by ECR_TOKEN_AUTH so GetAuthorizationToken keeps returning
-		// the htpasswd cred until the registry is cut over to token auth (set together).
-		ecrKeyNS := getenv("ECR_TOKEN_KEY_NAMESPACE", ecrNS)
-		if sgn, serr := loadOrCreateECRTokenSigner(context.Background(), cs, ecrKeyNS); serr != nil {
+		// Per-repo data-plane auth (the Docker bearer-token protocol). The PRIVATE signing key lives in
+		// the shim's own namespace (keysNS — where it may create Secrets); the PUBLIC cert is published
+		// as a ConfigMap in the registry's namespace for the registry to mount as the token
+		// rootcertbundle (a cert is not secret, and the shim already writes ConfigMaps there). tokenAuth
+		// is gated by ECR_TOKEN_AUTH so GetAuthorizationToken keeps returning the htpasswd cred until the
+		// registry is cut over to token auth (set together).
+		if sgn, serr := loadOrCreateECRTokenSigner(context.Background(), cs, keysNS); serr != nil {
 			logger.Warn("ECR token signer unavailable; per-repo token auth disabled", "error", serr.Error())
 		} else {
 			ecrH.signer = sgn
 			ecrH.issuer = getenv("ECR_TOKEN_ISSUER", "openinfra-ecr")
 			ecrH.service = getenv("ECR_TOKEN_SERVICE", "ecr-registry")
 			ecrH.tokenAuth = getenv("ECR_TOKEN_AUTH", "") == "true"
+			if perr := publishCertConfigMap(context.Background(), cs, ecrNS, sgn.certPEM); perr != nil {
+				logger.Warn("could not publish the ECR token cert to the registry namespace", "error", perr.Error())
+			}
 		}
 		services["ecr"] = ecrH
 		logger.Info("ECR front door enabled", slog.String("namespace", ecrNS), slog.Bool("perRepoTokenAuth", ecrH.tokenAuth))

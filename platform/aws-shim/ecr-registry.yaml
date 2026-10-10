@@ -298,10 +298,10 @@ spec:
   ports:
     - { name: http, port: 5000, targetPort: http }
 ---
-# Let the aws-shim SA read the registry credential so GetAuthorizationToken can hand it back, and
-# get/create the per-repo token SIGNING key (ecr-token-signing-key) in THIS namespace — so the key
-# lives beside the registry, which mounts its cert as the token rootcertbundle (no cross-namespace
-# cert read). create cannot be resourceName-scoped; get is scoped to the two named Secrets.
+# Let the aws-shim SA read the registry credential so GetAuthorizationToken can hand it back. Scoped to
+# the single Secret (resourceNames), cross-namespace from open-infra-aws-shim. (The per-repo token
+# signing key lives in the shim's OWN namespace; only its public cert is published here, as a
+# ConfigMap via the aws-shim-ecr-records Role — no Secret authority is needed in this namespace.)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -311,10 +311,7 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get]
-    resourceNames: [ecr-registry-auth, ecr-token-signing-key]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [create]
+    resourceNames: [ecr-registry-auth]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

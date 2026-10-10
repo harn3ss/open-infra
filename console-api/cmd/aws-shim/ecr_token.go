@@ -329,3 +329,20 @@ func (h *ecrHandler) serveToken(w http.ResponseWriter, r *http.Request) {
 		"token": tok, "access_token": tok, "expires_in": 300, "issued_at": time.Now().UTC().Format(time.RFC3339),
 	})
 }
+
+// publishCertConfigMap writes the signer's PUBLIC cert to a ConfigMap in the registry's namespace,
+// so the registry can mount it as the token rootcertbundle WITHOUT a cross-namespace Secret read
+// (the private key stays in the shim's own namespace). A cert is not secret, and the shim already
+// writes ConfigMaps in the ECR namespace (the ecr-records Role), so this needs no new authority.
+func publishCertConfigMap(ctx context.Context, cs kubernetes.Interface, ns string, certPEM []byte) error {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "ecr-token-cert", Namespace: ns,
+			Labels: map[string]string{"app.kubernetes.io/managed-by": "open-infra-aws-shim"}},
+		Data: map[string]string{"cert.pem": string(certPEM)},
+	}
+	_, err := cs.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = cs.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+	}
+	return err
+}
