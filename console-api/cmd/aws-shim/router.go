@@ -59,7 +59,7 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// possibly an app JWT for the route's authorizer), so it must be recognized BEFORE SigV4 parsing —
 	// otherwise its Authorization header would be misread as a bad signature. Control-plane apigatewayv2
 	// management calls are SigV4-signed to /v2/... and are NOT invoke targets, so this never shadows them.
-	if apigw, ok := rt.services["apigateway"].(*apigwHandler); ok {
+	if apigw, ok := rt.services["apigateway"].(apigwInvoker); ok {
 		if apiID, invokePath, isInvoke := apigw.invokeTarget(r); isInvoke {
 			apigw.serveInvoke(w, r, apiID, invokePath, requestID)
 			return

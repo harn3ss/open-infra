@@ -148,6 +148,7 @@ func run(logger *slog.Logger) error {
 	var cwlSt *cwlStore
 	var ssmSt *ssmStore
 	var apigwSt *apigwStore
+	var apigwV1St *apigwV1Store
 	var cwSt *cwStore
 	var kinesisSt *kinesisStore
 	var ddbStreamSt *ddbStreamStore
@@ -207,6 +208,12 @@ func run(logger *slog.Logger) error {
 		apigwSt = &apigwStore{db: db}
 		if serr := apigwSt.ensureSchema(context.Background()); serr != nil {
 			return fmt.Errorf("API Gateway schema init failed: %w", serr)
+		}
+		// REST API (v1) shares the same Postgres; own rest_* tables (resource tree, methods,
+		// integrations, deployment snapshots, stages).
+		apigwV1St = &apigwV1Store{db: db}
+		if serr := apigwV1St.ensureSchema(context.Background()); serr != nil {
+			return fmt.Errorf("API Gateway REST v1 schema init failed: %w", serr)
 		}
 		// CloudWatch metrics + alarms share the same Postgres; the in-process evaluator (started below)
 		// reads datapoints from here and fires SNS alarm actions.
@@ -427,6 +434,10 @@ func run(logger *slog.Logger) error {
 	apigwInvokeBase := getenv("APIGW_INVOKE_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
 	apigwH := newAPIGWHandler(cs, authzNS, account, region, fnNS, svcSuffix, apigwInvokeBase, apigwSt, logger)
 	apigwH.authz = authzChecker
+	// REST API (v1) shares the "apigateway" SigV4 signing name with HTTP API (v2); one mux path-routes
+	// /restapis/... to v1 and /v2/apis/... to v2 (and picks the right data plane by api id on invoke).
+	apigwV1H := newAPIGWV1Handler(cs, authzNS, fnNS, svcSuffix, apigwV1St, authzChecker, logger)
+	apigwMuxH := &apigwMux{v1: apigwV1H, v2: apigwH}
 	// CloudWatch metrics + alarms (SigV4 service name "monitoring"). The alarm evaluator (started below)
 	// fires SNS AlarmActions through the SNS handler.
 	cwmH := newCWHandler(cs, authzNS, account, region, cwSt, snsH, logger)
@@ -469,7 +480,7 @@ func run(logger *slog.Logger) error {
 		"rds":             rdsH,
 		"logs":            cwlH,
 		"ssm":             ssmH,
-		"apigateway":      apigwH,
+		"apigateway":      apigwMuxH,
 		"monitoring":      cwmH,
 		"kinesis":         kinesisH,
 	}
