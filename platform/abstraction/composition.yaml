@@ -100,6 +100,15 @@ spec:
               {{- $dbAutoMin = (int ($spec.database.autoscaling.minReplicas | default 2)) }}
             {{- end }}
             {{- $dbMultiNode := or (gt $dbInstances 1) $dbAuto }}
+            {{- /* database.pointInTimeRecovery: continuously archive WAL to MinIO via the barman-cloud
+                   plugin (the Aurora Backtrack / RDS PITR analog). Opt-in. A db-backup-setup Job mints
+                   a scoped MinIO user into <name>-db-backup-creds; the ObjectStore + Cluster plugin use it. */}}
+            {{- $dbPITR := false }}
+            {{- $dbBacktrackWindow := "7d" }}
+            {{- if and $spec.database (eq $dbEngine "postgres") ($spec.database.pointInTimeRecovery | default false) }}
+              {{- $dbPITR = true }}
+              {{- $dbBacktrackWindow = ($spec.database.backtrackWindow | default "7d") }}
+            {{- end }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
                    image is given. An Application may be database-only — just declare
                    a `database:` block and the platform provisions the DB, no app. */}}
@@ -931,6 +940,16 @@ spec:
                     # database.autoscaling: instances is OWNED by the KEDA ScaledObject below (via the
                     # Cluster /scale subresource) — omitted here so Crossplane doesn't fight the autoscaler.
                     {{- end }}
+                    {{- if $dbPITR }}
+                    # database.pointInTimeRecovery: archive WAL continuously to the ObjectStore below
+                    # (barman-cloud CNPG-I plugin, cluster-installed). This is the WAL stream a
+                    # point-in-time restore replays. Restore = bootstrap a new cluster to a target time.
+                    plugins:
+                      - name: barman-cloud.cloudnative-pg.io
+                        isWALArchiver: true
+                        parameters:
+                          barmanObjectName: {{ $name }}-db-backup
+                    {{- end }}
                     {{- if $dbEncrypted }}
                     # Propagate the encryption-key annotation onto every PVC CNPG creates, so the
                     # volume-crypto reconciler materializes each <pvc>-crypto LUKS secret from the
@@ -1026,6 +1045,101 @@ spec:
                         metricType: Utilization
                         metadata:
                           value: "{{ $spec.database.autoscaling.targetCPUPercent | default 70 }}"
+            {{- end }}
+            {{- if $dbPITR }}
+            ---
+            # database.pointInTimeRecovery: the object store the barman-cloud WAL archiver writes to.
+            # MinIO, per-DB path under the platform backup bucket; retentionPolicy = backtrackWindow.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: db-backup-store
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: barmancloud.cnpg.io/v1
+                  kind: ObjectStore
+                  metadata:
+                    name: {{ $name }}-db-backup
+                    namespace: {{ $ns }}
+                  spec:
+                    retentionPolicy: "{{ $dbBacktrackWindow }}"
+                    configuration:
+                      destinationPath: s3://db-snapshots/wal/{{ $ns }}/{{ $name }}/
+                      endpointURL: http://minio.minio.svc.cluster.local:9000
+                      s3Credentials:
+                        accessKeyId: { name: {{ $name }}-db-backup-creds, key: ak }
+                        secretAccessKey: { name: {{ $name }}-db-backup-creds, key: sk }
+                      wal: { compression: gzip }
+                      data: { compression: gzip }
+            ---
+            # Mint a per-DB, NON-ROOT MinIO user scoped to ONLY this DB's WAL path, into
+            # <name>-db-backup-creds (the ObjectStore above reads it). Same pattern + SA as bucket-setup:
+            # root provisions only, is never written into the app namespace.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: db-backup-setup
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata: { name: {{ $name }}-db-backup-setup, namespace: minio }
+                  spec:
+                    backoffLimit: 20
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-bucket-setup
+                        restartPolicy: OnFailure
+                        volumes:
+                          - { name: mc, emptyDir: {} }
+                        initContainers:
+                          - name: fetch-mc
+                            image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
+                            securityContext:
+                              runAsNonRoot: true
+                              runAsUser: 65532
+                              allowPrivilegeEscalation: false
+                              capabilities: { drop: [ALL] }
+                            command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+                            volumeMounts: [{ name: mc, mountPath: /mc }]
+                        containers:
+                          - name: setup
+                            image: alpine/k8s:1.30.0
+                            volumeMounts: [{ name: mc, mountPath: /mc }]
+                            env:
+                              - name: ROOT_USER
+                                valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+                              - name: ROOT_PASS
+                                valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                set -e
+                                MC=/mc/mc
+                                E=http://minio.minio.svc.cluster.local:9000
+                                "$MC" alias set m "$E" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+                                # Platform backup bucket (shared with snapshots); per-DB path keeps tenants apart.
+                                "$MC" mb --ignore-existing m/db-snapshots
+                                BKPUSER="bkp-{{ $ns }}-{{ $name }}"
+                                SK=$(kubectl get secret {{ $name }}-db-backup-creds -n {{ $ns }} -o jsonpath='{.data.sk}' 2>/dev/null | base64 -d || true)
+                                [ -n "$SK" ] || SK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+                                "$MC" admin user add m "$BKPUSER" "$SK" >/dev/null
+                                # Scope to ONLY this DB's WAL path (+ the bucket list/location barman needs).
+                                P=wal/{{ $ns }}/{{ $name }}
+                                printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListMultipartUploadParts","s3:AbortMultipartUpload"],"Resource":["arn:aws:s3:::db-snapshots/'"$P"'/*"]},{"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::db-snapshots"]}]}' > /tmp/pol.json
+                                "$MC" admin policy create m "$BKPUSER" /tmp/pol.json >/dev/null 2>&1 \
+                                  || "$MC" admin policy info m "$BKPUSER" >/dev/null 2>&1 \
+                                  || { echo "policy create failed for $BKPUSER" >&2; exit 1; }
+                                "$MC" admin policy attach m "$BKPUSER" --user "$BKPUSER" >/dev/null 2>&1 || true
+                                kubectl create secret generic {{ $name }}-db-backup-creds -n {{ $ns }} \
+                                  --from-literal=ak="$BKPUSER" \
+                                  --from-literal=sk="$SK" \
+                                  --dry-run=client -o yaml | kubectl apply -f -
             {{- end }}
             {{- end }}
             {{- end }}
