@@ -111,6 +111,30 @@ the detail page) — no recreate. Postgres scales its CNPG instance count live (
 streaming-replication standby); Mongo scales the proxy tier; MySQL converts the standalone
 MariaDB to a 3-node Galera cluster. (Start the database first if it's stopped.)
 
+### Read scaling (postgres) — the Aurora reader model
+
+Beyond the HA on/off flag, postgres databases can size and autoscale their read capacity:
+
+```yaml
+database:
+  engine: postgres
+  replicas: 3            # 1 primary + 2 hot standbys (overrides highAvailability's implied 2)
+  readerEndpoint: true   # inject DATABASE_RO_HOST — a reader endpoint balancing reads across standbys
+  autoscaling:           # or autoscale the standbys on load instead of a fixed replicas count
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUPercent: 70
+```
+
+- **`replicas`** — an explicit instance count (the Aurora replica-count knob). Any value `>1`
+  turns on streaming replication + cross-node anti-affinity, exactly like `highAvailability`.
+- **`readerEndpoint`** — surfaces `DATABASE_RO_HOST` (CNPG's `-ro` service, which load-balances
+  across the standbys) alongside the writer `DATABASE_URL`, so the app can send reads off the
+  primary — the Aurora **reader endpoint**. Needs standbys (`replicas > 1` or `highAvailability`).
+- **`autoscaling`** — a KEDA ScaledObject target-tracks CPU and scales the instance count between
+  `minReplicas` and `maxReplicas` (the Aurora **replica autoscaling** analog). The reader pool
+  widens automatically as it scales. When set, it owns the count (`replicas` is ignored).
+
 ## Storage & durability
 
 Database volumes use **local-path** PVs (local NVMe — never CIFS/NFS) for performance by
@@ -130,6 +154,36 @@ Like RDS stop/start: pause a database to free compute while **keeping its data**
 - **mysql / mongo** → the engine deployments scale to 0.
 
 The PVC(s) are retained; set `stopped: false` (or click **Start**) to resume.
+
+## Point-in-time recovery (postgres) — the backtrack analog
+
+> AWS equivalent: **RDS point-in-time recovery** / **Aurora Backtrack**.
+
+Opt a postgres database into continuous backup and you can restore it to any instant within a
+retention window:
+
+```yaml
+database:
+  engine: postgres
+  pointInTimeRecovery: true   # continuously archive WAL to object storage
+  backtrackWindow: 7d         # how far back a restore can reach (the WAL-archive retention)
+```
+
+When enabled, the database's CNPG cluster streams its write-ahead log continuously to object
+storage (MinIO) via the barman-cloud plugin, under a per-database path with its own scoped,
+non-root credential (an app's archive is never reachable by another tenant). This adds ongoing
+object-storage cost, so it's **off by default**.
+
+To restore, `POST /api/databases/{namespace}/{name}/backtrack` with a target time:
+
+```json
+{ "targetTime": "2026-10-10T12:00:00Z", "targetName": "shop-db-recovered" }
+```
+
+Postgres has **no in-place rewind**, so (like restoring an RDS instance to a point in time) the
+platform recovers into a **new** cluster by replaying the WAL archive up to `targetTime`, then
+you cut the application over to the recovered database's endpoint (returned in the response).
+The original database is left untouched, so you can compare before switching.
 
 ## Peek — live engine internals
 
