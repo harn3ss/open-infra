@@ -318,7 +318,13 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 1800  # full re-hash of the whole chain — more headroom than the hourly
+      # Full re-hash of the WHOLE chain; cost scales with chain length. Measured 2026-10-10 at
+      # ~34m (2024s) over 15,422 segments / 116 GiB / 79M records — the chain outgrew the old
+      # 1800s and the daily backstop was being DeadlineExceeded (the hourly incremental, bounded to
+      # new segments, kept passing, so integrity was never actually at risk). 7200s = ~3.5x current
+      # with ~1yr of growth headroom. Durable fix (parallelize the sequential MinIO fetch + stream to
+      # bound memory) tracked separately — a deadline bump alone is a treadmill at ~0.5 GiB/day.
+      activeDeadlineSeconds: 7200
       ttlSecondsAfterFinished: 600
       backoffLimit: 0
       template:
