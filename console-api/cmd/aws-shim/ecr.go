@@ -54,7 +54,14 @@ type ecrHandler struct {
 	proxyEndpoint string // what GetAuthorizationToken returns + the repositoryUri base (e.g. http://ecr-registry...:5000)
 	authSecret    string // name of the registry credential Secret in ns (ecr-registry-auth; keys: username, password)
 	authz         *dataplaneauthz.Checker
-	logger        *slog.Logger
+	// Per-repo data-plane auth (the Docker bearer-token protocol). signer mints the caller credential
+	// + the per-repo registry tokens; tokenAuth gates GetAuthorizationToken onto that path (set together
+	// with the registry's token-auth config — until then GetAuthorizationToken returns the htpasswd cred).
+	signer    *ecrTokenSigner
+	tokenAuth bool
+	issuer    string // the registry token issuer (must match the registry config's ISSUER)
+	service   string // the registry token service/audience (must match the registry config's SERVICE)
+	logger    *slog.Logger
 }
 
 func newECRHandler(cs kubernetes.Interface, authzNS, account, region, ns, registryURL, proxyEndpoint, authSecret string, logger *slog.Logger) *ecrHandler {
@@ -194,7 +201,7 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 	switch op {
 	case "GetAuthorizationToken":
-		h.getAuthorizationToken(ctx, w, requestID)
+		h.getAuthorizationToken(ctx, w, requestID, claims)
 	case "CreateRepository":
 		h.createRepository(ctx, w, requestID, body)
 	case "DescribeRepositories":
@@ -217,11 +224,27 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 // --- authorization token (the data-plane credential) ---
 
-func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseWriter, requestID string) {
-	user, pass, err := h.registryCred(ctx)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseWriter, requestID string, claims iam.Claims) {
+	var user, pass string
+	if h.tokenAuth && h.signer != nil {
+		// Per-repo mode: the credential is a shim-signed caller token carrying the caller's identity.
+		// docker login -u AWS -p <token>; docker then presents it to /ecr/token, which authorizes the
+		// requested repos against THIS caller and mints a registry token scoped to only what's granted.
+		caller, err := h.signer.mintCaller(ecrCaller{Sub: claims.Sub, Groups: claims.Groups, Role: claims.Role}, 12*time.Hour)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		user, pass = "AWS", caller
+	} else {
+		// htpasswd mode (pre-cutover): the shared registry credential. Coarse — any token holder can
+		// push/pull any repo — which is exactly what the token-auth path above replaces.
+		u, p, err := h.registryCred(ctx)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		user, pass = u, p
 	}
 	// The ECR authorization token is base64("<user>:<pass>") — exactly what `docker login -u AWS` consumes.
 	token := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
