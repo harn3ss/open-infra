@@ -89,7 +89,17 @@ spec:
                 {{- $dbInstances = $r }}
               {{- end }}
             {{- end }}
-            {{- $dbMultiNode := gt $dbInstances 1 }}
+            {{- /* database.autoscaling: a KEDA ScaledObject target-tracks CPU and owns the CNPG
+                   Cluster's instance count via its /scale subresource. When set, the composition OMITS
+                   spec.instances (same pattern as the app Deployment + its HPA) so Crossplane doesn't
+                   fight the autoscaler, and the DB is treated as multi-node (standbys + reader endpoint). */}}
+            {{- $dbAuto := false }}
+            {{- $dbAutoMin := 2 }}
+            {{- if and $spec.database $spec.database.autoscaling }}
+              {{- $dbAuto = true }}
+              {{- $dbAutoMin = (int ($spec.database.autoscaling.minReplicas | default 2)) }}
+            {{- end }}
+            {{- $dbMultiNode := or (gt $dbInstances 1) $dbAuto }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
                    image is given. An Application may be database-only — just declare
                    a `database:` block and the platform provisions the DB, no app. */}}
@@ -915,7 +925,12 @@ spec:
                     # replication, automatic failover. local-path PVs are node-local,
                     # so anti-affinity (one instance per node) is what makes the DB
                     # survive a node loss — the standby is promoted automatically.
+                    {{- if not $dbAuto }}
                     instances: {{ $dbInstances }}
+                    {{- else }}
+                    # database.autoscaling: instances is OWNED by the KEDA ScaledObject below (via the
+                    # Cluster /scale subresource) — omitted here so Crossplane doesn't fight the autoscaler.
+                    {{- end }}
                     {{- if $dbEncrypted }}
                     # Propagate the encryption-key annotation onto every PVC CNPG creates, so the
                     # volume-crypto reconciler materializes each <pvc>-crypto LUKS secret from the
@@ -978,6 +993,40 @@ spec:
                           # pgvector: vector similarity search (RAG with Models).
                           - CREATE EXTENSION IF NOT EXISTS vector
                           {{- end }}
+            {{- if $dbAuto }}
+            ---
+            # database.autoscaling (the Aurora replica-autoscaling analog): KEDA target-tracks CPU
+            # utilization and scales the CNPG Cluster's instance count between min and max via the
+            # Cluster /scale subresource (.spec.instances). The composition omits instances above so
+            # the autoscaler owns it. More instances automatically widen the -ro reader pool.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: db-autoscaler
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: keda.sh/v1alpha1
+                  kind: ScaledObject
+                  metadata:
+                    name: {{ $name }}-db
+                    namespace: {{ $ns }}
+                    annotations:
+                      argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+                  spec:
+                    scaleTargetRef:
+                      apiVersion: postgresql.cnpg.io/v1
+                      kind: Cluster
+                      name: {{ $name }}-db
+                    minReplicaCount: {{ $dbAutoMin }}
+                    maxReplicaCount: {{ int $spec.database.autoscaling.maxReplicas }}
+                    triggers:
+                      - type: cpu
+                        metricType: Utilization
+                        metadata:
+                          value: "{{ $spec.database.autoscaling.targetCPUPercent | default 70 }}"
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if and $spec.database $spec.database.expose }}

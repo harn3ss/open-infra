@@ -119,6 +119,23 @@ spec:
                       type: integer
                       minimum: 1
                       description: "postgres only: explicit instance count — 1 primary + (replicas-1) hot standbys (the Aurora replica-count knob). Overrides highAvailability's implied 2. Any value >1 enables streaming replication, cross-node anti-affinity, and the reader endpoint; needs that many nodes. Unset = highAvailability ? 2 : 1."
+                    autoscaling:
+                      type: object
+                      description: "postgres only: autoscale the instance count on load (the Aurora replica-autoscaling analog). A KEDA ScaledObject target-tracks CPU utilization and scales the CNPG Cluster's instances between minReplicas and maxReplicas via its /scale subresource. When set, it owns the instance count (replicas/highAvailability are ignored) and implies standbys (anti-affinity + reader endpoint). Needs ≥ maxReplicas nodes."
+                      properties:
+                        minReplicas:
+                          type: integer
+                          minimum: 1
+                          default: 2
+                          description: "Floor instance count (primary + standbys). Default 2 (one standby), so there is always a reader to scale from."
+                        maxReplicas:
+                          type: integer
+                          minimum: 2
+                          description: "Ceiling instance count the autoscaler may scale up to. Required when autoscaling is set."
+                        targetCPUPercent:
+                          type: integer
+                          default: 70
+                          description: "Scale up/down to keep average CPU utilization across instances near this percent (default 70)."
                     readerEndpoint:
                       type: boolean
                       default: false
