@@ -77,6 +77,19 @@ spec:
                         secret:
                           type: string
                           description: "Secret with S3 creds for the bucket (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL / BUCKET) — e.g. an Application bucket's connection secret."
+                    layers:
+                      type: array
+                      description: >-
+                        Lambda LAYERS: .zip artifacts extracted (merged, in order) into /opt at cold
+                        start, so the handler can import shared code/deps they provide (a python layer's
+                        zip carries a python/ tree -> importable). Each is a bucket+key fetched with the
+                        same S3 creds as source.secret, so layers require a bucket source. v1: python.
+                      items:
+                        type: object
+                        required: [bucket, key]
+                        properties:
+                          bucket: { type: string, description: "MinIO/S3 bucket holding the layer .zip." }
+                          key:    { type: string, description: "Object key of the layer .zip within the bucket." }
                 port:  { type: integer, default: 8080, description: "Container port the function listens on" }
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
                 memory:  { type: string, description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob. Set as both request and limit. Unset = cluster default." }
