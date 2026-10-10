@@ -85,8 +85,8 @@ with `encrypt=disable` by default (or `encrypt=on`/`strict` when the proxy termi
 and the multiplex-opportunity metric. Backed by open-infra's own `tds-proxy`
 (`ghcr.io/…/open-infra-tds-proxy`); see `docs/design/rds-proxy-tds-multiplexing.md`. **Experimental**,
 same as the `babelfish` engine it fronts. Today a session holds its backend for its lifetime (reuse is
-across sessions); per-transaction multiplexing is available as an opt-in proxy mode (`-tx-multiplex`),
-not yet surfaced as a `DatabaseProxy` spec field.
+across sessions); per-transaction multiplexing is an opt-in proxy mode (`-tx-multiplex`),
+surfaced as the `DatabaseProxy` spec field `transactionMultiplexing`.
 
 ## High availability
 
