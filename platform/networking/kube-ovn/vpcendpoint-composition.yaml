@@ -1,0 +1,57 @@
+# One kind: VpcEndpoint claim -> an ExternalName Service (the private endpoint DNS) aliasing the
+# aws-shim front door, in the claim's namespace. An app sets its AWS endpoint URL for the service to
+# this name (e.g. http://vpce-<name>.<ns>.svc.cluster.local:4566). See vpcendpoint-xrd.yaml for the
+# semantics decision (all services route to the shim; isolated-VPC routing is the graduation step).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: vpcendpoint
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef: { apiVersion: openinfra.dev/v1, kind: XVpcEndpoint }
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef: { name: crossplane-contrib-function-go-templating }
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $spec := .observed.composite.resource.spec }}
+            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $shim := "aws-shim.open-infra-aws-shim.svc.cluster.local" }}
+            ---
+            # The private endpoint: an ExternalName Service aliasing the aws-shim front door.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: endpoint-svc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: vpce-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/vpc-endpoint: {{ $name }}
+                      openinfra.dev/vpc-endpoint-service: {{ $spec.service }}
+                  spec:
+                    type: ExternalName
+                    externalName: {{ $shim }}
+                    ports:
+                      - { port: 4566, targetPort: 4566 }
+            ---
+            apiVersion: openinfra.dev/v1
+            kind: XVpcEndpoint
+            status:
+              dnsName: "vpce-{{ $name }}.{{ $ns }}.svc.cluster.local:4566"
+    - step: ready
+      functionRef: { name: crossplane-contrib-function-auto-ready }
