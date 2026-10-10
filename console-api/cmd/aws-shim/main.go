@@ -530,8 +530,19 @@ func run(logger *slog.Logger) error {
 		ecrH := newECRHandler(cs, authzNS, account, region, ecrNS, ecrURL,
 			getenv("ECR_PROXY_ENDPOINT", ecrURL), getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
 		ecrH.authz = authzChecker
+		// Per-repo data-plane auth (the Docker bearer-token protocol). The signing key lives in the
+		// shim's own namespace (keysNS). tokenAuth is gated by ECR_TOKEN_AUTH so GetAuthorizationToken
+		// keeps returning the htpasswd cred until the registry is cut over to token auth (set together).
+		if sgn, serr := loadOrCreateECRTokenSigner(context.Background(), cs, keysNS); serr != nil {
+			logger.Warn("ECR token signer unavailable; per-repo token auth disabled", "error", serr.Error())
+		} else {
+			ecrH.signer = sgn
+			ecrH.issuer = getenv("ECR_TOKEN_ISSUER", "openinfra-ecr")
+			ecrH.service = getenv("ECR_TOKEN_SERVICE", "ecr-registry")
+			ecrH.tokenAuth = getenv("ECR_TOKEN_AUTH", "") == "true"
+		}
 		services["ecr"] = ecrH
-		logger.Info("ECR front door enabled", slog.String("namespace", ecrNS))
+		logger.Info("ECR front door enabled", slog.String("namespace", ecrNS), slog.Bool("perRepoTokenAuth", ecrH.tokenAuth))
 	}
 	// Glue (glue.*) — the Data Catalog fronting the platform's EXISTING Iceberg REST catalog (lakehouse ns):
 	// a Glue database IS an Iceberg namespace, a Glue table IS an Iceberg table (marked table_type=ICEBERG +
@@ -749,6 +760,13 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// The ECR Docker-registry token endpoint (not an AWS-SDK path): the registry redirects docker
+	// here, which authenticates the caller credential (Basic auth) and mints a per-repo-scoped
+	// registry token. Authentication is the credential itself, so it's not behind the SigV4 layer.
+	if ecr, ok := services["ecr"].(*ecrHandler); ok {
+		r.Get("/ecr/token", ecr.serveToken)
+	}
 
 	// Every other request is an AWS-SDK call; the serviceRouter authenticates once and dispatches
 	// to the handler for the service the client signed for.
