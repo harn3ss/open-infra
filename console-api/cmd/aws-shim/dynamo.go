@@ -146,9 +146,9 @@ func (h *dynamoHandler) authFailure(w http.ResponseWriter, _ *http.Request, requ
 // same table-agnostic coarseness S3 carries in v1.
 func verbForOp(op string) (verb string, known bool) {
 	switch op {
-	case "GetItem", "Query", "Scan", "BatchGetItem", "TransactGetItems", "DescribeTable", "DescribeTimeToLive", "ListTables":
+	case "GetItem", "Query", "Scan", "BatchGetItem", "TransactGetItems", "DescribeTable", "DescribeTimeToLive", "ListTables", "DescribeContinuousBackups":
 		return "get", true
-	case "PutItem", "UpdateItem", "BatchWriteItem", "TransactWriteItems", "CreateTable", "UpdateTimeToLive":
+	case "PutItem", "UpdateItem", "BatchWriteItem", "TransactWriteItems", "CreateTable", "UpdateTimeToLive", "UpdateContinuousBackups", "RestoreTableToPointInTime":
 		return "create", true
 	case "DeleteItem", "DeleteTable":
 		return "delete", true
@@ -222,6 +222,12 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		h.updateTimeToLive(ctx, w, requestID, table, body)
 	case "DescribeTimeToLive":
 		h.describeTimeToLive(ctx, w, requestID, table)
+	case "DescribeContinuousBackups":
+		h.describeContinuousBackups(ctx, w, requestID, table)
+	case "UpdateContinuousBackups":
+		h.updateContinuousBackups(ctx, w, requestID, table, body)
+	case "RestoreTableToPointInTime":
+		h.restoreTableToPointInTime(w, requestID)
 	default:
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"DynamoDB "+op+" is recognized but not yet implemented by the open-infra shim.")
