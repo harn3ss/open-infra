@@ -528,6 +528,26 @@ func TestFunction_Code(t *testing.T) {
 		}
 	})
 
+	// Layers (zip artifacts): a bucket-source function with layers emits OPENINFRA_LAYERS as the
+	// JSON list the runtime shim fetches + extracts into /opt.
+	t.Run("layers", func(t *testing.T) {
+		out := render(t, tmpl, ctx(map[string]any{
+			"code": map[string]any{"runtime": "python3.12", "handler": "app.handler",
+				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"},
+				"layers": []any{map[string]any{"bucket": "fn-artifacts", "key": "layer-deps.zip"}}},
+		}))
+		lrow := grepCtx(out, "OPENINFRA_LAYERS")
+		if !strings.Contains(out, "name: OPENINFRA_LAYERS") {
+			t.Errorf("layers should inject OPENINFRA_LAYERS; got:\n%s", out)
+		}
+		// The value is the JSON layer list (quote-escaped in YAML); assert the bucket+key are present.
+		for _, want := range []string{"bucket", "fn-artifacts", "layer-deps.zip"} {
+			if !strings.Contains(lrow, want) {
+				t.Errorf("OPENINFRA_LAYERS missing %q; got:\n%s", want, lrow)
+			}
+		}
+	})
+
 	// Fail-loud guards: each malformed spec must abort the render rather than mis-emit.
 	for _, bad := range []struct {
 		name string
@@ -542,6 +562,10 @@ func TestFunction_Code(t *testing.T) {
 			"handler": "a.b", "source": map[string]any{"configMap": "c", "bucket": "b"}}}},
 		{"no-source", map[string]any{"code": map[string]any{"runtime": "python3.12",
 			"handler": "a.b", "source": map[string]any{}}}},
+		// Layers need a bucket source with creds — an inline (configMap) handler can't carry layers.
+		{"layers-need-bucket", map[string]any{"code": map[string]any{"runtime": "python3.12",
+			"handler": "a.b", "source": map[string]any{"configMap": "c"},
+			"layers": []any{map[string]any{"bucket": "b", "key": "l.zip"}}}}},
 	} {
 		t.Run("guard/"+bad.name, func(t *testing.T) {
 			if err := renderErr(tmpl, ctx(bad.spec)); err == nil {

@@ -48,6 +48,8 @@ spec:
             {{-   if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function: unknown spec.code.runtime %q" $code.runtime) }}{{- end }}
             {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "kind: Function spec.code.source: set configMap OR bucket+key, not both" }}{{- end }}
             {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "kind: Function spec.code.source: set configMap (inline) or bucket+key (zip)" }}{{- end }}
+            {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
+            {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "kind: Function spec.code.layers require a bucket source with a creds secret (source.bucket + source.secret)" }}{{- end }}
             {{- end }}
             ---
             # --- Knative Service: the scale-to-zero "Function" ---
@@ -105,6 +107,9 @@ spec:
                               {{- if $csrc.bucket }}
                               - { name: OPENINFRA_CODE_BUCKET, value: "{{ $csrc.bucket }}" }
                               - { name: OPENINFRA_CODE_KEY, value: "{{ $csrc.key }}" }
+                              {{- end }}
+                              {{- if $code.layers }}
+                              - { name: OPENINFRA_LAYERS, value: {{ $code.layers | toJson | quote }} }
                               {{- end }}
                             {{- end }}
                             {{- range $spec.env }}
