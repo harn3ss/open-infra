@@ -76,6 +76,7 @@ type DeployOptions struct {
 	StackName string
 	Namespace string
 	Params    map[string]string
+	Exports   map[string]string // cross-stack Exports (export name -> value) for Fn::ImportValue
 	Wait      bool
 	Timeout   time.Duration
 }
@@ -85,7 +86,7 @@ type DeployOptions struct {
 // deploy and update: a REJECTED plan, a type with no create translator, or any untranslatable
 // property returns an error and no manifests — there is no partial result.
 func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
-	plan, err := BuildPlan(data, opts.Params, opts.StackName)
+	plan, err := BuildPlanWithExports(data, opts.Params, opts.Exports, opts.StackName)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +97,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := newResolver(t, resolveParams(t, opts.Params), pseudoParams(opts.StackName))
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	ctx := &stackCtx{template: t, resolver: r}
 

@@ -46,8 +46,9 @@ design, and every refusal names its reason.
 | `REJECTED` | 1 | At least one blocker. **Nothing** would be provisioned. Every blocker is listed with its exact reason. |
 
 A blocker is any of: an unsupported or gated resource type, an unsupported intrinsic
-function (e.g. `Fn::ImportValue`), a macro/SAM `Transform`, a required parameter with
-no value, a reference to something that does not exist, or a dependency cycle.
+function (e.g. a macro/SAM `Fn::Transform`), an `Fn::ImportValue` whose export was not
+supplied, a required parameter with no value, a reference to something that does not
+exist, or a dependency cycle.
 
 ## Usage
 
@@ -129,15 +130,27 @@ the reason stated.
 ## Intrinsic functions
 
 Resolved: `Ref`, `Fn::GetAtt`, `Fn::Sub`, `Fn::Join`, `Fn::Select`, `Fn::Split`,
-`Fn::FindInMap`, `Fn::Base64`, and the condition functions `Fn::If` / `Fn::Equals` /
-`Fn::And` / `Fn::Or` / `Fn::Not`, plus the `AWS::*` pseudo-parameters. `Conditions` are
-evaluated, so a resource gated on a false condition is reported as skipped and left out
-of the provisioning order.
+`Fn::FindInMap`, `Fn::Base64`, `Fn::Cidr`, `Fn::GetAZs`, `Fn::ImportValue`, and the
+condition functions `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not`, plus the
+`AWS::*` pseudo-parameters. `Conditions` are evaluated, so a resource gated on a false
+condition is reported as skipped and left out of the provisioning order.
 
-Refused (each records a blocker): `Fn::ImportValue`, `Fn::GetAZs`, `Fn::Cidr`,
-`Fn::Transform`, and any other intrinsic the engine does not implement. A template that
-relies on one of these is `REJECTED` rather than provisioned with the value quietly
-wrong.
+- **`Fn::Cidr`** — real IPv4 subnet math: `[ipBlock, count, cidrBits]` carves `count`
+  sequential `/(32-cidrBits)` blocks from `ipBlock` (IPv6 blocks, or a count/bits that
+  overflow the block, are refused).
+- **`Fn::GetAZs`** — a deterministic region-derived stand-in (`<region>a/b/c`), enough for
+  `Fn::Select` over the list to resolve. open-infra is a single cluster, not multi-AZ, so
+  these are plan-time names; the translate layer maps subnet/AZ placement to the cluster's
+  own topology.
+- **`Fn::ImportValue`** — resolves a cross-stack export from the exports supplied to the
+  engine (`-import NAME=VALUE`, repeatable). A stateless CLI has no account-global export
+  registry, so the operator supplies the exporting stacks' output values. An export that is
+  **not** supplied records a blocker (the honesty rail holds — never a faked value), so a
+  multi-stack deploy passes each upstream export explicitly.
+
+Refused (each records a blocker): `Fn::Transform` (macros / SAM), and any other intrinsic
+the engine does not implement. A template that relies on one of these is `REJECTED` rather
+than provisioned with the value quietly wrong.
 
 ## Deploying a stack
 
