@@ -145,3 +145,27 @@ func TestPickMappingTemplate(t *testing.T) {
 		t.Errorf("empty map must not match")
 	}
 }
+
+func TestPickIntegrationResponse(t *testing.T) {
+	// no responses → pass-through (ok=false)
+	if _, _, ok := pickIntegrationResponse(nil, 200); ok {
+		t.Errorf("no responses must be pass-through")
+	}
+	// exact backend-status match wins, and its statusCode is the method status
+	resps := map[string]map[string]string{
+		"200": {"application/json": "OK"},
+		"404": {"application/json": "NF"},
+	}
+	if st, tm, ok := pickIntegrationResponse(resps, 404); !ok || st != 404 || tm["application/json"] != "NF" {
+		t.Errorf("exact match 404 got st=%d ok=%v tmpl=%v", st, ok, tm)
+	}
+	// unmatched backend status falls back to the "200" default
+	if st, tm, ok := pickIntegrationResponse(resps, 502); !ok || st != 200 || tm["application/json"] != "OK" {
+		t.Errorf("fallback to 200 got st=%d ok=%v tmpl=%v", st, ok, tm)
+	}
+	// no 200 and no exact → lowest-numbered entry (deterministic)
+	only := map[string]map[string]string{"201": {"application/json": "C"}, "500": {"application/json": "E"}}
+	if st, _, ok := pickIntegrationResponse(only, 302); !ok || st != 201 {
+		t.Errorf("deterministic lowest got st=%d ok=%v", st, ok)
+	}
+}

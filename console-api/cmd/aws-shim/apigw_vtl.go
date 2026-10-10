@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	sharedvtl "github.com/harn3ss/open-infra/vtl"
@@ -220,6 +221,32 @@ func agwArgStr(args []any, i int) string {
 		return s
 	}
 	return toStr(v)
+}
+
+// pickIntegrationResponse selects the IntegrationResponse (PutIntegrationResponse) for a backend
+// response status from the statusCode → (contentType → VTL) map: an exact statusCode match wins, then
+// the conventional "200" default, then the lowest-numbered entry (deterministic). It returns the
+// matched response's statusCode as the method response status and its content-type→template map.
+// ok=false means NO IntegrationResponse is configured → the caller passes the backend response through
+// unchanged (status, headers, body). selectionPattern is not modelled (honest subset).
+func pickIntegrationResponse(responses map[string]map[string]string, upstreamStatus int) (status int, templates map[string]string, ok bool) {
+	if len(responses) == 0 {
+		return 0, nil, false
+	}
+	if t, found := responses[strconv.Itoa(upstreamStatus)]; found {
+		return upstreamStatus, t, true
+	}
+	if t, found := responses["200"]; found {
+		return 200, t, true
+	}
+	bestK := ""
+	for k := range responses {
+		if bestK == "" || k < bestK {
+			bestK = k
+		}
+	}
+	st, _ := strconv.Atoi(bestK)
+	return st, responses[bestK], true
 }
 
 // pickMappingTemplate selects the template for a content-type from a requestTemplates/responseTemplates
