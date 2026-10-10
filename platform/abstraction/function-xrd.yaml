@@ -102,6 +102,16 @@ spec:
                     min:    { type: integer, default: 0, description: "Min instances (0 = scale to zero)" }
                     max:    { type: integer, default: 10, description: "Maximum instances the autoscaler may scale up to (default 10)." }
                     target: { type: integer, default: 100, description: "Target concurrent requests per pod" }
+                reservedConcurrency:
+                  type: integer
+                  minimum: 1
+                  description: >-
+                    The AWS Lambda reserved-concurrency analog: the maximum number of requests this
+                    function may serve concurrently. When set, the function runs Lambda-style — one
+                    request per instance (Knative containerConcurrency 1) and at most this many
+                    instances — so it is a HARD concurrency cap, not a soft target. It overrides
+                    scaling.max and scaling.target (scaling.min still sets the warm floor, the
+                    "provisioned concurrency" analog). Unset = the request-driven scaling block applies.
                 # Functions are stateless compute: they CONNECT to resources, they
                 # don't own them. To use a database/bucket, provision it on an
                 # Application and reference its secret here (e.g. secrets: [api-db-app]).
