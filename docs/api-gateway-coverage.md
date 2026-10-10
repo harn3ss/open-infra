@@ -14,10 +14,11 @@ emulator and not the AWS API Gateway wire protocol."*
 
 - `domain` (required) — one hostname.
 - `tls` (default true) — cert-manager TLS termination.
-- `routes[]` (required) — each `{ path, pathType (Prefix|Exact), backend { kind: Function|Application, name, port } }`.
+- `routes[]` (required) — each `{ path, pathType (Prefix|Exact), backend { kind: Function|Application, name, port } }`, or an external origin `backend { url }` (the `HTTP_PROXY` integration — see below).
 
-Backends are in-cluster `Function` (Knative) or `Application` Services. No gateway product (Kong /
-APISIX / Envoy Gateway), no dedicated gateway pod — it is pure orchestration onto one Ingress.
+Backends are in-cluster `Function` (Knative) / `Application` Services, or an external HTTP(S) origin
+(`backend.url`). No gateway product (Kong / APISIX / Envoy Gateway), no dedicated gateway pod — it is
+pure orchestration onto one Ingress.
 
 ## Coverage vs API Gateway REST v1
 
@@ -34,7 +35,7 @@ APISIX / Envoy Gateway), no dedicated gateway pod — it is pure orchestration o
 | Request/response mapping (VTL) | **Non-goal** | an L7 path proxy, not a transformation layer; VTL request/response mapping is not modeled (use the backend, or `GraphQLApi`'s VTL for GraphQL) |
 | CORS | **Covered** | `spec.cors` (origins/methods/headers/credentials/max-age) renders a Traefik headers middleware — the API Gateway CORS-equivalent, preflight included |
 | Custom domain | **Partial** | one IngressRoute host + TLS; no APIGW base-path mapping / multi-domain |
-| Integrations | **Partial** | in-cluster `Function`/`Application` only; no Lambda-proxy / HTTP / AWS-service / VPC-link |
+| Integrations | **Partial** | in-cluster `Function`/`Application`, plus **external HTTP origins** via `backend.url` (the API Gateway `HTTP_PROXY` integration — opt-in, cluster-toggle-gated, see below); no AWS-service / VPC-link |
 
 ## The honest read for an adopter
 
@@ -88,6 +89,43 @@ spec:
 This is an operator step (it restarts Traefik) and is intentionally **not** shipped as a live
 manifest — a wrong module reference would take down cluster ingress. Until the plugin is enabled,
 setting `spec.waf: true` renders a middleware Traefik cannot resolve, so keep it off until then.
+
+## External HTTP backends (`backend.url`) — the HTTP_PROXY integration
+
+A route can forward to an **external HTTP(S) origin** instead of an in-cluster backend, by setting
+`backend.url` (mutually exclusive with `backend.name`):
+
+```yaml
+routes:
+  - path: /payments
+    backend: { url: https://payments.partner.example:8443 }
+```
+
+This is the API Gateway `HTTP_PROXY` integration: the matched request path is forwarded as-is to the
+origin and the `Host` header is set to the origin host. The composition renders a Kubernetes
+`ExternalName` Service per external route and points the IngressRoute's service at it (scheme + port
+parsed from the URL, `passHostHeader: false`). v1 takes an **origin only** — no backend path rewrite.
+
+**Prerequisite — allow ExternalName services in Traefik.** Traefik refuses `ExternalName` Service
+backends unless told otherwise (`allowExternalNameServices` has defaulted to `false` since Traefik
+2.6). On k3s, enable it with a `HelmChartConfig` (this restarts Traefik):
+
+```yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    additionalArguments:
+      - "--providers.kubernetescrd.allowExternalNameServices=true"
+```
+
+Like the WAF/JWT plugins, this is an **operator step** and is intentionally **not** shipped as a live
+manifest: it is a cluster-wide ingress-posture change (any namespace could then route to an
+ExternalName target), so it stays opt-in. Until it is enabled, a `backend.url` route renders an
+IngressRoute Traefik will not resolve, so use in-cluster backends until then.
 
 ## JWT authorizer (`spec.authorizer`)
 

@@ -50,6 +50,12 @@ spec:
             {{- if $authz }}{{- $mwnames = append $mwnames (printf "httpapi-%s-authorizer" $name) }}{{- end }}
             {{- if $rateLimit }}{{- $mwnames = append $mwnames (printf "httpapi-%s-ratelimit" $name) }}{{- end }}
             {{- if $waf }}{{- $mwnames = append $mwnames (printf "httpapi-%s-waf" $name) }}{{- end }}
+            {{- /* Each route backend is EXACTLY ONE of in-cluster (name) or external (url, the
+                   HTTP_PROXY integration). Fail loud rather than render an empty/ambiguous target. */}}
+            {{- range $spec.routes }}
+            {{-   if and .backend.name .backend.url }}{{- fail "kind: HttpApi route backend: set backend.name OR backend.url, not both" }}{{- end }}
+            {{-   if and (not .backend.name) (not .backend.url) }}{{- fail "kind: HttpApi route backend: set backend.name (in-cluster) or backend.url (external)" }}{{- end }}
+            {{- end }}
             {{- if $tls }}
             ---
             # --- TLS: cert-manager issues the cert into the secret the IngressRoute references.
@@ -94,7 +100,7 @@ spec:
                   spec:
                     entryPoints: [ {{ if $tls }}websecure{{ else }}web{{ end }} ]
                     routes:
-                      {{- range $route := $spec.routes }}
+                      {{- range $i, $route := $spec.routes }}
                       {{- /* Build the match: Host && (PathPrefix|Path) && optional (Method || ...) */}}
                       {{- $m := printf "Host(`%s`)" $spec.domain }}
                       {{- $pt := $route.pathType | default "Prefix" }}
@@ -108,8 +114,22 @@ spec:
                       - kind: Rule
                         match: {{ $m | quote }}
                         services:
+                          {{- if $route.backend.url }}
+                          {{- /* External backend (HTTP_PROXY): forward to the per-route ExternalName
+                                 Service rendered below. scheme + port are parsed from the origin URL. */}}
+                          {{- $u := $route.backend.url }}
+                          {{- $https := ne (trimPrefix "https://" $u) $u }}
+                          {{- $parts := splitList ":" ($u | trimPrefix "https://" | trimPrefix "http://" | trimSuffix "/") }}
+                          {{- $port := "80" }}{{- if $https }}{{- $port = "443" }}{{- end }}
+                          {{- if gt (len $parts) 1 }}{{- $port = index $parts 1 }}{{- end }}
+                          - name: httpapi-{{ $name }}-ext-{{ $i }}
+                            port: {{ $port }}
+                            scheme: {{ ternary "https" "http" $https }}
+                            passHostHeader: false
+                          {{- else }}
                           - name: {{ $route.backend.name }}
                             port: {{ $route.backend.port | default 80 }}
+                          {{- end }}
                         {{- if $mwnames }}
                         middlewares:
                           {{- range $ref := $mwnames }}
@@ -122,6 +142,40 @@ spec:
                     tls:
                       secretName: httpapi-{{ $name }}-tls
                     {{- end }}
+            {{- /* One ExternalName Service per external-URL route, so the IngressRoute can forward
+                   to an origin outside the cluster (the HTTP_PROXY integration target). */}}
+            {{- range $i, $route := $spec.routes }}
+            {{- if $route.backend.url }}
+            {{- $u := $route.backend.url }}
+            {{- $https := ne (trimPrefix "https://" $u) $u }}
+            {{- $parts := splitList ":" ($u | trimPrefix "https://" | trimPrefix "http://" | trimSuffix "/") }}
+            {{- $host := index $parts 0 }}
+            {{- $port := "80" }}{{- if $https }}{{- $port = "443" }}{{- end }}
+            {{- if gt (len $parts) 1 }}{{- $port = index $parts 1 }}{{- end }}
+            ---
+            # External backend (HTTP_PROXY) for route {{ $i }} ({{ $route.path }}): an ExternalName
+            # Service so the IngressRoute forwards to {{ $host }}:{{ $port }} outside the cluster.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ext-backend-{{ $i }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: httpapi-{{ $name }}-ext-{{ $i }}
+                    namespace: {{ $ns }}
+                  spec:
+                    type: ExternalName
+                    externalName: {{ $host }}
+                    ports:
+                      - port: {{ $port }}
+                        targetPort: {{ $port }}
+            {{- end }}
+            {{- end }}
             {{- if $authz }}
             ---
             # JWT authorizer: a per-API Traefik JWT middleware that validates a Bearer OIDC token
