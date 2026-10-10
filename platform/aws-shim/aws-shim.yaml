@@ -562,6 +562,11 @@ spec:
             # the shim already reads (aws-shim-idp Role). Deliberately NOT open-infra-console: the
             # control-plane authorizer fences the shim out of that IAM/console namespace.
             - { name: TABLE_CONFIG_NAMESPACE, value: "open-infra-aws-shim" }
+            # DynamoDB RestoreTableToPointInTime (polyhedron#291): the image the async restore Job runs
+            # (the shim's own image, so the Job carries exactly this code). The Job bootstraps a recovery
+            # CNPG cluster to the target time + copies the source table — see dynamo-restore-rbac.yaml for
+            # its dedicated SA (aws-shim-restore). Keep in lockstep with the container image above.
+            - { name: AWS_SHIM_IMAGE, value: "ghcr.io/harn3ss/open-infra-aws-shim:latest" }
             # Step Functions (polyhedron#172): the namespace kind: StateMachine / Execution and per-execution
             # STS creds Secrets live in (defaults to this namespace). A Task's function:<name> resolves in
             # this namespace, so a Function used as a Task target must live here too.
