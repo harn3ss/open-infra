@@ -175,6 +175,13 @@ spec:
                               - name: DATABASE_URL
                                 valueFrom:
                                   secretKeyRef: { name: {{ $name }}-db-app, key: uri }
+                              {{- if and $spec.database.readerEndpoint $spec.database.highAvailability }}
+                              # Reader endpoint (the Aurora reader-endpoint analog): CNPG's -ro Service
+                              # load-balances reads across the replicas. Combine with the DATABASE_URL
+                              # credentials. Opt-in (database.readerEndpoint) + HA-only (no replica = no reader).
+                              - name: DATABASE_RO_HOST
+                                value: "{{ $name }}-db-ro.{{ $ns }}.svc.cluster.local"
+                              {{- end }}
                             {{- end }}
                             {{- end }}
                             {{- if $spec.queues }}
