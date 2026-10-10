@@ -1746,6 +1746,28 @@ func sprigLite() template.FuncMap {
 			}
 			return s
 		},
+		// sprig: integer division (staticsite-composition turns pollSeconds into poll minutes).
+		"div": func(a, b any) int {
+			toI := func(v any) int {
+				switch n := v.(type) {
+				case int:
+					return n
+				case int64:
+					return int(n)
+				case float64:
+					return int(n)
+				case string:
+					i, _ := strconv.Atoi(n)
+					return i
+				}
+				return 0
+			}
+			d := toI(b)
+			if d == 0 {
+				return 0
+			}
+			return toI(a) / d
+		},
 		// query-composition.yaml quotes user-supplied SQL into the Job env. Faithful to
 		// sprig: %q on the string form (the render assertions only need the value present).
 		"quote": func(v ...any) string {

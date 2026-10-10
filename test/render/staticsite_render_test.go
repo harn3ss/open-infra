@@ -58,3 +58,46 @@ func TestStaticSite_PlainWithErrorDoc(t *testing.T) {
 		t.Errorf("a non-SPA site should serve the error document; got:\n%s", grepCtx(out, "error_page"))
 	}
 }
+
+// With a build block, an Amplify-style build CronJob is rendered: poll schedule from pollSeconds,
+// a sandboxed build step (no cluster creds), clone/build/publish, and change-detection via a SHA
+// marker in the bucket. Without a build block, no CronJob.
+func TestStaticSite_Build(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	out := render(t, tmpl, staticsiteCtx(map[string]any{
+		"domain": "app.example.com",
+		"build": map[string]any{
+			"repo":         "https://github.com/me/app.git",
+			"branch":       "release",
+			"buildCommand": "pnpm i && pnpm build",
+			"outputDir":    "build",
+			"pollSeconds":  int64(120),
+			"env":          []any{map[string]any{"name": "VITE_API", "value": "https://api.example.com"}},
+		},
+	}))
+	for _, want := range []string{
+		"name: web-site-build",
+		"kind: CronJob",
+		`schedule: "*/2 * * * *"`,        // 120s -> 2 minutes
+		"automountServiceAccountToken: false", // untrusted build gets no cluster creds
+		"git clone --depth 1 -b \"release\"",
+		"https://github.com/me/app.git",
+		"pnpm i && pnpm build",
+		`s3://web-site/.build/last-sha`,  // change-detection marker
+		"/ws/src/build/",                 // publishes the custom output dir
+		"VITE_API",                       // build env threaded through
+		"concurrencyPolicy: Forbid",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("build render missing %q; got:\n%s", want, grepCtx(out, "build"))
+		}
+	}
+}
+
+func TestStaticSite_NoBuildByDefault(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	out := render(t, tmpl, staticsiteCtx(map[string]any{"domain": "app.example.com"}))
+	if strings.Contains(out, "web-site-build") || strings.Contains(out, "kind: CronJob") {
+		t.Errorf("no build block must render no build CronJob; got:\n%s", grepCtx(out, "CronJob"))
+	}
+}
