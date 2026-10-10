@@ -1,0 +1,48 @@
+# A service-namespace-wide grant for the Crossplane core service account on the openinfra.dev API
+# groups — the AWS-faithful analog of a service principal holding "openinfra.dev:*" instead of an
+# enumerated per-resource-type allowlist.
+#
+# Why this exists: the Cedar control-plane authorizer's corpus is generated from RBAC
+# (console-api/cmd/rbac-to-cedar). The crossplane-rbac-manager only ever grants Crossplane per-type
+# access (one aggregated ClusterRole per XRD), so a corpus generated from that RBAC enumerates the
+# types that existed at generation time. Every NEW kind added afterwards is default-denied to the
+# crossplane SA by Cedar until the corpus is regenerated — and that deadlocks the `offered`
+# reconciler, because its informer for the new claim type can't sync, so no new XRD ever becomes
+# Offered. (This is precisely the corpus-gating deadlock the control-plane cutover said must never
+# happen.)
+#
+# A group wildcard here makes RBAC — and therefore every corpus regen — cover present AND future
+# openinfra.dev kinds automatically: rbac-to-cedar's resourceString() turns `resources: ["*"]` on a
+# concrete apiGroup into `*.<group>::*`, so no new kind can be gated off again. This is how an AWS
+# service grant behaves (a new resource type in a service is covered the moment the service ships it,
+# with no IAM allowlist edit).
+#
+# Not a privilege increase: Crossplane already holds `*` on each of these types via the rbac-manager's
+# per-type aggregated ClusterRoles; this expresses the same reach as a single wildcard. After this is
+# in RBAC, regenerate the Cedar corpus (console-api/cmd/rbac-to-cedar --configmap) so the enforced
+# corpus reflects the wildcard rather than a stale per-type snapshot.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane:openinfra-group-access
+  labels:
+    openinfra.dev/purpose: crossplane-control-plane-group-wildcard
+rules:
+  - apiGroups: ["openinfra.dev", "iam.openinfra.dev"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crossplane:openinfra-group-access
+  labels:
+    openinfra.dev/purpose: crossplane-control-plane-group-wildcard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: crossplane:openinfra-group-access
+subjects:
+  - kind: ServiceAccount
+    name: crossplane
+    namespace: crossplane-system
