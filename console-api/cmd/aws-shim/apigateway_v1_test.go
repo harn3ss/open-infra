@@ -112,3 +112,54 @@ func TestApigwMux_Routing(t *testing.T) {
 	}
 	_ = http.MethodGet
 }
+
+func TestResolveCognitoIssuer(t *testing.T) {
+	h := &apigwV1Handler{cognitoIssuerBase: "https://cognito-idp.us-east-1.example/"}
+	// a Cognito user pool ARN resolves to <base>/<poolId>
+	if got := h.resolveCognitoIssuer("arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_abc123"); got != "https://cognito-idp.us-east-1.example/us-east-1_abc123" {
+		t.Errorf("pool ARN resolution got %q", got)
+	}
+	// a bare issuer URL is used as-is (trailing slash trimmed)
+	if got := h.resolveCognitoIssuer("https://issuer.example/realm/"); got != "https://issuer.example/realm" {
+		t.Errorf("issuer URL got %q", got)
+	}
+	// unresolvable
+	if got := h.resolveCognitoIssuer("not-an-arn-or-url"); got != "" {
+		t.Errorf("unresolvable should be empty, got %q", got)
+	}
+}
+
+func TestHeaderFromIdentitySource(t *testing.T) {
+	cases := map[string]string{
+		"method.request.header.Authorization": "Authorization",
+		"method.request.header.X-Api-Token":   "X-Api-Token",
+		"":                                    "Authorization", // default
+		"garbage":                             "Authorization", // default
+	}
+	for in, want := range cases {
+		if got := headerFromIdentitySource(in); got != want {
+			t.Errorf("headerFromIdentitySource(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestEnforceMethodAuthorizer_FailClosed(t *testing.T) {
+	h := &apigwV1Handler{}
+	// AWS_IAM is honestly refused (403)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	if h.enforceMethodAuthorizer(rec, req, restSnapshot{}, "AWS_IAM", "", "rid") {
+		t.Error("AWS_IAM must not authorize")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("AWS_IAM want 403 got %d", rec.Code)
+	}
+	// COGNITO_USER_POOLS referencing an authorizer absent from the snapshot → 401 fail-closed
+	rec = httptest.NewRecorder()
+	if h.enforceMethodAuthorizer(rec, req, restSnapshot{}, "COGNITO_USER_POOLS", "missing", "rid") {
+		t.Error("missing authorizer must not authorize")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("missing authorizer want 401 got %d", rec.Code)
+	}
+}
