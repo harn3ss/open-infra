@@ -60,10 +60,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `cfn — open-infra CloudFormation engine
 
 Usage:
-  cfn plan      [-param K=V ...] [-stack-name NAME] [-json] <template>
-  cfn deploy     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
-  cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] <template>
-  cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-no-wait] [-timeout SECS] <template>
+  cfn plan      [-param K=V ...] [-import NAME=VALUE ...] [-stack-name NAME] [-json] <template>
+  cfn deploy     -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] [-no-wait] [-timeout SECS] <template>
+  cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] <template>
+  cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] [-no-wait] [-timeout SECS] <template>
   cfn destroy    -namespace NS -stack-name NAME [-no-wait] [-timeout SECS]
   cfn drift      -namespace NS -stack-name NAME
 
@@ -84,6 +84,7 @@ drift     (read-only) compares the recorded stack against the live cluster and r
 
 func runPlan(args []string) int {
 	params := map[string]string{}
+	exports := map[string]string{}
 	stackName := ""
 	asJSON := false
 	var files []string
@@ -111,6 +112,25 @@ func runPlan(args []string) int {
 				return 2
 			}
 			params[k] = v
+		case a == "-import":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "cfn: -import needs NAME=VALUE")
+				return 2
+			}
+			k, v, ok := strings.Cut(args[i], "=")
+			if !ok {
+				fmt.Fprintf(os.Stderr, "cfn: bad -import %q (want NAME=VALUE)\n", args[i])
+				return 2
+			}
+			exports[k] = v
+		case strings.HasPrefix(a, "-import="):
+			k, v, ok := strings.Cut(strings.TrimPrefix(a, "-import="), "=")
+			if !ok {
+				fmt.Fprintf(os.Stderr, "cfn: bad -import %q (want NAME=VALUE)\n", a)
+				return 2
+			}
+			exports[k] = v
 		case a == "-stack-name":
 			i++
 			if i >= len(args) {
@@ -136,7 +156,7 @@ func runPlan(args []string) int {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
 	}
-	plan, err := BuildPlan(data, params, stackName)
+	plan, err := BuildPlanWithExports(data, params, exports, stackName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
@@ -234,7 +254,7 @@ func statusMark(s Status) string {
 // parseStackFlags parses the flags shared by deploy/update/changeset, returning the options,
 // the single template file, and a non-negative exit code on error (-1 = ok).
 func parseStackFlags(cmd string, args []string) (DeployOptions, string, int) {
-	opts := DeployOptions{Params: map[string]string{}, Wait: true, Timeout: 180 * time.Second}
+	opts := DeployOptions{Params: map[string]string{}, Exports: map[string]string{}, Wait: true, Timeout: 180 * time.Second}
 	var files []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -246,6 +266,18 @@ func parseStackFlags(cmd string, args []string) (DeployOptions, string, int) {
 			return args[i], true
 		}
 		switch {
+		case a == "-import":
+			v, ok := next()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "cfn: -import needs NAME=VALUE")
+				return opts, "", 2
+			}
+			k, val, ok := strings.Cut(v, "=")
+			if !ok {
+				fmt.Fprintf(os.Stderr, "cfn: bad -import %q (want NAME=VALUE)\n", v)
+				return opts, "", 2
+			}
+			opts.Exports[k] = val
 		case a == "-namespace" || a == "-n":
 			v, ok := next()
 			if !ok {
