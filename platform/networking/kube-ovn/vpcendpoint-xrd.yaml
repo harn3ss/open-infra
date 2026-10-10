@@ -1,0 +1,48 @@
+# open-infra's kind: VpcEndpoint — a private, in-VPC entry point to an AWS service (the AWS VPC
+# endpoint analog). In open-infra every AWS service is fronted by the ONE aws-shim endpoint
+# (the unified AWS API front door), so a VpcEndpoint is a stable, per-VPC DNS alias to that shim
+# that an app uses as its AWS endpoint URL — the private path from a workload to the service,
+# without leaving the cluster.
+#
+# Semantics decision (for this architecture): all service endpoints route to the aws-shim; the
+# `service` + `vpcEndpointType` fields are carried for fidelity (CFN round-trip of
+# AWS::EC2::VPCEndpoint, and so an app that keys off the endpoint DNS works). For an ISOLATED
+# custom kind: Vpc, a kube-ovn route from the VPC to the shim's subnet is the graduation step
+# (default-network workloads already reach the shim); see docs. Backend kind (no console page yet).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xvpcendpoints.openinfra.dev
+spec:
+  group: openinfra.dev
+  names: { kind: XVpcEndpoint, plural: xvpcendpoints }
+  claimNames: { kind: VpcEndpoint, plural: vpcendpoints }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [service]
+              properties:
+                service:
+                  type: string
+                  description: "AWS service the endpoint fronts, e.g. s3, dynamodb, sqs, sns, kms (any aws-shim service). Selects the endpoint's purpose; all route to the aws-shim front door."
+                vpcEndpointType:
+                  type: string
+                  enum: [Gateway, Interface]
+                  default: Interface
+                  description: "AWS endpoint type — carried for fidelity (both route to the shim here). Gateway = S3/DynamoDB in AWS; Interface = PrivateLink ENI."
+                vpc:
+                  type: string
+                  description: "The kind: Vpc this endpoint serves (fidelity / the owning VPC). Optional; the alias is created in the claim's namespace."
+            status:
+              type: object
+              properties:
+                dnsName:
+                  type: string
+                  description: "The in-cluster DNS name an app sets as its AWS endpoint URL for this service."
