@@ -5,9 +5,12 @@
 # makes PITR possible (WAL archived to object storage, restore = bootstrap a new cluster to a target
 # time). See memory dynamodb-pitr-cnpg for the proven recipe and the per-knob rationale.
 #
-# Credentials are provisioned out of band (this repo is public), referenced here by name:
-#   - dynamo-mongo-app   : app user (username/password) + MONGODB_URI/POSTGRESQL_URL the shim reads
-#                          (MONGO_URI / MONGO_PG_URI). CNPG bootstraps the `app` role from it.
+# Credentials are committed as SealedSecrets (dynamo-secrets.sealed.yaml) — GitOps owns them and a
+# fresh/DR cluster reconstructs them, so there is no manual out-of-band step. Referenced here by name:
+#   - dynamo-mongo-app   : app user (username/password) + MONGODB_URI/POSTGRESQL_URL the shim reads.
+#                          Type kubernetes.io/basic-auth so CNPG bootstraps the `app` role's password
+#                          from it directly (an Opaque secret is ignored → would need a post-bootstrap
+#                          ALTER USER; basic-auth keeps a fresh bootstrap self-consistent).
 #   - dynamo-wal-minio   : the object-store (MinIO) credentials the barman-cloud plugin archives with.
 ---
 # DocumentDB-Postgres as a CNPG cluster. postgresUID/GID 999 (the image's postgres user; CNPG defaults
