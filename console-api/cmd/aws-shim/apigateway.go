@@ -13,8 +13,9 @@
 //     The API's OWN request auth (JWT authorizers) is the APPLICATION's auth for its END USERS — a
 //     different trust domain from the platform principals, and never conflated with the control-plane check.
 //
-// Scoped to HTTP API (v2). REST API (v1) and non-Lambda integrations are refused, not faked. See
-// docs/aws-shim.md.
+// This handler is the HTTP API (v2) surface; its non-Lambda integrations are refused, not faked.
+// REST API (v1) is a sibling handler (apigateway_v1.go) — they share the "apigateway" SigV4 signing
+// name and are path-muxed by apigwMux (/v2/apis -> here, /restapis -> v1). See docs/aws-shim.md.
 package main
 
 import (
