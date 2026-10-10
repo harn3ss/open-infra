@@ -66,10 +66,12 @@ this page describes).
 > (`put-integration-response`), exactly as AWS models them. The VTL engine is the shared
 > `github.com/harn3ss/open-infra/vtl` module — the *same* parser/evaluator open-appsync uses for
 > GraphQL resolvers, so the two front doors can never drift on Velocity semantics; only the injected
-> `$util`/variable surface differs (`$input`/`$context`/`$stageVariables` here). Honest gaps still open
-> on v1: non-`NONE` method authorizers (refused at invoke today, never bypassed) and a CFN/Terraform
-> resource type. The non-goals above still describe the declarative `HttpApi` model, which stays
-> stage-less and transformation-free by design; the v1 wire API is where that lifecycle lives.
+> `$util`/variable surface differs (`$input`/`$context`/`$stageVariables` here). A `COGNITO_USER_POOLS`
+> method authorizer validates the caller's JWT against the pool's issuer/JWKS (the same coreos/go-oidc
+> verifier the v2 authorizer uses). Honest gaps still open on v1: `TOKEN`/`REQUEST` (Lambda)
+> authorizers and `AWS_IAM` invoke signing (both refused fail-closed today, never bypassed), and a
+> provider/CFN resource type. The non-goals above still describe the declarative `HttpApi` model, which
+> stays stage-less and transformation-free by design; the v1 wire API is where that lifecycle lives.
 
 ## In-cluster WAF (`spec.waf`)
 
