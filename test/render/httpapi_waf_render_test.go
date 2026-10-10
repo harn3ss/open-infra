@@ -170,6 +170,65 @@ func TestHttpApi_Authorizer(t *testing.T) {
 	}
 }
 
+// External backend (the API Gateway HTTP_PROXY integration): backend.url renders a per-route
+// ExternalName Service and an IngressRoute service entry with the parsed scheme + port.
+func TestHttpApi_ExternalBackend(t *testing.T) {
+	tmpl := extractInlineTemplate(t, httpapiCompositionPath)
+
+	// https origin with an explicit port.
+	t.Run("https-with-port", func(t *testing.T) {
+		spec := baseHttpApiSpec()
+		spec["routes"] = []any{
+			map[string]any{"path": "/", "backend": map[string]any{"url": "https://api.upstream.io:8443"}},
+		}
+		out := render(t, tmpl, httpapiCtx(spec))
+		for _, want := range []string{
+			"type: ExternalName", "externalName: api.upstream.io",
+			"name: httpapi-api-ext-0", "scheme: https", "passHostHeader: false", "port: 8443",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("external https backend missing %q; got:\n%s", want, out)
+			}
+		}
+		// an external route must NOT emit an in-cluster backend name
+		if strings.Contains(out, "name: fn") {
+			t.Errorf("external route should not reference the in-cluster backend; got:\n%s", out)
+		}
+	})
+
+	// http origin, no explicit port → defaults to 80, scheme http.
+	t.Run("http-default-port", func(t *testing.T) {
+		spec := baseHttpApiSpec()
+		spec["routes"] = []any{
+			map[string]any{"path": "/legacy", "backend": map[string]any{"url": "http://legacy.internal/"}},
+		}
+		out := render(t, tmpl, httpapiCtx(spec))
+		for _, want := range []string{"externalName: legacy.internal", "scheme: http", "port: 80"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("external http backend missing %q; got:\n%s", want, out)
+			}
+		}
+	})
+
+	// Guards: a backend must be EXACTLY one of name | url.
+	t.Run("guard/both", func(t *testing.T) {
+		spec := baseHttpApiSpec()
+		spec["routes"] = []any{
+			map[string]any{"path": "/", "backend": map[string]any{"name": "fn", "url": "http://x"}},
+		}
+		if err := renderErr(tmpl, httpapiCtx(spec)); err == nil {
+			t.Error("setting both backend.name and backend.url should abort the render")
+		}
+	})
+	t.Run("guard/neither", func(t *testing.T) {
+		spec := baseHttpApiSpec()
+		spec["routes"] = []any{map[string]any{"path": "/", "backend": map[string]any{}}}
+		if err := renderErr(tmpl, httpapiCtx(spec)); err == nil {
+			t.Error("setting neither backend.name nor backend.url should abort the render")
+		}
+	})
+}
+
 // All four middlewares compose in order: cors, authorizer, ratelimit, waf.
 func TestHttpApi_MiddlewareChainOrder(t *testing.T) {
 	spec := baseHttpApiSpec()

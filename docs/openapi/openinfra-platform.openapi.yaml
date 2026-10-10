@@ -5842,8 +5842,8 @@ components:
                       all methods. A request whose method isn't listed doesn't match this route.
                   backend:
                     type: object
-                    required:
-                    - name
+                    description: "Where this route forwards. Set EXACTLY ONE of: name (an in-cluster kind: Function / Application)\
+                      \ or url (an external origin \u2014 the API Gateway HTTP_PROXY integration)."
                     properties:
                       kind:
                         type: string
@@ -5851,15 +5851,22 @@ components:
                         enum:
                         - Function
                         - Application
-                        description: The kind of backend this route targets (both expose an in-cluster Service named after
-                          the resource on port 80).
+                        description: 'For an in-cluster backend: the kind this route targets (both expose an in-cluster Service
+                          named after the resource on port 80).'
                       name:
                         type: string
-                        description: 'Name of the backing kind: Function or kind: Application (same namespace as this HttpApi).'
+                        description: 'In-cluster backend: name of the backing kind: Function or kind: Application (same namespace
+                          as this HttpApi). Mutually exclusive with url.'
                       port:
                         type: integer
                         default: 80
                         description: Backend Service port. Functions and Applications both listen on 80.
+                      url:
+                        type: string
+                        pattern: ^https?://[^/]+/?$
+                        description: 'External backend origin (the API Gateway HTTP_PROXY integration): http(s)://host[:port].
+                          The matched request path is forwarded as-is to this origin; the Host header is set to the origin
+                          host. Mutually exclusive with name. v1 takes an origin only (no backend path rewrite).'
         status:
           type: object
           properties:
