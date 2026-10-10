@@ -548,6 +548,27 @@ func TestFunction_Code(t *testing.T) {
 		}
 	})
 
+	// nodejs20 runtime: the same code contract selects the Node base image instead of python. The
+	// handler/source/layer env wiring is runtime-agnostic (the Node shim reads the same vars).
+	t.Run("nodejs", func(t *testing.T) {
+		out := render(t, tmpl, ctx(map[string]any{
+			"code": map[string]any{"runtime": "nodejs20", "handler": "index.handler",
+				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"}},
+		}))
+		for _, want := range []string{
+			"image: ghcr.io/harn3ss/open-infra-lambda-nodejs:latest",
+			"name: OPENINFRA_HANDLER", `value: "index.handler"`,
+			"name: OPENINFRA_CODE_BUCKET", `value: "fn-artifacts"`,
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("nodejs-runtime render missing %q; got:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "open-infra-lambda-python") {
+			t.Errorf("nodejs runtime must not select the python image:\n%s", out)
+		}
+	})
+
 	// Fail-loud guards: each malformed spec must abort the render rather than mis-emit.
 	for _, bad := range []struct {
 		name string
