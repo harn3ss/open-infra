@@ -5297,6 +5297,14 @@ components:
                   type: integer
                   default: 100
                   description: Target concurrent requests per pod
+            reservedConcurrency:
+              type: integer
+              minimum: 1
+              description: "The AWS Lambda reserved-concurrency analog: the maximum number of requests this function may serve\
+                \ concurrently. When set, the function runs Lambda-style \u2014 one request per instance (Knative containerConcurrency\
+                \ 1) and at most this many instances \u2014 so it is a HARD concurrency cap, not a soft target. It overrides\
+                \ scaling.max and scaling.target (scaling.min still sets the warm floor, the \"provisioned concurrency\" analog).\
+                \ Unset = the request-driven scaling block applies."
             queues:
               type: array
               items:

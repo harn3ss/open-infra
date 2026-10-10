@@ -84,8 +84,16 @@ spec:
                         annotations:
                           # KPA scaling: min 0 = scale to zero when idle.
                           autoscaling.knative.dev/min-scale: "{{ $scaling.min | default 0 }}"
+                          {{- if $spec.reservedConcurrency }}
+                          # Reserved concurrency (AWS Lambda analog): a HARD cap on concurrent requests.
+                          # One request per instance (containerConcurrency 1 below) + at most this many
+                          # instances = at most this many concurrent executions. Overrides scaling.max/target.
+                          autoscaling.knative.dev/max-scale: "{{ $spec.reservedConcurrency }}"
+                          autoscaling.knative.dev/target: "1"
+                          {{- else }}
                           autoscaling.knative.dev/max-scale: "{{ $scaling.max | default 10 }}"
                           autoscaling.knative.dev/target: "{{ $scaling.target | default 100 }}"
+                          {{- end }}
                         {{- if $spec.securityGroups }}
                         # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
                         labels:
@@ -94,6 +102,11 @@ spec:
                           {{- end }}
                         {{- end }}
                       spec:
+                        {{- if $spec.reservedConcurrency }}
+                        # Reserved concurrency: one request per instance (Lambda's 1-per-sandbox model),
+                        # so max-scale above is a hard ceiling on concurrent executions.
+                        containerConcurrency: 1
+                        {{- end }}
                         {{- if $spec.timeout }}
                         # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
                         timeoutSeconds: {{ $spec.timeout }}
