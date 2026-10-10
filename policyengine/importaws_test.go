@@ -44,6 +44,58 @@ func TestImportAWS_DataPlane(t *testing.T) {
 	}
 }
 
+// #265: the import now covers every service the shim enforces at the data plane, mapping each ARN to
+// the exact Type the shim checks (sqs->Queue, sns->Topic, ...). None of these should report unsupported.
+func TestImportAWS_ExtendedServices(t *testing.T) {
+	doc := `{"Statement":[
+	  {"Effect":"Allow","Action":"sqs:SendMessage","Resource":"arn:aws:sqs:us-east-1:123:orders"},
+	  {"Effect":"Allow","Action":"sns:Publish","Resource":"arn:aws:sns:us-east-1:123:events"},
+	  {"Effect":"Allow","Action":"kinesis:PutRecord","Resource":"arn:aws:kinesis:us-east-1:123:stream/clicks"},
+	  {"Effect":"Allow","Action":"kms:Decrypt","Resource":"arn:aws:kms:us-east-1:123:key/abcd-1234"},
+	  {"Effect":"Allow","Action":"ssm:GetParameter","Resource":"arn:aws:ssm:us-east-1:123:parameter/app/db"},
+	  {"Effect":"Allow","Action":"secretsmanager:GetSecretValue","Resource":"arn:aws:secretsmanager:us-east-1:123:secret:db-creds-AbCdEf"},
+	  {"Effect":"Allow","Action":"ecr:BatchGetImage","Resource":"arn:aws:ecr:us-east-1:123:repository/web"},
+	  {"Effect":"Allow","Action":"ecs:UpdateService","Resource":"arn:aws:ecs:us-east-1:123:service/prod/api"},
+	  {"Effect":"Allow","Action":"logs:PutLogEvents","Resource":"arn:aws:logs:us-east-1:123:log-group:/app/web:*"},
+	  {"Effect":"Allow","Action":"rds:DescribeDBInstances","Resource":"arn:aws:rds:us-east-1:123:db:pg1"},
+	  {"Effect":"Allow","Action":"ses:SendEmail","Resource":"arn:aws:ses:us-east-1:123:identity/noreply@x.test"}
+	]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(unsupported) != 0 {
+		t.Fatalf("every service here is shim-enforced; nothing should be unsupported: %v", unsupported)
+	}
+	got := map[string]bool{}
+	for _, s := range stmts {
+		for _, r := range s.Resources {
+			got[r] = true
+		}
+	}
+	for _, want := range []string{
+		"Queue::orders", "Topic::events", "Stream::clicks", "Key::abcd-1234",
+		"Parameter::app/db", "Secret::db-creds", "Repository::web", "Service::api",
+		"LogGroup::/app/web", "DBInstance::pg1", "Identity::noreply@x.test",
+	} {
+		if !got[want] {
+			t.Errorf("missing mapped resource %q; got %v", want, got)
+		}
+	}
+	// Spot-check enforcement: the imported sqs grant allows the named queue, denies another.
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "a"}
+	if d := eng.Authorize(Request{p, "sqs:SendMessage", Resource{"Queue", "orders"}, nil}); !d.Allowed {
+		t.Errorf("send to orders should be allowed")
+	}
+	if d := eng.Authorize(Request{p, "sqs:SendMessage", Resource{"Queue", "other"}, nil}); d.Allowed {
+		t.Errorf("send to a different queue must be denied")
+	}
+}
+
 func TestImportAWS_ReportsUnsupported(t *testing.T) {
 	doc := `{"Statement":[
 	  {"Effect":"Allow","Action":["ec2:RunInstances","s3:GetObject"],"Resource":"*"},
