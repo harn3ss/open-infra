@@ -42,6 +42,13 @@ spec:
               {{- if $g.rangeKey }}{{- $ka = append $ka $g.rangeKey.name }}{{- end }}
               {{- $gsis = append $gsis (dict "name" $g.name "keyAttrs" $ka) }}
             {{- end }}
+            {{- /* LSIs share the table's HASH key and add an alternate RANGE key: keyAttrs = [tableHash, lsiRange]. */}}
+            {{- $lsis := list }}
+            {{- range $l := ($spec.localSecondaryIndexes | default list) }}
+              {{- if not $spec.rangeKey }}{{- fail "kind: Table localSecondaryIndexes require the table to have a rangeKey" }}{{- end }}
+              {{- $lka := list $spec.hashKey.name $l.rangeKey.name }}
+              {{- $lsis = append $lsis (dict "name" $l.name "keyAttrs" $lka) }}
+            {{- end }}
             ---
             # Spec mirror the aws-shim reads (label-selected) to register the table's registry entry.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -69,6 +76,9 @@ spec:
                     {{- end }}
                     {{- if $gsis }}
                     gsi: {{ $gsis | toJson | quote }}
+                    {{- end }}
+                    {{- if $lsis }}
+                    lsi: {{ $lsis | toJson | quote }}
                     {{- end }}
             ---
             apiVersion: openinfra.dev/v1

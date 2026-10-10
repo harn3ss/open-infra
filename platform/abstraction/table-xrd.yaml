@@ -10,11 +10,12 @@
 # schema is IMMUTABLE, exactly as in DynamoDB — you cannot change a table's hash/range key after
 # it is created; delete and recreate instead.
 #
-# GLOBAL secondary indexes AND TTL ARE modelled — spec.globalSecondaryIndexes (backed by real
-# Mongo indexes) + spec.ttlAttribute (shim reaper). NOT modelled: read/write capacity (billingMode
-# is advisory CFN-round-trip metadata only — the FerretDB store has no capacity model), LOCAL
-# secondary indexes, streams, PITR/continuous-backup, per-table SSE. Reach for a real managed
-# database (kind: Application.database) when you need the rest.
+# GLOBAL + LOCAL secondary indexes AND TTL ARE modelled — spec.globalSecondaryIndexes and
+# spec.localSecondaryIndexes (both backed by real Mongo indexes; LSI shares the table HASH key and
+# requires a rangeKey) + spec.ttlAttribute (shim reaper). NOT modelled: read/write capacity
+# (billingMode is advisory CFN-round-trip metadata only — the FerretDB store has no capacity model),
+# streams, PITR/continuous-backup, per-table SSE. Reach for a real managed database
+# (kind: Application.database) when you need the rest.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -106,6 +107,26 @@ spec:
                             type: string
                             enum: ["S", "N", "B"]
                             description: 'Scalar key type: S / N / B. Quote it in YAML.'
+                localSecondaryIndexes:
+                  type: array
+                  description: "Local secondary indexes — query the table by an alternate sort key under the SAME partition (HASH) key. Declared at table creation (immutable, as in DynamoDB), each backed by a real Mongo index on (table hashKey, this rangeKey). Requires the table to have a rangeKey. Like GSIs, projection is effectively ALL (the store keeps full items)."
+                  items:
+                    type: object
+                    required: [name, rangeKey]
+                    properties:
+                      name:
+                        type: string
+                        description: "Index name — the Query IndexName."
+                      rangeKey:
+                        type: object
+                        description: "The index's sort key (the partition key is the table's hashKey)."
+                        required: [name, type]
+                        properties:
+                          name: { type: string, description: "Attribute name of the index sort key." }
+                          type:
+                            type: string
+                            enum: ["S", "N", "B"]
+                            description: 'Scalar key type: S / N / B. Quote it in YAML (type: "N").'
             status:
               type: object
               properties:
