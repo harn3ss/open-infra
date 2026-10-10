@@ -1,5 +1,7 @@
-# The compiler for kind: Table. It renders a spec-mirror ConfigMap in the console namespace,
-# labeled openinfra.dev/dynamo-table, holding the table's name + ordered key attributes (+ an
+# The compiler for kind: Table. It renders a spec-mirror ConfigMap in the aws-shim's OWN namespace
+# (open-infra-aws-shim) — the DynamoDB service's domain, so the table registry lives with the
+# service that owns it (AWS-shaped), not in the console/IAM namespace (which the control-plane
+# authorizer deliberately fences off). Labeled openinfra.dev/dynamo-table, holding the table's name + ordered key attributes (+ an
 # optional TTL attribute). The aws-shim reads these ConfigMaps and registers each table in its
 # FerretDB registry (the same entry a runtime CreateTable writes) — so a declared table is
 # usable (PutItem/GetItem/…) without a manual CreateTable call. The shim is the reconciler
@@ -63,7 +65,10 @@ spec:
                   kind: ConfigMap
                   metadata:
                     name: openinfra-dynamo-table-{{ $name }}
-                    namespace: open-infra-console
+                    # The aws-shim's own namespace: the DynamoDB service owns its table registry
+                    # (TABLE_CONFIG_NAMESPACE must match). Must NOT be open-infra-console — the
+                    # control-plane authorizer fences the shim out of that IAM/console namespace.
+                    namespace: open-infra-aws-shim
                     labels:
                       openinfra.dev/dynamo-table: {{ $name }}
                       openinfra.dev/table-namespace: {{ $ns }}
