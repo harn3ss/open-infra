@@ -3,6 +3,7 @@ package policyengine
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/cedar-policy/cedar-go/types"
@@ -10,7 +11,15 @@ import (
 
 // SupportedServices are the AWS data-plane services the aws-shim enforces, so an AWS policy's
 // statements for these can be honored faithfully. Anything else is reported, never silently granted.
-var SupportedServices = map[string]bool{"s3": true, "dynamodb": true, "lambda": true}
+// Every service here is one the aws-shim actually ENFORCES at the data plane (a deniedByDataPlane
+// check with this "<svc>:" action prefix), so importing its actions is faithful — never a grant the
+// shim won't honor. Keep this in lockstep with the shim's deniedByDataPlane call sites.
+var SupportedServices = map[string]bool{
+	"s3": true, "dynamodb": true, "lambda": true,
+	"sqs": true, "sns": true, "kinesis": true, "kms": true, "ssm": true,
+	"secretsmanager": true, "ecr": true, "ecs": true, "logs": true, "rds": true,
+	"ses": true, "apigateway": true, "cloudwatch": true,
+}
 
 // condType classifies a populated request-context attribute by value type, which fixes the AWS
 // condition operators that map onto it faithfully.
@@ -243,37 +252,94 @@ func importResources(arns []string) (kept, unsupported []string) {
 		if res, ok := arnToResource(r); ok {
 			add(res)
 		} else {
-			unsupported = append(unsupported, "resource "+r+" is not a recognizable S3/DynamoDB/Lambda ARN")
+			unsupported = append(unsupported, "resource "+r+" is not a recognizable ARN for a shim-fronted service")
 		}
 	}
 	return kept, unsupported
 }
 
-// arnToResource maps an S3/DynamoDB/Lambda ARN to a "Type::id" (wildcards preserved via like-patterns).
+// arnToResource maps an AWS ARN to the open-infra "Type::id" the aws-shim data-plane check uses for
+// that service (wildcards preserved via like-patterns). The Type for each service MATCHES the one the
+// shim passes to deniedByDataPlane (e.g. sqs -> Queue, sns -> Topic), so an imported resource grant
+// lands on the same resource the shim enforces. An ARN form it can't map is reported, not guessed.
 func arnToResource(arn string) (string, bool) {
 	parts := strings.SplitN(arn, ":", 6) // arn:aws:<svc>:<region>:<acct>:<resource>
 	if len(parts) < 6 || parts[0] != "arn" {
 		return "", false
 	}
 	svc, tail := parts[2], parts[5]
+	cut := func(prefix, typ string) (string, bool) {
+		if n, ok := strings.CutPrefix(tail, prefix); ok && n != "" {
+			return typ + "::" + n, true
+		}
+		return "", false
+	}
 	switch svc {
 	case "s3":
 		bucket, _, _ := strings.Cut(tail, "/") // arn:aws:s3:::bucket[/key] -> Bucket::bucket
-		if bucket == "" {
-			return "", false
+		if bucket != "" {
+			return "Bucket::" + bucket, true
 		}
-		return "Bucket::" + bucket, true
 	case "dynamodb":
-		if name, ok := strings.CutPrefix(tail, "table/"); ok && name != "" {
-			return "Table::" + name, true
-		}
+		return cut("table/", "Table")
 	case "lambda":
-		if name, ok := strings.CutPrefix(tail, "function:"); ok && name != "" {
-			return "Function::" + name, true
+		return cut("function:", "Function")
+	case "sqs": // arn:aws:sqs:r:a:QueueName
+		if tail != "" {
+			return "Queue::" + tail, true
+		}
+	case "sns": // arn:aws:sns:r:a:TopicName[:subid] -> scope to the topic
+		if topic, _, _ := strings.Cut(tail, ":"); topic != "" {
+			return "Topic::" + topic, true
+		}
+	case "kinesis":
+		return cut("stream/", "Stream")
+	case "kms": // key/<id> or alias/<name>
+		if r, ok := cut("key/", "Key"); ok {
+			return r, true
+		}
+		return cut("alias/", "Key")
+	case "ssm":
+		return cut("parameter/", "Parameter")
+	case "secretsmanager": // secret:<name>-<6 random> -> strip the AWS suffix
+		if n, ok := strings.CutPrefix(tail, "secret:"); ok && n != "" {
+			return "Secret::" + secretSuffixRe.ReplaceAllString(n, ""), true
+		}
+	case "ecr":
+		return cut("repository/", "Repository")
+	case "ecs": // service/<cluster>/<name> -> Service::<name>
+		if n, ok := strings.CutPrefix(tail, "service/"); ok && n != "" {
+			if i := strings.LastIndex(n, "/"); i >= 0 {
+				n = n[i+1:]
+			}
+			if n != "" {
+				return "Service::" + n, true
+			}
+		}
+	case "logs": // log-group:<name>[:log-stream:...|:*]
+		if n, ok := strings.CutPrefix(tail, "log-group:"); ok {
+			n, _, _ = strings.Cut(n, ":")
+			if n != "" {
+				return "LogGroup::" + n, true
+			}
+		}
+	case "rds":
+		return cut("db:", "DBInstance")
+	case "ses":
+		return cut("identity/", "Identity")
+	case "apigateway": // arn:aws:apigateway:r::/restapis/<id>[/...]
+		if n, ok := strings.CutPrefix(tail, "/restapis/"); ok && n != "" {
+			n, _, _ = strings.Cut(n, "/")
+			if n != "" {
+				return "Api::" + n, true
+			}
 		}
 	}
 	return "", false
 }
+
+// secretSuffixRe matches the "-" + 6 random chars AWS appends to a Secrets Manager secret ARN.
+var secretSuffixRe = regexp.MustCompile(`-[A-Za-z0-9]{6}$`)
 
 func awsStr(v any) string { s, _ := v.(string); return s }
 
