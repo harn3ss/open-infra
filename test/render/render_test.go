@@ -129,6 +129,25 @@ func TestManagedDB_Replicas(t *testing.T) {
 	if strings.Contains(auto, "instances:") {
 		t.Errorf("with autoscaling the Cluster must omit instances (KEDA owns /scale); got:\n%s", grepCtx(auto, "instances"))
 	}
+
+	// pointInTimeRecovery: barman WAL archiver on the Cluster + ObjectStore + scoped-cred setup Job.
+	pitr := render(t, tmpl, mk(map[string]any{"pointInTimeRecovery": true, "backtrackWindow": "14d"}))
+	for _, want := range []string{
+		"barman-cloud.cloudnative-pg.io", "isWALArchiver: true", "barmanObjectName: myapp-db-backup",
+		"kind: ObjectStore", `retentionPolicy: "14d"`, "s3://db-snapshots/wal/default/myapp/",
+		"myapp-db-backup-setup", "myapp-db-backup-creds",
+	} {
+		if !strings.Contains(pitr, want) {
+			t.Errorf("pointInTimeRecovery render missing %q; got:\n%s", want, grepCtx(pitr, "barman"))
+		}
+	}
+	// Off by default: no WAL archiving machinery.
+	off := render(t, tmpl, mk(map[string]any{}))
+	for _, bad := range []string{"barman-cloud", "ObjectStore", "db-backup"} {
+		if strings.Contains(off, bad) {
+			t.Errorf("without pointInTimeRecovery there must be no %q", bad)
+		}
+	}
 }
 
 // TestFileShare_NodeIPExternalIPs guards the masquerade-VM escape hatch: when a
