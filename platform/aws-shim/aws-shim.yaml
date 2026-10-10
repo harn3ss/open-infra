@@ -580,6 +580,10 @@ spec:
             - { name: ECR_REGISTRY_URL, value: "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000" }
             - { name: ECR_PROXY_ENDPOINT, value: "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000" }
             - { name: ECR_AUTH_SECRET, value: "ecr-registry-auth" }
+            # Per-repo data-plane auth: GetAuthorizationToken returns a caller credential and the
+            # registry (token auth) authorizes each push/pull via the shim's /ecr/token endpoint
+            # against that caller. Set together with the registry's auth:token config (ecr-registry.yaml).
+            - { name: ECR_TOKEN_AUTH, value: "true" }
             # Glue (polyhedron#179): the Data Catalog doorway fronts the platform's existing Iceberg REST
             # catalog (lakehouse ns) — Glue databases ← Iceberg namespaces, Glue tables ← Iceberg tables.
             # Read + database-lifecycle only; in-cluster, no auth. (Athena, over Trino, is the next slice.)
