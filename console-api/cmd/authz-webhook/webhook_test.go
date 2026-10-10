@@ -153,13 +153,42 @@ func TestWebhook_DeferServiceAccountNamespace(t *testing.T) {
 	if st := post(t, h, sar("system:serviceaccount:open-infra-rds:rds-smoke", []string{"system:serviceaccounts:open-infra-rds"}, "get", "postgresql.cnpg.io", "clusters", "open-infra-rds", "rds-smoke")); st.Allowed || st.Denied {
 		t.Fatalf("a defer-namespace SA must defer to RBAC, got allowed=%v denied=%v", st.Allowed, st.Denied)
 	}
-	// A SA in a DIFFERENT namespace is still enforced (ungranted → explicit deny).
-	if st := post(t, h, sar("system:serviceaccount:default:other", []string{"system:serviceaccounts:default"}, "get", "postgresql.cnpg.io", "clusters", "default", "x")); !st.Denied {
-		t.Fatalf("a non-defer-namespace SA must be enforced (denied), got allowed=%v denied=%v", st.Allowed, st.Denied)
+	// A ServiceAccount the corpus names NOWHERE (even outside a defer namespace) DEFERS to RBAC — a new
+	// machine identity the snapshot has not been regenerated for must not be dead-locked (corpus-miss fix).
+	if st := post(t, h, sar("system:serviceaccount:default:other", []string{"system:serviceaccounts:default"}, "get", "postgresql.cnpg.io", "clusters", "default", "x")); st.Allowed || st.Denied {
+		t.Fatalf("an unknown SA must defer to RBAC, got allowed=%v denied=%v", st.Allowed, st.Denied)
 	}
 	// A regular USER is never a deferred SA — still enforced.
 	if st := post(t, h, sar("bob", []string{"devs"}, "get", "postgresql.cnpg.io", "clusters", "open-infra-rds", "x")); !st.Denied {
 		t.Fatalf("a non-SA user must be enforced, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+}
+
+// Corpus-miss fix: a ServiceAccount the corpus names NOWHERE defers to RBAC (so a new CNPG cluster SA
+// or operator plugin SA is never dead-locked by a stale snapshot), while a ServiceAccount the corpus
+// DOES name stays fully enforced (granted → allow, ungranted → deny, preserving the AC-6 tightening),
+// and a human user absent from the corpus is NOT deferred — the defer is scoped to ServiceAccounts.
+func TestWebhook_DeferUnknownServiceAccount(t *testing.T) {
+	h := &webhookHandler{
+		checker: checkerFor([]string{"ServiceAccount::cnpg-system/cloudnative-pg"},
+			policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"clusters.postgresql.cnpg.io::*"}}),
+		mode: Enforce, logger: discard(), breakGlass: map[string]bool{"system:masters": true},
+	}
+	// An absent SA (named nowhere) → defer to RBAC.
+	if st := post(t, h, sar("system:serviceaccount:cnpg-system:plugin-barman-cloud", []string{"system:serviceaccounts:cnpg-system"}, "create", "coordination.k8s.io", "leases", "cnpg-system", "x")); st.Allowed || st.Denied {
+		t.Fatalf("an unknown SA must defer to RBAC, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	// A NAMED SA with a granted action → allowed (enforcement still works).
+	if st := post(t, h, sar("system:serviceaccount:cnpg-system:cloudnative-pg", []string{"system:serviceaccounts:cnpg-system"}, "get", "postgresql.cnpg.io", "clusters", "x", "y")); !st.Allowed {
+		t.Fatalf("a named+granted SA must be allowed, got %+v", st)
+	}
+	// A NAMED SA with an UNGRANTED action → denied (AC-6 tightening preserved for named SAs).
+	if st := post(t, h, sar("system:serviceaccount:cnpg-system:cloudnative-pg", []string{"system:serviceaccounts:cnpg-system"}, "delete", "postgresql.cnpg.io", "clusters", "x", "y")); st.Allowed || !st.Denied {
+		t.Fatalf("a named SA's ungranted action must be denied, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	// A human USER absent from the corpus is NOT deferred (SA-scoped) — still default-denied.
+	if st := post(t, h, sar("alice", []string{"devs"}, "get", "", "pods", "default", "p")); st.Allowed || !st.Denied {
+		t.Fatalf("an absent human user must stay default-denied, got allowed=%v denied=%v", st.Allowed, st.Denied)
 	}
 }
 
