@@ -13,6 +13,8 @@ package cfn
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +27,7 @@ type Finding struct {
 type resolver struct {
 	t        *Template
 	params   map[string]any
+	exports  map[string]any // cross-stack Exports supplied to Fn::ImportValue (export name -> value)
 	pseudo   map[string]any
 	conds    map[string]bool // evaluated named conditions
 	where    string          // current location, for findings
@@ -32,8 +35,11 @@ type resolver struct {
 	refs     map[string]bool // resource logical ids referenced by the current item
 }
 
-func newResolver(t *Template, params, pseudo map[string]any) *resolver {
-	return &resolver{t: t, params: params, pseudo: pseudo, conds: map[string]bool{}, refs: map[string]bool{}}
+func newResolver(t *Template, params, exports, pseudo map[string]any) *resolver {
+	if exports == nil {
+		exports = map[string]any{}
+	}
+	return &resolver{t: t, params: params, exports: exports, pseudo: pseudo, conds: map[string]bool{}, refs: map[string]bool{}}
 }
 
 func (r *resolver) find(reason string) {
@@ -152,16 +158,13 @@ func (r *resolver) intrinsic(key string, arg any) (bool, any) {
 			return true, base64.StdEncoding.EncodeToString([]byte(v))
 		}
 		return true, fmt.Sprintf("<base64:%v>", v)
-	// Explicitly unsupported intrinsics — fail loud, never pass through.
 	case "Fn::ImportValue":
-		r.find("Fn::ImportValue (cross-stack import) is not supported in v1")
-		return true, "<unsupported:Fn::ImportValue>"
+		return true, r.importValue(arg)
 	case "Fn::GetAZs":
-		r.find("Fn::GetAZs (AWS availability zones) is not supported")
-		return true, "<unsupported:Fn::GetAZs>"
+		return true, r.getAZs(arg)
 	case "Fn::Cidr":
-		r.find("Fn::Cidr is not supported")
-		return true, "<unsupported:Fn::Cidr>"
+		return true, r.cidr(arg)
+	// Explicitly unsupported intrinsics — fail loud, never pass through.
 	case "Fn::Transform":
 		r.find("Fn::Transform (macros) is not supported")
 		return true, "<unsupported:Fn::Transform>"
@@ -213,6 +216,97 @@ func (r *resolver) getAtt(arg any) any {
 	}
 	return "<" + id + "." + attr + ">"
 }
+
+// importValue resolves Fn::ImportValue against the cross-stack Exports supplied to the engine (export
+// name -> value, passed with -import NAME=VALUE / an exports file). An export that was not supplied is
+// a FINDING, never a faked value — the engine stays fail-loud; the operator supplies the exporting
+// stacks' output values. (AWS resolves these from the account's live exports; a stateless CLI resolves
+// them from what it is given.)
+func (r *resolver) importValue(arg any) any {
+	name := fmt.Sprint(r.resolve(arg))
+	if v, ok := r.exports[name]; ok {
+		return v
+	}
+	r.find("Fn::ImportValue: no export named " + name + " was supplied (pass -import " + name + "=… with the exporting stack's output value)")
+	return "<importvalue:" + name + ">"
+}
+
+// getAZs resolves Fn::GetAZs to a deterministic set of AZ names for the region (the pseudo AWS::Region
+// when the argument is empty). open-infra is a single cluster, so these are documented plan-time
+// stand-ins (<region>a/b/c) — enough for a template's Fn::Select over the list to resolve; the
+// translate layer maps subnet/AZ placement to the cluster's own topology, not to real AWS zones.
+func (r *resolver) getAZs(arg any) any {
+	region := fmt.Sprint(r.resolve(arg))
+	if region == "" || region == "<nil>" {
+		if v, ok := r.pseudo["AWS::Region"]; ok {
+			region = fmt.Sprint(v)
+		}
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+	return []any{region + "a", region + "b", region + "c"}
+}
+
+// cidr resolves Fn::Cidr [ipBlock, count, cidrBits] to `count` sequential IPv4 subnet CIDRs carved from
+// ipBlock, each with a /(32-cidrBits) mask (AWS semantics: cidrBits is the subnet/host-bit count). Pure
+// deterministic subnet math. An unparseable/IPv6 ipBlock or a count/bits that overflow the block is a
+// finding.
+func (r *resolver) cidr(arg any) any {
+	l := r.list(arg)
+	if len(l) != 3 {
+		r.find("Fn::Cidr requires [ipBlock, count, cidrBits]")
+		return "<unsupported:Fn::Cidr>"
+	}
+	ipBlock := fmt.Sprint(r.resolve(l[0]))
+	count, cerr := strconv.Atoi(strings.TrimSpace(fmt.Sprint(r.resolve(l[1]))))
+	cidrBits, berr := strconv.Atoi(strings.TrimSpace(fmt.Sprint(r.resolve(l[2]))))
+	if cerr != nil || berr != nil || count < 1 || cidrBits < 0 || cidrBits > 32 {
+		r.find("Fn::Cidr: count and cidrBits must be integers (count>=1, 0<=cidrBits<=32)")
+		return "<unsupported:Fn::Cidr>"
+	}
+	out, err := fnCidr(ipBlock, count, cidrBits)
+	if err != nil {
+		r.find("Fn::Cidr: " + err.Error())
+		return "<unsupported:Fn::Cidr>"
+	}
+	return out
+}
+
+// fnCidr carves count sequential /(32-cidrBits) IPv4 subnets from ipBlock, starting at its network
+// address. Pure (no resolver state) so it is directly unit-testable.
+func fnCidr(ipBlock string, count, cidrBits int) ([]any, error) {
+	_, ipnet, err := net.ParseCIDR(ipBlock)
+	if err != nil {
+		return nil, fmt.Errorf("ipBlock %q is not a valid CIDR", ipBlock)
+	}
+	if ipnet.IP.To4() == nil {
+		return nil, fmt.Errorf("only IPv4 ipBlocks are supported")
+	}
+	newMask := 32 - cidrBits
+	basePrefix, _ := ipnet.Mask.Size()
+	if newMask < basePrefix {
+		return nil, fmt.Errorf("cidrBits %d makes a /%d larger than the ipBlock /%d", cidrBits, newMask, basePrefix)
+	}
+	maxSubnets := uint64(1) << uint(newMask-basePrefix)
+	if uint64(count) > maxSubnets {
+		return nil, fmt.Errorf("count %d exceeds the %d /%d subnets that fit in %s", count, maxSubnets, newMask, ipBlock)
+	}
+	base := ipToU32(ipnet.IP.To4())
+	step := uint64(1) << uint(cidrBits) // addresses per subnet
+	out := make([]any, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, fmt.Sprintf("%s/%d", u32ToIP(base+uint32(uint64(i)*step)), newMask))
+	}
+	return out, nil
+}
+
+func ipToU32(ip net.IP) uint32 {
+	ip = ip.To4()
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+func u32ToIP(v uint32) net.IP { return net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) }
 
 func (r *resolver) sub(arg any) any {
 	var tmpl string

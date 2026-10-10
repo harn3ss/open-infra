@@ -4,7 +4,7 @@ import "testing"
 
 func resolverFor(t *testing.T, tmpl *Template) *resolver {
 	t.Helper()
-	r := newResolver(tmpl, map[string]any{"Env": "prod"}, pseudoParams("stk"))
+	r := newResolver(tmpl, map[string]any{"Env": "prod"}, nil, pseudoParams("stk"))
 	r.evalConditions()
 	r.where = "test"
 	return r
@@ -54,9 +54,8 @@ func TestResolve_UnsupportedIntrinsicFinds(t *testing.T) {
 	tmpl := &Template{Resources: map[string]Resource{}}
 	r := resolverFor(t, tmpl)
 	for _, in := range []any{
-		map[string]any{"Fn::ImportValue": "other-stack-out"},
-		map[string]any{"Fn::GetAZs": ""},
-		map[string]any{"Fn::Cidr": []any{"10.0.0.0/16", 6, 5}},
+		map[string]any{"Fn::ImportValue": "other-stack-out"}, // no export supplied -> finding (fail-loud, not faked)
+		map[string]any{"Fn::Transform": map[string]any{"Name": "AWS::Include"}},
 		map[string]any{"Fn::Bogus": "x"},
 	} {
 		r.findings = nil
@@ -99,3 +98,81 @@ func toStr(v any) string {
 }
 
 func readFixtureBytes(t *testing.T, name string) []byte { return readFixture(t, name) }
+
+func TestFnCidr(t *testing.T) {
+	// 6 /24 subnets from a /16 (the canonical AWS example)
+	got, err := fnCidr("10.0.0.0/16", 6, 8)
+	if err != nil {
+		t.Fatalf("fnCidr: %v", err)
+	}
+	want := []string{"10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24", "10.0.4.0/24", "10.0.5.0/24"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d subnets, want %d: %v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("subnet %d = %v, want %s", i, got[i], w)
+		}
+	}
+	// /28 subnets from a /24
+	g2, err := fnCidr("192.168.0.0/24", 4, 4)
+	if err != nil || g2[0] != "192.168.0.0/28" || g2[3] != "192.168.0.48/28" {
+		t.Errorf("/28 carve wrong: %v (err %v)", g2, err)
+	}
+	// overflow: can't fit 300 /24s in a /16
+	if _, err := fnCidr("10.0.0.0/16", 300, 8); err == nil {
+		t.Error("expected overflow error for 300 /24s in a /16")
+	}
+	// IPv6 rejected
+	if _, err := fnCidr("2001:db8::/32", 2, 8); err == nil {
+		t.Error("expected IPv6 to be rejected")
+	}
+	// garbage ipBlock rejected
+	if _, err := fnCidr("not-a-cidr", 2, 8); err == nil {
+		t.Error("expected parse error for a bad ipBlock")
+	}
+}
+
+func TestResolve_Cidr_GetAZs_ImportValue(t *testing.T) {
+	tmpl := &Template{Resources: map[string]Resource{}}
+	r := newResolver(tmpl, map[string]any{}, map[string]any{"SharedVpcId": "vpc-123"}, pseudoParams("stk"))
+	r.where = "test"
+
+	// Fn::Cidr resolves to a list (no finding)
+	out := r.resolve(map[string]any{"Fn::Cidr": []any{"10.0.0.0/16", float64(2), float64(8)}})
+	if l, ok := out.([]any); !ok || len(l) != 2 || l[0] != "10.0.0.0/24" {
+		t.Errorf("Fn::Cidr resolve got %v", out)
+	}
+
+	// Fn::GetAZs resolves to a 3-element region-derived stand-in
+	az := r.resolve(map[string]any{"Fn::GetAZs": "us-west-2"})
+	if l, ok := az.([]any); !ok || len(l) != 3 || l[0] != "us-west-2a" {
+		t.Errorf("Fn::GetAZs got %v", az)
+	}
+
+	// Fn::ImportValue resolves a SUPPLIED export, no finding
+	before := len(r.findings)
+	iv := r.resolve(map[string]any{"Fn::ImportValue": "SharedVpcId"})
+	if iv != "vpc-123" {
+		t.Errorf("Fn::ImportValue(SharedVpcId) got %v want vpc-123", iv)
+	}
+	if len(r.findings) != before {
+		t.Errorf("a supplied export must not add a finding")
+	}
+
+	// Fn::ImportValue for a MISSING export is a finding (fail-loud, not faked)
+	_ = r.resolve(map[string]any{"Fn::ImportValue": "Absent"})
+	if len(r.findings) != before+1 {
+		t.Errorf("a missing export must add exactly one finding; findings=%v", r.findings)
+	}
+}
+
+func TestResolve_TransformStillFailsLoud(t *testing.T) {
+	tmpl := &Template{Resources: map[string]Resource{}}
+	r := newResolver(tmpl, nil, nil, pseudoParams("stk"))
+	r.where = "test"
+	_ = r.resolve(map[string]any{"Fn::Transform": map[string]any{"Name": "AWS::Include"}})
+	if len(r.findings) != 1 {
+		t.Errorf("Fn::Transform must still be a finding; got %v", r.findings)
+	}
+}

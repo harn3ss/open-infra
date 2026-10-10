@@ -56,6 +56,12 @@ type Plan struct {
 // BuildPlan parses a template and produces a dry-run plan. params supplies parameter values
 // (overriding defaults); stackName seeds AWS::StackName. It never contacts the cluster.
 func BuildPlan(data []byte, params map[string]string, stackName string) (*Plan, error) {
+	return BuildPlanWithExports(data, params, nil, stackName)
+}
+
+// BuildPlanWithExports is BuildPlan with a cross-stack Exports map (export name -> value) made
+// available to Fn::ImportValue. BuildPlan passes nil (no exports supplied).
+func BuildPlanWithExports(data []byte, params, exports map[string]string, stackName string) (*Plan, error) {
 	t, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -89,7 +95,7 @@ func BuildPlan(data []byte, params map[string]string, stackName string) (*Plan, 
 		plan.Blockers = append(plan.Blockers, "parameter "+name+" has no default and no value supplied (pass -param "+name+"=…)")
 	}
 
-	r := newResolver(t, pvals, pseudoParams(stackName))
+	r := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
 	r.evalConditions()
 
 	// Decide inclusion + mapping for every resource, walking properties only for included ones.
@@ -194,6 +200,18 @@ func pseudoParams(stackName string) map[string]any {
 		"AWS::NoValue":          nil,
 		"AWS::NotificationARNs": []any{},
 	}
+}
+
+// strMapToAny lifts a string-keyed string map to an any-valued one (exports, for Fn::ImportValue).
+func strMapToAny(m map[string]string) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func dedupSorted(ids []string) []string {

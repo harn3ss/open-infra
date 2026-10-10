@@ -283,7 +283,7 @@ func ecsCtx(t *testing.T, tmpl string) *stackCtx {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	r := newResolver(tt, resolveParams(tt, nil), pseudoParams("s"))
+	r := newResolver(tt, resolveParams(tt, nil), nil, pseudoParams("s"))
 	r.evalConditions()
 	return &stackCtx{template: tt, resolver: r}
 }
