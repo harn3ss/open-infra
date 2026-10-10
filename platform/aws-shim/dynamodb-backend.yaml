@@ -34,6 +34,11 @@ spec:
       - pg_documentdb
     parameters:
       cron.database_name: postgres
+      # Force a WAL segment to archive at least this often, even under light writes. Without it a
+      # low-traffic table's most recent writes can sit in an unarchived segment indefinitely, so
+      # "latest restorable time" would silently exclude them — point-in-time recovery must actually
+      # be able to reach recent writes (bounds the RPO at ~60s).
+      archive_timeout: 60s
   bootstrap:
     initdb:
       database: postgres
@@ -83,6 +88,28 @@ spec:
       compression: gzip
     data:
       compression: gzip
+---
+# Base backups (the PITR foundation). WAL archiving alone is not restorable — a point-in-time restore
+# replays WAL FROM a base backup, so without one firstRecoverabilityPoint stays empty and nothing is
+# actually restorable. This takes a base backup immediately (so the restorable window opens now) and
+# every 12h thereafter, via the same barman-cloud plugin that archives the WAL. Retention (7d) is
+# enforced by the ObjectStore above.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: dynamo-docdb-base
+  namespace: open-infra-aws-shim
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  immediate: true
+  schedule: "0 0 */12 * * *" # CNPG uses 6-field cron (sec min hour dom mon dow): every 12 hours
+  backupOwnerReference: self
+  cluster:
+    name: dynamo-docdb
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
 ---
 # FerretDB proxy (stateless Mongo wire endpoint). Connects to the CNPG primary (-rw) via the shim secret.
 apiVersion: apps/v1

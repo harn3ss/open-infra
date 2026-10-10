@@ -1,0 +1,80 @@
+# DynamoDB RestoreTableToPointInTime — RBAC for the async restore Job.
+#
+# RestoreTableToPointInTime launches a Kubernetes Job (the shim's own image, subcommand `restore-pitr`)
+# that bootstraps a recovery CNPG cluster to the target time, stands a throwaway FerretDB over it, copies
+# the source table's collection into the new table, and tears the recovery resources down. That Job runs
+# as a DEDICATED least-privilege SA (aws-shim-restore) — NOT the shim SA — so the recovery blast radius
+# (create/delete CNPG clusters + Deployments/Services in this namespace) is separate from the request
+# front door. The shim SA itself only needs to CREATE the Job (aws-shim-restore-launcher below).
+#
+# Scope: this namespace only (the DynamoDB backend's own — where dynamo-docdb, the ObjectStore, and the
+# dynamo-mongo-app Secret live). This file is part of platform/aws-shim/*.yaml, so the app-of-apps picks
+# it up automatically when components.awsShim is enabled (no root-app patch needed).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-shim-restore
+  namespace: open-infra-aws-shim
+---
+# The restore Job's own grants: lifecycle the recovery CNPG cluster + the throwaway FerretDB
+# Deployment/Service, read the pods it creates (for status), and read ONLY the shared connection Secret
+# (resourceName-scoped) to build the recovered FerretDB's POSTGRESQL_URL. No access to any other Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-restore
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [create, get, list, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  # Only the shared basic-auth connection Secret — never any other Secret in this namespace.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+    resourceNames: [dynamo-mongo-app]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-restore
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-restore }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim-restore
+    namespace: open-infra-aws-shim
+---
+# Launcher grant: the shim SA (aws-shim) may CREATE/observe/delete the restore Jobs — nothing more. The
+# Job's heavier CNPG/Deployment grants belong to aws-shim-restore above, so the front door SA stays
+# least-privilege (it can start a restore, not create databases itself).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-restore-launcher
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-restore-launcher
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-restore-launcher }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
