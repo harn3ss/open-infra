@@ -575,6 +575,40 @@ func TestFunction_Code(t *testing.T) {
 	}
 }
 
+// Weighted aliases (the Lambda alias/version analog) render a Knative traffic block: a tag per
+// alias, percent = weight, latest vs a pinned revision. Weights must sum to 100.
+func TestFunction_Aliases(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	ctx := func(spec map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{"labels": map[string]any{
+				"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "default"}},
+		}}}}
+	}
+	// A canary split: 90% to the latest revision (tag "prod"), 10% to a pinned revision (tag "canary").
+	out := render(t, tmpl, ctx(map[string]any{
+		"image": "ghcr.io/x/fn:latest",
+		"aliases": []any{
+			map[string]any{"name": "prod", "revision": "latest", "weight": int64(90)},
+			map[string]any{"name": "canary", "revision": "fn-00003", "weight": int64(10)},
+		},
+	}))
+	for _, want := range []string{"traffic:", "tag: prod", "percent: 90", "latestRevision: true",
+		"tag: canary", "percent: 10", "revisionName: fn-00003"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("aliases render missing %q; got:\n%s", want, grepCtx(out, "traffic"))
+		}
+	}
+	// Weights that don't sum to 100 must abort the render.
+	if err := renderErr(tmpl, ctx(map[string]any{
+		"image":   "ghcr.io/x/fn:latest",
+		"aliases": []any{map[string]any{"name": "a", "weight": int64(70)}, map[string]any{"name": "b", "weight": int64(20)}},
+	})); err == nil {
+		t.Error("alias weights not summing to 100 should abort the render")
+	}
+}
+
 // A resolver with a caching block renders its ttl + keys into config.json.
 func TestGraphQLApi_ResolverCaching(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
@@ -1507,6 +1541,28 @@ func sprigLite() template.FuncMap {
 				return i
 			}
 			return 0
+		},
+		// sprig: sum its arguments (function-composition sums alias weights). Coerces like int.
+		"add": func(nums ...any) int {
+			toI := func(v any) int {
+				switch n := v.(type) {
+				case int:
+					return n
+				case int64:
+					return int(n)
+				case float64:
+					return int(n)
+				case string:
+					i, _ := strconv.Atoi(n)
+					return i
+				}
+				return 0
+			}
+			s := 0
+			for _, n := range nums {
+				s += toI(n)
+			}
+			return s
 		},
 		// query-composition.yaml quotes user-supplied SQL into the Job env. Faithful to
 		// sprig: %q on the string form (the render assertions only need the value present).

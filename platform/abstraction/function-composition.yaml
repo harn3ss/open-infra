@@ -51,6 +51,12 @@ spec:
             {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
             {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "kind: Function spec.code.layers require a bucket source with a creds secret (source.bucket + source.secret)" }}{{- end }}
             {{- end }}
+            {{- /* Weighted aliases (Knative traffic) must sum to 100, as Knative requires. */}}
+            {{- if $spec.aliases }}
+            {{-   $sum := 0 }}
+            {{-   range $a := $spec.aliases }}{{- $sum = add $sum (int $a.weight) }}{{- end }}
+            {{-   if ne $sum 100 }}{{- fail (printf "kind: Function spec.aliases weights must sum to 100 (got %d)" $sum) }}{{- end }}
+            {{- end }}
             ---
             # --- Knative Service: the scale-to-zero "Function" ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -152,6 +158,20 @@ spec:
                           - name: openinfra-code
                             configMap: { name: {{ $csrc.configMap }} }
                         {{- end }}
+                    {{- if $spec.aliases }}
+                    # Weighted traffic targets (the Lambda alias/version analog): each alias is a
+                    # Knative traffic tag routing its percent to a pinned revision or the latest.
+                    traffic:
+                      {{- range $a := $spec.aliases }}
+                      - tag: {{ $a.name }}
+                        percent: {{ $a.weight }}
+                        {{- if eq ($a.revision | default "latest") "latest" }}
+                        latestRevision: true
+                        {{- else }}
+                        revisionName: {{ $a.revision }}
+                        {{- end }}
+                      {{- end }}
+                    {{- end }}
             {{- if $spec.trigger }}
             {{- $tstream := $spec.trigger.stream }}
             {{- $tsubject := $spec.trigger.subject | default (printf "cdc.%s.>" $tstream) }}
