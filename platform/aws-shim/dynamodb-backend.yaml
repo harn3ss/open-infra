@@ -41,6 +41,11 @@ spec:
         name: dynamo-mongo-app
       postInitSQL:
         - CREATE EXTENSION IF NOT EXISTS documentdb CASCADE
+        # FerretDB connects as `app` and must hold the documentdb admin role to create/write
+        # collections — the stock postgres-documentdb image grants this in its entrypoint, which CNPG's
+        # instance manager replaces, so grant it explicitly (else: "permission denied for schema
+        # documentdb_api" on every write).
+        - GRANT documentdb_admin_role TO app
   storage:
     size: 10Gi
     storageClass: local-path
