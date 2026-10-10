@@ -49,11 +49,26 @@ type restIntegration struct {
 	IntegrationResponses map[string]map[string]string `json:"integrationResponses,omitempty"`
 }
 
+// restAuthorizer is a method authorizer (CreateAuthorizer). The shim enforces COGNITO_USER_POOLS by
+// validating the caller's JWT against the pool's issuer/JWKS (the shim's own Cognito serves these, and
+// any OIDC issuer works). TOKEN/REQUEST (Lambda) and the method-level AWS_IAM authType are refused
+// fail-closed at the control plane (see the handler) — an authorizer the shim cannot vet must never
+// silently admit a request.
+type restAuthorizer struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Type           string   `json:"type"`           // COGNITO_USER_POOLS (TOKEN/REQUEST refused at CreateAuthorizer)
+	Issuer         string   `json:"issuer"`         // resolved OIDC issuer (from a Cognito pool ARN or a bare issuer URL)
+	Audiences      []string `json:"audiences"`      // allowed token audiences (empty = skip aud check)
+	IdentitySource string   `json:"identitySource"` // header the token is read from (default Authorization)
+}
+
 // restSnapshot is the immutable picture a deployment freezes and a stage serves.
 type restSnapshot struct {
 	Resources    []restResource    `json:"resources"`
 	Methods      []restMethod      `json:"methods"`
 	Integrations []restIntegration `json:"integrations"`
+	Authorizers  []restAuthorizer  `json:"authorizers,omitempty"`
 }
 
 func (s *apigwV1Store) ensureSchema(ctx context.Context) error {
@@ -90,6 +105,16 @@ CREATE TABLE IF NOT EXISTS rest_integrations (
     request_templates     jsonb,
     integration_responses jsonb,
     PRIMARY KEY (api_id, resource_id, http_method)
+);
+CREATE TABLE IF NOT EXISTS rest_authorizers (
+    api_id          text NOT NULL,
+    authorizer_id   text NOT NULL,
+    name            text NOT NULL DEFAULT '',
+    type            text NOT NULL,
+    issuer          text NOT NULL DEFAULT '',
+    audiences       jsonb,
+    identity_source text NOT NULL DEFAULT '',
+    PRIMARY KEY (api_id, authorizer_id)
 );
 CREATE TABLE IF NOT EXISTS rest_deployments (
     api_id        text NOT NULL,
@@ -314,7 +339,48 @@ func (s *apigwV1Store) listIntegrations(ctx context.Context, apiID string) ([]re
 	return out, rows.Err()
 }
 
-// snapshot captures the current resource/method/integration tree for a deployment.
+func (s *apigwV1Store) createAuthorizer(ctx context.Context, apiID string, a restAuthorizer) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rest_authorizers (api_id, authorizer_id, name, type, issuer, audiences, identity_source)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		 ON CONFLICT (api_id, authorizer_id)
+		 DO UPDATE SET name=EXCLUDED.name, type=EXCLUDED.type, issuer=EXCLUDED.issuer,
+		   audiences=EXCLUDED.audiences, identity_source=EXCLUDED.identity_source`,
+		apiID, a.ID, a.Name, a.Type, a.Issuer, marshalJSONBSlice(a.Audiences), a.IdentitySource)
+	return err
+}
+
+func (s *apigwV1Store) listAuthorizers(ctx context.Context, apiID string) ([]restAuthorizer, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT authorizer_id, name, type, issuer, audiences, identity_source FROM rest_authorizers WHERE api_id=$1`, apiID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []restAuthorizer
+	for rows.Next() {
+		var a restAuthorizer
+		var auds []byte
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Issuer, &auds, &a.IdentitySource); err != nil {
+			return nil, err
+		}
+		if len(auds) > 0 {
+			_ = json.Unmarshal(auds, &a.Audiences)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// marshalJSONBSlice encodes a string slice for a jsonb column (nil when empty → NULL).
+func marshalJSONBSlice(v []string) []byte {
+	if len(v) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return b
+}
+
+// snapshot captures the current resource/method/integration/authorizer tree for a deployment.
 func (s *apigwV1Store) snapshot(ctx context.Context, apiID string) (restSnapshot, error) {
 	var snap restSnapshot
 	var err error
@@ -325,6 +391,9 @@ func (s *apigwV1Store) snapshot(ctx context.Context, apiID string) (restSnapshot
 		return snap, err
 	}
 	if snap.Integrations, err = s.listIntegrations(ctx, apiID); err != nil {
+		return snap, err
+	}
+	if snap.Authorizers, err = s.listAuthorizers(ctx, apiID); err != nil {
 		return snap, err
 	}
 	return snap, nil

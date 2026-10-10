@@ -28,6 +28,7 @@ type restV1Op struct {
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration/responses/{statusCode}  PUT PutIntegrationResponse
 //	/restapis/{id}/deployments                                        POST CreateDeployment
 //	/restapis/{id}/stages                                             POST CreateStage / GET GetStages
+//	/restapis/{id}/authorizers                                        POST CreateAuthorizer
 func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 	segs := splitPath(r.URL.Path)
 	if len(segs) < 1 || segs[0] != "restapis" {
@@ -64,6 +65,10 @@ func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 			}
 			if r.Method == http.MethodGet {
 				return restV1Op{Op: "GetStages", APIID: segs[1]}, true
+			}
+		case "authorizers":
+			if r.Method == http.MethodPost {
+				return restV1Op{Op: "CreateAuthorizer", APIID: segs[1]}, true
 			}
 		}
 	case 4: // /restapis/{id}/resources/{parentId}

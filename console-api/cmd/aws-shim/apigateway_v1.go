@@ -19,28 +19,36 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
 
 type apigwV1Handler struct {
-	cs        kubernetes.Interface
-	authzNS   string
-	fnNS      string
-	svcSuffix string
-	store     *apigwV1Store
-	authz     *dataplaneauthz.Checker
-	logger    *slog.Logger
-	client    *http.Client
+	cs                kubernetes.Interface
+	authzNS           string
+	fnNS              string
+	svcSuffix         string
+	cognitoIssuerBase string // issuer prefix a Cognito pool ARN resolves to (<base>/<poolId>)
+	store             *apigwV1Store
+	authz             *dataplaneauthz.Checker
+	logger            *slog.Logger
+	client            *http.Client
+
+	oidcMu    sync.Mutex
+	providers map[string]*oidc.Provider // issuer -> provider (JWKS discovery is network; cache). Reused by the COGNITO_USER_POOLS authorizer, the SAME coreos/go-oidc path the v2 handler uses.
 }
 
-func newAPIGWV1Handler(cs kubernetes.Interface, authzNS, fnNS, svcSuffix string, store *apigwV1Store, authz *dataplaneauthz.Checker, logger *slog.Logger) *apigwV1Handler {
+func newAPIGWV1Handler(cs kubernetes.Interface, authzNS, fnNS, svcSuffix, cognitoIssuerBase string, store *apigwV1Store, authz *dataplaneauthz.Checker, logger *slog.Logger) *apigwV1Handler {
 	return &apigwV1Handler{
-		cs: cs, authzNS: authzNS, fnNS: fnNS, svcSuffix: svcSuffix, store: store, authz: authz, logger: logger,
-		client: &http.Client{Timeout: 30 * time.Second},
+		cs: cs, authzNS: authzNS, fnNS: fnNS, svcSuffix: svcSuffix, cognitoIssuerBase: cognitoIssuerBase,
+		store: store, authz: authz, logger: logger,
+		client:    &http.Client{Timeout: 30 * time.Second},
+		providers: map[string]*oidc.Provider{},
 	}
 }
 
@@ -114,6 +122,8 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		h.createStage(ctx, w, requestID, v.APIID, body)
 	case "GetStages":
 		h.getStages(ctx, w, requestID, v.APIID)
+	case "CreateAuthorizer":
+		h.createAuthorizer(ctx, w, requestID, v.APIID, body)
 	default:
 		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "unimplemented op: "+v.Op)
 	}
@@ -342,6 +352,96 @@ func (h *apigwV1Handler) putIntegrationResponse(ctx context.Context, w http.Resp
 	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{"statusCode": statusCode})
 }
 
+// createAuthorizer registers a method authorizer. The shim enforces COGNITO_USER_POOLS (validate the
+// caller's JWT against the pool's issuer/JWKS). TOKEN/REQUEST (Lambda) authorizers are refused
+// fail-closed — an authorizer the shim cannot vet must never silently admit a request (the same
+// "authentication false green" stance the v2 HTTP-API path takes). providerARNs accepts a Cognito user
+// pool ARN (resolved to <COGNITO_ISSUER_BASE>/<poolId>) or a bare OIDC issuer URL.
+func (h *apigwV1Handler) createAuthorizer(ctx context.Context, w http.ResponseWriter, requestID, apiID string, body map[string]any) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	name, _ := body["name"].(string)
+	atype, _ := body["type"].(string)
+	switch atype {
+	case "COGNITO_USER_POOLS":
+		// enforced below
+	case "TOKEN", "REQUEST":
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID,
+			"the shim supports authorizer type COGNITO_USER_POOLS only (the caller's JWT is validated against the pool's issuer/JWKS). TOKEN/REQUEST (Lambda) authorizers are not fronted — an authorizer the shim cannot vet is an authentication false green, refused rather than faked.")
+		return
+	default:
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID,
+			"authorizer type must be COGNITO_USER_POOLS.")
+		return
+	}
+	var issuer string
+	for _, arn := range stringSlice(body["providerARNs"]) {
+		if iss := h.resolveCognitoIssuer(arn); iss != "" {
+			issuer = iss
+			break
+		}
+	}
+	if issuer == "" {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID,
+			"a COGNITO_USER_POOLS authorizer requires providerARNs — a Cognito user pool ARN (arn:aws:cognito-idp:…:userpool/<poolId>) or an OIDC issuer URL.")
+		return
+	}
+	var auds []string
+	for _, a := range sliceOf(body["audience"]) {
+		if s, ok := a.(string); ok && s != "" {
+			auds = append(auds, s)
+		}
+	}
+	a := restAuthorizer{
+		ID: shortID(10), Name: name, Type: "COGNITO_USER_POOLS", Issuer: issuer, Audiences: auds,
+		IdentitySource: headerFromIdentitySource(firstStr(stringSlice(body["identitySource"]))),
+	}
+	if err := h.store.createAuthorizer(ctx, apiID, a); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{
+		"id": a.ID, "name": a.Name, "type": a.Type, "providerARNs": stringSlice(body["providerARNs"]),
+		"identitySource": a.IdentitySource,
+	})
+}
+
+// resolveCognitoIssuer maps a providerARN to an OIDC issuer: a bare http(s) URL is the issuer as-is; a
+// Cognito user pool ARN (…:userpool/<poolId>) resolves to <COGNITO_ISSUER_BASE>/<poolId> (the shim's own
+// Cognito serves that issuer's discovery + JWKS). Anything else is unresolvable ("").
+func (h *apigwV1Handler) resolveCognitoIssuer(arn string) string {
+	if strings.HasPrefix(arn, "https://") || strings.HasPrefix(arn, "http://") {
+		return strings.TrimRight(arn, "/")
+	}
+	if i := strings.Index(arn, "userpool/"); i >= 0 {
+		poolID := arn[i+len("userpool/"):]
+		if poolID != "" {
+			return strings.TrimRight(h.cognitoIssuerBase, "/") + "/" + poolID
+		}
+	}
+	return ""
+}
+
+// headerFromIdentitySource extracts the header name from a REST identity-source expression
+// ("method.request.header.Authorization" -> "Authorization"); default Authorization.
+func headerFromIdentitySource(src string) string {
+	const pfx = "method.request.header."
+	if strings.HasPrefix(src, pfx) {
+		if h := strings.TrimPrefix(src, pfx); h != "" {
+			return h
+		}
+	}
+	return "Authorization"
+}
+
+func firstStr(ss []string) string {
+	if len(ss) > 0 {
+		return ss[0]
+	}
+	return ""
+}
+
 func (h *apigwV1Handler) createDeployment(ctx context.Context, w http.ResponseWriter, requestID, apiID string, body map[string]any) {
 	if !h.mustAPI(ctx, w, requestID, apiID) {
 		return
@@ -445,17 +545,17 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 	if routePath == "" {
 		routePath = "/"
 	}
-	integ, pathParams, authType, _, matched := matchRestRoute(snap, r.Method, routePath)
+	integ, pathParams, authType, authorizerID, matched := matchRestRoute(snap, r.Method, routePath)
 	if !matched {
 		writeAGWError(w, http.StatusForbidden, "MissingAuthenticationTokenException", requestID, "Missing Authentication Token")
 		return
 	}
-	// v1 increment 1 serves NONE-auth methods; enforcing IAM/Cognito/JWT method authorizers is a
-	// tracked follow-on — refuse (don't silently bypass) a method that asks for more.
+	// Method authorizer. NONE serves open; COGNITO_USER_POOLS validates the caller's JWT (fail-closed);
+	// AWS_IAM and any unsupported type are refused (never silently bypassed).
 	if authType != "" && authType != "NONE" {
-		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID,
-			"method authorizationType "+authType+" is not yet enforced by the shim's REST v1 data plane")
-		return
+		if !h.enforceMethodAuthorizer(w, r, snap, authType, authorizerID, requestID) {
+			return
+		}
 	}
 
 	reqBody, _ := io.ReadAll(io.LimitReader(r.Body, 6<<20))
@@ -631,6 +731,86 @@ func (h *apigwV1Handler) writeMappedResponse(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(out))
+}
+
+// --- method authorizers (increment 3) ---
+
+// enforceMethodAuthorizer gates a non-NONE method. COGNITO_USER_POOLS → validate the caller's JWT.
+// AWS_IAM is refused (the REST v1 invoke path is unsigned by design — honest, not a silent bypass). A
+// method that references a missing/unknown authorizer fails closed (401). Returns true only when the
+// request is authorized to proceed.
+func (h *apigwV1Handler) enforceMethodAuthorizer(w http.ResponseWriter, r *http.Request, snap restSnapshot, authType, authorizerID, requestID string) bool {
+	if authType == "AWS_IAM" {
+		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID,
+			"method authorizationType AWS_IAM is not enforced on the REST v1 invoke path (unsigned by design); use a COGNITO_USER_POOLS authorizer.")
+		return false
+	}
+	var authz *restAuthorizer
+	for i := range snap.Authorizers {
+		if snap.Authorizers[i].ID == authorizerID {
+			authz = &snap.Authorizers[i]
+			break
+		}
+	}
+	if authz == nil || authz.Type != "COGNITO_USER_POOLS" {
+		// method asks for an authorizer the deployment doesn't carry / the shim doesn't enforce — fail closed.
+		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
+		return false
+	}
+	return h.runCognitoAuthorizer(w, r, authz, requestID)
+}
+
+// runCognitoAuthorizer validates the caller's JWT against the authorizer's issuer (JWKS discovery via
+// coreos/go-oidc — the SAME path the v2 handler uses). Missing token, issuer-discovery failure,
+// bad/expired signature, or an audience mismatch all 401 (fail closed).
+func (h *apigwV1Handler) runCognitoAuthorizer(w http.ResponseWriter, r *http.Request, a *restAuthorizer, requestID string) bool {
+	hdr := a.IdentitySource
+	if hdr == "" {
+		hdr = "Authorization"
+	}
+	raw := r.Header.Get(hdr)
+	if tok, ok := bearerToken(raw); ok {
+		raw = tok // strip a "Bearer " prefix when present (Authorization header); a custom header carries the raw token
+	}
+	if raw == "" {
+		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
+		return false
+	}
+	provider, perr := h.oidcProvider(r.Context(), a.Issuer)
+	if perr != nil {
+		h.logger.Warn("apigw v1 cognito authorizer: issuer discovery failed", "issuer", a.Issuer, "error", perr.Error())
+		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
+		return false
+	}
+	auds := a.Audiences
+	if len(auds) == 0 {
+		auds = []string{""} // no audience configured -> skip the aud check
+	}
+	for _, aud := range auds {
+		cfg := &oidc.Config{ClientID: aud}
+		if aud == "" {
+			cfg = &oidc.Config{SkipClientIDCheck: true}
+		}
+		if _, verr := provider.Verifier(cfg).Verify(r.Context(), raw); verr == nil {
+			return true
+		}
+	}
+	writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
+	return false
+}
+
+func (h *apigwV1Handler) oidcProvider(ctx context.Context, issuer string) (*oidc.Provider, error) {
+	h.oidcMu.Lock()
+	defer h.oidcMu.Unlock()
+	if p, ok := h.providers[issuer]; ok {
+		return p, nil
+	}
+	p, err := oidc.NewProvider(ctx, issuer)
+	if err != nil {
+		return nil, err
+	}
+	h.providers[issuer] = p
+	return p, nil
 }
 
 // vtlContext builds the minimal $context map a mapping template can read (honest subset).
