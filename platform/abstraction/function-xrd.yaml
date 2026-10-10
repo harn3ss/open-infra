@@ -138,6 +138,26 @@ spec:
                     subject:
                       type: string
                       description: "Optional subject filter (default cdc.<stream>.>), e.g. cdc.<stream>.public.orders"
+                aliases:
+                  type: array
+                  description: >-
+                    Weighted traffic targets — the AWS Lambda alias/version analog. Each routes a
+                    percentage of traffic to a specific revision (a pinned "version") or the latest,
+                    and is independently addressable at <name>-<function>. Weights must sum to 100.
+                    Maps to the Knative Service traffic block (canary / blue-green for functions).
+                  items:
+                    type: object
+                    required: [name, weight]
+                    properties:
+                      name:
+                        type: string
+                        description: "Alias name — also a Knative traffic tag, addressable at <name>-<function>.<namespace>."
+                      revision:
+                        type: string
+                        description: "Target: 'latest' (the newest revision = $LATEST, default) or a specific Knative revision name (a pinned version, e.g. myfn-00003)."
+                      weight:
+                        type: integer
+                        description: "Percent of traffic to this target. All aliases' weights must sum to 100."
             status:
               type: object
               properties:
