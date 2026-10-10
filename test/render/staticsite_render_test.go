@@ -78,14 +78,14 @@ func TestStaticSite_Build(t *testing.T) {
 	for _, want := range []string{
 		"name: web-site-build",
 		"kind: CronJob",
-		`schedule: "*/2 * * * *"`,        // 120s -> 2 minutes
+		`schedule: "*/2 * * * *"`,             // 120s -> 2 minutes
 		"automountServiceAccountToken: false", // untrusted build gets no cluster creds
 		"git clone --depth 1 -b \"release\"",
 		"https://github.com/me/app.git",
 		"pnpm i && pnpm build",
-		`s3://web-site/.build/last-sha`,  // change-detection marker
-		"/ws/src/build/",                 // publishes the custom output dir
-		"VITE_API",                       // build env threaded through
+		`s3://web-site/.build/last-sha`, // change-detection marker
+		"/ws/src/build/",                // publishes the custom output dir
+		"VITE_API",                      // build env threaded through
 		"concurrencyPolicy: Forbid",
 	} {
 		if !strings.Contains(out, want) {
