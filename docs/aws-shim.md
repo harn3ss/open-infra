@@ -134,7 +134,7 @@ the sections below; the one-line summary:
 | **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
 | **[CloudWatch Logs](#cloudwatch-logs-postgres-backed-json-protocol-probe-proven)** | Postgres | JSON 1.1 | Logs Insights refused; retention genuinely enforced |
 | **[SSM Parameter Store](#ssm-parameter-store-postgres--kms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted SecureString | JSON 1.1 | Standard tier only; Advanced/policies refused |
-| **[API Gateway (HTTP API v2)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda proxy | restJson1 (REST paths) | REST API v1 + non-Lambda integrations refused |
+| **[API Gateway (HTTP API v2 + REST API v1)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda/HTTP proxy | restJson1 (REST paths) | v2 non-Lambda integrations refused; v1 VTL mapping + non-NONE authorizers are follow-ons |
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
@@ -709,8 +709,9 @@ ciphertext but is denied the plaintext).
 ### API Gateway (HTTP API v2; two-plane; runtime→Lambda proxy; probe-proven)
 
 API Gateway is the REST/HTTP complement to AppSync that completes the AWS serverless triad — **API Gateway →
-Lambda → DynamoDB**. Scoped to **HTTP API (v2)**; REST API (v1) is a much larger, deliberately refused
-surface. Like RDS it splits into **two planes**:
+Lambda → DynamoDB**. Both **HTTP API (v2)** and **REST API (v1)** are fronted; they share the `apigateway`
+SigV4 signing name and are path-muxed (`/v2/apis/…` → v2, `/restapis/…` → v1). The v2 surface (below) splits
+into **two planes**:
 
 - **Control plane** — the apigatewayv2 management API, spoken as **restJson1 over REST paths** (`POST /v2/apis`,
   `POST /v2/apis/{apiId}/routes`, …), *not* `X-Amz-Target` dispatch. `CreateApi`/`GetApi(s)`/`DeleteApi`,
@@ -742,9 +743,24 @@ responses.
 would need per-API wildcard DNS + TLS. The shim returns a stable, in-cluster-routable
 `…/_apigw/<api-id>/<path>` as `apiEndpoint` (the `$default` stage serves at the root; a named stage is the
 leading path segment) and **also** accepts the AWS-shaped `<api-id>.execute-api.…` `Host` for a client that
-overrides endpoint resolution. **Deliberate carve-outs, refused honestly:** REST API v1; non-`AWS_PROXY`
+overrides endpoint resolution. **Deliberate v2 carve-outs, refused honestly:** non-`AWS_PROXY`
 integrations (`HTTP_PROXY` etc.) refused at `CreateIntegration` rather than accepted into a route that 502s;
 REQUEST/Lambda authorizers.
+
+#### REST API (v1)
+
+REST v1 (`/restapis/…`) is a sibling handler for the large estate of v1 APIs. It models the v1
+**resource tree** (`CreateRestApi` seeds the root `/`, `CreateResource` builds children), per-resource
+**methods** (`PutMethod`) and **integrations** (`PutIntegration`), an immutable **deployment snapshot**
+(`CreateDeployment` freezes the resource/method/integration tree), and **stages** that point at a deployment
+(`CreateStage`, with stage variables). Invoke resolves **stage → deployment snapshot → resource → method →
+integration**, matching paths with the same precedence as v2 (static > `{var}` > `{proxy+}`). Integrations:
+`AWS_PROXY` (Lambda, payload-format **1.0**, behind the same wiring-time `lambda:InvokeFunction` fence as
+v2), **`HTTP`/`HTTP_PROXY`** (reverse-proxied to an http(s) origin), and `MOCK`. Same two auth planes +
+Postgres (`rest_*` tables) as v2. **Follow-ons (refused/limited honestly):** VTL request/response **mapping
+templates** (the shared-module refactor to reuse the AppSync Velocity engine), and non-`NONE` method
+**authorizers** (IAM/Cognito/custom) — a method asking for more than `NONE` is refused at invoke, never
+silently bypassed.
 
 `probe/aws-shim-apigateway.sh` proves this end to end — a real SDK builds the API/integration/route/stage, a
 real HTTP POST to the invoke URL confirms the Lambda received the faithful **2.0 event** (path parameter,
