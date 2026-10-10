@@ -569,6 +569,22 @@ func TestFunction_Code(t *testing.T) {
 		}
 	})
 
+	// dotnet8 runtime: selects the .NET base image; handler is the 3-part AWS .NET form.
+	t.Run("dotnet", func(t *testing.T) {
+		out := render(t, tmpl, ctx(map[string]any{
+			"code": map[string]any{"runtime": "dotnet8", "handler": "MyFn::MyFn.Functions::Handle",
+				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"}},
+		}))
+		for _, want := range []string{
+			"image: ghcr.io/harn3ss/open-infra-lambda-dotnet:latest",
+			"name: OPENINFRA_HANDLER", `value: "MyFn::MyFn.Functions::Handle"`,
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("dotnet-runtime render missing %q; got:\n%s", want, out)
+			}
+		}
+	})
+
 	// Fail-loud guards: each malformed spec must abort the render rather than mis-emit.
 	for _, bad := range []struct {
 		name string

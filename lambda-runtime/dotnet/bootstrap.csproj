@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>bootstrap</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The bucket (S3/MinIO) code-source path. The inline-ConfigMap path never touches it. Floating
+         3.7.x so the base image picks up patch fixes on rebuild; the API surface used (AmazonS3Client,
+         GetObjectAsync, ForcePathStyle, ServiceURL) is stable across 3.7. -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.*" />
+  </ItemGroup>
+</Project>
