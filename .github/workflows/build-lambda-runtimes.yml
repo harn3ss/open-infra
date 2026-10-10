@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        runtime: [python, nodejs]
+        runtime: [python, nodejs, dotnet]
     steps:
       - uses: actions/checkout@v7
 
