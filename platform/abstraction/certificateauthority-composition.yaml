@@ -63,3 +63,6 @@ spec:
             status:
               ready: true
               pkiMount: "{{ $pkiMount }}"
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

@@ -126,3 +126,6 @@ spec:
               boundTo: "{{ $subjectName }}"
               message: "approved by {{ $approvedBy }}{{ if $approvedAt }} at {{ $approvedAt }}{{ end }}"
             {{- end }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
