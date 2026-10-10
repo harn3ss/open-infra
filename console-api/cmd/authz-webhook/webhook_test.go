@@ -192,6 +192,33 @@ func TestWebhook_DeferUnknownServiceAccount(t *testing.T) {
 	}
 }
 
+// A ServiceAccount covered ONLY by the blanket Group::system:serviceaccounts baseline (which every SA
+// matches) is NOT specifically governed — it still defers to RBAC, so the shared baseline cannot
+// defeat the corpus-miss defer. A ServiceAccount named by its own (scoped) namespace group IS
+// governed and stays enforced.
+func TestWebhook_BlanketServiceAccountGroupStillDefers(t *testing.T) {
+	checker := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) {
+		return []controlplaneauthz.PolicyDoc{
+			{AppliesTo: []string{"Group::system:serviceaccounts"}, Statements: []policyengine.Statement{
+				{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"NonResourceURL::/openid/v1/jwks"}}}},
+			{AppliesTo: []string{"Group::system:serviceaccounts:curated-ns"}, Statements: []policyengine.Statement{
+				{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"clusters.postgresql.cnpg.io::*"}}}},
+		}, nil
+	}, time.Minute)
+	h := &webhookHandler{checker: checker, mode: Enforce, logger: discard(), breakGlass: map[string]bool{"system:masters": true}}
+
+	// An SA matching ONLY the blanket group → defer to RBAC for an action the baseline does not cover.
+	if st := post(t, h, sar("system:serviceaccount:cnpg-system:plugin-barman-cloud",
+		[]string{"system:serviceaccounts", "system:serviceaccounts:cnpg-system"}, "create", "coordination.k8s.io", "leases", "cnpg-system", "x")); st.Allowed || st.Denied {
+		t.Fatalf("an SA matching only the blanket group must defer, got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+	// An SA in a CURATED namespace group → specifically governed → enforced (ungranted action denied).
+	if st := post(t, h, sar("system:serviceaccount:curated-ns:thing",
+		[]string{"system:serviceaccounts", "system:serviceaccounts:curated-ns"}, "delete", "postgresql.cnpg.io", "clusters", "curated-ns", "x")); st.Allowed || !st.Denied {
+		t.Fatalf("a curated-namespace SA must be enforced (denied), got allowed=%v denied=%v", st.Allowed, st.Denied)
+	}
+}
+
 // Enforce mode returns the real Cedar decision: an allow, and an explicit deny for the ungranted.
 func TestWebhook_EnforceReturnsDecision(t *testing.T) {
 	h := &webhookHandler{
