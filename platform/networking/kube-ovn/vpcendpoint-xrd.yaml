@@ -17,6 +17,7 @@ spec:
   group: openinfra.dev
   names: { kind: XVpcEndpoint, plural: xvpcendpoints }
   claimNames: { kind: VpcEndpoint, plural: vpcendpoints }
+  defaultCompositionRef: { name: vpcendpoint }
   versions:
     - name: v1
       served: true
