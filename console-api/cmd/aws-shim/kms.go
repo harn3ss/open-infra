@@ -16,10 +16,17 @@
 //   - automatic key rotation (Vault Transit rotate) with old ciphertext still decryptable;
 //   - aliases; ScheduleKeyDeletion with a 7–30 day window and CancelKeyDeletion; crypto-erase on expiry.
 //
+// Key policies: authorization is still the shim's ONE policy world (RBAC + Cedar) — there
+// is NO second KMS-native policy engine. But a supplied AWS key-policy JSON (CreateKey's Policy param,
+// PutKeyPolicy) is now TRANSLATED into the equivalent kind: Policy spec.dataPlane grants (one CR per
+// statement, Allow/Deny kms:<action> on Key::<keyId>, appliesTo the statement's principals) instead of
+// being refused, and GetKeyPolicy/ListKeyPolicies round-trip it. The translation is fail-closed (a
+// Condition, a non-user/role principal, a foreign Resource, or a non-kms action refuses the whole policy),
+// and the default root statement is skipped (it delegates to identity policies). See kms_keypolicy.go.
+//
 // Deliberate carve-outs, refused honestly rather than faked (never a silent divergence):
 //   - asymmetric CMKs (RSA/ECC), HMAC keys, and Sign/Verify/GetPublicKey — v1 is SYMMETRIC_DEFAULT only;
-//   - key policies / grants (KMS's own resource-policy language) — authorization is the shim's one
-//     policy world (RBAC + Cedar), not a second KMS-native policy engine;
+//   - KMS grants (CreateGrant — the grant token API) — use a kind: Policy / key policy instead;
 //   - multi-Region keys, custom key stores, imported key material, and tags.
 //
 // See docs/aws-shim.md for the full divergence list.
@@ -39,25 +46,28 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
 type kmsHandler struct {
-	cs      kubernetes.Interface
-	authzNS string
-	account string
-	region  string
-	transit *vaultTransit // nil => Vault not configured (honest 501)
-	store   *kmsStore     // nil => data layer not configured (honest 501)
-	authz   *dataplaneauthz.Checker
-	logger  *slog.Logger
+	cs         kubernetes.Interface
+	dyn        dynamic.Interface // for key-policy import (materializes kind: Policy CRs); nil => import off
+	policiesNS string            // namespace the imported kind: Policy CRs live in (the data plane loads cluster-wide)
+	authzNS    string
+	account    string
+	region     string
+	transit    *vaultTransit // nil => Vault not configured (honest 501)
+	store      *kmsStore     // nil => data layer not configured (honest 501)
+	authz      *dataplaneauthz.Checker
+	logger     *slog.Logger
 }
 
-func newKMSHandler(cs kubernetes.Interface, authzNS, account, region string, transit *vaultTransit, store *kmsStore, logger *slog.Logger) *kmsHandler {
+func newKMSHandler(cs kubernetes.Interface, dyn dynamic.Interface, policiesNS, authzNS, account, region string, transit *vaultTransit, store *kmsStore, logger *slog.Logger) *kmsHandler {
 	if region == "" {
 		region = "us-east-1"
 	}
-	return &kmsHandler{cs: cs, authzNS: authzNS, account: account, region: region, transit: transit, store: store, logger: logger}
+	return &kmsHandler{cs: cs, dyn: dyn, policiesNS: policiesNS, authzNS: authzNS, account: account, region: region, transit: transit, store: store, logger: logger}
 }
 
 // --- error dialect (AWS JSON 1.1). KMS surfaces the bare exception name in __type. ---
@@ -88,11 +98,12 @@ func (h *kmsHandler) authFailure(w http.ResponseWriter, _ *http.Request, request
 // (kms:Encrypt vs kms:Decrypt) enforces the exact separation at key granularity.
 func verbForKMSOp(op string) (string, bool) {
 	switch op {
-	case "DescribeKey", "ListKeys", "ListAliases", "GetKeyRotationStatus", "Decrypt", "GenerateRandom":
+	case "DescribeKey", "ListKeys", "ListAliases", "GetKeyRotationStatus", "Decrypt", "GenerateRandom",
+		"GetKeyPolicy", "ListKeyPolicies":
 		return "get", true
 	case "CreateKey", "CreateAlias", "UpdateAlias", "Encrypt", "GenerateDataKey",
 		"GenerateDataKeyWithoutPlaintext", "ReEncrypt", "EnableKey", "DisableKey",
-		"EnableKeyRotation", "DisableKeyRotation", "CancelKeyDeletion":
+		"EnableKeyRotation", "DisableKeyRotation", "CancelKeyDeletion", "PutKeyPolicy":
 		return "create", true
 	case "DeleteAlias", "ScheduleKeyDeletion":
 		return "delete", true
@@ -214,6 +225,12 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.scheduleKeyDeletion(ctx, w, requestID, body)
 	case "CancelKeyDeletion":
 		h.cancelKeyDeletion(ctx, w, requestID, keyRef)
+	case "PutKeyPolicy":
+		h.putKeyPolicy(ctx, w, requestID, body)
+	case "GetKeyPolicy":
+		h.getKeyPolicy(ctx, w, requestID, body)
+	case "ListKeyPolicies":
+		h.listKeyPolicies(ctx, w, requestID, body)
 	default:
 		writeKMSError(w, http.StatusBadRequest, "InvalidActionException", requestID,
 			"KMS "+op+" is recognized but not implemented by the open-infra shim.")
@@ -241,6 +258,26 @@ func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, reque
 	desc, _ := body["Description"].(string)
 
 	keyID := uuidLike()
+
+	// An optional AWS key-policy JSON (CreateKey's Policy param) is translated to kind: Policy CRs. Validate
+	// it BEFORE creating any crypto material, so a malformed policy fails the whole CreateKey (AWS behavior)
+	// with nothing orphaned.
+	policyDoc, _ := body["Policy"].(string)
+	var translatedPolicy []kmsTranslatedPolicy
+	if strings.TrimSpace(policyDoc) != "" {
+		if h.dyn == nil {
+			writeKMSError(w, http.StatusNotImplemented, "KMSInternalException", requestID,
+				"key-policy import is not configured on this shim (no cluster client)")
+			return
+		}
+		tp, err := translateKeyPolicy(policyDoc, keyID)
+		if err != nil {
+			writeKMSError(w, http.StatusBadRequest, "MalformedPolicyDocumentException", requestID, err.Error())
+			return
+		}
+		translatedPolicy = tp
+	}
+
 	if err := h.transit.createKey(ctx, keyID); err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -259,6 +296,24 @@ func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, reque
 		_ = h.transit.destroy(ctx, keyID)
 		h.internal(w, requestID, err)
 		return
+	}
+	// Materialize an optional key policy. On failure, roll the whole CreateKey back (crypto + metadata +
+	// any partially-created CRs) so a key never exists with a policy that didn't fully apply.
+	if translatedPolicy != nil {
+		if err := h.materializeKeyPolicy(ctx, keyID, translatedPolicy); err != nil {
+			_ = h.deleteKeyPolicyCRs(ctx, keyID)
+			_ = h.store.deleteKeyRow(ctx, keyID)
+			_ = h.transit.destroy(ctx, keyID)
+			h.internal(w, requestID, err)
+			return
+		}
+		if err := h.store.putKeyPolicyDoc(ctx, keyID, policyDoc); err != nil {
+			_ = h.deleteKeyPolicyCRs(ctx, keyID)
+			_ = h.store.deleteKeyRow(ctx, keyID)
+			_ = h.transit.destroy(ctx, keyID)
+			h.internal(w, requestID, err)
+			return
+		}
 	}
 	h.audit(ctx, "CreateKey", keyID)
 	writeKMSJSON(w, requestID, map[string]any{"KeyMetadata": h.keyMetadataJSON(m)})
@@ -839,6 +894,17 @@ func (h *kmsHandler) reapDeleted(ctx context.Context) error {
 		if err := h.store.deleteKeyRow(ctx, id); err != nil {
 			h.logger.Warn("kms metadata delete failed after crypto-erase", "keyId", id, "error", err.Error())
 			continue
+		}
+		// Tear down the imported key-policy CRs + the stored raw doc (the grants are moot once the key is
+		// gone). Best-effort: a stale grant on a destroyed Key::<id> can authorize nothing. Cleanup runs at
+		// crypto-erase (true deletion), not ScheduleKeyDeletion, so the policy survives a CancelKeyDeletion.
+		if h.dyn != nil {
+			if err := h.deleteKeyPolicyCRs(ctx, id); err != nil {
+				h.logger.Warn("kms key-policy CR cleanup failed after crypto-erase", "keyId", id, "error", err.Error())
+			}
+		}
+		if err := h.store.deleteKeyPolicyDoc(ctx, id); err != nil {
+			h.logger.Warn("kms key-policy doc delete failed after crypto-erase", "keyId", id, "error", err.Error())
 		}
 		h.audit(ctx, "CryptoErase", id, "reason", "deletion window elapsed")
 	}

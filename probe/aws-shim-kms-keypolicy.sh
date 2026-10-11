@@ -35,7 +35,7 @@ command -v kubectl >/dev/null || inconclusive "kubectl is required"
 command -v base64  >/dev/null || inconclusive "base64 is required"
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
-CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); SCHEDULED=()
+CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); SCHEDULED=(); CREATED_KEYS_IDS=()
 AAK=""; ASK=""
 cleanup() {
   # Fast CLI timeouts so a flaky/closed port-forward can't stall cleanup (the kubectl deletes below must still run).
@@ -43,6 +43,9 @@ cleanup() {
   for s in "${CREATED_KEYS[@]:-}";     do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}";    do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
   for p in "${CREATED_POLICIES[@]:-}"; do [ -n "$p" ] && kubectl -n "$USERS_NS" delete policy.iam.openinfra.dev "$p" --ignore-not-found >/dev/null 2>&1 || true; done
+  # The kind: Policy CRs the PutKeyPolicy import materialized (labeled by key id) — reaped only on crypto-erase,
+  # so delete them here (the scheduled keys are in a 7-day window, not erased during the probe).
+  for k in "${CREATED_KEYS_IDS[@]:-}"; do [ -n "$k" ] && kubectl -n "$USERS_NS" delete policy.iam.openinfra.dev -l "openinfra.dev/kms-key=$k" --ignore-not-found >/dev/null 2>&1 || true; done
 }
 trap cleanup EXIT
 
@@ -78,6 +81,7 @@ SCHEDULED+=("$KA")
 KB="$(awsk "$AAK" "$ASK" create-key --description "kp-probe-B-$SFX" --query 'KeyMetadata.KeyId' 2>/dev/null || true)"
 [ -n "$KB" ] && [ "$KB" != "None" ] || inconclusive "create-key B failed"
 SCHEDULED+=("$KB")
+CREATED_KEYS_IDS+=("$KA" "$KB")
 log "  ✓ key A=$KA  key B=$KB"
 
 # --- 2. A per-key grant: the user may use key A ONLY (the key-policy equivalent) ---------------
@@ -122,7 +126,47 @@ grep -qiE 'AccessDenied|denied|AuthorizationError' "$PWD/.kp_b" || fail "key-B d
 rm -f "$PWD/.kp_b" "$TMP_PT"
 log "  ✓ key B: Encrypt DENIED (the per-key grant does not leak across keys)"
 
-printf '\n✓ PASS — KMS per-key access is enforced at key granularity: a kind: Policy granting kms:* on\n'
-printf '  Key::<A> (open-infra'\''s equivalent of an AWS key policy) permits that key and DENIES the same\n'
-printf '  action on another key. Key access is governed by the identity-based Cedar data-plane, not a\n'
-printf '  separate resource-attached policy document.\n'
+# --- 5. PutKeyPolicy IMPORT: a SUPPLIED AWS key-policy JSON is translated to the --------
+#        equivalent kind: Policy grant + enforced + round-trips. This is the import convenience #267 lacked.
+USER2="kms-kp2-user-$SFX"
+read -r U2AK U2SK <<<"$(mint_key "$USER2" "powerusers")"   # powerusers = coarse kms allow; the key policy tightens
+sleep 2
+log "PutKeyPolicy on key A: a REAL AWS key-policy JSON granting User::$USER2 kms:Encrypt/Decrypt (+ the root default)"
+KP_DOC="$(cat <<JSON
+{"Version":"2012-10-17","Id":"key-probe","Statement":[
+  {"Sid":"Root","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::000000000000:root"},"Action":"kms:*","Resource":"*"},
+  {"Sid":"App","Effect":"Allow","Principal":{"AWS":"arn:aws:iam::000000000000:user/${USER2}"},"Action":["kms:Encrypt","kms:Decrypt"],"Resource":"*"}
+]}
+JSON
+)"
+awsk "$AAK" "$ASK" put-key-policy --key-id "$KA" --policy-name default --policy "$KP_DOC" >/dev/null 2>"$PWD/.kp_put" \
+  || fail "PutKeyPolicy was rejected (the key-policy JSON should translate): $(cat "$PWD/.kp_put" 2>/dev/null)"
+rm -f "$PWD/.kp_put"
+
+log "  GetKeyPolicy must round-trip the supplied JSON verbatim"
+GOT_KP="$(awsk "$AAK" "$ASK" get-key-policy --key-id "$KA" --policy-name default --query Policy --output text 2>/dev/null || true)"
+printf '%s' "$GOT_KP" | grep -q "user/${USER2}" || fail "GetKeyPolicy did not round-trip the supplied policy (missing user/${USER2}): $GOT_KP"
+log "  ListKeyPolicies must report the single \"default\" policy"
+awsk "$AAK" "$ASK" list-key-policies --key-id "$KA" --query 'PolicyNames' --output text 2>/dev/null | grep -q default \
+  || fail "ListKeyPolicies did not return the default policy name"
+
+log "  waiting ~35s for the data-plane loader to pick up the translated grant..."
+sleep 35
+TMP_PT2="$(mktemp)"; printf 'kp-import-%s' "$SFX" > "$TMP_PT2"
+log "ALLOW: User::$USER2 (granted by the imported key policy) encrypts on key A"
+CT2="$(awsk "$U2AK" "$U2SK" encrypt --key-id "$KA" --plaintext "fileb://$TMP_PT2" --query CiphertextBlob 2>"$PWD/.kp_e2" || true)"
+[ -n "$CT2" ] && [ "$CT2" != "None" ] || fail "the imported key policy did not grant Encrypt on key A: $(cat "$PWD/.kp_e2" 2>/dev/null)"
+rm -f "$PWD/.kp_e2"
+log "DENY: the SAME User::$USER2 must be denied on key B (the imported policy scoped the grant to key A only)"
+if awsk "$U2AK" "$U2SK" encrypt --key-id "$KB" --plaintext "fileb://$TMP_PT2" --query CiphertextBlob >/dev/null 2>"$PWD/.kp_b2"; then
+  rm -f "$TMP_PT2"
+  fail "KEY LEAK: the imported key policy for key A allowed Encrypt on key B — translation did not scope to Key::$KA"
+fi
+grep -qiE 'AccessDenied|denied|AuthorizationError' "$PWD/.kp_b2" || fail "key-B denial (import path) had the wrong error: $(cat "$PWD/.kp_b2")"
+rm -f "$PWD/.kp_b2" "$TMP_PT2"
+log "  ✓ imported key policy: enforced on key A, does NOT leak to key B, and round-trips via GetKeyPolicy"
+
+printf '\n✓ PASS — KMS per-key access is enforced at key granularity, AND a supplied AWS key-policy JSON\n'
+printf '  (PutKeyPolicy / CreateKey Policy) is TRANSLATED into the equivalent kind: Policy grant (#298):\n'
+printf '  it enforces on its key, does not leak to another key, and round-trips via GetKeyPolicy. Key\n'
+printf '  access is governed by the identity-based Cedar data-plane, not a separate resource-attached engine.\n'

@@ -414,7 +414,9 @@ func run(logger *slog.Logger) error {
 	sqsH.authz = authzChecker
 	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
 	snsH.authz = authzChecker
-	kmsH := newKMSHandler(cs, authzNS, account, region, kmsTransit, kmsSt, logger)
+	// usersNS is where kind: Policy CRs live (the IAM doorway materializes there; the data plane loads
+	// policies cluster-wide), so imported KMS key policies reuse it + the shim SA's existing policy RBAC.
+	kmsH := newKMSHandler(cs, dyn, usersNS, authzNS, account, region, kmsTransit, kmsSt, logger)
 	kmsH.authz = authzChecker
 	// Secrets Manager reuses the SAME Vault Transit client as KMS (role aws-shim-kms): every secret value
 	// is encrypted under the transit key kms-aws-secretsmanager, so no separate Vault policy is needed.
