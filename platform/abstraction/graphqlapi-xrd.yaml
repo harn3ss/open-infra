@@ -11,9 +11,17 @@
 # bespoke controller open-infra doesn't have. One object is both the vendor-neutral model AND the
 # no-controller mechanism — it renders exactly like kind: HttpApi (XRD + go-templating composition).
 #
-# Honest scope (Stage 1): a neutral engine that runs a team's unchanged VTL, wired via THIS object.
-# It is NOT yet the AWS packaging experience — CreateResolver / the CloudFormation type are Stage 2,
-# a shim that later patches this same object at the edge. See open-appsync/README.md.
+# Scope: a neutral engine that runs a team's unchanged VTL, wired via THIS object. The AWS packaging
+# experience (Stage 2) is now DELIVERED on top of it (#281): the aws-shim fronts the AppSync management
+# API (CreateResolver/UpdateResolver/DeleteResolver/GetResolver + CreateDataSource/DeleteDataSource),
+# patching this same object at the edge, and the CloudFormation AWS::AppSync::GraphQLApi + its Schema/
+# DataSource/Resolver/FunctionConfiguration children translate (collated into one GraphQLApi). All five
+# AWS auth modes (@aws_api_key / @aws_iam / @aws_oidc / @aws_cognito_user_pools / @aws_lambda) are
+# ENFORCED — the shim validates each mode and the field's SAR decides (one policy world), never a
+# parallel auth layer. @aws_lambda was the last to graduate (shim Lambda authorizer, 7a954f5).
+#
+# STABILITY: EXPERIMENTAL — opt-in, OFF by default; the engine is young (honesty clock in
+# open-appsync/README.md). Data plane + Stage-2 management + the CloudFormation type are shipped+tested.
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:
