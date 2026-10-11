@@ -33,11 +33,12 @@ const (
 // mapping to a Cedar permit/forbid. An empty list or a lone "*" in Actions/Resources means "any";
 // a "*" inside an entry (e.g. "s3:*", "Bucket::log-*") is a wildcard.
 type Statement struct {
-	Effect       Effect
-	Actions      []string          // e.g. ["s3:GetObject","s3:*"] or ["*"]
-	Resources    []string          // "Type::id" e.g. ["Bucket::assets","Bucket::*"], or ["*"]
-	Condition    map[string]string // request-context keys that must equal these values ("true"/"false" => bool)
-	IPConditions []IPCondition     // aws:SourceIp-style CIDR conditions, evaluated via Cedar's ipaddr extension
+	Effect         Effect
+	Actions        []string          // e.g. ["s3:GetObject","s3:*"] or ["*"]
+	Resources      []string          // "Type::id" e.g. ["Bucket::assets","Bucket::*"], or ["*"]
+	Condition      map[string]string // request-context keys that must equal these values ("true"/"false" => bool)
+	IPConditions   []IPCondition     // aws:SourceIp-style CIDR conditions, evaluated via Cedar's ipaddr extension
+	LikeConditions []LikeCondition   // StringLike/StringNotLike wildcard conditions, evaluated via Cedar's `like`
 }
 
 // IPCondition is a CIDR test on a request-context attribute that holds an IP (today only "sourceIp",
@@ -50,6 +51,18 @@ type IPCondition struct {
 	Key    string // request-context attribute, e.g. "sourceIp"
 	CIDR   string // e.g. "10.0.0.0/8" (a bare address is treated as /32 by Cedar's ip())
 	Negate bool   // true => NotIpAddress (source must NOT be in the range)
+}
+
+// LikeCondition is a wildcard test on a string request-context attribute (today "username"), from an
+// AWS StringLike/StringNotLike condition. It renders to Cedar's `context.<Key> like "<Pattern>"`
+// (Negate=true => the AWS StringNotLike, so the test is `!(... like ...)`). The pattern uses `*` as the
+// only wildcard (AWS `?` is refused at import since Cedar can't express it). Like IPConditions, the Key
+// MUST be a shim-populated attribute, and the forbid absent-key guard in toCedar keeps a Deny gated on
+// it fail-closed when the attribute is absent.
+type LikeCondition struct {
+	Key     string // request-context attribute, e.g. "username"
+	Pattern string // Cedar `like` pattern, `*` wildcard (e.g. "admin-*")
+	Negate  bool   // true => StringNotLike (must NOT match)
 }
 
 // Principal identifies the subject of a request (the SigV4-authenticated open-infra identity).
@@ -250,6 +263,17 @@ func (s Statement) toCedar(idx int) (string, error) {
 		value = append(value, test)
 		keys = append(keys, ip.Key)
 	}
+	for _, lk := range s.LikeConditions {
+		if lk.Key == "" || lk.Pattern == "" {
+			return "", fmt.Errorf("statement %d: like condition needs a key and a pattern", idx)
+		}
+		test := fmt.Sprintf("context.%s like \"%s\"", lk.Key, cedarPattern(lk.Pattern))
+		if lk.Negate {
+			test = "!(" + test + ")"
+		}
+		value = append(value, test)
+		keys = append(keys, lk.Key)
+	}
 
 	terms := scope
 	if len(value) > 0 {
@@ -311,6 +335,15 @@ func compileBoundary(boundary []Statement) (string, error) {
 		return head + ";", nil // allows nothing → forbid everything (fail closed)
 	}
 	return head + "\nunless { " + strings.Join(permits, " || ") + " };", nil
+}
+
+// cedarPattern escapes a string for use inside a Cedar `like` pattern literal: `\` and `"` are escaped
+// so they can't break out of the literal, while `*` is left intact as Cedar's wildcard (matching the
+// AWS StringLike `*`). AWS `?` is refused at import, so it never reaches here.
+func cedarPattern(p string) string {
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	p = strings.ReplaceAll(p, `"`, `\"`)
+	return p
 }
 
 func dedupe(xs []string) []string {
