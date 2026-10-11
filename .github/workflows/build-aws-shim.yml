@@ -13,6 +13,9 @@ on:
     paths:
       - "console-api/**"
       - "dynamodb/**"
+      - "cfn/**" # the shim's CloudFormation doorway embeds the cfn translator (console-api COPYs cfn/)
+      - "vtl/**" # the API Gateway VTL engine, likewise embedded
+      - "policyengine/**" # the data-plane policy engine, likewise embedded
       - ".github/workflows/build-aws-shim.yml"
   workflow_dispatch: {}
 
