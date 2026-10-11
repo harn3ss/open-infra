@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/harn3ss/open-infra/policyengine"
@@ -93,6 +94,7 @@ var translators = map[string]translator{
 	"AWS::EC2::Instance":                    translateEC2Instance,
 	"AWS::EC2::VPC":                         translateEC2VPC,
 	"AWS::EC2::Subnet":                      translateEC2Subnet,
+	"AWS::EC2::SecurityGroup":               translateEC2SecurityGroup,
 	"AWS::EC2::InternetGateway":             translateEC2ImplicitGateway,
 	"AWS::EC2::VPCGatewayAttachment":        translateEC2ImplicitGateway,
 	"AWS::EC2::SubnetNetworkAclAssociation": translateEC2ImplicitGateway,
@@ -698,6 +700,175 @@ func serviceFromServiceName(sn string) string {
 		return parts[len(parts)-1]
 	}
 	return sn
+}
+
+// ---- AWS::EC2::SecurityGroup -> kind: SecurityGroup ----
+//
+// A default-deny allow-rule set (platform/abstraction/securitygroup-xrd.yaml). CFN inline
+// SecurityGroupIngress/SecurityGroupEgress rules map to spec.ingress/egress, with FAIL-CLOSED fidelity:
+// anything kind: SecurityGroup cannot express EXACTLY (a protocol other than TCP/UDP, a true port range,
+// an out-of-stack SG reference, an IPv6 CIDR) REFUSES the whole resource rather than emit a looser rule —
+// an over-permissive security group is precisely the silent defect this must never produce. Only TCP/UDP
+// on a single port (or all-ports), a CidrIp source, or a SourceSecurityGroupId that !Refs an in-stack
+// AWS::EC2::SecurityGroup translate. Standalone AWS::EC2::SecurityGroupIngress/Egress resources are NOT
+// handled here (author the rules inline on the group or natively).
+func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"GroupDescription": true, "GroupName": true, "VpcId": true,
+		"SecurityGroupIngress": true, "SecurityGroupEgress": true, "Tags": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	// Iterate the RAW rules so a SourceSecurityGroupId !Ref can be followed to an in-stack logical id
+	// (the resolver would have turned it into an unusable placeholder).
+	raw := props
+	if ctx != nil {
+		if r, ok := ctx.rawProps(id); ok {
+			raw = r
+		}
+	}
+	spec := map[string]any{}
+	ingress, inF := sgRules(id, raw["SecurityGroupIngress"], false, ctx)
+	f = append(f, inF...)
+	if len(ingress) > 0 {
+		spec["ingress"] = ingress
+	}
+	egress, egF := sgRules(id, raw["SecurityGroupEgress"], true, ctx)
+	f = append(f, egF...)
+	if len(egress) > 0 {
+		spec["egress"] = egress
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: k8sName(id), Spec: spec}
+	if _, ok := props["VpcId"]; ok {
+		m.Caveats = append(m.Caveats, "VpcId dropped — a kind: SecurityGroup is enforced cluster-wide by membership label, not scoped to a VPC")
+	}
+	for _, p := range []string{"GroupName", "GroupDescription", "Tags"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no kind: SecurityGroup equivalent (name is the resource name; tags/description don't map)")
+		}
+	}
+	return m, f
+}
+
+// sgRules translates a CFN SecurityGroupIngress/Egress rule list into kind: SecurityGroup ingress/egress
+// entries. egress=true selects the Destination* fields. It is FAIL-CLOSED: a rule it cannot map exactly
+// produces a Finding (which blocks the whole resource) rather than a looser emitted rule.
+func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Finding) {
+	var f []Finding
+	items, _ := rawList.([]any)
+	dir := "ingress"
+	peerKey, sgField := "from", "SourceSecurityGroupId"
+	if egress {
+		dir, peerKey, sgField = "egress", "to", "DestinationSecurityGroupId"
+	}
+	var out []any
+	for i, it := range items {
+		r, ok := it.(map[string]any)
+		if !ok {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d is not an object", dir, i)})
+			continue
+		}
+		rule := map[string]any{}
+
+		// Protocol — TCP/UDP only; "-1" (all protocols) and icmp/other cannot be expressed exactly.
+		proto, _ := concrete(r["IpProtocol"])
+		switch strings.ToLower(strings.TrimSpace(proto)) {
+		case "tcp":
+			rule["protocol"] = "TCP"
+		case "udp":
+			rule["protocol"] = "UDP"
+		default:
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: IpProtocol %q not expressible — kind: SecurityGroup allows only TCP or UDP (split by protocol or author natively)", dir, i, proto)})
+			continue
+		}
+
+		// Ports — single port, or all-ports; a true range cannot be expressed as a ports LIST faithfully.
+		ports, perr := sgPorts(r["FromPort"], r["ToPort"])
+		if perr != "" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s", dir, i, perr)})
+			continue
+		}
+		if len(ports) > 0 {
+			rule["ports"] = ports
+		} // empty = all ports (kind: SecurityGroup convention)
+
+		// Source/destination — a CidrIp, or an in-stack SG reference. Exactly one.
+		peer := map[string]any{}
+		if cidr, ok := concrete(r["CidrIp"]); ok && cidr != "" {
+			peer["cidr"] = cidr
+		} else if sgid, isRef := refTarget(r[sgField]); isRef {
+			inStackSG := false
+			if ctx != nil {
+				if rr, ok := ctx.template.Resources[sgid]; ok && rr.Type == "AWS::EC2::SecurityGroup" {
+					inStackSG = true
+				}
+			}
+			if !inStackSG {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s must !Ref an in-stack AWS::EC2::SecurityGroup (an out-of-stack sg- id cannot be resolved)", dir, i, sgField)})
+				continue
+			}
+			peer["securityGroup"] = k8sName(sgid)
+		} else if _, hasSG := r[sgField]; hasSG {
+			// A literal/concrete SourceSecurityGroupId (an existing sg- id, or a Fn::GetAtt) — not an
+			// in-stack !Ref we can resolve. Refuse rather than guess the group's membership.
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s must !Ref an in-stack AWS::EC2::SecurityGroup (an out-of-stack sg- id cannot be resolved)", dir, i, sgField)})
+			continue
+		} else if _, ok := r["CidrIpv6"]; ok {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: CidrIpv6 does not map — kind: SecurityGroup CIDR enforcement is IPv4 (author natively)", dir, i)})
+			continue
+		} else {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: needs a CidrIp or a SourceSecurityGroupId/DestinationSecurityGroupId; a prefix-list or self-reference source does not map", dir, i)})
+			continue
+		}
+		rule[peerKey] = []any{peer}
+		out = append(out, rule)
+	}
+	return out, f
+}
+
+// sgPorts maps a CFN FromPort/ToPort to a kind: SecurityGroup ports list. A single port -> [port]; the
+// full range (0-65535, or FromPort -1) or both absent -> empty (all ports); any other range -> an error
+// (kind: SecurityGroup takes a list of ports, not a range — refuse rather than expand or approximate).
+func sgPorts(fromRaw, toRaw any) ([]any, string) {
+	from, okF := cfnPort(fromRaw)
+	to, okT := cfnPort(toRaw)
+	if !okF && !okT {
+		return nil, "" // no ports -> all ports
+	}
+	if !okF || !okT {
+		return nil, "a rule with only one of FromPort/ToPort is malformed"
+	}
+	if from < 0 || (from == 0 && to == 65535) {
+		return nil, "" // all ports
+	}
+	if from == to {
+		return []any{from}, ""
+	}
+	return nil, fmt.Sprintf("port range %d-%d does not map — kind: SecurityGroup takes a list of ports, not a range (use single-port rules)", from, to)
+}
+
+// cfnPort reads a CFN port value (a JSON number, int, or numeric string).
+func cfnPort(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case string:
+		if n == "" {
+			return 0, false
+		}
+		i, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	}
+	return 0, false
 }
 
 // ---- Structural EC2 networking resources -> implicit (no-op) ----
