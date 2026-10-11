@@ -94,6 +94,32 @@ func TestStaticSite_Build(t *testing.T) {
 	}
 }
 
+// A buildCommand containing single quotes (amplify.yml commands routinely do) must render into a
+// BLOCK scalar, not a single-quoted flow scalar — the latter breaks the manifest on the first quote
+// ("cannot decode manifest: error converting YAML to JSON"), a fail found by the live #296 E2E. This
+// module is stdlib-only (no YAML parser), so we assert the structural fix; the live probe proves the
+// apiserver actually accepts it.
+func TestStaticSite_BuildCommandWithQuotes(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	cmd := `echo '<h1>hi</h1>' > dist/index.html && sed -i "s/a/b/g" dist/index.html`
+	out := render(t, tmpl, staticsiteCtx(map[string]any{
+		"domain": "app.example.com",
+		"build":  map[string]any{"repo": "https://github.com/me/app.git", "buildCommand": cmd},
+	}))
+	// Threaded through verbatim (quotes intact).
+	if !strings.Contains(out, cmd) {
+		t.Fatalf("buildCommand not rendered verbatim; got:\n%s", grepCtx(out, "sed"))
+	}
+	// NOT the old single-quoted flow scalar that a quote would break.
+	if strings.Contains(out, "args: ['if [ -f /ws/.skip") {
+		t.Fatalf("build args still use a single-quoted flow scalar — a quoted buildCommand breaks the manifest")
+	}
+	// Block-scalar form: the skip guard sits on its own line, the command on the next.
+	if !strings.Contains(out, "if [ -f /ws/.skip ]; then exit 0; fi\n") {
+		t.Fatalf("expected the skip guard on its own line (block scalar); got:\n%s", grepCtx(out, "skip"))
+	}
+}
+
 func TestStaticSite_NoBuildByDefault(t *testing.T) {
 	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
 	out := render(t, tmpl, staticsiteCtx(map[string]any{"domain": "app.example.com"}))
