@@ -1746,6 +1746,24 @@ func sprigLite() template.FuncMap {
 			}
 			return s
 		},
+		// sprig: multiply two values (backupplan-composition turns retentionDays into TTL hours). Coerces like int.
+		"mul": func(a, b any) int {
+			toI := func(v any) int {
+				switch n := v.(type) {
+				case int:
+					return n
+				case int64:
+					return int(n)
+				case float64:
+					return int(n)
+				case string:
+					i, _ := strconv.Atoi(n)
+					return i
+				}
+				return 0
+			}
+			return toI(a) * toI(b)
+		},
 		// sprig: integer division (staticsite-composition turns pollSeconds into poll minutes).
 		"div": func(a, b any) int {
 			toI := func(v any) int {

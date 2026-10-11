@@ -1,0 +1,51 @@
+# kind: BackupVault — an AWS Backup–shaped vault: an isolated destination for recovery
+# points that a kind: BackupPlan targets. One claim -> a Velero BackupStorageLocation
+# (openinfra-vault-<name>) that stores its backups under a dedicated prefix in the MinIO
+# `velero` bucket, so each vault's recovery points are logically separated (the open-infra
+# analog of AWS's per-vault isolation). Plans reference a vault by name.
+#
+# Why a separate kind from BackupPlan (not a field on the plan): the vault OWNS the
+# BackupStorageLocation and has its own lifecycle — several plans can target one vault, so
+# the BSL must be created once and referenced, not re-created per plan (which would make two
+# plans fight over the same object). This mirrors AWS, where a plan references a vault ARN.
+#
+# OPT-IN: rides the `backup` component with the Velero install (platform/backup/). Honest
+# scope: Velero backs up k8s objects + PV data to object storage; this is NOT AWS Vault Lock
+# (WORM/compliance retention) — retention is enforced per-backup by the plan rule's TTL. See
+# docs/backup.md. EXPERIMENTAL.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xbackupvaults.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XBackupVault, plural: xbackupvaults }
+  claimNames: { kind: BackupVault, plural: backupvaults }
+  defaultCompositionRef: { name: backupvault }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                description:
+                  type: string
+                  description: "Human-readable purpose of this vault (e.g. \"production database backups\")."
+            status:
+              type: object
+              properties:
+                backupStorageLocation: { type: string }
+                ready: { type: boolean }

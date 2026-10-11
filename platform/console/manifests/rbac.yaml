@@ -156,6 +156,8 @@ rules:
       - buckets
       - queues
       - tables
+      - backupplans
+      - backupvaults
       # kube-ovn networking family (#120)
       - vpcs
       - subnets

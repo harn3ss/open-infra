@@ -1,0 +1,87 @@
+# kind: BackupPlan — an AWS Backup–shaped plan: scheduled, retained backups of selected
+# resources into a kind: BackupVault. One claim -> one Velero Schedule per rule. Each rule is
+# a cron schedule + a retention (TTL) + a target vault; the selection chooses what to back up
+# (namespaces + an optional label selector + optional resource-type restriction). This is the
+# declarative, per-resource analog of the cluster-wide `daily` Schedule in platform/backup/.
+#
+# Mapping to AWS Backup: spec.rules[] == a plan's rules (ScheduleExpression + Lifecycle +
+# TargetBackupVault); spec.selection == the plan's resource assignment (open-infra selects by
+# namespace/label rather than by tag/ARN). Velero backs up k8s objects + PV data (fs backup),
+# so a BackupPlan protects the workloads a kind: Application/Database/VirtualMachine renders.
+#
+# OPT-IN: rides the `backup` component (Velero, platform/backup/). Honest scope: retention is
+# the per-rule TTL (Velero deletes the backup when it expires); this is NOT AWS Vault Lock
+# (immutable WORM retention). See docs/backup.md. EXPERIMENTAL.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xbackupplans.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XBackupPlan, plural: xbackupplans }
+  claimNames: { kind: BackupPlan, plural: backupplans }
+  defaultCompositionRef: { name: backupplan }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [rules]
+              properties:
+                rules:
+                  type: array
+                  description: "One or more backup rules. Each becomes a Velero Schedule (<plan>-<rule name>)."
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [name, schedule, targetVault]
+                    properties:
+                      name:
+                        type: string
+                        description: "Rule name, unique within the plan (becomes part of the Schedule name)."
+                        pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                      schedule:
+                        type: string
+                        description: "Cron schedule for this rule, e.g. \"0 3 * * *\" (daily at 03:00)."
+                      retentionDays:
+                        type: integer
+                        description: "How long to keep each backup from this rule, in days (Velero TTL). Default 30."
+                        default: 30
+                        minimum: 1
+                      targetVault:
+                        type: string
+                        description: "The kind: BackupVault (by name) these backups are stored in."
+                selection:
+                  type: object
+                  description: "What to back up. Defaults to all namespaces excluding the system/backup ones."
+                  properties:
+                    includedNamespaces:
+                      type: array
+                      items: { type: string }
+                      description: "Namespaces to back up (default [\"*\"] — all, minus the system excludes)."
+                    labelSelector:
+                      type: object
+                      additionalProperties: { type: string }
+                      description: "Only back up objects matching these labels (matchLabels)."
+                    includedResources:
+                      type: array
+                      items: { type: string }
+                      description: "Restrict to these resource types (default: all)."
+            status:
+              type: object
+              properties:
+                scheduleCount: { type: integer }
+                ready: { type: boolean }

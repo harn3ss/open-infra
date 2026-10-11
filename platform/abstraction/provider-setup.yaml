@@ -136,6 +136,8 @@ rules:
       - tables
       - buckets
       - queues
+      - backupplans
+      - backupvaults
     verbs: [get, list, watch, create, update, patch, delete]
 
   # Knative Services for the kind: Function (serverless) abstraction.
@@ -159,6 +161,11 @@ rules:
   # member VirtualMachines/DataVolumes, so the provider only manages the pool itself.
   - apiGroups: [pool.kubevirt.io]
     resources: [virtualmachinepools]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # kind: BackupVault -> a Velero BackupStorageLocation; kind: BackupPlan -> Velero Schedules
+  # (AWS Backup). The provider manages those objects in the velero namespace.
+  - apiGroups: [velero.io]
+    resources: [backupstoragelocations, schedules]
     verbs: [get, list, watch, create, update, patch, delete]
   # Chaos Mesh experiments for the kind: FaultInjection (Fault Injection Simulator).
   - apiGroups: [chaos-mesh.org]
