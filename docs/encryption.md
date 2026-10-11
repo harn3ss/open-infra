@@ -47,6 +47,34 @@ Vault access. Its policy is scoped to **create / read / rotate** Transit keys on
 Destruction is withheld from the reconciler and gated behind `kind: Destruction`, which uses a
 separately-authorized token — that is what makes crypto-erase a deliberate act.
 
+### Who may USE a key (the AWS "key policy" equivalent)
+
+`kind: EncryptionKey` has **no resource-attached key-policy field**, by design. AWS controls who may use
+a CMK with a key policy stapled to the key; open-infra governs the same thing through its one
+**identity-based** authorization authority (Cedar), at key granularity — never a second, resource-attached
+policy engine running in parallel (which could become a divergent authority that silently ignores a
+supplied document). When the KMS front door (`docs/aws-shim.md`) is enabled, a request to use a key is
+authorized by a `kind: Policy` `spec.dataPlane` statement:
+
+```yaml
+# "alice may encrypt/decrypt with key tenant-a, and nothing else may" — the open-infra key policy.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata: { name: tenant-a-key-access, namespace: open-infra-console }
+spec:
+  dataPlane:
+    appliesTo: ["User::alice"]            # the key-policy Principal
+    statements:
+      - { effect: Allow, actions: ["kms:Encrypt", "kms:Decrypt"], resources: ["Key::<keyId>"] }
+```
+
+An AWS key-policy statement *"Principal P may `kms:X` on this key"* maps directly to this
+(`appliesTo: [P]`, `Allow kms:X on Key::<keyId>`); the default key-policy root statement (which just
+delegates to IAM) is the absence of a key-scoped restriction. The grant is enforced **per key** —
+`probe/aws-shim-kms-keypolicy.sh` proves a grant on one key does not leak to another. Importing a supplied
+AWS key-policy JSON into this shape (`CreateKey`'s `Policy` / `PutKeyPolicy`) is a scoped follow-on
+(polyhedron#267); today, author the `kind: Policy` directly.
+
 ## Bringing Vault up (operator, one-time)
 
 The whole point of customer-owned keys is that open-infra can't unseal your KMS for you.

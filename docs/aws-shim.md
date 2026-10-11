@@ -128,7 +128,7 @@ the sections below; the one-line summary:
 | **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
 | **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | FIFO refused (standard only) |
 | **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` protocol only; FilterPolicy/`.fifo`/http refused |
-| **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; grants/key-policies refused |
+| **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; per-key access via the Cedar data-plane (`kms:* on Key::<id>`), grants/key-policy-doc import refused |
 | **[Secrets Manager](#secrets-manager-vaultkms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted values | JSON 1.1 | auto-rotation + custom `KmsKeyId` refused |
 | **[EventBridge](#eventbridge-kubernetesjetstream-backed-json-protocol-probe-proven)** | in-proc scheduler + JetStream/SQS delivery | JSON 1.1 | Lambda+SQS targets only; `RoleArn` refused |
 | **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
@@ -444,8 +444,20 @@ Faithful semantics that matter:
   GENERATE_VERIFY_MAC) is **refused** (`UnsupportedOperationException`); `Sign`/`Verify`/`GetPublicKey`/
   `GenerateMac` are not implemented. A "symmetric key masquerading as asymmetric" is precisely the
   unevaluable defect this program refuses.
-- **No KMS key policies / grants.** Authorization is the shim's one policy world (RBAC + Cedar), not a
-  second KMS-native resource-policy engine that would silently ignore a supplied document.
+- **Per-key access is governed by the one policy world, not a resource-attached key-policy document.**
+  AWS controls who may use a CMK with a *resource-based* key policy stapled to the key. open-infra reaches
+  the same result through its *identity-based* Cedar data-plane — the authority everything else uses — at
+  **key granularity**: a `kind: Policy` `spec.dataPlane` statement `Allow kms:<action> on Key::<keyId>`.
+  The mapping is direct — an AWS key-policy statement *"Principal P may kms:X on this key"* is the
+  open-infra `kind: Policy {appliesTo: [P], Allow kms:X on Key::<keyId>}`, and the default key-policy root
+  statement (*"enable IAM user permissions"*, which delegates to identity policies) is simply the absence
+  of a key-scoped restriction. This is a deliberate choice **not** to run a second, resource-attached
+  policy engine in parallel with Cedar (which would be a divergent authority that could silently ignore a
+  supplied document). The equivalence is **probe-proven**: `probe/aws-shim-kms-keypolicy.sh` shows a grant
+  on `Key::<A>` permits that key and **denies the same action on another key** (key fidelity, no leak).
+  *Not yet accepted:* an AWS key-policy JSON on `CreateKey`/`PutKeyPolicy` is refused rather than imported
+  — translating a supplied key-policy document into the equivalent `kind: Policy` is a scoped follow-on
+  (polyhedron#267); author the `kind: Policy` directly today.
 - **Automatic rotation is coarser than AWS.** Vault has no scheduled rotation, so `EnableKeyRotation`
   rotates once immediately and records the flag; it is not AWS's yearly cadence. Documented, not hidden.
 - **Multi-Region keys, custom key stores, imported key material, and tags** are not implemented.
