@@ -327,6 +327,9 @@ type statusReport struct {
 	HeadHash   string `json:"headHash"`
 	VerifiedAt string `json:"verifiedAt"`
 	Bucket     string `json:"bucket"`
+	// Resweep reports the rotating prefix re-derivation (mode=rotating, #294): "" when not rotating,
+	// else "ok seq A..B (cursor->C)" or a tamper reason. A non-ok resweep makes the run NOT Intact.
+	Resweep string `json:"resweep,omitempty"`
 }
 
 // readAnchor reads the external head anchor (a different trust domain than the bucket). Returns ok=false
@@ -388,15 +391,21 @@ func verify() bool {
 	// on a locked segment is a lock-bypass attempt, visible without a GET). PAIR it with a periodic FULL
 	// run (AUDIT_VERIFY_MODE unset) so a prefix content-tamper is still re-derived from contents; incremental
 	// only shortens the common path, it does not replace the trust-nothing sweep.
+	// "rotating" (the durable anti-treadmill mode, #294) behaves like "incremental" for the head/anchor
+	// (O(new) GETs), but ALSO re-derives a bounded WINDOW of the already-locked prefix from contents each
+	// run — a rotating cursor sweeps the whole chain over N runs, so the trust-nothing content check of the
+	// prefix happens in fixed-size chunks instead of all-at-once (whose cost grows with the chain → the
+	// deadline treadmill). "full" (default) re-derives everything, unchanged.
+	mode := getenv("AUDIT_VERIFY_MODE", "full")
 	var sv *auditchain.StreamVerifier
 	verifiedSeq := -1
 	var verifiedHash string
-	if getenv("AUDIT_VERIFY_MODE", "full") == "incremental" {
+	if mode == "incremental" || mode == "rotating" {
 		if a, ok := readAnchor(ctx); ok {
 			verifiedSeq, verifiedHash = a.HeadSeq, a.HeadHash
 			sv = auditchain.NewStreamVerifierFrom(a.HeadSeq, a.HeadHash)
 		} else {
-			fmt.Fprintln(os.Stderr, "audit-offsite: incremental requested but no anchor yet — doing a full verify")
+			fmt.Fprintln(os.Stderr, "audit-offsite: "+mode+" requested but no anchor yet — doing a full verify")
 		}
 	}
 	if sv == nil {
@@ -506,15 +515,24 @@ func verify() bool {
 
 	anchor := checkAndUpdateAnchor(ctx, heads, res)
 
+	// Rotating mode (#294): re-derive a bounded window of the locked prefix from contents, advancing a
+	// persisted cursor so the whole chain is content-re-verified over successive runs at fixed per-run
+	// cost. A tamper found in the swept window makes the run NOT Intact (same weight as the main chain).
+	resweep, resweepOK := "", true
+	if mode == "rotating" {
+		resweep, resweepOK = resweepPrefix(ctx, cl, bucket, perKey, res.HeadSeq)
+	}
+
 	report := statusReport{
 		Result:         res,
 		ShadowVersions: shadow,
 		Anchor:         anchor,
-		Intact:         res.OK && shadow == 0 && (anchor == "ok" || anchor == "new"),
+		Intact:         res.OK && shadow == 0 && (anchor == "ok" || anchor == "new") && resweepOK,
 		HeadSeq:        res.HeadSeq,
 		HeadHash:       res.HeadHash,
 		VerifiedAt:     time.Now().UTC().Format(time.RFC3339),
 		Bucket:         bucket,
+		Resweep:        resweep,
 	}
 	blob, _ := json.MarshalIndent(report, "", "  ")
 
@@ -611,4 +629,107 @@ func checkAndUpdateAnchor(ctx context.Context, segs []auditchain.Segment, res au
 		}
 	}
 	return status
+}
+
+// ── the rotating prefix re-sweep (#294): bounded trust-nothing re-derivation ──────
+
+const resweepConfigMap = "audit-offsite-resweep"
+
+type resweepCursor struct {
+	NextSeq int    `json:"nextSeq"`
+	SweptAt string `json:"sweptAt"`
+}
+
+// readResweepCursor returns the persisted next-to-re-derive seq, or -1 if none yet (caller starts at base).
+func readResweepCursor(ctx context.Context) int {
+	cs, ns := k8sClient()
+	cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, resweepConfigMap, metav1.GetOptions{})
+	if err != nil {
+		return -1
+	}
+	var c resweepCursor
+	if json.Unmarshal([]byte(cm.Data["cursor.json"]), &c) != nil {
+		return -1
+	}
+	return c.NextSeq
+}
+
+func writeResweepCursor(ctx context.Context, nextSeq int) {
+	cs, ns := k8sClient()
+	blob, _ := json.Marshal(resweepCursor{NextSeq: nextSeq, SweptAt: time.Now().UTC().Format(time.RFC3339)})
+	target := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: resweepConfigMap, Namespace: ns},
+		Data:       map[string]string{"cursor.json": string(blob)},
+	}
+	_, err := cs.CoreV1().ConfigMaps(ns).Update(ctx, target, metav1.UpdateOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cs.CoreV1().ConfigMaps(ns).Create(ctx, target, metav1.CreateOptions{})
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "audit-offsite: update resweep cursor: %v\n", err)
+	}
+}
+
+// resweepPrefix re-derives a bounded WINDOW of the locked prefix from its contents (trust-nothing), a
+// front-truncated mini-verify, advancing a persisted cursor that wraps at the head — so over successive
+// runs the whole chain's contents are re-verified at FIXED per-run cost (the #294 anti-treadmill). The
+// window overlaps the previous one by one segment so every chain LINK is re-checked across windows too.
+// A content-tamper or lock-shadow in the swept window returns ok=false (making the run not Intact).
+func resweepPrefix(ctx context.Context, cl *minio.Client, bucket string, perKey map[string][]minio.ObjectInfo, head int) (string, bool) {
+	window := 2000
+	if w, err := strconv.Atoi(getenv("AUDIT_RESWEEP_WINDOW", "2000")); err == nil && w > 0 {
+		window = w
+	}
+	base := 1 << 30
+	for k := range perKey {
+		if seq, ok := seqFromKey(k); ok && seq < base {
+			base = seq
+		}
+	}
+	if base == 1<<30 || head < base {
+		return "rotating: empty chain, nothing to re-sweep", true
+	}
+	cursor := readResweepCursor(ctx)
+	if cursor < base || cursor > head {
+		cursor = base // first run, or wrapped past the head / below retention
+	}
+	end := cursor + window - 1
+	if end > head {
+		end = head
+	}
+	lo := cursor - 1 // overlap the prior window by one so the cross-window LINK is re-verified
+	if lo < base {
+		lo = base
+	}
+	// Re-derive [lo..end] from their LOCKED ORIGINALS as a front-truncated sub-chain (trust-nothing).
+	var sv auditchain.StreamVerifier
+	for seq := lo; seq <= end; seq++ {
+		key := segmentKey(seq)
+		versions, ok := perKey[key]
+		if !ok {
+			return fmt.Sprintf("rotating: segment seq=%d missing in [%d..%d] (gap — chain truncated/tampered)", seq, lo, end), false
+		}
+		orig := oldestReal(versions)
+		if orig == nil {
+			return fmt.Sprintf("rotating: segment seq=%d is fully shadowed (no locked original)", seq), false
+		}
+		data, err := getVersion(ctx, cl, bucket, key, orig.VersionID)
+		if err != nil {
+			return fmt.Sprintf("rotating: get seq=%d failed: %v", seq, err), false
+		}
+		var s auditchain.Segment
+		if json.Unmarshal(data, &s) != nil {
+			return fmt.Sprintf("rotating: parse seq=%d failed", seq), false
+		}
+		sv.Push(s)
+	}
+	if r := sv.Result(); !r.OK {
+		return fmt.Sprintf("rotating: prefix re-sweep [%d..%d] FAILED: %s", lo, end, r.Reason), false
+	}
+	next := end + 1
+	if next > head {
+		next = base // wrap: one full rotation complete, start the prefix over
+	}
+	writeResweepCursor(ctx, next)
+	return fmt.Sprintf("rotating: re-derived seq %d..%d (next cursor %d, window %d)", lo, end, next, window), true
 }

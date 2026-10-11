@@ -19,6 +19,35 @@ func buildChain(t *testing.T, n int) []Segment {
 	return segs
 }
 
+// The rotating prefix re-sweep (#294) re-verifies a bounded WINDOW of the chain trust-nothing, starting
+// mid-chain (front-truncated). This is the correctness premise it relies on: a front-truncated window of
+// intact segments verifies OK (with the right bounds), and a content tamper anywhere in the window is
+// caught — so a tampered prefix segment cannot hide from a window that happens to cover it.
+func TestStreamVerifier_FrontTruncatedWindow(t *testing.T) {
+	segs := buildChain(t, 20)
+	window := segs[8:13] // seq 8..12 — a mid-chain window that does NOT start at genesis
+
+	var sv StreamVerifier
+	for i := range window {
+		sv.Push(window[i])
+	}
+	if r := sv.Result(); !r.OK || r.BaseSeq != 8 || r.HeadSeq != 12 || r.Count != 5 {
+		t.Fatalf("an intact front-truncated window must verify cleanly: %+v", r)
+	}
+
+	// A tampered record on a segment inside the window is detected (re-derivation, not trust).
+	tampered := buildChain(t, 20)
+	w2 := tampered[8:13]
+	w2[2].Records[0] = `{"verb":"create","objectRef":{"resource":"users","name":"MALLORY"}}` // edit seq 10
+	var sv2 StreamVerifier
+	for i := range w2 {
+		sv2.Push(w2[i])
+	}
+	if sv2.Result().OK {
+		t.Fatal("a tampered record in the re-swept window must be detected")
+	}
+}
+
 func TestVerify_IntactChain(t *testing.T) {
 	segs := buildChain(t, 5)
 	r := Verify(segs)
