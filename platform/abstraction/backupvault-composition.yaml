@@ -1,0 +1,69 @@
+# The compiler for kind: BackupVault -> a Velero BackupStorageLocation. The vault is a named,
+# prefix-isolated destination in the shared MinIO `velero` bucket: BSL openinfra-vault-<name>
+# with objectStorage.prefix vaults/<name>, so a vault's recovery points never mingle with
+# another's or with the cluster-wide `daily` schedule's. The BSL inherits the Velero install's
+# default credential (velero-cloud-credentials) — same as the `default` BSL — so no per-vault
+# secret is minted. config mirrors platform/backup/velero.yaml's default BSL (MinIO over S3).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: backupvault
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XBackupVault
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $bsl := printf "openinfra-vault-%s" $name }}
+            # --- The vault's BackupStorageLocation: a prefix-isolated view of the velero bucket. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: bsl
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: velero.io/v1
+                  kind: BackupStorageLocation
+                  metadata:
+                    name: {{ $bsl }}
+                    namespace: velero
+                    labels:
+                      openinfra.dev/backupvault: {{ $name }}
+                  spec:
+                    provider: aws
+                    # A dedicated prefix in the shared velero bucket isolates this vault's recovery points.
+                    objectStorage:
+                      bucket: velero
+                      prefix: vaults/{{ $name }}
+                    config:
+                      region: minio
+                      s3ForcePathStyle: "true"
+                      s3Url: http://minio.minio.svc.cluster.local:9000
+            ---
+            # --- Composite status: surface the backing BSL name. ---
+            apiVersion: openinfra.dev/v1
+            kind: XBackupVault
+            status:
+              backupStorageLocation: {{ $bsl }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

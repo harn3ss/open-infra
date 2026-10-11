@@ -123,6 +123,8 @@ spec:
         - tables:*
         - buckets:*
         - queues:*
+        - backupplans:*
+        - backupvaults:*
       resources: ["*"]
     - effect: Allow
       actions: ["faultinjections:Get", "faultinjections:List", "faultinjections:Watch"]

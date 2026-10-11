@@ -1,0 +1,95 @@
+# The compiler for kind: BackupPlan -> one Velero Schedule per rule. Each rule's cron +
+# retention (TTL) + target vault become a Schedule named <plan>-<rule>, whose template backs
+# up the selected namespaces/labels/resources (PV data via fs backup) into the vault's BSL
+# (openinfra-vault-<targetVault>). This is the declarative, per-resource analog of the
+# cluster-wide `daily` Schedule in platform/backup/velero-schedule.yaml.
+#
+# A default selection (no spec.selection) backs up all namespaces EXCEPT the system/backup
+# ones (kube-system/velero/minio — same excludes the daily schedule uses, so a BackupPlan
+# never tries to back up the backup store itself). An explicit includedNamespaces is honored
+# verbatim (no excludes added — the author chose the scope).
+#
+# Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: backupplan
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XBackupPlan
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $sel := $spec.selection | default dict }}
+            {{- range $i, $r := $spec.rules }}
+            # --- Rule {{ $r.name }}: a Velero Schedule backing up the selection into the target vault. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sched-{{ $r.name }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: velero.io/v1
+                  kind: Schedule
+                  metadata:
+                    name: {{ $name }}-{{ $r.name }}
+                    namespace: velero
+                    labels:
+                      openinfra.dev/backupplan: {{ $name }}
+                  spec:
+                    schedule: {{ $r.schedule | quote }}
+                    template:
+                      # retentionDays -> Velero TTL (a Go duration). Default 30d when unset.
+                      ttl: {{ mul (int ($r.retentionDays | default 30)) 24 }}h0m0s
+                      storageLocation: openinfra-vault-{{ $r.targetVault }}
+                      defaultVolumesToFsBackup: true
+                      {{- if $sel.includedNamespaces }}
+                      includedNamespaces:
+                        {{- range $sel.includedNamespaces }}
+                        - {{ . | quote }}
+                        {{- end }}
+                      {{- else }}
+                      includedNamespaces: ["*"]
+                      excludedNamespaces: [kube-system, velero, minio]
+                      {{- end }}
+                      {{- if $sel.includedResources }}
+                      includedResources:
+                        {{- range $sel.includedResources }}
+                        - {{ . | quote }}
+                        {{- end }}
+                      {{- end }}
+                      {{- if $sel.labelSelector }}
+                      labelSelector:
+                        matchLabels:
+                          {{- range $k, $v := $sel.labelSelector }}
+                          {{ $k }}: {{ $v | quote }}
+                          {{- end }}
+                      {{- end }}
+            ---
+            {{- end }}
+            # --- Composite status: how many Schedules this plan renders. ---
+            apiVersion: openinfra.dev/v1
+            kind: XBackupPlan
+            status:
+              scheduleCount: {{ len $spec.rules }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
