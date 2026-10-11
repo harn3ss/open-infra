@@ -212,8 +212,10 @@ result) — authoring with feedback instead of blind. Same mechanism as the corp
   DeleteDataSource); the skin owns AWS's `(apiId, typeName, fieldName)` mapping and the neutral core
   never learns it. Neutral core now, zero-retraining at the edge.
 
-Honest label for this release: *a neutral engine that runs a team's VTL* — **not yet** the AWS
-packaging (authoring) experience.
+Honest label for this release: *a neutral engine that runs a team's VTL*, now **fronted by the AWS
+packaging (authoring) experience** — the Stage-2 management shim (above) translates the AppSync
+management verbs per-verb, and the CloudFormation `AWS::AppSync::*` types translate too, so an
+AppSync-locked team runs its existing tooling unchanged. Still **experimental** (see *Maturity*).
 
 ## What's built
 
