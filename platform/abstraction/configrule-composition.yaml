@@ -1,0 +1,86 @@
+# The compiler for kind: ConfigRule -> a Kyverno ClusterPolicy in AUDIT mode (background scan +
+# admission report, never a block). The rule's `match` becomes the policy's resource selector and
+# `requirePattern` its validate.pattern; a resource that doesn't match the pattern is recorded
+# non-compliant in Kyverno's PolicyReports (the compliance history). failurePolicy: Ignore keeps a
+# Kyverno hiccup from ever affecting admission — this records compliance, it does not enforce.
+#
+# The ClusterPolicy is a kyverno.io object applied via provider-kubernetes; it rides the opt-in
+# `compliance` component (the Kyverno install). Synced after the XRD (sync-wave 3).
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: configrule
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: openinfra.dev/v1
+    kind: XConfigRule
+  mode: Pipeline
+  pipeline:
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- $match := $spec.match }}
+            {{- $msg := $spec.message | default (printf "resource does not comply with ConfigRule %s" $name) }}
+            {{- $cp := printf "openinfra-configrule-%s" $name }}
+            # --- The Kyverno ClusterPolicy (Audit): evaluate the matched resources against the pattern. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: policy
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kyverno.io/v1
+                  kind: ClusterPolicy
+                  metadata:
+                    name: {{ $cp }}
+                    labels:
+                      openinfra.dev/configrule: {{ $name }}
+                  spec:
+                    # Audit = report only, never block admission; background = scan existing resources too.
+                    validationFailureAction: Audit
+                    background: true
+                    # A Kyverno outage must never affect admission for a compliance recorder.
+                    failurePolicy: Ignore
+                    rules:
+                      - name: {{ $name | trunc 63 }}
+                        match:
+                          any:
+                            - resources:
+                                kinds:
+                                  {{- range $match.kinds }}
+                                  - {{ . | quote }}
+                                  {{- end }}
+                                {{- if $match.namespaces }}
+                                namespaces:
+                                  {{- range $match.namespaces }}
+                                  - {{ . | quote }}
+                                  {{- end }}
+                                {{- end }}
+                        validate:
+                          message: {{ $msg | quote }}
+                          pattern:
+                            {{- $spec.requirePattern | toYaml | nindent 28 }}
+            ---
+            # --- Composite status: surface the backing ClusterPolicy. ---
+            apiVersion: openinfra.dev/v1
+            kind: XConfigRule
+            status:
+              clusterPolicy: {{ $cp }}
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready

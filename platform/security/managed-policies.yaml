@@ -125,6 +125,7 @@ spec:
         - queues:*
         - backupplans:*
         - backupvaults:*
+        - configrules:*
       resources: ["*"]
     - effect: Allow
       actions: ["faultinjections:Get", "faultinjections:List", "faultinjections:Watch"]

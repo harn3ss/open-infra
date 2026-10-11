@@ -1,0 +1,78 @@
+# kind: ConfigRule — AWS Config–shaped continuous compliance: evaluate cluster resources
+# against a rule and record which ones comply, continuously (background scan) and at admission.
+# One claim -> a Kyverno ClusterPolicy in AUDIT mode (it REPORTS, never blocks — the Config
+# analog records compliance, it does not enforce). Kyverno's PolicyReports are the compliance
+# history; a resource that violates the rule shows up as a fail in its report.
+#
+# This is the open-infra form of an AWS Config rule: `match` selects the resources the rule
+# governs (like a Config rule's scope), and `requirePattern` is the shape they MUST have to be
+# compliant (like a Config rule's logic). A Config rule such as "s3-bucket-ssl-requests-only" or
+# "required-tags" becomes a ConfigRule over the equivalent open-infra kind.
+#
+# OPT-IN: rides the `compliance` component (the Kyverno install, platform/compliance/). Honest
+# scope: AUDIT only (reports, never blocks admission) and v1 supports the `requirePattern`
+# validation form (a required-shape check); CEL expressions and remediation are later phases.
+# See docs/config.md. EXPERIMENTAL.
+#
+# Synced after Crossplane's CRDs exist (sync-wave 2).
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xconfigrules.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: openinfra.dev
+  names: { kind: XConfigRule, plural: xconfigrules }
+  claimNames: { kind: ConfigRule, plural: configrules }
+  defaultCompositionRef: { name: configrule }
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [match, requirePattern]
+              properties:
+                description:
+                  type: string
+                  description: "What this rule checks (e.g. \"buckets must have versioning enabled\")."
+                match:
+                  type: object
+                  description: "Which resources this rule evaluates (the rule's scope)."
+                  required: [kinds]
+                  properties:
+                    kinds:
+                      type: array
+                      items: { type: string }
+                      description: "Resource kinds to evaluate, e.g. [Bucket] or [apps/v1/Deployment]."
+                      minItems: 1
+                    namespaces:
+                      type: array
+                      items: { type: string }
+                      description: "Limit evaluation to these namespaces (default: all namespaces)."
+                requirePattern:
+                  type: object
+                  description: "The shape a matched resource MUST have to be compliant (a Kyverno validate pattern — supports * wildcards and anchors). A resource that doesn't match is reported non-compliant."
+                  x-kubernetes-preserve-unknown-fields: true
+                message:
+                  type: string
+                  description: "The non-compliance message shown for a resource that fails the rule."
+                severity:
+                  type: string
+                  enum: [low, medium, high]
+                  default: medium
+                  description: "Informational severity for the compliance report."
+            status:
+              type: object
+              properties:
+                clusterPolicy: { type: string }
+                ready: { type: boolean }
