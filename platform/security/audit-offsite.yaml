@@ -303,10 +303,13 @@ spec:
                 requests: { cpu: 250m, memory: 64Mi }
                 limits: { cpu: 2000m, memory: 256Mi }
 ---
-# Daily FULL re-verify — the trust-nothing backstop for the hourly incremental above. It re-derives the
-# ENTIRE chain from each segment's locked contents (AUDIT_VERIFY_MODE unset), so any content-tamper of an
-# already-anchored segment (a lock bypass the incremental prefix check would only flag as an attempt) is
-# caught here from first principles. Cost scales with chain length, so it runs once a day, not hourly.
+# Daily trust-nothing backstop for the hourly incremental above — now ROTATING (AUDIT_VERIFY_MODE=rotating,
+# #294). It re-derives a bounded WINDOW of the already-locked prefix from contents each run, a persisted
+# cursor rotating it so the ENTIRE chain is content-re-verified over successive days — catching a
+# content-tamper of an anchored segment (a lock bypass the incremental only flags as an attempt) from first
+# principles, at FIXED per-run cost. Replaces the old every-run whole-chain re-derivation, whose cost grew
+# with the chain and was heading for the DeadlineExceeded treadmill. Remove the AUDIT_VERIFY_MODE env to
+# go back to full (every-run whole-chain).
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -319,12 +322,10 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      # Full re-hash of the WHOLE chain; cost scales with chain length. Measured 2026-10-10 at
-      # ~34m (2024s) over 15,422 segments / 116 GiB / 79M records — the chain outgrew the old
-      # 1800s and the daily backstop was being DeadlineExceeded (the hourly incremental, bounded to
-      # new segments, kept passing, so integrity was never actually at risk). 7200s = ~3.5x current
-      # with ~1yr of growth headroom. Durable fix (parallelize the sequential MinIO fetch + stream to
-      # bound memory) tracked separately — a deadline bump alone is a treadmill at ~0.5 GiB/day.
+      # Rotating mode's per-run cost is BOUNDED (incremental new-segment GETs + an AUDIT_RESWEEP_WINDOW-sized
+      # prefix window), independent of chain length — so the deadline no longer needs to track growth. Kept
+      # at 7200s as ample headroom (the old full pass measured ~34m/2024s over 15,422 segments before the
+      # rotating fix (#294) retired the treadmill). Lower it once rotating's steady-state runtime is observed.
       activeDeadlineSeconds: 7200
       ttlSecondsAfterFinished: 600
       backoffLimit: 0
@@ -336,7 +337,7 @@ spec:
           containers:
             - name: verify
               image: ghcr.io/harn3ss/open-infra-audit-offsite:latest
-              args: ["verify"] # AUDIT_VERIFY_MODE unset => full, trust-nothing re-derivation
+              args: ["verify"]
               securityContext:
                 readOnlyRootFilesystem: true
                 allowPrivilegeEscalation: false
@@ -346,6 +347,15 @@ spec:
                 - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: accessKey } } }
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+                # ROTATING (#294): the durable anti-treadmill mode. Each run does the incremental head/anchor
+                # check (O(new)) AND trust-nothing re-derives a bounded prefix WINDOW; a persisted cursor
+                # (ConfigMap audit-offsite-resweep) rotates it so the WHOLE chain's contents are re-derived
+                # over ~ceil(chainLen/AUDIT_RESWEEP_WINDOW) daily runs — fixed per-run cost regardless of
+                # chain length. Posture note: a prefix content-tamper is caught within one rotation (days),
+                # not every single run, in exchange for bounding the cost (the AU-9(3) tradeoff #294 chose).
+                # Revert to full (every-run whole-chain) by removing this env.
+                - { name: AUDIT_VERIFY_MODE, value: "rotating" }
+                - { name: AUDIT_RESWEEP_WINDOW, value: "2000" } # segments re-derived per run (~8 runs/full rotation at 15k)
                 # Go's GC does NOT read the cgroup limit, so under GOGC=100 it can grow the heap to ~2x the
                 # live set and be OOMKilled before collecting — the risk that grows with the chain. A soft
                 # GOMEMLIMIT under the 256Mi limit makes the GC keep peak heap bounded. (#294)
