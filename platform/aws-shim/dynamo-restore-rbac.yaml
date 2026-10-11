@@ -38,11 +38,14 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list]
-  # Only the shared basic-auth connection Secret — never any other Secret in this namespace.
+  # Read the shared connection Secret (dynamo-mongo-app) AND each recovery cluster's own CNPG-generated
+  # <cluster>-app Secret — CNPG RESETS the app role's password on a recovered cluster, so the restore
+  # must read the recovery cluster's fresh credentials. Those Secret names are per-restore and
+  # unpredictable (dynamo-restore-<id>-app), so get cannot be resourceName-pinned; scoped to get-only in
+  # this one namespace (the DynamoDB backend's own).
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get]
-    resourceNames: [dynamo-mongo-app]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
