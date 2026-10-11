@@ -29,6 +29,7 @@ const (
 	condBool   condType = iota // a boolean attr — the Bool operator
 	condIP                     // a string attr holding an IP — IpAddress / NotIpAddress (or an exact StringEquals)
 	condString                 // a plain string attr — StringEquals (exact) / StringLike / StringNotLike (wildcard)
+	condTime                   // a datetime attr (RFC3339 string) — DateLessThan / DateGreaterThan [Equals]
 )
 
 // ConditionKey is one request-context attribute the aws-shim's requestContext() populates and that the
@@ -58,6 +59,9 @@ var SupportedConditionKeys = []ConditionKey{
 	// populates it from the data-plane principal id. Honors "only this principal" conditions
 	// (StringEquals) and prefix/pattern conditions (StringLike/StringNotLike).
 	{Attr: "username", Type: condString, Aliases: []string{"aws:username", "username"}},
+	// The request time — the shim populates it from the clock. Honors time-window conditions
+	// (DateGreaterThan/DateLessThan[Equals]), e.g. temporary access that expires.
+	{Attr: "currentTime", Type: condTime, Aliases: []string{"aws:CurrentTime", "currentTime"}},
 }
 
 // SupportedConditionAttrs is the set of request-context attributes the importer may reference — the
@@ -112,6 +116,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 		var eq map[string]string
 		var ips []IPCondition
 		var likes []LikeCondition
+		var times []TimeCondition
 		if rawCond, ok := st["Condition"]; ok {
 			cm, isMap := rawCond.(map[string]any)
 			if !isMap {
@@ -120,7 +125,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 			}
 			var reason string
 			var mapped bool
-			eq, ips, likes, reason, mapped = importCondition(cm)
+			eq, ips, likes, times, reason, mapped = importCondition(cm)
 			if !mapped {
 				// Refuse the WHOLE statement — never emit it with the condition dropped. Dropping an
 				// Allow's condition would WIDEN the grant; dropping a Deny's condition would widen the
@@ -143,7 +148,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 			unsupported = append(unsupported, fmt.Sprintf("statement %d: %v has no mappable Resource (an identity policy must scope to an ARN or \"*\")", i, actions))
 			continue
 		}
-		s := Statement{Effect: effect, Actions: actions, Resources: resources, IPConditions: ips, LikeConditions: likes}
+		s := Statement{Effect: effect, Actions: actions, Resources: resources, IPConditions: ips, LikeConditions: likes, TimeConditions: times}
 		if len(eq) > 0 {
 			s.Condition = eq
 		}
@@ -153,65 +158,96 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 }
 
 // importCondition maps a statement's AWS Condition block onto the whitelist. It returns the equality
-// conditions (attr -> value; "true"/"false" for a Bool) and the IP CIDR conditions, plus ok=false with
-// a reason if ANY operator / key / shape is not faithfully mappable — in which case the caller refuses
-// the whole statement. Only Bool (on a boolean attr), single-valued StringEquals (on a non-boolean
-// populated attr), and IpAddress / NotIpAddress (CIDR, on an IP attr) are honored; every other
-// operator, an unpopulated key, and any multi-valued list stay refused (fail closed).
-func importCondition(cond map[string]any) (eq map[string]string, ips []IPCondition, likes []LikeCondition, reason string, ok bool) {
+// conditions (attr -> value; "true"/"false" for a Bool), the IP CIDR conditions, the StringLike pattern
+// conditions, and the Date* datetime conditions, plus ok=false with a reason if ANY operator / key /
+// shape is not faithfully mappable — in which case the caller refuses the whole statement. Only Bool (on
+// a boolean attr), single-valued StringEquals (on a non-boolean populated attr), StringLike/StringNotLike
+// (on a string attr), Date{Greater,Less}Than[Equals] (on a datetime attr), and IpAddress / NotIpAddress
+// (CIDR, on an IP attr) are honored; every other operator, an unpopulated key, and any multi-valued list
+// stay refused (fail closed).
+func importCondition(cond map[string]any) (eq map[string]string, ips []IPCondition, likes []LikeCondition, times []TimeCondition, reason string, ok bool) {
 	eq = map[string]string{}
+	fail := func(format string, a ...any) (map[string]string, []IPCondition, []LikeCondition, []TimeCondition, string, bool) {
+		return nil, nil, nil, nil, fmt.Sprintf(format, a...), false
+	}
 	for op, kv := range cond {
 		m, isMap := kv.(map[string]any)
 		if !isMap {
-			return nil, nil, nil, fmt.Sprintf("operator %q has a non-object body", op), false
+			return fail("operator %q has a non-object body", op)
 		}
 		for key, rawVal := range m {
 			ck, known := resolveConditionKey(key)
 			if !known {
-				return nil, nil, nil, fmt.Sprintf("key %q is not a request attribute the shim populates", key), false
+				return fail("key %q is not a request attribute the shim populates", key)
 			}
 			val, single := singleValue(rawVal)
 			if !single {
-				return nil, nil, nil, fmt.Sprintf("%q on %q is multi-valued (only single-valued is importable)", op, key), false
+				return fail("%q on %q is multi-valued (only single-valued is importable)", op, key)
 			}
 			switch op {
 			case "Bool":
 				if ck.Type != condBool || (val != "true" && val != "false") {
-					return nil, nil, nil, fmt.Sprintf("Bool on %q is not a boolean request attribute", key), false
+					return fail("Bool on %q is not a boolean request attribute", key)
 				}
 				eq[ck.Attr] = val
 			case "StringEquals":
-				if ck.Type == condBool {
-					return nil, nil, nil, fmt.Sprintf("StringEquals on boolean key %q is not faithful (use Bool)", key), false
+				if ck.Type == condBool || ck.Type == condTime {
+					return fail("StringEquals on %q is not faithful (use the type's operator)", key)
 				}
 				eq[ck.Attr] = val
 			case "StringLike", "StringNotLike":
 				if ck.Type != condString {
-					return nil, nil, nil, fmt.Sprintf("%q on non-string key %q", op, key), false
+					return fail("%q on non-string key %q", op, key)
 				}
 				// Cedar's `like` wildcard is `*` only; AWS StringLike also allows `?` (single char), which
 				// Cedar can't express — refuse rather than approximate (an over-broad `*` would widen the
 				// match). A literal `*`/`?` would need escaping, also not faithfully expressible — refuse.
 				if strings.Contains(val, "?") {
-					return nil, nil, nil, fmt.Sprintf("%q value %q uses '?' which Cedar's pattern match can't express", op, val), false
+					return fail("%q value %q uses '?' which Cedar's pattern match can't express", op, val)
 				}
 				likes = append(likes, LikeCondition{Key: ck.Attr, Pattern: val, Negate: op == "StringNotLike"})
+			case "DateGreaterThan", "DateGreaterThanEquals", "DateLessThan", "DateLessThanEquals":
+				if ck.Type != condTime {
+					return fail("%q on non-time key %q", op, key)
+				}
+				// Validate with the SAME parser Cedar's datetime() uses, so a value accepted here cannot
+				// then error at eval (an errored datetime test would skip a forbid → fail open). Note AWS
+				// values must be Cedar-parseable (e.g. "...Z" or "+0000", not "+00:00").
+				if _, err := types.ParseDatetime(val); err != nil {
+					return fail("%q value %q is not a Cedar-parseable datetime (want e.g. 2025-01-01T00:00:00Z)", op, val)
+				}
+				times = append(times, TimeCondition{Key: ck.Attr, Op: dateOp(op), Target: val})
 			case "IpAddress", "NotIpAddress":
 				if ck.Type != condIP {
-					return nil, nil, nil, fmt.Sprintf("%q on non-IP key %q", op, key), false
+					return fail("%q on non-IP key %q", op, key)
 				}
 				// Validate with the SAME parser Cedar's ip() uses, so a value accepted here cannot then
 				// error inside the compiled policy (an errored IP test would skip a forbid → fail open).
 				if _, err := types.ParseIPAddr(val); err != nil {
-					return nil, nil, nil, fmt.Sprintf("%q value %q is not a valid IP or CIDR", op, val), false
+					return fail("%q value %q is not a valid IP or CIDR", op, val)
 				}
 				ips = append(ips, IPCondition{Key: ck.Attr, CIDR: val, Negate: op == "NotIpAddress"})
 			default:
-				return nil, nil, nil, fmt.Sprintf("operator %q is not importable", op), false
+				return fail("operator %q is not importable", op)
 			}
 		}
 	}
-	return eq, ips, likes, "", true
+	return eq, ips, likes, times, "", true
+}
+
+// dateOp maps an AWS Date* condition operator to the Cedar datetime comparison operator.
+func dateOp(awsOp string) string {
+	switch awsOp {
+	case "DateGreaterThan":
+		return ">"
+	case "DateGreaterThanEquals":
+		return ">="
+	case "DateLessThan":
+		return "<"
+	case "DateLessThanEquals":
+		return "<="
+	}
+	return ""
 }
 
 // singleValue reads a single-valued AWS condition value (a string, a bool, or a one-element array).
