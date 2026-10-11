@@ -1088,6 +1088,20 @@ func statementsToSpec(stmts []policyengine.Statement) []any {
 			}
 			m["ipConditions"] = ips
 		}
+		if len(s.LikeConditions) > 0 {
+			likes := make([]any, 0, len(s.LikeConditions))
+			for _, lk := range s.LikeConditions {
+				likes = append(likes, map[string]any{"key": lk.Key, "pattern": lk.Pattern, "negate": lk.Negate})
+			}
+			m["likeConditions"] = likes
+		}
+		if len(s.TimeConditions) > 0 {
+			times := make([]any, 0, len(s.TimeConditions))
+			for _, tc := range s.TimeConditions {
+				times = append(times, map[string]any{"key": tc.Key, "op": tc.Op, "target": tc.Target})
+			}
+			m["timeConditions"] = times
+		}
 		out = append(out, m)
 	}
 	return out

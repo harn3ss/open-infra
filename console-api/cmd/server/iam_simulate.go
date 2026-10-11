@@ -66,17 +66,31 @@ type draftPolicyInput struct {
 }
 
 type draftStatement struct {
-	Effect       string             `json:"effect"`
-	Actions      []string           `json:"actions"`
-	Resources    []string           `json:"resources"`
-	Condition    map[string]string  `json:"condition"`
-	IPConditions []draftIPCondition `json:"ipConditions"`
+	Effect         string               `json:"effect"`
+	Actions        []string             `json:"actions"`
+	Resources      []string             `json:"resources"`
+	Condition      map[string]string    `json:"condition"`
+	IPConditions   []draftIPCondition   `json:"ipConditions"`
+	LikeConditions []draftLikeCondition `json:"likeConditions"`
+	TimeConditions []draftTimeCondition `json:"timeConditions"`
 }
 
 type draftIPCondition struct {
 	Key    string `json:"key"`
 	CIDR   string `json:"cidr"`
 	Negate bool   `json:"negate"`
+}
+
+type draftLikeCondition struct {
+	Key     string `json:"key"`
+	Pattern string `json:"pattern"`
+	Negate  bool   `json:"negate"`
+}
+
+type draftTimeCondition struct {
+	Key    string `json:"key"`
+	Op     string `json:"op"`
+	Target string `json:"target"`
 }
 
 // planeResult is one plane's verdict. Decision is allow|deny|not-governed|indeterminate.
@@ -432,6 +446,12 @@ func draftCheckerFor(d *draftPolicyInput) *dataplaneauthz.Checker {
 		for _, c := range s.IPConditions {
 			st.IPConditions = append(st.IPConditions, policyengine.IPCondition{Key: c.Key, CIDR: c.CIDR, Negate: c.Negate})
 		}
+		for _, c := range s.LikeConditions {
+			st.LikeConditions = append(st.LikeConditions, policyengine.LikeCondition{Key: c.Key, Pattern: c.Pattern, Negate: c.Negate})
+		}
+		for _, c := range s.TimeConditions {
+			st.TimeConditions = append(st.TimeConditions, policyengine.TimeCondition{Key: c.Key, Op: c.Op, Target: c.Target})
+		}
 		doc.Statements = append(doc.Statements, st)
 	}
 	return dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
@@ -510,9 +530,15 @@ func splitTyped(s string) (typ, id string) {
 }
 
 // simContext builds the Cedar condition context, defaulting authenticated=true (the request is past
-// SigV4 in the real shim) and coercing "true"/"false" strings to booleans so bool conditions match.
+// SigV4 in the real shim) and coercing "true"/"false" strings to booleans so bool conditions match. It
+// also defaults currentTime to now, mirroring the shim's requestContext (which always populates it) so a
+// time-windowed policy evaluates the same way in preview as at runtime; a caller may override currentTime
+// to simulate a specific moment.
 func simContext(in map[string]any) map[string]any {
-	out := map[string]any{"authenticated": true}
+	out := map[string]any{
+		"authenticated": true,
+		"currentTime":   time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}
 	for k, v := range in {
 		if s, ok := v.(string); ok {
 			switch s {

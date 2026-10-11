@@ -46,11 +46,13 @@ func K8sLoader(dc dynamic.Interface) Loader {
 					continue
 				}
 				doc.Statements = append(doc.Statements, policyengine.Statement{
-					Effect:       policyengine.Effect(str(sm["effect"])),
-					Actions:      toStrings(sm["actions"]),
-					Resources:    toStrings(sm["resources"]),
-					Condition:    toStringMap(sm["condition"]),
-					IPConditions: toIPConditions(sm["ipConditions"]),
+					Effect:         policyengine.Effect(str(sm["effect"])),
+					Actions:        toStrings(sm["actions"]),
+					Resources:      toStrings(sm["resources"]),
+					Condition:      toStringMap(sm["condition"]),
+					IPConditions:   toIPConditions(sm["ipConditions"]),
+					LikeConditions: toLikeConditions(sm["likeConditions"]),
+					TimeConditions: toTimeConditions(sm["timeConditions"]),
 				})
 			}
 			if len(doc.Statements) > 0 {
@@ -110,6 +112,47 @@ func toIPConditions(v any) []policyengine.IPCondition {
 		}
 		neg, _ := m["negate"].(bool)
 		out = append(out, policyengine.IPCondition{Key: key, CIDR: cidr, Negate: neg})
+	}
+	return out
+}
+
+// toLikeConditions parses a statement's likeConditions array (the aws:username StringLike/StringNotLike
+// wildcard conditions the AWS importer emits) into policyengine.LikeConditions. Entries missing a key or
+// pattern are skipped.
+func toLikeConditions(v any) []policyengine.LikeCondition {
+	items, _ := v.([]any)
+	var out []policyengine.LikeCondition
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		key, pattern := str(m["key"]), str(m["pattern"])
+		if key == "" || pattern == "" {
+			continue
+		}
+		neg, _ := m["negate"].(bool)
+		out = append(out, policyengine.LikeCondition{Key: key, Pattern: pattern, Negate: neg})
+	}
+	return out
+}
+
+// toTimeConditions parses a statement's timeConditions array (the aws:CurrentTime Date* datetime-window
+// conditions the AWS importer emits) into policyengine.TimeConditions. Entries missing a key, op, or
+// target are skipped.
+func toTimeConditions(v any) []policyengine.TimeCondition {
+	items, _ := v.([]any)
+	var out []policyengine.TimeCondition
+	for _, it := range items {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		key, op, target := str(m["key"]), str(m["op"]), str(m["target"])
+		if key == "" || op == "" || target == "" {
+			continue
+		}
+		out = append(out, policyengine.TimeCondition{Key: key, Op: op, Target: target})
 	}
 	return out
 }
