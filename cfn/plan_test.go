@@ -229,3 +229,43 @@ Resources:
 		t.Errorf("IAM::Role should still MAP to kind: Role at plan, got %q", byID["Role"].Kind)
 	}
 }
+
+// Lambda versions/aliases (#257): a published Version is a Knative revision (assigned at apply) and an
+// Alias is a weighted traffic tag on a kind: Function — both are recognized at plan but neither is
+// create-deployable (Deployable=false), because the alias->revision binding isn't template-derivable.
+// Traffic is declared natively via kind: Function spec.aliases (render-tested + the shim Invoke doorway
+// routes a Qualifier to it). This keeps a migrating stack HONEST: it maps, but deploy refuses rather
+// than fabricating a revision pin.
+func TestPlan_LambdaVersionAliasPlanOnly(t *testing.T) {
+	data := []byte(`
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties: { Runtime: python3.12, Handler: app.handler, Role: x, Code: { ZipFile: "x" } }
+  Ver:
+    Type: AWS::Lambda::Version
+    Properties: { FunctionName: !Ref Fn }
+  Prod:
+    Type: AWS::Lambda::Alias
+    Properties: { FunctionName: !Ref Fn, FunctionVersion: !GetAtt Ver.Version, Name: prod }
+`)
+	p := mustPlan(t, data, nil, "")
+	byID := map[string]PlannedResource{}
+	for _, r := range p.Resources {
+		byID[r.LogicalID] = r
+	}
+	// Both map at plan (no backing-kind blocker) ...
+	for _, id := range []string{"Ver", "Prod"} {
+		if byID[id].Kind == "" || byID[id].Status != Partial {
+			t.Errorf("%s should MAP at plan (Partial), got kind=%q status=%q", id, byID[id].Kind, byID[id].Status)
+		}
+		// ... but neither is create-deployable (no translator).
+		if byID[id].Deployable {
+			t.Errorf("%s has no create translator — want Deployable=false (Knative revisions aren't template-derivable)", id)
+		}
+	}
+	// A stack whose only lossy parts are these must be caveated, never cleanly provisionable.
+	if p.Verdict != ProvisionableWithCaveats {
+		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (version/alias map but don't deploy); blockers:\n%s", p.Verdict, blockersJoined(p))
+	}
+}
