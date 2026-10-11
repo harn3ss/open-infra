@@ -63,6 +63,32 @@ build/CI pipeline (git push → build → deploy), and a backend-provisioning la
 So a Cognito+AppSync+DynamoDB+Amplify app migrating in expresses its backend as open-infra kinds and
 hosts its frontend on `StaticSite`; the git-push-to-build step is the one piece still being built.
 
+## Elastic Beanstalk → `kind: Application`
+
+Elastic Beanstalk is a managed app-deployment layer (provision instances, deploy a build, load-balance,
+auto-scale, roll updates). open-infra is container-native, so an EB environment is **re-expressed as a
+`kind: Application`** — there is no `BackupPlan`-style new kind to add, just a mapping. Build a container
+image for the app (EB's managed platforms — Python/Node/Java/Go/Docker — all become an image) and:
+
+| Elastic Beanstalk | `kind: Application` |
+|---|---|
+| Environment (app version + platform + config) | one `Application` (Deployment + Service + Ingress + HPA) |
+| Platform / solution stack | the container `spec.image` (bring the runtime in the image) |
+| `aws:autoscaling:asg` MinSize/MaxSize | `spec.scaling` (`min`/`max`/`targetCPUPercent` → HPA) |
+| Instance type (`aws:ec2:instances`) | `spec.cpu` / `spec.memory` (requests/limits) — not an instance SKU |
+| Environment properties (env vars) | `spec.env` (and `spec.secrets` for secret-backed values) |
+| Environment CNAME / URL | `spec.domain` (Traefik Ingress + cert-manager TLS) |
+| Enhanced health / health-check URL | the container's own readiness/liveness probes (a failing container is not routed) |
+| Rolling / immutable deploys | the Deployment's rolling update (an image change rolls the pods) |
+| RDS attached to the environment | a managed DB via `spec.database` (CNPG/MariaDB/babelfish) |
+| Worker environment (SQS-backed) | a `kind: Function` with `spec.trigger`/`spec.queues`, or an `Application` consuming a `kind: Queue` |
+
+**Does not map:** `.ebextensions` / platform hooks (bake the equivalent into the image or an init
+container), EB-managed OS patching (the image + cluster handle it), and EB's instance-SKU sizing (open-infra
+sizes by `spec.cpu`/`spec.memory` requests + quotas, not a named instance type). The estate's EB
+environments each become one `Application` manifest; the `kind: Application` schema (and its ECS-mapping
+notes) is in `platform/abstraction/xrd.yaml`.
+
 ## Terraform (via open-transform): the neutral-resource mapping
 
 Beyond CloudFormation, an AWS **Terraform** estate can be assessed for portability by
