@@ -1,0 +1,43 @@
+# Kyverno — the policy engine behind kind: ConfigRule (AWS Config, #270). It evaluates cluster
+# resources against ClusterPolicies and records compliance in PolicyReports, both at admission and
+# as a continuous background scan. open-infra uses it in REPORT mode only: every ConfigRule renders
+# a ClusterPolicy with validationFailureAction: Audit + failurePolicy: Ignore, so Kyverno records
+# compliance and can NEVER block or break admission — the Config analog records, it does not enforce.
+#
+# Part of the OPT-IN `compliance` component. Installed via the Kyverno Helm chart.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    # Install before the abstraction XRDs/compositions (wave 2/3) so the kyverno.io CRDs exist
+    # by the time a kind: ConfigRule's composition renders a ClusterPolicy.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    targetRevision: 3.2.6
+    helm:
+      values: |
+        # Compliance-recorder posture: background scan + reports controllers do the work; the
+        # admission controller only produces admission-time reports (policies are Audit/Ignore).
+        # Single replicas (homelab); no cleanup policies in use.
+        admissionController:
+          replicas: 1
+        backgroundController:
+          replicas: 1
+        reportsController:
+          replicas: 1
+        cleanupController:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
