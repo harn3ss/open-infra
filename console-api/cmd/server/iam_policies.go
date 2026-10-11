@@ -39,6 +39,7 @@ var policyResources = []string{
 	"staticsites", "parameters", "emailsenders",
 	"tables", "buckets", "queues",
 	"backupplans", "backupvaults",
+	"configrules",
 }
 
 // policyVerbs are the verbs an action may use (case-insensitive), plus "*".
