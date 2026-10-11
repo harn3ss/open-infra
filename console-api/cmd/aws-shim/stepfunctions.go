@@ -147,6 +147,8 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.listStateMachines(ctx, w, requestID)
 	case "StartExecution":
 		h.startExecution(ctx, w, requestID, body, claims)
+	case "StartSyncExecution":
+		h.startSyncExecution(ctx, w, requestID, body, claims)
 	case "StopExecution":
 		h.stopExecution(ctx, w, requestID, body)
 	case "DescribeExecution":
@@ -211,9 +213,15 @@ func (h *sfnHandler) createStateMachine(ctx context.Context, w http.ResponseWrit
 		writeSFNError(w, http.StatusBadRequest, "InvalidName", requestID, "CreateStateMachine requires a name.")
 		return
 	}
-	if t := strings.ToUpper(str(body["type"])); t != "" && t != "STANDARD" {
+	smType := "Standard"
+	switch strings.ToUpper(str(body["type"])) {
+	case "", "STANDARD":
+		smType = "Standard"
+	case "EXPRESS":
+		smType = "Express"
+	default:
 		writeSFNError(w, http.StatusBadRequest, "StateMachineTypeNotSupported", requestID,
-			"only STANDARD state machines are supported (got "+t+"); EXPRESS is not implemented.")
+			"type must be STANDARD or EXPRESS (got "+strings.ToUpper(str(body["type"]))+").")
 		return
 	}
 	translated, err := validateAndTranslateDefinition(str(body["definition"]))
@@ -238,7 +246,7 @@ func (h *sfnHandler) createStateMachine(ctx context.Context, w http.ResponseWrit
 		"apiVersion": "openinfra.dev/v1",
 		"kind":       "StateMachine",
 		"metadata":   map[string]any{"name": name, "namespace": h.ns},
-		"spec":       map[string]any{"definition": translated, "type": "Standard", "roleArn": roleName},
+		"spec":       map[string]any{"definition": translated, "type": smType, "roleArn": roleName},
 	}}
 	if _, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -310,13 +318,17 @@ func (h *sfnHandler) describeStateMachine(ctx context.Context, w http.ResponseWr
 	}
 	def, _, _ := unstructured.NestedString(u.Object, "spec", "definition")
 	roleName, _, _ := unstructured.NestedString(u.Object, "spec", "roleArn")
+	smType, _, _ := unstructured.NestedString(u.Object, "spec", "type")
+	if smType == "" {
+		smType = "Standard"
+	}
 	writeSFNJSON(w, requestID, map[string]any{
 		"stateMachineArn": h.smArn(name),
 		"name":            name,
 		"status":          "ACTIVE",
 		"definition":      def,
 		"roleArn":         h.iamRoleArn(roleName),
-		"type":            "STANDARD",
+		"type":            strings.ToUpper(smType),
 		"creationDate":    epoch(u.GetCreationTimestamp().Time),
 	})
 }
@@ -330,8 +342,12 @@ func (h *sfnHandler) listStateMachines(ctx context.Context, w http.ResponseWrite
 	items := make([]map[string]any, 0, len(list.Items))
 	for i := range list.Items {
 		n := list.Items[i].GetName()
+		smType, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "type")
+		if smType == "" {
+			smType = "Standard"
+		}
 		items = append(items, map[string]any{
-			"stateMachineArn": h.smArn(n), "name": n, "type": "STANDARD",
+			"stateMachineArn": h.smArn(n), "name": n, "type": strings.ToUpper(smType),
 			"creationDate": epoch(list.Items[i].GetCreationTimestamp().Time),
 		})
 	}
@@ -341,17 +357,40 @@ func (h *sfnHandler) listStateMachines(ctx context.Context, w http.ResponseWrite
 // --- executions ---
 
 func (h *sfnHandler) startExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, claims iam.Claims) {
-	smName := smNameFromArn(str(body["stateMachineArn"]))
-	if smName == "" {
-		writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "StartExecution requires stateMachineArn.")
+	smName, execName, _, serr := h.createExecution(ctx, body, claims, "")
+	if serr != nil {
+		writeSFNError(w, serr.status, serr.code, requestID, serr.message)
 		return
+	}
+	writeSFNJSON(w, requestID, map[string]any{
+		"executionArn": h.execArn(smName, execName),
+		"startDate":    epoch(time.Now()),
+	})
+}
+
+// createExecution is the shared create path for StartExecution (async) and StartSyncExecution (sync):
+// resolve the state machine, mint the per-execution STS session (if the machine carries a role), and
+// create the Execution CR the controller runs. requireType, when non-empty, rejects a machine whose
+// spec.type does not match BEFORE anything is created (StartSyncExecution passes "Express", since AWS
+// only allows a synchronous start on an Express machine). It returns the names + the machine's type.
+func (h *sfnHandler) createExecution(ctx context.Context, body map[string]any, claims iam.Claims, requireType string) (smName, execName, smType string, serr *sfnErr) {
+	smName = smNameFromArn(str(body["stateMachineArn"]))
+	if smName == "" {
+		return "", "", "", &sfnErr{http.StatusBadRequest, "InvalidArn", "StartExecution requires stateMachineArn."}
 	}
 	sm, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Get(ctx, smName, metav1.GetOptions{})
 	if err != nil {
-		writeSFNError(w, http.StatusBadRequest, "StateMachineDoesNotExist", requestID, "State Machine "+smName+" does not exist.")
-		return
+		return "", "", "", &sfnErr{http.StatusBadRequest, "StateMachineDoesNotExist", "State Machine " + smName + " does not exist."}
 	}
-	execName := sanitizeName(str(body["name"]))
+	smType, _, _ = unstructured.NestedString(sm.Object, "spec", "type")
+	if smType == "" {
+		smType = "Standard"
+	}
+	if requireType != "" && !strings.EqualFold(smType, requireType) {
+		return "", "", smType, &sfnErr{http.StatusBadRequest, "StateMachineTypeNotSupported",
+			"StartSyncExecution is only supported for EXPRESS state machines (this one is " + smType + ")."}
+	}
+	execName = sanitizeName(str(body["name"]))
 	if execName == "" {
 		execName = fmt.Sprintf("exec-%d", time.Now().UnixNano())
 	}
@@ -366,8 +405,7 @@ func (h *sfnHandler) startExecution(ctx context.Context, w http.ResponseWriter, 
 	if roleName, _, _ := unstructured.NestedString(sm.Object, "spec", "roleArn"); roleName != "" {
 		secretName, aerr := h.mintExecutionCreds(ctx, roleName, execName, claims)
 		if aerr != nil {
-			writeSFNError(w, aerr.status, aerr.code, requestID, aerr.message)
-			return
+			return "", "", smType, aerr
 		}
 		credsSecret = secretName
 	}
@@ -388,20 +426,84 @@ func (h *sfnHandler) startExecution(ctx context.Context, w http.ResponseWriter, 
 	}}
 	if _, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			writeSFNError(w, http.StatusBadRequest, "ExecutionAlreadyExists", requestID, "Execution "+execName+" already exists.")
-			return
+			return "", "", smType, &sfnErr{http.StatusBadRequest, "ExecutionAlreadyExists", "Execution " + execName + " already exists."}
 		}
 		// Best-effort: don't leave an orphaned creds Secret if the Execution create failed.
 		if credsSecret != "" {
 			_ = h.cs.CoreV1().Secrets(h.ns).Delete(ctx, credsSecret, metav1.DeleteOptions{})
 		}
-		writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
+		return "", "", smType, &sfnErr{http.StatusInternalServerError, "InternalFailure", err.Error()}
+	}
+	return smName, execName, smType, nil
+}
+
+// syncWaitCap bounds how long StartSyncExecution blocks for a terminal result. Express workflows are
+// short; if one exceeds this, the call returns the current (RUNNING) status with the executionArn — the
+// engine is durable (unlike AWS Express), so the client can finish with DescribeExecution.
+const syncWaitCap = 110 * time.Second
+
+// startSyncExecution runs an EXPRESS state machine and returns its output inline (AWS StartSyncExecution).
+// It creates the execution through the shared path (which enforces the Express-only rule), then polls the
+// Execution CR until it reaches a terminal phase, and renders the synchronous result.
+func (h *sfnHandler) startSyncExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, claims iam.Claims) {
+	start := time.Now()
+	smName, execName, _, serr := h.createExecution(ctx, body, claims, "Express")
+	if serr != nil {
+		writeSFNError(w, serr.status, serr.code, requestID, serr.message)
 		return
 	}
-	writeSFNJSON(w, requestID, map[string]any{
-		"executionArn": h.execArn(smName, execName),
-		"startDate":    epoch(time.Now()),
-	})
+	deadline := start.Add(syncWaitCap)
+	var phase, output, execErr, cause string
+	for {
+		u, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Get(ctx, execName, metav1.GetOptions{})
+		if err == nil {
+			phase, _, _ = unstructured.NestedString(u.Object, "status", "phase")
+			output, _, _ = unstructured.NestedString(u.Object, "status", "output")
+			execErr, _, _ = unstructured.NestedString(u.Object, "status", "error")
+			cause, _, _ = unstructured.NestedString(u.Object, "status", "cause")
+		}
+		switch phase {
+		case "Succeeded", "Failed", "TimedOut", "Aborted":
+			resp := map[string]any{
+				"executionArn":    h.execArn(smName, execName),
+				"stateMachineArn": h.smArn(smName),
+				"name":            execName,
+				"status":          awsExecStatus(phase),
+				"startDate":       epoch(start),
+				"stopDate":        epoch(time.Now()),
+				"input":           str(body["input"]),
+			}
+			if phase == "Succeeded" {
+				if output == "" {
+					output = "{}"
+				}
+				resp["output"] = output
+			}
+			if execErr != "" {
+				resp["error"] = execErr
+			}
+			if cause != "" {
+				resp["cause"] = cause
+			}
+			writeSFNJSON(w, requestID, resp)
+			return
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			// Exceeded the synchronous wait — the execution keeps running (durable engine). Return the
+			// current status + arn so the caller can finish via DescribeExecution. A superset of AWS,
+			// where Express keeps no history; honest, never a false terminal result.
+			writeSFNJSON(w, requestID, map[string]any{
+				"executionArn":    h.execArn(smName, execName),
+				"stateMachineArn": h.smArn(smName),
+				"name":            execName,
+				"status":          "RUNNING",
+				"startDate":       epoch(start),
+				"input":           str(body["input"]),
+			})
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 type sfnErr struct {

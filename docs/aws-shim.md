@@ -139,7 +139,7 @@ the sections below; the one-line summary:
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
 | **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource + non-S3/DDB/Lambda refused; needs STS |
-| **[Step Functions](#step-functions-kind-statemachine--per-execution-role-authority-probe-proven)** | kind: StateMachine/Execution + singleton controller | JSON 1.0 | Parallel/Map supported; Express + `.waitForTaskToken`/`.sync` + non-Lambda integrations refused |
+| **[Step Functions](#step-functions-kind-statemachine--per-execution-role-authority-probe-proven)** | kind: StateMachine/Execution + singleton controller | JSON 1.0 | Parallel/Map + Express (StartSyncExecution) supported; `.waitForTaskToken`/`.sync` + non-Lambda integrations refused |
 | **[CloudFormation](#cloudformation-the-cfn-engine-as-a-doorway-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine (~50 resource mappings) | query/XML | provisions under the caller's authority (impersonation); nested stacks + custom resources + unmapped types refused |
 | **[ECS](#ecs-service-and-task-definition-collate-into-one-kind-application-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine → `kind: Application` | JSON 1.1 | provisions under the caller's authority (impersonation); RunTask/StartTask, Fargate/raw subnets, host-path/EFS volumes, Command/EntryPoint overrides, external task-def ARNs refused |
 
@@ -961,17 +961,26 @@ The live round-trip requires STS enabled (a Vault `sts/signing-key`, the same op
 The AWS Step Functions API (SigV4 service `states`, JSON 1.0) over the platform's existing owned ASL engine —
 `kind: StateMachine` (the workflow) and `kind: Execution` (one run), driven by the singleton statemachine
 controller. Implemented: `CreateStateMachine`/`UpdateStateMachine`/`DeleteStateMachine`/`DescribeStateMachine`/
-`ListStateMachines`, and `StartExecution`/`DescribeExecution`/`StopExecution`/`GetExecutionHistory`/
-`ListExecutions`. An AWS-authored definition runs unchanged: a Lambda Task `Resource` (a Lambda ARN or
-`arn:aws:states:::lambda:invoke`) is translated to the engine's `function:<name>` form.
+`ListStateMachines`, and `StartExecution`/`StartSyncExecution`/`DescribeExecution`/`StopExecution`/
+`GetExecutionHistory`/`ListExecutions`. An AWS-authored definition runs unchanged: a Lambda Task `Resource`
+(a Lambda ARN or `arn:aws:states:::lambda:invoke`) is translated to the engine's `function:<name>` form.
 
 **Refused, not faked.** `CreateStateMachine` validates the ASL and **rejects** (`InvalidDefinition`) what the
-engine does not implement — the `EXPRESS` type, the `.waitForTaskToken`/`.sync` callback patterns, and
-non-Lambda service integrations — rather than storing a definition that would fail or silently mis-run later.
-The workflow surface is Standard workflows with Task/Choice/Wait/Pass/Succeed/Fail, **Parallel** (concurrent
-branches) and **Map** (iterate an array, `MaxConcurrency`-bounded, with `ItemSelector`/`ItemProcessor`), plus
-Retry (with backoff)/Catch and JSONPath data shaping. (Parallel/Map sub-executions run in-memory and are not
-individually checkpointed — a controller restart re-runs the enclosing state from the start.)
+engine does not implement — the `.waitForTaskToken`/`.sync` callback patterns and non-Lambda service
+integrations — rather than storing a definition that would fail or silently mis-run later. The workflow
+surface is Task/Choice/Wait/Pass/Succeed/Fail, **Parallel** (concurrent branches) and **Map** (iterate an
+array, `MaxConcurrency`-bounded, with `ItemSelector`/`ItemProcessor`), plus Retry (with backoff)/Catch and
+JSONPath data shaping, in both **Standard** and **Express** (`spec.type`) workflows. (Parallel/Map
+sub-executions run in-memory and are not individually checkpointed — a controller restart re-runs the
+enclosing state from the start.)
+
+**Express + StartSyncExecution.** An `EXPRESS` state machine adds `StartSyncExecution` — run the workflow and
+return its output inline. Both types run on the SAME durable interpreter, so open-infra's Express is a
+*superset* of AWS Express (still exactly-once, still keeps a history; AWS Express is at-least-once and keeps
+none). The client-visible contract is faithful: `StartSyncExecution` returns `SUCCEEDED` + the output (or the
+`error`/`cause`), and is refused on a `STANDARD` machine (`StateMachineTypeNotSupported`), exactly as AWS. The
+synchronous call blocks up to a bounded window; a longer Express run returns `RUNNING` + the `executionArn`
+(the caller finishes via `DescribeExecution`, which — unlike AWS Express — this durable engine retains).
 
 **Per-execution role authority — the same authority model as IAM/STS above.** A state machine created with a
 `roleArn` gets, at `StartExecution`, a freshly minted STS session for that role, stored in a per-execution
