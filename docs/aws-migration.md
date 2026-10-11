@@ -121,6 +121,7 @@ on one, the honest answer is the boundary + the substitute, not a half-built loo
 | **Organizations** (multi-account) | **Non-goal** | Tenancy is **namespaces + RBAC + Cedar**, not an account hierarchy. Mapping: namespace ≈ account, a namespace subtree ≈ an OU, a Cedar/RBAC deny-ceiling ≈ an SCP. No account layer is built. |
 | **SES managed deliverability** (DKIM/SPF/DMARC, reputation, suppression) | **Non-goal** | `kind: EmailSender` sends SES-shaped mail over a relay; deliverability (which needs DNS control, itself BYO) stays the operator's responsibility on their relay + DNS. |
 | **Babelfish HA** (SQL-Server-compatible engine) | **Experimental, no HA** | Single-instance StatefulSet on Longhorn with start/stop + snapshot/restore (durability = Longhorn + Velero). It is not under CloudNativePG, so streaming-replication HA would mean a re-platform — out of scope while the engine is experimental. |
+| **CloudFront** (managed CDN) | **Non-goal** | The edge stays BYO (Cloudflare/Fastly). A single cluster can't mirror a globally-anycast CDN's PoPs — same reasoning as Route 53. Mapping: a distribution → the BYO-CDN's config; origin → an `Ingress`/`kind: StaticSite`; OAC → origin auth; invalidation → the CDN's own API. (In-cluster caching, if ever needed for a single-region deployment, would be a Varnish/nginx layer in front of Traefik — not a CloudFront equivalent.) |
 
 These are decisions, not gaps: revisit the boundary (as with the CNI/VPC and API Gateway calls)
 if the estate's dependence proves load-bearing enough to justify crossing it.
