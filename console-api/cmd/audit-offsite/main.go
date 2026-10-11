@@ -410,28 +410,14 @@ func verify() bool {
 		heads = append(heads, auditchain.Segment{Seq: verifiedSeq, Hash: verifiedHash})
 	}
 	shadow := 0
-	for _, key := range keys {
-		versions := perKey[key]
-		if seq, ok := seqFromKey(key); ok && seq <= verifiedSeq {
-			// Already-verified, WORM-locked prefix: skip the GET + chain re-derivation. Still confirm the
-			// lock held — exactly one real version and no delete marker; anything else is a bypass ATTEMPT.
-			real := 0
-			for i := range versions {
-				if versions[i].IsDeleteMarker {
-					shadow++
-				} else {
-					real++
-				}
-			}
-			if real > 1 {
-				shadow += real - 1
-			}
-			continue
-		}
+	// verifySegKey re-derives one segment from its LOCKED ORIGINAL (trust-nothing), pushes it into the
+	// chain in Seq order, and tallies any object-lock shadowing. Shared by the main pass and the tip
+	// catch-up below (closes over sv/heads/shadow, mutating them).
+	verifySegKey := func(key string, versions []minio.ObjectInfo) {
 		orig := oldestReal(versions)
 		if orig == nil {
 			shadow++ // only delete markers — the original is fully shadowed
-			continue
+			return
 		}
 		origData, err := getVersion(ctx, cl, bucket, key, orig.VersionID)
 		if err != nil {
@@ -459,6 +445,57 @@ func verify() bool {
 			if !bytes.Equal(d, origData) {
 				shadow++
 			}
+		}
+	}
+
+	for _, key := range keys {
+		versions := perKey[key]
+		if seq, ok := seqFromKey(key); ok && seq <= verifiedSeq {
+			// Already-verified, WORM-locked prefix: skip the GET + chain re-derivation. Still confirm the
+			// lock held — exactly one real version and no delete marker; anything else is a bypass ATTEMPT.
+			real := 0
+			for i := range versions {
+				if versions[i].IsDeleteMarker {
+					shadow++
+				} else {
+					real++
+				}
+			}
+			if real > 1 {
+				shadow += real - 1
+			}
+			continue
+		}
+		verifySegKey(key, versions)
+	}
+
+	// Catch up to the current tip. A full pass can take tens of minutes, during which new segments arrive
+	// (the hourly incremental advances the external anchor meanwhile) — so a slow full verify would finish
+	// behind a head it simply had not listed yet and read as "regressed" against the anchor (a false alarm,
+	// not a tamper). Re-list and verify (from contents, trust-nothing) any segment beyond our head until
+	// converged, so the anchor cross-check is tip-vs-tip. Append-only growth converges in a round or two;
+	// bounded as a backstop against pathological churn.
+	for round := 0; round < 8; round++ {
+		curHead := sv.Result().HeadSeq
+		fresh := map[string][]minio.ObjectInfo{}
+		for obj := range cl.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: segmentPrefix, Recursive: true, WithVersions: true}) {
+			if obj.Err != nil {
+				fatalf("re-list segment versions (catch-up): %v", obj.Err)
+			}
+			fresh[obj.Key] = append(fresh[obj.Key], obj)
+		}
+		var newKeys []string
+		for k := range fresh {
+			if seq, ok := seqFromKey(k); ok && seq > curHead {
+				newKeys = append(newKeys, k)
+			}
+		}
+		if len(newKeys) == 0 {
+			break
+		}
+		sort.Strings(newKeys)
+		for _, key := range newKeys {
+			verifySegKey(key, fresh[key])
 		}
 	}
 
