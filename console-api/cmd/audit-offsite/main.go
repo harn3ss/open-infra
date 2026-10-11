@@ -482,12 +482,15 @@ func verify() bool {
 		fetchKeys = append(fetchKeys, key)
 	}
 
-	// The full pass is latency-bound on thousands of sequential GETs, so fetch+hash the segment originals
+	// The full pass is latency-bound on thousands of sequential GETs, so fetch+parse the segment originals
 	// in BOUNDED-concurrency windows — concurrency cuts wall-clock far below the deadline (#294, which had
 	// crept toward DeadlineExceeded as the chain grew), while a fixed window keeps peak memory O(window)
-	// segments, not O(chain) (the whole-chain load OOM'd before). Only the GETs run in parallel; the chain
-	// is linked in order, so results are PUSHED into the verifier sequentially in Seq order.
-	const fetchWindow = 24
+	// segments, not O(chain). Only the GETs run in parallel; the chain is linked in order, so results are
+	// PUSHED into the verifier sequentially in Seq order. The window is deliberately SMALL: segments average
+	// ~8 MiB (audit records), and the window holds that many parsed segments at once under a 256Mi limit, so
+	// 4 (≈base-100Mi + 4×~15Mi transient) stays well clear of OOM even for larger-than-average segments —
+	// still a ~4x wall-clock cut. (Raising it OOM-killed the job at 24.)
+	const fetchWindow = 4
 	for start := 0; start < len(fetchKeys); start += fetchWindow {
 		end := start + fetchWindow
 		if end > len(fetchKeys) {
