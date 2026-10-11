@@ -35,7 +35,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -158,54 +157,6 @@ func oldestReal(versions []minio.ObjectInfo) *minio.ObjectInfo {
 		}
 	}
 	return nil
-}
-
-// segFetch is one segment's parallel-fetch result: the parsed original (when present), the object-lock
-// shadowing tally for its versions, and any fetch/parse error. The chain Push is deliberately NOT done
-// here — the caller pushes results in Seq order so chain linkage stays ordered.
-type segFetch struct {
-	seg        auditchain.Segment
-	hasSegment bool
-	shadow     int
-	err        error
-}
-
-// fetchSegment reads a segment's LOCKED ORIGINAL version, parses it, and tallies any object-lock
-// shadowing (delete markers, or extra real versions whose bytes differ from the original). It performs
-// the latency-bound GET(s) and nothing else mutable, so it is safe to call concurrently for distinct
-// keys (each key owns its own versions slice; minio-go is concurrency-safe).
-func fetchSegment(ctx context.Context, cl *minio.Client, bucket, key string, versions []minio.ObjectInfo) segFetch {
-	orig := oldestReal(versions)
-	if orig == nil {
-		return segFetch{shadow: 1} // only delete markers — the original is fully shadowed
-	}
-	origData, err := getVersion(ctx, cl, bucket, key, orig.VersionID)
-	if err != nil {
-		return segFetch{err: fmt.Errorf("get %s (original version): %w", key, err)}
-	}
-	var s auditchain.Segment
-	if err := json.Unmarshal(origData, &s); err != nil {
-		return segFetch{err: fmt.Errorf("parse %s: %w", key, err)}
-	}
-	r := segFetch{seg: s, hasSegment: true}
-	for i := range versions {
-		v := versions[i]
-		if v.VersionID == orig.VersionID {
-			continue
-		}
-		if v.IsDeleteMarker {
-			r.shadow++
-			continue
-		}
-		d, err := getVersion(ctx, cl, bucket, key, v.VersionID)
-		if err != nil {
-			return segFetch{err: fmt.Errorf("get %s (shadow version %s): %w", key, v.VersionID, err)}
-		}
-		if !bytes.Equal(d, origData) {
-			r.shadow++
-		}
-	}
-	return r
 }
 
 func getVersion(ctx context.Context, cl *minio.Client, bucket, key, versionID string) ([]byte, error) {
@@ -459,16 +410,14 @@ func verify() bool {
 		heads = append(heads, auditchain.Segment{Seq: verifiedSeq, Hash: verifiedHash})
 	}
 	shadow := 0
-	// Classify: the already-verified WORM-locked prefix (incremental mode) is confirmed cheaply from the
-	// version LIST — exactly one real version and no delete marker; anything else is a lock-bypass ATTEMPT
-	// — with no GET. Everything newer needs its original fetched + the chain re-derived; collect those in
-	// Seq order so the chain Push stays ordered.
-	fetchKeys := make([]string, 0, len(keys))
 	for _, key := range keys {
+		versions := perKey[key]
 		if seq, ok := seqFromKey(key); ok && seq <= verifiedSeq {
+			// Already-verified, WORM-locked prefix: skip the GET + chain re-derivation. Still confirm the
+			// lock held — exactly one real version and no delete marker; anything else is a bypass ATTEMPT.
 			real := 0
-			for i := range perKey[key] {
-				if perKey[key][i].IsDeleteMarker {
+			for i := range versions {
+				if versions[i].IsDeleteMarker {
 					shadow++
 				} else {
 					real++
@@ -479,46 +428,37 @@ func verify() bool {
 			}
 			continue
 		}
-		fetchKeys = append(fetchKeys, key)
-	}
-
-	// The full pass is latency-bound on thousands of sequential GETs, so fetch+parse the segment originals
-	// in BOUNDED-concurrency windows — concurrency cuts wall-clock far below the deadline (#294, which had
-	// crept toward DeadlineExceeded as the chain grew), while a fixed window keeps peak memory O(window)
-	// segments, not O(chain). Only the GETs run in parallel; the chain is linked in order, so results are
-	// PUSHED into the verifier sequentially in Seq order. The window is deliberately SMALL: segments average
-	// ~8 MiB (audit records), and the window holds that many parsed segments at once under a 256Mi limit, so
-	// 4 (≈base-100Mi + 4×~15Mi transient) stays well clear of OOM even for larger-than-average segments —
-	// still a ~4x wall-clock cut. (Raising it OOM-killed the job at 24.)
-	const fetchWindow = 4
-	for start := 0; start < len(fetchKeys); start += fetchWindow {
-		end := start + fetchWindow
-		if end > len(fetchKeys) {
-			end = len(fetchKeys)
+		orig := oldestReal(versions)
+		if orig == nil {
+			shadow++ // only delete markers — the original is fully shadowed
+			continue
 		}
-		window := fetchKeys[start:end]
-		results := make([]segFetch, len(window))
-		var wg sync.WaitGroup
-		for i := range window {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				results[i] = fetchSegment(ctx, cl, bucket, window[i], perKey[window[i]])
-			}(i)
+		origData, err := getVersion(ctx, cl, bucket, key, orig.VersionID)
+		if err != nil {
+			fatalf("get %s (original version): %v", key, err)
 		}
-		wg.Wait()
-		// Verify this window in Seq order: push into the chain, record the head, tally shadows. A fetch
-		// error fails the whole pass (fatalf), reported after the parallel stage so it surfaces cleanly.
-		for _, r := range results {
-			if r.err != nil {
-				fatalf("%v", r.err)
+		var s auditchain.Segment
+		if err := json.Unmarshal(origData, &s); err != nil {
+			fatalf("parse %s: %v", key, err)
+		}
+		sv.Push(s)
+		heads = append(heads, auditchain.Segment{Seq: s.Seq, Hash: s.Hash})
+		for i := range versions {
+			v := versions[i]
+			if v.VersionID == orig.VersionID {
+				continue
 			}
-			shadow += r.shadow
-			if !r.hasSegment {
-				continue // original fully shadowed (only delete markers)
+			if v.IsDeleteMarker {
+				shadow++
+				continue
 			}
-			sv.Push(r.seg)
-			heads = append(heads, auditchain.Segment{Seq: r.seg.Seq, Hash: r.seg.Hash})
+			d, err := getVersion(ctx, cl, bucket, key, v.VersionID)
+			if err != nil {
+				fatalf("get %s (shadow version %s): %v", key, v.VersionID, err)
+			}
+			if !bytes.Equal(d, origData) {
+				shadow++
+			}
 		}
 	}
 
