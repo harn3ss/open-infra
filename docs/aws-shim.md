@@ -128,7 +128,7 @@ the sections below; the one-line summary:
 | **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
 | **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | FIFO refused (standard only) |
 | **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` protocol only; FilterPolicy/`.fifo`/http refused |
-| **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; per-key access via the Cedar data-plane (`kms:* on Key::<id>`), grants/key-policy-doc import refused |
+| **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; per-key access via the Cedar data-plane (`kms:* on Key::<id>`); key-policy JSON import (CreateKey Policy/PutKeyPolicy→kind: Policy, GetKeyPolicy round-trip); CreateGrant refused |
 | **[Secrets Manager](#secrets-manager-vaultkms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted values | JSON 1.1 | auto-rotation + custom `KmsKeyId` refused |
 | **[EventBridge](#eventbridge-kubernetesjetstream-backed-json-protocol-probe-proven)** | in-proc scheduler + JetStream/SQS delivery | JSON 1.1 | Lambda+SQS targets only; `RoleArn` refused |
 | **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
@@ -470,9 +470,16 @@ Faithful semantics that matter:
   policy engine in parallel with Cedar (which would be a divergent authority that could silently ignore a
   supplied document). The equivalence is **probe-proven**: `probe/aws-shim-kms-keypolicy.sh` shows a grant
   on `Key::<A>` permits that key and **denies the same action on another key** (key fidelity, no leak).
-  *Not yet accepted:* an AWS key-policy JSON on `CreateKey`/`PutKeyPolicy` is refused rather than imported
-  — translating a supplied key-policy document into the equivalent `kind: Policy` is a scoped follow-on
-  (polyhedron#267); author the `kind: Policy` directly today.
+  **Key-policy JSON import (polyhedron#298):** a supplied AWS key-policy document on `CreateKey`'s `Policy`
+  param or `PutKeyPolicy` is **translated** into the equivalent `kind: Policy` CR set (one per statement,
+  `Allow`/`Deny kms:<action> on Key::<keyId>` with `appliesTo` the statement's principals), rather than
+  refused — so the estate's existing key policies import without hand-authoring. `GetKeyPolicy` round-trips
+  the raw JSON and `ListKeyPolicies` reports the single `default` policy. The translation is **fail-closed**
+  (a `Condition`, a non-user/role principal, a `Resource` that isn't this key, or a non-`kms:` action
+  refuses the whole document), and the default root statement is skipped (it delegates to identity policies).
+  It is still ONE policy world — the import produces ordinary `kind: Policy` grants, not a second engine.
+  The import is proven by the same probe (a `PutKeyPolicy` JSON enforces on its key, does not leak to
+  another, and round-trips via `GetKeyPolicy`). `CreateGrant` (the grant-token API) remains unimplemented.
 - **Automatic rotation is coarser than AWS.** Vault has no scheduled rotation, so `EnableKeyRotation`
   rotates once immediately and records the flag; it is not AWS's yearly cadence. Documented, not hidden.
 - **Multi-Region keys, custom key stores, imported key material, and tags** are not implemented.

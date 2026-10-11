@@ -50,7 +50,42 @@ CREATE TABLE IF NOT EXISTS kms_aliases (
     created    timestamptz NOT NULL DEFAULT now(),
     updated    timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS kms_aliases_key_id ON kms_aliases (key_id);`)
+CREATE INDEX IF NOT EXISTS kms_aliases_key_id ON kms_aliases (key_id);
+CREATE TABLE IF NOT EXISTS kms_key_policies (
+    key_id     text PRIMARY KEY,
+    policy_doc text NOT NULL,
+    updated    timestamptz NOT NULL DEFAULT now()
+);`)
+	return err
+}
+
+// putKeyPolicyDoc stores the raw AWS key-policy JSON verbatim so GetKeyPolicy round-trips byte-for-byte
+// (the translated enforcement lives in the materialized kind: Policy CRs; this is the read-back copy).
+func (s *kmsStore) putKeyPolicyDoc(ctx context.Context, keyID, doc string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO kms_key_policies (key_id, policy_doc, updated) VALUES ($1,$2,now())
+		 ON CONFLICT (key_id) DO UPDATE SET policy_doc=EXCLUDED.policy_doc, updated=now()`, keyID, doc)
+	return err
+}
+
+// getKeyPolicyDoc returns the stored raw key-policy JSON, or ok=false when none was ever set (the caller
+// then synthesizes the AWS default key policy).
+func (s *kmsStore) getKeyPolicyDoc(ctx context.Context, keyID string) (string, bool, error) {
+	var doc string
+	err := s.db.QueryRowContext(ctx, `SELECT policy_doc FROM kms_key_policies WHERE key_id=$1`, keyID).Scan(&doc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return doc, true, nil
+}
+
+// deleteKeyPolicyDoc drops the stored raw policy (called by the reaper after crypto-erase, alongside the
+// metadata row and the materialized Policy CRs).
+func (s *kmsStore) deleteKeyPolicyDoc(ctx context.Context, keyID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM kms_key_policies WHERE key_id=$1`, keyID)
 	return err
 }
 
