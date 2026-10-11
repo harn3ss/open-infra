@@ -21,10 +21,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// localTemplateResolver resolves a nested stack's TemplateURL (#268) to a LOCAL child template, relative
+// to the parent template's directory — the CLI's resolver. A remote (S3/HTTP) TemplateURL refuses here:
+// those are fetched by the in-cluster aws-shim CloudFormation doorway, not the local CLI.
+type localTemplateResolver struct{ dir string }
+
+func (r localTemplateResolver) Resolve(url string) ([]byte, error) {
+	p := strings.TrimPrefix(url, "file://")
+	if strings.Contains(p, "://") {
+		return nil, fmt.Errorf("the cfn CLI resolves nested-stack TemplateURLs as LOCAL files; %q is a remote URL (deploy through the in-cluster aws-shim for an S3/MinIO-hosted child template)", url)
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(r.dir, p)
+	}
+	return os.ReadFile(p)
+}
+
+// readTemplate reads a template file and FLATTENS any nested stacks (#268) against a local resolver, so
+// the engine sees one combined template. A template with no nested stack is read unchanged.
+func readTemplate(file string) ([]byte, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	return FlattenNested(data, localTemplateResolver{dir: filepath.Dir(file)})
+}
 
 // Main is the cfn CLI entrypoint, invoked by cfn/cmd/cfn. Split out so the engine is an
 // importable library (the aws-shim CloudFormation doorway imports this package) while the CLI stays.
@@ -151,7 +178,7 @@ func runPlan(args []string) int {
 		fmt.Fprintln(os.Stderr, "cfn: expected exactly one template file")
 		return 2
 	}
-	data, err := os.ReadFile(files[0])
+	data, err := readTemplate(files[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
@@ -341,7 +368,7 @@ func runDeploy(args []string) int {
 	if code >= 0 {
 		return code
 	}
-	data, err := os.ReadFile(file)
+	data, err := readTemplate(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
@@ -364,7 +391,7 @@ func runChangeSet(args []string) int {
 	if code >= 0 {
 		return code
 	}
-	data, err := os.ReadFile(file)
+	data, err := readTemplate(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
@@ -383,7 +410,7 @@ func runUpdate(args []string) int {
 	if code >= 0 {
 		return code
 	}
-	data, err := os.ReadFile(file)
+	data, err := readTemplate(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2

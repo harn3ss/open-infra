@@ -130,10 +130,23 @@ a custom resource has no diffable state); custom resources are not drift-tracked
 the invoke needs the **in-cluster** deploy path (the aws-shim CloudFormation doorway), so the local
 `cfn` CLI refuses a custom-resource stack.
 
-### Unsupported
+### Nested stacks (`AWS::CloudFormation::Stack`)
 
-`AWS::CloudFormation::Stack` (nested stacks) is **unsupported** for now, and produces a `REJECTED`
-verdict with the reason stated.
+Nested stacks are **flattened** (#268): the `cfn` CLI inlines each child template into the parent as
+one combined template (`FlattenNested`), which then deploys as a single open-infra stack. The child's
+resources are prefixed with the stack's logical id, the parent-supplied `Parameters` are substituted,
+and the parent's `Fn::GetAtt <Stack>.Outputs.<Key>` resolves to the child's Output expression. The
+child template is resolved as a **local file** (relative to the parent) — so author/export the child
+templates alongside the parent.
+
+**Fail-closed** (a flattened template is never a mis-wired one): the flattener refuses what it can't
+rewrite correctly — `Fn::Sub` in a child, child `Conditions`/`Mappings`, a nested-nested stack, an
+intrinsic (non-literal) `TemplateURL`, an unmappable `Ref`/`GetAtt`, an id collision, or an unbound
+child `Parameter`.
+
+**Not via the aws-shim** (its CloudFormation doorway takes templates inline and does not fetch child
+`TemplateURL`s — SSRF-safe), so a nested-stack parent sent to the shim is refused; deploy it with the
+`cfn` CLI. A shim-side child fetch (from MinIO) would be a deliberate follow-on.
 
 > `AWS::DynamoDB::Table` graduated from gated to **partial** once the aws-shim's DynamoDB
 > data layer gained atomic transactions + TTL and a declarative `kind: Table`. `kind: Table`
