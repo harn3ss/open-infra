@@ -68,7 +68,7 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		// policies, AWS-style default-deny: an ungoverned role (no applicable policy) is denied, never
 		// allowed to fall through the way an ungoverned console user does (#111 Gap C — fail closed).
 		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
-			s3Action(op.kind), "Bucket", op.bucket, requestContext(r))
+			s3Action(op.kind), "Bucket", op.bucket, requestContext(claims, r))
 		if !governed || !allowed {
 			if reason == "" {
 				reason = "assumed role has no data-plane policy allowing this action (default deny)"

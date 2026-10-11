@@ -83,12 +83,13 @@ func TestS3_DataPlaneDeny(t *testing.T) {
 // test fails if the two ever diverge — e.g. someone adds an importable key without populating it, or
 // removes a populated key that is still importable. Keep them one shared list.
 func TestSupportedConditionKeysMatchRequestContext(t *testing.T) {
-	// Exercise requestContext with a request that populates every attribute it can set: a RemoteAddr
-	// yields the source IP, and authenticated is always set.
+	// Exercise requestContext with a request + claims that populate every attribute it can set: a
+	// RemoteAddr yields the source IP, a principal id yields username, and authenticated is always set.
 	req := httptest.NewRequest("GET", "http://shim/", nil)
 	req.RemoteAddr = "203.0.113.7:5555"
+	claims := iam.Claims{Sub: "alice"}
 	populated := map[string]bool{}
-	for k := range requestContext(req) {
+	for k := range requestContext(claims, req) {
 		populated[k] = true
 	}
 

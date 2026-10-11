@@ -229,3 +229,94 @@ func TestImportAWS_DeduplicatesResources(t *testing.T) {
 		t.Fatalf("want a single deduped Bucket::reports, got %#v", stmts[0].Resources)
 	}
 }
+
+// §266: StringEquals on aws:username imports to an equality condition and enforces it.
+func TestImportAWS_UsernameStringEquals(t *testing.T) {
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"StringEquals":{"aws:username":"alice"}}}]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
+	}
+	if len(stmts) != 1 || stmts[0].Condition["username"] != "alice" {
+		t.Fatalf("want username==alice, got %#v", stmts)
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "x"}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "alice"}}); !d.Allowed {
+		t.Error("alice should be allowed")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "bob"}}); d.Allowed {
+		t.Error("bob should be denied")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+		t.Error("absent username should be denied (allow condition unsatisfied)")
+	}
+}
+
+// §266: StringLike on aws:username imports to a wildcard condition and enforces the pattern.
+func TestImportAWS_UsernameStringLike(t *testing.T) {
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"StringLike":{"aws:username":"admin-*"}}}]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
+	}
+	if len(stmts) != 1 || len(stmts[0].LikeConditions) != 1 || stmts[0].LikeConditions[0].Pattern != "admin-*" {
+		t.Fatalf("want one like condition admin-*, got %#v", stmts)
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "x"}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "admin-ops"}}); !d.Allowed {
+		t.Error("admin-ops should match admin-* → allowed")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "dev-x"}}); d.Allowed {
+		t.Error("dev-x should not match admin-* → denied")
+	}
+}
+
+// §266 security: a Deny gated on StringNotLike aws:username fails CLOSED when username is absent.
+func TestImportAWS_UsernameDenyFailsClosedOnAbsent(t *testing.T) {
+	// Allow everything, but Deny unless the username is like "admin-*" (StringNotLike = deny when NOT matching).
+	doc := `{"Statement":[
+		{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*"},
+		{"Effect":"Deny","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"StringNotLike":{"aws:username":"admin-*"}}}
+	]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "x"}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "admin-ops"}}); !d.Allowed {
+		t.Error("admin-ops matches → NotLike false → deny does not fire → allowed")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "intruder"}}); d.Allowed {
+		t.Error("intruder → NotLike true → deny fires → denied")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+		t.Error("FAIL-OPEN: absent username must DENY (the forbid absent-key guard)")
+	}
+}
+
+// §266: AWS '?' in StringLike is refused (Cedar's `like` can't express a single-char wildcard).
+func TestImportAWS_StringLikeQuestionMarkRefused(t *testing.T) {
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"StringLike":{"aws:username":"a?b"}}}]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(stmts) != 0 {
+		t.Fatalf("a '?' StringLike must refuse the statement, got %#v", stmts)
+	}
+	if !strings.Contains(strings.Join(unsupported, "\n"), "?") {
+		t.Fatalf("expected a '?' refusal reason, got %v", unsupported)
+	}
+}
