@@ -315,7 +315,15 @@ are registered from their spec-mirror ConfigMaps, so a cfn-/GitOps-applied table
 `CreateTable`. **Streams:** a table with a `StreamSpecification` (or `kind: Table` `spec.streamSpecification`)
 emits an ordered INSERT/MODIFY/REMOVE change record per item write, read via the **dynamodbstreams** API
 (`DescribeStream`/`GetShardIterator`/`GetRecords`) — Postgres-backed shard log, one shard in v1, 24h retention
-(needs `MONGO_PG_URI`). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`, `DeleteTable`.
+(needs `MONGO_PG_URI`). **Continuous backups / PITR:** the backend is CloudNativePG with continuous WAL
+archiving, so `DescribeContinuousBackups`/`UpdateContinuousBackups` are real (per-table PITR toggle;
+`EarliestRestorableDateTime` reports the backend's actual firstRecoverabilityPoint, never a window no
+backup can satisfy), and **`RestoreTableToPointInTime` is a real asynchronous backend recovery** — it
+launches a Job that bootstraps a recovery Postgres cluster from the WAL archive, copies the source
+table's collection + indexes into the new table, and flips it `CREATING`→`ACTIVE` (or `CREATE_FAILED`,
+never a false success), observable via `DescribeTable`. `UseLatestRestorableTime` is supported; a
+specific past `RestoreDateTime` is refused loudly (a CNPG/PostgreSQL `recovery_target_time` limitation,
+tracked). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`, `DeleteTable`.
 Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions and streams).
 
 ### SQS (Postgres-backed; probe-proven)
