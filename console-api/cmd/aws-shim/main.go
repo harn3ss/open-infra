@@ -532,7 +532,7 @@ func run(logger *slog.Logger) error {
 	// client (shim SA client for stack-record bookkeeping) + the in-cluster rest.Config (to impersonate).
 	if dyn != nil {
 		cfnNS := getenv("CFN_NAMESPACE", "default")
-		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, logger); cerr != nil {
+		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
 			logger.Warn("CloudFormation front door disabled", slog.String("error", cerr.Error()))
 		} else {
 			services["cloudformation"] = cfnH

@@ -125,7 +125,73 @@ var translators = map[string]translator{
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).
-func hasTranslator(cfnType string) bool { _, ok := translators[cfnType]; return ok }
+// translatorFor returns the translator for a CFN type, routing any custom resource
+// (AWS::CloudFormation::CustomResource or Custom::*) to translateCustomResource (#269), since those
+// aren't exact keys in the registry. Returns nil when the type is not create-provisionable.
+func translatorFor(cfnType string) translator {
+	if t, ok := translators[cfnType]; ok {
+		return t
+	}
+	if isCustomResourceType(cfnType) {
+		return translateCustomResource
+	}
+	return nil
+}
+
+// isCustomResourceType reports whether a CFN type is a Lambda-backed custom resource.
+func isCustomResourceType(cfnType string) bool {
+	return cfnType == "AWS::CloudFormation::CustomResource" || strings.HasPrefix(cfnType, "Custom::")
+}
+
+func hasTranslator(cfnType string) bool { return translatorFor(cfnType) != nil }
+
+// A custom resource does not translate to a k8s object — it translates to this sentinel manifest, which
+// the deploy loop recognizes (never applies as an object) and turns into a synchronous Function invoke.
+const (
+	customResourceAPIVersion = "cfn.openinfra.dev/v1"
+	customResourceKind       = "CustomResourceInvoke"
+)
+
+// translateCustomResource handles a Lambda-backed custom resource (#269). Fail-closed: ServiceToken must
+// !Ref/!GetAtt an in-stack AWS::Lambda::Function — an out-of-stack / AWS-ARN ServiceToken has no invoke
+// target on open-infra. The sentinel manifest carries the backing Function name, the CFN resource type,
+// and the (resolved) ResourceProperties the handler receives.
+func translateCustomResource(logicalID string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	fin := func(msg string) []Finding { return []Finding{{"Resource " + logicalID, msg}} }
+	if ctx == nil {
+		return nil, fin("a custom resource needs stack context to resolve its ServiceToken")
+	}
+	raw, ok := ctx.rawProps(logicalID)
+	if !ok {
+		return nil, fin("custom resource has no properties")
+	}
+	stRaw, hasST := raw["ServiceToken"]
+	if !hasST {
+		return nil, fin("a custom resource requires a ServiceToken")
+	}
+	fnID, ok := getAttTarget(stRaw)
+	if !ok || !ctx.isType(fnID, "AWS::Lambda::Function") {
+		return nil, fin("ServiceToken must !Ref or !GetAtt an in-stack AWS::Lambda::Function — an out-of-stack or AWS-ARN ServiceToken has no invoke target on open-infra (author the handler as a kind: Function in this stack)")
+	}
+	// ResourceProperties = the resolved properties minus ServiceToken (what AWS passes to the handler).
+	rp := map[string]any{}
+	for k, v := range props {
+		if k == "ServiceToken" {
+			continue
+		}
+		rp[k] = v
+	}
+	return &Manifest{
+		APIVersion: customResourceAPIVersion,
+		Kind:       customResourceKind,
+		Name:       k8sName(logicalID),
+		Spec: map[string]any{
+			"function":     k8sName(fnID),
+			"resourceType": ctx.template.Resources[logicalID].Type,
+			"properties":   rp,
+		},
+	}, nil
+}
 
 // ---- AWS::KMS::Key -> kind: EncryptionKey ----
 //

@@ -114,11 +114,26 @@ part of another kind rather than on its own. The caveat is always printed.
 | `AWS::Cognito::UserPool` / `UserPoolClient` | `kind: UserPool` | a hosted OIDC pool (Keycloak realm); MFA, Lambda triggers, and schema do not transfer |
 | `AWS::ECS::Service` (+ its `TaskDefinition`) | `kind: Application` | a Service and its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer |
 
+### Custom resources (`AWS::CloudFormation::CustomResource` / `Custom::*`)
+
+A Lambda-backed custom resource is **supported** (#269): at deploy, the in-stack `kind: Function`
+named by `ServiceToken` is **invoked synchronously** at the resource's point in dependency order with
+the CloudFormation custom-resource event (`RequestType` `Create`/`Delete`, `ResourceProperties`), and
+its returned **`Data`** resolves later resources' `Fn::GetAtt`. This is the faithful AWS behaviour,
+with one open-infra adaptation: the handler **returns** `{"Status":"SUCCESS"|"FAILED","Data":{…}}`
+synchronously rather than PUT-ing it to a pre-signed S3 `ResponseURL` (open-infra has no S3 callback
+surface). A `FAILED` status fails the deploy (all-or-nothing rollback). On stack teardown the Function
+gets a `Delete` event. **Fail-closed:** `ServiceToken` must `!Ref`/`!GetAtt` an **in-stack**
+`AWS::Lambda::Function` — an out-of-stack / AWS-ARN ServiceToken has no invoke target and refuses.
+**Carve-outs (v1):** a stack **UPDATE** that touches a custom resource refuses (destroy + recreate —
+a custom resource has no diffable state); custom resources are not drift-tracked (no live object); and
+the invoke needs the **in-cluster** deploy path (the aws-shim CloudFormation doorway), so the local
+`cfn` CLI refuses a custom-resource stack.
+
 ### Unsupported
 
-`AWS::CloudFormation::Stack` (nested stacks), `AWS::CloudFormation::CustomResource`, and
-every `Custom::*` type are **unsupported** for now, and produce a `REJECTED` verdict with
-the reason stated.
+`AWS::CloudFormation::Stack` (nested stacks) is **unsupported** for now, and produces a `REJECTED`
+verdict with the reason stated.
 
 > `AWS::DynamoDB::Table` graduated from gated to **partial** once the aws-shim's DynamoDB
 > data layer gained atomic transactions + TTL and a declarative `kind: Table`. `kind: Table`

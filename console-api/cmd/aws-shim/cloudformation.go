@@ -18,12 +18,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -49,16 +51,18 @@ const cfnAsyncTimeout = 15 * time.Minute
 const cfnWaitTimeout = 10 * time.Minute
 
 type cfnDoorway struct {
-	cfg     *rest.Config      // base in-cluster config; copied + impersonated per caller
-	shimDyn dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
-	mapper  meta.RESTMapper
-	account string
-	region  string
-	ns      string
-	logger  *slog.Logger
+	cfg       *rest.Config      // base in-cluster config; copied + impersonated per caller
+	shimDyn   dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
+	mapper    meta.RESTMapper
+	account   string
+	region    string
+	ns        string
+	svcSuffix string       // cluster-local DNS suffix for Knative Functions (custom-resource invoke, #269)
+	invoker   *http.Client // invokes a custom resource's backing Function synchronously
+	logger    *slog.Logger
 }
 
-func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns string, logger *slog.Logger) (*cfnDoorway, error) {
+func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns, svcSuffix string, logger *slog.Logger) (*cfnDoorway, error) {
 	dc, err := discoveryclient.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("cfn doorway discovery client: %w", err)
@@ -67,7 +71,40 @@ func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region,
 	if region == "" {
 		region = "us-east-1"
 	}
-	return &cfnDoorway{cfg: cfg, shimDyn: shimDyn, mapper: mapper, account: account, region: region, ns: ns, logger: logger}, nil
+	if svcSuffix == "" {
+		svcSuffix = "svc.cluster.local"
+	}
+	// A generous timeout: Knative scale-from-zero makes the FIRST request to a custom resource's Function
+	// block while the pod cold-starts; the request is queued, not dropped.
+	return &cfnDoorway{cfg: cfg, shimDyn: shimDyn, mapper: mapper, account: account, region: region, ns: ns,
+		svcSuffix: svcSuffix, invoker: &http.Client{Timeout: 3 * time.Minute}, logger: logger}, nil
+}
+
+// invokeCustomResourceFn is the cfn.InvokeFunc for a Lambda-backed custom resource (#269): it POSTs the
+// CloudFormation custom-resource event to the in-stack Function's cluster-local Knative URL and parses the
+// handler's {Status, Data, Reason} response. The open-infra adaptation of the ResponseURL callback — the
+// handler RETURNS its response synchronously rather than PUT-ing it to a pre-signed S3 URL.
+func (h *cfnDoorway) invokeCustomResourceFn(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, error) {
+	target := "http://" + functionName + "." + namespace + "." + h.svcSuffix + "/"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(event))
+	if err != nil {
+		return nil, fmt.Errorf("building custom-resource invoke request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.invoker.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("invoking custom-resource Function %q at %s: %w", functionName, target, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("custom-resource Function %q returned HTTP %d: %s", functionName, resp.StatusCode, string(body))
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("custom-resource Function %q returned a non-JSON response: %w", functionName, err)
+	}
+	return out, nil
 }
 
 func (h *cfnDoorway) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
@@ -170,7 +207,12 @@ func (h *cfnDoorway) stackID(name string) string {
 }
 
 func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptions {
-	return cfn.DeployOptions{StackName: name, Namespace: h.ns, Params: params, Wait: true, Timeout: cfnWaitTimeout}
+	return cfn.DeployOptions{
+		StackName: name, Namespace: h.ns, Params: params, Wait: true, Timeout: cfnWaitTimeout,
+		// In-cluster: a custom resource's backing Function is invokable (#269). The CLI deploy path leaves
+		// this nil, so a custom-resource stack there refuses rather than guessing.
+		Invoke: h.invokeCustomResourceFn,
+	}
 }
 
 // --- stack lifecycle (async) ---

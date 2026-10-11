@@ -2,11 +2,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Things the engine must refuse — an unsupported type and an unsupported intrinsic. Nothing here should provision.
 
 Resources:
-  # unsupported: custom resources are out of scope for v1.
+  # unsupported: no backing open-infra kind (the engine never guesses).
   Users:
-    Type: AWS::CloudFormation::CustomResource
+    Type: AWS::GuardDuty::Detector
     Properties:
-      ServiceToken: arn:aws:sns:x
+      Enable: true
 
   # supported type, but pulls a value from another stack — an unsupported intrinsic.
   Fn:

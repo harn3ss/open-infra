@@ -101,7 +101,7 @@ func TestPlan_Unsupported_Rejected(t *testing.T) {
 		t.Fatalf("verdict = %s, want REJECTED", p.Verdict)
 	}
 	b := blockersJoined(p)
-	for _, want := range []string{"CustomResource", "ImportValue"} {
+	for _, want := range []string{"GuardDuty", "ImportValue"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("blockers missing %q:\n%s", want, b)
 		}
@@ -186,10 +186,17 @@ Resources:
 	}
 }
 
-func TestLookup_UnknownAndCustomUnsupported(t *testing.T) {
-	for _, ty := range []string{"AWS::Nonexistent::Thing", "Custom::MyResource"} {
+func TestLookup_UnknownUnsupported_CustomSupported(t *testing.T) {
+	// A genuinely-unknown type stays unsupported — the engine never guesses.
+	for _, ty := range []string{"AWS::Nonexistent::Thing", "AWS::GuardDuty::Detector"} {
 		if e := Lookup(ty); e.Status != Unsupported || e.mappable() {
 			t.Errorf("Lookup(%q) = %+v, want unsupported/not-mappable", ty, e)
+		}
+	}
+	// A Lambda-backed custom resource IS supported now (#269): invoke-at-deploy with a create translator.
+	for _, ty := range []string{"AWS::CloudFormation::CustomResource", "Custom::MyResource"} {
+		if e := Lookup(ty); !e.mappable() || !hasTranslator(ty) {
+			t.Errorf("Lookup(%q) = %+v, want supported/mappable with a translator", ty, e)
 		}
 	}
 	if !Lookup("AWS::Lambda::Function").mappable() {
