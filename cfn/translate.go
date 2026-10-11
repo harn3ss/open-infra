@@ -89,6 +89,7 @@ var translators = map[string]translator{
 	"AWS::Lambda::Function":                 translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine":      translateStateMachine,
 	"AWS::EC2::Volume":                      translateVolume,
+	"AWS::EC2::VPCEndpoint":                 translateEC2VPCEndpoint,
 	"AWS::EC2::Instance":                    translateEC2Instance,
 	"AWS::EC2::VPC":                         translateEC2VPC,
 	"AWS::EC2::Subnet":                      translateEC2Subnet,
@@ -634,6 +635,69 @@ func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manife
 		}
 	}
 	return m, f
+}
+
+// ---- AWS::EC2::VPCEndpoint -> kind: VpcEndpoint ----
+//
+// A private DNS alias to the one aws-shim front door for an AWS service (the open-infra VpcEndpoint
+// semantics — see platform/networking/kube-ovn/vpcendpoint-xrd.yaml). ServiceName -> service,
+// VpcEndpointType carried for fidelity, a VpcId !Ref to an in-stack AWS::EC2::VPC -> vpc. Endpoint
+// policies / route tables / subnets / SGs don't map: every service routes to the shim and access
+// control is IAM/Cedar at the shim, not per-endpoint (caveats, never a silent unenforced policy).
+func translateEC2VPCEndpoint(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"ServiceName": true, "VpcId": true, "VpcEndpointType": true, "PolicyDocument": true,
+		"RouteTableIds": true, "SubnetIds": true, "SecurityGroupIds": true, "PrivateDnsEnabled": true, "Tags": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	spec := map[string]any{}
+	if sn, ok := concrete(props["ServiceName"]); ok && sn != "" {
+		spec["service"] = serviceFromServiceName(sn)
+	} else {
+		f = append(f, Finding{"Resource " + id, "ServiceName is required to create a VpcEndpoint"})
+	}
+	// VpcEndpointType (Gateway|Interface); AWS defaults to Gateway. Carried for fidelity (both route to the shim).
+	etype := "Gateway"
+	if v, ok := concrete(props["VpcEndpointType"]); ok && v != "" {
+		etype = v
+	}
+	spec["vpcEndpointType"] = etype
+	// VpcId: a !Ref to an in-stack AWS::EC2::VPC -> the owning kind: Vpc (optional, fidelity).
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if t, ok := refTarget(raw["VpcId"]); ok {
+				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::VPC" {
+					spec["vpc"] = k8sName(t)
+				}
+			}
+		}
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VpcEndpoint", Name: k8sName(id), Spec: spec}
+	if _, ok := props["PolicyDocument"]; ok {
+		m.Caveats = append(m.Caveats, "PolicyDocument dropped — the VpcEndpoint is a private DNS alias to the aws-shim; access through it is governed by IAM/Cedar at the shim, not a per-endpoint policy")
+	}
+	for _, p := range []string{"RouteTableIds", "SubnetIds", "SecurityGroupIds", "PrivateDnsEnabled", "Tags"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — every service endpoint routes to the one aws-shim front door; route tables/subnets/SGs/private-DNS-toggle/tags don't map")
+		}
+	}
+	return m, f
+}
+
+// serviceFromServiceName extracts the service token from an AWS endpoint ServiceName
+// ("com.amazonaws.<region>.<service…>" -> "<service…>", e.g. s3 / dynamodb / ecr.dkr), falling back to
+// the last dotted token for an unrecognized shape.
+func serviceFromServiceName(sn string) string {
+	parts := strings.Split(sn, ".")
+	if len(parts) >= 4 && parts[0] == "com" && parts[1] == "amazonaws" {
+		return strings.Join(parts[3:], ".")
+	}
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return sn
 }
 
 // ---- Structural EC2 networking resources -> implicit (no-op) ----
