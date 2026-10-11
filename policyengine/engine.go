@@ -39,6 +39,7 @@ type Statement struct {
 	Condition      map[string]string // request-context keys that must equal these values ("true"/"false" => bool)
 	IPConditions   []IPCondition     // aws:SourceIp-style CIDR conditions, evaluated via Cedar's ipaddr extension
 	LikeConditions []LikeCondition   // StringLike/StringNotLike wildcard conditions, evaluated via Cedar's `like`
+	TimeConditions []TimeCondition   // aws:CurrentTime Date* conditions, evaluated via Cedar's datetime extension
 }
 
 // IPCondition is a CIDR test on a request-context attribute that holds an IP (today only "sourceIp",
@@ -65,6 +66,19 @@ type LikeCondition struct {
 	Negate  bool   // true => StringNotLike (must NOT match)
 }
 
+// TimeCondition is a datetime comparison on a time-valued request-context attribute (today
+// "currentTime"), from an AWS Date* condition operator. It renders to Cedar's datetime extension:
+// datetime(context.<Key>) <Op> datetime("<Target>"), where Op is one of < <= > >= (DateLessThan,
+// DateLessThanEquals, DateGreaterThan, DateGreaterThanEquals). Target is a Cedar-parseable datetime
+// string (validated at import, so it can't error at eval). The attribute carries an RFC3339 string the
+// shim populates; like IPConditions it is sanitized to "absent" if unparseable, so the forbid absent-key
+// guard keeps a Deny gated on it fail-closed.
+type TimeCondition struct {
+	Key    string // request-context attribute, e.g. "currentTime"
+	Op     string // "<", "<=", ">", ">="
+	Target string // Cedar datetime literal argument, e.g. "2025-01-01T00:00:00Z"
+}
+
 // Principal identifies the subject of a request (the SigV4-authenticated open-infra identity).
 type Principal struct{ Type, ID string } // Type: User | Group | Key
 
@@ -88,8 +102,9 @@ type Decision struct {
 // Engine holds a compiled Cedar policy set plus the set of context attributes any IP condition reads
 // (ipKeys), which Authorize sanitises so a malformed IP cannot make a Deny fail open.
 type Engine struct {
-	ps     *cedar.PolicySet
-	ipKeys map[string]bool
+	ps       *cedar.PolicySet
+	ipKeys   map[string]bool
+	timeKeys map[string]bool
 }
 
 // NewEngine compiles open-infra statements into a Cedar policy set.
@@ -114,6 +129,7 @@ func NewEngineWithBoundary(statements, boundary []Statement) (*Engine, error) {
 func newEngine(statements []Statement, extra string) (*Engine, error) {
 	var b strings.Builder
 	ipKeys := map[string]bool{}
+	timeKeys := map[string]bool{}
 	for i, s := range statements {
 		clause, err := s.toCedar(i)
 		if err != nil {
@@ -124,6 +140,9 @@ func newEngine(statements []Statement, extra string) (*Engine, error) {
 		for _, ip := range s.IPConditions {
 			ipKeys[ip.Key] = true
 		}
+		for _, tc := range s.TimeConditions {
+			timeKeys[tc.Key] = true
+		}
 	}
 	if extra != "" {
 		b.WriteString(extra)
@@ -133,7 +152,7 @@ func newEngine(statements []Statement, extra string) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile policy: %w", err)
 	}
-	return &Engine{ps: ps, ipKeys: ipKeys}, nil
+	return &Engine{ps: ps, ipKeys: ipKeys, timeKeys: timeKeys}, nil
 }
 
 // Authorize evaluates a request: an explicit Deny wins, else an Allow permits, else default-deny.
@@ -167,6 +186,26 @@ func (e *Engine) Authorize(r Request) Decision {
 			continue
 		}
 		if _, err := types.ParseIPAddr(string(s)); err != nil {
+			delete(ctx, key)
+		}
+	}
+	// Sanitise datetime-typed attributes the same way: a time condition renders to
+	// datetime(context.<key>) <op> datetime(...); if context.<key> is present but not a parseable Cedar
+	// datetime, datetime() ERRORS at eval → an errored `when` skips a forbid → fail OPEN. Collapse
+	// "present but unparseable" into "absent" so the forbid absent-key guard denies. types.ParseDatetime
+	// is the exact parser Cedar's datetime() uses, so a value kept here cannot then error inside Cedar.
+	for k := range e.timeKeys {
+		key := types.String(k)
+		v, ok := ctx[key]
+		if !ok {
+			continue
+		}
+		s, isStr := v.(types.String)
+		if !isStr {
+			delete(ctx, key)
+			continue
+		}
+		if _, err := types.ParseDatetime(string(s)); err != nil {
 			delete(ctx, key)
 		}
 	}
@@ -273,6 +312,18 @@ func (s Statement) toCedar(idx int) (string, error) {
 		}
 		value = append(value, test)
 		keys = append(keys, lk.Key)
+	}
+	for _, tc := range s.TimeConditions {
+		if tc.Key == "" || tc.Op == "" || tc.Target == "" {
+			return "", fmt.Errorf("statement %d: time condition needs a key, operator, and target", idx)
+		}
+		switch tc.Op {
+		case "<", "<=", ">", ">=":
+		default:
+			return "", fmt.Errorf("statement %d: time condition operator %q must be one of < <= > >=", idx, tc.Op)
+		}
+		value = append(value, fmt.Sprintf("datetime(context.%s) %s datetime(%q)", tc.Key, tc.Op, tc.Target))
+		keys = append(keys, tc.Key)
 	}
 
 	terms := scope

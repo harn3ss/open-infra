@@ -88,14 +88,18 @@ that principal is unaffected there.
 supports (`s3:*`, `dynamodb:*`, `lambda:*`) — `Effect` → `permit`/`forbid`, ARNs → typed resources
 (`arn:aws:s3:::reports/*` → `Bucket::reports`, a table ARN → `Table::metrics`). Everything it cannot
 honor is **reported, never silently granted or dropped**: an action for a service with no data plane,
-an unrecognizable ARN, a statement with no mappable `Resource`, and — deliberately — any `Condition`
-(a silently-ineffective `Deny` condition is a security hole, so conditions are refused wholesale in
-v1 rather than guessed; the engine evaluates conditions natively, so author them on `spec.dataPlane`).
+an unrecognizable ARN, a statement with no mappable `Resource`, and any `Condition` outside the narrow
+supported set — `aws:SourceIp` (IpAddress/NotIpAddress), `aws:username` (StringEquals, StringLike/NotLike
+`*`-wildcard), `aws:CurrentTime` (Date{Greater,Less}Than[Equals]), and the authenticated-principal flag.
+A supported condition is **populated on every request and sanitised** so a key that is absent or malformed
+makes a gated `Deny` fail *closed* (deny), never silently vanish; an unsupported key or operator, or a
+multi-valued condition, is refused wholesale rather than guessed (a silently-ineffective `Deny` condition
+is a security hole) — author those natively on `spec.dataPlane`, which the engine evaluates directly.
 
 This is what lets the CFN engine translate `AWS::IAM::Policy`: `translateIAMPolicy` runs the importer
 and, being fail-closed to a fault, **blocks the whole resource** if the importer reports *any*
 unsupported part (a partial security policy is worse than none) — so only a policy that is purely
-data-plane actions on recognizable ARNs with no conditions becomes a `kind: Policy spec.dataPlane`,
+data-plane actions on recognizable ARNs with supported-or-no conditions becomes a `kind: Policy spec.dataPlane`,
 attached to its `Users`/`Groups`. A `Roles` attachment blocks (the shim authenticates Users and
 access keys, not assumed roles). See [`cloudformation.md`](cloudformation.md).
 

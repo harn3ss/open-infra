@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -44,12 +45,19 @@ func s3Action(kind string) string {
 }
 
 // requestContext is the Cedar condition context: the request is past SigV4 auth (authenticated), the
-// source IP, and the calling principal's name (username — the data-plane principal id: a User's name or
-// an assumed Role's name). Each attribute here MUST stay in lockstep with policyengine's
-// SupportedConditionKeys (the TestSupportedConditionKeysMatchRequestContext drift guard): supporting a
-// condition key the shim never populates would make a Deny gated on it silently never fire.
+// source IP, the calling principal's name (username — the data-plane principal id: a User's name or an
+// assumed Role's name), and the wall-clock time the request is evaluated (currentTime, for aws:CurrentTime
+// Date* conditions). Each attribute here MUST stay in lockstep with policyengine's SupportedConditionKeys
+// (the TestSupportedConditionKeysMatchRequestContext drift guard): supporting a condition key the shim
+// never populates would make a Deny gated on it silently never fire. currentTime is ALWAYS populated —
+// the datetime attr must never be absent, or a time-window Deny would fail open via the forbid guard.
 func requestContext(claims iam.Claims, r *http.Request) map[string]any {
-	c := map[string]any{"authenticated": true}
+	c := map[string]any{
+		"authenticated": true,
+		// RFC3339 UTC with a trailing Z — the form cedar-go's datetime() parses (the import path validates
+		// targets with the same parser, so both sides of every comparison are Cedar-parseable).
+		"currentTime": time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}
 	if r != nil {
 		if ip := clientIP(r); ip != "" {
 			c["sourceIp"] = ip

@@ -181,7 +181,7 @@ func TestImportAWS_RefusesUnpopulatedConditionKey(t *testing.T) {
 // (DateGreaterThan) blocks the WHOLE statement — nothing is applied partially (dropping the date
 // condition would broaden the grant beyond what was authored).
 func TestImportAWS_RefusesWholeStatementOnUnmappableOperator(t *testing.T) {
-	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::reports/*","Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"},"DateGreaterThan":{"aws:CurrentTime":"2020-01-01T00:00:00Z"}}}]}`
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::reports/*","Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"},"NumericLessThan":{"aws:username":"3600"}}}]}`
 	stmts, unsupported, err := ImportAWS(doc)
 	if err != nil {
 		t.Fatalf("import: %v", err)
@@ -318,5 +318,112 @@ func TestImportAWS_StringLikeQuestionMarkRefused(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(unsupported, "\n"), "?") {
 		t.Fatalf("expected a '?' refusal reason, got %v", unsupported)
+	}
+}
+
+// §266 time: Date{Greater,Less}Than on aws:CurrentTime imports to a datetime window and enforces it.
+func TestImportAWS_CurrentTimeWindow(t *testing.T) {
+	// Allow s3:GetObject only within [2025-01-01, 2026-01-01).
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"DateGreaterThan":{"aws:CurrentTime":"2025-01-01T00:00:00Z"},"DateLessThan":{"aws:CurrentTime":"2026-01-01T00:00:00Z"}}}]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
+	}
+	if len(stmts) != 1 || len(stmts[0].TimeConditions) != 2 {
+		t.Fatalf("want 1 stmt with 2 time conditions, got %#v", stmts)
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "x"}
+	in := map[string]any{"currentTime": "2025-06-15T12:00:00Z"}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, in}); !d.Allowed {
+		t.Error("in-window request should be allowed")
+	}
+	before := map[string]any{"currentTime": "2024-12-31T23:59:59Z"}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, before}); d.Allowed {
+		t.Error("before-window request should be denied")
+	}
+	after := map[string]any{"currentTime": "2026-02-01T00:00:00Z"}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, after}); d.Allowed {
+		t.Error("after-window request should be denied")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+		t.Error("absent currentTime should be denied (allow condition unsatisfied)")
+	}
+}
+
+// §266 security: a Deny gated on a Date* aws:CurrentTime condition fails CLOSED when currentTime is
+// absent or malformed — the forbid absent-key guard must deny, never fail open.
+func TestImportAWS_CurrentTimeDenyFailsClosed(t *testing.T) {
+	// Allow everything, but Deny s3:GetObject after a cutoff (DateGreaterThan).
+	doc := `{"Statement":[
+		{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*"},
+		{"Effect":"Deny","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"DateGreaterThan":{"aws:CurrentTime":"2025-01-01T00:00:00Z"}}}
+	]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "User", ID: "x"}
+	// Before the cutoff: allowed (deny's DateGreaterThan not satisfied).
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"currentTime": "2024-06-01T00:00:00Z"}}); !d.Allowed {
+		t.Error("before-cutoff request should be allowed")
+	}
+	// After the cutoff: denied.
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"currentTime": "2025-06-01T00:00:00Z"}}); d.Allowed {
+		t.Error("after-cutoff request should be denied")
+	}
+	// Absent currentTime: the Deny's forbid absent-key guard must fire → DENY (fail closed).
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+		t.Error("FAIL-OPEN: absent currentTime must DENY (the forbid absent-key guard)")
+	}
+	// Malformed currentTime: sanitised to absent → same forbid guard denies (fail closed).
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"currentTime": "not-a-date"}}); d.Allowed {
+		t.Error("FAIL-OPEN: malformed currentTime must DENY (sanitised to absent)")
+	}
+}
+
+// §266 time: a Date* value Cedar's datetime() can't parse is refused (fail closed, never approximated).
+func TestImportAWS_CurrentTimeUnparseableRefused(t *testing.T) {
+	// "+00:00" offset form: RFC3339 but NOT the form cedar-go's datetime() accepts.
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"DateGreaterThan":{"aws:CurrentTime":"2025-01-01T00:00:00+00:00"}}}]}`
+	stmts, unsupported, err := ImportAWS(doc)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(stmts) != 0 {
+		t.Fatalf("an unparseable datetime must refuse the statement, got %#v", stmts)
+	}
+	if !strings.Contains(strings.Join(unsupported, "\n"), "datetime") {
+		t.Fatalf("expected a datetime refusal reason, got %v", unsupported)
+	}
+}
+
+// §266 time: Date* on a non-time key (and StringEquals on aws:CurrentTime) is refused — operator/type
+// mismatches must fail closed, never silently coerce.
+func TestImportAWS_DateOperatorTypeMismatchRefused(t *testing.T) {
+	// Date* on aws:username (a string key) is refused.
+	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"DateGreaterThan":{"aws:username":"2025-01-01T00:00:00Z"}}}]}`
+	stmts, _, err := ImportAWS(doc)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(stmts) != 0 {
+		t.Fatalf("Date* on a string key must refuse the statement, got %#v", stmts)
+	}
+	// StringEquals on aws:CurrentTime (a time key) is refused — use the Date* operators.
+	doc2 := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"StringEquals":{"aws:CurrentTime":"2025-01-01T00:00:00Z"}}}]}`
+	stmts2, _, err := ImportAWS(doc2)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(stmts2) != 0 {
+		t.Fatalf("StringEquals on a time key must refuse the statement, got %#v", stmts2)
 	}
 }

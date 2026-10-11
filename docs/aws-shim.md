@@ -916,7 +916,9 @@ honor, and the doorway **refuses** a policy with any unsupported part (`Malforme
 storing a grant that differs from the JSON. `NotAction`/`NotResource` — which the importer drops silently —
 are rejected explicitly. Deny statements translate to Cedar `forbid` (forbid overrides permit). The importer
 covers S3/DynamoDB/Lambda actions + a narrow condition set (authenticated, `aws:SourceIp`, `aws:username` —
-StringEquals/StringLike); anything outside that is refused, not narrowed.
+StringEquals/StringLike, and `aws:CurrentTime` — `Date{Greater,Less}Than[Equals]` time windows); anything
+outside that is refused, not narrowed. The time keys render to Cedar's `datetime` extension and the shim
+populates `currentTime` on every request, so a time-boxed `Deny` cannot fail open on an absent clock.
 
 `probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy` (JSON→Cedar) + `CreateRole` (trust)
 + `AttachRolePolicy`; the **live `AssumeRole`→S3 round-trip** — an STS-assumed session does **exactly** what
