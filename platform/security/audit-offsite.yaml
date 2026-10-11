@@ -295,6 +295,7 @@ spec:
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
                 - { name: AUDIT_VERIFY_MODE, value: "incremental" } # O(new) hourly; daily full is the backstop
+                - { name: GOMEMLIMIT, value: "224MiB" } # bound the GC under the cgroup limit (falls back to full with no anchor) (#294)
               resources:
                 # Incremental re-derives only segments newer than the anchor, so hourly cost no longer scales
                 # with total chain length (the durable fix the full-verify comment called for; the daily full
@@ -345,6 +346,10 @@ spec:
                 - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: accessKey } } }
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
+                # Go's GC does NOT read the cgroup limit, so under GOGC=100 it can grow the heap to ~2x the
+                # live set and be OOMKilled before collecting — the risk that grows with the chain. A soft
+                # GOMEMLIMIT under the 256Mi limit makes the GC keep peak heap bounded. (#294)
+                - { name: GOMEMLIMIT, value: "224MiB" }
               resources:
                 requests: { cpu: 250m, memory: 64Mi }
                 limits: { cpu: 2000m, memory: 256Mi }
