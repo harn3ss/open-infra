@@ -312,11 +312,16 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 	writeDynamoJSON(w, requestID, map[string]any{"Table": tbl})
 }
 
-// deleteTable — DynamoDB_20120810.DeleteTable. Drops the item collection (and with it its data + GSI/LSI
-// indexes), tears down the table's stream log, and removes the registry entry. A table still being
-// created (e.g. mid-restore, status CREATING) is refused with ResourceInUseException, matching AWS.
-// Returns the table in DELETING, as AWS does (the drop is synchronous, so a follow-up DescribeTable is
-// ResourceNotFound).
+// deleteTable — DynamoDB_20120810.DeleteTable. Removes the table: deletes all its items, tears down the
+// stream log, and removes the registry entry (which is what makes the table resolve), so a follow-up
+// DescribeTable is ResourceNotFound. A table still being created (e.g. mid-restore, status CREATING) is
+// refused with ResourceInUseException, matching AWS. Returns the table in DELETING, as AWS does.
+//
+// NOTE: it deletes the items rather than DROPPING the backing collection — the FerretDB/documentdb
+// backend cannot drop a collection under CNPG (documentdb's internal libpq connection is unauthenticated;
+// see platform/aws-shim/dynamodb-backend.yaml). So an EMPTY collection shell remains, invisible to the
+// DynamoDB API (the table is gone: no registry entry, no items). True collection drop is a tracked
+// backend follow-on.
 func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, requestID, table string) {
 	if table == "" {
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "DeleteTable requires a TableName.")
@@ -333,9 +338,9 @@ func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, 
 			"Table "+table+" is CREATING and cannot be deleted")
 		return
 	}
-	// Drop the item collection (removes its data + indexes), then the stream log (best-effort), then the
-	// registry entry. Order matters: once the registry entry is gone the table no longer resolves.
-	if err := h.db.Collection(table).Drop(ctx); err != nil {
+	// Delete all items, then the stream log (best-effort), then the registry entry. Order matters: once
+	// the registry entry is gone the table no longer resolves (DescribeTable → ResourceNotFound).
+	if _, err := h.db.Collection(table).DeleteMany(ctx, bson.M{}); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
