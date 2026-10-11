@@ -327,6 +327,21 @@ specific past `RestoreDateTime` is refused loudly (a CNPG/PostgreSQL `recovery_t
 tracked). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`.
 Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions and streams).
 
+**Billing mode + capacity — accepted and round-tripped, honestly not metered.** The backend is an
+**on-demand** store (documentdb on Postgres): it does not meter or throttle on read/write capacity units,
+so `PAY_PER_REQUEST` is the native behaviour (and an omitted `BillingMode` defaults to it). `CreateTable`
+nonetheless **accepts and round-trips** `BillingMode` and `ProvisionedThroughput` — a `PROVISIONED` table's
+declared capacity is stored and echoed by `DescribeTable` (`BillingModeSummary` + `ProvisionedThroughput`),
+so an estate's SDK/CloudFormation `CreateTable` calls and any tooling that reads the mode back are faithful;
+an on-demand table reports `0/0`, exactly as AWS. The validation is AWS-faithful (`PROVISIONED` requires
+`ProvisionedThroughput ≥ 1`; `PAY_PER_REQUEST` must not carry one — else `ValidationException`). The
+declared provisioned capacity is **not enforced** (there is nothing to throttle on an on-demand backend) —
+documented, never hidden. **Capacity autoscaling is a non-goal:** Application Auto Scaling
+(`RegisterScalableTarget`/scaling policies) is not fronted, because there is no provisioned throughput to
+scale. `UpdateTable` (changing mode/capacity after create) is a tracked follow-on. Proven by
+`probe/aws-shim-dynamodb.sh` (on-demand reports `PAY_PER_REQUEST` + `0/0`; a `PROVISIONED` table echoes its
+declared capacity; an invalid `PROVISIONED`-without-throughput request is rejected).
+
 ### SQS (Postgres-backed; probe-proven)
 
 The SQS front door speaks the **AWS JSON protocol** (`X-Amz-Target: AmazonSQS.<Op>`, what current

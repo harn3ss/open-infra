@@ -38,9 +38,12 @@ command -v kubectl >/dev/null || inconclusive "kubectl is required to seed the p
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT} (set SHIM_ENDPOINT / port-forward)"
 
 CREATED_KEYS=(); CREATED_USERS=()
+PROV_TABLE="${TABLE}-prov"
 cleanup() {
-  AWS_ACCESS_KEY_ID="${WAK:-}" AWS_SECRET_ACCESS_KEY="${WSK:-}" AWS_REGION="$REGION" \
-    aws --endpoint-url "$ENDPOINT" --no-cli-pager dynamodb delete-table --table-name "$TABLE" >/dev/null 2>&1 || true
+  for t in "$TABLE" "$PROV_TABLE"; do
+    AWS_ACCESS_KEY_ID="${WAK:-}" AWS_SECRET_ACCESS_KEY="${WSK:-}" AWS_REGION="$REGION" \
+      aws --endpoint-url "$ENDPOINT" --no-cli-pager dynamodb delete-table --table-name "$t" >/dev/null 2>&1 || true
+  done
   for s in "${CREATED_KEYS[@]:-}";  do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
 }
@@ -93,6 +96,34 @@ ddb describe-table --table-name "$TABLE" | grep -q '"AttributeName": "sk"' || fa
 ddb describe-table --table-name "$TABLE" | grep -q '"IndexName": "by-cat"' || fail "describe-table missing the GSI by-cat"
 ddb describe-table --table-name "$TABLE" | grep -q "GlobalSecondaryIndexes" || fail "describe-table missing the GlobalSecondaryIndexes block"
 log "  ✓ table + GSI present"
+
+# --- billing mode + provisioned capacity round-trip (#263) ------------------------------------
+log "billing: the on-demand table reports PAY_PER_REQUEST + 0/0 capacity"
+DT="$(ddb describe-table --table-name "$TABLE")"
+echo "$DT" | grep -q '"BillingMode": "PAY_PER_REQUEST"' || fail "describe-table missing BillingModeSummary=PAY_PER_REQUEST: $DT"
+echo "$DT" | grep -q '"ReadCapacityUnits": 0' || fail "on-demand table must report 0 read capacity: $DT"
+log "  ✓ on-demand billing reported"
+
+log "billing: a PROVISIONED table echoes its declared capacity (accepted + round-tripped)"
+ddb create-table --table-name "$PROV_TABLE" \
+  --attribute-definitions AttributeName=id,AttributeType=S \
+  --key-schema AttributeName=id,KeyType=HASH \
+  --billing-mode PROVISIONED --provisioned-throughput ReadCapacityUnits=50,WriteCapacityUnits=25 >/dev/null 2>&1 \
+  || fail "create-table PROVISIONED (with throughput) was rejected"
+DP="$(ddb describe-table --table-name "$PROV_TABLE")"
+echo "$DP" | grep -q '"BillingMode": "PROVISIONED"'  || fail "PROVISIONED table did not round-trip BillingMode: $DP"
+echo "$DP" | grep -q '"ReadCapacityUnits": 50'       || fail "PROVISIONED table did not echo ReadCapacityUnits=50: $DP"
+echo "$DP" | grep -q '"WriteCapacityUnits": 25'      || fail "PROVISIONED table did not echo WriteCapacityUnits=25: $DP"
+log "  ✓ provisioned capacity accepted + echoed (not metered — the backend is on-demand; documented)"
+
+log "billing: PROVISIONED without ProvisionedThroughput is rejected (AWS-faithful validation)"
+if ddb create-table --table-name "${PROV_TABLE}-bad" \
+  --attribute-definitions AttributeName=id,AttributeType=S \
+  --key-schema AttributeName=id,KeyType=HASH --billing-mode PROVISIONED >/dev/null 2>&1; then
+  ddb delete-table --table-name "${PROV_TABLE}-bad" >/dev/null 2>&1 || true
+  fail "PROVISIONED without ProvisionedThroughput should be a ValidationException"
+fi
+log "  ✓ invalid PROVISIONED request rejected"
 
 log "put-item then get-item round-trips the exact item"
 ddb put-item --table-name "$TABLE" --item '{"pk":{"S":"u1"},"sk":{"S":"a"},"n":{"N":"7"},"msg":{"S":"hi"},"cat":{"S":"c1"}}' >/dev/null || fail "put-item failed"
