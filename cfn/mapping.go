@@ -104,7 +104,7 @@ var mappingTable = map[string]MapEntry{
 	"AWS::ECS::Cluster":            {Kind: "(implicit)", Status: Partial, Note: "a grouping with no open-infra counterpart (the k3s cluster is the cluster) — provisions nothing"},
 
 	// --- unsupported: no backing kind / explicitly out of scope for v1 (refused) ---
-	"AWS::CloudFormation::Stack": {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
+	"AWS::CloudFormation::Stack": {Status: Unsupported, Note: "nested stacks are FLATTENED before the engine by FlattenNested (#268) — the cfn CLI inlines each child template (resolved as a local file) into one combined template, so a Stack never normally reaches here. A Stack that DOES reach the engine was not flattened (e.g. the aws-shim CloudFormation doorway, which takes templates inline and does not fetch child TemplateURLs — SSRF-safe), and is refused: deploy a nested stack via the cfn CLI, or flatten it first"},
 	// AWS::CloudFormation::CustomResource + Custom::* are handled in Lookup (customResourceEntry, #269).
 }
 
