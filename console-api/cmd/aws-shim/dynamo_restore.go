@@ -42,7 +42,6 @@ const (
 	// (see platform/aws-shim/dynamodb-backend.yaml). The recovery replays this cluster's archive.
 	dynamoSourceCluster = "dynamo-docdb"
 	dynamoSourceStore   = "dynamo-docdb-store"
-	dynamoSourceRWHost  = "dynamo-docdb-rw"
 	// ferretDBImage is the throwaway FerretDB the orchestrator stands over the recovered Postgres.
 	ferretDBImage = "ghcr.io/ferretdb/ferretdb:2"
 )
@@ -355,6 +354,7 @@ func buildRestoreFerretService(ns, name string) *corev1.Service {
 // secret's POSTGRESQL_URL with the source cluster's -rw host swapped for the recovery cluster's. The
 // recovered app role + password are a physical WAL replay of the source, so the same creds authenticate.
 func recoveryPostgresURL(ctx context.Context, cs kubernetes.Interface, ns, clusterName string) (string, error) {
+	// Template: the live backend's POSTGRESQL_URL carries the right database (postgres) + query params.
 	sec, err := cs.CoreV1().Secrets(ns).Get(ctx, restoreMongoSecret, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("read %s secret: %w", restoreMongoSecret, err)
@@ -363,7 +363,32 @@ func recoveryPostgresURL(ctx context.Context, cs kubernetes.Interface, ns, clust
 	if pg == "" {
 		return "", fmt.Errorf("%s has no POSTGRESQL_URL", restoreMongoSecret)
 	}
-	return strings.ReplaceAll(pg, dynamoSourceRWHost, clusterName+"-rw"), nil
+	// CNPG RESETS the app role's password on a recovered cluster (it generates a fresh <cluster>-app
+	// Secret), so the source's password no longer authenticates — read the recovery cluster's OWN
+	// generated app Secret. Verified live on #291: the source password fails, this one succeeds.
+	app, err := cs.CoreV1().Secrets(ns).Get(ctx, clusterName+"-app", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("read recovery %s-app secret: %w", clusterName, err)
+	}
+	recPW := string(app.Data["password"])
+	if recPW == "" {
+		return "", fmt.Errorf("recovery %s-app secret has no password", clusterName)
+	}
+	u, err := url.Parse(pg)
+	if err != nil {
+		return "", fmt.Errorf("parse template POSTGRESQL_URL: %w", err)
+	}
+	host := clusterName + "-rw"
+	if p := u.Port(); p != "" {
+		host += ":" + p
+	}
+	u.Host = host
+	user := "app"
+	if un := string(app.Data["username"]); un != "" {
+		user = un
+	}
+	u.User = url.UserPassword(user, recPW)
+	return u.String(), nil
 }
 
 // swapMongoHost returns the mongo URI with its host[:port] replaced (preserving user/pass + query).
