@@ -95,6 +95,8 @@ var translators = map[string]translator{
 	"AWS::EC2::VPC":                         translateEC2VPC,
 	"AWS::EC2::Subnet":                      translateEC2Subnet,
 	"AWS::EC2::SecurityGroup":               translateEC2SecurityGroup,
+	"AWS::EC2::SecurityGroupIngress":        translateEC2SecurityGroupRule,
+	"AWS::EC2::SecurityGroupEgress":         translateEC2SecurityGroupRule,
 	"AWS::EC2::InternetGateway":             translateEC2ImplicitGateway,
 	"AWS::EC2::VPCGatewayAttachment":        translateEC2ImplicitGateway,
 	"AWS::EC2::SubnetNetworkAclAssociation": translateEC2ImplicitGateway,
@@ -731,11 +733,29 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 	spec := map[string]any{}
 	ingress, inF := sgRules(id, raw["SecurityGroupIngress"], false, ctx)
 	f = append(f, inF...)
+	egress, egF := sgRules(id, raw["SecurityGroupEgress"], true, ctx)
+	f = append(f, egF...)
+
+	// Collate standalone AWS::EC2::SecurityGroupIngress/Egress resources whose GroupId !Refs this SG —
+	// the common pattern for breaking SG-to-SG circular references. Each is ONE rule; convert it with the
+	// same fail-closed sgRules and append. Their own translators are no-ops when in-stack (refuse external).
+	if ctx != nil {
+		for _, rid := range ctx.sgStandaloneRules(id, "AWS::EC2::SecurityGroupIngress") {
+			rr, _ := ctx.rawProps(rid)
+			rules, rf := sgRules(rid, []any{rr}, false, ctx)
+			f = append(f, rf...)
+			ingress = append(ingress, rules...)
+		}
+		for _, rid := range ctx.sgStandaloneRules(id, "AWS::EC2::SecurityGroupEgress") {
+			rr, _ := ctx.rawProps(rid)
+			rules, rf := sgRules(rid, []any{rr}, true, ctx)
+			f = append(f, rf...)
+			egress = append(egress, rules...)
+		}
+	}
 	if len(ingress) > 0 {
 		spec["ingress"] = ingress
 	}
-	egress, egF := sgRules(id, raw["SecurityGroupEgress"], true, ctx)
-	f = append(f, egF...)
 	if len(egress) > 0 {
 		spec["egress"] = egress
 	}
@@ -869,6 +889,51 @@ func cfnPort(v any) (int, bool) {
 		return i, true
 	}
 	return 0, false
+}
+
+// sgStandaloneRules returns the in-stack logical ids of `cfnType` (AWS::EC2::SecurityGroupIngress or
+// ...Egress) whose GroupId !Refs sgID, in deterministic order — the standalone rules collated into that SG.
+func (c *stackCtx) sgStandaloneRules(sgID, cfnType string) []string {
+	var ids []string
+	for rid, res := range c.template.Resources {
+		if res.Type != cfnType {
+			continue
+		}
+		raw, _ := c.rawProps(rid)
+		if t, ok := refTarget(raw["GroupId"]); ok && t == sgID {
+			ids = append(ids, rid)
+		}
+	}
+	sortStrs(ids)
+	return ids
+}
+
+// translateEC2SecurityGroupRule is the no-op half of the standalone-rule collation: a
+// SecurityGroupIngress/Egress whose GroupId !Refs an in-stack AWS::EC2::SecurityGroup provisions nothing
+// on its own (the group collates its rule, fail-closed, in translateEC2SecurityGroup). Unknown props are
+// refused, and a rule targeting an out-of-stack group is refused (its rule can't attach to a group we
+// don't manage — author it inline on the group or natively).
+func translateEC2SecurityGroupRule(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"GroupId": true, "GroupName": true, "IpProtocol": true, "FromPort": true, "ToPort": true,
+		"CidrIp": true, "CidrIpv6": true, "Description": true,
+		"SourceSecurityGroupId": true, "DestinationSecurityGroupId": true,
+	}
+	f := blockUnknownProps(id, props, known)
+	inStack := false
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if t, isRef := refTarget(raw["GroupId"]); isRef {
+				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::SecurityGroup" {
+					inStack = true
+				}
+			}
+		}
+	}
+	if !inStack {
+		f = append(f, Finding{"Resource " + id, "GroupId must !Ref an in-stack AWS::EC2::SecurityGroup — a standalone rule on an out-of-stack group can't be attached (author it inline on the group or natively)"})
+	}
+	return nil, f // collated into the group (or refused above)
 }
 
 // ---- Structural EC2 networking resources -> implicit (no-op) ----

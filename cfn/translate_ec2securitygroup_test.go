@@ -106,6 +106,53 @@ func TestTranslate_EC2SecurityGroup_FailClosed(t *testing.T) {
 	}
 }
 
+// A standalone AWS::EC2::SecurityGroupIngress/Egress whose GroupId !Refs an in-stack SG collates into
+// that SG's spec.ingress/egress (the circular-ref-breaking pattern), with the same fail-closed fidelity.
+func TestTranslate_EC2SecurityGroup_StandaloneRuleCollation(t *testing.T) {
+	tmpl := `
+Resources:
+  AppSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: app
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+  ExtraIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties: { GroupId: !Ref AppSG, IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 10.0.0.0/8 }
+  ExtraEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties: { GroupId: !Ref AppSG, IpProtocol: udp, FromPort: 53, ToPort: 53, CidrIp: 0.0.0.0/0 }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("AppSG", ecsResolvedService(t, ctx, "AppSG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("standalone-rule collation must translate cleanly: %s", findingsText(fs))
+	}
+	ing, _ := m.Spec["ingress"].([]any)
+	if len(ing) != 2 { // the inline 443 + the collated standalone 22
+		t.Fatalf("want 2 ingress rules (inline + collated), got %d: %#v", len(ing), m.Spec["ingress"])
+	}
+	eg, _ := m.Spec["egress"].([]any)
+	if len(eg) != 1 { // the collated standalone 53
+		t.Fatalf("want 1 collated egress rule, got %d: %#v", len(eg), m.Spec["egress"])
+	}
+	// The standalone child translators are no-ops when in-stack (the group owns the rule).
+	if mm, cf := translateEC2SecurityGroupRule("ExtraIngress", ecsResolvedService(t, ctx, "ExtraIngress"), ctx); mm != nil || len(cf) != 0 {
+		t.Fatalf("an in-stack standalone rule must be a clean no-op: manifest=%v findings=%s", mm, findingsText(cf))
+	}
+}
+
+// A standalone rule targeting an out-of-stack group is refused (can't attach to a group we don't manage).
+func TestTranslate_EC2SecurityGroupRule_OutOfStackRefused(t *testing.T) {
+	_, fs := translateEC2SecurityGroupRule("R", map[string]any{
+		"GroupId": "sg-0abc123", "IpProtocol": "tcp", "FromPort": float64(22), "ToPort": float64(22), "CidrIp": "0.0.0.0/0",
+	}, nil)
+	if !strings.Contains(findingsText(fs), "in-stack AWS::EC2::SecurityGroup") {
+		t.Fatalf("a standalone rule on an out-of-stack group must be refused: %s", findingsText(fs))
+	}
+}
+
 // An unknown property is refused (blockUnknownProps), not silently dropped.
 func TestTranslate_EC2SecurityGroup_UnknownProp(t *testing.T) {
 	_, fs := translateEC2SecurityGroup("SG", map[string]any{
