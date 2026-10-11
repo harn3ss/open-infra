@@ -249,3 +249,72 @@ func TestChecker_IPConditionThroughAuthorize(t *testing.T) {
 		t.Errorf("absent source IP on an IP-gated allow must deny: allowed=%v governed=%v, want false/true", a, g)
 	}
 }
+
+// A time-windowed Allow must enforce through the Checker: in-window allows, out-of-window and absent
+// currentTime deny. This is the engine-side mirror of the live time-condition probe (#266).
+func TestChecker_TimeConditionThroughAuthorize(t *testing.T) {
+	snap := Snapshot{Docs: []PolicyDoc{{
+		Name:      "window",
+		AppliesTo: []string{"User::alice"},
+		Statements: []policyengine.Statement{
+			{Effect: policyengine.Allow, Actions: []string{"s3:GetObject"}, Resources: []string{"Bucket::reports"},
+				TimeConditions: []policyengine.TimeCondition{
+					{Key: "currentTime", Op: ">", Target: "2020-01-01T00:00:00Z"},
+					{Key: "currentTime", Op: "<", Target: "2099-01-01T00:00:00Z"},
+				}},
+		},
+	}}}
+	c := New(fixedLoader(snap, nil), time.Minute)
+	ctx := context.Background()
+	in := map[string]any{"authenticated": true, "currentTime": "2025-06-15T12:00:00Z"}
+	out := map[string]any{"authenticated": true, "currentTime": "2015-01-01T00:00:00Z"}
+
+	if a, g, r := c.Authorize(ctx, "User", "alice", nil, "s3:GetObject", "Bucket", "reports", in); !a || !g {
+		t.Errorf("in-window GetObject: allowed=%v governed=%v (%s), want true/true", a, g, r)
+	}
+	if a, g, _ := c.Authorize(ctx, "User", "alice", nil, "s3:GetObject", "Bucket", "reports", out); a || !g {
+		t.Errorf("out-of-window GetObject: allowed=%v governed=%v, want false/true", a, g)
+	}
+	if a, g, _ := c.Authorize(ctx, "User", "alice", nil, "s3:GetObject", "Bucket", "reports", map[string]any{"authenticated": true}); a || !g {
+		t.Errorf("absent currentTime on a time-gated allow must deny: allowed=%v governed=%v, want false/true", a, g)
+	}
+}
+
+// toLikeConditions / toTimeConditions parse the raw CR-map shape the apiserver returns into engine
+// conditions. This is the read half of the write/read parity that the live probe found broken: the
+// loader must consume exactly the keys statementsToSpecAny (and cfn's statementsToSpec) emit.
+func TestToLikeConditions(t *testing.T) {
+	in := []any{
+		map[string]any{"key": "username", "pattern": "admin-*", "negate": false},
+		map[string]any{"key": "username", "pattern": "svc-*", "negate": true},
+		map[string]any{"key": "username"}, // missing pattern → skipped
+		map[string]any{"pattern": "x-*"},  // missing key → skipped
+		"not-a-map",                       // wrong type → skipped
+	}
+	got := toLikeConditions(in)
+	if len(got) != 2 {
+		t.Fatalf("want 2 like conditions, got %d: %#v", len(got), got)
+	}
+	if got[0] != (policyengine.LikeCondition{Key: "username", Pattern: "admin-*", Negate: false}) ||
+		got[1] != (policyengine.LikeCondition{Key: "username", Pattern: "svc-*", Negate: true}) {
+		t.Errorf("parsed like conditions wrong: %#v", got)
+	}
+}
+
+func TestToTimeConditions(t *testing.T) {
+	in := []any{
+		map[string]any{"key": "currentTime", "op": ">", "target": "2020-01-01T00:00:00Z"},
+		map[string]any{"key": "currentTime", "op": "<=", "target": "2099-01-01T00:00:00Z"},
+		map[string]any{"key": "currentTime", "op": ">"}, // missing target → skipped
+		map[string]any{"op": "<", "target": "2020..."},  // missing key → skipped
+		42, // wrong type → skipped
+	}
+	got := toTimeConditions(in)
+	if len(got) != 2 {
+		t.Fatalf("want 2 time conditions, got %d: %#v", len(got), got)
+	}
+	if got[0] != (policyengine.TimeCondition{Key: "currentTime", Op: ">", Target: "2020-01-01T00:00:00Z"}) ||
+		got[1] != (policyengine.TimeCondition{Key: "currentTime", Op: "<=", Target: "2099-01-01T00:00:00Z"}) {
+		t.Errorf("parsed time conditions wrong: %#v", got)
+	}
+}

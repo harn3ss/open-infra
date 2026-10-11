@@ -160,6 +160,58 @@ spec:
                                   type: boolean
                                   default: false
                                   description: true = NotIpAddress (the source must NOT be in the CIDR).
+                          likeConditions:
+                            type: array
+                            description: >-
+                              Wildcard string conditions (the aws:username StringLike/StringNotLike
+                              equivalent the AWS importer emits), evaluated via the policy engine's
+                              `like` match. Each requires the request attribute to match (negate false)
+                              or not match (negate true) the pattern, where "*" is any run of characters.
+                              On a Deny statement these fail CLOSED: an absent attribute DENIES rather
+                              than letting the forbid evaporate. key must be a request attribute the shim
+                              populates (today: "username"). Optional.
+                            items:
+                              type: object
+                              required: [key, pattern]
+                              properties:
+                                key:
+                                  type: string
+                                  description: The request-context attribute to test, e.g. "username".
+                                pattern:
+                                  type: string
+                                  description: A Cedar `like` pattern; "*" matches any run of characters, e.g. "admin-*".
+                                negate:
+                                  type: boolean
+                                  default: false
+                                  description: true = StringNotLike (the attribute must NOT match the pattern).
+                          timeConditions:
+                            type: array
+                            description: >-
+                              Datetime window conditions (the aws:CurrentTime Date{Greater,Less}Than
+                              [Equals] equivalent the AWS importer emits), evaluated via the policy
+                              engine's datetime extension. Each requires the request attribute, compared
+                              as a datetime, to satisfy op against target. On a Deny statement these fail
+                              CLOSED: an absent or unparseable attribute DENIES rather than letting the
+                              forbid evaporate. key must be a request attribute the shim populates
+                              (today: "currentTime"). Optional.
+                            items:
+                              type: object
+                              required: [key, op, target]
+                              properties:
+                                key:
+                                  type: string
+                                  description: The request-context datetime attribute to test, e.g. "currentTime".
+                                op:
+                                  type: string
+                                  enum: ["<", "<=", ">", ">="]
+                                  description: >-
+                                    The datetime comparison: "<" (DateLessThan), "<=" (DateLessThanEquals),
+                                    ">" (DateGreaterThan), ">=" (DateGreaterThanEquals).
+                                target:
+                                  type: string
+                                  description: >-
+                                    A Cedar-parseable datetime the attribute is compared against, e.g.
+                                    "2025-01-01T00:00:00Z".
                 controlPlane:
                   type: object
                   description: >-

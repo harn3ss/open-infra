@@ -39,15 +39,31 @@ type importedIPCondition struct {
 	Negate bool   `json:"negate,omitempty"`
 }
 
+// importedLikeCondition / importedTimeCondition likewise mirror the engine types with the lowercase json
+// tags the kind: Policy XRD requires, so a previewed statement can be authored onto spec.dataPlane as-is.
+type importedLikeCondition struct {
+	Key     string `json:"key"`
+	Pattern string `json:"pattern"`
+	Negate  bool   `json:"negate,omitempty"`
+}
+
+type importedTimeCondition struct {
+	Key    string `json:"key"`
+	Op     string `json:"op"`
+	Target string `json:"target"`
+}
+
 // importedStatement is one translated statement in the kind: Policy spec.dataPlane shape (so it can be
 // authored as-is), plus a `broad` flag when it carries a wildcard the operator should confirm.
 type importedStatement struct {
-	Effect       string                `json:"effect"`
-	Actions      []string              `json:"actions"`
-	Resources    []string              `json:"resources,omitempty"`
-	Condition    map[string]string     `json:"condition,omitempty"`
-	IPConditions []importedIPCondition `json:"ipConditions,omitempty"`
-	Broad        bool                  `json:"broad"`
+	Effect         string                  `json:"effect"`
+	Actions        []string                `json:"actions"`
+	Resources      []string                `json:"resources,omitempty"`
+	Condition      map[string]string       `json:"condition,omitempty"`
+	IPConditions   []importedIPCondition   `json:"ipConditions,omitempty"`
+	LikeConditions []importedLikeCondition `json:"likeConditions,omitempty"`
+	TimeConditions []importedTimeCondition `json:"timeConditions,omitempty"`
+	Broad          bool                    `json:"broad"`
 }
 
 type importSummary struct {
@@ -107,13 +123,23 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 		for _, c := range s.IPConditions {
 			ipc = append(ipc, importedIPCondition{Key: c.Key, CIDR: c.CIDR, Negate: c.Negate})
 		}
+		var likec []importedLikeCondition
+		for _, c := range s.LikeConditions {
+			likec = append(likec, importedLikeCondition{Key: c.Key, Pattern: c.Pattern, Negate: c.Negate})
+		}
+		var timec []importedTimeCondition
+		for _, c := range s.TimeConditions {
+			timec = append(timec, importedTimeCondition{Key: c.Key, Op: c.Op, Target: c.Target})
+		}
 		translated = append(translated, importedStatement{
-			Effect:       string(s.Effect),
-			Actions:      s.Actions,
-			Resources:    s.Resources,
-			Condition:    s.Condition,
-			IPConditions: ipc,
-			Broad:        broad,
+			Effect:         string(s.Effect),
+			Actions:        s.Actions,
+			Resources:      s.Resources,
+			Condition:      s.Condition,
+			IPConditions:   ipc,
+			LikeConditions: likec,
+			TimeConditions: timec,
+			Broad:          broad,
 		})
 		if broad {
 			needsReview = append(needsReview, fmt.Sprintf(
