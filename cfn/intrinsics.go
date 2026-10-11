@@ -33,6 +33,10 @@ type resolver struct {
 	where    string          // current location, for findings
 	findings []Finding
 	refs     map[string]bool // resource logical ids referenced by the current item
+	// customData holds a custom resource's returned Data (logicalID -> Data), populated during the
+	// interleaved deploy AFTER the resource's Function is invoked, so a dependent's Fn::GetAtt resolves
+	// to the real value instead of a placeholder (#269). Empty at plan time (values resolve at deploy).
+	customData map[string]map[string]any
 }
 
 func newResolver(t *Template, params, exports, pseudo map[string]any) *resolver {
@@ -208,6 +212,14 @@ func (r *resolver) getAtt(arg any) any {
 		if len(parts) > 1 {
 			attr = parts[1]
 		}
+	}
+	// A custom resource's Data, once invoked (interleaved deploy), resolves Fn::GetAtt for real.
+	if data, ok := r.customData[id]; ok {
+		r.refs[id] = true
+		if v, present := data[attr]; present {
+			return v
+		}
+		return "<" + id + "." + attr + ">" // invoked, but the handler returned no such Data key
 	}
 	if _, ok := r.t.Resources[id]; ok {
 		r.refs[id] = true

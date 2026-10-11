@@ -104,18 +104,25 @@ var mappingTable = map[string]MapEntry{
 	"AWS::ECS::Cluster":            {Kind: "(implicit)", Status: Partial, Note: "a grouping with no open-infra counterpart (the k3s cluster is the cluster) — provisions nothing"},
 
 	// --- unsupported: no backing kind / explicitly out of scope for v1 (refused) ---
-	"AWS::CloudFormation::Stack":          {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
-	"AWS::CloudFormation::CustomResource": {Status: Unsupported, Note: "Lambda-backed custom resources are out of scope for v1"},
+	"AWS::CloudFormation::Stack": {Status: Unsupported, Note: "nested stacks are out of scope for v1"},
+	// AWS::CloudFormation::CustomResource + Custom::* are handled in Lookup (customResourceEntry, #269).
 }
 
-// Lookup returns the mapping entry for a CFN resource type. An unknown type — or any
-// Custom:: resource — is unsupported by default: the engine never guesses.
+// customResourceEntry is the mapping for a Lambda-backed custom resource — AWS::CloudFormation::
+// CustomResource and any Custom::<Name>. Both resolve to the same thing: at deploy, the in-stack
+// kind: Function named by ServiceToken is invoked with the CloudFormation custom-resource event,
+// and its returned Data feeds dependents' Fn::GetAtt (#269).
+var customResourceEntry = MapEntry{Kind: "Function(invoke)", Status: Supported, Note: "Lambda-backed custom resource: at deploy the in-stack kind: Function named by ServiceToken (a !Ref/!GetAtt to an in-stack AWS::Lambda::Function) is invoked SYNCHRONOUSLY with the CloudFormation custom-resource event, and its returned Data resolves dependents' Fn::GetAtt (the open-infra adaptation of the pre-signed ResponseURL callback: the handler RETURNS {Status, Data} rather than PUT-ing to S3). Fail-closed: an out-of-stack / AWS-ARN ServiceToken refuses. Create + Delete (destroy) are supported; a stack UPDATE touching a custom resource refuses (destroy+recreate)."}
+
+// Lookup returns the mapping entry for a CFN resource type. An unknown type is unsupported by
+// default: the engine never guesses. A custom resource (AWS::CloudFormation::CustomResource or
+// Custom::*) maps to the invoke-at-deploy backing (#269).
 func Lookup(cfnType string) MapEntry {
 	if e, ok := mappingTable[cfnType]; ok {
 		return e
 	}
-	if strings.HasPrefix(cfnType, "Custom::") {
-		return MapEntry{Status: Unsupported, Note: "custom resource — out of scope for v1"}
+	if cfnType == "AWS::CloudFormation::CustomResource" || strings.HasPrefix(cfnType, "Custom::") {
+		return customResourceEntry
 	}
 	return MapEntry{Status: Unsupported, Note: "no backing open-infra kind"}
 }

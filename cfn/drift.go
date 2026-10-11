@@ -53,6 +53,11 @@ func DetectDrift(ctx context.Context, opts DeployOptions, ap Applier) (*DriftRep
 	report := &DriftReport{StackName: opts.StackName, Namespace: opts.Namespace, InSync: true}
 	for _, r := range rec.Resources {
 		rd := ResourceDrift{LogicalID: r.LogicalID, Kind: r.Kind, Name: r.Name, Status: InSync}
+		// A custom resource (#269) has no live k8s object to compare — it ran a deploy-time invoke, not a
+		// persisted object — so it is not drift-tracked (skip it; reporting it Deleted would be a false drift).
+		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
+			continue
+		}
 		live, exists, err := ap.GetSpec(ctx, r.APIVersion, r.Kind, r.Name)
 		if err != nil {
 			return nil, err

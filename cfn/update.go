@@ -25,12 +25,25 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	if opts.Namespace == "" {
 		return nil, fmt.Errorf("a target namespace is required")
 	}
+	// Fail-closed: a stack with custom resources can't be UPDATEd (v1, #269) — a custom resource runs
+	// deploy-time logic (an invoke) with no diffable desired state, so an in-place update can't honor it.
+	// Destroy + recreate instead. (Create + delete are supported; update is the bounded carve-out.)
+	if pt, perr := Parse(data); perr == nil && hasCustomResources(pt) {
+		return nil, fmt.Errorf("updating a stack that contains a custom resource is not supported (#269): a custom resource runs deploy-time logic that has no diffable state — destroy and recreate the stack instead")
+	}
 	cs, desired, current, err := BuildChangeSet(ctx, data, opts, ap)
 	if err != nil {
 		return nil, err
 	}
 	if !cs.Exists {
 		return nil, fmt.Errorf("no stack %q in namespace %q to update — use deploy to create it", opts.StackName, opts.Namespace)
+	}
+	// Also refuse if the EXISTING stack was created with custom resources (removing one via update would
+	// need a Delete-event invoke the diff path doesn't run) — destroy + recreate.
+	for _, r := range current.Resources {
+		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
+			return nil, fmt.Errorf("updating a stack that was created with a custom resource is not supported (#269) — destroy and recreate the stack instead")
+		}
 	}
 	if !cs.hasChanges() {
 		return current, nil // no-op: nothing to do
