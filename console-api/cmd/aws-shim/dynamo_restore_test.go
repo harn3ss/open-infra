@@ -217,17 +217,24 @@ func TestParseRestoreArgs(t *testing.T) {
 	}
 }
 
-func TestSwapMongoHost(t *testing.T) {
-	out, err := swapMongoHost("mongodb://user:p%40ss@dynamo-mongo.open-infra-aws-shim.svc.cluster.local:27017/?authMechanism=PLAIN",
-		"dynamo-restore-ferret-x.open-infra-aws-shim.svc.cluster.local:27017")
+func TestSwapMongoURI(t *testing.T) {
+	out, err := swapMongoURI("mongodb://app:oldpass@dynamo-mongo.open-infra-aws-shim.svc.cluster.local:27017/dynamo?authSource=admin",
+		"dynamo-restore-ferret-x.open-infra-aws-shim.svc.cluster.local:27017", "app", "newp@ss")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
 	if !strings.Contains(out, "@dynamo-restore-ferret-x.open-infra-aws-shim.svc.cluster.local:27017/") {
 		t.Errorf("host not swapped: %q", out)
 	}
-	if !strings.Contains(out, "user:") || !strings.Contains(out, "authMechanism=PLAIN") {
-		t.Errorf("creds/query not preserved: %q", out)
+	// password swapped to the recovery cluster's reset creds (percent-encoded), the old one gone.
+	if strings.Contains(out, "oldpass") {
+		t.Errorf("old password not replaced: %q", out)
+	}
+	if !strings.Contains(out, "app:newp%40ss@") {
+		t.Errorf("recovered creds not applied: %q", out)
+	}
+	if !strings.Contains(out, "/dynamo?authSource=admin") {
+		t.Errorf("path/query not preserved: %q", out)
 	}
 }
 
