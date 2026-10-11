@@ -96,6 +96,13 @@ output, and the step-by-step history.
 | `Pass` | Inject or reshape data with no external call. |
 | `Succeed` | End the execution successfully. |
 | `Fail` | End the execution with an error and cause. |
+| `Parallel` | Run several `Branches` concurrently; the result is the array of branch outputs (branch order). |
+| `Map` | Run an `Iterator`/`ItemProcessor` over each element of an array (`ItemsPath`), `MaxConcurrency`-bounded; the result is the array of per-item outputs (item order). `ItemSelector` shapes each item's input, with `$$.Map.Item.{Index,Value}` available. |
+
+`Parallel` and `Map` honor `Retry`/`Catch` at the state level like `Task`. Their
+sub-executions run in-memory and are **not** individually checkpointed — a controller
+restart re-runs the enclosing `Parallel`/`Map` state from the start, so (as with `Task`)
+the work inside should be idempotent.
 
 **Error handling** on `Task`:
 
@@ -131,7 +138,6 @@ An execution ends in one of: `Succeeded` (with `output`), `Failed` (with `error`
 v1 is a faithful subset. These ASL features are **not** available yet and are
 rejected with a `States.Runtime` error rather than silently ignored:
 
-- `Parallel` and `Map` states.
 - The `Express` workflow type (only `Standard` is implemented).
 - Task callbacks (`.waitForTaskToken`) and service integrations other than Functions.
 - ASL intrinsic functions and JSONPath filters/wildcards/slices.
