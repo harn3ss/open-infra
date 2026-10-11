@@ -191,7 +191,13 @@ spec:
                                 image: {{ $build.image | default "node:20-alpine" }}
                                 workingDir: /ws/src
                                 command: [/bin/sh, -c]
-                                args: ['if [ -f /ws/.skip ]; then exit 0; fi; {{ $build.buildCommand | default "npm ci && npm run build" }}']
+                                # A block scalar (not a single-quoted flow scalar) so a buildCommand
+                                # containing quotes/brackets/colons — amplify.yml commands routinely do —
+                                # does not break the rendered manifest. The command is a single line.
+                                args:
+                                  - |
+                                    if [ -f /ws/.skip ]; then exit 0; fi
+                                    {{ $build.buildCommand | default "npm ci && npm run build" }}
                                 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: [ALL] } }
                                 env:
                                   - { name: HOME, value: /ws }
