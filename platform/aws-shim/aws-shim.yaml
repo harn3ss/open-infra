@@ -675,6 +675,25 @@ spec:
       port: 4566
       targetPort: 4566
 ---
+# Step Functions StartSyncExecution endpoint alias. The AWS SDK/CLI resolve StartSyncExecution to a
+# SEPARATE, "sync-"prefixed host (AWS's sync-states.<region>.amazonaws.com), and apply that prefix even
+# to an overridden endpoint — so a client pointed at aws-shim.<ns>.svc sends StartSyncExecution to
+# sync-aws-shim.<ns>.svc. This Service makes that host resolve to the same shim pods (the shim routes by
+# X-Amz-Target, not Host), so StartSyncExecution is reachable with the stock SDK. (#280 Express.)
+apiVersion: v1
+kind: Service
+metadata:
+  name: sync-aws-shim
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim }
+spec:
+  type: ClusterIP
+  selector: { app: aws-shim }
+  ports:
+    - name: s3
+      port: 4566
+      targetPort: 4566
+---
 # Egress control — a CiliumNetworkPolicy, not a standard NetworkPolicy, DELIBERATELY.
 #
 # The shim reaches all its backends through ClusterIP Services (MinIO, the kube-apiserver, the

@@ -266,8 +266,9 @@ FEXARN="$(start_exec faily)"
 ST="$(poll_status "$FEXARN" SUCCEEDED 90)" || fail "faily execution did not SUCCEED via Catch (status=$ST)"
 FNAME="$(python3 -c 'import sys;print(sys.argv[1].rsplit(":",1)[1])' "$FEXARN")"
 HIST="$(kubectl -n "$SHIM_NS" get execution.openinfra.dev "$FNAME" -o jsonpath='{.status.history}' 2>/dev/null || true)"
-grep -q 'TaskRetry' <<<"$HIST" || fail "execution history shows no TaskRetry (Retry did not fire)"
-grep -q 'TaskCaught' <<<"$HIST" || fail "execution history shows no TaskCaught (Catch did not fire)"
+# The engine records StateRetry/StateCaught (shared by Task/Parallel/Map since #280's runRetryCatch).
+grep -q 'StateRetry' <<<"$HIST" || fail "execution history shows no StateRetry (Retry did not fire)"
+grep -q 'StateCaught' <<<"$HIST" || fail "execution history shows no StateCaught (Catch did not fire)"
 # the front-door GetExecutionHistory must also return events.
 EVN="$(sfn get-execution-history --execution-arn "$FEXARN" --query 'length(events)' --output text 2>/dev/null || echo 0)"
 [ "${EVN:-0}" -gt 0 ] 2>/dev/null || fail "GetExecutionHistory returned no events"
@@ -335,24 +336,32 @@ log "    ✓ rejected on signature mismatch"
 log "express: create an EXPRESS state machine (Pass → inline output)"
 echo '{"StartAt":"Echo","States":{"Echo":{"Type":"Pass","Result":{"ok":true,"via":"express"},"End":true}}}' > "$TMP/exp.json"
 EXP_ARN="$(sfn create-state-machine --name "$SM_EXPRESS" --definition "file://$TMP/exp.json" --type EXPRESS \
-  --query stateMachineArn --output text 2>"$TMP/ce")"
+  --role-arn "arn:aws:iam::${ACCOUNT}:role/${ROLE}" --query stateMachineArn --output text 2>"$TMP/ce")"
 [ -n "$EXP_ARN" ] && [ "$EXP_ARN" != "None" ] || fail "create EXPRESS state machine failed: $(cat "$TMP/ce" 2>/dev/null)"
 sfn describe-state-machine --state-machine-arn "$EXP_ARN" --query type --output text 2>/dev/null | grep -qx "EXPRESS" \
   || fail "describe-state-machine did not report type=EXPRESS"
 log "    ✓ EXPRESS machine created + described as EXPRESS"
 
-log "express: start-sync-execution RUNS the workflow and returns the output INLINE"
-SYNC="$(sfn start-sync-execution --state-machine-arn "$EXP_ARN" --input '{"n":1}' 2>"$TMP/ss")"
-[ -n "$SYNC" ] || fail "start-sync-execution failed: $(cat "$TMP/ss" 2>/dev/null)"
+# StartSyncExecution: the AWS SDK/CLI force a "sync-"prefixed endpoint host (AWS's sync-states), reachable
+# only via the in-cluster sync-aws-shim Service — so run the sync calls from an in-cluster aws-cli pod
+# pointed at the shim's cluster endpoint (the CLI rewrites it to sync-aws-shim.<ns>.svc, which resolves).
+INEP="http://aws-shim.${SHIM_NS}.svc.cluster.local:4566"
+awscli_pod() { # <pod-suffix> <state-machine-arn> -> prints the start-sync-execution result (or error)
+  # 2>&1 INSIDE the container so an aws error (non-zero exit) lands on the pod's stdout and is captured,
+  # not lost to the terminating pod's stderr.
+  kubectl -n "$SHIM_NS" run "sfn-$1-$SFX" --rm -i --restart=Never --image=amazon/aws-cli:2.18.9 \
+    --env=AWS_ACCESS_KEY_ID="$AAK" --env=AWS_SECRET_ACCESS_KEY="$ASK" --env=AWS_REGION="$REGION" \
+    --command -- sh -c "aws --endpoint-url $INEP --no-cli-pager stepfunctions start-sync-execution --state-machine-arn $2 --input '{}' 2>&1" 2>&1 | grep -v 'pod .* deleted' || true
+}
+log "express: start-sync-execution RUNS the workflow and returns the output INLINE (in-cluster sync endpoint)"
+SYNC="$(awscli_pod sync "$EXP_ARN")"
 echo "$SYNC" | grep -q 'SUCCEEDED' || fail "start-sync-execution did not reach SUCCEEDED inline: $SYNC"
 echo "$SYNC" | grep -q 'express'   || fail "start-sync-execution did not return the Pass output inline: $SYNC"
 log "    ✓ synchronous result returned inline (SUCCEEDED + output)"
 
 log "express negative: start-sync-execution on a STANDARD machine is refused (EXPRESS-only, AWS-faithful)"
-if sfn start-sync-execution --state-machine-arn "$SM_ARN" --input '{}' >/dev/null 2>"$TMP/sstd"; then
-  fail "start-sync-execution on a STANDARD machine was accepted (must be EXPRESS-only)"
-fi
-grep -qiE 'StateMachineTypeNotSupported|EXPRESS|not supported' "$TMP/sstd" || fail "STANDARD-sync refusal had the wrong error: $(cat "$TMP/sstd")"
+STD="$(awscli_pod syncn "$SM_ARN")"
+echo "$STD" | grep -qiE 'StateMachineTypeNotSupported|EXPRESS|not supported' || fail "STANDARD-sync refusal had the wrong error: $STD"
 log "    ✓ refused on a STANDARD machine"
 
 printf '\n✓ PASS — aws-shim Step Functions is faithful: an AWS-authored ASL workflow runs (Task/Choice/Wait/Retry/Catch), a Task executes under the state machine ROLE (injected STS session = the assumed role, doing exactly what the role grants and denied what it does not — the confused-deputy fix), StopExecution aborts, the history reflects real transitions, an EXPRESS machine runs synchronously (StartSyncExecution returns the output inline, refused on STANDARD), and the negatives (untrusted-role pass, invalid ASL) are refused.\n'
