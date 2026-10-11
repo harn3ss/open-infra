@@ -3,17 +3,21 @@ package main
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeInvoker struct {
 	fn    func(resource string, input any) (any, *taskError)
+	mu    sync.Mutex
 	calls int
 }
 
 func (f *fakeInvoker) Invoke(_ context.Context, resource string, input any, _ int) (any, *taskError) {
+	f.mu.Lock()
 	f.calls++
+	f.mu.Unlock()
 	return f.fn(resource, input)
 }
 
@@ -163,15 +167,6 @@ func TestDanglingTransitionRejectedAtParse(t *testing.T) {
 	_, err := ParseDefinition([]byte(`{"StartAt":"A","States":{"A":{"Type":"Pass","Next":"Ghost"}}}`))
 	if err == nil {
 		t.Fatal("expected parse error for dangling Next")
-	}
-}
-
-func TestParallelNotImplemented(t *testing.T) {
-	def := mustDef(t, `{"StartAt":"P","States":{"P":{"Type":"Parallel","End":true}}}`)
-	res := newTestEngine(def, &fakeInvoker{fn: func(string, any) (any, *taskError) { return nil, nil }}).
-		Run(context.Background(), "P", nil)
-	if res.Phase != "Failed" || res.Error != ErrRuntime {
-		t.Fatalf("Parallel should fail with States.Runtime, got %+v", res)
 	}
 }
 

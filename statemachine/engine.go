@@ -122,8 +122,10 @@ func (e *Engine) Run(ctx context.Context, startState string, data any) Result {
 			tr = e.runSucceed(state, s, data)
 		case "Fail":
 			tr = transition{done: &Result{Phase: "Failed", Error: s.Error, Cause: s.Cause}}
-		case "Parallel", "Map":
-			tr = failRuntime(fmt.Sprintf("state type %q is not implemented in v1", s.Type))
+		case "Parallel":
+			tr = e.runParallel(ctx, state, s, data)
+		case "Map":
+			tr = e.runMap(ctx, state, s, data)
 		default:
 			tr = failRuntime(fmt.Sprintf("unknown state type %q", s.Type))
 		}
@@ -164,10 +166,19 @@ func (e *Engine) runTask(ctx context.Context, name string, s State, data any) tr
 	if err != nil {
 		return failRuntime(err.Error())
 	}
+	return e.runRetryCatch(ctx, name, s, effInput, func(ctx context.Context) (any, *taskError) {
+		return e.invoker.Invoke(ctx, s.Resource, params, s.TimeoutSeconds)
+	})
+}
 
+// runRetryCatch runs one unit of work (a Task invoke, a Parallel's branches, a Map's iterations) and
+// applies the state's Retry (with backoff) then Catch, finally shaping the success result through
+// ResultPath/OutputPath and advancing. Shared by Task, Parallel, and Map so all three honor Retry/Catch
+// identically. effInput is the state's post-InputPath input (the base ResultPath/Catch merge into).
+func (e *Engine) runRetryCatch(ctx context.Context, name string, s State, effInput any, work func(context.Context) (any, *taskError)) transition {
 	attempts := make([]int, len(s.Retry))
 	for {
-		result, terr := e.invoker.Invoke(ctx, s.Resource, params, s.TimeoutSeconds)
+		result, terr := work(ctx)
 		if terr == nil {
 			combined, err := applyResultPath(effInput, result, s.ResultPath.orDefault("$"))
 			if err != nil {
@@ -179,7 +190,7 @@ func (e *Engine) runTask(ctx context.Context, name string, s State, data any) tr
 			}
 			return e.advance(s, out)
 		}
-		e.record(map[string]any{"type": "TaskFailed", "state": name, "error": terr.Name, "cause": terr.Cause, "time": e.now().UTC().Format(time.RFC3339)})
+		e.record(map[string]any{"type": "StateFailed", "state": name, "error": terr.Name, "cause": terr.Cause, "time": e.now().UTC().Format(time.RFC3339)})
 
 		// Retry: first matching retrier with attempts remaining.
 		if ri := firstMatch(len(s.Retry), func(i int) bool { return matchesError(s.Retry[i].ErrorEquals, terr.Name) }); ri >= 0 {
@@ -187,7 +198,7 @@ func (e *Engine) runTask(ctx context.Context, name string, s State, data any) tr
 			if attempts[ri] < r.maxAttempts() {
 				d := backoffDelay(r, attempts[ri])
 				attempts[ri]++
-				e.record(map[string]any{"type": "TaskRetry", "state": name, "attempt": attempts[ri], "delaySeconds": d.Seconds(), "time": e.now().UTC().Format(time.RFC3339)})
+				e.record(map[string]any{"type": "StateRetry", "state": name, "attempt": attempts[ri], "delaySeconds": d.Seconds(), "time": e.now().UTC().Format(time.RFC3339)})
 				if err := e.sleep(ctx, d); err != nil {
 					return Result2Transition(ctx)
 				}
@@ -202,11 +213,33 @@ func (e *Engine) runTask(ctx context.Context, name string, s State, data any) tr
 			if err != nil {
 				return failRuntime(err.Error())
 			}
-			e.record(map[string]any{"type": "TaskCaught", "state": name, "next": c.Next, "error": terr.Name, "time": e.now().UTC().Format(time.RFC3339)})
+			e.record(map[string]any{"type": "StateCaught", "state": name, "next": c.Next, "error": terr.Name, "time": e.now().UTC().Format(time.RFC3339)})
 			return transition{next: c.Next, data: cd}
 		}
 		return transition{done: &Result{Phase: "Failed", Error: terr.Name, Cause: terr.Cause}}
 	}
+}
+
+// subEngine spawns a nested engine (for a Parallel branch or a Map iteration) that shares the invoker +
+// clock/sleep + record, over its OWN context object copy so concurrent sub-executions don't race on
+// $$.State. Nested executions are not individually checkpointed in v1 — a controller restart re-runs the
+// enclosing Parallel/Map state from the start (idempotent for pure Tasks; documented).
+func (e *Engine) subEngine(def *Definition, ctxObj map[string]any) *Engine {
+	se := newEngine(def, e.invoker, ctxObj)
+	se.now = e.now
+	se.sleep = e.sleep
+	se.record = e.record
+	return se
+}
+
+// copyCtx shallow-copies a context object so a sub-execution can set its own $$.State / $$.Map without
+// mutating the parent's or a sibling's.
+func copyCtx(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src)+1)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // Result2Transition maps a cancelled context (controller shutdown) to a failed

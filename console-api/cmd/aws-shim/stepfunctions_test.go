@@ -64,15 +64,15 @@ func TestValidateAndTranslateDefinition_TranslatesOptimizedLambdaInvoke(t *testi
 
 func TestValidateAndTranslateDefinition_Refuses(t *testing.T) {
 	cases := map[string]string{
-		"parallel":         `{"StartAt":"A","States":{"A":{"Type":"Parallel","End":true}}}`,
-		"map":              `{"StartAt":"A","States":{"A":{"Type":"Map","End":true}}}`,
-		"waitForTaskToken": `{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke.waitForTaskToken","End":true}}}`,
-		"sync":             `{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:states:::ecs:runTask.sync","End":true}}}`,
-		"non-lambda svc":   `{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:states:::sns:publish","End":true}}}`,
-		"unknown type":     `{"StartAt":"A","States":{"A":{"Type":"Frobnicate","End":true}}}`,
-		"no StartAt":       `{"States":{"A":{"Type":"Succeed"}}}`,
-		"empty States":     `{"StartAt":"A","States":{}}`,
-		"bad json":         `{not json`,
+		"parallel no branches": `{"StartAt":"A","States":{"A":{"Type":"Parallel","End":true}}}`,
+		"map no iterator":      `{"StartAt":"A","States":{"A":{"Type":"Map","End":true}}}`,
+		"waitForTaskToken":     `{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:states:::lambda:invoke.waitForTaskToken","End":true}}}`,
+		"sync":                 `{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:states:::ecs:runTask.sync","End":true}}}`,
+		"non-lambda svc":       `{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:states:::sns:publish","End":true}}}`,
+		"unknown type":         `{"StartAt":"A","States":{"A":{"Type":"Frobnicate","End":true}}}`,
+		"no StartAt":           `{"States":{"A":{"Type":"Succeed"}}}`,
+		"empty States":         `{"StartAt":"A","States":{}}`,
+		"bad json":             `{not json`,
 	}
 	for name, def := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -80,6 +80,30 @@ func TestValidateAndTranslateDefinition_Refuses(t *testing.T) {
 				t.Fatalf("expected refusal for %s, got accept", name)
 			}
 		})
+	}
+}
+
+// A valid Parallel/Map is ACCEPTED and nested Lambda Task Resources are translated to function:<name>.
+func TestValidateAndTranslateDefinition_ParallelMap(t *testing.T) {
+	par := `{"StartAt":"P","States":{"P":{"Type":"Parallel","End":true,"Branches":[
+		{"StartAt":"A","States":{"A":{"Type":"Task","Resource":"arn:aws:lambda:us-east-1:0:function:fn-a","End":true}}}
+	]}}}`
+	out, err := validateAndTranslateDefinition(par)
+	if err != nil {
+		t.Fatalf("a valid Parallel should be accepted: %v", err)
+	}
+	if !strings.Contains(out, `"function:fn-a"`) {
+		t.Fatalf("nested branch Task ARN not translated: %s", out)
+	}
+
+	mp := `{"StartAt":"M","States":{"M":{"Type":"Map","End":true,"ItemProcessor":{
+		"StartAt":"D","States":{"D":{"Type":"Task","Resource":"arn:aws:lambda:us-east-1:0:function:fn-m","End":true}}}}}}`
+	out2, err := validateAndTranslateDefinition(mp)
+	if err != nil {
+		t.Fatalf("a valid Map should be accepted: %v", err)
+	}
+	if !strings.Contains(out2, `"function:fn-m"`) {
+		t.Fatalf("Map iterator Task ARN not translated: %s", out2)
 	}
 }
 
