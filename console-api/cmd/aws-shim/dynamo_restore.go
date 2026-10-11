@@ -151,7 +151,13 @@ func doRestore(ctx context.Context, logger *slog.Logger, cs kubernetes.Interface
 	}
 
 	// (c) Stand a throwaway FerretDB over the recovered Postgres (-rw service of the recovery cluster).
-	pgURL, err := recoveryPostgresURL(ctx, cs, p.namespace, clusterName)
+	// CNPG reset the app password on recovery, so read the recovery cluster's own creds — used for BOTH
+	// the FerretDB->Postgres URL and the orchestrator's mongo client to that FerretDB.
+	recUser, recPW, err := recoveredAppCreds(ctx, cs, p.namespace, clusterName)
+	if err != nil {
+		return err
+	}
+	pgURL, err := recoveryPostgresURL(ctx, cs, p.namespace, clusterName, recUser, recPW)
 	if err != nil {
 		return err
 	}
@@ -166,7 +172,7 @@ func doRestore(ctx context.Context, logger *slog.Logger, cs kubernetes.Interface
 	if err := waitDeploymentReady(ctx, logger, cs, p.namespace, ferretName, 3*time.Minute); err != nil {
 		return err
 	}
-	recoveredURI, err := swapMongoHost(liveMongoURI, ferretName+"."+p.namespace+".svc.cluster.local:27017")
+	recoveredURI, err := swapMongoURI(liveMongoURI, ferretName+"."+p.namespace+".svc.cluster.local:27017", recUser, recPW)
 	if err != nil {
 		return err
 	}
@@ -353,8 +359,30 @@ func buildRestoreFerretService(ns, name string) *corev1.Service {
 // recoveryPostgresURL builds the recovered FerretDB's FERRETDB_POSTGRESQL_URL: the shared basic-auth
 // secret's POSTGRESQL_URL with the source cluster's -rw host swapped for the recovery cluster's. The
 // recovered app role + password are a physical WAL replay of the source, so the same creds authenticate.
-func recoveryPostgresURL(ctx context.Context, cs kubernetes.Interface, ns, clusterName string) (string, error) {
-	// Template: the live backend's POSTGRESQL_URL carries the right database (postgres) + query params.
+// recoveredAppCreds reads the recovery cluster's OWN CNPG-generated <cluster>-app Secret. CNPG RESETS
+// the app role's password on a recovered cluster, so the source's password no longer authenticates —
+// to EITHER PostgreSQL or the FerretDB mongo layer (FerretDB v2 validates the mongo client against the
+// backend role). Verified live on #291: the source password fails, this one succeeds.
+func recoveredAppCreds(ctx context.Context, cs kubernetes.Interface, ns, clusterName string) (user, pass string, err error) {
+	app, err := cs.CoreV1().Secrets(ns).Get(ctx, clusterName+"-app", metav1.GetOptions{})
+	if err != nil {
+		return "", "", fmt.Errorf("read recovery %s-app secret: %w", clusterName, err)
+	}
+	pass = string(app.Data["password"])
+	if pass == "" {
+		return "", "", fmt.Errorf("recovery %s-app secret has no password", clusterName)
+	}
+	user = string(app.Data["username"])
+	if user == "" {
+		user = "app"
+	}
+	return user, pass, nil
+}
+
+// recoveryPostgresURL builds the temp FerretDB's FERRETDB_POSTGRESQL_URL: the live backend's
+// POSTGRESQL_URL (right database + query params) with the host swapped to the recovery cluster's -rw
+// service and the credentials swapped to the recovery cluster's own reset app creds.
+func recoveryPostgresURL(ctx context.Context, cs kubernetes.Interface, ns, clusterName, user, pass string) (string, error) {
 	sec, err := cs.CoreV1().Secrets(ns).Get(ctx, restoreMongoSecret, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("read %s secret: %w", restoreMongoSecret, err)
@@ -363,41 +391,29 @@ func recoveryPostgresURL(ctx context.Context, cs kubernetes.Interface, ns, clust
 	if pg == "" {
 		return "", fmt.Errorf("%s has no POSTGRESQL_URL", restoreMongoSecret)
 	}
-	// CNPG RESETS the app role's password on a recovered cluster (it generates a fresh <cluster>-app
-	// Secret), so the source's password no longer authenticates — read the recovery cluster's OWN
-	// generated app Secret. Verified live on #291: the source password fails, this one succeeds.
-	app, err := cs.CoreV1().Secrets(ns).Get(ctx, clusterName+"-app", metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("read recovery %s-app secret: %w", clusterName, err)
-	}
-	recPW := string(app.Data["password"])
-	if recPW == "" {
-		return "", fmt.Errorf("recovery %s-app secret has no password", clusterName)
-	}
+	host := clusterName + "-rw"
 	u, err := url.Parse(pg)
 	if err != nil {
 		return "", fmt.Errorf("parse template POSTGRESQL_URL: %w", err)
 	}
-	host := clusterName + "-rw"
 	if p := u.Port(); p != "" {
 		host += ":" + p
 	}
 	u.Host = host
-	user := "app"
-	if un := string(app.Data["username"]); un != "" {
-		user = un
-	}
-	u.User = url.UserPassword(user, recPW)
+	u.User = url.UserPassword(user, pass)
 	return u.String(), nil
 }
 
-// swapMongoHost returns the mongo URI with its host[:port] replaced (preserving user/pass + query).
-func swapMongoHost(uri, newHost string) (string, error) {
+// swapMongoURI returns the mongo URI with its host[:port] AND credentials replaced (preserving the
+// path/query). The recovered FerretDB authenticates the mongo client against the recovery cluster's
+// reset app role, so both host and creds must change.
+func swapMongoURI(uri, newHost, user, pass string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return "", fmt.Errorf("parse mongo uri: %w", err)
 	}
 	u.Host = newHost
+	u.User = url.UserPassword(user, pass)
 	return u.String(), nil
 }
 
