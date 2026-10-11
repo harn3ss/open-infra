@@ -14,6 +14,7 @@ package cfn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -78,6 +79,24 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 		r := rec.Resources[i]
 		if strings.EqualFold(r.DeletionPolicy, "Retain") {
 			continue // left in place, intentionally unmanaged
+		}
+		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
+		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown
+		// (it would otherwise leave the whole stack undeletable), so it is logged via the record, not fatal.
+		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
+			if opts.Invoke != nil {
+				fnName, _ := r.Spec["function"].(string)
+				resType, _ := r.Spec["resourceType"].(string)
+				props, _ := r.Spec["properties"].(map[string]any)
+				event, _ := json.Marshal(map[string]any{
+					"RequestType": "Delete", "ResponseURL": "", "StackId": opts.StackName,
+					"RequestId": opts.StackName + "/" + r.LogicalID, "ResourceType": resType,
+					"LogicalResourceId": r.LogicalID, "ResourceProperties": props,
+				})
+				_, _ = opts.Invoke(ctx, opts.Namespace, fnName, event)
+			}
+			gone[r.LogicalID] = true
+			continue
 		}
 		if err := ap.Delete(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
 			return fail(fmt.Errorf("deleting %s/%s: %w", r.Kind, r.Name, err))

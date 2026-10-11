@@ -79,7 +79,18 @@ type DeployOptions struct {
 	Exports   map[string]string // cross-stack Exports (export name -> value) for Fn::ImportValue
 	Wait      bool
 	Timeout   time.Duration
+	// Invoke synchronously calls an in-stack kind: Function for a Lambda-backed custom resource (#269),
+	// returning the parsed response ({Status, Data, Reason}). Nil = custom resources are unsupported on
+	// this deploy path (the CLI, which isn't in-cluster): a stack with one refuses rather than guessing.
+	// The aws-shim CFN doorway (in-cluster) sets this to an HTTP invoker of the Function's cluster URL.
+	Invoke InvokeFunc
 }
+
+// InvokeFunc synchronously invokes a custom resource's backing Function with the CloudFormation
+// custom-resource event (JSON) and returns the handler's parsed response: {"Status":"SUCCESS"|"FAILED",
+// "Data":{...},"Reason":"..."}. The open-infra adaptation of the ResponseURL callback — the handler
+// RETURNS the response rather than PUT-ing it to a pre-signed S3 URL.
+type InvokeFunc func(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, error)
 
 // buildManifests runs the plan gate then the translate gate, returning every included
 // resource translated and ordered by dependency. It is the shared fail-closed front half of
@@ -115,7 +126,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 		}
 		r.where = "Resource " + id
 		resolved, _ := r.resolve(res.Properties).(map[string]any)
-		m, fs := translators[res.Type](id, resolved, ctx)
+		m, fs := translatorFor(res.Type)(id, resolved, ctx)
 		if len(fs) > 0 {
 			findings = append(findings, fs...)
 			continue
@@ -151,6 +162,14 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
 	if opts.Namespace == "" {
 		return nil, fmt.Errorf("a target namespace is required (deploy never guesses one)")
+	}
+
+	// A stack with Lambda-backed custom resources (#269) needs the interleaved deploy: each custom
+	// resource's Function is invoked at its point in dependency order so dependents' Fn::GetAtt resolves
+	// against the returned Data. Stacks WITHOUT one take the exact build-all-then-apply path below,
+	// unchanged — the new path is additive and never touches the common case.
+	if pt, perr := Parse(data); perr == nil && hasCustomResources(pt) {
+		return deployInterleaved(ctx, data, opts, ap)
 	}
 
 	// 1+2. Plan gate + translate gate — build every manifest up front, in dependency order,
@@ -205,6 +224,140 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return rec, fmt.Errorf("stack created but recording COMPLETE failed: %w", err)
 	}
 	return rec, nil
+}
+
+// hasCustomResources reports whether a parsed template contains any Lambda-backed custom resource (#269).
+func hasCustomResources(t *Template) bool {
+	for _, res := range t.Resources {
+		if isCustomResourceType(res.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// deployInterleaved is the create path for a stack containing custom resources (#269). Unlike the
+// build-all-then-apply path, it walks resources in dependency order one at a time so a custom resource's
+// Function can be invoked at its point in the order, its returned Data recorded, and LATER dependents'
+// Fn::GetAtt resolved against it. Same fail-closed rollback as Deploy. A stack with no custom resource
+// never reaches here (Deploy branches on hasCustomResources), so the common path is untouched.
+func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
+	plan, err := BuildPlanWithExports(data, opts.Params, opts.Exports, opts.StackName)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Verdict == Rejected {
+		return nil, fmt.Errorf("plan is REJECTED — refusing:\n  - %s", joinBlockers(plan.Blockers))
+	}
+	t, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r.evalConditions()
+	r.customData = map[string]map[string]any{}
+	sctx := &stackCtx{template: t, resolver: r}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}
+	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
+		return nil, fmt.Errorf("could not persist stack record: %w", err)
+	}
+
+	var applied []StackResource
+	rollback := func(cause error) (*StackRecord, error) {
+		for i := len(applied) - 1; i >= 0; i-- { // reverse order
+			a := applied[i]
+			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
+		}
+		rec.Status = "CREATE_FAILED"
+		rec.Message = cause.Error()
+		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		_ = writeStackRecord(ctx, ap, rec, opts)
+		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
+	}
+
+	for _, id := range plan.Order {
+		res := t.Resources[id]
+		tr := translatorFor(res.Type)
+		if tr == nil {
+			return rollback(fmt.Errorf("%s (%s) has no create translator", id, res.Type))
+		}
+		r.where = "Resource " + id
+		resolved, _ := r.resolve(res.Properties).(map[string]any)
+		m, fs := tr(id, resolved, sctx)
+		if len(fs) > 0 {
+			return rollback(fmt.Errorf("translate gate REJECTED:\n  - %s", joinFindings(fs)))
+		}
+		if m == nil {
+			continue // a no-op resource (composes into another kind)
+		}
+		// A custom resource is invoked (not applied); its Data feeds later dependents' Fn::GetAtt.
+		if m.APIVersion == customResourceAPIVersion && m.Kind == customResourceKind {
+			sr, cerr := invokeCustomResource(ctx, opts, r, id, m)
+			if cerr != nil {
+				return rollback(cerr)
+			}
+			rec.Resources = append(rec.Resources, sr)
+			continue
+		}
+		yml, rerr := renderManifest(m, opts)
+		if rerr != nil {
+			return rollback(rerr)
+		}
+		sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, DeletionPolicy: res.DeletionPolicy, Spec: m.Spec}
+		if aerr := ap.Apply(ctx, yml); aerr != nil {
+			return rollback(fmt.Errorf("applying %s/%s: %w", m.Kind, m.Name, aerr))
+		}
+		applied = append(applied, sr)
+		rec.Resources = append(rec.Resources, sr)
+		if opts.Wait {
+			if werr := ap.WaitReady(ctx, m.APIVersion, m.Kind, m.Name, opts.Timeout); werr != nil {
+				return rollback(fmt.Errorf("%s/%s did not become ready: %w", m.Kind, m.Name, werr))
+			}
+		}
+	}
+	rec.Status = "CREATE_COMPLETE"
+	rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
+		return rec, fmt.Errorf("stack created but recording COMPLETE failed: %w", err)
+	}
+	return rec, nil
+}
+
+// invokeCustomResource invokes a custom resource's backing Function with the CloudFormation
+// custom-resource event and records its returned Data on the resolver (for dependents' Fn::GetAtt).
+// A non-SUCCESS status (or a transport error) fails the deploy, which then rolls back.
+func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, id string, m *Manifest) (StackResource, error) {
+	sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec}
+	if opts.Invoke == nil {
+		return sr, fmt.Errorf("custom resource %s requires the in-cluster deploy path (the aws-shim CloudFormation doorway); a CLI deploy cannot invoke a Function", id)
+	}
+	fnName, _ := m.Spec["function"].(string)
+	resType, _ := m.Spec["resourceType"].(string)
+	props, _ := m.Spec["properties"].(map[string]any)
+	event, _ := json.Marshal(map[string]any{
+		"RequestType":        "Create",
+		"ResponseURL":        "", // open-infra: the handler returns the response synchronously (no S3 callback)
+		"StackId":            opts.StackName,
+		"RequestId":          opts.StackName + "/" + id,
+		"ResourceType":       resType,
+		"LogicalResourceId":  id,
+		"ResourceProperties": props,
+	})
+	resp, err := opts.Invoke(ctx, opts.Namespace, fnName, event)
+	if err != nil {
+		return sr, fmt.Errorf("custom resource %s: invoking Function %q failed: %w", id, fnName, err)
+	}
+	if status := fmt.Sprint(resp["Status"]); status != "SUCCESS" {
+		return sr, fmt.Errorf("custom resource %s: Function returned status %q (%s)", id, status, fmt.Sprint(resp["Reason"]))
+	}
+	if data, ok := resp["Data"].(map[string]any); ok {
+		r.customData[id] = data
+	} else {
+		r.customData[id] = map[string]any{}
+	}
+	return sr, nil
 }
 
 // renderManifest builds the applyable YAML for one resource, with stack labels.
