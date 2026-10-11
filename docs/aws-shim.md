@@ -298,7 +298,8 @@ exercised → proven by the probe → counted.
 
 The DynamoDB front door speaks the **AWS JSON protocol** (`X-Amz-Target: DynamoDB_20120810.<Op>`) over
 **FerretDB** (a MongoDB wire front end on a `documentdb`-extension Postgres). Supported: `CreateTable`,
-`DescribeTable`, `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort +
+`DescribeTable`, `DeleteTable` (drops the data + indexes + stream log; refuses a table still `CREATING`
+with `ResourceInUseException`), `GetItem`, `PutItem`, `DeleteItem`, `Query` (key-condition + filter + sort +
 pagination), `UpdateItem` (update + condition expressions), `Scan`, `BatchGetItem`, `BatchWriteItem`
 (capped at DynamoDB's 100/25 limits), **`TransactWriteItems`** (atomic Put/Update/Delete +
 `ConditionExpression`), **`TransactGetItems`** (consistent multi-item snapshot), and
@@ -323,7 +324,7 @@ launches a Job that bootstraps a recovery Postgres cluster from the WAL archive,
 table's collection + indexes into the new table, and flips it `CREATING`→`ACTIVE` (or `CREATE_FAILED`,
 never a false success), observable via `DescribeTable`. `UseLatestRestorableTime` is supported; a
 specific past `RestoreDateTime` is refused loudly (a CNPG/PostgreSQL `recovery_target_time` limitation,
-tracked). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`, `DeleteTable`.
+tracked). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`.
 Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions and streams).
 
 ### SQS (Postgres-backed; probe-proven)

@@ -149,4 +149,12 @@ if AWS_ACCESS_KEY_ID="$WAK" AWS_SECRET_ACCESS_KEY="wrong-secret-0000000000000000
 fi
 log "  ✓ wrong secret rejected"
 
-printf '\n✓ PASS — aws-shim DynamoDB core is faithful: CreateTable/DescribeTable (with a GSI), PutItem/GetItem round-trip, UpdateItem, Query, Scan, a GSI query spanning partitions, DeleteItem, the ContinuousBackups/PITR surface, and a wrong secret is rejected.\n'
+log "delete-table removes the table (describe-table then ResourceNotFound)"
+ddb delete-table --table-name "$TABLE" | grep -q '"TableStatus": "DELETING"' || fail "delete-table did not return a DELETING TableDescription"
+if DT="$(ddb describe-table --table-name "$TABLE" 2>&1 >/dev/null)"; then
+  fail "describe-table should be ResourceNotFound after delete-table, but it succeeded"
+fi
+echo "$DT" | grep -q "ResourceNotFoundException" || fail "describe-table after delete should be ResourceNotFoundException, got: $DT"
+log "  ✓ delete-table removed the table"
+
+printf '\n✓ PASS — aws-shim DynamoDB core is faithful: CreateTable/DescribeTable (with a GSI), PutItem/GetItem round-trip, UpdateItem, Query, Scan, a GSI query spanning partitions, DeleteItem, the ContinuousBackups/PITR surface, DeleteTable (table gone afterward), and a wrong secret is rejected.\n'

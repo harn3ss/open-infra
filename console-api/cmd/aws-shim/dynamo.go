@@ -10,7 +10,7 @@
 // limits, non-transactional like the real service), the full transaction surface
 // (TransactWriteItems with Put/Update/Delete + ConditionExpression, and TransactGetItems'
 // consistent snapshot — atomic over the documentdb Postgres behind FerretDB), and TTL. The
-// remainder — ListTables, DeleteTable, projection expressions, streams — returns an honest 501
+// remainder — ListTables, projection expressions — returns an honest 501
 // NotImplementedException, the shim's per-op graduation, never a silent fake.
 //
 // The store executor is the SHARED module github.com/harn3ss/open-infra/dynamodb — the same code
@@ -205,6 +205,8 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		h.createTable(ctx, w, requestID, table, body)
 	case "DescribeTable":
 		h.describeTable(ctx, w, requestID, table)
+	case "DeleteTable":
+		h.deleteTable(ctx, w, requestID, table)
 	case "GetItem":
 		h.getItem(ctx, w, requestID, table, body)
 	case "PutItem":
@@ -308,6 +310,48 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 		tbl["LatestStreamLabel"] = table
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"Table": tbl})
+}
+
+// deleteTable — DynamoDB_20120810.DeleteTable. Drops the item collection (and with it its data + GSI/LSI
+// indexes), tears down the table's stream log, and removes the registry entry. A table still being
+// created (e.g. mid-restore, status CREATING) is refused with ResourceInUseException, matching AWS.
+// Returns the table in DELETING, as AWS does (the drop is synchronous, so a follow-up DescribeTable is
+// ResourceNotFound).
+func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, requestID, table string) {
+	if table == "" {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "DeleteTable requires a TableName.")
+		return
+	}
+	var doc dynamoRegistryDoc
+	if err := h.registry().FindOne(ctx, bson.M{"_id": table}).Decode(&doc); err != nil {
+		writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
+			"Requested resource not found: Table: "+table+" not found")
+		return
+	}
+	if doc.Status == "CREATING" {
+		writeDynamoError(w, http.StatusBadRequest, "ResourceInUseException", requestID,
+			"Table "+table+" is CREATING and cannot be deleted")
+		return
+	}
+	// Drop the item collection (removes its data + indexes), then the stream log (best-effort), then the
+	// registry entry. Order matters: once the registry entry is gone the table no longer resolves.
+	if err := h.db.Collection(table).Drop(ctx); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if h.stream != nil {
+		if err := h.stream.closeStream(ctx, table); err != nil {
+			h.logger.Warn("dynamodb stream close failed on DeleteTable", "table", table, "err", err)
+		}
+	}
+	if _, err := h.registry().DeleteOne(ctx, bson.M{"_id": table}); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": map[string]any{
+		"TableName": table, "TableStatus": "DELETING", "KeySchema": keySchemaFromAttrs(doc.KeyAttrs),
+		"ItemCount": float64(0),
+	}})
 }
 
 func (h *dynamoHandler) getItem(ctx context.Context, w http.ResponseWriter, requestID, table string, body map[string]any) {
