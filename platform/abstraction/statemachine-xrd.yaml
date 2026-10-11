@@ -56,11 +56,16 @@ spec:
                     Function's cluster-local URL) or a raw "http(s)://..." URL.
                 type:
                   type: string
-                  enum: [Standard]
+                  enum: [Standard, Express]
                   default: Standard
                   description: >-
-                    Workflow class. Only Standard (durable, checkpointed, full execution
-                    history) is implemented in v1; Express is a planned follow-up.
+                    Workflow class. Standard is durable, checkpointed, exactly-once with a
+                    full execution history. Express is high-volume/short-duration and adds
+                    StartSyncExecution (run the workflow and return its output inline). The
+                    open-infra engine runs both on the SAME durable interpreter, so Express
+                    here is a SUPERSET of AWS Express — it is still exactly-once and keeps a
+                    history (AWS Express is at-least-once and keeps none); the client-visible
+                    contract (the synchronous result) is faithful.
                 roleArn:
                   type: string
                   description: >-

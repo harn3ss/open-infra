@@ -42,6 +42,7 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 ECHO_NAME="sfn-echo-$SFX"
 SM_NAME="sfn-probe-$SFX"
 SM_NOTRUST="sfn-notrust-$SFX"
+SM_EXPRESS="sfn-express-$SFX"
 ROLE="sfn-role-$SFX"; NOTRUST_ROLE="sfn-notrust-role-$SFX"
 POL="sfn-pol-$SFX"
 BUCKET_X="sfn-granted-$SFX"; BUCKET_Y="sfn-denied-$SFX"
@@ -55,6 +56,7 @@ s3op() { local ak="$1" sk="$2" tok="${3:-}"; shift 3; AWS_ACCESS_KEY_ID="$ak" AW
 cleanup() {
   sfn delete-state-machine --state-machine-arn "arn:aws:states:${REGION}:${ACCOUNT}:stateMachine:${SM_NAME}" >/dev/null 2>&1 || true
   sfn delete-state-machine --state-machine-arn "arn:aws:states:${REGION}:${ACCOUNT}:stateMachine:${SM_NOTRUST}" >/dev/null 2>&1 || true
+  sfn delete-state-machine --state-machine-arn "arn:aws:states:${REGION}:${ACCOUNT}:stateMachine:${SM_EXPRESS}" >/dev/null 2>&1 || true
   # Delete this probe's executions by their stateMachineRef — NOT via an array mutated inside start_exec,
   # which runs in a $(...) subshell so the parent's array never sees the appends.
   kubectl -n "$SHIM_NS" get execution.openinfra.dev -o json 2>/dev/null \
@@ -62,7 +64,7 @@ cleanup() {
 d=json.load(sys.stdin)
 for i in d.get("items",[]):
   sm=str(i.get("spec",{}).get("stateMachineRef",{}).get("name",""))
-  if sm in (sys.argv[1],sys.argv[2]): print(i["metadata"]["name"])' "$SM_NAME" "$SM_NOTRUST" 2>/dev/null \
+  if sm in sys.argv[1:]: print(i["metadata"]["name"])' "$SM_NAME" "$SM_NOTRUST" "$SM_EXPRESS" 2>/dev/null \
     | while read -r e; do [ -n "$e" ] && kubectl -n "$SHIM_NS" delete execution.openinfra.dev "$e" --ignore-not-found >/dev/null 2>&1 || true; done
   kubectl -n "$SHIM_NS" delete secret -l openinfra.dev/statemachine-creds=true >/dev/null 2>&1 || true
   kubectl -n "$SHIM_NS" delete deployment,service "$ECHO_NAME" --ignore-not-found >/dev/null 2>&1 || true
@@ -308,15 +310,16 @@ fi
 grep -qiE 'AccessDenied|not authorized|trust' "$TMP/nt" || fail "untrusted-role denial had the wrong error: $(cat "$TMP/nt")"
 log "    ✓ denied (caller not named by the role's trust policy)"
 
-# --- 10. NEGATIVE: an unsupported ASL feature is REFUSED at CreateStateMachine ----------------------
-log "negative: CreateStateMachine with a Parallel state → InvalidDefinition (refused, not faked)"
-echo '{"StartAt":"P","States":{"P":{"Type":"Parallel","End":true}}}' > "$TMP/bad.json"
+# --- 10. NEGATIVE: an invalid/unsupported ASL definition is REFUSED at CreateStateMachine -----------
+# (Parallel + Map ARE supported since #280; use an unknown state Type as the genuinely-refused case.)
+log "negative: CreateStateMachine with an unknown state Type → InvalidDefinition (refused, not faked)"
+echo '{"StartAt":"X","States":{"X":{"Type":"Bogus","End":true}}}' > "$TMP/bad.json"
 if sfn create-state-machine --name "sfn-bad-$SFX" --definition "file://$TMP/bad.json" \
    --role-arn "arn:aws:iam::${ACCOUNT}:role/${ROLE}" >/dev/null 2>"$TMP/bad"; then
   sfn delete-state-machine --state-machine-arn "arn:aws:states:${REGION}:${ACCOUNT}:stateMachine:sfn-bad-$SFX" >/dev/null 2>&1 || true
-  fail "an unsupported Parallel definition was accepted (should be refused)"
+  fail "an invalid definition (unknown state Type) was accepted (should be refused)"
 fi
-grep -qiE 'InvalidDefinition|not supported|Parallel' "$TMP/bad" || fail "unsupported-ASL refusal had the wrong error: $(cat "$TMP/bad")"
+grep -qiE 'InvalidDefinition|not supported|Bogus|unknown' "$TMP/bad" || fail "invalid-ASL refusal had the wrong error: $(cat "$TMP/bad")"
 log "    ✓ refused"
 
 # --- 11. NEGATIVE: a wrong secret is rejected (shared SigV4 auth actually fires) --------------------
@@ -328,4 +331,28 @@ fi
 grep -qiE 'Signature|does not match|InvalidSignature|AccessDenied' "$TMP/ws" || fail "wrong-secret rejection had the wrong error: $(cat "$TMP/ws")"
 log "    ✓ rejected on signature mismatch"
 
-printf '\n✓ PASS — aws-shim Step Functions is faithful: an AWS-authored ASL workflow runs (Task/Choice/Wait/Retry/Catch), a Task executes under the state machine ROLE (injected STS session = the assumed role, doing exactly what the role grants and denied what it does not — the confused-deputy fix), StopExecution aborts, the history reflects real transitions, and the negatives (untrusted-role pass, unsupported ASL) are refused.\n'
+# --- 12. EXPRESS + StartSyncExecution (#280) --------------------------------------------------------
+log "express: create an EXPRESS state machine (Pass → inline output)"
+echo '{"StartAt":"Echo","States":{"Echo":{"Type":"Pass","Result":{"ok":true,"via":"express"},"End":true}}}' > "$TMP/exp.json"
+EXP_ARN="$(sfn create-state-machine --name "$SM_EXPRESS" --definition "file://$TMP/exp.json" --type EXPRESS \
+  --query stateMachineArn --output text 2>"$TMP/ce")"
+[ -n "$EXP_ARN" ] && [ "$EXP_ARN" != "None" ] || fail "create EXPRESS state machine failed: $(cat "$TMP/ce" 2>/dev/null)"
+sfn describe-state-machine --state-machine-arn "$EXP_ARN" --query type --output text 2>/dev/null | grep -qx "EXPRESS" \
+  || fail "describe-state-machine did not report type=EXPRESS"
+log "    ✓ EXPRESS machine created + described as EXPRESS"
+
+log "express: start-sync-execution RUNS the workflow and returns the output INLINE"
+SYNC="$(sfn start-sync-execution --state-machine-arn "$EXP_ARN" --input '{"n":1}' 2>"$TMP/ss")"
+[ -n "$SYNC" ] || fail "start-sync-execution failed: $(cat "$TMP/ss" 2>/dev/null)"
+echo "$SYNC" | grep -q 'SUCCEEDED' || fail "start-sync-execution did not reach SUCCEEDED inline: $SYNC"
+echo "$SYNC" | grep -q 'express'   || fail "start-sync-execution did not return the Pass output inline: $SYNC"
+log "    ✓ synchronous result returned inline (SUCCEEDED + output)"
+
+log "express negative: start-sync-execution on a STANDARD machine is refused (EXPRESS-only, AWS-faithful)"
+if sfn start-sync-execution --state-machine-arn "$SM_ARN" --input '{}' >/dev/null 2>"$TMP/sstd"; then
+  fail "start-sync-execution on a STANDARD machine was accepted (must be EXPRESS-only)"
+fi
+grep -qiE 'StateMachineTypeNotSupported|EXPRESS|not supported' "$TMP/sstd" || fail "STANDARD-sync refusal had the wrong error: $(cat "$TMP/sstd")"
+log "    ✓ refused on a STANDARD machine"
+
+printf '\n✓ PASS — aws-shim Step Functions is faithful: an AWS-authored ASL workflow runs (Task/Choice/Wait/Retry/Catch), a Task executes under the state machine ROLE (injected STS session = the assumed role, doing exactly what the role grants and denied what it does not — the confused-deputy fix), StopExecution aborts, the history reflects real transitions, an EXPRESS machine runs synchronously (StartSyncExecution returns the output inline, refused on STANDARD), and the negatives (untrusted-role pass, invalid ASL) are refused.\n'
