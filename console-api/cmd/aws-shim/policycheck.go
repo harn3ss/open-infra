@@ -19,7 +19,7 @@ func deniedByDataPlane(ctx context.Context, authz *dataplaneauthz.Checker, claim
 	// The principal is the User normally, or the assumed kind: Role for an sts:AssumeRole session —
 	// so a role's data-plane policies govern what that session may do, exactly as in AWS.
 	allowed, governed, reason := authz.Authorize(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
-		action, resType, resID, requestContext(r))
+		action, resType, resID, requestContext(claims, r))
 	if governed && !allowed {
 		return true, reason
 	}
@@ -43,13 +43,20 @@ func s3Action(kind string) string {
 	return "s3:" + kind
 }
 
-// requestContext is the Cedar condition context: the request is past SigV4 auth, plus the source IP.
-func requestContext(r *http.Request) map[string]any {
+// requestContext is the Cedar condition context: the request is past SigV4 auth (authenticated), the
+// source IP, and the calling principal's name (username — the data-plane principal id: a User's name or
+// an assumed Role's name). Each attribute here MUST stay in lockstep with policyengine's
+// SupportedConditionKeys (the TestSupportedConditionKeysMatchRequestContext drift guard): supporting a
+// condition key the shim never populates would make a Deny gated on it silently never fire.
+func requestContext(claims iam.Claims, r *http.Request) map[string]any {
 	c := map[string]any{"authenticated": true}
 	if r != nil {
 		if ip := clientIP(r); ip != "" {
 			c["sourceIp"] = ip
 		}
+	}
+	if p := claims.PrincipalID(); p != "" {
+		c["username"] = p
 	}
 	return c
 }

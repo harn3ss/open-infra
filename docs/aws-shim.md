@@ -915,8 +915,8 @@ deputy would pass the allow case and fail every deny), and a session may only na
 honor, and the doorway **refuses** a policy with any unsupported part (`MalformedPolicyDocument`) rather than
 storing a grant that differs from the JSON. `NotAction`/`NotResource` — which the importer drops silently —
 are rejected explicitly. Deny statements translate to Cedar `forbid` (forbid overrides permit). The importer
-covers S3/DynamoDB/Lambda actions + a narrow condition set (authenticated, sourceIp); anything outside that is
-refused, not narrowed.
+covers S3/DynamoDB/Lambda actions + a narrow condition set (authenticated, `aws:SourceIp`, `aws:username` —
+StringEquals/StringLike); anything outside that is refused, not narrowed.
 
 `probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy` (JSON→Cedar) + `CreateRole` (trust)
 + `AttachRolePolicy`; the **live `AssumeRole`→S3 round-trip** — an STS-assumed session does **exactly** what

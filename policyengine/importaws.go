@@ -26,8 +26,9 @@ var SupportedServices = map[string]bool{
 type condType int
 
 const (
-	condBool condType = iota // a boolean attr — the Bool operator
-	condIP                   // a string attr holding an IP — IpAddress / NotIpAddress (or an exact StringEquals)
+	condBool   condType = iota // a boolean attr — the Bool operator
+	condIP                     // a string attr holding an IP — IpAddress / NotIpAddress (or an exact StringEquals)
+	condString                 // a plain string attr — StringEquals (exact) / StringLike / StringNotLike (wildcard)
 )
 
 // ConditionKey is one request-context attribute the aws-shim's requestContext() populates and that the
@@ -53,6 +54,10 @@ type ConditionKey struct {
 var SupportedConditionKeys = []ConditionKey{
 	{Attr: "authenticated", Type: condBool, Aliases: []string{"authenticated"}},
 	{Attr: "sourceIp", Type: condIP, Aliases: []string{"aws:SourceIp", "sourceIp"}},
+	// The calling principal's name (a kind: User's name, or an assumed kind: Role's name) — the shim
+	// populates it from the data-plane principal id. Honors "only this principal" conditions
+	// (StringEquals) and prefix/pattern conditions (StringLike/StringNotLike).
+	{Attr: "username", Type: condString, Aliases: []string{"aws:username", "username"}},
 }
 
 // SupportedConditionAttrs is the set of request-context attributes the importer may reference — the
@@ -106,6 +111,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 		}
 		var eq map[string]string
 		var ips []IPCondition
+		var likes []LikeCondition
 		if rawCond, ok := st["Condition"]; ok {
 			cm, isMap := rawCond.(map[string]any)
 			if !isMap {
@@ -114,7 +120,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 			}
 			var reason string
 			var mapped bool
-			eq, ips, reason, mapped = importCondition(cm)
+			eq, ips, likes, reason, mapped = importCondition(cm)
 			if !mapped {
 				// Refuse the WHOLE statement — never emit it with the condition dropped. Dropping an
 				// Allow's condition would WIDEN the grant; dropping a Deny's condition would widen the
@@ -137,7 +143,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 			unsupported = append(unsupported, fmt.Sprintf("statement %d: %v has no mappable Resource (an identity policy must scope to an ARN or \"*\")", i, actions))
 			continue
 		}
-		s := Statement{Effect: effect, Actions: actions, Resources: resources, IPConditions: ips}
+		s := Statement{Effect: effect, Actions: actions, Resources: resources, IPConditions: ips, LikeConditions: likes}
 		if len(eq) > 0 {
 			s.Condition = eq
 		}
@@ -152,49 +158,60 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 // the whole statement. Only Bool (on a boolean attr), single-valued StringEquals (on a non-boolean
 // populated attr), and IpAddress / NotIpAddress (CIDR, on an IP attr) are honored; every other
 // operator, an unpopulated key, and any multi-valued list stay refused (fail closed).
-func importCondition(cond map[string]any) (eq map[string]string, ips []IPCondition, reason string, ok bool) {
+func importCondition(cond map[string]any) (eq map[string]string, ips []IPCondition, likes []LikeCondition, reason string, ok bool) {
 	eq = map[string]string{}
 	for op, kv := range cond {
 		m, isMap := kv.(map[string]any)
 		if !isMap {
-			return nil, nil, fmt.Sprintf("operator %q has a non-object body", op), false
+			return nil, nil, nil, fmt.Sprintf("operator %q has a non-object body", op), false
 		}
 		for key, rawVal := range m {
 			ck, known := resolveConditionKey(key)
 			if !known {
-				return nil, nil, fmt.Sprintf("key %q is not a request attribute the shim populates", key), false
+				return nil, nil, nil, fmt.Sprintf("key %q is not a request attribute the shim populates", key), false
 			}
 			val, single := singleValue(rawVal)
 			if !single {
-				return nil, nil, fmt.Sprintf("%q on %q is multi-valued (only single-valued is importable)", op, key), false
+				return nil, nil, nil, fmt.Sprintf("%q on %q is multi-valued (only single-valued is importable)", op, key), false
 			}
 			switch op {
 			case "Bool":
 				if ck.Type != condBool || (val != "true" && val != "false") {
-					return nil, nil, fmt.Sprintf("Bool on %q is not a boolean request attribute", key), false
+					return nil, nil, nil, fmt.Sprintf("Bool on %q is not a boolean request attribute", key), false
 				}
 				eq[ck.Attr] = val
 			case "StringEquals":
 				if ck.Type == condBool {
-					return nil, nil, fmt.Sprintf("StringEquals on boolean key %q is not faithful (use Bool)", key), false
+					return nil, nil, nil, fmt.Sprintf("StringEquals on boolean key %q is not faithful (use Bool)", key), false
 				}
 				eq[ck.Attr] = val
+			case "StringLike", "StringNotLike":
+				if ck.Type != condString {
+					return nil, nil, nil, fmt.Sprintf("%q on non-string key %q", op, key), false
+				}
+				// Cedar's `like` wildcard is `*` only; AWS StringLike also allows `?` (single char), which
+				// Cedar can't express — refuse rather than approximate (an over-broad `*` would widen the
+				// match). A literal `*`/`?` would need escaping, also not faithfully expressible — refuse.
+				if strings.Contains(val, "?") {
+					return nil, nil, nil, fmt.Sprintf("%q value %q uses '?' which Cedar's pattern match can't express", op, val), false
+				}
+				likes = append(likes, LikeCondition{Key: ck.Attr, Pattern: val, Negate: op == "StringNotLike"})
 			case "IpAddress", "NotIpAddress":
 				if ck.Type != condIP {
-					return nil, nil, fmt.Sprintf("%q on non-IP key %q", op, key), false
+					return nil, nil, nil, fmt.Sprintf("%q on non-IP key %q", op, key), false
 				}
 				// Validate with the SAME parser Cedar's ip() uses, so a value accepted here cannot then
 				// error inside the compiled policy (an errored IP test would skip a forbid → fail open).
 				if _, err := types.ParseIPAddr(val); err != nil {
-					return nil, nil, fmt.Sprintf("%q value %q is not a valid IP or CIDR", op, val), false
+					return nil, nil, nil, fmt.Sprintf("%q value %q is not a valid IP or CIDR", op, val), false
 				}
 				ips = append(ips, IPCondition{Key: ck.Attr, CIDR: val, Negate: op == "NotIpAddress"})
 			default:
-				return nil, nil, fmt.Sprintf("operator %q is not importable", op), false
+				return nil, nil, nil, fmt.Sprintf("operator %q is not importable", op), false
 			}
 		}
 	}
-	return eq, ips, "", true
+	return eq, ips, likes, "", true
 }
 
 // singleValue reads a single-valued AWS condition value (a string, a bool, or a one-element array).
