@@ -7414,9 +7414,13 @@ components:
               type: string
               enum:
               - Standard
+              - Express
               default: Standard
-              description: Workflow class. Only Standard (durable, checkpointed, full execution history) is implemented in
-                v1; Express is a planned follow-up.
+              description: "Workflow class. Standard is durable, checkpointed, exactly-once with a full execution history.\
+                \ Express is high-volume/short-duration and adds StartSyncExecution (run the workflow and return its output\
+                \ inline). The open-infra engine runs both on the SAME durable interpreter, so Express here is a SUPERSET\
+                \ of AWS Express \u2014 it is still exactly-once and keeps a history (AWS Express is at-least-once and keeps\
+                \ none); the client-visible contract (the synchronous result) is faithful."
             roleArn:
               type: string
               description: "Optional execution role \u2014 the analogue of aws_sfn_state_machine.role_arn. An \"arn:aws:iam::<acct>:role/<name>\"\

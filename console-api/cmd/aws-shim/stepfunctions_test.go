@@ -151,12 +151,16 @@ func TestVerbForSFNOp(t *testing.T) {
 	for op, wantRes := range map[string]string{
 		"CreateStateMachine": "statemachines",
 		"StartExecution":     "executions",
+		"StartSyncExecution": "executions", // #280 Express: must authorize like StartExecution, not default-deny
 		"StopExecution":      "executions",
 		"DescribeExecution":  "executions",
 	} {
-		_, res, ok := verbForSFNOp(op)
+		verb, res, ok := verbForSFNOp(op)
 		if !ok || res != wantRes {
 			t.Errorf("verbForSFNOp(%q)=%q,%v want %q", op, res, ok, wantRes)
+		}
+		if op == "StartSyncExecution" && verb != "create" {
+			t.Errorf("StartSyncExecution must map to the create verb, got %q", verb)
 		}
 	}
 	if _, _, ok := verbForSFNOp("NopeOp"); ok {

@@ -138,9 +138,20 @@ An execution ends in one of: `Succeeded` (with `output`), `Failed` (with `error`
 v1 is a faithful subset. These ASL features are **not** available yet and are
 rejected with a `States.Runtime` error rather than silently ignored:
 
-- The `Express` workflow type (only `Standard` is implemented).
 - Task callbacks (`.waitForTaskToken`) and service integrations other than Functions.
 - ASL intrinsic functions and JSONPath filters/wildcards/slices.
+
+## Express workflows
+
+`spec.type: Express` is supported alongside `Standard`, and the aws-shim exposes
+`StartSyncExecution` (run the workflow and return its output inline) for Express
+machines. One important honesty note: both types run on the **same durable
+interpreter**, so open-infra's Express is a *superset* of AWS Express — it is still
+exactly-once and keeps a full execution history (AWS Express is at-least-once and
+keeps none). The client-visible contract — the synchronous result from
+`StartSyncExecution`, and that it is refused on a `Standard` machine — is faithful;
+`DescribeExecution`/`GetExecutionHistory` also work on an Express execution here,
+where AWS would not retain one.
 
 ## Notes
 
