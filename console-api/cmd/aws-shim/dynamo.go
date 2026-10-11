@@ -252,10 +252,16 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 			"CreateTable requires a TableName and a KeySchema.")
 		return
 	}
+	bill, verr := billingFromCreateTable(body)
+	if verr != "" {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, verr)
+		return
+	}
 	gsis := gsisFromCreateTable(body)
 	lsis := lsisFromCreateTable(body)
 	streamView := streamViewFromSpec(body["StreamSpecification"])
 	entry := bson.M{"_id": table, "keyAttrs": keyAttrs}
+	storeBilling(entry, bill)
 	if len(gsis) > 0 {
 		entry["gsi"] = gsis
 	}
@@ -275,6 +281,7 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 	h.openTableStream(ctx, table, streamView)
 	desc := map[string]any{
 		"TableName": table, "TableStatus": "ACTIVE", "KeySchema": body["KeySchema"], "ItemCount": float64(0),
+		"BillingModeSummary": billingModeSummary(bill), "ProvisionedThroughput": provisionedThroughputDesc(bill),
 	}
 	if len(gsis) > 0 {
 		desc["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
@@ -297,7 +304,9 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 			"Requested resource not found: Table: "+table+" not found")
 		return
 	}
-	tbl := map[string]any{"TableName": table, "TableStatus": h.tableStatus(ctx, table), "KeySchema": keySchemaFromAttrs(keyAttrs)}
+	bill := h.tableBilling(ctx, table)
+	tbl := map[string]any{"TableName": table, "TableStatus": h.tableStatus(ctx, table), "KeySchema": keySchemaFromAttrs(keyAttrs),
+		"BillingModeSummary": billingModeSummary(bill), "ProvisionedThroughput": provisionedThroughputDesc(bill)}
 	if gsis := h.tableGSIs(ctx, table); len(gsis) > 0 {
 		tbl["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
 	}
