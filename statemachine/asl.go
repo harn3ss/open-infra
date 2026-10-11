@@ -1,9 +1,9 @@
 // ASL (Amazon States Language) types and parsing for open-infra's kind: StateMachine.
 //
 // This is a faithful SUBSET of ASL: state types Task, Choice, Wait, Pass, Succeed,
-// Fail, with Retry/Catch, TimeoutSeconds, and JSONPath data shaping
-// (InputPath/Parameters/ResultPath/OutputPath). Parallel and Map are not parsed here
-// (the engine rejects them with States.Runtime so the gap is loud, never silent).
+// Fail, Parallel, and Map, with Retry/Catch, TimeoutSeconds, and JSONPath data shaping
+// (InputPath/Parameters/ResultPath/OutputPath). Parallel runs its Branches concurrently;
+// Map runs its Iterator/ItemProcessor over each item of an array (MaxConcurrency-bounded).
 package main
 
 import (
@@ -58,6 +58,32 @@ type State struct {
 	// Fail.
 	Error string `json:"Error"`
 	Cause string `json:"Cause"`
+
+	// Parallel — each branch is its own {StartAt, States} sub-graph, run concurrently.
+	Branches []Definition `json:"Branches"`
+
+	// Map — run an iterator sub-graph over each element of an array.
+	Iterator       *Definition     `json:"Iterator"`       // classic Map
+	ItemProcessor  *Definition     `json:"ItemProcessor"`  // modern Map (ProcessorConfig ignored)
+	ItemsPath      Path            `json:"ItemsPath"`      // reference path to the input array (default "$")
+	MaxConcurrency int             `json:"MaxConcurrency"` // 0 = unbounded
+	ItemSelector   json.RawMessage `json:"ItemSelector"`   // modern per-item input template ($ = item, $$ = ctx incl Map.Item)
+}
+
+// iteratorDef returns a Map state's sub-graph (ItemProcessor preferred, else Iterator).
+func (s State) iteratorDef() *Definition {
+	if s.ItemProcessor != nil {
+		return s.ItemProcessor
+	}
+	return s.Iterator
+}
+
+// itemTemplate returns the per-item input template (ItemSelector preferred, else Parameters).
+func (s State) itemTemplate() json.RawMessage {
+	if len(s.ItemSelector) > 0 {
+		return s.ItemSelector
+	}
+	return s.Parameters
 }
 
 // Retrier retries a failed Task on matching errors with exponential backoff.
@@ -143,23 +169,31 @@ func (p Path) orDefault(def string) string {
 	return p.Value
 }
 
-// ParseDefinition parses an ASL JSON document and validates the reachable state graph.
+// ParseDefinition parses an ASL JSON document and validates the reachable state graph
+// (recursing into Parallel Branches and Map Iterator/ItemProcessor sub-graphs).
 func ParseDefinition(raw []byte) (*Definition, error) {
 	var d Definition
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return nil, fmt.Errorf("definition is not valid JSON: %w", err)
 	}
+	if err := validateDefinition(&d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// validateDefinition checks StartAt + that every transition target resolves, and recurses into the
+// sub-graphs of Parallel/Map states so a dangling transition fails at create time, not mid-execution.
+func validateDefinition(d *Definition) error {
 	if d.StartAt == "" {
-		return nil, fmt.Errorf("definition missing StartAt")
+		return fmt.Errorf("definition missing StartAt")
 	}
 	if len(d.States) == 0 {
-		return nil, fmt.Errorf("definition has no States")
+		return fmt.Errorf("definition has no States")
 	}
 	if _, ok := d.States[d.StartAt]; !ok {
-		return nil, fmt.Errorf("StartAt %q is not a defined state", d.StartAt)
+		return fmt.Errorf("StartAt %q is not a defined state", d.StartAt)
 	}
-	// Validate every Next/Default/Catch target resolves — a dangling transition
-	// should fail at create time, not surface mid-execution.
 	check := func(from, to string) error {
 		if to == "" {
 			return nil
@@ -171,21 +205,40 @@ func ParseDefinition(raw []byte) (*Definition, error) {
 	}
 	for name, s := range d.States {
 		if err := check(name, s.Next); err != nil {
-			return nil, err
+			return err
 		}
 		if err := check(name, s.Default); err != nil {
-			return nil, err
+			return err
 		}
 		for _, c := range s.Catch {
 			if err := check(name, c.Next); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		for _, ch := range s.Choices {
 			if err := check(name, ch.Next()); err != nil {
-				return nil, err
+				return err
+			}
+		}
+		if s.Type == "Parallel" {
+			if len(s.Branches) == 0 {
+				return fmt.Errorf("Parallel state %q has no Branches", name)
+			}
+			for i := range s.Branches {
+				if err := validateDefinition(&s.Branches[i]); err != nil {
+					return fmt.Errorf("Parallel state %q branch %d: %w", name, i, err)
+				}
+			}
+		}
+		if s.Type == "Map" {
+			it := s.iteratorDef()
+			if it == nil {
+				return fmt.Errorf("Map state %q has no Iterator/ItemProcessor", name)
+			}
+			if err := validateDefinition(it); err != nil {
+				return fmt.Errorf("Map state %q iterator: %w", name, err)
 			}
 		}
 	}
-	return &d, nil
+	return nil
 }

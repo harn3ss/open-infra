@@ -25,36 +25,75 @@ func validateAndTranslateDefinition(def string) (string, error) {
 	if _, ok := doc["StartAt"].(string); !ok {
 		return "", fmt.Errorf("definition must have a top-level string \"StartAt\"")
 	}
-	states, ok := doc["States"].(map[string]any)
-	if !ok || len(states) == 0 {
-		return "", fmt.Errorf("definition must have a non-empty \"States\" object")
-	}
-	for name, raw := range states {
-		st, ok := raw.(map[string]any)
-		if !ok {
-			return "", fmt.Errorf("state %q is not an object", name)
-		}
-		typ, _ := st["Type"].(string)
-		switch typ {
-		case "":
-			return "", fmt.Errorf("state %q has no Type", name)
-		case "Parallel", "Map":
-			return "", fmt.Errorf("state %q uses Type %q, which is not supported in v1 (no Parallel/Map)", name, typ)
-		case "Task":
-			if err := translateTaskResource(name, st); err != nil {
-				return "", err
-			}
-		case "Choice", "Wait", "Pass", "Succeed", "Fail":
-			// supported as-is
-		default:
-			return "", fmt.Errorf("state %q uses unknown Type %q", name, typ)
-		}
+	if err := validateAndTranslateStates(doc); err != nil {
+		return "", err
 	}
 	out, err := json.Marshal(doc)
 	if err != nil {
 		return "", fmt.Errorf("could not re-encode definition: %v", err)
 	}
 	return string(out), nil
+}
+
+// validateAndTranslateStates validates a {StartAt, States} object and translates each Task Resource in
+// place, recursing into Parallel Branches and Map Iterator/ItemProcessor sub-graphs so a Parallel/Map
+// with Lambda Tasks is accepted and its nested Resources rewritten to function:<name>.
+func validateAndTranslateStates(doc map[string]any) error {
+	states, ok := doc["States"].(map[string]any)
+	if !ok || len(states) == 0 {
+		return fmt.Errorf("definition must have a non-empty \"States\" object")
+	}
+	for name, raw := range states {
+		st, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("state %q is not an object", name)
+		}
+		typ, _ := st["Type"].(string)
+		switch typ {
+		case "":
+			return fmt.Errorf("state %q has no Type", name)
+		case "Task":
+			if err := translateTaskResource(name, st); err != nil {
+				return err
+			}
+		case "Choice", "Wait", "Pass", "Succeed", "Fail":
+			// supported as-is
+		case "Parallel":
+			branches, ok := st["Branches"].([]any)
+			if !ok || len(branches) == 0 {
+				return fmt.Errorf("Parallel state %q must have a non-empty \"Branches\" array", name)
+			}
+			for i, b := range branches {
+				bm, ok := b.(map[string]any)
+				if !ok {
+					return fmt.Errorf("Parallel state %q branch %d is not an object", name, i)
+				}
+				if _, ok := bm["StartAt"].(string); !ok {
+					return fmt.Errorf("Parallel state %q branch %d must have a string \"StartAt\"", name, i)
+				}
+				if err := validateAndTranslateStates(bm); err != nil {
+					return fmt.Errorf("Parallel state %q branch %d: %v", name, i, err)
+				}
+			}
+		case "Map":
+			sub, _ := st["ItemProcessor"].(map[string]any)
+			if sub == nil {
+				sub, _ = st["Iterator"].(map[string]any)
+			}
+			if sub == nil {
+				return fmt.Errorf("Map state %q must have an \"ItemProcessor\" or \"Iterator\"", name)
+			}
+			if _, ok := sub["StartAt"].(string); !ok {
+				return fmt.Errorf("Map state %q iterator must have a string \"StartAt\"", name)
+			}
+			if err := validateAndTranslateStates(sub); err != nil {
+				return fmt.Errorf("Map state %q iterator: %v", name, err)
+			}
+		default:
+			return fmt.Errorf("state %q uses unknown Type %q", name, typ)
+		}
+	}
+	return nil
 }
 
 // translateTaskResource validates and, where needed, rewrites a Task state's Resource in place.
