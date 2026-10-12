@@ -71,6 +71,7 @@ spec:
                   "fedora-40"       (dict "image" "quay.io/containerdisks/fedora:40"       "osType" "linux")
                   "debian-12"       (dict "image" "quay.io/containerdisks/debian:12"       "osType" "linux")
                   "centos-stream-9"     (dict "image" "quay.io/containerdisks/centos-stream:9" "osType" "linux")
+                  "windows-server-2016" (dict "image" "" "osType" "windows")
                   "windows-server-2019" (dict "image" "" "osType" "windows")
                   "windows-server-2022" (dict "image" "" "osType" "windows")
                   "windows-server-2025" (dict "image" "" "osType" "windows") }}

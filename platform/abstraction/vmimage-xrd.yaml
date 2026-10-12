@@ -52,6 +52,7 @@ spec:
                   type: string
                   description: "Windows version to build (curated catalog)."
                   enum:
+                    - windows-server-2016   # no auto-fetchable eval ISO — supply sourceUrl or adopt a disk
                     - windows-server-2019
                     - windows-server-2022
                     - windows-server-2025

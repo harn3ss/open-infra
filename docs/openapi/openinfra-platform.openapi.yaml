@@ -4427,6 +4427,7 @@ components:
                   - fedora-40
                   - debian-12
                   - centos-stream-9
+                  - windows-server-2016
                   - windows-server-2019
                   - windows-server-2022
                   - windows-server-2025
@@ -5702,10 +5703,12 @@ components:
                   type: string
                   enum:
                   - python3.12
+                  - python3.13
                   - nodejs20
+                  - nodejs22
                   - dotnet8
-                  description: 'Managed runtime base image the handler runs on: python3.12 (handler ''<module>.<function>''),
-                    nodejs20 (handler ''<file>.<export>'', CommonJS), or dotnet8 (handler ''Assembly::Namespace.Type::Method'',
+                  description: 'Managed runtime base image the handler runs on: python3.12 / python3.13 (handler ''<module>.<function>''),
+                    nodejs20 / nodejs22 (handler ''<file>.<export>'', CommonJS), or dotnet8 (handler ''Assembly::Namespace.Type::Method'',
                     a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task).'
                 handler:
                   type: string
@@ -8543,6 +8546,7 @@ components:
               - fedora-40
               - debian-12
               - centos-stream-9
+              - windows-server-2016
               - windows-server-2019
               - windows-server-2022
               - windows-server-2025
@@ -8682,6 +8686,7 @@ components:
               type: string
               description: Windows version to build (curated catalog).
               enum:
+              - windows-server-2016
               - windows-server-2019
               - windows-server-2022
               - windows-server-2025

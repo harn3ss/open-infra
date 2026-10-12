@@ -6,7 +6,10 @@
 # Built + pushed by .github/workflows/build-lambda-runtimes.yml as
 # ghcr.io/harn3ss/open-infra-lambda-nodejs. Plain interpreter; NOT FIPS (FIPS is a substrate property,
 # not a first-party image one — see docs).
-FROM node:20-slim
+# NODE_VERSION selects the base (20 = the default image, 22 = the open-infra-lambda-nodejs22
+# build). The bootstrap shim is version-independent, so one Dockerfile builds both.
+ARG NODE_VERSION=20
+FROM node:${NODE_VERSION}-slim
 
 LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
       openinfra.dev/component="lambda-runtime-nodejs" \

@@ -54,7 +54,8 @@ spec:
                     - fedora-40            # linux · cloud image
                     - debian-12            # linux · cloud image
                     - centos-stream-9      # linux · cloud image
-                    - windows-server-2019  # windows · clones <os>-golden (build via kind: VmImage)
+                    - windows-server-2016  # windows · clones <os>-golden (build via kind: VmImage)
+                    - windows-server-2019  # windows
                     - windows-server-2022  # windows
                     - windows-server-2025  # windows
                 cpu:      { type: integer, default: 2, minimum: 1, description: "Number of vCPU cores (KubeVirt domain.cpu.cores). Default 2." }

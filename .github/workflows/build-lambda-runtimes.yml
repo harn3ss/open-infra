@@ -34,8 +34,16 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        runtime: [python, nodejs, dotnet]
+        # dir = the (parameterized) Dockerfile; image = GHCR name; cat = Trivy category;
+        # args = base-version build-arg. One Dockerfile per language builds every version.
+        include:
+          - { dir: python, image: open-infra-lambda-python,    cat: python,    args: "" }
+          - { dir: nodejs, image: open-infra-lambda-nodejs,    cat: nodejs,    args: "" }
+          - { dir: dotnet, image: open-infra-lambda-dotnet,    cat: dotnet,    args: "" }
+          - { dir: python, image: open-infra-lambda-python313, cat: python313, args: "PY_VERSION=3.13" }
+          - { dir: nodejs, image: open-infra-lambda-nodejs22,  cat: nodejs22,  args: "NODE_VERSION=22" }
     steps:
       - uses: actions/checkout@v7
 
@@ -52,7 +60,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/open-infra-lambda-${{ matrix.runtime }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
@@ -61,18 +69,19 @@ jobs:
         id: build
         uses: docker/build-push-action@v7
         with:
-          context: lambda-runtime/${{ matrix.runtime }}
-          file: lambda-runtime/${{ matrix.runtime }}/Dockerfile
+          context: lambda-runtime/${{ matrix.dir }}
+          file: lambda-runtime/${{ matrix.dir }}/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: ${{ matrix.args }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
       - name: Trivy vulnerability scan (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/open-infra-lambda-${{ matrix.runtime }}@${{ steps.build.outputs.digest }}
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
@@ -86,7 +95,7 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-results.sarif
-          category: trivy-lambda-${{ matrix.runtime }}
+          category: trivy-lambda-${{ matrix.cat }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -94,4 +103,4 @@ jobs:
       - name: Sign the image (keyless, Sigstore)
         run: |
           cosign sign --yes \
-            ghcr.io/${{ github.repository_owner }}/open-infra-lambda-${{ matrix.runtime }}@${{ steps.build.outputs.digest }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}

@@ -37,9 +37,13 @@ spec:
             {{- $disk := $spec.diskSize | default "64Gi" }}
             {{- $ns := "openinfra-images" }}
             {{- $virtio := "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso" }}
-            {{- /* Curated catalog: os -> verified eval-ISO fwlink + unattend params.
+            {{- /* Curated catalog: os -> eval-ISO fwlink + unattend params. windows-server-2016 has NO
+                   stable auto-fetchable Microsoft ISO (no fwlink; the direct download needs a token), so
+                   its url is empty — build it with spec.sourceUrl, or skip the ISO build via
+                   spec.existingGoldenClaim (adopt an existing/imported disk — the migration path).
                    KEEP IN SYNC with the XRD enum + the VM os catalog. */}}
             {{- $catalog := dict
+                  "windows-server-2016" (dict "url" "" "edition" "Windows Server 2016 Standard Evaluation (Desktop Experience)" "driver" "2k16")
                   "windows-server-2019" (dict "url" "https://go.microsoft.com/fwlink/p/?LinkID=2195167" "edition" "Windows Server 2019 Standard Evaluation (Desktop Experience)" "driver" "2k19")
                   "windows-server-2022" (dict "url" "https://go.microsoft.com/fwlink/p/?LinkID=2195280" "edition" "Windows Server 2022 Standard Evaluation (Desktop Experience)" "driver" "2k22")
                   "windows-server-2025" (dict "url" "https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us" "edition" "Windows Server 2025 Standard Evaluation (Desktop Experience)" "driver" "2k25") }}
@@ -48,6 +52,9 @@ spec:
             {{- $pass := printf "%s-img" .observed.composite.resource.metadata.uid | sha256sum | trunc 14 }}
             {{- /* adopt an existing golden (clone it) instead of building from ISO — migration */}}
             {{- $adoptGolden := $spec.existingGoldenClaim | default "" }}
+            {{- /* Fail closed rather than fetch an empty URL: a catalog entry with no eval-ISO link
+                   (windows-server-2016) MUST be given spec.sourceUrl, or adopted via existingGoldenClaim. */}}
+            {{- if and (not $adoptGolden) (not $url) }}{{- fail (printf "kind: VmImage %s: no auto-fetchable evaluation ISO. Set spec.sourceUrl to a %s ISO URL, or spec.existingGoldenClaim to adopt an existing disk." $os $os) }}{{- end }}
             {{- if not $adoptGolden }}
             ---
             # --- Windows eval ISO (CDI follows the fwlink redirect) ---

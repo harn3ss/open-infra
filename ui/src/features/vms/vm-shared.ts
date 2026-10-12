@@ -17,6 +17,7 @@ export const OS_CATALOG: OsEntry[] = [
   { value: "fedora-40", label: "Fedora 40", family: "linux" },
   { value: "debian-12", label: "Debian 12", family: "linux" },
   { value: "centos-stream-9", label: "CentOS Stream 9", family: "linux" },
+  { value: "windows-server-2016", label: "Windows Server 2016", family: "windows" },
   { value: "windows-server-2019", label: "Windows Server 2019", family: "windows" },
   { value: "windows-server-2022", label: "Windows Server 2022", family: "windows" },
   { value: "windows-server-2025", label: "Windows Server 2025", family: "windows" },
