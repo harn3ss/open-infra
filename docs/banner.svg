@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 410" width="1200" height="410" role="img" aria-label="open-infra — the cloud experience you know, on the hardware you own. The AWS you already speak (CLI, SDKs, CloudFormation, Terraform; Lambda, S3, RDS, DynamoDB, EC2, IAM and more) on top of Kubernetes, Crossplane and GitOps running on your own hardware.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0f1e"/>
+      <stop offset="1" stop-color="#0e1529"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.18" cy="0.0" r="0.9">
+      <stop offset="0" stop-color="#1d2b4d" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#1d2b4d" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- card -->
+  <rect x="0" y="0" width="1200" height="410" rx="20" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="410" rx="20" fill="url(#glow)"/>
+  <rect x="0.5" y="0.5" width="1199" height="409" rx="19.5" fill="none" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- ===================== HEADER ===================== -->
+  <!-- logo mark: a cloud, in a box = a self-hosted cloud -->
+  <rect x="48" y="26" width="46" height="46" rx="11" fill="#111a2e" stroke="#2dd4bf" stroke-width="1.5"/>
+  <g fill="#ff9900">
+    <circle cx="64" cy="52" r="7"/>
+    <circle cx="75" cy="47" r="9.5"/>
+    <circle cx="85" cy="53" r="6"/>
+    <rect x="62" y="52" width="25" height="8" rx="4"/>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="112" y="58" font-size="34" font-weight="800" fill="#f8fafc">open<tspan fill="#2dd4bf">-infra</tspan></text>
+    <text x="114" y="80" font-size="12.5" font-weight="600" letter-spacing="2.2" fill="#64748b">SELF-HOSTED AWS</text>
+
+    <!-- right-aligned couplet -->
+    <text x="1152" y="46" text-anchor="end" font-size="17" font-weight="600" fill="#e2e8f0">The cloud experience you know,</text>
+    <text x="1152" y="72" text-anchor="end" font-size="17" font-weight="600" fill="#2dd4bf">on the hardware you own.</text>
+  </g>
+
+  <!-- ===================== AWS SURFACE BAND ===================== -->
+  <rect x="48" y="104" width="1104" height="116" rx="14" fill="#ff9900" fill-opacity="0.06"/>
+  <rect x="48" y="104" width="4" height="116" rx="2" fill="#ff9900"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="72" y="132" font-size="13" font-weight="700" letter-spacing="1.6" fill="#ff9900">THE AWS YOU ALREADY SPEAK</text>
+  </g>
+  <!-- command pills -->
+  <g font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="14" fill="#f1f5f9" text-anchor="middle">
+    <rect x="72"  y="148" width="94"  height="30" rx="15" fill="#131d33" stroke="#ff9900" stroke-opacity="0.45"/><text x="119" y="168">aws cli</text>
+    <rect x="178" y="148" width="66"  height="30" rx="15" fill="#131d33" stroke="#ff9900" stroke-opacity="0.45"/><text x="211" y="168">SDKs</text>
+    <rect x="256" y="148" width="150" height="30" rx="15" fill="#131d33" stroke="#ff9900" stroke-opacity="0.45"/><text x="331" y="168">CloudFormation</text>
+    <rect x="418" y="148" width="104" height="30" rx="15" fill="#131d33" stroke="#ff9900" stroke-opacity="0.45"/><text x="470" y="168">Terraform</text>
+    <rect x="534" y="148" width="72"  height="30" rx="15" fill="#131d33" stroke="#ff9900" stroke-opacity="0.45"/><text x="570" y="168">boto3</text>
+  </g>
+  <!-- service breadth -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" fill="#cbd5e1">
+    <text x="72" y="206">Lambda&#160; &#183;&#160; S3&#160; &#183;&#160; RDS&#160; &#183;&#160; DynamoDB&#160; &#183;&#160; EC2&#160; &#183;&#160; IAM&#160; &#183;&#160; Step Functions&#160; &#183;&#160; SQL Server&#160; &#183;&#160; Cognito&#160; &#183;&#160; API Gateway&#160; &#183;&#160; <tspan fill="#64748b">+ 25 more, each proven by a real-SDK probe</tspan></text>
+  </g>
+
+  <!-- ===================== SEAM ===================== -->
+  <line x1="48" y1="238" x2="486" y2="238" stroke="#334155" stroke-width="1"/>
+  <line x1="714" y1="238" x2="1152" y2="238" stroke="#334155" stroke-width="1"/>
+  <rect x="488" y="226" width="224" height="25" rx="12.5" fill="#0a0f1e" stroke="#475569"/>
+  <g font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12.5" fill="#94a3b8" text-anchor="middle">
+    <text x="600" y="242">&#8645;&#160; open-infra translates</text>
+  </g>
+
+  <!-- ===================== YOUR HARDWARE BAND ===================== -->
+  <rect x="48" y="256" width="1104" height="116" rx="14" fill="#2dd4bf" fill-opacity="0.06"/>
+  <rect x="48" y="256" width="4" height="116" rx="2" fill="#2dd4bf"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="72" y="284" font-size="13" font-weight="700" letter-spacing="1.6" fill="#2dd4bf">ON HARDWARE YOU OWN</text>
+  </g>
+  <!-- stack glyph (the boxes in your closet) -->
+  <g>
+    <rect x="1058" y="272" width="94" height="18" rx="4" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.4"/><circle cx="1068" cy="281" r="3" fill="#2dd4bf"/>
+    <rect x="1058" y="294" width="94" height="18" rx="4" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.4"/><circle cx="1068" cy="303" r="3" fill="#2dd4bf"/>
+    <rect x="1058" y="316" width="94" height="18" rx="4" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.4"/><circle cx="1068" cy="325" r="3" fill="#ff9900"/>
+  </g>
+  <!-- engine pills -->
+  <g font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="14" fill="#f1f5f9" text-anchor="middle">
+    <rect x="72"  y="300" width="118" height="30" rx="15" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.45"/><text x="131" y="320">Kubernetes</text>
+    <rect x="202" y="300" width="114" height="30" rx="15" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.45"/><text x="259" y="320">Crossplane</text>
+    <rect x="328" y="300" width="84"  height="30" rx="15" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.45"/><text x="370" y="320">GitOps</text>
+    <rect x="424" y="300" width="98"  height="30" rx="15" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.45"/><text x="473" y="320">KubeVirt</text>
+    <rect x="534" y="300" width="100" height="30" rx="15" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.45"/><text x="584" y="320">Longhorn</text>
+    <rect x="646" y="300" width="72"  height="30" rx="15" fill="#131d33" stroke="#2dd4bf" stroke-opacity="0.45"/><text x="682" y="320">MinIO</text>
+  </g>
+  <!-- capability breadth -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13" fill="#cbd5e1">
+    <text x="72" y="356">VMs&#160; &#183;&#160; containers&#160; &#183;&#160; serverless + GPU&#160; &#183;&#160; managed DBs&#160; &#183;&#160; object store&#160; &#183;&#160; data lake&#160; &#183;&#160; CDC&#160; &#183;&#160; IAM / Cedar&#160; &#183;&#160; VPC&#160; &#183;&#160; backups&#160; &#183;&#160; FIPS</text>
+  </g>
+
+  <!-- ===================== FOOTER ===================== -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#64748b" text-anchor="middle">
+    <text x="600" y="396">Apache-2.0&#160; &#183;&#160; secure-by-default, NIST 800-53&#8211;shaped&#160; &#183;&#160; the experience feels like AWS, the bill is $0</text>
+  </g>
+</svg>
