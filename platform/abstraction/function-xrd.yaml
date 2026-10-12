@@ -50,12 +50,33 @@ spec:
                     Run handler CODE on a managed runtime base image instead of a BYO container (the
                     Lambda Zip+handler model). open-infra injects the handler into a first-party
                     runtime image whose shim serves it over HTTP. Use this OR spec.image.
-                  required: [runtime, handler]
+                  required: [handler]
                   properties:
                     runtime:
                       type: string
                       enum: [python3.12, python3.13, nodejs20, nodejs22, dotnet8]
-                      description: "Managed runtime base image the handler runs on: python3.12 / python3.13 (handler '<module>.<function>'), nodejs20 / nodejs22 (handler '<file>.<export>', CommonJS), or dotnet8 (handler 'Assembly::Namespace.Type::Method', a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task)."
+                      description: "Managed runtime base image the handler runs on: python3.12 / python3.13 (handler '<module>.<function>'), nodejs20 / nodejs22 (handler '<file>.<export>', CommonJS), or dotnet8 (handler 'Assembly::Namespace.Type::Method', a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task). This enum is the set open-infra vouches for; for anything else use runtimeImage."
+                    runtimeImage:
+                      type: string
+                      description: >-
+                        ESCAPE HATCH — run the handler on a BYO base image instead of a managed runtime,
+                        for a runtime open-infra does not vouch for: an EOL version (nodejs18, python3.7)
+                        kept only as a comparison fixture, or a language not in the enum. The image must
+                        honor the runtime contract (serve the handler at /var/task over HTTP on spec.port
+                        per the OPENINFRA_* env — build it FROM the old interpreter plus an open-infra
+                        bootstrap shim). Requires unsupportedRuntime: true. Use runtime OR runtimeImage.
+                    unsupportedRuntime:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Required true to use runtimeImage — you accept an UNSUPPORTED, non-production
+                        runtime. The platform then fails closed into a marked, isolated, asleep posture:
+                        labelled non-production, forced cluster-local (expose off), min-scale 0, and
+                        egress-denied unless allowEgress. Mirrors acceptEula on the SQL Server engine.
+                    allowEgress:
+                      type: boolean
+                      default: false
+                      description: "unsupportedRuntime only: permit outbound network calls. Default false — an unsupported-runtime fixture is egress-denied (invoked in-cluster, it shouldn't call out)."
                     handler:
                       type: string
                       description: "Entrypoint '<module>.<function>', e.g. 'app.handler' -> function handler in app.py."
