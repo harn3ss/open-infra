@@ -4,6 +4,95 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
+## v3.2.0 — 2026-10-12
+
+Where v3.1.0 widened the AWS **surface** (twenty-five shim doorways), v3.2.0 deepens the **managed
+services behind it** — the native `openinfra.dev` resources now *behave* like the AWS services they
+mirror, not just answer like them. **DynamoDB** gains a durable backend with **point-in-time
+recovery**; **Lambda** runs your **Zip/handler code** on managed runtimes; databases gain
+**Aurora-style replicas, autoscaling and point-in-time restore** plus a new **real Microsoft SQL
+Server** engine; **Step Functions** gets **Parallel/Map/Express**; and **CloudFormation** and **IAM**
+translate more of a real stack. New declarative surfaces — **AWS Backup, AWS Config, Amplify-style
+static-site builds, VPC endpoints** — round it out. Everything is **additive, and opt-in wherever it
+touches cost or proprietary software**; nothing in the existing surface changes.
+
+### Managed databases — RDS / Aurora / DynamoDB / SQL Server
+- **Real Microsoft SQL Server** as a managed engine (`spec.database.engine: sqlserver`) — actual SQL
+  Server 2022 over TDS 1433, alongside the existing SQL-Server-*compatible* `babelfish`. **Opt-in and
+  EULA-gated**: it provisions nothing (and pulls no image) until you set `acceptEula: true`, and
+  `edition` selects the licence — Developer (free, **non-production**) by default, Evaluation, or
+  Express. A StatefulSet on Longhorn; `kind: DatabaseProxy (engineFamily: sqlserver)` fronts it. Live-verified.
+- **Point-in-time recovery for Postgres** — continuous WAL archiving to object storage
+  (`database.pointInTimeRecovery`), the foundation for **backtrack restore**: recover a managed Postgres
+  to any instant in its window (to a new database you cut over to).
+- **Aurora-shaped scaling** — `database.replicas` (the Aurora replica-count knob), a read-only
+  **reader endpoint**, and **replica autoscaling** via KEDA.
+- **DynamoDB got real.** A durable backend — **DocumentDB on CloudNativePG** with WAL archiving —
+  brings **continuous backups + genuine `RestoreTableToPointInTime`**, `DeleteTable`, `BillingMode` /
+  `ProvisionedThroughput` round-tripping, **DynamoDB Streams** (ordered change records + the
+  `dynamodbstreams` API) and **local secondary indexes**. Each surface is proven by a live SDK probe.
+- **DatabaseProxy** exposes `transactionMultiplexing`, wiring the proven RDS-Proxy per-transaction path.
+
+### Serverless — Lambda (kind: Function)
+- **Run your Lambda code, not just a container.** `spec.code` ingests a **Zip/handler** onto a managed
+  runtime base image — **python3.12, nodejs20, and .NET 8** — with **Lambda layers**, **reserved
+  concurrency**, and **weighted aliases/versions** (Knative traffic splitting). Alias
+  invoke-by-qualifier is served through the shim.
+
+### API Gateway — HTTP and REST
+- **HTTP APIs (`kind: HttpApi`):** external HTTP origin backends (the `HTTP_PROXY` integration),
+  **multiple custom domains + base-path mapping**, and **request validation** — required parameters and
+  **body validation against Models** via the apigw-validator tier.
+- **REST APIs (v1)** through the shim: a full control + data plane, **non-proxy VTL request/response
+  mapping**, `IntegrationResponse` templates, and a **`COGNITO_USER_POOLS` method authorizer**.
+
+### CloudFormation
+- More of a real template deploys: **`Fn::Cidr`, `Fn::GetAZs`, `Fn::ImportValue`** intrinsics;
+  **Lambda-backed custom resources** (invoked at deploy, with `Data` resolved into `Fn::GetAtt`);
+  **nested-stack flattening** (child templates inlined into one stack); **`AWS::EC2::SecurityGroup`**
+  (and standalone ingress/egress collation) and **`AWS::EC2::VPCEndpoint`** translation; and
+  `AWS::Lambda::Version/Alias` recognized as plan-only ceilings.
+
+### Step Functions
+- The owned ASL engine gains **`Parallel` and `Map`** state types and **Express workflows** with
+  **`StartSyncExecution`** (served via a dedicated sync Service).
+
+### IAM & policy
+- Cedar policy import now covers the **`aws:username`** (StringEquals/StringLike) and **`aws:CurrentTime`**
+  (Date* time-window) condition keys, persisted through the CR.
+- **IAM import translates all shim-enforced services**, not just s3/dynamodb/lambda.
+- **KMS** key policies import as `kind: Policy` (`CreateKey` Policy / `PutKeyPolicy`), per-key access proven live.
+
+### Backup, Config & compliance
+- **`kind: BackupVault` + `BackupPlan`** — declarative **AWS Backup** over Velero (prefix-isolated
+  vaults, scheduled plans).
+- **`kind: ConfigRule`** — **AWS Config**-style rules over **Kyverno** (audit mode: records, does not
+  enforce), delivered with a new **opt-in `compliance` component**.
+
+### Web & networking
+- **`kind: StaticSite`** — **Amplify-style managed builds** (clone → sandboxed build → publish → serve).
+- **`kind: VpcEndpoint`** — a private in-VPC entry to the AWS front door.
+- **ECR** moves to **per-repo data-plane token auth** (a Docker bearer-token server over the
+  MinIO-backed registry).
+- **SES** `SendEmail` / `SendRawEmail` front door over the SMTP relay (opt-in).
+- **lan-expose:** a multi-VLAN return-path so clients off the EIP subnet reach FIPs, and NetworkPolicy
+  ipBlock drift reconciliation.
+
+### Security & hardening
+- **CVE fixes:** `golang.org/x/net` → v0.60.0 (CVE-2026-78669) across all first-party binaries; UI
+  `source-map-js` / `fast-uri` (Dependabot); Lambda runtime images now pull OS security updates and drop
+  the unused npm CLI (pure build-tooling CVE surface).
+- **authz:** corpus-miss defers unknown ServiceAccounts to RBAC (no reconcile deadlock) and a Crossplane
+  group-wildcard unblocks new kinds; `function-auto-ready` added to the go-templating-only compositions.
+- **audit off-siting:** a rotating-prefix re-sweep (durable anti-treadmill verify) plus memory/deadline
+  fixes to the verify-full job.
+
+### Docs
+- The README now leads with a **banner** — *AWS on the surface, your hardware underneath*.
+- Migration guidance: an **Elastic Beanstalk → `kind: Application`** recipe, with **CloudFront** (BYO-CDN)
+  and **Redshift** (covered by `kind: Query` / Trino) recorded as non-goals; the AWS-parity boundary
+  decisions documented.
+
 ## v3.1.0 — 2026-10-02
 
 The AWS-SDK shim now fronts **twenty-five probe-proven services** (up from twelve at v3.0.0), each proven
