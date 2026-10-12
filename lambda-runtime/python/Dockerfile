@@ -13,6 +13,10 @@ LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
       openinfra.dev/component="lambda-runtime-python" \
       openinfra.dev/fips="false"
 
+# Pull Debian security updates for base-image OS packages (CVE hygiene) so the image isn't
+# pinned to the base layer's package snapshot. Keeps parity with the node/dotnet runtimes.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # boto3 for the bucket (S3/MinIO) code-source path. The shim imports it lazily, so the
 # ConfigMap (inline) source never pays for it at runtime — it's here so bucket sources work.
 RUN pip install --no-cache-dir "boto3>=1.34,<2" && rm -rf /root/.cache/pip

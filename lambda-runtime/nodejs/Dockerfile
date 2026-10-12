@@ -16,11 +16,21 @@ LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
 #        tool (the python shim uses stdlib zipfile for the same job).
 # @aws-sdk/client-s3: the bucket (S3/MinIO) code-source path. Installed globally + put on NODE_PATH so
 #        the shim can require() it; the inline-ConfigMap path never loads it (lazy require).
+# apt-get upgrade: pull Debian bookworm security updates for base-image OS packages
+#        (perl-base, libgnutls30, libpcre2-8-0, libcap2, …) so the image isn't pinned to the
+#        base layer's snapshot — the durable fix for the recurring OS-package CVE treadmill.
+# rm npm/npx: the function runtime only runs `node bootstrap.js`; handler deps arrive as
+#        prebuilt layer node_modules, never an in-image `npm install`. npm's own bundled
+#        node_modules (tar, minimatch, glob, brace-expansion, sigstore, pacote, …) are pure
+#        build-tooling CVE surface that nothing here executes, so the npm CLI is removed after
+#        our one global install rather than carried (and futilely dep-bumped).
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends unzip ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
  && npm install -g @aws-sdk/client-s3@3 \
- && npm cache clean --force
+ && npm cache clean --force \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+ && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_PATH=/usr/local/lib/node_modules
 

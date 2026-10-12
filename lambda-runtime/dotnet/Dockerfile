@@ -18,6 +18,10 @@ LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
       openinfra.dev/component="lambda-runtime-dotnet" \
       openinfra.dev/fips="false"
 
+# Pull Debian security updates for base-image OS packages (perl-base, … — CVE hygiene) so the
+# image isn't pinned to the runtime base layer's package snapshot. Runs as root, before USER.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 # The shim lives outside /var/task so a handler can never shadow it.
 COPY --from=build /app /opt/open-infra
 
