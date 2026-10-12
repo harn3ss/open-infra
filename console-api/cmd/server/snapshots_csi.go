@@ -36,13 +36,19 @@ const (
 )
 
 // managedEngine reports the engine + data-PVC name for a database whose data is on Longhorn
-// (→ durable CSI snapshot). In this platform that's ONLY babelfish; every other engine —
-// Postgres, mongo (DocumentDB), mysql (MariaDB) — is on local-path, which has no CSI snapshot,
-// so those take a logical dump instead (see logicalDumpPlan). Detected by the connection secret.
+// (→ durable CSI snapshot). In this platform that's babelfish and sqlserver (both StatefulSets on
+// Longhorn); every other engine — Postgres, mongo (DocumentDB), mysql (MariaDB) — is on local-path,
+// which has no CSI snapshot, so those take a logical dump instead (see logicalDumpPlan). A logical
+// dump is also WRONG for the TDS engines (no pg_dump/mysqldump equivalent), so they MUST land here.
+// Detected by the connection secret.
 func managedEngine(cs kubernetes.Interface, ns, app string) (engine, pvc string, ok bool) {
 	if _, err := cs.CoreV1().Secrets(ns).Get(context.Background(), app+"-babelfish", metav1.GetOptions{}); err == nil {
 		// StatefulSet <app>-babelfish, volumeClaimTemplate "data" → data-<app>-babelfish-0.
 		return "babelfish", fmt.Sprintf("data-%s-babelfish-0", app), true
+	}
+	if _, err := cs.CoreV1().Secrets(ns).Get(context.Background(), app+"-sqlserver", metav1.GetOptions{}); err == nil {
+		// StatefulSet <app>-sqlserver, volumeClaimTemplate "data" → data-<app>-sqlserver-0.
+		return "sqlserver", fmt.Sprintf("data-%s-sqlserver-0", app), true
 	}
 	return "", "", false
 }

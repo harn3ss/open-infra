@@ -203,6 +203,14 @@ spec:
                               - name: DATABASE_URL
                                 valueFrom:
                                   secretKeyRef: { name: {{ $name }}-mysql-app, key: DATABASE_URL }
+                            {{- else if eq $dbEngine "sqlserver" }}
+                              {{- if $spec.database.acceptEula }}
+                              # Injected SQL Server connection (real MSSQL, TDS) — present only once the
+                              # EULA is accepted and the engine is provisioned (else the engine is blocked).
+                              - name: SQLSERVER_URL
+                                valueFrom:
+                                  secretKeyRef: { name: {{ $name }}-sqlserver, key: SQLSERVER_URL }
+                              {{- end }}
                             {{- else }}
                               # Injected Postgres connection (CloudNativePG app secret).
                               - name: DATABASE_URL
@@ -902,6 +910,161 @@ spec:
                     ports:
                       - { name: tds, port: 1433, targetPort: 1433 }
                       - { name: pg, port: 5432, targetPort: 5432 }
+            {{- else if eq $dbEngine "sqlserver" }}
+            {{- /* REAL Microsoft SQL Server (Developer/Evaluation/Express) as a managed engine.
+                   The proprietary image is pulled at runtime from Microsoft (never bundled), and
+                   NOTHING is provisioned unless the EULA is explicitly accepted (acceptEula) —
+                   fail-closed, opt-in. StatefulSet on Longhorn (node-independent), single instance;
+                   back it up with Velero. Developer/Evaluation are NON-PRODUCTION editions, labelled
+                   as such. The Service is named <name>-sqlserver so kind: DatabaseProxy
+                   (engineFamily: sqlserver) fronts it with zero config. */}}
+            {{- $accept := $spec.database.acceptEula | default false }}
+            {{- $edition := $spec.database.edition | default "Developer" }}
+            {{- $mssqlImg := "mcr.microsoft.com/mssql/server:2022-latest" }}
+            {{- $saPass := printf "Mssql-%s-9Z" (printf "%s-sa" .observed.composite.resource.metadata.uid | sha256sum | trunc 16) }}
+            {{- if not $accept }}
+            ---
+            # Fail-closed: engine=sqlserver requires database.acceptEula=true (Microsoft EULA). No
+            # proprietary image is pulled and no database is provisioned until it is set.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sqlserver-blocked
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $name }}-sqlserver-blocked
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/managed-db: sqlserver, openinfra.dev/blocked: "eula-not-accepted" }
+                  data:
+                    reason: "engine=sqlserver requires spec.database.acceptEula=true to accept Microsoft's SQL Server EULA. Nothing is provisioned until then."
+                    eula: "https://go.microsoft.com/fwlink/?linkid=857698"
+            {{- else }}
+            ---
+            # Connection secret (TDS). SA credential; the target DATABASE is created/restored into this
+            # instance (a fresh MSSQL has only the system DBs, so connect to master first).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sqlserver-secret
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $name }}-sqlserver, namespace: {{ $ns }} }
+                  stringData:
+                    ENGINE: sqlserver
+                    EDITION: {{ $edition | quote }}
+                    HOST: {{ $name }}-sqlserver.{{ $ns }}.svc.cluster.local
+                    TDS_PORT: "1433"
+                    USERNAME: sa
+                    PASSWORD: {{ $saPass | quote }}
+                    DATABASE: {{ $dbName | quote }}
+                    SQLSERVER_URL: "Server={{ $name }}-sqlserver.{{ $ns }}.svc.cluster.local,1433;Database=master;User Id=sa;Password={{ $saPass }};Encrypt=mandatory;TrustServerCertificate=true"
+            ---
+            # SQL Server — StatefulSet on Longhorn, single instance. Stop => replicas 0.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sqlserver
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: apps/v1
+                  kind: StatefulSet
+                  metadata:
+                    name: {{ $name }}-sqlserver
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}-sqlserver, openinfra.dev/managed-db: sqlserver }
+                    annotations:
+                      openinfra.dev/mssql-edition: {{ $edition | quote }}
+                      {{- if or (eq $edition "Developer") (eq $edition "Evaluation") }}
+                      openinfra.dev/non-production: "true"
+                      {{- end }}
+                  spec:
+                    serviceName: {{ $name }}-sqlserver
+                    replicas: {{ if $dbStopped }}0{{ else }}1{{ end }}
+                    selector: { matchLabels: { app: {{ $name }}-sqlserver } }
+                    template:
+                      metadata:
+                        labels: { app: {{ $name }}-sqlserver }
+                      spec:
+                        {{- if $spec.database.expose }}
+                        # A DB LAN endpoint (lan-expose EIP) is only reachable on the external-gateway node.
+                        nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
+                        {{- else if $spec.database.placement }}
+                        nodeSelector:
+                          {{- range $k, $v := $spec.database.placement }}
+                          {{ $k }}: {{ $v | quote }}
+                          {{- end }}
+                        {{- end }}
+                        # SQL Server runs as uid 10001 and must own its data dir; chown the fresh
+                        # Longhorn PVC first (fsGroup + an explicit chown, same pattern as babelfish).
+                        securityContext: { fsGroup: 10001 }
+                        initContainers:
+                          - name: fix-perms
+                            image: {{ $mssqlImg }}
+                            command: ["sh", "-c", "chown -R 10001:0 /var/opt/mssql && chmod 770 /var/opt/mssql"]
+                            securityContext: { runAsUser: 0 }
+                            volumeMounts:
+                              # subPath so the data root is a clean subdir below the ext4 lost+found.
+                              - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
+                        containers:
+                          - name: sqlserver
+                            image: {{ $mssqlImg }}
+                            env:
+                              - { name: ACCEPT_EULA, value: "Y" }
+                              - { name: MSSQL_PID, value: {{ $edition | quote }} }
+                              - name: MSSQL_SA_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-sqlserver, key: PASSWORD } }
+                            ports:
+                              - { containerPort: 1433, name: tds }
+                            volumeMounts:
+                              - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
+                            readinessProbe: { tcpSocket: { port: 1433 }, initialDelaySeconds: 20, periodSeconds: 10 }
+                            livenessProbe:  { tcpSocket: { port: 1433 }, initialDelaySeconds: 60, periodSeconds: 20 }
+                            resources:
+                              # SQL Server needs >=2Gi to start; size database.memory to the workload (8Gi+).
+                              requests: { cpu: {{ $dbCpu | default "500m" | quote }}, memory: {{ $dbMem | default "2Gi" | quote }} }
+                              limits: { cpu: {{ $dbCpu | default "2" | quote }}, memory: {{ $dbMem | default "8Gi" | quote }} }
+                    volumeClaimTemplates:
+                      - metadata: { name: data }
+                        spec:
+                          accessModes: [ReadWriteOnce]
+                          storageClassName: {{ $spec.database.storageClass | default "longhorn" }}   # node-independent; back up with Velero
+                          resources: { requests: { storage: {{ $dbSize | default "20Gi" }} } }
+            ---
+            # Service — TDS 1433. The name <name>-sqlserver is exactly what kind: DatabaseProxy
+            # (engineFamily: sqlserver) fronts. expose => LAN-reachable via the lan-expose controller.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sqlserver-svc
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: {{ $name }}-sqlserver
+                    namespace: {{ $ns }}
+                    {{- if $spec.database.expose }}
+                    annotations: { openinfra.dev/lan-expose: "true" }
+                    {{- end }}
+                  spec:
+                    type: ClusterIP
+                    selector: { app: {{ $name }}-sqlserver }
+                    ports:
+                      - { name: tds, port: 1433, targetPort: 1433 }
+            {{- end }}
             {{- else }}
             ---
             # --- Managed Postgres ("RDS") via CloudNativePG. LOCAL NVMe only. ---

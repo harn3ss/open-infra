@@ -98,13 +98,26 @@ spec:
                   properties:
                     engine:
                       type: string
-                      enum: [postgres, mongo, mysql, babelfish]
+                      enum: [postgres, mongo, mysql, babelfish, sqlserver]
                       default: postgres
-                      description: "Database engine. postgres = CloudNativePG (relational, injects DATABASE_URL). mongo = FerretDB on DocumentDB-Postgres (Mongo wire protocol, injects MONGODB_URI). mysql = MariaDB (MySQL wire protocol, injects DATABASE_URL). babelfish = SQL Server-compatible (TDS 1433 + T-SQL on Postgres) — experimental, single instance."
+                      description: "Database engine. postgres = CloudNativePG (relational, injects DATABASE_URL). mongo = FerretDB on DocumentDB-Postgres (Mongo wire protocol, injects MONGODB_URI). mysql = MariaDB (MySQL wire protocol, injects DATABASE_URL). babelfish = SQL Server-compatible (TDS 1433 + T-SQL on Postgres) — experimental, single instance. sqlserver = REAL Microsoft SQL Server (TDS 1433 + T-SQL) — opt-in (requires acceptEula); Developer/Evaluation editions are non-production; single instance on Longhorn, injects SQLSERVER_URL."
+                    edition:
+                      type: string
+                      enum: [Developer, Evaluation, Express]
+                      default: Developer
+                      description: "sqlserver only: SQL Server edition (MSSQL_PID). Developer = free, full-featured, NON-PRODUCTION only (default). Evaluation = full-featured, 180-day. Express = free but capped at 10GB/database. Production use needs a licensed edition (BYOL) — a follow-up."
+                    acceptEula:
+                      type: boolean
+                      default: false
+                      description: "sqlserver only: set true to accept Microsoft's SQL Server EULA (https://go.microsoft.com/fwlink/?linkid=857698). REQUIRED for engine=sqlserver — the engine fails closed and provisions nothing (no image is pulled) until you do. open-infra never accepts it for you."
+                    placement:
+                      type: object
+                      additionalProperties: { type: string }
+                      description: "sqlserver only: optional nodeSelector for the database pod — pin a large DB to a node with the RAM/storage for it. Use openinfra.dev/* node labels, never real hostnames."
                     name:   { type: string, description: "Database name (defaults to the application name)." }
                     size:
                       type: string
-                      description: "Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi). Expandable later where the engine + StorageClass support it."
+                      description: "Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi, sqlserver 20Gi). Expandable later where the engine + StorageClass support it."
                     cpu:
                       type: string
                       description: "CPU request/limit for the database (e.g. \"2\"), sized to match an RDS instance class's vCPU. When unset, the engine operator's default is used."
@@ -162,7 +175,7 @@ spec:
                       description: "Stop the database to save resources while keeping its data, like RDS stop/start (Postgres hibernates; MySQL/Mongo scale to zero; PVCs are retained). Set back to false to start it."
                     storageClass:
                       type: string
-                      description: "StorageClass for the database's persistent volumes. When unset, each engine keeps its default (local-path; babelfish: longhorn). Set this to your cluster's StorageClass on substrates that don't ship a default local-path provisioner, or to pin the DB onto replicated storage (e.g. longhorn)."
+                      description: "StorageClass for the database's persistent volumes. When unset, each engine keeps its default (local-path; babelfish + sqlserver: longhorn). Set this to your cluster's StorageClass on substrates that don't ship a default local-path provisioner, or to pin the DB onto replicated storage (e.g. longhorn)."
                     storageEncrypted:
                       type: boolean
                       default: false
