@@ -114,6 +114,14 @@ spec:
                       type: object
                       additionalProperties: { type: string }
                       description: "sqlserver only: optional nodeSelector for the database pod — pin a large DB to a node with the RAM/storage for it. Use openinfra.dev/* node labels, never real hostnames."
+                    restoreFrom:
+                      type: object
+                      description: "sqlserver only: restore a .bak into this instance on bring-up (the migration landing path). The engine stages the object onto the pod and runs RESTORE DATABASE once — idempotent: skipped if the database already exists. Files are auto-relocated (WITH MOVE) into the data volume."
+                      required: [bucket, key, secret]
+                      properties:
+                        bucket: { type: string, description: "S3/MinIO bucket holding the .bak." }
+                        key:    { type: string, description: "Object key of the .bak within the bucket. Setting restoreFrom enables the restore." }
+                        secret: { type: string, description: "Name of a Secret with S3 credentials for the bucket (keys: S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY)." }
                     name:   { type: string, description: "Database name (defaults to the application name)." }
                     size:
                       type: string

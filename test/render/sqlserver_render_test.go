@@ -81,6 +81,44 @@ func TestSQLServer_ProvisionsWhenEulaAccepted(t *testing.T) {
 	}
 }
 
+// restoreFrom wires the .bak landing path: an mc init stages the object, a restore sidecar runs the
+// RESTORE script from a ConfigMap, and a shared restore volume carries the .bak to the engine. Absent
+// restoreFrom, none of it renders.
+func TestSQLServer_RestoreFrom(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+
+	// Without restoreFrom: no restore machinery.
+	plain := render(t, tmpl, mkSQLServer(map[string]any{"acceptEula": true}))
+	for _, forbid := range []string{"RESTORE DATABASE", "name: fetch-bak", "sqlserver-restore", "restore-stage"} {
+		if strings.Contains(plain, forbid) {
+			t.Errorf("a non-restoring sqlserver must NOT render %q", forbid)
+		}
+	}
+
+	// With restoreFrom: the full landing path.
+	out := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"restoreFrom": map[string]any{"bucket": "import", "key": "db.bak", "secret": "restore-creds"},
+	}))
+	for _, want := range []string{
+		"name: myapp-sqlserver-restore",                // the restore-script ConfigMap
+		"restore.sh: |",                                // the script
+		"DB='estate'",                                  // target DB name templated into the script
+		"RESTORE DATABASE [$DB] FROM DISK",             // the RESTORE (DB resolved at runtime)
+		"name: fetch-bak",                              // the staging init
+		"ghcr.io/harn3ss/open-infra-mc",                // mc stages the .bak
+		"src/import/db.bak",                            // from the configured bucket/key
+		"secretRef: { name: restore-creds }",           // S3 creds
+		`command: ["bash", "/opt/restore/restore.sh"]`, // the restore sidecar
+		"{ name: restore-stage, emptyDir: {} }",        // the shared staging volume
+		"mountPath: /restore",                          // engine can read the staged .bak
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("restoring sqlserver render missing %q; got:\n%s", want, grepCtx(out, "restore"))
+		}
+	}
+}
+
 // Express edition maps to MSSQL_PID=Express and is NOT labelled non-production; placement renders a
 // nodeSelector so a large DB can be pinned to a node with the RAM/storage.
 func TestSQLServer_EditionAndPlacement(t *testing.T) {
