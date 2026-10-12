@@ -77,6 +77,17 @@ const ENGINES = {
     port: 1433,
     scheme: "sqlserver",
   },
+  sqlserver: {
+    label: "Microsoft SQL Server",
+    secretSuffix: "-sqlserver",
+    uriKey: "SQLSERVER_URL",
+    uriLabel: "Connection (SQLSERVER_URL · TDS 1433)",
+    consume: "SQLSERVER_URL — any SQL Server driver (Encrypt=mandatory, TrustServerCertificate)",
+    podRe: "sqlserver",
+    svcSuffix: "-sqlserver",
+    port: 1433,
+    scheme: "sqlserver",
+  },
 } as const;
 
 /**

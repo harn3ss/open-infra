@@ -204,6 +204,10 @@ export interface ApplicationSpec {
     name?: string;
     highAvailability?: boolean;
     stopped?: boolean;
+    // sqlserver engine (real Microsoft SQL Server): opt-in, EULA-gated.
+    edition?: "Developer" | "Evaluation" | "Express";
+    acceptEula?: boolean;
+    placement?: Record<string, string>;
   };
   storage?: { buckets?: string[] };
   queues?: string[];

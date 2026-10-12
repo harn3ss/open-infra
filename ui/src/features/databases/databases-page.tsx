@@ -19,12 +19,13 @@ function engineLabel(engine?: string): string {
   if (engine === "mongo") return "MongoDB (FerretDB)";
   if (engine === "mysql") return "MySQL (MariaDB)";
   if (engine === "babelfish") return "SQL Server (Babelfish)";
+  if (engine === "sqlserver") return "Microsoft SQL Server";
   return "PostgreSQL";
 }
 
 /** Engines without a CloudNativePG Cluster CR use the managed-db detail page. */
 function isManagedEngine(engine?: string): boolean {
-  return engine === "mongo" || engine === "mysql" || engine === "babelfish";
+  return engine === "mongo" || engine === "mysql" || engine === "babelfish" || engine === "sqlserver";
 }
 
 // A stopped database is healthy (Ready) but paused — surface "Stopped" like the VM
