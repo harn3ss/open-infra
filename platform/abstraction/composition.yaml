@@ -922,6 +922,10 @@ spec:
             {{- $edition := $spec.database.edition | default "Developer" }}
             {{- $mssqlImg := "mcr.microsoft.com/mssql/server:2022-latest" }}
             {{- $saPass := printf "Mssql-%s-9Z" (printf "%s-sa" .observed.composite.resource.metadata.uid | sha256sum | trunc 16) }}
+            {{- /* restoreFrom: land a .bak into this instance on bring-up (the migration landing path). */}}
+            {{- $restore := $spec.database.restoreFrom | default dict }}
+            {{- $restoreKey := $restore.key | default "" }}
+            {{- $restoring := ne $restoreKey "" }}
             {{- if not $accept }}
             ---
             # Fail-closed: engine=sqlserver requires database.acceptEula=true (Microsoft EULA). No
@@ -967,6 +971,49 @@ spec:
                     PASSWORD: {{ $saPass | quote }}
                     DATABASE: {{ $dbName | quote }}
                     SQLSERVER_URL: "Server={{ $name }}-sqlserver.{{ $ns }}.svc.cluster.local,1433;Database=master;User Id=sa;Password={{ $saPass }};Encrypt=mandatory;TrustServerCertificate=true"
+            {{- if $restoring }}
+            ---
+            # Restore script for the sidecar: wait for the engine, then RESTORE the staged .bak once
+            # (idempotent — skipped if the DB already exists). FILELISTONLY is parsed in shell (robust
+            # to SQL's column count) to auto-generate WITH MOVE into the data volume.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: sqlserver-restore-script
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata: { name: {{ $name }}-sqlserver-restore, namespace: {{ $ns }} }
+                  data:
+                    restore.sh: |
+                      #!/usr/bin/env bash
+                      set -euo pipefail
+                      SQLCMD=/opt/mssql-tools18/bin/sqlcmd
+                      DB='{{ $dbName }}'
+                      BAK=/restore/db.bak
+                      q(){ "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -b "$@"; }
+                      echo "restore: waiting for SQL Server..."
+                      until q -l 2 -Q "SELECT 1" >/dev/null 2>&1; do sleep 5; done
+                      exists=$(q -h -1 -W -Q "SET NOCOUNT ON; SELECT ISNULL(CONVERT(varchar(12),DB_ID(N'$DB')),'NULL')" | tr -d '[:space:]')
+                      if [ "$exists" != "NULL" ]; then echo "restore: '$DB' already present — nothing to do"; exec sleep infinity; fi
+                      if [ ! -s "$BAK" ]; then echo "restore: $BAK not staged (fetch-bak failed?)" >&2; exec sleep infinity; fi
+                      echo "restore: building MOVE from the backup file list..."
+                      MOVES=""
+                      while IFS='~' read -r logical _phys typ _rest; do
+                        logical=$(printf '%s' "$logical" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                        typ=$(printf '%s' "$typ" | tr -d '[:space:]')
+                        [ -z "$logical" ] && continue
+                        ext=.mdf; [ "$typ" = "L" ] && ext=.ldf
+                        MOVES="$MOVES, MOVE N'$logical' TO N'/var/opt/mssql/data/${DB}_${logical}${ext}'"
+                      done < <(q -s '~' -W -h -1 -Q "SET NOCOUNT ON; RESTORE FILELISTONLY FROM DISK=N'$BAK'")
+                      echo "restore: restoring '$DB'$MOVES"
+                      q -Q "RESTORE DATABASE [$DB] FROM DISK=N'$BAK' WITH REPLACE, RECOVERY$MOVES"
+                      echo "restore: complete"
+                      exec sleep infinity
+            {{- end }}
             ---
             # SQL Server — StatefulSet on Longhorn, single instance. Stop => replicas 0.
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -1016,6 +1063,14 @@ spec:
                             volumeMounts:
                               # subPath so the data root is a clean subdir below the ext4 lost+found.
                               - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
+                          {{- if $restoring }}
+                          # Stage the .bak off the sink bucket so the engine can RESTORE FROM DISK it.
+                          - name: fetch-bak
+                            image: ghcr.io/harn3ss/open-infra-mc:latest
+                            command: ["sh", "-c", "mc alias set src \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && mc cp \"src/{{ $restore.bucket }}/{{ $restoreKey }}\" /restore/db.bak && ls -l /restore/db.bak"]
+                            envFrom: [ { secretRef: { name: {{ $restore.secret }} } } ]
+                            volumeMounts: [ { name: restore-stage, mountPath: /restore } ]
+                          {{- end }}
                         containers:
                           - name: sqlserver
                             image: {{ $mssqlImg }}
@@ -1028,12 +1083,33 @@ spec:
                               - { containerPort: 1433, name: tds }
                             volumeMounts:
                               - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
+                              {{- if $restoring }}
+                              - { name: restore-stage, mountPath: /restore }
+                              {{- end }}
                             readinessProbe: { tcpSocket: { port: 1433 }, initialDelaySeconds: 20, periodSeconds: 10 }
                             livenessProbe:  { tcpSocket: { port: 1433 }, initialDelaySeconds: 60, periodSeconds: 20 }
                             resources:
                               # SQL Server needs >=2Gi to start; size database.memory to the workload (8Gi+).
                               requests: { cpu: {{ $dbCpu | default "500m" | quote }}, memory: {{ $dbMem | default "2Gi" | quote }} }
                               limits: { cpu: {{ $dbCpu | default "2" | quote }}, memory: {{ $dbMem | default "8Gi" | quote }} }
+                          {{- if $restoring }}
+                          # Restore sidecar: waits for the engine, then RESTOREs the staged .bak once.
+                          - name: restore
+                            image: {{ $mssqlImg }}
+                            command: ["bash", "/opt/restore/restore.sh"]
+                            env:
+                              - name: MSSQL_SA_PASSWORD
+                                valueFrom: { secretKeyRef: { name: {{ $name }}-sqlserver, key: PASSWORD } }
+                            volumeMounts:
+                              - { name: restore-stage, mountPath: /restore }
+                              - { name: restore-script, mountPath: /opt/restore, readOnly: true }
+                          {{- end }}
+                        {{- if $restoring }}
+                        volumes:
+                          - { name: restore-stage, emptyDir: {} }
+                          - name: restore-script
+                            configMap: { name: {{ $name }}-sqlserver-restore, defaultMode: 0755, items: [ { key: restore.sh, path: restore.sh } ] }
+                        {{- end }}
                     volumeClaimTemplates:
                       - metadata: { name: data }
                         spec:

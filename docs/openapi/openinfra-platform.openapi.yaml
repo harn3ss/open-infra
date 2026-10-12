@@ -4180,6 +4180,26 @@ components:
                     type: string
                   description: "sqlserver only: optional nodeSelector for the database pod \u2014 pin a large DB to a node\
                     \ with the RAM/storage for it. Use openinfra.dev/* node labels, never real hostnames."
+                restoreFrom:
+                  type: object
+                  description: "sqlserver only: restore a .bak into this instance on bring-up (the migration landing path).\
+                    \ The engine stages the object onto the pod and runs RESTORE DATABASE once \u2014 idempotent: skipped\
+                    \ if the database already exists. Files are auto-relocated (WITH MOVE) into the data volume."
+                  required:
+                  - bucket
+                  - key
+                  - secret
+                  properties:
+                    bucket:
+                      type: string
+                      description: S3/MinIO bucket holding the .bak.
+                    key:
+                      type: string
+                      description: Object key of the .bak within the bucket. Setting restoreFrom enables the restore.
+                    secret:
+                      type: string
+                      description: 'Name of a Secret with S3 credentials for the bucket (keys: S3_ENDPOINT, S3_ACCESS_KEY,
+                        S3_SECRET_KEY).'
                 name:
                   type: string
                   description: Database name (defaults to the application name).
@@ -7019,7 +7039,10 @@ components:
                     enum:
                     - Allow
                     default: Allow
-                    description: "Only Allow \u2014 RBAC cannot express Deny (see docs/iam.md)."
+                    description: "Only Allow \u2014 this block compiles to a Kubernetes ClusterRole (RBAC), which cannot express\
+                      \ Deny. To Deny (or conditionally Allow), put the statement in controlPlane.statements or dataPlane.statements\
+                      \ (Cedar), where effect accepts Deny with AWS-style precedence. A Deny added here would silently fail\
+                      \ open. See docs/iam.md."
                   actions:
                     type: array
                     description: <resource>:<verb> pairs over openinfra.dev, e.g. "virtualmachines:*", "volumes:Get". resource
