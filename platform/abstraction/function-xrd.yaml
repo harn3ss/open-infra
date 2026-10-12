@@ -54,8 +54,8 @@ spec:
                   properties:
                     runtime:
                       type: string
-                      enum: [python3.12, nodejs20, dotnet8]
-                      description: "Managed runtime base image the handler runs on: python3.12 (handler '<module>.<function>'), nodejs20 (handler '<file>.<export>', CommonJS), or dotnet8 (handler 'Assembly::Namespace.Type::Method', a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task)."
+                      enum: [python3.12, python3.13, nodejs20, nodejs22, dotnet8]
+                      description: "Managed runtime base image the handler runs on: python3.12 / python3.13 (handler '<module>.<function>'), nodejs20 / nodejs22 (handler '<file>.<export>', CommonJS), or dotnet8 (handler 'Assembly::Namespace.Type::Method', a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task)."
                     handler:
                       type: string
                       description: "Entrypoint '<module>.<function>', e.g. 'app.handler' -> function handler in app.py."

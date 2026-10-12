@@ -7,7 +7,10 @@
 # Built + pushed by .github/workflows/build-lambda-runtimes.yml as
 # ghcr.io/harn3ss/open-infra-lambda-python. Plain CGO-free interpreter; NOT FIPS
 # (FIPS is a substrate property, not a first-party image one — see docs).
-FROM python:3.12-slim
+# PY_VERSION selects the base (3.12 = the default image, 3.13 = the open-infra-lambda-python313
+# build). The stdlib-only bootstrap shim is version-independent, so one Dockerfile builds both.
+ARG PY_VERSION=3.12
+FROM python:${PY_VERSION}-slim
 
 LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
       openinfra.dev/component="lambda-runtime-python" \
