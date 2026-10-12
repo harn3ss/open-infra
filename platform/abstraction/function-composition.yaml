@@ -43,9 +43,16 @@ spec:
             {{- if and $spec.image $code }}{{- fail "kind: Function: set spec.image OR spec.code, not both" }}{{- end }}
             {{- $img := $spec.image }}
             {{- $csrc := dict }}
+            {{- $unsupported := false }}
             {{- if $code }}
             {{-   $csrc = $code.source | default dict }}
-            {{-   if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else if eq $code.runtime "python3.13" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python313:latest%s" $arch }}{{- else if eq $code.runtime "nodejs20" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest%s" $arch }}{{- else if eq $code.runtime "nodejs22" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest%s" $arch }}{{- else if eq $code.runtime "dotnet8" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function: unknown spec.code.runtime %q" $code.runtime) }}{{- end }}
+            {{-   if $code.runtimeImage }}
+            {{- /* ESCAPE HATCH: a BYO base image for a runtime we don't vouch for (EOL/other). Fails
+                   closed — requires unsupportedRuntime, then the service is marked/isolated/asleep below. */}}
+            {{-     if $code.runtime }}{{- fail "kind: Function spec.code: set runtime OR runtimeImage, not both" }}{{- end }}
+            {{-     if not ($code.unsupportedRuntime | default false) }}{{- fail "kind: Function spec.code.runtimeImage requires unsupportedRuntime: true (a BYO runtime is unsupported + non-production — see the field docs)" }}{{- end }}
+            {{-     $img = $code.runtimeImage }}{{- $unsupported = true }}
+            {{-   else if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else if eq $code.runtime "python3.13" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python313:latest%s" $arch }}{{- else if eq $code.runtime "nodejs20" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest%s" $arch }}{{- else if eq $code.runtime "nodejs22" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest%s" $arch }}{{- else if eq $code.runtime "dotnet8" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function spec.code: set runtime (a supported enum value) or runtimeImage (BYO, unsupported); got runtime=%q" ($code.runtime | default "")) }}{{- end }}
             {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "kind: Function spec.code.source: set configMap OR bucket+key, not both" }}{{- end }}
             {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "kind: Function spec.code.source: set configMap (inline) or bucket+key (zip)" }}{{- end }}
             {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
@@ -56,6 +63,30 @@ spec:
             {{-   $sum := 0 }}
             {{-   range $a := $spec.aliases }}{{- $sum = add $sum (int $a.weight) }}{{- end }}
             {{-   if ne $sum 100 }}{{- fail (printf "kind: Function spec.aliases weights must sum to 100 (got %d)" $sum) }}{{- end }}
+            {{- end }}
+            {{- /* Unsupported (BYO) runtime: fail closed into an isolated posture — cluster-local (expose
+                   off), min-scale 0 and non-production label on the Service below, and egress-denied here. */}}
+            {{- if $unsupported }}{{- $expose = false }}{{- end }}
+            {{- if and $unsupported (not ($code.allowEgress | default false)) }}
+            ---
+            # Egress-denied: an unsupported-runtime fixture may reach in-cluster destinations (its code
+            # bucket, DNS, the harness that invokes it) but not the LAN or the internet.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: function-eol-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata: { name: {{ $name }}-eol-egress, namespace: {{ $ns }} }
+                  spec:
+                    podSelector: { matchLabels: { serving.knative.dev/service: {{ $name }} } }
+                    policyTypes: [Egress]
+                    egress:
+                      - to: [ { namespaceSelector: {} } ]   # in-cluster pods/services only; external denied
             {{- end }}
             ---
             # --- Knative Service: the scale-to-zero "Function" ---
@@ -74,6 +105,10 @@ spec:
                     namespace: {{ $ns }}
                     labels:
                       app.kubernetes.io/name: {{ $name }}
+                      {{- if $unsupported }}
+                      # Unsupported/EOL runtime kept only as a comparison fixture — never production.
+                      openinfra.dev/non-production: "true"
+                      {{- end }}
                       {{- if not $expose }}
                       # Private: only reachable from inside the cluster.
                       networking.knative.dev/visibility: cluster-local
@@ -83,7 +118,7 @@ spec:
                       metadata:
                         annotations:
                           # KPA scaling: min 0 = scale to zero when idle.
-                          autoscaling.knative.dev/min-scale: "{{ $scaling.min | default 0 }}"
+                          autoscaling.knative.dev/min-scale: "{{ if $unsupported }}0{{ else }}{{ $scaling.min | default 0 }}{{ end }}"
                           {{- if $spec.reservedConcurrency }}
                           # Reserved concurrency (AWS Lambda analog): a HARD cap on concurrent requests.
                           # One request per instance (containerConcurrency 1 below) + at most this many
