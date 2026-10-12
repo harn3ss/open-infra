@@ -231,7 +231,13 @@ spec:
                 # The audit log is mounted at a FIXED internal path (/audit) so this container
                 # is substrate-agnostic; only the hostPath below is distribution-specific.
                 - { name: AUDIT_LOG_PATH, value: "/audit/audit.log" }
-                - { name: RETENTION_DAYS, value: "2555" } # ~7 years (AU-11); segments are undeletable until then
+                # Lock duration (AU-11 default ~7y; segments are undeletable until then). Operator-tunable
+                # WITHOUT forking the shipped default: create a ConfigMap `audit-config` (this namespace)
+                # with key `retentionDays` to override. Absent => the exporter's built-in 2555 default, so
+                # every deployment keeps the compliance floor unless its operator deliberately lowers it.
+                - name: RETENTION_DAYS
+                  valueFrom:
+                    configMapKeyRef: { name: audit-config, key: retentionDays, optional: true }
                 # ── Off-site copy (AU-9(2)): point these at an EXTERNAL, operator-controlled S3 to
                 #    keep a second immutable copy outside this cluster. Left unset = single WORM copy.
                 # - { name: OFFSITE_ENDPOINT, value: "s3.us-gov-west-1.amazonaws.com" }
