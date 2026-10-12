@@ -89,6 +89,12 @@ spec:
             - { name: ROOT_PASS, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
             - { name: MINIO_URL, value: "http://minio.minio.svc.cluster.local:9000" }
             - { name: BUCKET, value: "openinfra-audit" }
+            # Optional self-trim: expire segments this many days after creation (via the optional
+            # audit-config ConfigMap, this namespace). Unset => keep forever (default). Expiry respects
+            # Object Lock, so set it to match the exporter's retentionDays for retain-then-dispose.
+            - name: AUDIT_EXPIRE_DAYS
+              valueFrom:
+                configMapKeyRef: { name: audit-config, key: expireDays, optional: true }
           args:
             - |
               set -eu
@@ -113,6 +119,19 @@ spec:
                 exit 1
               fi
               echo "  object lock: ACTIVE (COMPLIANCE retention set per-object by the exporter)"
+
+              # 1b) Self-trim lifecycle (optional; default off = keep forever). Expire segments
+              #     AUDIT_EXPIRE_DAYS after creation; the expiry RESPECTS Object Lock, so with
+              #     AUDIT_EXPIRE_DAYS == the exporter's retentionDays the chain is retained exactly that
+              #     long then auto-disposed (AU-11 retain-then-dispose) and the bucket self-trims instead
+              #     of growing forever. Idempotent: clear prior rules, then set one.
+              if [ -n "${AUDIT_EXPIRE_DAYS:-}" ] && [ "${AUDIT_EXPIRE_DAYS}" -gt 0 ] 2>/dev/null; then
+                "$MC" ilm rule remove --all --force "m/$BUCKET" >/dev/null 2>&1 || true
+                "$MC" ilm rule add --expire-days "$AUDIT_EXPIRE_DAYS" "m/$BUCKET" >/dev/null
+                echo "  lifecycle: expire segments ${AUDIT_EXPIRE_DAYS}d after creation (self-trimming)"
+              else
+                echo "  lifecycle: none (segments kept until retention lifts + a manual sweep)"
+              fi
 
               # 2) A scoped identity that can WRITE and SET RETENTION but never DELETE and never
               #    bypass a lock. (COMPLIANCE mode blocks deletes for everyone anyway — this is
