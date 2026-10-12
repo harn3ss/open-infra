@@ -1,8 +1,12 @@
-# open-infra
+<p align="center">
+  <img src="docs/banner.svg" alt="open-infra — the cloud experience you know, on the hardware you own" width="920">
+</p>
 
-[![Release](https://img.shields.io/github/v/release/harn3ss/open-infra?sort=semver)](https://github.com/harn3ss/open-infra/releases)
-[![Build console](https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml/badge.svg)](https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml)
-[![License: Apache-2.0](https://img.shields.io/github/license/harn3ss/open-infra)](LICENSE)
+<p align="center">
+  <a href="https://github.com/harn3ss/open-infra/releases"><img src="https://img.shields.io/github/v/release/harn3ss/open-infra?sort=semver" alt="Release"></a>&nbsp;
+  <a href="https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml"><img src="https://github.com/harn3ss/open-infra/actions/workflows/build-console.yml/badge.svg" alt="Build console"></a>&nbsp;
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/harn3ss/open-infra" alt="License: Apache-2.0"></a>
+</p>
 
 > A **self-hosted cloud that speaks AWS**, running entirely inside your own trust boundary.
 > Point your existing AWS **SDK, CLI, Terraform, or CloudFormation** at it and it answers the way AWS
