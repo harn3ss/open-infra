@@ -124,7 +124,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 	closed := principalType == "Role"
 	governs := false
 	for _, s := range stmts {
-		if coversService(s.Actions, service) {
+		if coversService(s.Actions, service) || notActionsCoverService(s.NotActions, service) {
 			governs = true
 			break
 		}
@@ -206,6 +206,24 @@ func coversService(actions []string, service string) bool {
 		}
 	}
 	return false
+}
+
+// notActionsCoverService reports whether a NotAction (complement) set governs the given service. A
+// statement that grants/denies "every action EXCEPT these" touches a service UNLESS the exclusion wipes
+// out the whole service — a bare "*" excludes everything (the complement is empty), and "<service>:*"
+// excludes that service entirely. In every other case the complement includes actions of the service, so
+// the principal IS governed for it. This is security-critical: without it a Deny NotAction (empty Actions)
+// would be read as "does not govern this service" and the forbid would be silently bypassed (fail open).
+func notActionsCoverService(notActions []string, service string) bool {
+	if len(notActions) == 0 {
+		return false
+	}
+	for _, na := range notActions {
+		if na == "*" || na == service+":*" {
+			return false
+		}
+	}
+	return true
 }
 
 // appliesTo reports whether a policy's appliesTo list names the principal or one of its groups.

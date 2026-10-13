@@ -31,9 +31,18 @@ func toAny(ss []string) []any {
 func statementsToSpecAny(stmts []policyengine.Statement) []any {
 	out := make([]any, 0, len(stmts))
 	for _, s := range stmts {
-		m := map[string]any{"effect": string(s.Effect), "actions": toAny(s.Actions)}
+		m := map[string]any{"effect": string(s.Effect)}
+		if len(s.Actions) > 0 {
+			m["actions"] = toAny(s.Actions)
+		}
+		if len(s.NotActions) > 0 {
+			m["notActions"] = toAny(s.NotActions)
+		}
 		if len(s.Resources) > 0 {
 			m["resources"] = toAny(s.Resources)
+		}
+		if len(s.NotResources) > 0 {
+			m["notResources"] = toAny(s.NotResources)
 		}
 		if len(s.Condition) > 0 {
 			c := map[string]any{}
@@ -176,37 +185,6 @@ func userFromArn(arn string) string {
 
 func isRootOrAccountArn(arn string) bool {
 	return strings.HasSuffix(arn, ":root") || (strings.HasPrefix(arn, "arn:aws:iam::") && !strings.Contains(arn, "/"))
-}
-
-// hasNotActionOrResource reports whether the policy JSON uses NotAction/NotResource, which policyengine
-// .ImportAWS drops SILENTLY (a fidelity hole) — so the IAM doorway refuses such a policy explicitly.
-func hasNotActionOrResource(doc string) bool {
-	var raw any
-	if err := json.Unmarshal([]byte(doc), &raw); err != nil {
-		return false // let ImportAWS report the parse error
-	}
-	return jsonHasKey(raw, "NotAction") || jsonHasKey(raw, "NotResource")
-}
-
-func jsonHasKey(v any, key string) bool {
-	switch t := v.(type) {
-	case map[string]any:
-		if _, ok := t[key]; ok {
-			return true
-		}
-		for _, e := range t {
-			if jsonHasKey(e, key) {
-				return true
-			}
-		}
-	case []any:
-		for _, e := range t {
-			if jsonHasKey(e, key) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func policyNameFromArn(arn string) string {

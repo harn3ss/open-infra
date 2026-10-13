@@ -222,3 +222,51 @@ func TestTranslate_ManagedPolicy_ControlPlaneBlocks(t *testing.T) {
 		t.Fatalf("a control-plane action must block, got: %s", findingsText(fs))
 	}
 }
+
+// #7: a CFN IAM policy using NotAction/NotResource translates into a kind: Policy spec.dataPlane that
+// carries the complement axes (a dropped complement would silently widen the grant). And a NotResource
+// whose exclusion can't be mapped blocks the whole resource, fail-closed.
+func TestTranslate_IAMPolicy_Complement(t *testing.T) {
+	m, fs := translateIAMPolicy("ComplementScope", map[string]any{
+		"PolicyName": "complement-scope",
+		"Users":      []any{"alice"},
+		"PolicyDocument": map[string]any{
+			"Statement": []any{
+				map[string]any{"Effect": "Allow", "NotAction": "s3:DeleteObject", "Resource": "*"},
+				map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "NotResource": "arn:aws:s3:::secret"},
+			},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	dp := m.Spec["dataPlane"].(map[string]any)
+	st, _ := dp["statements"].([]any)
+	if len(st) != 2 {
+		t.Fatalf("want 2 statements, got %d: %#v", len(st), st)
+	}
+	s0 := st[0].(map[string]any)
+	if _, ok := s0["actions"]; ok {
+		t.Error("a NotAction statement must not carry an actions key")
+	}
+	if na, _ := s0["notActions"].([]any); len(na) != 1 || na[0] != "s3:DeleteObject" {
+		t.Errorf("notActions not carried: %#v", s0["notActions"])
+	}
+	s1 := st[1].(map[string]any)
+	if nr, _ := s1["notResources"].([]any); len(nr) != 1 || nr[0] != "Bucket::secret" {
+		t.Errorf("notResources not carried: %#v", s1["notResources"])
+	}
+
+	// An unmappable NotResource (an unfronted service's ARN) must block the resource, not widen it.
+	_, fs = translateIAMPolicy("BadComplement", map[string]any{
+		"Users": []any{"alice"},
+		"PolicyDocument": map[string]any{
+			"Statement": []any{
+				map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "NotResource": "arn:aws:ec2:us-east-1:1:instance/i-abc"},
+			},
+		},
+	}, nil)
+	if len(fs) == 0 || !strings.Contains(findingsText(fs), "NotResource") {
+		t.Fatalf("unmappable NotResource must block with a NotResource finding, got: %s", findingsText(fs))
+	}
+}

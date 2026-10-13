@@ -13,8 +13,9 @@
 //
 // Translation fidelity guardrails: ImportAWS reports (never silently drops) anything it can't honor, and
 // this handler REFUSES a policy with any unsupported part (MalformedPolicyDocument) rather than storing a
-// policy that grants more or less than the JSON says. NotAction/NotResource — which ImportAWS drops
-// silently — are rejected explicitly here.
+// policy that grants more or less than the JSON says. NotAction/NotResource translate faithfully to the
+// engine's complement axes (ImportAWS is fail-closed on them — it refuses a statement whose NotResource
+// exclusion can't be mapped rather than widening the grant), so they are accepted, not rejected.
 package main
 
 import (
@@ -608,14 +609,12 @@ func (h *iamHandler) simulatePrincipalPolicy(ctx context.Context, w http.Respons
 
 // --- translation ---
 
-// translateOrRefuse parses an AWS PolicyDocument, rejects NotAction/NotResource explicitly, translates via
-// policyengine.ImportAWS, and REFUSES (writes MalformedPolicyDocument, returns ok=false) on any error or any
-// unsupported part — never storing a policy that grants more or less than the JSON says.
+// translateOrRefuse parses an AWS PolicyDocument, translates via policyengine.ImportAWS, and REFUSES
+// (writes MalformedPolicyDocument, returns ok=false) on any error or any unsupported part — never storing
+// a policy that grants more or less than the JSON says. NotAction/NotResource now translate faithfully to
+// the engine's complement axes (ImportAWS is itself fail-closed on them — a NotResource whose exclusion
+// doesn't map is reported here, not silently widened), so they are no longer refused up front.
 func (h *iamHandler) translateOrRefuse(w http.ResponseWriter, requestID, doc string, _ any) ([]policyengine.Statement, []any, bool) {
-	if hasNotActionOrResource(doc) {
-		h.malformed(w, requestID, "NotAction/NotResource are not supported by the open-infra IAM translator (they would silently change the grant); rewrite with Action/Resource.")
-		return nil, nil, false
-	}
 	stmts, unsupported, err := policyengine.ImportAWS(doc)
 	if err != nil {
 		h.malformed(w, requestID, "PolicyDocument: "+err.Error())

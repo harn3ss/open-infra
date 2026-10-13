@@ -427,3 +427,115 @@ func TestImportAWS_DateOperatorTypeMismatchRefused(t *testing.T) {
 		t.Fatalf("StringEquals on a time key must refuse the statement, got %#v", stmts2)
 	}
 }
+
+// #7: NotAction/NotResource translate to the engine's complement axes, fail-closed. A faithful import
+// must (a) grant/deny the COMPLEMENT at enforcement, (b) refuse a statement that sets both a positive and
+// its Not sibling, and (c) refuse — never silently widen — a NotResource whose exclusion can't be mapped.
+func TestImportAWS_Complement(t *testing.T) {
+	p := Principal{Type: "User", ID: "a"}
+
+	// Allow everything EXCEPT s3:DeleteObject, on any resource.
+	stmts, unsupported, err := ImportAWS(`{"Statement":[{"Effect":"Allow","NotAction":"s3:DeleteObject","Resource":"*"}]}`)
+	if err != nil || len(unsupported) != 0 || len(stmts) != 1 {
+		t.Fatalf("NotAction allow: err=%v unsupported=%v stmts=%#v", err, unsupported, stmts)
+	}
+	if len(stmts[0].NotActions) != 1 || stmts[0].NotActions[0] != "s3:DeleteObject" || len(stmts[0].Actions) != 0 {
+		t.Fatalf("NotActions not carried: %#v", stmts[0])
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "x"}, nil}); !d.Allowed {
+		t.Error("GetObject should be allowed by NotAction[DeleteObject]")
+	}
+	if d := eng.Authorize(Request{p, "s3:DeleteObject", Resource{"Bucket", "x"}, nil}); d.Allowed {
+		t.Error("DeleteObject must NOT be allowed by NotAction[DeleteObject]")
+	}
+
+	// Deny everything EXCEPT s3:GetObject on a locked bucket, layered over a broad allow.
+	stmts, _, err = ImportAWS(`{"Statement":[
+	  {"Effect":"Allow","Action":"*","Resource":"*"},
+	  {"Effect":"Deny","NotAction":"s3:GetObject","Resource":"arn:aws:s3:::locked"}
+	]}`)
+	if err != nil {
+		t.Fatalf("NotAction deny import: %v", err)
+	}
+	eng, err = NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "locked"}, nil}); !d.Allowed {
+		t.Error("GetObject on locked must survive the NotAction deny")
+	}
+	if d := eng.Authorize(Request{p, "s3:PutObject", Resource{"Bucket", "locked"}, nil}); d.Allowed {
+		t.Error("PutObject on locked must be denied by Deny NotAction[GetObject]")
+	}
+
+	// Allow GetObject on every bucket EXCEPT Bucket::secret.
+	stmts, unsupported, err = ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:s3:::secret"}]}`)
+	if err != nil || len(unsupported) != 0 || len(stmts) != 1 {
+		t.Fatalf("NotResource allow: err=%v unsupported=%v stmts=%#v", err, unsupported, stmts)
+	}
+	if len(stmts[0].NotResources) != 1 || stmts[0].NotResources[0] != "Bucket::secret" {
+		t.Fatalf("NotResources not carried: %#v", stmts[0])
+	}
+	eng, err = NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "public"}, nil}); !d.Allowed {
+		t.Error("GetObject on public should be allowed by NotResource[secret]")
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "secret"}, nil}); d.Allowed {
+		t.Error("GetObject on secret must NOT be allowed by NotResource[secret]")
+	}
+
+	// A statement setting both Action and NotAction is malformed — a hard error, never a partial import.
+	if _, _, err := ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:Get*","NotAction":"s3:Delete*","Resource":"*"}]}`); err == nil {
+		t.Error("both Action and NotAction must error")
+	}
+	if _, _, err := ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*","NotResource":"arn:aws:s3:::x"}]}`); err == nil {
+		t.Error("both Resource and NotResource must error")
+	}
+
+	// A NotResource whose exclusion can't be mapped (an unfronted service's ARN) is REFUSED, not widened:
+	// dropping the carve-out would silently grant "all resources". Reported, no statement emitted.
+	stmts, unsupported, err = ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:ec2:us-east-1:123:instance/i-abc"}]}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stmts) != 0 || len(unsupported) == 0 {
+		t.Fatalf("unmappable NotResource must be refused (no statement, reported): stmts=%#v unsupported=%v", stmts, unsupported)
+	}
+	if !strings.Contains(strings.Join(unsupported, " "), "NotResource") {
+		t.Errorf("refusal should name NotResource: %v", unsupported)
+	}
+
+	// A NotAction exclusion for an unfronted service is a harmless no-op carve-out — kept, not reported,
+	// and the complement still grants every enforced action.
+	stmts, unsupported, err = ImportAWS(`{"Statement":[{"Effect":"Allow","NotAction":"ec2:RunInstances","Resource":"*"}]}`)
+	if err != nil || len(unsupported) != 0 || len(stmts) != 1 {
+		t.Fatalf("NotAction[unfronted]: err=%v unsupported=%v stmts=%#v", err, unsupported, stmts)
+	}
+	eng, err = NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if d := eng.Authorize(Request{p, "s3:PutObject", Resource{"Bucket", "x"}, nil}); !d.Allowed {
+		t.Error("NotAction[ec2:RunInstances] should still grant all enforced actions")
+	}
+
+	// NotResource:["*"] excludes everything → the statement matches nothing (grants nothing).
+	stmts, _, err = ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"*"}]}`)
+	if err != nil {
+		t.Fatalf("NotResource[*] import: %v", err)
+	}
+	eng, err = NewEngine(stmts)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "x"}, nil}); d.Allowed {
+		t.Error("NotResource[*] must grant nothing (matches no resource)")
+	}
+}
