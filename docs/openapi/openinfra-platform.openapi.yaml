@@ -7080,10 +7080,12 @@ components:
                 - actions
             dataPlane:
               type: object
-              description: "Fine-grained DATA-PLANE authorization for the aws-shim front doors (S3, DynamoDB, Lambda), evaluated\
-                \ by the Cedar-backed policy engine. Unlike the control-plane statements above, it supports explicit Deny\
-                \ (which overrides Allow) and request conditions \u2014 the model Kubernetes RBAC cannot express. Additive:\
-                \ it can only tighten a grant the coarse RBAC check already allowed. See docs/policy-engine.md."
+              description: "Fine-grained DATA-PLANE authorization for the aws-shim front doors \u2014 the services the shim\
+                \ enforces (today 16: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm, secretsmanager, ecr, ecs, logs, rds,\
+                \ ses, apigateway, cloudwatch; the authoritative set is policyengine.SupportedServices), evaluated by the\
+                \ Cedar-backed policy engine. Unlike the control-plane statements above, it supports explicit Deny (which\
+                \ overrides Allow) and request conditions \u2014 the model Kubernetes RBAC cannot express. Additive: it can\
+                \ only tighten a grant the coarse RBAC check already allowed. See docs/policy-engine.md."
               properties:
                 appliesTo:
                   type: array
@@ -7618,7 +7620,10 @@ components:
               description: What this role is for, shown in the console.
             policies:
               type: array
-              description: Names of Policies (in this namespace) to aggregate.
+              description: "Names of Policies (in this namespace) to aggregate. Optional \u2014 a role with no policies is\
+                \ a trust anchor (an aggregated ClusterRole with no rules of its own), exactly as AWS allows a role carrying\
+                \ only a trust policy (Cognito and Elastic Beanstalk create these). The composition already renders an empty-policy\
+                \ role safely."
               items:
                 type: string
             trust:
@@ -7646,8 +7651,6 @@ components:
                 \ the cutoff are unaffected, so new assumes keep working; it revokes a role's current sessions without rotating\
                 \ the global STS signing key (which would cut every role's sessions at once). Set it to \"now\" via the console\
                 \ \"Revoke sessions\" action."
-          required:
-          - policies
         status:
           type: object
           properties:
