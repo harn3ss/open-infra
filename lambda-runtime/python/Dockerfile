@@ -31,7 +31,14 @@ RUN pip install --no-cache-dir \
       "urllib3>=2.8.0" \
       "msgpack>=1.2.1" \
       "setuptools>=78.1.1" \
+    && python -m pip uninstall -y pip \
     && rm -rf /root/.cache/pip
+# pip is a BUILD-time tool — the runtime only runs bootstrap.py (stdlib) + boto3; a handler brings its
+# own deps (bundled or a layer), never `pip install` at cold start. Removing pip also removes its
+# _vendor bundle, which ships its OWN pinned copies of urllib3/msgpack/setuptools (vendor.txt) that
+# Trivy flags separately from the top-level packages above — those vendored copies are the real source
+# of the python-pkg CVE alerts, and they can't be upgraded without upgrading pip itself. Dropping pip
+# clears them and shrinks the runtime's CVE surface to the stdlib shim + boto3.
 
 # The shim lives outside /var/task so a handler can never shadow it.
 COPY bootstrap.py /opt/open-infra/bootstrap.py
