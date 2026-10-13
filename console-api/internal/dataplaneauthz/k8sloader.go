@@ -48,7 +48,9 @@ func K8sLoader(dc dynamic.Interface) Loader {
 				doc.Statements = append(doc.Statements, policyengine.Statement{
 					Effect:         policyengine.Effect(str(sm["effect"])),
 					Actions:        toStrings(sm["actions"]),
+					NotActions:     toStrings(sm["notActions"]),
 					Resources:      toStrings(sm["resources"]),
+					NotResources:   toStrings(sm["notResources"]),
 					Condition:      toStringMap(sm["condition"]),
 					IPConditions:   toIPConditions(sm["ipConditions"]),
 					LikeConditions: toLikeConditions(sm["likeConditions"]),

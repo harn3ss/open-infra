@@ -41,6 +41,9 @@ interface SummaryRow {
   plane: "Platform (control plane)" | "Data service";
   effect?: "Allow" | "Deny";
   levels: string[];
+  /** When set, the access-level cell shows this text instead of level badges — used for NotAction
+   *  complements ("Any action except …"), which the level grid can't express. */
+  accessText?: string;
   resource: string;
   condition: string;
 }
@@ -87,6 +90,35 @@ function buildRows(doc: PolicyDoc): SummaryRow[] {
 
   // Data plane: one row per statement.
   for (const st of doc.dataPlane?.statements ?? []) {
+    const condition = st.condition
+      ? Object.entries(st.condition)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(", ") || "—"
+      : "—";
+    const hasNotActions = (st.notActions?.length ?? 0) > 0;
+    const hasNotResources = (st.notResources?.length ?? 0) > 0;
+    // Complement axes (AWS NotAction/NotResource): the per-service level grid can't express "any action
+    // except …", so render the exclusion as text and span all data services (the complement is broad).
+    if (hasNotActions || hasNotResources) {
+      const svcName = firstService(st.actions ?? []);
+      const svc = serviceByName(svcName);
+      rows.push({
+        service: hasNotActions ? "All data services" : (svc?.label ?? svcName),
+        plane: "Data service",
+        effect: st.effect,
+        levels: [],
+        accessText: hasNotActions
+          ? `Any action except ${st.notActions!.join(", ")}`
+          : (st.actions ?? []).join(", ") || "Any action",
+        resource: hasNotResources
+          ? `Any resource except ${st.notResources!.join(", ")}`
+          : !st.resources || st.resources.length === 0 || st.resources.includes("*")
+            ? `Any ${svc?.resourceLabel ?? "resource"}`
+            : st.resources.join(", "),
+        condition,
+      });
+      continue;
+    }
     const svcName = firstService(st.actions ?? []);
     const svc = serviceByName(svcName);
     const levels = sortLevels(dataLevels(svcName, st.actions ?? []));
@@ -94,11 +126,6 @@ function buildRows(doc: PolicyDoc): SummaryRow[] {
       !st.resources || st.resources.length === 0 || st.resources.includes("*")
         ? `Any ${svc?.resourceLabel ?? "resource"}`
         : st.resources.join(", ");
-    const condition = st.condition
-      ? Object.entries(st.condition)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(", ") || "—"
-      : "—";
     rows.push({
       service: svc?.label ?? svcName,
       plane: "Data service",
@@ -161,13 +188,17 @@ export function PermissionsSummary({ doc }: { doc: PolicyDoc }) {
                 )}
               </td>
               <td className="p-3">
-                <div className="flex flex-wrap gap-1">
-                  {r.levels.map((l) => (
-                    <Badge key={l} variant={levelTone(l)}>
-                      {l}
-                    </Badge>
-                  ))}
-                </div>
+                {r.accessText ? (
+                  <span className="text-muted-foreground">{r.accessText}</span>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {r.levels.map((l) => (
+                      <Badge key={l} variant={levelTone(l)}>
+                        {l}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </td>
               <td className="p-3 text-muted-foreground">{r.resource}</td>
               <td className="p-3 text-muted-foreground">

@@ -115,7 +115,7 @@ spec:
                       type: array
                       items:
                         type: object
-                        required: [effect, actions]
+                        required: [effect]
                         properties:
                           effect:
                             type: string
@@ -125,14 +125,39 @@ spec:
                             type: array
                             description: >-
                               Data-plane actions, e.g. "s3:GetObject", "dynamodb:Query",
-                              "lambda:InvokeFunction", or "*".
+                              "lambda:InvokeFunction", or "*". A statement sets EITHER actions OR
+                              notActions (not both); omitting both means "any action".
+                            items:
+                              type: string
+                          notActions:
+                            type: array
+                            description: >-
+                              The complement of actions (AWS NotAction): matches every data-plane action
+                              EXCEPT these, e.g. notActions ["s3:DeleteObject"] grants all s3 actions but
+                              delete. Mutually exclusive with actions (a statement setting both is rejected,
+                              fail closed). An entry for a service the shim does not front is a harmless
+                              no-op carve-out; a lone "*" excludes everything (the statement then matches
+                              nothing). On a Deny, "deny everything except X" is a broad forbid — author
+                              with care.
                             items:
                               type: string
                           resources:
                             type: array
                             description: >-
                               Typed resources, e.g. "Bucket::assets", "Table::orders",
-                              "Function::worker", or "*".
+                              "Function::worker", or "*". A statement sets EITHER resources OR
+                              notResources (not both); omitting both means "any resource".
+                            items:
+                              type: string
+                          notResources:
+                            type: array
+                            description: >-
+                              The complement of resources (AWS NotResource): matches every resource EXCEPT
+                              these, e.g. notResources ["Bucket::secret"] scopes to all buckets but that one.
+                              Mutually exclusive with resources (both set is rejected, fail closed). A lone
+                              "*" excludes everything (matches nothing). Each entry must be Type::id or a
+                              wildcard; an unmappable exclusion is refused at import rather than silently
+                              widening the grant.
                             items:
                               type: string
                           condition:

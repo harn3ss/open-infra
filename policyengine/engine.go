@@ -32,10 +32,20 @@ const (
 // Statement is one open-infra policy statement (the shape carried on kind: Policy spec.dataPlane),
 // mapping to a Cedar permit/forbid. An empty list or a lone "*" in Actions/Resources means "any";
 // a "*" inside an entry (e.g. "s3:*", "Bucket::log-*") is a wildcard.
+//
+// NotActions/NotResources are the COMPLEMENT axes (AWS NotAction/NotResource): "any action/resource
+// EXCEPT these". They are mutually exclusive with their positive sibling — a statement sets Actions OR
+// NotActions, never both (toCedar errors on both, fail closed). A NotX set compiles to a negated match
+// (`!(context.X == … || …)`) in the SAME always-present scope term the positive match uses, so it never
+// introduces the absent-key fail-open the value conditions guard against. A NotX set reduced to "exclude
+// everything" (a lone "*") compiles to `false` — the statement then matches nothing, the faithful meaning
+// of "all except all".
 type Statement struct {
 	Effect         Effect
 	Actions        []string          // e.g. ["s3:GetObject","s3:*"] or ["*"]
+	NotActions     []string          // complement of Actions (AWS NotAction): "any action except these"
 	Resources      []string          // "Type::id" e.g. ["Bucket::assets","Bucket::*"], or ["*"]
+	NotResources   []string          // complement of Resources (AWS NotResource): "any resource except these"
 	Condition      map[string]string // request-context keys that must equal these values ("true"/"false" => bool)
 	IPConditions   []IPCondition     // aws:SourceIp-style CIDR conditions, evaluated via Cedar's ipaddr extension
 	LikeConditions []LikeCondition   // StringLike/StringNotLike wildcard conditions, evaluated via Cedar's `like`
@@ -262,21 +272,23 @@ func (s Statement) toCedar(idx int) (string, error) {
 		return "", fmt.Errorf("statement %d: effect must be Allow or Deny, got %q", idx, s.Effect)
 	}
 
-	// Scope: action + resource. These read context.action / context.resource, which the engine ALWAYS
-	// sets, so they never fail on an absent attribute and never need the forbid guard.
+	// Scope: action + resource (a positive match, or the COMPLEMENT of a NotAction/NotResource set).
+	// These read context.action / context.resource, which the engine ALWAYS sets, so they never fail on
+	// an absent attribute and never need the forbid guard — including the negated (complement) form.
 	var scope []string
-	if clause := matchAny("context.action", s.Actions); clause != "" {
-		scope = append(scope, clause)
+	actClause, err := scopeClause("context.action", s.Actions, s.NotActions, idx, "Action", false)
+	if err != nil {
+		return "", err
 	}
-	if !wildcard(s.Resources) {
-		for _, r := range s.Resources {
-			if r != "*" && !strings.Contains(r, "::") {
-				return "", fmt.Errorf("statement %d: resource %q must be Type::id (e.g. Bucket::assets), a wildcard like Bucket::*, or *", idx, r)
-			}
-		}
-		if clause := matchAny("context.resource", s.Resources); clause != "" {
-			scope = append(scope, clause)
-		}
+	if actClause != "" {
+		scope = append(scope, actClause)
+	}
+	resClause, err := scopeClause("context.resource", s.Resources, s.NotResources, idx, "Resource", true)
+	if err != nil {
+		return "", err
+	}
+	if resClause != "" {
+		scope = append(scope, resClause)
 	}
 
 	// Value conditions: tests on caller-supplied context attributes (authenticated, sourceIp, ...).
@@ -362,19 +374,23 @@ func compileBoundary(boundary []Statement) (string, error) {
 		if s.Effect != Allow {
 			continue
 		}
-		for _, r := range s.Resources {
-			if r != "*" && r != "" && !strings.Contains(r, "::") {
-				return "", fmt.Errorf("boundary statement %d: resource %q must be Type::id, a wildcard, or *", i, r)
-			}
+		// A boundary Allow with a NotAction/NotResource is a complement ceiling ("everything except …").
+		// Route it through scopeClause too, so such a boundary narrows rather than being misread as a
+		// wildcard "no ceiling" (which would fail OPEN — the identity policies would stand unbounded).
+		actClause, err := scopeClause("context.action", s.Actions, s.NotActions, i, "Action", false)
+		if err != nil {
+			return "", fmt.Errorf("boundary %w", err)
+		}
+		resClause, err := scopeClause("context.resource", s.Resources, s.NotResources, i, "Resource", true)
+		if err != nil {
+			return "", fmt.Errorf("boundary %w", err)
 		}
 		var match []string
-		if clause := matchAny("context.action", s.Actions); clause != "" {
-			match = append(match, clause)
+		if actClause != "" {
+			match = append(match, actClause)
 		}
-		if !wildcard(s.Resources) {
-			if clause := matchAny("context.resource", s.Resources); clause != "" {
-				match = append(match, clause)
-			}
+		if resClause != "" {
+			match = append(match, resClause)
 		}
 		if len(match) == 0 {
 			return "", nil // allows everything → no ceiling
@@ -407,6 +423,42 @@ func dedupe(xs []string) []string {
 		}
 	}
 	return out
+}
+
+// scopeClause renders the action/resource axis of a statement: the positive set via matchAny (empty or
+// a lone "*" => "any", no constraint), OR — when a NotX (complement) set is given — the negation of that
+// set (AWS NotAction/NotResource: "any X except these"). The positive and complement sets are mutually
+// exclusive (an AWS statement carries Action or NotAction, never both); both present is a malformed
+// statement and errors (fail closed). `typed` requires each resource entry to be Type::id / a wildcard /
+// "*". `axis` ("Action"/"Resource") names the field in errors.
+func scopeClause(field string, positive, negative []string, idx int, axis string, typed bool) (string, error) {
+	if len(positive) > 0 && len(negative) > 0 {
+		return "", fmt.Errorf("statement %d: a statement cannot set both %s and Not%s (AWS allows only one)", idx, axis, axis)
+	}
+	if typed {
+		for _, r := range append(append([]string{}, positive...), negative...) {
+			if r != "*" && r != "" && !strings.Contains(r, "::") {
+				return "", fmt.Errorf("statement %d: %s %q must be Type::id (e.g. Bucket::assets), a wildcard like Bucket::*, or *", idx, strings.ToLower(axis), r)
+			}
+		}
+	}
+	if len(negative) > 0 {
+		return complementClause(field, negative), nil
+	}
+	return matchAny(field, positive), nil
+}
+
+// complementClause renders the Cedar match for a NotAction/NotResource set: the negation of matchAny over
+// the excluded values ("match anything that is NOT one of these"). An exclude set that is itself a
+// wildcard ("exclude everything") renders to the constant `false`, so the statement matches nothing — the
+// faithful meaning of "all except all" (an Allow then grants nothing, a Deny denies nothing). Because the
+// term only reads context.<field> (always set by the engine) it never errors at eval, so it is safe in a
+// forbid without the absent-key guard.
+func complementClause(field string, exclude []string) string {
+	if wildcard(exclude) {
+		return "false"
+	}
+	return "!(" + matchAny(field, exclude) + ")"
 }
 
 // matchAny renders an OR of equality / `like` tests for a set of values against a context field, or

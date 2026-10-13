@@ -4,6 +4,20 @@ All notable changes to open-infra are recorded here. Versions follow
 [semantic versioning](https://semver.org). The `openinfra.dev` resource kinds are
 the product's public contract.
 
+## Unreleased
+
+### IAM — NotAction / NotResource
+- **AWS `NotAction`/`NotResource` now translate**, instead of being refused. They map to new
+  **complement axes** on a data-plane policy statement — `notActions` ("any action except these") and
+  `notResources` ("any resource except these") — enforced by the Cedar engine across the AWS policy
+  importer (`policyengine.ImportAWS`), the CloudFormation `AWS::IAM::Policy` translator, the aws-shim IAM
+  doorway, and native `kind: Policy spec.dataPlane` authoring. This unblocks importing the AWS managed
+  policies that are written with `NotAction`.
+- **Fail-closed by construction.** A statement may set `actions` **or** `notActions` (never both), and
+  `resources` **or** `notResources`; a `NotResource` whose exclusion can't be mapped to a shim-fronted
+  resource is **refused** rather than silently widened to all resources; and a `NotAction` grant is
+  recognised by the per-service governance gate, so a `Deny NotAction` can never be bypassed.
+
 ## v3.2.0 — 2026-10-12
 
 Where v3.1.0 widened the AWS **surface** (twenty-five shim doorways), v3.2.0 deepens the **managed

@@ -972,10 +972,17 @@ export interface PolicyStatement {
 export interface CedarStatement {
   /** "Allow" or "Deny". Deny overrides — this is the whole point of the Cedar plane. */
   effect: "Allow" | "Deny";
-  /** e.g. "s3:GetObject", "dynamodb:Query", "lambda:InvokeFunction", or "*" (see iam-cedar-vocab.ts). */
-  actions: string[];
+  /**
+   * e.g. "s3:GetObject", "dynamodb:Query", "lambda:InvokeFunction", or "*" (see iam-cedar-vocab.ts).
+   * A statement sets EITHER actions OR notActions (never both); omitted ⇒ any.
+   */
+  actions?: string[];
+  /** Complement of actions (AWS NotAction): any action EXCEPT these. Mutually exclusive with actions. */
+  notActions?: string[];
   /** Typed resources, e.g. "Bucket::assets", "Table::orders", "Function::worker", "*". Omitted ⇒ any. */
   resources?: string[];
+  /** Complement of resources (AWS NotResource): any resource EXCEPT these. Mutually exclusive with resources. */
+  notResources?: string[];
   /** Request conditions, e.g. { authenticated: "true", sourceIp: "10.0.0.0/8" }. */
   condition?: Record<string, string>;
 }
@@ -1163,8 +1170,10 @@ export function updateIamPolicyTags(
 /** One draft data-plane statement (custom mode), in the kind: Policy spec.dataPlane shape. */
 export interface DraftStatement {
   effect?: string;
-  actions: string[];
+  actions?: string[];
+  notActions?: string[];
   resources?: string[];
+  notResources?: string[];
   condition?: Record<string, string>;
   ipConditions?: ImportedIpCondition[];
 }
@@ -1249,8 +1258,10 @@ export interface ImportedIpCondition {
 /** One translated statement, in the kind: Policy spec.dataPlane shape, plus a `broad` wildcard flag. */
 export interface ImportedStatement {
   effect: string;
-  actions: string[];
+  actions?: string[];
+  notActions?: string[];
   resources?: string[];
+  notResources?: string[];
   condition?: Record<string, string>;
   ipConditions?: ImportedIpCondition[];
   broad: boolean;

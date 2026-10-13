@@ -68,7 +68,9 @@ type draftPolicyInput struct {
 type draftStatement struct {
 	Effect         string               `json:"effect"`
 	Actions        []string             `json:"actions"`
+	NotActions     []string             `json:"notActions"`
 	Resources      []string             `json:"resources"`
+	NotResources   []string             `json:"notResources"`
 	Condition      map[string]string    `json:"condition"`
 	IPConditions   []draftIPCondition   `json:"ipConditions"`
 	LikeConditions []draftLikeCondition `json:"likeConditions"`
@@ -361,10 +363,12 @@ func dataPlaneCheckerFor(ps []crdPolicy) *dataplaneauthz.Checker {
 		doc := dataplaneauthz.PolicyDoc{Name: p.Metadata.Name, AppliesTo: b.AppliesTo}
 		for _, s := range b.Statements {
 			doc.Statements = append(doc.Statements, policyengine.Statement{
-				Effect:    policyengine.Effect(canonEffect(s.Effect)),
-				Actions:   s.Actions,
-				Resources: s.Resources,
-				Condition: s.Condition,
+				Effect:       policyengine.Effect(canonEffect(s.Effect)),
+				Actions:      s.Actions,
+				NotActions:   s.NotActions,
+				Resources:    s.Resources,
+				NotResources: s.NotResources,
+				Condition:    s.Condition,
 			})
 		}
 		docs = append(docs, doc)
@@ -438,10 +442,12 @@ func draftCheckerFor(d *draftPolicyInput) *dataplaneauthz.Checker {
 	doc := dataplaneauthz.PolicyDoc{Name: "(draft)", AppliesTo: appliesTo}
 	for _, s := range d.Statements {
 		st := policyengine.Statement{
-			Effect:    policyengine.Effect(canonEffect(s.Effect)),
-			Actions:   s.Actions,
-			Resources: s.Resources,
-			Condition: s.Condition,
+			Effect:       policyengine.Effect(canonEffect(s.Effect)),
+			Actions:      s.Actions,
+			NotActions:   s.NotActions,
+			Resources:    s.Resources,
+			NotResources: s.NotResources,
+			Condition:    s.Condition,
 		}
 		for _, c := range s.IPConditions {
 			st.IPConditions = append(st.IPConditions, policyengine.IPCondition{Key: c.Key, CIDR: c.CIDR, Negate: c.Negate})

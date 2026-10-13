@@ -256,3 +256,42 @@ func TestEngine_BoundaryEdges(t *testing.T) {
 		t.Error("a wildcard boundary imposes no ceiling → the identity allow stands")
 	}
 }
+
+// #7: NotAction/NotResource compile to the complement in toCedar, and a NotAction/NotResource used in a
+// permission BOUNDARY must still CAP (not be misread as a wildcard "no ceiling", which would fail open —
+// the identity policies would stand unbounded).
+func TestComplementAndBoundary(t *testing.T) {
+	p := Principal{Type: "User", ID: "a"}
+
+	// A statement that sets both a positive axis and its Not sibling is malformed → compile error.
+	if _, err := NewEngine([]Statement{{Effect: Allow, Actions: []string{"s3:Get*"}, NotActions: []string{"s3:Delete*"}, Resources: []string{"*"}}}); err == nil {
+		t.Error("both Actions and NotActions must error")
+	}
+	if _, err := NewEngine([]Statement{{Effect: Allow, Actions: []string{"*"}, Resources: []string{"Bucket::x"}, NotResources: []string{"Bucket::y"}}}); err == nil {
+		t.Error("both Resources and NotResources must error")
+	}
+
+	// Identity: full s3 on all buckets. Boundary: everything EXCEPT s3:DeleteObject. The effective
+	// permission is the intersection — get allowed, delete capped away by the boundary complement.
+	identity := []Statement{{Effect: Allow, Actions: []string{"s3:*"}, Resources: []string{"Bucket::*"}}}
+	boundary := []Statement{{Effect: Allow, NotActions: []string{"s3:DeleteObject"}, Resources: []string{"*"}}}
+	eng, err := NewEngineWithBoundary(identity, boundary)
+	if err != nil {
+		t.Fatalf("compile with NotAction boundary: %v", err)
+	}
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports"}, nil}); !d.Allowed {
+		t.Error("GetObject is within the NotAction boundary → allowed")
+	}
+	if d := eng.Authorize(Request{p, "s3:DeleteObject", Resource{"Bucket", "reports"}, nil}); d.Allowed {
+		t.Error("DeleteObject is excluded by the NotAction boundary → must be capped (denied)")
+	}
+
+	// A boundary whose only Allow excludes everything (NotActions:["*"]) caps to nothing: fail closed.
+	eng2, err := NewEngineWithBoundary(identity, []Statement{{Effect: Allow, NotActions: []string{"*"}, Resources: []string{"*"}}})
+	if err != nil {
+		t.Fatalf("compile exclude-all boundary: %v", err)
+	}
+	if d := eng2.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports"}, nil}); d.Allowed {
+		t.Error("an exclude-everything NotAction boundary must cap to nothing (deny all)")
+	}
+}

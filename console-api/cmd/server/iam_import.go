@@ -57,8 +57,10 @@ type importedTimeCondition struct {
 // authored as-is), plus a `broad` flag when it carries a wildcard the operator should confirm.
 type importedStatement struct {
 	Effect         string                  `json:"effect"`
-	Actions        []string                `json:"actions"`
+	Actions        []string                `json:"actions,omitempty"`
+	NotActions     []string                `json:"notActions,omitempty"`
 	Resources      []string                `json:"resources,omitempty"`
+	NotResources   []string                `json:"notResources,omitempty"`
 	Condition      map[string]string       `json:"condition,omitempty"`
 	IPConditions   []importedIPCondition   `json:"ipConditions,omitempty"`
 	LikeConditions []importedLikeCondition `json:"likeConditions,omitempty"`
@@ -118,7 +120,10 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 	translated := make([]importedStatement, 0, len(stmts))
 	needsReview := []string{}
 	for i, s := range stmts {
-		broad := hasWildcard(s.Actions) || hasWildcard(s.Resources)
+		// A NotAction/NotResource statement grants "everything except …" — inherently broad, so it is
+		// always flagged for review alongside the usual "*" wildcard grants.
+		complement := len(s.NotActions) > 0 || len(s.NotResources) > 0
+		broad := hasWildcard(s.Actions) || hasWildcard(s.Resources) || complement
 		var ipc []importedIPCondition
 		for _, c := range s.IPConditions {
 			ipc = append(ipc, importedIPCondition{Key: c.Key, CIDR: c.CIDR, Negate: c.Negate})
@@ -134,7 +139,9 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 		translated = append(translated, importedStatement{
 			Effect:         string(s.Effect),
 			Actions:        s.Actions,
+			NotActions:     s.NotActions,
 			Resources:      s.Resources,
+			NotResources:   s.NotResources,
 			Condition:      s.Condition,
 			IPConditions:   ipc,
 			LikeConditions: likec,
@@ -142,9 +149,15 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 			Broad:          broad,
 		})
 		if broad {
-			needsReview = append(needsReview, fmt.Sprintf(
-				"statement %d (%s %v on %v) is a wildcard grant — confirm the breadth is intended",
-				i+1, s.Effect, s.Actions, s.Resources))
+			if complement {
+				needsReview = append(needsReview, fmt.Sprintf(
+					"statement %d (%s %s on %s) is a NotAction/NotResource complement — it grants everything EXCEPT the listed set; confirm that breadth is intended",
+					i+1, s.Effect, actionAxis(s.Actions, s.NotActions), resourceAxis(s.Resources, s.NotResources)))
+			} else {
+				needsReview = append(needsReview, fmt.Sprintf(
+					"statement %d (%s %v on %v) is a wildcard grant — confirm the breadth is intended",
+					i+1, s.Effect, s.Actions, s.Resources))
+			}
 		}
 	}
 	if refused == nil {
@@ -161,6 +174,22 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 			NeedsReview: len(needsReview),
 		},
 	}
+}
+
+// actionAxis / resourceAxis render a statement's action/resource axis for a review message — the
+// positive set, or the "NotAction …"/"NotResource …" complement when the statement uses that form.
+func actionAxis(actions, notActions []string) string {
+	if len(notActions) > 0 {
+		return fmt.Sprintf("NotAction %v", notActions)
+	}
+	return fmt.Sprintf("%v", actions)
+}
+
+func resourceAxis(resources, notResources []string) string {
+	if len(notResources) > 0 {
+		return fmt.Sprintf("NotResource %v", notResources)
+	}
+	return fmt.Sprintf("%v", resources)
 }
 
 // hasWildcard reports whether any entry is "*" or contains a "*" (e.g. "s3:*", "Bucket::log-*").

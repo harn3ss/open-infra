@@ -90,6 +90,14 @@ func resolveConditionKey(key string) (ConditionKey, bool) {
 // for services with no open-infra data plane, ARNs it can't map, or conditions (not importable yet).
 // Those are reported so the caller can refuse rather than silently grant or drop them. Effect and
 // wildcards ("s3:*", "*") carry over faithfully.
+//
+// NotAction/NotResource are supported and carry over as the COMPLEMENT axes (Statement.NotActions/
+// NotResources), which the engine renders as a negated match ("any except these"). They are handled
+// fail-closed: a statement cannot set both Action and NotAction (or both Resource and NotResource) — a
+// malformed AWS document that does errors; and a NotResource whose excluded ARN does not map to a
+// shim-fronted resource is REFUSED (reported, not emitted) rather than dropping the carve-out, which
+// would silently WIDEN the grant to all resources. NotAction exclusions are kept verbatim — an excluded
+// action for a service the shim does not front is a harmless no-op carve-out (it only ever narrows).
 func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 	var doc struct {
 		Statement json.RawMessage `json:"Statement"`
@@ -135,20 +143,64 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 				continue
 			}
 		}
-		actions, aUn := importActions(awsList(st["Action"]))
-		unsupported = append(unsupported, aUn...)
-		if len(actions) == 0 {
-			continue // nothing data-plane here
+		_, hasAction := st["Action"]
+		_, hasNotAction := st["NotAction"]
+		_, hasResource := st["Resource"]
+		_, hasNotResource := st["NotResource"]
+		if hasAction && hasNotAction {
+			return nil, nil, fmt.Errorf("statement %d: a statement cannot set both Action and NotAction", i)
 		}
-		resources, rUn := importResources(awsList(st["Resource"]))
-		unsupported = append(unsupported, rUn...)
-		if len(resources) == 0 {
-			// A data-plane action with no mappable Resource would compile to a rule that matches
-			// nothing (silently inert) — report it instead of emitting it.
-			unsupported = append(unsupported, fmt.Sprintf("statement %d: %v has no mappable Resource (an identity policy must scope to an ARN or \"*\")", i, actions))
-			continue
+		if hasResource && hasNotResource {
+			return nil, nil, fmt.Errorf("statement %d: a statement cannot set both Resource and NotResource", i)
 		}
-		s := Statement{Effect: effect, Actions: actions, Resources: resources, IPConditions: ips, LikeConditions: likes, TimeConditions: times}
+
+		// --- action axis ---
+		var actions, notActions []string
+		if hasNotAction {
+			// NotAction grants every action EXCEPT these. The exclusion set is kept verbatim: an entry for
+			// a service the shim does not front is a harmless no-op carve-out (it only narrows, never
+			// grants). An empty NotAction excludes nothing, i.e. any action (AWS treats it as Action:"*").
+			notActions = awsList(st["NotAction"])
+			if len(notActions) == 0 {
+				actions, notActions = []string{"*"}, nil
+			}
+		} else {
+			var aUn []string
+			actions, aUn = importActions(awsList(st["Action"]))
+			unsupported = append(unsupported, aUn...)
+			if len(actions) == 0 {
+				continue // nothing data-plane here (every Action was for an unfronted service)
+			}
+		}
+
+		// --- resource axis ---
+		var resources, notResources []string
+		if hasNotResource {
+			// NotResource scopes to every resource EXCEPT these. Every excluded ARN MUST map to a typed
+			// resource: an unmappable exclusion would silently WIDEN the grant (the carve-out would be
+			// lost, leaving "all resources"), so the whole statement is refused rather than emitted.
+			var nrUn []string
+			notResources, nrUn = importResources(awsList(st["NotResource"]))
+			if len(nrUn) > 0 {
+				unsupported = append(unsupported, fmt.Sprintf("statement %d: NotResource has an ARN that does not map to a shim-fronted resource (%s) — refused rather than silently widening the grant by dropping the exclusion; author it natively on kind: Policy spec.dataPlane", i, strings.Join(nrUn, "; ")))
+				continue
+			}
+			if len(notResources) == 0 {
+				resources, notResources = []string{"*"}, nil // excludes nothing → any resource
+			}
+		} else {
+			var rUn []string
+			resources, rUn = importResources(awsList(st["Resource"]))
+			unsupported = append(unsupported, rUn...)
+			if len(resources) == 0 {
+				// A data-plane action with no mappable Resource would compile to a rule that matches
+				// nothing (silently inert) — report it instead of emitting it.
+				unsupported = append(unsupported, fmt.Sprintf("statement %d: %s has no mappable Resource (an identity policy must scope to an ARN or \"*\")", i, actionAxisDisplay(actions, notActions)))
+				continue
+			}
+		}
+
+		s := Statement{Effect: effect, Actions: actions, NotActions: notActions, Resources: resources, NotResources: notResources, IPConditions: ips, LikeConditions: likes, TimeConditions: times}
 		if len(eq) > 0 {
 			s.Condition = eq
 		}
@@ -393,6 +445,15 @@ func arnToResource(arn string) (string, bool) {
 
 // secretSuffixRe matches the "-" + 6 random chars AWS appends to a Secrets Manager secret ARN.
 var secretSuffixRe = regexp.MustCompile(`-[A-Za-z0-9]{6}$`)
+
+// actionAxisDisplay renders a statement's action axis for a diagnostic — the Action set, or the
+// NotAction set when the statement uses the complement form.
+func actionAxisDisplay(actions, notActions []string) string {
+	if len(notActions) > 0 {
+		return fmt.Sprintf("NotAction %v", notActions)
+	}
+	return fmt.Sprintf("%v", actions)
+}
 
 func awsStr(v any) string { s, _ := v.(string); return s }
 
