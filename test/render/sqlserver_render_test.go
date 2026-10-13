@@ -87,9 +87,9 @@ func TestSQLServer_ProvisionsWhenEulaAccepted(t *testing.T) {
 func TestSQLServer_RestoreFrom(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 
-	// Without restoreFrom: no restore machinery.
+	// Without restoreFrom: no restore machinery (and no node emptyDir staging — there never is one now).
 	plain := render(t, tmpl, mkSQLServer(map[string]any{"acceptEula": true}))
-	for _, forbid := range []string{"RESTORE DATABASE", "name: fetch-bak", "sqlserver-restore", "restore-stage"} {
+	for _, forbid := range []string{"RESTORE DATABASE", "name: fetch-bak", "sqlserver-restore", "capacity-preflight", "name: restore-stage"} {
 		if strings.Contains(plain, forbid) {
 			t.Errorf("a non-restoring sqlserver must NOT render %q", forbid)
 		}
@@ -101,21 +101,56 @@ func TestSQLServer_RestoreFrom(t *testing.T) {
 		"restoreFrom": map[string]any{"bucket": "import", "key": "db.bak", "secret": "restore-creds"},
 	}))
 	for _, want := range []string{
-		"name: myapp-sqlserver-restore",                // the restore-script ConfigMap
-		"restore.sh: |",                                // the script
-		"DB='estate'",                                  // target DB name templated into the script
-		"RESTORE DATABASE [$DB] FROM DISK",             // the RESTORE (DB resolved at runtime)
-		"name: fetch-bak",                              // the staging init
-		"ghcr.io/harn3ss/open-infra-mc",                // mc stages the .bak
-		"src/import/db.bak",                            // from the configured bucket/key
-		"secretRef: { name: restore-creds }",           // S3 creds
-		`command: ["bash", "/opt/restore/restore.sh"]`, // the restore sidecar
-		"{ name: restore-stage, emptyDir: {} }",        // the shared staging volume
-		"mountPath: /restore",                          // engine can read the staged .bak
+		"name: myapp-sqlserver-restore",                   // the restore-script ConfigMap
+		"restore.sh: |",                                   // the script
+		"DB='estate'",                                     // target DB name templated into the script
+		"RESTORE DATABASE [$DB] FROM DISK",                // the RESTORE (DB resolved at runtime)
+		"name: fetch-bak",                                 // the staging init
+		"ghcr.io/harn3ss/open-infra-mc",                   // mc stages the .bak
+		"src/import/db.bak",                               // from the configured bucket/key
+		"secretRef: { name: restore-creds }",              // S3 creds
+		`command: ["bash", "/opt/restore/restore.sh"]`,    // the restore sidecar
+		"mountPath: /restore, subPath: restore",           // staged on the SIZED data volume, not a node emptyDir
+		"test -f /restore/.done",                          // readiness gate: NotReady until the restore completes
+		"terminationMessagePolicy: FallbackToLogsOnError", // a failed restore surfaces its reason
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("restoring sqlserver render missing %q; got:\n%s", want, grepCtx(out, "restore"))
 		}
+	}
+	// The .bak must NOT be staged to the old node-local emptyDir volume any more (it could fill/evict
+	// the node); the restore-stage volume is gone entirely.
+	if strings.Contains(out, "name: restore-stage") {
+		t.Errorf("restore staging must be on the sized data volume, not the old restore-stage emptyDir; got:\n%s", grepCtx(out, "restore"))
+	}
+}
+
+// The restore path runs a capacity preflight on the actually-scheduled node that fails fast when the
+// requested size can't fit — turning a silent mid-RESTORE ENOSPC into an immediate, explained failure —
+// and the restore script reclaims the staged .bak once the database is in place.
+func TestSQLServer_RestoreCapacityPreflight(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	out := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"size":        "499Gi",
+		"restoreFrom": map[string]any{"bucket": "import", "key": "db.bak", "secret": "restore-creds"},
+	}))
+	for _, want := range []string{
+		"name: capacity-preflight",           // the preflight init container
+		`NEED='499Gi'`,                       // the requested size is what it checks against
+		"INSUFFICIENT STORAGE",               // the actionable failure message
+		"fieldPath: spec.nodeName",           // it names the node in the message
+		"rm -f \"$BAK\"",                     // the script reclaims the staged .bak after a successful restore
+		`mkdir -p /data/mssql /data/restore`, // fix-perms owns the staging subdir for the non-root writer
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("restore capacity/staging render missing %q; got:\n%s", want, grepCtx(out, "preflight"))
+		}
+	}
+	// The preflight is restore-only — a fresh DB grows into its size and must not fail at startup.
+	fresh := render(t, tmpl, mkSQLServer(map[string]any{"acceptEula": true, "size": "499Gi"}))
+	if strings.Contains(fresh, "capacity-preflight") {
+		t.Errorf("a fresh (non-restore) sqlserver must not run the restore capacity preflight")
 	}
 }
 
