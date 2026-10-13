@@ -77,13 +77,6 @@ jobs:
           build-args: ${{ matrix.args }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          # Push a PLAIN single-image manifest, not an OCI index with provenance/SBOM attestations.
-          # With attestations enabled, steps.build.outputs.digest is the INDEX digest, and the Trivy
-          # scan below (scanning that digest) could resolve stale/cached content — it reported the
-          # pre-fix package versions even though the pushed image carried the fixed ones, so the CVE
-          # alerts never cleared. A single manifest makes outputs.digest the real image digest.
-          provenance: false
-          sbom: false
 
       - name: Trivy vulnerability scan (SARIF)
         uses: aquasecurity/trivy-action@v0.36.0
