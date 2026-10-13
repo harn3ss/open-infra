@@ -1247,16 +1247,17 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 //
 // The reason IAM::Policy was refused was that an AWS policy document has no faithful RBAC form. The
 // data-plane policy engine (kind: Policy spec.dataPlane, Cedar-backed, enforced at the aws-shim)
-// removes that barrier for exactly the actions the shim fronts — s3:*, dynamodb:*, lambda:*. So this
-// translator imports the DATA-PLANE part of the document (policyengine.ImportAWS) into a real,
-// enforced Policy.
+// removes that barrier for exactly the actions the shim fronts — the services in
+// policyengine.SupportedServices (today 16: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm,
+// secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch). So this translator imports the
+// DATA-PLANE part of the document (policyengine.ImportAWS) into a real, enforced Policy.
 //
 // It is fail-closed to a fault: a partially-translated security policy is worse than none (a dropped
 // Deny or condition is a hole; a dropped Allow is a silent scope change). So if the importer reports
 // ANY part it cannot honor — an action for a service with no data plane, an unrecognizable ARN, or a
 // Condition (not importable yet) — the whole resource BLOCKS with a precise list, pointing the author
-// at kind: Policy spec.dataPlane to express it natively. Only a policy that is PURELY s3/dynamodb/
-// lambda actions on recognizable ARNs with no conditions translates.
+// at kind: Policy spec.dataPlane to express it natively. Only a policy that is PURELY actions on the
+// fronted services (policyengine.SupportedServices) on recognizable ARNs with no conditions translates.
 func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
 	return importAWSPolicyResource(id, props, "AWS::IAM::Policy", map[string]bool{
 		"PolicyName": true, "PolicyDocument": true,

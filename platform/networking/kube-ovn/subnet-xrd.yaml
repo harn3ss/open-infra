@@ -32,7 +32,7 @@ spec:
               properties:
                 cidr:
                   type: string
-                  description: "The subnet's IPv4 CIDR, e.g. 10.20.0.0/24. Must not overlap other subnets."
+                  description: "The subnet's IPv4 CIDR, e.g. 10.20.0.0/24. Must not overlap other subnets IN THE SAME VPC. kube-ovn VPCs are isolated routing domains, so the same CIDR can be reused across different VPCs (exactly as in AWS) — a duplicate across VPCs is not a conflict."
                 vpc:
                   type: string
                   description: "The parent kind: Vpc. Omit for the default VPC (ovn-cluster)."
