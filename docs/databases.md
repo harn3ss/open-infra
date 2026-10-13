@@ -145,6 +145,34 @@ StorageClass on a substrate that doesn't ship `local-path`. Data persists across
 Hardening the single-instance/durability story (node-resilient storage for non-HA DBs,
 off-cluster backups) is a planned follow-up.
 
+### Sizing, placement & capacity
+
+Storage-capacity-aware scheduling is **off** on this substrate: `local-path` isn't a CSI driver,
+and `driver.longhorn.io` reports `storageCapacity: false`. Nothing compares `spec.database.size`
+to what a node can hold, so a database pod binds to any node that fits it by CPU and memory — and
+a volume larger than that node's free disk only fails later, as `ENOSPC` while the engine is
+writing. For a **large database, set `spec.database.placement`** to a node that has the room (use
+`openinfra.dev/*` node labels, never hostnames). `local-path` is strictly node-local — it can't
+move or grow — so pin it; **`longhorn`** provisions the requested size and backs it up with Velero,
+so prefer it for large or movable databases. (A fresh database grows into `size` over time; the
+concern is a load that needs the full size up front — see restore below.)
+
+### Restoring a SQL Server `.bak` (`restoreFrom`) — capacity & failure surfacing
+
+A `restoreFrom` restore needs the **whole** database size immediately, and transiently needs room
+for both the backup and the restored data (≈2×), so it is where the capacity gap bites hardest.
+The engine therefore:
+
+- **stages the `.bak` onto the sized data volume**, not node-ephemeral storage, so an over-large
+  backup fails as a clear volume-full error (and can't fill or evict the node), and reclaims the
+  staged file once the database is in place;
+- runs a **capacity preflight** on the actually-scheduled node that **fails fast with an actionable
+  reason** ("INSUFFICIENT STORAGE … set `spec.database.placement` … or reduce `size`") *before* any
+  data is written, instead of hitting `ENOSPC` hours into `RESTORE DATABASE`;
+- keeps the claim **NotReady until the restore completes**, and a failed restore surfaces as a
+  **NotReady claim with the reason** (in the restore container's status/logs) — never a
+  silently-healthy claim over a half-restored database.
+
 ## Start / Stop
 
 Like RDS stop/start: pause a database to free compute while **keeping its data**. Set
