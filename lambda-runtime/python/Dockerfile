@@ -22,7 +22,16 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # boto3 for the bucket (S3/MinIO) code-source path. The shim imports it lazily, so the
 # ConfigMap (inline) source never pays for it at runtime — it's here so bucket sources work.
-RUN pip install --no-cache-dir "boto3>=1.34,<2" && rm -rf /root/.cache/pip
+# The transitive/base packages are floored to their patched versions to clear Trivy CVE
+# findings on the runtime image — urllib3 (pulled by botocore) CVE-2026-97687 + CVE-2026-97689,
+# setuptools (from the python base image) CVE-2025-47273, msgpack GHSA-6v7p-g79w-8964. botocore
+# allows urllib3 <3 on Python >=3.10, so these floors do not conflict with boto3's own pins.
+RUN pip install --no-cache-dir \
+      "boto3>=1.34,<2" \
+      "urllib3>=2.8.0" \
+      "msgpack>=1.2.1" \
+      "setuptools>=78.1.1" \
+    && rm -rf /root/.cache/pip
 
 # The shim lives outside /var/task so a handler can never shadow it.
 COPY bootstrap.py /opt/open-infra/bootstrap.py
