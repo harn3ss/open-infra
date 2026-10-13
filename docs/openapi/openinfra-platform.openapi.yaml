@@ -4179,12 +4179,20 @@ components:
                   additionalProperties:
                     type: string
                   description: "sqlserver only: optional nodeSelector for the database pod \u2014 pin a large DB to a node\
-                    \ with the RAM/storage for it. Use openinfra.dev/* node labels, never real hostnames."
+                    \ with the RAM/storage for it. SET THIS for a large DB: neither local-path nor Longhorn does storage-capacity-aware\
+                    \ scheduling, so without placement the pod can bind to any node that fits it by CPU/memory and then run\
+                    \ out of disk. local-path in particular is node-local and cannot move or grow, so pin it. Use openinfra.dev/*\
+                    \ node labels, never real hostnames."
                 restoreFrom:
                   type: object
                   description: "sqlserver only: restore a .bak into this instance on bring-up (the migration landing path).\
-                    \ The engine stages the object onto the pod and runs RESTORE DATABASE once \u2014 idempotent: skipped\
-                    \ if the database already exists. Files are auto-relocated (WITH MOVE) into the data volume."
+                    \ The engine stages the object onto the SIZED data volume (not node-ephemeral storage) and runs RESTORE\
+                    \ DATABASE once \u2014 idempotent: skipped if the database already exists. Files are auto-relocated (WITH\
+                    \ MOVE) into the data volume, and the staged .bak is reclaimed afterward. size must therefore hold the\
+                    \ backup AND the restored data at the same time during the restore (\u22482\xD7 transiently). A capacity\
+                    \ preflight runs first on the scheduled node and FAILS FAST with a clear reason if size cannot fit (rather\
+                    \ than hitting ENOSPC mid-restore), and the claim stays NotReady until the restore completes \u2014 a\
+                    \ failed restore surfaces as a NotReady claim with the reason, never a silently-healthy one."
                   required:
                   - bucket
                   - key
@@ -4205,9 +4213,13 @@ components:
                   description: Database name (defaults to the application name).
                 size:
                   type: string
-                  description: Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When
-                    unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi, sqlserver 20Gi). Expandable
-                    later where the engine + StorageClass support it.
+                  description: "Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When\
+                    \ unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi, sqlserver 20Gi). Expandable\
+                    \ later where the engine + StorageClass support it. NOTE: on local-path, size is NOT enforced \u2014 the\
+                    \ data lands on the node's own disk and consumes whatever free space it has \u2014 and scheduling is not\
+                    \ capacity-aware on either local-path or Longhorn, so for a large DB set database.placement to a node\
+                    \ that can hold it (local-path cannot move or grow). Longhorn provisions the requested size and backs\
+                    \ it up with Velero, so it is the better class for large or movable databases."
                 cpu:
                   type: string
                   description: CPU request/limit for the database (e.g. "2"), sized to match an RDS instance class's vCPU.

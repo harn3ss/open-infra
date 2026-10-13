@@ -990,16 +990,25 @@ spec:
                   data:
                     restore.sh: |
                       #!/usr/bin/env bash
+                      # Restores the staged .bak ONCE, then idles ready. A readiness sentinel (/restore/.done)
+                      # gates this sidecar's readiness probe, so the pod — and therefore the Service endpoint
+                      # and the claim — is NOT Ready until the restore actually completes. A failure exits
+                      # NON-ZERO (set -e), so the container crashloops NotReady with the reason in its logs /
+                      # terminationMessage, instead of sleeping and letting the claim look healthy.
                       set -euo pipefail
                       SQLCMD=/opt/mssql-tools18/bin/sqlcmd
                       DB='{{ $dbName }}'
                       BAK=/restore/db.bak
+                      DONE=/restore/.done
+                      rm -f "$DONE"
                       q(){ "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -b "$@"; }
                       echo "restore: waiting for SQL Server..."
                       until q -l 2 -Q "SELECT 1" >/dev/null 2>&1; do sleep 5; done
                       exists=$(q -h -1 -W -Q "SET NOCOUNT ON; SELECT ISNULL(CONVERT(varchar(12),DB_ID(N'$DB')),'NULL')" | tr -d '[:space:]')
-                      if [ "$exists" != "NULL" ]; then echo "restore: '$DB' already present — nothing to do"; exec sleep infinity; fi
-                      if [ ! -s "$BAK" ]; then echo "restore: $BAK not staged (fetch-bak failed?)" >&2; exec sleep infinity; fi
+                      if [ "$exists" != "NULL" ]; then echo "restore: '$DB' already present — nothing to do"; touch "$DONE"; exec sleep infinity; fi
+                      # fetch-bak (an init container) must have staged the file; if it is missing here the
+                      # restore cannot proceed — fail loudly (NotReady) rather than idle and look done.
+                      if [ ! -s "$BAK" ]; then echo "restore: $BAK not staged (fetch-bak failed?)" >&2; exit 1; fi
                       echo "restore: building MOVE from the backup file list..."
                       MOVES=""
                       while IFS='~' read -r logical _phys typ _rest; do
@@ -1011,7 +1020,9 @@ spec:
                       done < <(q -s '~' -W -h -1 -Q "SET NOCOUNT ON; RESTORE FILELISTONLY FROM DISK=N'$BAK'")
                       echo "restore: restoring '$DB'$MOVES"
                       q -Q "RESTORE DATABASE [$DB] FROM DISK=N'$BAK' WITH REPLACE, RECOVERY$MOVES"
-                      echo "restore: complete"
+                      echo "restore: complete — reclaiming staged backup"
+                      rm -f "$BAK"   # free the staging space on the data volume now the DB is restored
+                      touch "$DONE"
                       exec sleep infinity
             {{- end }}
             ---
@@ -1056,21 +1067,68 @@ spec:
                         # Longhorn PVC first (fsGroup + an explicit chown, same pattern as babelfish).
                         securityContext: { fsGroup: 10001 }
                         initContainers:
+                          {{- if $restoring }}
+                          # Capacity preflight (restore path): neither local-path nor Longhorn does
+                          # storage-capacity-aware scheduling (local-path isn't CSI; driver.longhorn.io
+                          # reports STORAGECAPACITY=false), so a size larger than the node/volume can hold
+                          # would otherwise bind anywhere the pod fits by CPU/memory and only surface as
+                          # ENOSPC mid-RESTORE — hours in, with the claim still looking healthy. A RESTORE
+                          # needs the full database size available immediately, so fail FAST and LOUD here,
+                          # on the actually-scheduled node, with a reason an operator can act on, before any
+                          # data (or the staged .bak) is written. (A fresh DB grows into its size over time,
+                          # so this check is restore-only; size guidance for fresh DBs is in the docs.)
+                          - name: capacity-preflight
+                            image: {{ $mssqlImg }}
+                            command:
+                              - sh
+                              - -c
+                              - |
+                                set -e
+                                NEED='{{ $dbSize | default "20Gi" }}'
+                                to_bytes() { n=$(printf '%s' "$1" | sed 's/[A-Za-z].*//'); u=$(printf '%s' "$1" | sed 's/^[0-9.]*//'); case "$u" in Ki) f=1024;; Mi) f=1048576;; Gi) f=1073741824;; Ti) f=1099511627776;; Pi) f=1125899906842624;; k|K) f=1000;; M) f=1000000;; G) f=1000000000;; T) f=1000000000000;; "") f=1;; *) f=1;; esac; awk -v n="$n" -v f="$f" 'BEGIN{printf "%.0f", n*f}'; }
+                                need=$(to_bytes "$NEED")
+                                avail=$(df -PB1 /var/opt/mssql | awk 'NR==2{print $4}')
+                                node="${NODE_NAME:-this node}"
+                                printf 'capacity-preflight: database size=%s (%s bytes); data volume has %s bytes free on %s\n' "$NEED" "$need" "$avail" "$node"
+                                if [ "$avail" -lt "$need" ]; then
+                                  echo "capacity-preflight: INSUFFICIENT STORAGE — a RESTORE of size $NEED cannot fit in the ${avail} bytes free on $node. Set spec.database.placement to a node with room, use a larger storageClass/volume, or reduce spec.database.size. Refusing to start so the restore does not ENOSPC mid-flight." >&2
+                                  exit 1
+                                fi
+                                echo "capacity-preflight: OK"
+                            env:
+                              - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+                            volumeMounts:
+                              - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
+                          {{- end }}
                           - name: fix-perms
                             image: {{ $mssqlImg }}
-                            command: ["sh", "-c", "chown -R 10001:0 /var/opt/mssql && chmod 770 /var/opt/mssql"]
                             securityContext: { runAsUser: 0 }
+                            {{- if $restoring }}
+                            # Restoring: own BOTH subdirs on the data volume — mssql (the engine data root, a
+                            # clean subdir below the ext4 lost+found) and restore (the .bak staging dir, which
+                            # the non-root fetch-bak writes to — see fetch-bak).
+                            command: ["sh", "-c", "mkdir -p /data/mssql /data/restore && chown -R 10001:0 /data/mssql /data/restore && chmod 770 /data/mssql /data/restore"]
                             volumeMounts:
-                              # subPath so the data root is a clean subdir below the ext4 lost+found.
+                              - { name: data, mountPath: /data }
+                            {{- else }}
+                            # subPath so the data root is a clean subdir below the ext4 lost+found.
+                            command: ["sh", "-c", "chown -R 10001:0 /var/opt/mssql && chmod 770 /var/opt/mssql"]
+                            volumeMounts:
                               - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
+                            {{- end }}
                           {{- if $restoring }}
-                          # Stage the .bak off the sink bucket so the engine can RESTORE FROM DISK it.
+                          # Stage the .bak onto the sized DATA volume (subPath restore), NOT a node emptyDir:
+                          # a .bak staged to node-ephemeral storage can fill the node's disk (and evict pods)
+                          # independent of the PVC, and it needs headroom on top of the restored data. Staging
+                          # on the data volume makes an over-large backup fail as a clear volume-full error
+                          # here, and the restore reclaims it (rm) once the database is in place.
                           - name: fetch-bak
                             image: ghcr.io/harn3ss/open-infra-mc:latest
                             command: ["sh", "-c", "mc alias set src \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && mc cp \"src/{{ $restore.bucket }}/{{ $restoreKey }}\" /restore/db.bak && ls -l /restore/db.bak"]
                             env: [ { name: HOME, value: /tmp } ]   # mc writes its config to $HOME/.mc — / is not writable under the non-root pod
                             envFrom: [ { secretRef: { name: {{ $restore.secret }} } } ]
-                            volumeMounts: [ { name: restore-stage, mountPath: /restore } ]
+                            securityContext: { runAsUser: 10001 }   # match the fix-perms ownership of subPath restore
+                            volumeMounts: [ { name: data, mountPath: /restore, subPath: restore } ]
                           {{- end }}
                         containers:
                           - name: sqlserver
@@ -1085,7 +1143,9 @@ spec:
                             volumeMounts:
                               - { name: data, mountPath: /var/opt/mssql, subPath: mssql }
                               {{- if $restoring }}
-                              - { name: restore-stage, mountPath: /restore }
+                              # The engine reads the staged .bak at /restore (RESTORE FROM DISK resolves the
+                              # path in THIS process), backed by the sized data volume's restore subPath.
+                              - { name: data, mountPath: /restore, subPath: restore }
                               {{- end }}
                             readinessProbe: { tcpSocket: { port: 1433 }, initialDelaySeconds: 20, periodSeconds: 10 }
                             livenessProbe:  { tcpSocket: { port: 1433 }, initialDelaySeconds: 60, periodSeconds: 20 }
@@ -1094,20 +1154,29 @@ spec:
                               requests: { cpu: {{ $dbCpu | default "500m" | quote }}, memory: {{ $dbMem | default "2Gi" | quote }} }
                               limits: { cpu: {{ $dbCpu | default "2" | quote }}, memory: {{ $dbMem | default "8Gi" | quote }} }
                           {{- if $restoring }}
-                          # Restore sidecar: waits for the engine, then RESTOREs the staged .bak once.
+                          # Restore sidecar: waits for the engine, then RESTOREs the staged .bak once. Its
+                          # readiness gates the POD (and therefore the Service endpoint + the claim): NotReady
+                          # until the restore actually completes (sentinel /restore/.done), and it crashloops
+                          # NotReady — with the reason in its terminationMessage/logs — if the restore fails,
+                          # so a failed restore surfaces as a NotReady claim instead of a silently-healthy one.
                           - name: restore
                             image: {{ $mssqlImg }}
                             command: ["bash", "/opt/restore/restore.sh"]
+                            terminationMessagePolicy: FallbackToLogsOnError
                             env:
                               - name: MSSQL_SA_PASSWORD
                                 valueFrom: { secretKeyRef: { name: {{ $name }}-sqlserver, key: PASSWORD } }
+                            readinessProbe:
+                              exec: { command: ["sh", "-c", "test -f /restore/.done"] }
+                              initialDelaySeconds: 10
+                              periodSeconds: 10
+                              failureThreshold: 1
                             volumeMounts:
-                              - { name: restore-stage, mountPath: /restore }
+                              - { name: data, mountPath: /restore, subPath: restore }
                               - { name: restore-script, mountPath: /opt/restore, readOnly: true }
                           {{- end }}
                         {{- if $restoring }}
                         volumes:
-                          - { name: restore-stage, emptyDir: {} }
                           - name: restore-script
                             configMap: { name: {{ $name }}-sqlserver-restore, defaultMode: 0755, items: [ { key: restore.sh, path: restore.sh } ] }
                         {{- end }}
