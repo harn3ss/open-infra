@@ -92,10 +92,12 @@ type policyStatement struct {
 // the model Kubernetes RBAC cannot express (explicit Deny + request conditions). It mirrors the
 // XRD shape exactly and maps 1:1 to policyengine.Statement at enforcement time.
 type cedarStatement struct {
-	Effect    string            `json:"effect"`
-	Actions   []string          `json:"actions"`
-	Resources []string          `json:"resources,omitempty"`
-	Condition map[string]string `json:"condition,omitempty"`
+	Effect       string            `json:"effect"`
+	Actions      []string          `json:"actions,omitempty"`
+	NotActions   []string          `json:"notActions,omitempty"`
+	Resources    []string          `json:"resources,omitempty"`
+	NotResources []string          `json:"notResources,omitempty"`
+	Condition    map[string]string `json:"condition,omitempty"`
 }
 
 // cedarBlock is a spec.dataPlane or spec.controlPlane block: the principals it governs plus its
@@ -332,10 +334,21 @@ func validateCedar(plane string, b *cedarBlock) string {
 		if !strings.EqualFold(eff, "Allow") && !strings.EqualFold(eff, "Deny") {
 			return fmt.Sprintf("%s: effect %q is not supported — use Allow or Deny", plane, s.Effect)
 		}
-		if len(nonEmpty(s.Actions)) == 0 {
-			return fmt.Sprintf("%s: every statement needs at least one action", plane)
+		// Actions axis: exactly one of actions / notActions (AWS NotAction is the complement — "any
+		// action except these"). Both set is malformed; neither leaves the statement unscoped.
+		hasActions, hasNotActions := len(nonEmpty(s.Actions)) > 0, len(nonEmpty(s.NotActions)) > 0
+		if hasActions && hasNotActions {
+			return fmt.Sprintf("%s: a statement cannot set both actions and notActions — use one (notActions is the complement, 'any action except these')", plane)
 		}
-		for _, res := range s.Resources {
+		if !hasActions && !hasNotActions {
+			return fmt.Sprintf("%s: every statement needs at least one action (or a notActions complement)", plane)
+		}
+		// Resources axis: at most one of resources / notResources (NotResource is the complement).
+		hasRes, hasNotRes := len(nonEmpty(s.Resources)) > 0, len(nonEmpty(s.NotResources)) > 0
+		if hasRes && hasNotRes {
+			return fmt.Sprintf("%s: a statement cannot set both resources and notResources — use one", plane)
+		}
+		for _, res := range append(append([]string{}, s.Resources...), s.NotResources...) {
 			res = strings.TrimSpace(res)
 			if res == "" || res == "*" || strings.Contains(res, "*") {
 				continue
@@ -378,12 +391,20 @@ func nonEmpty(in []string) []string {
 func normCedar(b *cedarBlock) map[string]any {
 	stmts := make([]any, 0, len(b.Statements))
 	for _, s := range b.Statements {
-		sm := map[string]any{
-			"effect":  canonEffect(s.Effect),
-			"actions": nonEmpty(s.Actions),
+		sm := map[string]any{"effect": canonEffect(s.Effect)}
+		if acts := nonEmpty(s.Actions); len(acts) > 0 {
+			sm["actions"] = acts
+		}
+		// notActions/notResources are the complement axes (AWS NotAction/NotResource); carry them through
+		// the round-trip so an imported-then-edited policy keeps its "any except these" scope.
+		if na := nonEmpty(s.NotActions); len(na) > 0 {
+			sm["notActions"] = na
 		}
 		if res := nonEmpty(s.Resources); len(res) > 0 {
 			sm["resources"] = res
+		}
+		if nr := nonEmpty(s.NotResources); len(nr) > 0 {
+			sm["notResources"] = nr
 		}
 		if len(s.Condition) > 0 {
 			sm["condition"] = s.Condition

@@ -1373,9 +1373,18 @@ func iamPolicyPrincipals(id string, props map[string]any, f *[]Finding) []any {
 func statementsToSpec(stmts []policyengine.Statement) []any {
 	out := make([]any, 0, len(stmts))
 	for _, s := range stmts {
-		m := map[string]any{"effect": string(s.Effect), "actions": toAnySlice(s.Actions)}
+		m := map[string]any{"effect": string(s.Effect)}
+		if len(s.Actions) > 0 {
+			m["actions"] = toAnySlice(s.Actions)
+		}
+		if len(s.NotActions) > 0 {
+			m["notActions"] = toAnySlice(s.NotActions)
+		}
 		if len(s.Resources) > 0 {
 			m["resources"] = toAnySlice(s.Resources)
+		}
+		if len(s.NotResources) > 0 {
+			m["notResources"] = toAnySlice(s.NotResources)
 		}
 		if len(s.Condition) > 0 {
 			c := map[string]any{}

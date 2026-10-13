@@ -14,7 +14,8 @@
 #   - CreateAccessKey yields a key that genuinely AUTHENTICATES through the shim
 # and the NEGATIVES:
 #   - a valid key ID with a WRONG secret on a management call → SignatureDoesNotMatch
-#   - a policy using NotAction/NotResource is REFUSED (the fidelity hole), not silently stored
+#   - a NotAction policy is ACCEPTED (translated to the Cedar complement — "any action except these")
+#   - a NotResource whose exclusion cannot be mapped is still REFUSED (never silently widened)
 #
 # On-demand (needs a deployed shim + STS AssumeRole + MinIO/S3 + the IAM CRDs + an openinfra:admins caller).
 # Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE. Per polyhedron#157, a probe failure is a shim defect.
@@ -216,16 +217,26 @@ grep -qiE 'Signature|does not match' "$PWD/.iam_neg" || fail "wrong secret rejec
 rm -f "$PWD/.iam_neg"
 log "    ✓ rejected on signature mismatch"
 
-# --- 7b. Negative: NotAction refused ----------------------------------------------------------
-log "negative: a policy using NotAction must be REFUSED (fidelity hole), not silently stored"
+# --- 7b. NotAction translates (complement); unmappable NotResource still refused -------------
+log "a NotAction policy must now be ACCEPTED (translated to the Cedar complement), not refused"
 NADOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotAction":"s3:DeleteObject","Resource":"*"}]}'
 if iam "$AAK" "$ASK" create-policy --policy-name "iam-probe-na-$SFX" --policy-document "$NADOC" >/dev/null 2>"$PWD/.iam_na"; then
   CREATED_POLICIES+=("iam-probe-na-$SFX")
-  fail "a NotAction policy was accepted (would silently change the grant)"
+  log "    ✓ NotAction accepted (translates to 'any action except s3:DeleteObject')"
+else
+  fail "a NotAction policy was refused — it must now translate to the Cedar complement: $(cat "$PWD/.iam_na")"
 fi
-grep -qiE 'Malformed|NotAction|not supported' "$PWD/.iam_na" || fail "NotAction refusal had the wrong error: $(cat "$PWD/.iam_na")"
 rm -f "$PWD/.iam_na"
-log "    ✓ NotAction refused"
+
+log "negative: a NotResource whose exclusion cannot be mapped must still be REFUSED (never silently widened)"
+NRDOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:ec2:us-east-1:123:instance/i-abc"}]}'
+if iam "$AAK" "$ASK" create-policy --policy-name "iam-probe-nr-$SFX" --policy-document "$NRDOC" >/dev/null 2>"$PWD/.iam_nr"; then
+  CREATED_POLICIES+=("iam-probe-nr-$SFX")
+  fail "a NotResource with an unmappable exclusion was accepted (would widen the grant to all resources)"
+fi
+grep -qiE 'Malformed|NotResource|map' "$PWD/.iam_nr" || fail "unmappable-NotResource refusal had the wrong error: $(cat "$PWD/.iam_nr")"
+rm -f "$PWD/.iam_nr"
+log "    ✓ unmappable NotResource refused (fail-closed carve-out)"
 
 if [ -n "$STS_GATED" ]; then
   printf '\n⚠ INCONCLUSIVE — the TRANSLATION is proven faithful both directions (SimulatePrincipalPolicy: allow + resource-deny + action-deny + explicit-forbid), CreateAccessKey authenticates, and the negatives hold. BUT the LIVE AssumeRole→S3 round-trip (the confused-deputy detector) could not run: STS AssumeRole is not enabled on this shim (no Vault sts/signing-key). Enable STS (write sts/signing-key in Vault, like the KMS bootstrap) and re-run to complete the DoD.\n'

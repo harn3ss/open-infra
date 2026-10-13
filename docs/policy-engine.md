@@ -85,9 +85,12 @@ that principal is unaffected there.
 ## AWS policy import
 
 `policyengine.ImportAWS` maps an AWS IAM policy document onto the model for the actions the shim
-supports (`s3:*`, `dynamodb:*`, `lambda:*`) — `Effect` → `permit`/`forbid`, ARNs → typed resources
-(`arn:aws:s3:::reports/*` → `Bucket::reports`, a table ARN → `Table::metrics`). Everything it cannot
-honor is **reported, never silently granted or dropped**: an action for a service with no data plane,
+fronts (the services in `policyengine.SupportedServices`) — `Effect` → `permit`/`forbid`, ARNs → typed
+resources (`arn:aws:s3:::reports/*` → `Bucket::reports`, a table ARN → `Table::metrics`). `NotAction`/
+`NotResource` map to the **complement** axes (`notActions`/`notResources` — "any action/resource except
+these"), themselves fail-closed: a statement cannot set both a positive and its `Not` sibling, and a
+`NotResource` whose exclusion can't be mapped is refused rather than silently widened to all resources.
+Everything else it cannot honor is **reported, never silently granted or dropped**: an action for a service with no data plane,
 an unrecognizable ARN, a statement with no mappable `Resource`, and any `Condition` outside the narrow
 supported set — `aws:SourceIp` (IpAddress/NotIpAddress), `aws:username` (StringEquals, StringLike/NotLike
 `*`-wildcard), `aws:CurrentTime` (Date{Greater,Less}Than[Equals]), and the authenticated-principal flag.
@@ -119,7 +122,15 @@ spec:
       - { effect: Deny,  actions: ["s3:DeleteObject"], resources: ["*"] }
       - { effect: Allow, actions: ["dynamodb:Query"], resources: ["Table::metrics"],
           condition: { authenticated: "true" } }
+      # complement axes (AWS NotAction/NotResource) — "any except these":
+      - { effect: Allow, notActions: ["s3:DeleteObject"], resources: ["Bucket::reports"] }
+      - { effect: Allow, actions: ["s3:GetObject"], notResources: ["Bucket::secret"] }
 ```
+
+A statement sets **either** `actions` or `notActions` (never both), and **either** `resources` or
+`notResources`. `notActions` grants/denies every data-plane action *except* those listed (a lone `"*"`
+excludes everything, so the statement matches nothing); on a `Deny` it is a broad `forbid` — author with
+care. `notResources` scopes to every resource except those listed.
 
 The shim lists these (cached, 30s), collects the statements whose `appliesTo` names the request's
 principal or a group, compiles them to Cedar, and evaluates every request — AND'd with the coarse

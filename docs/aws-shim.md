@@ -138,7 +138,7 @@ the sections below; the one-line summary:
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
-| **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource + non-S3/DDB/Lambda refused; needs STS |
+| **[IAM (management)](#iam-management-api--jsoncedar-translation-probe-proven)** | kind: Role/Policy/User + JSON→Cedar | query/XML | NotAction/NotResource translate (complement); non-shim-fronted actions + conditions outside the whitelist refused; needs STS |
 | **[Step Functions](#step-functions-kind-statemachine--per-execution-role-authority-probe-proven)** | kind: StateMachine/Execution + singleton controller | JSON 1.0 | Parallel/Map + Express (StartSyncExecution) supported; `.waitForTaskToken`/`.sync` + non-Lambda integrations refused |
 | **[CloudFormation](#cloudformation-the-cfn-engine-as-a-doorway-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine (~50 resource mappings) | query/XML | provisions under the caller's authority (impersonation); nested stacks + custom resources + unmapped types refused |
 | **[ECS](#ecs-service-and-task-definition-collate-into-one-kind-application-caller-authority-via-impersonation-probe-proven)** | the owned cfn engine → `kind: Application` | JSON 1.1 | provisions under the caller's authority (impersonation); RunTask/StartTask, Fargate/raw subnets, host-path/EFS volumes, Command/EntryPoint overrides, external task-def ARNs refused |
@@ -947,9 +947,11 @@ deputy would pass the allow case and fail every deny), and a session may only na
 
 **Translation fidelity is guarded, not assumed.** `ImportAWS` reports (never silently drops) anything it can't
 honor, and the doorway **refuses** a policy with any unsupported part (`MalformedPolicyDocument`) rather than
-storing a grant that differs from the JSON. `NotAction`/`NotResource` — which the importer drops silently —
-are rejected explicitly. Deny statements translate to Cedar `forbid` (forbid overrides permit). The importer
-covers S3/DynamoDB/Lambda actions + a narrow condition set (authenticated, `aws:SourceIp`, `aws:username` —
+storing a grant that differs from the JSON. `NotAction`/`NotResource` translate to the engine's **complement**
+axes ("any action/resource except these") — themselves fail-closed: a statement cannot set both a positive and
+its `Not` sibling, and a `NotResource` whose exclusion can't be mapped is **refused** (never silently widened to
+all resources by dropping the carve-out). Deny statements translate to Cedar `forbid` (forbid overrides permit).
+The importer covers every shim-fronted service's actions + a narrow condition set (authenticated, `aws:SourceIp`, `aws:username` —
 StringEquals/StringLike, and `aws:CurrentTime` — `Date{Greater,Less}Than[Equals]` time windows); anything
 outside that is refused, not narrowed. The time keys render to Cedar's `datetime` extension and the shim
 populates `currentTime` on every request, so a time-boxed `Deny` cannot fail open on an absent clock.
@@ -960,7 +962,8 @@ its translated policy grants (GetObject the granted bucket) and is **denied ever
 bucket = resource fidelity; `ListBucket` = action fidelity) — the end-to-end confused-deputy detector, proving
 the session is authorized on the *role*, not the shim's backend credentials; `SimulatePrincipalPolicy` agrees
 in both directions and reports an explicit `Deny` as `explicitDeny` (forbid fidelity); `CreateAccessKey`
-yields a key that authenticates; and the negatives (wrong secret → signature mismatch, `NotAction` refused).
+yields a key that authenticates; and the negatives (wrong secret → signature mismatch; a `NotAction` policy is
+accepted and translated to the complement, while a `NotResource` with an unmappable exclusion is refused).
 The live round-trip requires STS enabled (a Vault `sts/signing-key`, the same operator bootstrap as KMS).
 
 ### Step Functions (kind: StateMachine + per-execution role authority; probe-proven)

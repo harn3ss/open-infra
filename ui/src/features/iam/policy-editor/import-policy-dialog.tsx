@@ -259,8 +259,21 @@ function StatementLine({ s }: { s: ImportedStatement }) {
     <div className="border-b border-border px-2 py-1.5 text-xs last:border-b-0">
       <div className="font-mono">
         <span className={s.effect === "Deny" ? "text-destructive" : "text-foreground"}>{s.effect}</span>{" "}
-        {s.actions.join(", ")} <span className="text-muted-foreground">on</span>{" "}
-        {(s.resources ?? ["*"]).join(", ")}
+        {s.notActions?.length ? (
+          <>
+            <span className="text-muted-foreground">any action except</span> {s.notActions.join(", ")}
+          </>
+        ) : (
+          (s.actions ?? ["*"]).join(", ")
+        )}{" "}
+        <span className="text-muted-foreground">on</span>{" "}
+        {s.notResources?.length ? (
+          <>
+            <span className="text-muted-foreground">any resource except</span> {s.notResources.join(", ")}
+          </>
+        ) : (
+          (s.resources ?? ["*"]).join(", ")
+        )}
       </div>
       <div className="mt-0.5 flex flex-wrap gap-1">
         {s.condition
@@ -299,6 +312,12 @@ function AwsSource({
   const result = preview.data;
 
   const hasIp = (result?.translated ?? []).some((s) => (s.ipConditions?.length ?? 0) > 0);
+  // notActions/notResources (AWS NotAction/NotResource) are complement axes the simplified visual editor
+  // can't represent — like IP conditions, they must go via the lossless dataPlane JSON, not "add to draft".
+  const hasComplement = (result?.translated ?? []).some(
+    (s) => (s.notActions?.length ?? 0) > 0 || (s.notResources?.length ?? 0) > 0,
+  );
+  const unmodelable = hasIp || hasComplement;
 
   // The data-plane block an operator would author — lossless, keeps IP conditions. For pasting into the
   // JSON tab (the visual editor can't carry IP conditions, so that is the faithful path for those).
@@ -315,7 +334,9 @@ function AwsSource({
     const statements = result.translated.map((t) => ({
       effect: t.effect === "Deny" ? ("Deny" as const) : ("Allow" as const),
       actions: t.actions,
+      notActions: t.notActions,
       resources: t.resources,
+      notResources: t.notResources,
       condition: t.condition,
     }));
     onImport({ description: "", statements: [], dataPlane: { appliesTo: ["*"], statements } });
@@ -407,11 +428,13 @@ function AwsSource({
             </div>
           ) : null}
 
-          {hasIp ? (
+          {unmodelable ? (
             <p className="flex items-start gap-1.5 rounded-md border border-border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-              <AlertTriangle className="mt-px size-3.5 shrink-0" /> Some statements use an IP condition,
-              which the visual editor can't carry. Use <span className="font-medium">Copy dataPlane JSON</span>{" "}
-              and paste it into the JSON tab so the condition is preserved.
+              <AlertTriangle className="mt-px size-3.5 shrink-0" /> Some statements use{" "}
+              {hasComplement ? "a NotAction/NotResource complement" : "an IP condition"}
+              {hasComplement && hasIp ? " and an IP condition" : ""}, which the visual editor can't carry. Use{" "}
+              <span className="font-medium">Copy dataPlane JSON</span> and author it on kind: Policy
+              spec.dataPlane so it is preserved exactly.
             </p>
           ) : null}
         </div>
@@ -434,7 +457,7 @@ function AwsSource({
           </Button>
         ) : null}
         <Button
-          disabled={!result || result.translated.length === 0 || hasIp}
+          disabled={!result || result.translated.length === 0 || unmodelable}
           onClick={addToDraft}
         >
           <Download className="size-4" /> Add translated to draft

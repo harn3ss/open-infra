@@ -44,15 +44,33 @@ func TestParseTrustPolicy(t *testing.T) {
 	}
 }
 
-func TestHasNotActionOrResource(t *testing.T) {
-	if !hasNotActionOrResource(`{"Statement":[{"Effect":"Allow","NotAction":"s3:*","Resource":"*"}]}`) {
-		t.Error("NotAction should be detected")
+// NotAction/NotResource are no longer refused up front — they translate to the engine's complement axes,
+// and statementsToSpecAny must carry those axes into the stored kind: Policy spec.dataPlane shape (a
+// dropped complement would silently widen a NotAction grant to "any action"). This asserts the write half
+// of that round-trip; the read half (K8sLoader) is covered in internal/dataplaneauthz.
+func TestStatementsToSpecAnyComplement(t *testing.T) {
+	out := statementsToSpecAny([]policyengine.Statement{
+		{Effect: policyengine.Allow, NotActions: []string{"s3:DeleteObject"}, Resources: []string{"*"}},
+		{Effect: policyengine.Allow, Actions: []string{"s3:GetObject"}, NotResources: []string{"Bucket::secret"}},
+	})
+	if len(out) != 2 {
+		t.Fatalf("want 2 statements, got %d", len(out))
 	}
-	if !hasNotActionOrResource(`{"Statement":[{"Effect":"Deny","Action":"s3:*","NotResource":"arn:aws:s3:::public/*"}]}`) {
-		t.Error("NotResource should be detected")
+	m0 := out[0].(map[string]any)
+	if _, ok := m0["actions"]; ok {
+		t.Error("a NotAction statement must not emit an actions key")
 	}
-	if hasNotActionOrResource(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*"}]}`) {
-		t.Error("a normal policy should not be flagged")
+	na, ok := m0["notActions"].([]any)
+	if !ok || len(na) != 1 || na[0] != "s3:DeleteObject" {
+		t.Errorf("notActions not carried: %#v", m0["notActions"])
+	}
+	m1 := out[1].(map[string]any)
+	nr, ok := m1["notResources"].([]any)
+	if !ok || len(nr) != 1 || nr[0] != "Bucket::secret" {
+		t.Errorf("notResources not carried: %#v", m1["notResources"])
+	}
+	if _, ok := m1["resources"]; ok {
+		t.Error("a NotResource statement must not emit a resources key")
 	}
 }
 
