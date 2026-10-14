@@ -1,0 +1,80 @@
+# Tenant pod budget (polyhedron#303) — a per-namespace ceiling on POD COUNT so a single tenant's
+# fan-out cannot consume the whole cluster's pod slots. On 2026-10-14 an unpaced mirror apply filled
+# every general node to its kubelet pod cap (110); this bounds a SINGLE namespace's blast radius.
+# Defense-in-depth ALONGSIDE apply pacing (otf, polyhedron#302) and kubelet max-pods — it caps one
+# namespace, not cross-namespace totals (that stays pacing + capacity).
+#
+# ENFORCEMENT is a native `ResourceQuota (count/pods)` — Kyverno only GENERATES it, never blocks
+# admission itself, so this stays consistent with open-infra's report-only Kyverno posture (see
+# kyverno.yaml). `count/pods` is an OBJECT-COUNT quota: it imposes NO request/limit requirement on
+# pods, so it can never break a pod that omits resources, and it only caps NEW pods beyond the budget —
+# it never evicts pods already running, so enabling it on a busy namespace is non-disruptive.
+#
+# OPT-IN PER NAMESPACE, and tunable by the label value:
+#     kubectl label namespace <ns> openinfra.dev/pod-budget=200
+# Kyverno then generates a `tenant-pod-budget` ResourceQuota with count/pods = that value. No label =>
+# no quota (system namespaces are never touched — they carry no label). Change the value and Kyverno
+# re-syncs it; remove the label and Kyverno removes the quota. Inert until a namespace is labelled, so
+# this file is safe to ship before anyone opts in. Part of the opt-in `compliance` component (Kyverno).
+---
+# Kyverno's background controller creates/syncs the generated ResourceQuota — grant it that, aggregated
+# into kyverno's background-controller ClusterRole. (If the Cedar control-plane webhook is enforcing,
+# this SA->resourcequotas action falls back to this RBAC on a corpus miss; regen the corpus to make it
+# explicit — see docs/policy-engine.md / [[cedar-corpus-new-kind-deadlock]].)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno-background-controller-resourcequotas
+  labels:
+    rbac.kyverno.io/aggregate-to-background-controller: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+rules:
+  - apiGroups: [""]
+    resources: [resourcequotas]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-pod-budget
+  annotations:
+    policies.kyverno.io/title: Tenant pod budget
+    policies.kyverno.io/category: Tenancy / resource governance
+    policies.kyverno.io/description: >-
+      Generates a native ResourceQuota (count/pods) into any namespace labelled
+      openinfra.dev/pod-budget=<N>, bounding a single tenant's pod fan-out (polyhedron#303).
+    # kyverno.io is a CRD from the opt-in compliance component — skip the dry-run so a fresh/DR sync
+    # doesn't deadlock before the CRD exists, and apply after Kyverno (wave 1).
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # GENERATE only (no validate/enforce) — Kyverno never blocks admission; the generated ResourceQuota
+  # does the bounding. background + generateExisting so it also applies to namespaces labelled later or
+  # already present, and synchronize keeps the quota matching the label value (and recreates it if
+  # something deletes it).
+  background: true
+  generateExisting: true
+  rules:
+    - name: pod-budget-quota
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - key: openinfra.dev/pod-budget
+                    operator: Exists
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: tenant-pod-budget
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              openinfra.dev/managed-by: tenant-pod-budget
+          spec:
+            hard:
+              count/pods: "{{request.object.metadata.labels.\"openinfra.dev/pod-budget\"}}"
