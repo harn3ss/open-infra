@@ -236,14 +236,17 @@ StorageClass (`nodeSelector: chaos`), so their replicas land ONLY on chaos nodes
 tagged nodes. Proven both directions live. Losing a chaos-node replica therefore never touches
 production data — the containment safety bar is met without a separate cluster.
 
-**Re-add durability.** The segmentation (taint + `openinfra.dev/chaos` label) survives a node
-rebuild because it lives in the k3s agent config. The Longhorn side did not — `tags:[chaos]`,
-`allowScheduling` and the cleared eviction are runtime `nodes.longhorn.io` state, and
-`createDefaultDiskLabeledNodes: true` means a rebuilt node gets no disk. A reconciler
-([platform/storage/chaos-node-longhorn-reconciler.yaml](../platform/storage/chaos-node-longhorn-reconciler.yaml))
-closes that from the one durable signal — the node label — setting the create-default-disk label
-and the Longhorn node tag/scheduling on every `openinfra.dev/chaos` node (Sync Job now + a
-self-healing CronJob), so a rebuilt chaos node reacquires its disk and `chaos` tag on its own.
+**Re-add durability.** The `openinfra.dev/chaos` *label* survives a node rebuild (it lives in the k3s
+agent config), but the `NoSchedule` *taint* was assumed to and does **not** reliably — a re-registered
+node has come back labelled yet untainted (chaos-node-3, polyhedron#300), silently returning a chaos
+node to the general scheduling pool so an ordinary fault on it became a production blocker. The Longhorn
+side was never durable either — `tags:[chaos]`, `allowScheduling` and the cleared eviction are runtime
+`nodes.longhorn.io` state, and `createDefaultDiskLabeledNodes: true` means a rebuilt node gets no disk. A
+reconciler ([platform/storage/chaos-node-longhorn-reconciler.yaml](../platform/storage/chaos-node-longhorn-reconciler.yaml))
+closes all of it from the one durable signal — the node label — ensuring the chaos **taint**, the
+create-default-disk label, and the Longhorn node tag/scheduling on every `openinfra.dev/chaos` node (Sync
+Job now + a self-healing CronJob), so a rebuilt chaos node reacquires its taint, disk and `chaos` tag on
+its own.
 
 **2. The safe alternative — `io-latency` — does not actually inject, for a known reason.**
 Degrading the sandbox's *own* Longhorn-backed volume would have answered the
