@@ -116,11 +116,16 @@ spec:
                       description: "sqlserver only: optional nodeSelector for the database pod — pin a large DB to a node with the RAM/storage for it. SET THIS for a large DB: neither local-path nor Longhorn does storage-capacity-aware scheduling, so without placement the pod can bind to any node that fits it by CPU/memory and then run out of disk. local-path in particular is node-local and cannot move or grow, so pin it. Use openinfra.dev/* node labels, never real hostnames."
                     restoreFrom:
                       type: object
-                      description: "sqlserver only: restore a .bak into this instance on bring-up (the migration landing path). The engine stages the object onto the SIZED data volume (not node-ephemeral storage) and runs RESTORE DATABASE once — idempotent: skipped if the database already exists. Files are auto-relocated (WITH MOVE) into the data volume, and the staged .bak is reclaimed afterward. size must therefore hold the backup AND the restored data at the same time during the restore (≈2× transiently). A capacity preflight runs first on the scheduled node and FAILS FAST with a clear reason if size cannot fit (rather than hitting ENOSPC mid-restore), and the claim stays NotReady until the restore completes — a failed restore surfaces as a NotReady claim with the reason, never a silently-healthy one."
-                      required: [bucket, key, secret]
+                      description: "sqlserver only: restore a backup into this instance on bring-up (the migration landing path). The engine stages the backup onto the SIZED data volume (not node-ephemeral storage) and runs RESTORE DATABASE once — idempotent: skipped if the database already exists. Files are auto-relocated (WITH MOVE) into the data volume, and the staged backup is reclaimed afterward. size must therefore hold the backup AND the restored data at the same time during the restore (≈2× transiently). A capacity preflight runs first on the scheduled node and FAILS FAST with a clear reason if size cannot fit (rather than hitting ENOSPC mid-restore), and the claim stays NotReady until the restore completes — a failed restore surfaces as a NotReady claim with the reason, never a silently-healthy one. Provide EXACTLY ONE of key (single .bak), keys (an ordered striped set), or prefix (enumerate a striped set); setting more than one is rejected (fail-closed)."
+                      required: [bucket, secret]
                       properties:
-                        bucket: { type: string, description: "S3/MinIO bucket holding the .bak." }
-                        key:    { type: string, description: "Object key of the .bak within the bucket. Setting restoreFrom enables the restore." }
+                        bucket: { type: string, description: "S3/MinIO bucket holding the backup." }
+                        key:    { type: string, description: "Object key of a SINGLE-file .bak within the bucket. Use for a one-file backup. Mutually exclusive with keys/prefix." }
+                        keys:
+                          type: array
+                          items: { type: string }
+                          description: "Object keys of a STRIPED multi-file backup (RDS native backup-to-S3 with @number_of_files), in order. SQL Server needs the whole set to restore; a missing stripe fails the restore loudly. Mutually exclusive with key/prefix."
+                        prefix: { type: string, description: "Object-key prefix that enumerates a STRIPED multi-file backup — every object under the prefix is fetched (sorted) and restored as one stripe set. Zero objects fails closed. Mutually exclusive with key/keys." }
                         secret: { type: string, description: "Name of a Secret with S3 credentials for the bucket (keys: S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY)." }
                     name:   { type: string, description: "Database name (defaults to the application name)." }
                     size:
