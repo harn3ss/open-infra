@@ -1155,11 +1155,18 @@ spec:
                                 NEED='{{ $dbSize | default "20Gi" }}'
                                 to_bytes() { n=$(printf '%s' "$1" | sed 's/[A-Za-z].*//'); u=$(printf '%s' "$1" | sed 's/^[0-9.]*//'); case "$u" in Ki) f=1024;; Mi) f=1048576;; Gi) f=1073741824;; Ti) f=1099511627776;; Pi) f=1125899906842624;; k|K) f=1000;; M) f=1000000;; G) f=1000000000;; T) f=1000000000000;; "") f=1;; *) f=1;; esac; awk -v n="$n" -v f="$f" 'BEGIN{printf "%.0f", n*f}'; }
                                 need=$(to_bytes "$NEED")
+                                # A formatted volume's USABLE space is a few % below its nominal size (ext4
+                                # reserve + metadata/journal), and Longhorn provisions exactly `size`, so a
+                                # correctly-sized volume reports df-free slightly under `size`. Compare against
+                                # ~90% of size: enough headroom to catch a GROSSLY undersized node/volume (the
+                                # real local-path risk, e.g. a 237GB node for a 499Gi DB) without false-
+                                # rejecting a right-sized volume on filesystem overhead alone.
+                                floor=$(awk -v n="$need" 'BEGIN{printf "%.0f", n*0.9}')
                                 avail=$(df -PB1 /var/opt/mssql | awk 'NR==2{print $4}')
                                 node="${NODE_NAME:-this node}"
-                                printf 'capacity-preflight: database size=%s (%s bytes); data volume has %s bytes free on %s\n' "$NEED" "$need" "$avail" "$node"
-                                if [ "$avail" -lt "$need" ]; then
-                                  echo "capacity-preflight: INSUFFICIENT STORAGE — a RESTORE of size $NEED cannot fit in the ${avail} bytes free on $node. Set spec.database.placement to a node with room, use a larger storageClass/volume, or reduce spec.database.size. Refusing to start so the restore does not ENOSPC mid-flight." >&2
+                                printf 'capacity-preflight: database size=%s (%s bytes, floor %s after fs overhead); data volume has %s bytes free on %s\n' "$NEED" "$need" "$floor" "$avail" "$node"
+                                if [ "$avail" -lt "$floor" ]; then
+                                  echo "capacity-preflight: INSUFFICIENT STORAGE — a RESTORE of size $NEED needs ~$floor usable bytes but only $avail are free on $node. Set spec.database.placement to a node with room, use a larger storageClass/volume, or reduce spec.database.size. Refusing to start so the restore does not ENOSPC mid-flight." >&2
                                   exit 1
                                 fi
                                 echo "capacity-preflight: OK"
