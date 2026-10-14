@@ -551,8 +551,14 @@ EOF
     #     on every restart, wedging the node). 1Gi absorbs a realistic admission burst so it
     #     degrades into slowness, not an OOM loop; the request stays 64Mi so it reserves nothing.
     #     (Multus-thick exposes no clean CNI-ADD concurrency cap, so headroom is the lever.)
+    #  3) PRIORITY. Upstream ships NO priorityClassName, so on a node at its pod-count cap (110) the
+    #     multus pod cannot schedule — it sits Pending behind ordinary workload and the node's CNI
+    #     deadlocks (: a bulk apply filled the node, a multus re-roll then couldn't get a
+    #     slot, and the stuck workload was itself stuck BECAUSE multus was down). A CNI is node-critical:
+    #     `system-node-critical` lets it PREEMPT a workload pod for its slot, so the CNI can never be
+    #     starved of a pod slot by the very workload that depends on it.
     $KUBECTL -n kube-system patch ds kube-multus-ds --type=json \
-      -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/command","value":["sh","-c","cp -f /usr/src/multus-cni/bin/multus-shim /host/opt/cni/bin/.multus-shim.new && mv -f /host/opt/cni/bin/.multus-shim.new /host/opt/cni/bin/multus-shim"]},{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}]' 2>/dev/null || WARN "multus init/resources hardening patch failed"
+      -p='[{"op":"replace","path":"/spec/template/spec/initContainers/0/command","value":["sh","-c","cp -f /usr/src/multus-cni/bin/multus-shim /host/opt/cni/bin/.multus-shim.new && mv -f /host/opt/cni/bin/.multus-shim.new /host/opt/cni/bin/multus-shim"]},{"op":"replace","path":"/spec/template/spec/containers/0/resources","value":{"requests":{"cpu":"100m","memory":"64Mi"},"limits":{"cpu":"1","memory":"1Gi"}}},{"op":"add","path":"/spec/template/spec/priorityClassName","value":"system-node-critical"}]' 2>/dev/null || WARN "multus init/resources hardening patch failed"
     $KUBECTL -n kube-system rollout status ds/kube-multus-ds --timeout=180s || WARN "Multus not ready yet"
     # 3. The macvlan NetworkAttachmentDefinition (no IPAM -> guest DHCP).
     cat <<EOF | $KUBECTL apply -f - || WARN "NAD create failed"
