@@ -47,6 +47,26 @@ The **hardened deployment profile** (opt-in `components.hardened`, shipped) exte
 install, RBAC that withholds `FaultInjection`, no `AUTH_MODE=none`, restricted Pod Security enforced on
 the console namespace, and the experimental tier disabled.
 
+### Tenant pod budget (NIST SC-6, Resource Availability)
+
+A per-namespace ceiling on **pod count** bounds the blast radius of one tenant's fan-out, so a single
+namespace cannot starve the cluster of pod slots (a workload applying thousands of objects at once hits
+its budget as a quota rejection rather than taking the whole cluster down). It is **opt-in per
+namespace and tunable by the label value**:
+
+```
+kubectl label namespace <ns> openinfra.dev/pod-budget=200
+```
+
+Kyverno (the opt-in `compliance` component) then **generates** a native `ResourceQuota` with
+`count/pods` = the label value into that namespace; no label means no quota, so system namespaces are
+never touched. Enforcement is the standard `ResourceQuota`, not Kyverno — consistent with the
+report-only Kyverno posture (Kyverno generates, it never blocks admission). Because `count/pods` is an
+object-count quota it imposes no request/limit requirement on pods and only caps *new* pods beyond the
+budget — it never evicts running pods, so enabling it on a busy namespace is non-disruptive. This bounds
+a single namespace; cross-namespace totals stay a function of workload pacing and cluster capacity. See
+`platform/compliance/tenant-pod-budget.yaml`.
+
 ## NIST 800-53 control mapping
 
 Control-level implementation statements for the families open-infra implements. This is a
