@@ -173,6 +173,13 @@ The engine therefore:
   **NotReady claim with the reason** (in the restore container's status/logs) — never a
   silently-healthy claim over a half-restored database.
 
+**Striped (multi-file) backups.** RDS SQL Server's native backup-to-S3 splits a large database into
+N files (`@number_of_files`). Point `restoreFrom` at the whole set with **`keys: [k1, k2, …]`** (an
+ordered list) or **`prefix: <p>`** (every object under the prefix, sorted) instead of a single `key`
+— set exactly one of the three. Each stripe is fetched to an ordered `db_<i>.bak`, and the engine
+restores the whole set in one `RESTORE DATABASE … FROM DISK, DISK, …`; a missing stripe fails the
+restore loudly, and the capacity guard sizes for the **summed** stripe set plus the restored database.
+
 ## Start / Stop
 
 Like RDS stop/start: pause a database to free compute while **keeping its data**. Set

@@ -922,10 +922,21 @@ spec:
             {{- $edition := $spec.database.edition | default "Developer" }}
             {{- $mssqlImg := "mcr.microsoft.com/mssql/server:2022-latest" }}
             {{- $saPass := printf "Mssql-%s-9Z" (printf "%s-sa" .observed.composite.resource.metadata.uid | sha256sum | trunc 16) }}
-            {{- /* restoreFrom: land a .bak into this instance on bring-up (the migration landing path). */}}
+            {{- /* restoreFrom: land a backup into this instance on bring-up (the migration landing path).
+                   A single `key` restores one .bak; `keys` (ordered list) or `prefix` (enumerate) restore a
+                   STRIPED multi-file backup — RDS SQL Server native backup-to-S3 with @number_of_files splits
+                   a large database into N files. Exactly one of key|keys|prefix; ambiguity fails closed. */}}
             {{- $restore := $spec.database.restoreFrom | default dict }}
             {{- $restoreKey := $restore.key | default "" }}
-            {{- $restoring := ne $restoreKey "" }}
+            {{- $restoreKeys := $restore.keys | default (list) }}
+            {{- $restorePrefix := $restore.prefix | default "" }}
+            {{- $hasKey := ne $restoreKey "" }}
+            {{- $hasKeys := gt (len $restoreKeys) 0 }}
+            {{- $hasPrefix := ne $restorePrefix "" }}
+            {{- if or (and $hasKey $hasKeys) (and $hasKey $hasPrefix) (and $hasKeys $hasPrefix) }}{{- fail "spec.database.restoreFrom: set exactly one of key, keys, or prefix" }}{{- end }}
+            {{- $striped := or $hasKeys $hasPrefix }}
+            {{- $restoring := or $hasKey $striped }}
+            {{- if and (not $restoring) (hasKey $restore "bucket") }}{{- fail "spec.database.restoreFrom: one of key, keys, or prefix is required" }}{{- end }}
             {{- if not $accept }}
             ---
             # Fail-closed: engine=sqlserver requires database.acceptEula=true (Microsoft EULA). No
@@ -988,6 +999,62 @@ spec:
                   kind: ConfigMap
                   metadata: { name: {{ $name }}-sqlserver-restore, namespace: {{ $ns }} }
                   data:
+                    {{- if $striped }}
+                    restore.sh: |
+                      #!/usr/bin/env bash
+                      # Restores a STRIPED backup set (/restore/db_*.bak — RDS native backup-to-S3 with
+                      # @number_of_files) ONCE, then idles ready. Same contract as the single-file path:
+                      # the /restore/.done sentinel gates readiness (the pod/Service/claim stay NotReady
+                      # until the restore completes), and a failure exits NON-ZERO (set -e) so the container
+                      # crashloops NotReady with the reason, never a silently-healthy claim.
+                      set -euo pipefail
+                      SQLCMD=/opt/mssql-tools18/bin/sqlcmd
+                      DB='{{ $dbName }}'
+                      DONE=/restore/.done
+                      rm -f "$DONE"
+                      q(){ "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -b "$@"; }
+                      echo "restore: waiting for SQL Server..."
+                      until q -l 2 -Q "SELECT 1" >/dev/null 2>&1; do sleep 5; done
+                      exists=$(q -h -1 -W -Q "SET NOCOUNT ON; SELECT ISNULL(CONVERT(varchar(12),DB_ID(N'$DB')),'NULL')" | tr -d '[:space:]')
+                      if [ "$exists" != "NULL" ]; then echo "restore: '$DB' already present — nothing to do"; touch "$DONE"; exec sleep infinity; fi
+                      # Build the DISK set from the staged stripes. SQL Server needs the WHOLE set; a missing
+                      # stripe makes RESTORE fail (set -e → NotReady with the reason), never a partial DB.
+                      DISKS=""; N=0
+                      for f in /restore/db_*.bak; do
+                        [ -s "$f" ] || { echo "restore: stripe $f missing or empty — incomplete stripe set" >&2; exit 1; }
+                        if [ -z "$DISKS" ]; then DISKS="FROM DISK=N'$f'"; else DISKS="$DISKS, DISK=N'$f'"; fi
+                        N=$((N+1))
+                      done
+                      [ "$N" -gt 0 ] || { echo "restore: no stripes staged under /restore/db_*.bak (fetch-bak failed?)" >&2; exit 1; }
+                      echo "restore: reading the backup file list across $N stripe(s)..."
+                      FLO=$(q -s '~' -W -h -1 -Q "SET NOCOUNT ON; RESTORE FILELISTONLY $DISKS")
+                      # Summed-stripe headroom (fold-in): FILELISTONLY's Size column (bytes) is
+                      # the restored size of each data file; df free NOW already excludes the staged stripe set,
+                      # so the remaining space must hold the restored database. Refuse BEFORE RESTORE, numbers
+                      # named, rather than ENOSPC mid-flight.
+                      need=$(printf '%s\n' "$FLO" | awk -F'~' '{gsub(/[^0-9]/,"",$5); if($5!="")s+=$5} END{printf "%.0f", s}')
+                      avail=$(df -PB1 /restore | awk 'NR==2{print $4}')
+                      echo "restore: the $N-stripe backup restores to ~$need bytes; $avail bytes free on the data volume after staging"
+                      if [ -n "$need" ] && [ "$need" -gt 0 ] && [ "$need" -gt "$avail" ]; then
+                        echo "restore: INSUFFICIENT STORAGE — the backup set restores to ~$need bytes but only $avail are free after staging the stripes. The staged stripe set + restored database exceed spec.database.size; increase it or use a larger volume. Refusing before RESTORE to avoid a mid-restore ENOSPC." >&2
+                        exit 1
+                      fi
+                      echo "restore: building MOVE from the backup file list..."
+                      MOVES=""
+                      while IFS='~' read -r logical _phys typ _rest; do
+                        logical=$(printf '%s' "$logical" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                        typ=$(printf '%s' "$typ" | tr -d '[:space:]')
+                        [ -z "$logical" ] && continue
+                        ext=.mdf; [ "$typ" = "L" ] && ext=.ldf
+                        MOVES="$MOVES, MOVE N'$logical' TO N'/var/opt/mssql/data/${DB}_${logical}${ext}'"
+                      done < <(printf '%s\n' "$FLO")
+                      echo "restore: restoring '$DB' from $N stripe(s)$MOVES"
+                      q -Q "RESTORE DATABASE [$DB] $DISKS WITH REPLACE, RECOVERY$MOVES"
+                      echo "restore: complete — reclaiming staged backup set"
+                      rm -f /restore/db_*.bak
+                      touch "$DONE"
+                      exec sleep infinity
+                    {{- else }}
                     restore.sh: |
                       #!/usr/bin/env bash
                       # Restores the staged .bak ONCE, then idles ready. A readiness sentinel (/restore/.done)
@@ -1024,6 +1091,7 @@ spec:
                       rm -f "$BAK"   # free the staging space on the data volume now the DB is restored
                       touch "$DONE"
                       exec sleep infinity
+                    {{- end }}
             {{- end }}
             ---
             # SQL Server — StatefulSet on Longhorn, single instance. Stop => replicas 0.
@@ -1124,7 +1192,39 @@ spec:
                           # here, and the restore reclaims it (rm) once the database is in place.
                           - name: fetch-bak
                             image: ghcr.io/harn3ss/open-infra-mc:latest
+                            {{- if not $striped }}
                             command: ["sh", "-c", "mc alias set src \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && mc cp \"src/{{ $restore.bucket }}/{{ $restoreKey }}\" /restore/db.bak && ls -l /restore/db.bak"]
+                            {{- else if $hasKeys }}
+                            # Striped (explicit keys): fetch each stripe in list order to db_<i>.bak. set -e
+                            # fails the init (fail-closed, no partial restore) if any object is missing.
+                            command:
+                              - sh
+                              - -c
+                              - |
+                                set -e
+                                mc alias set src "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+                                {{- range $i, $k := $restoreKeys }}
+                                mc cp "src/{{ $restore.bucket }}/{{ $k }}" "/restore/db_{{ add $i 1 }}.bak"
+                                {{- end }}
+                                ls -l /restore/db_*.bak
+                            {{- else }}
+                            # Striped (prefix): enumerate every object under the prefix, sorted, and fetch each
+                            # to db_<i>.bak. Zero objects fails closed (never an empty/partial restore).
+                            command:
+                              - sh
+                              - -c
+                              - |
+                                set -e
+                                mc alias set src "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
+                                mc find "src/{{ $restore.bucket }}/{{ $restorePrefix }}" --type f | sort > /tmp/stripes.txt
+                                [ -s /tmp/stripes.txt ] || { echo "fetch-bak: no objects under prefix {{ $restorePrefix }} — nothing to restore" >&2; exit 1; }
+                                i=0
+                                while read -r p; do
+                                  i=$((i+1))
+                                  mc cp "$p" "/restore/db_${i}.bak"
+                                done < /tmp/stripes.txt
+                                ls -l /restore/db_*.bak
+                            {{- end }}
                             env: [ { name: HOME, value: /tmp } ]   # mc writes its config to $HOME/.mc — / is not writable under the non-root pod
                             envFrom: [ { secretRef: { name: {{ $restore.secret }} } } ]
                             securityContext: { runAsUser: 10001 }   # match the fix-perms ownership of subPath restore

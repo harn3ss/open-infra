@@ -174,3 +174,74 @@ func TestSQLServer_EditionAndPlacement(t *testing.T) {
 		t.Errorf("placement must render a nodeSelector; got:\n%s", grepCtx(out, "nodeSelector"))
 	}
 }
+
+//: a STRIPED restore via explicit keys fetches each stripe to db_<i>.bak and restores the
+// whole set with one FROM DISK + N DISK clauses, summed-headroom checked before RESTORE. Single-file
+// markers must be ABSENT on this path.
+func TestSQLServer_RestoreStripedKeys(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	out := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"size":        "499Gi",
+		"restoreFrom": map[string]any{"bucket": "import", "keys": []any{"backup_1.bak", "backup_2.bak"}, "secret": "restore-creds"},
+	}))
+	for _, want := range []string{
+		`mc cp "src/import/backup_1.bak" "/restore/db_1.bak"`, // stripe 1 → ordered name
+		`mc cp "src/import/backup_2.bak" "/restore/db_2.bak"`, // stripe 2
+		"for f in /restore/db_*.bak",                         // restore builds the DISK set from the staged stripes
+		"RESTORE FILELISTONLY $DISKS",                        // FILELISTONLY across the whole set
+		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",         // multi-DISK restore
+		"INSUFFICIENT STORAGE",                               // summed-headroom guard before RESTORE
+		"rm -f /restore/db_*.bak",                            // reclaim the whole staged set
+		"incomplete stripe set",                              // missing-stripe fails loudly
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("striped(keys) render missing %q; got:\n%s", want, grepCtx(out, "stripe"))
+		}
+	}
+	// The single-file machinery must NOT render on the striped path.
+	for _, forbid := range []string{"FROM DISK=N'$BAK'", "/restore/db.bak"} {
+		if strings.Contains(out, forbid) {
+			t.Errorf("striped(keys) must not render single-file marker %q", forbid)
+		}
+	}
+}
+
+// A STRIPED restore via prefix enumerates every object under the prefix (sorted) and fails closed on zero.
+func TestSQLServer_RestoreStripedPrefix(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	out := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"restoreFrom": map[string]any{"bucket": "import", "prefix": "backup/", "secret": "restore-creds"},
+	}))
+	for _, want := range []string{
+		`mc find "src/import/backup/" --type f | sort`, // enumerate the stripe set, deterministic order
+		"no objects under prefix backup/",              // zero objects fails closed
+		`mc cp "$p" "/restore/db_${i}.bak"`,           // each object → ordered stripe name
+		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",  // multi-DISK restore (shared striped script)
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("striped(prefix) render missing %q; got:\n%s", want, grepCtx(out, "prefix"))
+		}
+	}
+}
+
+// Ambiguous restoreFrom (more than one of key/keys/prefix) fails the render loudly (fail-closed).
+func TestSQLServer_RestoreAmbiguousFails(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	err := renderErr(tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"restoreFrom": map[string]any{"bucket": "import", "key": "a.bak", "keys": []any{"b.bak"}, "secret": "restore-creds"},
+	}))
+	if err == nil || !strings.Contains(err.Error(), "exactly one of key, keys, or prefix") {
+		t.Errorf("ambiguous restoreFrom must fail the render with the exactly-one-of message; got err=%v", err)
+	}
+	// restoreFrom with a bucket but none of key/keys/prefix is also rejected.
+	err2 := renderErr(tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"restoreFrom": map[string]any{"bucket": "import", "secret": "restore-creds"},
+	}))
+	if err2 == nil || !strings.Contains(err2.Error(), "one of key, keys, or prefix is required") {
+		t.Errorf("restoreFrom without a key form must fail; got err=%v", err2)
+	}
+}
