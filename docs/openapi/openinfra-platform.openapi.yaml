@@ -5794,8 +5794,11 @@ components:
                       description: Object key of the .zip within the bucket.
                     secret:
                       type: string
-                      description: "Secret with S3 creds for the bucket (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL\
-                        \ / BUCKET) \u2014 e.g. an Application bucket's connection secret."
+                      description: "Secret whose keys the runtime's AWS SDK reads to fetch the .zip: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,\
+                        \ and (for MinIO / S3-compatible endpoints) AWS_ENDPOINT_URL. The bucket and object key come from\
+                        \ source.bucket / source.key, not this secret. NOTE: a MinIO bucket's own creds secret uses MINIO_*\
+                        \ keys and does NOT fit directly \u2014 create a secret with these AWS_* names from the bucket's scoped\
+                        \ creds (see probe/function-code-zip.sh for the exact recipe)."
                 layers:
                   type: array
                   description: 'Lambda LAYERS: .zip artifacts extracted (merged, in order) into /opt at cold start, so the
