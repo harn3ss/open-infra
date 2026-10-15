@@ -1101,6 +1101,14 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: sqlserver
             spec:
+              # Derive readiness from the StatefulSet's readyReplicas, NOT the provider default (ready as soon
+              # as the object is CREATED). The restore sidecar's readiness gate holds readyReplicas at 0 until
+              # the restore completes, so this makes the XR/claim stay NotReady through the restore — and a
+              # failed restore surface as a NotReady claim — instead of reporting a silently-healthy claim while
+              # the database is still (or never) being restored. replicas 0 (stopped) counts as ready.
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: object.spec.replicas == 0 || (has(object.status) && has(object.status.readyReplicas) && object.status.readyReplicas == object.spec.replicas)
               forProvider:
                 manifest:
                   apiVersion: apps/v1
@@ -1200,7 +1208,7 @@ spec:
                           - name: fetch-bak
                             image: ghcr.io/harn3ss/open-infra-mc:latest
                             {{- if not $striped }}
-                            command: ["sh", "-c", "mc alias set src \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && mc cp \"src/{{ $restore.bucket }}/{{ $restoreKey }}\" /restore/db.bak && ls -l /restore/db.bak"]
+                            command: ["sh", "-c", "[ -f /restore/.done ] && { echo 'fetch-bak: restore already complete — skipping download'; exit 0; }; mc alias set src \"$S3_ENDPOINT\" \"$S3_ACCESS_KEY\" \"$S3_SECRET_KEY\" && mc cp \"src/{{ $restore.bucket }}/{{ $restoreKey }}\" /restore/db.bak && ls -l /restore/db.bak"]
                             {{- else if $hasKeys }}
                             # Striped (explicit keys): fetch each stripe in list order to db_<i>.bak. set -e
                             # fails the init (fail-closed, no partial restore) if any object is missing.
@@ -1209,6 +1217,10 @@ spec:
                               - -c
                               - |
                                 set -e
+                                # Skip the download if a prior restore already completed (the sentinel persists on
+                                # the data volume) — on a pod restart the DB is already present, so re-pulling the
+                                # stripes just wastes the staging space and bandwidth.
+                                if [ -f /restore/.done ]; then echo "fetch-bak: restore already complete — skipping download"; exit 0; fi
                                 mc alias set src "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
                                 {{- range $i, $k := $restoreKeys }}
                                 mc cp "src/{{ $restore.bucket }}/{{ $k }}" "/restore/db_{{ add $i 1 }}.bak"
@@ -1221,9 +1233,16 @@ spec:
                               - sh
                               - -c
                               - |
-                                set -e
+                                set -eo pipefail
+                                # Skip the download if a prior restore already completed (sentinel persists on the
+                                # data volume) — see the keys branch above.
+                                if [ -f /restore/.done ]; then echo "fetch-bak: restore already complete — skipping download"; exit 0; fi
                                 mc alias set src "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY"
-                                mc find "src/{{ $restore.bucket }}/{{ $restorePrefix }}" --type f | sort > /tmp/stripes.txt
+                                # mc find lists every object under the prefix as a full alias path (one per line),
+                                # directly usable by mc cp. mc find takes no GNU find-style file-type selector;
+                                # passing one makes mc print its help and exit, which pipefail now catches instead
+                                # of silently producing an empty stripe list.
+                                mc find "src/{{ $restore.bucket }}/{{ $restorePrefix }}" | sort > /tmp/stripes.txt
                                 [ -s /tmp/stripes.txt ] || { echo "fetch-bak: no objects under prefix {{ $restorePrefix }} — nothing to restore" >&2; exit 1; }
                                 i=0
                                 while read -r p; do
