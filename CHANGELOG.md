@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Databases — SQL Server restore readiness
+- **A `engine: sqlserver` claim with `restoreFrom` now stays NotReady until the restore actually
+  completes.** Its readiness derives from the database pod being ready (gated by the restore sidecar),
+  not merely from the resource having been created — so a long-running or failed restore surfaces as a
+  NotReady claim with the reason, instead of a silently-healthy claim while the database is still (or
+  never) being restored. Striped restores via `restoreFrom.prefix` now enumerate the backup set
+  correctly, and a completed restore is not re-downloaded on a pod restart.
+
 ### IAM — NotAction / NotResource
 - **AWS `NotAction`/`NotResource` now translate**, instead of being refused. They map to new
   **complement axes** on a data-plane policy statement — `notActions` ("any action except these") and
