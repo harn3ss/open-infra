@@ -166,31 +166,36 @@ use), plus same-namespace traffic so the VM stays reachable in-cluster. Untick i
 for a locked-down VM, or add HTTP/HTTPS. The group is a normal `SecurityGroup` you
 can edit afterwards.
 
-## Why there is no VPC or Subnet (a deliberate non-goal)
+## Network isolation: identity-first, not address-range
 
-open-infra has **no `Network`/`VPC` or `Subnet` kind, by design** — not an unfinished
-feature. AWS uses the VPC/subnet as the primary isolation boundary because EC2 instances
-share a flat L2/L3 fabric that must be carved up. Kubernetes inverts that: the cluster is
-one flat pod network, and isolation is expressed by **policy over identity**, not by
-address ranges. Faking a VPC/subnet onto a `NetworkPolicy` would mean inventing an address
-partition that nothing actually enforces — a boundary that reads real but isn't.
+open-infra's **primary isolation boundary is `kind: SecurityGroup` (workload identity), not a
+VPC/subnet address range** — by design. AWS uses the VPC/subnet as the primary isolation boundary
+because EC2 instances share a flat L2/L3 fabric that must be carved up. Kubernetes inverts that:
+isolation is expressed by **policy over identity**, so an app in the `web` SG reaches the `db` SG
+only if a rule says so, independent of where either pod lands. Reaching for an address partition to
+express *isolation* would invent a boundary that reads real but isn't.
+
+`kind: Vpc` and `kind: Subnet` **do** exist — kube-ovn provides per-tenant overlay networks and
+subnets, used for genuine network segmentation, VLAN/LAN integration, and faithful estate mirrors.
+They are the *networking substrate*, not the workload-isolation primitive: use them when you need
+real separate networks, and Security Groups to say who may talk to whom.
 
 So the AWS network-isolation model maps like this:
 
 | AWS | open-infra | why |
 |---|---|---|
-| VPC / subnet segmentation | `kind: SecurityGroup` (SG-to-SG rules) | isolation is by workload identity, not address range — an app in the `web` SG reaches the `db` SG only if a rule says so, independent of where either pod lands |
-| Security group (the SG itself) | `kind: SecurityGroup` | direct equivalent, enforced by Cilium |
+| VPC / subnet *for isolation* | `kind: SecurityGroup` (SG-to-SG rules) | isolation is by workload identity, not address range — an app in the `web` SG reaches the `db` SG only if a rule says so, independent of where either pod lands |
+| VPC / subnet *as a network* | `kind: Vpc` / `kind: Subnet` | kube-ovn per-tenant overlay networks + subnets, when you genuinely need separate address spaces |
+| Security group (the SG itself) | `kind: SecurityGroup` | direct equivalent, enforced by the CNI (kube-ovn) |
 | NACL / CIDR edge rules | `SecurityGroup` CIDR rules | CIDR matches **external** sources at the edge (see *Enforcement semantics* above) |
 | Route tables / IGW / NAT / peering | *(no counterpart)* | cluster networking + egress are the substrate's job, not an app-level kind |
 
-If a migration tool reports `aws_vpc` / `aws_subnet` as untranslatable, that is the
-**correct** answer to surface to a human — the target is "model isolation with Security
-Groups," not "recreate the VPC." This is a decided position, so the answer is *"open-infra
-deliberately does not model subnets; use Security Groups"* rather than *"unsupported."*
+For **workload isolation**, a migration should map `aws_vpc`/`aws_subnet` security boundaries to
+Security Groups ("who may talk to whom"), not recreate the address plan. Where the estate needs the
+actual networks reproduced, `kind: Vpc` / `kind: Subnet` are the targets.
 
 ## See also
 
 - [architecture.md](architecture.md) — where Security Groups sit in the AWS map.
 - [virtual-machines.md](virtual-machines.md) — exposing VM ports on the LAN.
-- [aws-migration.md](aws-migration.md) — the Terraform/open-transform resource mapping, including this non-goal.
+- [aws-migration.md](aws-migration.md) — the Terraform/open-transform resource mapping.

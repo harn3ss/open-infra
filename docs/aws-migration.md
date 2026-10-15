@@ -94,20 +94,19 @@ notes) is in `platform/abstraction/xrd.yaml`.
 Beyond CloudFormation, an AWS **Terraform** estate can be assessed for portability by
 [open-transform](https://github.com/harn3ss/open-transform) (`otf assess -target openinfra`),
 which reports what does and does not have an open-infra target. A feasibility pass over real
-AWS VPC/EKS modules surfaced four resource classes worth a **decided** disposition — recorded
-here so the answer is deliberate, not "unsupported":
+AWS VPC/EKS modules first surfaced four resource classes with no obvious target; each has since
+gained a first-class kind. The current mapping:
 
 | AWS resource | open-infra | disposition |
 |---|---|---|
 | `aws_iam_role` | **`kind: Role`** | **Supported** — a Role is a named bundle of Policies compiled to an aggregated ClusterRole (see [iam.md](iam.md)). This is a first-class target; a migration should map to it. |
-| `aws_vpc` / `aws_subnet` | `kind: SecurityGroup` | **Deliberate non-goal** — Kubernetes is one flat pod network; isolation is by workload identity, not address range. Model it with Security Groups; do not recreate the VPC. Full rationale in [security-groups.md](security-groups.md#why-there-is-no-vpc-or-subnet-a-deliberate-non-goal). |
-| `aws_sqs_queue` | *(no standalone kind)* | **Acknowledged gap, deferred.** NATS JetStream is the messaging substrate, but it is exposed only through `kind: Stream` (which is **CDC-sourced** — it tails a database change log, not a standalone app-to-app queue) and `Function` triggers. A first-class SQS-shaped queue kind is not built (low frequency: one occurrence in the assessed estate); revisit if demand grows. |
-| `aws_s3_bucket` | *(sub-block, no kind)* | **Known** — buckets appear as fields inside other kinds (e.g. an `Application`'s `storage.buckets`), not as a standalone kind. Tracked separately. |
+| `aws_vpc` / `aws_subnet` | **`kind: Vpc` / `kind: Subnet`** | **Supported** — kube-ovn provides per-tenant overlay VPCs and subnets, so a VPC/subnet layout maps directly (`kind: Vpc`, `kind: Subnet`). Identity-based workload isolation is still expressed with `kind: SecurityGroup` and composes on top (see [security-groups.md](security-groups.md)). |
+| `aws_sqs_queue` | **`kind: Queue`** | **Supported** — a standalone NATS JetStream queue (`kind: Queue`), distinct from the CDC-sourced `kind: Stream` (which tails a database change log). An app-to-app SQS queue maps here. |
+| `aws_s3_bucket` | **`kind: Bucket`** | **Supported** — a standalone bucket (`kind: Bucket`, MinIO-backed), or a `storage.buckets` sub-block on an `Application` when the bucket belongs to a single app. |
 
-The point of the disposition is that a report of "untranslatable" should carry the *right
-next step* — "map to `kind: Role`," "model isolation with Security Groups," — rather than a
-bare "unsupported." Mapping the neutral `role`/`queue` classes to these targets is
-open-transform's job, not the platform's.
+The point is that a portability report should carry the *right next step* — "map to `kind: Role`,"
+"map to `kind: Queue`" — rather than a bare "unsupported." Mapping the neutral resource classes to
+these targets is open-transform's job, not the platform's.
 
 ## Declared non-goals (boundary decisions)
 
