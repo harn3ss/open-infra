@@ -194,6 +194,7 @@ func TestSQLServer_RestoreStripedKeys(t *testing.T) {
 		"INSUFFICIENT STORAGE",                               // summed-headroom guard before RESTORE
 		"rm -f /restore/db_*.bak",                            // reclaim the whole staged set
 		"incomplete stripe set",                              // missing-stripe fails loudly
+		"restore already complete — skipping download",       // fetch-bak skips the re-download once restored
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("striped(keys) render missing %q; got:\n%s", want, grepCtx(out, "stripe"))
@@ -215,14 +216,21 @@ func TestSQLServer_RestoreStripedPrefix(t *testing.T) {
 		"restoreFrom": map[string]any{"bucket": "import", "prefix": "backup/", "secret": "restore-creds"},
 	}))
 	for _, want := range []string{
-		`mc find "src/import/backup/" --type f | sort`, // enumerate the stripe set, deterministic order
-		"no objects under prefix backup/",              // zero objects fails closed
-		`mc cp "$p" "/restore/db_${i}.bak"`,           // each object → ordered stripe name
-		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",  // multi-DISK restore (shared striped script)
+		`mc find "src/import/backup/" | sort`,           // enumerate the stripe set, deterministic order
+		"no objects under prefix backup/",               // zero objects fails closed
+		`mc cp "$p" "/restore/db_${i}.bak"`,            // each object → ordered stripe name
+		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",   // multi-DISK restore (shared striped script)
+		"restore already complete — skipping download", // fetch-bak skips the re-download once restored
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("striped(prefix) render missing %q; got:\n%s", want, grepCtx(out, "prefix"))
 		}
+	}
+	// Regression: `mc find` has NO --type flag (that is GNU find). Passing one makes mc print its help
+	// and emit an empty stripe list, so a live prefix restore fails "no objects under prefix". The old
+	// test asserted the broken string verbatim, so it passed while the command did not work.
+	if strings.Contains(out, "--type f") {
+		t.Errorf("striped(prefix) must not pass `--type f` to mc find (not an mc flag; empties the stripe set)")
 	}
 }
 
@@ -243,5 +251,25 @@ func TestSQLServer_RestoreAmbiguousFails(t *testing.T) {
 	}))
 	if err2 == nil || !strings.Contains(err2.Error(), "one of key, keys, or prefix is required") {
 		t.Errorf("restoreFrom without a key form must fail; got err=%v", err2)
+	}
+}
+
+// The sqlserver StatefulSet Object must derive readiness from the workload's readyReplicas, not the
+// provider default (ready as soon as the Object is CREATED). Otherwise the XR/claim report Ready while
+// the restore sidecar is still restoring (or has failed) — a silently-healthy false green that
+// contradicts the restoreFrom contract ("stays NotReady until the restore completes").
+func TestSQLServer_ReadinessDerivesFromReplicas(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	out := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"restoreFrom": map[string]any{"bucket": "import", "keys": []any{"a.bak", "b.bak"}, "secret": "restore-creds"},
+	}))
+	for _, want := range []string{
+		"policy: DeriveFromCelQuery",
+		"object.status.readyReplicas == object.spec.replicas",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sqlserver StatefulSet readiness missing %q; got:\n%s", want, grepCtx(out, "readiness"))
+		}
 	}
 }
