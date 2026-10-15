@@ -96,6 +96,15 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: function
             spec:
+              # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+              # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+              # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+              # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+              # zero function that only crashes on first activation can still read Ready until then — that
+              # residual cold-start case is caught at emit time, not here.)
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
               forProvider:
                 manifest:
                   apiVersion: serving.knative.dev/v1

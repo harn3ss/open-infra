@@ -612,6 +612,10 @@ func TestFunction_Code(t *testing.T) {
 			"name: OPENINFRA_FUNCTION_NAME",
 			"mountPath: /var/task", "name: openinfra-code",
 			"configMap: { name: fn-code }",
+			// The ksvc Object derives readiness from the Knative Service's Ready condition, so a
+			// crash-looping / failed revision surfaces as a NotReady claim (not ready-on-create).
+			"policy: DeriveFromCelQuery",
+			"object.status.conditions.exists",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("configMap-source render missing %q; got:\n%s", want, out)
