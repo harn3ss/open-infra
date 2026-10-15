@@ -33,6 +33,14 @@ spec:
     features:
       kubernetes.podspec-runtimeclassname: enabled
       kubernetes.podspec-nodeselector: enabled
+    defaults:
+      # AWS Lambda's max timeout is 900s, and spec.timeout on kind: Function is the Lambda-timeout
+      # analog, so 900 is the kind's real ceiling. Knative's built-in cap is 600, which rejected a
+      # revision declaring up to 900 at admission (claim stuck in ReconcileError) — raise the cap to
+      # 900 so anything an AWS estate can legally set, a Function can express. The XRD caps
+      # spec.timeout at 900 to match, so the two never disagree. (Raising the cap only PERMITS a
+      # longer declared timeout; it doesn't make anything run longer on its own.)
+      max-revision-timeout-seconds: "900"
     # Distributed tracing (#67): per-request spans through the activator + queue-proxy
     # of every kind: Function, shipped to Tempo's Zipkin receiver. Rendered by the
     # operator into the config-tracing ConfigMap (knative-serving ns).

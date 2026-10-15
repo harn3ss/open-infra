@@ -5832,8 +5832,11 @@ components:
                 \ Lambda memory-size knob. Set as both request and limit. Unset = cluster default."
             timeout:
               type: integer
+              minimum: 1
+              maximum: 900
               description: "Max wall-clock seconds per request (Knative revision timeout) \u2014 the AWS Lambda timeout knob.\
-                \ Unset = Knative default (300s)."
+                \ 1\u2013900 (900 = Lambda's own maximum, and the platform's configured Knative ceiling). Unset = Knative\
+                \ default (300s)."
             expose:
               type: boolean
               default: true
