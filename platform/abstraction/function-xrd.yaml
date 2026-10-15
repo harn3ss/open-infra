@@ -114,7 +114,7 @@ spec:
                 port:  { type: integer, default: 8080, description: "Container port the function listens on" }
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
                 memory:  { type: string, description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob. Set as both request and limit. Unset = cluster default." }
-                timeout: { type: integer, description: "Max wall-clock seconds per request (Knative revision timeout) — the AWS Lambda timeout knob. Unset = Knative default (300s)." }
+                timeout: { type: integer, minimum: 1, maximum: 900, description: "Max wall-clock seconds per request (Knative revision timeout) — the AWS Lambda timeout knob. 1–900 (900 = Lambda's own maximum, and the platform's configured Knative ceiling). Unset = Knative default (300s)." }
                 expose: { type: boolean, default: true, description: "Publish the function on the Knative gateway so it is reachable from the LAN (default true). Set false to make it cluster-local — labels the Knative Service networking.knative.dev/visibility: cluster-local, so only in-cluster callers can reach it." }
                 scaling:
                   type: object
