@@ -104,10 +104,21 @@ function addLayerPaths() {
   }
 }
 
-function loadHandler() {
+// packageIsModule reports whether /var/task is an ESM package ("type":"module" in package.json),
+// which decides how a bare .js handler loads — exactly as Node/AWS Lambda resolve it.
+function packageIsModule(dir) {
+  try {
+    const pj = path.join(dir, "package.json");
+    if (fs.existsSync(pj)) return JSON.parse(fs.readFileSync(pj, "utf8")).type === "module";
+  } catch { /* unreadable/invalid package.json -> default CommonJS */ }
+  return false;
+}
+
+async function loadHandler() {
   // Import the declared handler once at startup; a bad handler crashes the pod (non-zero exit) so the
-  // failure is visible, never served as a false 200. CommonJS handlers (require-resolvable) in v1;
-  // an ESM-only handler (.mjs / "type":"module") is a known limitation.
+  // failure is visible, never served as a false 200. Supports BOTH CommonJS and ESM handlers, the way
+  // AWS Lambda's Node runtimes do: a .mjs file is ESM, a .cjs file is CommonJS, and a bare .js file is
+  // ESM iff the package.json says "type":"module" (else CommonJS). ESM loads via dynamic import().
   const spec = process.env.OPENINFRA_HANDLER || "";
   const i = spec.lastIndexOf(".");
   if (i < 1) {
@@ -116,14 +127,37 @@ function loadHandler() {
   }
   const modName = spec.slice(0, i);
   const fnName = spec.slice(i + 1);
+  const base = path.resolve(TASK_DIR, modName);
+
+  // Resolve the handler file + module system (mirrors Lambda's extension precedence).
+  let file = null;
+  let esm = false;
+  if (fs.existsSync(base + ".mjs")) { file = base + ".mjs"; esm = true; }
+  else if (fs.existsSync(base + ".cjs")) { file = base + ".cjs"; esm = false; }
+  else if (fs.existsSync(base + ".js")) { file = base + ".js"; esm = packageIsModule(TASK_DIR); }
+  // else: no direct file match — fall back to require's own resolution (subpaths, a dir's index.js,
+  // node_modules). That path is CommonJS; an ESM-only module there would fail loudly below.
+
   let mod;
   try {
-    mod = require(path.resolve(TASK_DIR, modName));
+    if (file && esm) {
+      const { pathToFileURL } = require("url");
+      mod = await import(pathToFileURL(file).href);
+    } else {
+      mod = require(file || base);
+    }
   } catch (e) {
     process.stderr.write(`open-infra-runtime: cannot load handler '${spec}' from ${TASK_DIR}:\n` + (e && e.stack ? e.stack : String(e)) + "\n");
     process.exit(2);
   }
-  const fn = mod && mod[fnName];
+
+  // Resolve the named export: CJS exports.<fn>, an ESM named export, or a default-exported object's
+  // property (covers `export default { handler }` and transpiled `module.exports = { handler }`).
+  let fn = mod && mod[fnName];
+  if (typeof fn !== "function" && mod && mod.default) {
+    fn = typeof mod.default[fnName] === "function" ? mod.default[fnName]
+       : (fnName === "default" && typeof mod.default === "function" ? mod.default : undefined);
+  }
   if (typeof fn !== "function") {
     process.stderr.write(`open-infra-runtime: handler export '${fnName}' is not a function in '${modName}'\n`);
     process.exit(2);
@@ -168,7 +202,7 @@ function main() {
   (async () => {
     await fetchCode();
     addLayerPaths(); // layer modules require()-able before the handler loads
-    const handler = loadHandler();
+    const handler = await loadHandler();
     process.stderr.write(
       `open-infra-runtime: serving ${process.env.OPENINFRA_HANDLER} on :${PORT} ` +
         `(task dir ${TASK_DIR}, cold-start ${((Date.now() - START) / 1000).toFixed(3)}s)\n`
