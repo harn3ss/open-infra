@@ -49,10 +49,17 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
-  # GENERATE only (no validate/enforce) — Kyverno never blocks admission; the generated ResourceQuota
-  # does the bounding. background + generateExisting so it also applies to namespaces labelled later or
-  # already present, and synchronize keeps the quota matching the label value (and recreates it if
-  # something deletes it).
+  # failurePolicy Ignore is REQUIRED for this to genuinely "never block admission": this is a GENERATE
+  # policy, and with Kyverno's default (Fail) a Kyverno-admission-controller outage fails CLOSED on the
+  # resources Kyverno registers for it (namespaces + the resourcequotas it syncs), blocking their
+  # creation cluster-wide — which is exactly what happened 2026-10-15 when the controller lost the API.
+  # Ignore makes a Kyverno outage a no-op for admission: the quota is simply (re)generated later by the
+  # background controller (generateExisting/background), never a fail-closed block on creating a
+  # namespace or a quota.
+  failurePolicy: Ignore
+  # GENERATE only (no validate/enforce) — the generated ResourceQuota does the bounding. background +
+  # generateExisting so it also applies to namespaces labelled later or already present, and synchronize
+  # keeps the quota matching the label value (and recreates it if something deletes it).
   background: true
   generateExisting: true
   rules:
