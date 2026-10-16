@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 
 	"k8s.io/client-go/kubernetes"
@@ -51,6 +53,14 @@ func New(kubeconfigPath string) (*Client, error) {
 		return nil, err
 	}
 
+	// Raise client-go's client-side rate limiter well above its 5 QPS / 10 burst default. Both the
+	// aws-shim (a SubjectAccessReview PER data-plane request) and the console BFF are request-serving:
+	// at 5 QPS a modest request rate self-throttles, and SARs queued behind the limiter blow their
+	// context deadline — which CanDo turns into a fail-closed 403, indistinguishable from a real
+	// denial. Configurable; generous defaults the API server + authz webhook comfortably handle.
+	cfg.QPS = envFloat32("K8S_CLIENT_QPS", 100)
+	cfg.Burst = envInt("K8S_CLIENT_BURST", 200)
+
 	// rest.TransportFor wires TLS (CA bundle / insecure flag) and bearer-token
 	// auth into a single RoundTripper, so neither the proxy nor the watch code
 	// has to handle credentials by hand.
@@ -76,6 +86,25 @@ func New(kubeconfigPath string) (*Client, error) {
 		Host:      host,
 		Clientset: &iface,
 	}, nil
+}
+
+// envFloat32 / envInt read an optional numeric override from the environment, falling back to def.
+func envFloat32(key string, def float32) float32 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil {
+			return float32(f)
+		}
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 // loadConfig returns an in-cluster config when running inside a pod, otherwise
