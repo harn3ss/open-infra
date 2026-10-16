@@ -117,10 +117,13 @@ func run(logger *slog.Logger) error {
 		client, cerr := mongo.Connect(mctx, options.Client().ApplyURI(uri))
 		cancel()
 		if cerr != nil {
-			return cerr
+			// A backing-store outage must NOT take the whole shim down: leave the DynamoDB front door
+			// unconfigured (it answers an honest 501) while every other service + Cedar keep serving.
+			logger.Warn("DynamoDB front door unavailable: FerretDB connect failed — it answers 501 until recovery; the shim stays up", slog.String("err", cerr.Error()))
+		} else {
+			mongoDB = client.Database(getenv("MONGO_DB", "open_infra_dynamodb"))
+			logger.Info("connected to FerretDB for the DynamoDB front door", slog.String("db", mongoDB.Name()))
 		}
-		mongoDB = client.Database(getenv("MONGO_DB", "open_infra_dynamodb"))
-		logger.Info("connected to FerretDB for the DynamoDB front door", slog.String("db", mongoDB.Name()))
 	}
 
 	// The Postgres (documentdb extension) behind the SAME FerretDB, used only for atomic
@@ -130,18 +133,20 @@ func run(logger *slog.Logger) error {
 	// wire. Optional: unset -> Transact* answers an honest 501.
 	var pg *sql.DB
 	if pgURI := getenv("MONGO_PG_URI", ""); pgURI != "" {
-		db, perr := sql.Open("postgres", pgURI)
-		if perr != nil {
-			return perr
+		if db, perr := sql.Open("postgres", pgURI); perr != nil {
+			logger.Warn("DynamoDB transactions unavailable: documentdb Postgres open failed — Transact* answers 501 until recovery; the shim stays up", slog.String("err", perr.Error()))
+		} else {
+			pctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			perr = db.PingContext(pctx)
+			cancel()
+			if perr != nil {
+				// Non-fatal: a documentdb outage degrades only DynamoDB Transact*, not the whole shim.
+				logger.Warn("DynamoDB transactions unavailable: documentdb Postgres unreachable — Transact* answers 501 until recovery; the shim stays up", slog.String("err", perr.Error()))
+			} else {
+				pg = db
+				logger.Info("connected to the documentdb Postgres for DynamoDB transactions")
+			}
 		}
-		pctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		perr = db.PingContext(pctx)
-		cancel()
-		if perr != nil {
-			return fmt.Errorf("MONGO_PG_URI set but the documentdb Postgres is unreachable: %w", perr)
-		}
-		pg = db
-		logger.Info("connected to the documentdb Postgres for DynamoDB transactions")
 	}
 
 	// SQS front door state (queues + messages), Postgres-backed for faithful visibility-timeout and
@@ -161,91 +166,102 @@ func run(logger *slog.Logger) error {
 	var ddbStreamSt *ddbStreamStore
 	var cognitoSt *cognitoStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
-		db, serr := sql.Open("postgres", sqsURI)
-		if serr != nil {
-			return serr
+		// A backing-store outage must NOT take the whole shim down. Build these shared-Postgres stores in
+		// a closure; on ANY failure, log and leave them nil — each service is nil-guarded at registration,
+		// so it simply isn't served (an honest 501) while the shim, Cedar enforcement, and every other
+		// backend keep running. A shim restart re-attempts the connection.
+		initErr := func() error {
+			db, serr := sql.Open("postgres", sqsURI)
+			if serr != nil {
+				return serr
+			}
+			sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			serr = db.PingContext(sctx)
+			cancel()
+			if serr != nil {
+				return fmt.Errorf("SQS_PG_URI set but the SQS Postgres is unreachable: %w", serr)
+			}
+			sqsSt = &sqsStore{db: db}
+			if serr := sqsSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("SQS schema init failed: %w", serr)
+			}
+			// SNS shares the same Postgres (topics + subscriptions); delivery fans out into SQS queues.
+			snsSt = &snsStore{db: db}
+			if serr := snsSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("SNS schema init failed: %w", serr)
+			}
+			// KMS shares the same Postgres for its CMK METADATA only (lifecycle state, aliases); the
+			// cryptographic material lives in Vault Transit (see kms.go / vault_transit.go).
+			kmsSt = &kmsStore{db: db}
+			if serr := kmsSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("KMS schema init failed: %w", serr)
+			}
+			// Secrets Manager shares the same Postgres for secret METADATA + the version/staging-label map;
+			// the values themselves are stored as KMS ciphertext (never plaintext), see secrets.go.
+			secretsSt = &secretsStore{db: db}
+			if serr := secretsSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("Secrets Manager schema init failed: %w", serr)
+			}
+			// EventBridge shares the same Postgres for buses, rules, and targets; the in-process scheduler
+			// reloads rules from here after a restart. Delivery rides the durable Lambda(async)/SQS paths.
+			ebSt = &ebStore{db: db}
+			if serr := ebSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("EventBridge schema init failed: %w", serr)
+			}
+			// CloudWatch Logs shares the same Postgres for log groups/streams/events; a reaper enforces
+			// genuine per-group retention (see cloudwatchlogs.go).
+			cwlSt = &cwlStore{db: db}
+			if serr := cwlSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("CloudWatch Logs schema init failed: %w", serr)
+			}
+			// SSM Parameter Store shares the same Postgres for the parameter tree + versions + labels; a
+			// SecureString value is stored as KMS ciphertext (never plaintext), see ssm.go.
+			ssmSt = &ssmStore{db: db}
+			if serr := ssmSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("SSM schema init failed: %w", serr)
+			}
+			// API Gateway (HTTP API v2) shares the same Postgres for apis/routes/integrations/stages/
+			// authorizers; the data plane (the runtime HTTP→Lambda proxy) reads it on every invoke.
+			apigwSt = &apigwStore{db: db}
+			if serr := apigwSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("API Gateway schema init failed: %w", serr)
+			}
+			// REST API (v1) shares the same Postgres; own rest_* tables (resource tree, methods,
+			// integrations, deployment snapshots, stages).
+			apigwV1St = &apigwV1Store{db: db}
+			if serr := apigwV1St.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("API Gateway REST v1 schema init failed: %w", serr)
+			}
+			// CloudWatch metrics + alarms share the same Postgres; the in-process evaluator (started below)
+			// reads datapoints from here and fires SNS alarm actions.
+			cwSt = &cwStore{db: db}
+			if serr := cwSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("CloudWatch schema init failed: %w", serr)
+			}
+			// Kinesis Data Streams share the same Postgres for streams/shards/records; a reaper enforces each
+			// stream's retention window (see kinesis.go).
+			kinesisSt = &kinesisStore{db: db}
+			if serr := kinesisSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("Kinesis schema init failed: %w", serr)
+			}
+			// DynamoDB Streams share the same Postgres for per-table change-record logs (its own tables, so
+			// it never pollutes Kinesis ListStreams); a reaper enforces the 24h retention (see dynamo_streams.go).
+			ddbStreamSt = &ddbStreamStore{db: db}
+			if serr := ddbStreamSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("DynamoDB Streams schema init failed: %w", serr)
+			}
+			// Cognito user pools share the same Postgres for pools/clients/users (bcrypt password hashes).
+			cognitoSt = &cognitoStore{db: db}
+			if serr := cognitoSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("Cognito schema init failed: %w", serr)
+			}
+			logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
+			return nil
+		}()
+		if initErr != nil {
+			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito Postgres unavailable — those services answer 501 until recovery; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
+			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 		}
-		sctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		serr = db.PingContext(sctx)
-		cancel()
-		if serr != nil {
-			return fmt.Errorf("SQS_PG_URI set but the SQS Postgres is unreachable: %w", serr)
-		}
-		sqsSt = &sqsStore{db: db}
-		if serr := sqsSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("SQS schema init failed: %w", serr)
-		}
-		// SNS shares the same Postgres (topics + subscriptions); delivery fans out into SQS queues.
-		snsSt = &snsStore{db: db}
-		if serr := snsSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("SNS schema init failed: %w", serr)
-		}
-		// KMS shares the same Postgres for its CMK METADATA only (lifecycle state, aliases); the
-		// cryptographic material lives in Vault Transit (see kms.go / vault_transit.go).
-		kmsSt = &kmsStore{db: db}
-		if serr := kmsSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("KMS schema init failed: %w", serr)
-		}
-		// Secrets Manager shares the same Postgres for secret METADATA + the version/staging-label map;
-		// the values themselves are stored as KMS ciphertext (never plaintext), see secrets.go.
-		secretsSt = &secretsStore{db: db}
-		if serr := secretsSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("Secrets Manager schema init failed: %w", serr)
-		}
-		// EventBridge shares the same Postgres for buses, rules, and targets; the in-process scheduler
-		// reloads rules from here after a restart. Delivery rides the durable Lambda(async)/SQS paths.
-		ebSt = &ebStore{db: db}
-		if serr := ebSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("EventBridge schema init failed: %w", serr)
-		}
-		// CloudWatch Logs shares the same Postgres for log groups/streams/events; a reaper enforces
-		// genuine per-group retention (see cloudwatchlogs.go).
-		cwlSt = &cwlStore{db: db}
-		if serr := cwlSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("CloudWatch Logs schema init failed: %w", serr)
-		}
-		// SSM Parameter Store shares the same Postgres for the parameter tree + versions + labels; a
-		// SecureString value is stored as KMS ciphertext (never plaintext), see ssm.go.
-		ssmSt = &ssmStore{db: db}
-		if serr := ssmSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("SSM schema init failed: %w", serr)
-		}
-		// API Gateway (HTTP API v2) shares the same Postgres for apis/routes/integrations/stages/
-		// authorizers; the data plane (the runtime HTTP→Lambda proxy) reads it on every invoke.
-		apigwSt = &apigwStore{db: db}
-		if serr := apigwSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("API Gateway schema init failed: %w", serr)
-		}
-		// REST API (v1) shares the same Postgres; own rest_* tables (resource tree, methods,
-		// integrations, deployment snapshots, stages).
-		apigwV1St = &apigwV1Store{db: db}
-		if serr := apigwV1St.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("API Gateway REST v1 schema init failed: %w", serr)
-		}
-		// CloudWatch metrics + alarms share the same Postgres; the in-process evaluator (started below)
-		// reads datapoints from here and fires SNS alarm actions.
-		cwSt = &cwStore{db: db}
-		if serr := cwSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("CloudWatch schema init failed: %w", serr)
-		}
-		// Kinesis Data Streams share the same Postgres for streams/shards/records; a reaper enforces each
-		// stream's retention window (see kinesis.go).
-		kinesisSt = &kinesisStore{db: db}
-		if serr := kinesisSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("Kinesis schema init failed: %w", serr)
-		}
-		// DynamoDB Streams share the same Postgres for per-table change-record logs (its own tables, so
-		// it never pollutes Kinesis ListStreams); a reaper enforces the 24h retention (see dynamo_streams.go).
-		ddbStreamSt = &ddbStreamStore{db: db}
-		if serr := ddbStreamSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("DynamoDB Streams schema init failed: %w", serr)
-		}
-		// Cognito user pools share the same Postgres for pools/clients/users (bcrypt password hashes).
-		cognitoSt = &cognitoStore{db: db}
-		if serr := cognitoSt.ensureSchema(context.Background()); serr != nil {
-			return fmt.Errorf("Cognito schema init failed: %w", serr)
-		}
-		logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
 	}
 
 	// KMS crypto backend: Vault Transit, reached with the shim's OWN SA token (k8s-auth role
