@@ -16,6 +16,9 @@
     "lint": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-python": "^6.2.1",
     "@codemirror/lang-sql": "^6.10.0",
     "@novnc/novnc": "1.7.0",
     "@radix-ui/react-dialog": "1.1.23",
