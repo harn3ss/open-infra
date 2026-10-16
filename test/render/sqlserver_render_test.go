@@ -188,13 +188,13 @@ func TestSQLServer_RestoreStripedKeys(t *testing.T) {
 	for _, want := range []string{
 		`mc cp "src/import/backup_1.bak" "/restore/db_1.bak"`, // stripe 1 → ordered name
 		`mc cp "src/import/backup_2.bak" "/restore/db_2.bak"`, // stripe 2
-		"for f in /restore/db_*.bak",                         // restore builds the DISK set from the staged stripes
-		"RESTORE FILELISTONLY $DISKS",                        // FILELISTONLY across the whole set
-		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",         // multi-DISK restore
-		"INSUFFICIENT STORAGE",                               // summed-headroom guard before RESTORE
-		"rm -f /restore/db_*.bak",                            // reclaim the whole staged set
-		"incomplete stripe set",                              // missing-stripe fails loudly
-		"restore already complete — skipping download",       // fetch-bak skips the re-download once restored
+		"for f in /restore/db_*.bak",                          // restore builds the DISK set from the staged stripes
+		"RESTORE FILELISTONLY $DISKS",                         // FILELISTONLY across the whole set
+		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",          // multi-DISK restore
+		"INSUFFICIENT STORAGE",                                // summed-headroom guard before RESTORE
+		"rm -f /restore/db_*.bak",                             // reclaim the whole staged set
+		"incomplete stripe set",                               // missing-stripe fails loudly
+		"restore already complete — skipping download",        // fetch-bak skips the re-download once restored
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("striped(keys) render missing %q; got:\n%s", want, grepCtx(out, "stripe"))
@@ -216,8 +216,8 @@ func TestSQLServer_RestoreStripedPrefix(t *testing.T) {
 		"restoreFrom": map[string]any{"bucket": "import", "prefix": "backup/", "secret": "restore-creds"},
 	}))
 	for _, want := range []string{
-		`mc find "src/import/backup/" | sort`,           // enumerate the stripe set, deterministic order
-		"no objects under prefix backup/",               // zero objects fails closed
+		`mc find "src/import/backup/" | sort`,          // enumerate the stripe set, deterministic order
+		"no objects under prefix backup/",              // zero objects fails closed
 		`mc cp "$p" "/restore/db_${i}.bak"`,            // each object → ordered stripe name
 		"RESTORE DATABASE [$DB] $DISKS WITH REPLACE",   // multi-DISK restore (shared striped script)
 		"restore already complete — skipping download", // fetch-bak skips the re-download once restored
