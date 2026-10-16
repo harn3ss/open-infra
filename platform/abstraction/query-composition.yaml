@@ -95,8 +95,9 @@ spec:
                       openinfra.dev/query-ns: {{ $ns }}
                   spec:
                     backoffLimit: 1
-                    # keep finished Jobs a day so the console can read the outcome, then GC.
-                    ttlSecondsAfterFinished: 86400
+                    # No ttlSecondsAfterFinished: provider-kubernetes recreates a TTL-GC'd managed Job
+                    # → re-run loop (the query would re-run on every GC). The console reads the result
+                    # from MinIO (which persists); the finished Job stays as its own done-marker.
                     template:
                       metadata: { labels: { openinfra.dev/query: "true" } }
                       spec:
