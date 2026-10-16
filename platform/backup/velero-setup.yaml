@@ -16,9 +16,15 @@ metadata:
   namespace: minio
   annotations:
     argocd.argoproj.io/sync-wave: "0"
+    # Run as a Sync hook (re-created each sync, deleted before the next) like the other setup Jobs
+    # (query-iam-setup, longhorn-backup-setup, vault-transit-setup). It must NOT be a plain tracked
+    # Job with ttlSecondsAfterFinished: the TTL controller GCs it, then selfHeal sees it missing and
+    # re-creates it → the app is permanently OutOfSync and never converges (the setup-job TTL loop,
+    # ArgoCD variant). A hook is not part of the drift comparison, so no churn.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 20
-  ttlSecondsAfterFinished: 600
   template:
     spec:
       serviceAccountName: openinfra-bucket-setup
