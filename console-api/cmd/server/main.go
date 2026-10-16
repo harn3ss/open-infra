@@ -215,6 +215,11 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 			Post("/models/{namespace}/{name}/chat", handleModelChat(*client.Clientset, logger))
 		api.With(middleware.Timeout(30*time.Second)).
 			Get("/functions/{namespace}/{name}/routes", handleFunctionRoutes(*client.Clientset, logger))
+		// Code tab: the function's source (inline ConfigMap, unpacked .zip package,
+		// or an honest "not viewable" for a container image). Reads the package from
+		// MinIO, so give it room beyond the default request timeout.
+		api.With(middleware.Timeout(30*time.Second)).
+			Get("/functions/{namespace}/{name}/code", handleFunctionCode(*client.Clientset, logger))
 		api.With(middleware.Timeout(65*time.Second)).
 			Post("/functions/{namespace}/{name}/invoke", handleFunctionInvoke(*client.Clientset, logger))
 		api.With(middleware.Timeout(35*time.Second)).
