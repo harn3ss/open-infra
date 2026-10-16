@@ -68,7 +68,10 @@ spec:
                   metadata: { name: {{ $name }}-bucket-{{ $hash }}, namespace: minio }
                   spec:
                     backoffLimit: 20
-                    ttlSecondsAfterFinished: 600
+                    # No ttlSecondsAfterFinished: this Job is managed by a provider-kubernetes Object,
+                    # and a TTL-GC'd managed Job is recreated by the provider every poll → an infinite
+                    # re-run loop (~12.5 min). The finished Job persists as its own done-marker; the
+                    # claim's readiness keys off the creds Secret below, not the Job's presence.
                     template:
                       spec:
                         serviceAccountName: openinfra-bucket-setup
