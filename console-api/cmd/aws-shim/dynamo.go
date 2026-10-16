@@ -182,6 +182,11 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// Authorize with the same impersonated SubjectAccessReview every front door uses — one policy
 	// world; coarse on openinfra.dev/applications in v1.
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, table); !allowed {
+		// Log the denial with its reason: a client-only 403 with nothing recorded server-side is
+		// undiagnosable, and "authorization check failed" (a SAR error/timeout — e.g. the authz
+		// webhook down) reads very differently from a genuine policy denial.
+		h.logger.Warn("dynamo authz denied", "op", op, "table", table,
+			"principal", claims.PrincipalID(), "verb", verb, "reason", reason)
 		writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
@@ -189,6 +194,8 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// name is required to scope it; the table-agnostic ops (ListTables) skip resource-level policy.
 	if table != "" {
 		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
+			h.logger.Warn("dynamo data-plane denied", "op", op, "table", table,
+				"principal", claims.PrincipalID(), "reason", reason)
 			writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
 		}
