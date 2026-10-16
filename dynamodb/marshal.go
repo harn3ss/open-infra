@@ -1,8 +1,11 @@
 package dynamodb
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strconv"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // ToDynamoDB is the inverse of fromDynamoDB: a plain Go value → a DynamoDB-typed attribute value
@@ -18,6 +21,13 @@ func ToDynamoDB(v any) map[string]any {
 		return map[string]any{"S": x}
 	case bool:
 		return map[string]any{"BOOL": x}
+	case []byte:
+		// Binary: re-dress as the base64-wrapped B the wire protocol and an unmodified AWS SDK
+		// expect (the inverse of fromDynamoDB's B case).
+		return map[string]any{"B": base64.StdEncoding.EncodeToString(x)}
+	case primitive.Binary:
+		// BSON binary as decoded by the mongo driver on read-back.
+		return map[string]any{"B": base64.StdEncoding.EncodeToString(x.Data)}
 	case float64:
 		return map[string]any{"N": strconv.FormatFloat(x, 'f', -1, 64)}
 	case int:

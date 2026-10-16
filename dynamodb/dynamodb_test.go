@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
 	"testing"
 )
@@ -55,5 +56,49 @@ func TestMemStore_PutGetDelete(t *testing.T) {
 func TestMemStore_UnknownOperation(t *testing.T) {
 	if _, err := NewMemStore().Execute(context.Background(), map[string]any{"operation": "Query"}); err == nil {
 		t.Fatal("Query is not in slice 1 — must return an honest not-implemented error, not silently succeed")
+	}
+}
+
+// TestBinaryAttributes_RoundTrip covers the DynamoDB B/BS types that fromDynamoDB used to drop
+// through to fromMap (storing the {"B":"<base64>"} wrapper AS data — a silent fake). Neutral
+// placeholders only: a `payload` attribute and a few bytes.
+func TestBinaryAttributes_RoundTrip(t *testing.T) {
+	raw := []byte{0x00, 0x01, 0xff, 0xfe, 0x42}
+	b64 := base64.StdEncoding.EncodeToString(raw)
+
+	// B: typed → plain decodes to the actual bytes, not the wrapper map.
+	got := fromDynamoDB(map[string]any{"B": b64})
+	gb, ok := got.([]byte)
+	if !ok {
+		t.Fatalf("B did not decode to []byte, got %T (%v) — the wrapper would leak as data", got, got)
+	}
+	if !reflect.DeepEqual(gb, raw) {
+		t.Errorf("B bytes mismatch: got %v want %v", gb, raw)
+	}
+
+	// B: plain → typed re-dresses []byte as {"B": base64}.
+	if rt := ToDynamoDB(raw); !reflect.DeepEqual(rt, map[string]any{"B": b64}) {
+		t.Errorf("ToDynamoDB([]byte) = %v, want {B:%s}", rt, b64)
+	}
+
+	// Full round trip through an item attribute.
+	item := map[string]any{"payload": map[string]any{"B": b64}}
+	plain := fromMap(item)
+	if _, ok := plain["payload"].([]byte); !ok {
+		t.Fatalf("payload not decoded to []byte: %T", plain["payload"])
+	}
+	back := ToItem(map[string]any{"payload": plain["payload"]})
+	if !reflect.DeepEqual(back["payload"], map[string]any{"B": b64}) {
+		t.Errorf("payload round trip = %v, want {B:%s}", back["payload"], b64)
+	}
+
+	// BS: a set of base64 → a list of []byte (no longer the wrapper-as-data).
+	bsGot := fromDynamoDB(map[string]any{"BS": []any{b64, base64.StdEncoding.EncodeToString([]byte("xy"))}})
+	bsList, ok := bsGot.([]any)
+	if !ok || len(bsList) != 2 {
+		t.Fatalf("BS did not decode to a 2-element list: %T %v", bsGot, bsGot)
+	}
+	if _, ok := bsList[0].([]byte); !ok {
+		t.Errorf("BS element 0 not []byte: %T", bsList[0])
 	}
 }

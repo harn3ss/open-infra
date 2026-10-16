@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -172,6 +173,10 @@ func normalizeBSON(v any) any {
 		return float64(x)
 	case int64:
 		return float64(x)
+	case primitive.Binary:
+		// BSON binary → plain []byte, so the binary round-trips as a B attribute (ToDynamoDB
+		// re-dresses []byte as {"B": base64}) rather than leaking a driver type.
+		return x.Data
 	}
 	return v
 }
