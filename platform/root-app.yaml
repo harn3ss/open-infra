@@ -39,6 +39,29 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  # Crossplane writes binding fields (compositionRef/Revision/UpdatePolicy + the composed
+  # resourceRef(s), and claimRef on the XR) into every managed claim/XR AFTER creation. Those
+  # fields are not in git, so without this the app is PERMANENTLY OutOfSync on each managed
+  # Crossplane object — and with selfHeal that means it re-syncs forever, re-running the Sync
+  # hooks (query-iam-setup, etc.) every cycle and never converging (which is why a committed
+  # change can sit unapplied). Ignoring the Crossplane-owned fields lets the app reach Synced.
+  ignoreDifferences:
+    - group: iam.openinfra.dev
+      kind: Policy
+      jqPathExpressions:
+        - .spec.resourceRef
+        - .spec.resourceRefs
+        - .spec.compositionRef
+        - .spec.compositionRevisionRef
+        - .spec.compositionUpdatePolicy
+    - group: iam.openinfra.dev
+      kind: XPolicy
+      jqPathExpressions:
+        - .spec.claimRef
+        - .spec.resourceRefs
+        - .spec.compositionRef
+        - .spec.compositionRevisionRef
+        - .spec.compositionUpdatePolicy
   syncPolicy:
     automated:
       prune: true
