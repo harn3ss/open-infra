@@ -24,8 +24,8 @@ objects. Nobody reimplements authorization for cluster resources in app code.
 | Managed policy | `kind: Policy` (Allow-only) → labelled ClusterRole | RBAC aggregation |
 | Attach policy → role | an aggregation label | RBAC controller |
 | Inline policy | `spec.inline` on a `kind: Role` | RBAC |
-| **Explicit `Deny`** | `kind: Policy` with `effect: Deny` | **ValidatingAdmissionPolicy** |
-| **`Condition`** | `spec.condition` on a Deny statement | **ValidatingAdmissionPolicy** |
+| **Explicit `Deny`** | `kind: Policy` `dataPlane.statements` with `effect: Deny` | **Cedar engine** (shipped) |
+| **`Condition`** | `condition` on a Cedar statement (Source-IP / string-match / datetime) | **Cedar engine** (shipped) |
 | Permission boundary | the openinfra.dev product surface (Policies can grant nothing else) | RBAC + provider grant |
 | CloudTrail | k8s audit log (`impersonatedUser`) | already shipped |
 
@@ -35,8 +35,9 @@ objects. Nobody reimplements authorization for cluster resources in app code.
 cannot match on resource attributes (labels, spec fields). So:
 
 - The **`Allow` half** of an IAM-style policy maps cleanly onto RBAC rules.
-- The **`Deny` half and every `Condition` do not**, and must be enforced at a different point —
-  **admission**, where the object body and the requester's identity are both in scope.
+- The **`Deny` half and every `Condition` do not** — they are enforced by the **Cedar engine**
+  instead (shipped), where the requester's identity and the request context are both in scope.
+  See [policy-engine.md](policy-engine.md).
 
 Any design that pretends otherwise ships a policy editor that accepts JSON it cannot enforce.
 That is the single most important thing to get right here.
@@ -175,17 +176,20 @@ all live and verified end-to-end. How it actually works:
 and never grant the provider SA secrets/RBAC verbs. Those two fences — not the absence of
 `escalate` — are what bound the whole system.
 
-### Stage 3 — `Deny` and conditions, via ValidatingAdmissionPolicy
-Only when a concrete requirement appears (likeliest: "powerusers must not delete production VMs").
-Compile `effect: Deny` statements to a **VAP + binding** rather than a ClusterRole. Use plain VAP
-(CEL, in the API server) rather than Kyverno/Gatekeeper: nothing new to install, it cannot be down,
-and it cannot fail open. Ship every generated Deny as `validationActions: [Warn, Audit]` first,
-read the audit annotations, then flip to `Deny` — the same graduation discipline as the chaos suite.
+### `Deny` and conditions — via the Cedar engine (shipped)
+`effect: Deny` statements and `Condition`s are expressed as **Cedar**: `kind: Policy`
+`dataPlane.statements` carry `effect: Deny` (AWS-style precedence — an explicit Deny overrides
+Allow) plus request-context conditions — Source-IP CIDR, string-match, and datetime windows (the
+`aws:SourceIp` / `aws:username` / `aws:CurrentTime` equivalents the AWS policy importer maps). They
+are enforced by the Cedar engine at the **aws-shim data plane** for AWS-API calls, and the
+**control-plane Cedar enforce is live** — RBAC is the Allow base and Cedar only tightens, fail-closed
+with an RBAC-fallback on a corpus miss. This superseded the earlier plan to compile `Deny` to a
+ValidatingAdmissionPolicy. See [policy-engine.md](policy-engine.md).
 
-**Be explicit in the UI that Deny is enforced at admission, not authorization.** It will not appear
-in `SelfSubjectRulesReview`, so a denied action's button looks enabled and fails on click. Surface
-the policy's message verbatim. The alternative — duplicating deny logic in the UI — is the drift
-anti-pattern.
+**Be explicit in the UI that `Deny` is enforced by the engine, not RBAC authorization.** It will not
+appear in `SelfSubjectRulesReview`, so a denied action's button looks enabled and fails on use.
+Surface the policy's message verbatim. The alternative — duplicating deny logic in the UI — is the
+drift anti-pattern.
 
 ## Deliberately NOT building
 
@@ -311,7 +315,7 @@ Government control mapping: **AC-2(2)** (temporary accounts), **AC-6(2)/(5)** (l
 | `kind: Policy` + permission boundary | ✅ shipped — BFF + console UI; boundary proven live (out-of-boundary action → 400; forced rule dropped) |
 | `kind: Role` (aggregated) | ✅ shipped — decision A (provider holds `escalate`, bounded by the bind fence); effective grant = boundary, verified live |
 | Policies / Roles UI | ✅ shipped — Security & Identity → Policies / Roles (author, attach/detach, admins-only via SAR) |
-| `Deny` + conditions via VAP | ⬜ not started |
+| `Deny` + conditions (Cedar) | ✅ shipped — `kind: Policy` `dataPlane.statements`: `effect: Deny` with AWS precedence + Source-IP / string / datetime conditions, enforced by the Cedar engine; see [policy-engine.md](policy-engine.md) |
 | Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
 | `kind: Grant` (temporal / JIT access) | ✅ shipped — time-bounded binding, self-revoking reconciler (jq-based expiry + strict 24h cap, verified against the runtime image), role allowlist enforced in the composition, reconciler-liveness alert; console UI is a follow-up (creatable via GitOps/kubectl/BFF) |
 
