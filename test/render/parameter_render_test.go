@@ -43,3 +43,18 @@ func TestParameter_SpecMirrorOmitsValue(t *testing.T) {
 		t.Errorf("the composite should report ready; got:\n%s", grepCtx(out, "ready"))
 	}
 }
+
+// A value-by-reference parameter carries NO value in its spec — the value is populated out-of-band
+// into Vault. The composition must still render cleanly (spec mirror carries the path; nothing to leak).
+func TestParameter_ValueByReference(t *testing.T) {
+	tmpl := extractInlineTemplate(t, parameterCompositionPath)
+	out := render(t, tmpl, parameterCtx(map[string]any{
+		"path": "/app/db/host", "type": "String",
+	}))
+	if !strings.Contains(out, `path: "/app/db/host"`) {
+		t.Errorf("value-by-reference parameter should still render the spec-mirror path; got:\n%s", grepCtx(out, "path"))
+	}
+	if !strings.Contains(out, "ready: true") {
+		t.Errorf("value-by-reference parameter composite should report ready; got:\n%s", grepCtx(out, "ready"))
+	}
+}

@@ -17,6 +17,26 @@ spec:
   type: String          # or SecureString
 ```
 
+## Value by reference (populate out-of-band)
+
+`value` is **optional**. Omit it to declare a parameter — its `path`, `type`, and other metadata —
+*without* putting the value in the manifest, and populate the value out-of-band into the same Vault
+path instead (`params/<namespace><path>`, key `value`). The reconciler materializes it into the
+namespace Secret once present; until then the parameter is simply absent from the Secret (eventually
+consistent, never an empty env var). This is the AWS SSM model — the value lives only where
+`ssm:GetParameter` reads it and never travels through a mirrored or GitOps-tracked manifest.
+
+```yaml
+apiVersion: openinfra.dev/v1
+kind: Parameter
+metadata: { name: db-password, namespace: shop }
+spec:
+  path: /app/db/password
+  type: SecureString        # value omitted — put it in Vault at params/shop/app/db/password (key: value)
+```
+
+An inline `value` and value-by-reference can be mixed freely within a namespace.
+
 ## How apps consume it
 
 The reconciler flattens each path into an `UPPER_SNAKE` env key — `/app/db/host` → `APP_DB_HOST` —

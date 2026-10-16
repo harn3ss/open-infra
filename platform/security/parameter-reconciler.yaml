@@ -104,22 +104,37 @@ spec:
 
                   for ns in $namespaces; do
                     [ -n "$ns" ] || continue
-                    # Write each value into the KV-v2 tree at params/<ns>/<path>.
+                    # Write each INLINE value into the KV-v2 tree at params/<ns>/<path>. A Parameter with no
+                    # spec.value is VALUE-BY-REFERENCE: its value is populated out-of-band into the same Vault
+                    # path, so it is skipped here — writing an empty value would clobber that out-of-band secret.
                     kubectl get parameters.openinfra.dev -n "$ns" -o json \
-                      | jq -r '.items[] | [.spec.path, .spec.value] | @tsv' \
+                      | jq -r '.items[] | select(.spec.value != null) | [.spec.path, .spec.value] | @tsv' \
                       | while IFS="$(printf '\t')" read -r path value; do
                           vault kv put "params/${ns}${path}" value="$value" >/dev/null
                         done
 
-                    # Materialize the per-namespace Secret: flatten /app/db/host -> APP_DB_HOST.
-                    kubectl get parameters.openinfra.dev -n "$ns" -o json \
+                    # Materialize the per-namespace Secret from VAULT — the single source of truth for BOTH
+                    # inline values (written just above) and value-by-reference values (populated out-of-band).
+                    # Flatten /app/db/host -> APP_DB_HOST. A path with no value in Vault yet (a value-by-
+                    # reference parameter still awaiting its out-of-band value) is omitted until it is
+                    # populated: eventually consistent, never an empty env var. Each value is piped through jq
+                    # (never a shell variable) so any content is preserved byte-for-byte.
+                    kv="$(mktemp)"
+                    kubectl get parameters.openinfra.dev -n "$ns" -o jsonpath='{range .items[*]}{.spec.path}{"\n"}{end}' \
+                      | while IFS= read -r path; do
+                          [ -n "$path" ] || continue
+                          key="$(printf '%s' "$path" | sed -e 's#^/##' -e 's#[/-]#_#g' | tr '[:lower:]' '[:upper:]')"
+                          vault kv get -format=json "params/${ns}${path}" 2>/dev/null \
+                            | jq -ec --arg k "$key" '.data.data.value as $v | if $v == null then empty else {($k): $v} end' >> "$kv" || true
+                        done
+                    jq -s 'add // {}' "$kv" \
                       | jq '{
                           apiVersion: "v1", kind: "Secret",
                           metadata: { name: "openinfra-parameters", namespace: $ns,
                                       labels: { "openinfra.dev/parameters": "true" } },
-                          stringData: ( reduce .items[] as $p ({};
-                            .[$p.spec.path | ltrimstr("/") | gsub("[/-]"; "_") | ascii_upcase] = $p.spec.value) )
+                          stringData: .
                         }' --arg ns "$ns" \
                       | kubectl apply -f -
+                    rm -f "$kv"
                     echo "reconciled parameters for namespace $ns"
                   done
