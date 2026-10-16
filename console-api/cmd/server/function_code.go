@@ -46,15 +46,16 @@ type codeFile struct {
 // Lambda "Code source" panel: inline files for small handlers, the unpacked zip
 // for a deployment package, or an honest "not available" for a BYO container.
 type codeResp struct {
-	Mode       string     `json:"mode"` // "inline" | "zip" | "image" | "none"
-	Runtime    string     `json:"runtime,omitempty"`
-	Handler    string     `json:"handler,omitempty"`
-	Image      string     `json:"image,omitempty"`  // mode=image
-	Bucket     string     `json:"bucket,omitempty"` // mode=zip
-	Key        string     `json:"key,omitempty"`    // mode=zip
-	Files      []codeFile `json:"files"`
-	TotalFiles int        `json:"totalFiles"`
-	Note       string     `json:"note,omitempty"` // why source isn't shown, or a truncation notice
+	Mode        string     `json:"mode"` // "inline" | "zip" | "image" | "none"
+	Runtime     string     `json:"runtime,omitempty"`
+	Handler     string     `json:"handler,omitempty"`
+	Image       string     `json:"image,omitempty"`  // mode=image
+	Bucket      string     `json:"bucket,omitempty"` // mode=zip
+	Key         string     `json:"key,omitempty"`    // mode=zip
+	Files       []codeFile `json:"files"`
+	TotalFiles  int        `json:"totalFiles"`
+	PackageSize int64      `json:"packageSize,omitempty"` // zipped size (zip) or sum of inline files
+	Note        string     `json:"note,omitempty"`        // why source isn't shown, or a truncation notice
 }
 
 // functionSpec is the slice of a kind: Function CR the code viewer needs.
@@ -140,23 +141,26 @@ func handleFunctionCode(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 			}
 			for k, v := range cm.Data {
 				out.Files = append(out.Files, makeCodeFile(k, []byte(v)))
+				out.PackageSize += int64(len(v))
 			}
 			// BinaryData carries non-UTF-8 keys (rare for handler source).
 			for k, v := range cm.BinaryData {
 				out.Files = append(out.Files, makeCodeFile(k, v))
+				out.PackageSize += int64(len(v))
 			}
 
 		case src.Bucket != "" && src.Key != "":
 			out.Mode = "zip"
 			out.Bucket = src.Bucket
 			out.Key = src.Key
-			files, note, err := readZipFromMinIO(r.Context(), cs, src.Bucket, src.Key, logger)
+			files, note, size, err := readZipFromMinIO(r.Context(), cs, src.Bucket, src.Key, logger)
 			if err != nil {
 				writeError(w, http.StatusBadGateway, err.Error())
 				return
 			}
 			out.Files = files
 			out.Note = note
+			out.PackageSize = size
 
 		default:
 			out.Mode = "none"
@@ -171,26 +175,27 @@ func handleFunctionCode(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 
 // readZipFromMinIO fetches the deployment package and unpacks it in memory within
 // the code-viewer bounds. Returns the files, an optional truncation note, or an error.
-func readZipFromMinIO(ctx context.Context, cs kubernetes.Interface, bucket, key string, logger *slog.Logger) ([]codeFile, string, error) {
+func readZipFromMinIO(ctx context.Context, cs kubernetes.Interface, bucket, key string, logger *slog.Logger) ([]codeFile, string, int64, error) {
 	cl, err := minioClient(cs)
 	if err != nil {
-		return nil, "", errors.New("object storage unavailable")
+		return nil, "", 0, errors.New("object storage unavailable")
 	}
 	obj, err := cl.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, "", errors.New("could not read the code package")
+		return nil, "", 0, errors.New("could not read the code package")
 	}
 	defer obj.Close()
 
 	// Pull at most maxCodeZipBytes+1 so we can tell "too large" from "exactly at cap".
 	buf, err := io.ReadAll(io.LimitReader(obj, maxCodeZipBytes+1))
 	if err != nil {
-		return nil, "", errors.New("could not read the code package")
+		return nil, "", 0, errors.New("could not read the code package")
 	}
 	if int64(len(buf)) > maxCodeZipBytes {
-		return nil, "", errors.New("code package is too large to preview in the console (download it from the bucket instead)")
+		return nil, "", 0, errors.New("code package is too large to preview in the console (download it from the bucket instead)")
 	}
-	return unpackZipBytes(buf)
+	files, note, err := unpackZipBytes(buf)
+	return files, note, int64(len(buf)), err
 }
 
 // unpackZipBytes decompresses a deployment package in memory within the code-viewer
