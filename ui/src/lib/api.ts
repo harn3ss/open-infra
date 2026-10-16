@@ -602,6 +602,8 @@ export interface FunctionCode {
   key?: string;
   files: FunctionCodeFile[];
   totalFiles: number;
+  /** Zipped package size (zip mode) or sum of inline file bytes. */
+  packageSize?: number;
   note?: string;
 }
 
