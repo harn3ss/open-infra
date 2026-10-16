@@ -37,7 +37,7 @@ spec:
           properties:
             spec:
               type: object
-              required: [path, value]
+              required: [path]
               properties:
                 path:
                   type: string
@@ -45,7 +45,7 @@ spec:
                   pattern: '^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$'
                 value:
                   type: string
-                  description: "The parameter value. For a SecureString this is held in Vault (KV-v2, encrypted at rest) and delivered via the namespace Secret."
+                  description: "The parameter value, held in Vault (KV-v2, encrypted at rest) and delivered via the namespace Secret. OPTIONAL — omit it for a VALUE-BY-REFERENCE parameter: declare the path (and metadata) with no value in the manifest, and populate the value out-of-band into the same Vault path (params/<namespace><path>, key `value`). The reconciler materializes it into the namespace Secret once present, and the parameter is simply absent from the Secret until then (so the value never has to travel through a mirrored manifest). The AWS SSM parameter-store model, where ssm:GetParameter is the one place the value lives."
                 type:
                   type: string
                   default: String
