@@ -583,6 +583,39 @@ export function getFunctionRoutes(
   );
 }
 
+export interface FunctionCodeFile {
+  path: string;
+  size: number;
+  content?: string; // UTF-8 text; absent when binary or too large
+  binary?: boolean;
+  tooLarge?: boolean;
+  truncated?: boolean;
+}
+export interface FunctionCode {
+  /** inline = ConfigMap source files, zip = unpacked deployment package,
+   *  image = container image (no source), none = nothing to show. */
+  mode: "inline" | "zip" | "image" | "none";
+  runtime?: string;
+  handler?: string;
+  image?: string;
+  bucket?: string;
+  key?: string;
+  files: FunctionCodeFile[];
+  totalFiles: number;
+  note?: string;
+}
+
+/** Read a function's source for the Code tab (handler source, unpacked zip package,
+ *  or an honest "not viewable" for a container-image function). Read-only. */
+export function getFunctionCode(
+  namespace: string,
+  name: string,
+): Promise<FunctionCode> {
+  return request<FunctionCode>(
+    `/functions/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/code`,
+  );
+}
+
 /** Test a resolver against a GraphQLApi's engine (its POST /test-resolver): render the
  *  request/response templates against a sample $ctx WITHOUT touching a data source. The BFF proxies to
  *  the in-cluster engine Service the browser can't reach. */
