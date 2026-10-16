@@ -26,6 +26,7 @@ import {
 } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
+import { FunctionCodeTab } from "./function-code-tab";
 import type { OpenInfraFunction } from "@/types/k8s";
 import { InstanceTypeLabel } from "@/components/common/instance-type-label";
 import { LAMBDA_MEMORY_TIERS } from "@/lib/instance-types";
@@ -213,8 +214,9 @@ export function FunctionDetailPage() {
       subtitle={`Serverless function · ${namespace}`}
       status={claimHealth(fn)}
     >
-      <Tabs defaultValue="test">
+      <Tabs defaultValue="code">
         <TabsList>
+          <TabsTrigger value="code">Code</TabsTrigger>
           <TabsTrigger value="test">Test</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -222,6 +224,10 @@ export function FunctionDetailPage() {
           <TabsTrigger value="yaml">YAML</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="code" className="pt-4">
+          <FunctionCodeTab namespace={namespace} name={name} />
+        </TabsContent>
 
         <TabsContent value="security" className="pt-4">
           <ResourceSecurityTab
