@@ -12,6 +12,7 @@ package dynamodb
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -42,6 +43,12 @@ func fromDynamoDB(v any) any {
 				// Normalize to float64 regardless of how N arrived: a JSON number (VTL), a JS int64
 				// (goja), or a stringified DynamoDB-SDK value. The un-marshalled result is always a
 				// plain float64, as the response phase expects.
+				//
+				// DELIBERATE PRECISION LIMIT: DynamoDB N carries up to 38 significant digits; a
+				// float64 holds ~15-17. A value wider than that is rounded here. This is a conscious
+				// choice (the response phase and the plain-value store operate in float64), not an
+				// accident — an estate needing exact high-precision decimals (e.g. monetary values at
+				// full DynamoDB precision) would need N carried as a string end-to-end instead.
 				switch n := val.(type) {
 				case float64:
 					return n
@@ -59,6 +66,17 @@ func fromDynamoDB(v any) any {
 				return val
 			case "NULL":
 				return nil
+			case "B":
+				// DynamoDB binary: the wire/JSON form is a base64 string. Decode to raw bytes so the
+				// store holds the actual value (BSON round-trips []byte as binary), never the type
+				// wrapper preserved as data — the same loud-not-silent contract this front door keeps
+				// everywhere else. On an undecodable value, keep it rather than drop it.
+				if s, ok := val.(string); ok {
+					if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+						return b
+					}
+				}
+				return val
 			case "L":
 				if list, ok := val.([]any); ok {
 					out := make([]any, len(list))
@@ -72,6 +90,24 @@ func fromDynamoDB(v any) any {
 					return fromMap(mm)
 				}
 			case "SS", "NS":
+				return val
+			case "BS":
+				// Binary set: a list of base64 strings → a list of []byte. Like SS/NS, set-ness is
+				// not preserved on read-back (it re-dresses as L), but the values are no longer the
+				// wrapper-as-data.
+				if list, ok := val.([]any); ok {
+					out := make([]any, len(list))
+					for i, e := range list {
+						if s, ok := e.(string); ok {
+							if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+								out[i] = b
+								continue
+							}
+						}
+						out[i] = e
+					}
+					return out
+				}
 				return val
 			}
 		}
