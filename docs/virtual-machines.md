@@ -47,7 +47,7 @@ and how to connect.
 | `fedora-40` | Linux | cloud image |
 | `debian-12` | Linux | cloud image |
 | `centos-stream-9` | Linux | cloud image |
-| `windows-server-2019`, `-2022`, `-2025` | Windows | **clones `<os>-golden`** — build it on the VM Images page (see below) |
+| `windows-server-2016`, `-2019`, `-2022`, `-2025` | Windows | **clones `<os>-golden`** — build it on the VM Images page (see below). `-2016` has no auto-fetchable eval ISO, so build it with `kind: VmImage` `spec.sourceUrl` (a supplied ISO) or `spec.existingGoldenClaim` (adopt an imported disk — the migration path) |
 
 The catalog lives in two places that must stay in sync: the XRD enum
 (`platform/abstraction/vm-xrd.yaml`) and the Composition's `$catalog`
