@@ -54,14 +54,15 @@ build/CI pipeline (git push → build → deploy), and a backend-provisioning la
 
 - **Static frontend hosting** is ported: **`kind: StaticSite`** serves a built `dist/` from MinIO
   with an SPA fallback and TLS (see [static-sites.md](static-sites.md)).
-- **The managed build pipeline** (git → build → deploy) is a **decided build** (git repo + build
-  command → sandboxed build Job → publish the output to the StaticSite bucket, on push). Until it
-  lands, the build half is the adopter's own CI pushing artifacts to the StaticSite bucket.
+- **The managed build pipeline** (git → build → deploy) **has landed**: `kind: StaticSite`
+  `spec.build` polls a git repo and, on a new commit, clones it, runs the build command in a
+  sandboxed (non-root, credential-less) Job, and publishes the output directory to the site bucket
+  (the server then serves it). Omit `spec.build` to keep pushing pre-built artifacts from your own CI.
 - **Backend provisioning** is the core of open-infra — the APIs, functions, data, and identity the
   frontend talks to, expressed as open-infra kinds (or via `cfn`/Terraform where the template maps).
 
 So a Cognito+AppSync+DynamoDB+Amplify app migrating in expresses its backend as open-infra kinds and
-hosts its frontend on `StaticSite`; the git-push-to-build step is the one piece still being built.
+hosts its frontend on `StaticSite` — including the git-push-to-build step, via `spec.build`.
 
 ## Elastic Beanstalk → `kind: Application`
 
@@ -132,11 +133,12 @@ Recorded honestly so no one reads this as "ready":
 
 - **The DynamoDB data layer** — the aws-shim ships a **DynamoDB front door**: CreateTable,
   GetItem / PutItem / DeleteItem / UpdateItem, Query, full Scan, and the batch item APIs
-  (BatchGetItem / BatchWriteItem) — see [`docs/aws-shim.md`](aws-shim.md). What remains: there is
-  **no standalone table *kind*** (a Dynamo table isn't yet a first-class declarative resource), and
-  the open-appsync *VTL-resolver* data-source path covers only single-item CRUD + Query/Scan (no
-  batch/transactional writes on that path). A Dynamo-backed app works against the shim surface, but
-  not yet as a declared table kind.
+  (BatchGetItem / BatchWriteItem) — see [`docs/aws-shim.md`](aws-shim.md). A DynamoDB table is also a
+  **first-class declarative resource — `kind: Table`** (name, key schema, TTL, billing mode /
+  capacity; point-in-time recovery on the CNPG-backed store). What remains: the open-appsync
+  *VTL-resolver* data-source path covers only single-item CRUD + Query/Scan (no batch/transactional
+  writes on that path). So a Dynamo-backed app works against the shim surface and declares its tables
+  as `kind: Table`.
 - **Cognito self-service management** — open-infra now **hosts a user pool**
   ([`kind: UserPool`](auth-migration.md) — Keycloak, hosted sign-up/sign-in UI, OIDC issuance), so
   the identity-provider half is covered. What is still absent is a programmatic self-service
