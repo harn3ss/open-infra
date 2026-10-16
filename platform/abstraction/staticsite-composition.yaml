@@ -64,7 +64,8 @@ spec:
                   metadata: { name: {{ $name }}-site-setup, namespace: minio }
                   spec:
                     backoffLimit: 20
-                    ttlSecondsAfterFinished: 600
+                    # No ttlSecondsAfterFinished: provider-kubernetes recreates a TTL-GC'd managed Job
+                    # → infinite re-run loop; the finished Job persists as its done-marker (see bucket-composition.yaml).
                     template:
                       spec:
                         serviceAccountName: openinfra-bucket-setup
