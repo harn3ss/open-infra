@@ -103,6 +103,12 @@ spec:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
-          resources: { requests: { cpu: 25m, memory: 64Mi }, limits: { cpu: 500m, memory: 256Mi } }
+          # This is the cluster-wide API-server authorizer (enforce mode): it holds the full
+          # control-plane Policy corpus in memory and evaluates EVERY SAR. Under estate-mirror scale
+          # (a large corpus + a high SAR rate from thousands of reconciles + the aws-shim's per-request
+          # SARs) 256Mi OOMKilled it repeatedly (240 restarts), and a crashlooping authorizer times out
+          # SARs cluster-wide -> intermittent 403s on the data path. Raised to 1Gi (see multus 1Gi for
+          # the same class of fix) and CPU to 1 to cut SAR latency under load.
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
       volumes:
         - { name: tls, secret: { secretName: authz-webhook-tls } }
