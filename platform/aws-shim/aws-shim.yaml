@@ -644,6 +644,14 @@ spec:
           # and optionally OIDC_GROUPS_CLAIM (explicit override always wins; else inferred from issuer).
           envFrom:
             - configMapRef: { name: aws-shim-oidc, optional: true }
+          # Startup gate: the shim runs ~13 per-service ensureSchema calls against the DynamoDB/documentdb
+          # backend before it serves, which on a cold or just-restored backend can exceed the liveness
+          # budget — so liveness used to SIGTERM it mid-startup (crashloop). The startupProbe gives startup
+          # up to ~5min to reach /healthz; liveness/readiness (short) only engage once it's serving.
+          startupProbe:
+            httpGet: { path: /healthz, port: 4566 }
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             httpGet: { path: /healthz, port: 4566 }
             initialDelaySeconds: 5
