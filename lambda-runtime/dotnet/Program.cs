@@ -83,10 +83,15 @@ static class Bootstrap
         using var ms = new MemoryStream();
         await resp.ResponseStream.CopyToAsync(ms);
         ms.Position = 0;
+        // Capture the length BEFORE constructing the ZipArchive: its using-block disposes `ms`
+        // (ZipArchive defaults to leaveOpen:false), so reading ms.Length after it throws
+        // ObjectDisposedException ("Cannot access a closed Stream") — which crashed the bootstrap
+        // of every dotnet function before a byte of the package was unpacked.
+        long size = ms.Length;
         Directory.CreateDirectory(dest);
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Read))
             zip.ExtractToDirectory(dest, overwriteFiles: true);
-        Console.Error.WriteLine($"open-infra-runtime: unpacked s3://{bucket}/{key} ({ms.Length} bytes) into {dest}");
+        Console.Error.WriteLine($"open-infra-runtime: unpacked s3://{bucket}/{key} ({size} bytes) into {dest}");
     }
 
     // Resolve the handler's dependencies from /var/task and the .NET layer dir (/opt/dotnet) — the
