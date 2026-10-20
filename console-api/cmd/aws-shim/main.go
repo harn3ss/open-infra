@@ -532,7 +532,7 @@ func run(logger *slog.Logger) error {
 	}
 	// Step Functions (states.*) — CreateStateMachine/StartExecution/… over kind: StateMachine/Execution,
 	// driven by the singleton statemachine controller. A state machine's roleArn grants its Tasks the
-	// role's authority via a per-execution STS session (/ the #168 pattern). Requires the
+	// role's authority via a per-execution STS session (the #168 pattern). Requires the
 	// dynamic client; the STS minter/roleResolver enable execution-role authority (nil ⇒ roleless only).
 	if dyn != nil {
 		sfnNS := getenv("STEPFUNCTIONS_NAMESPACE", keysNS)

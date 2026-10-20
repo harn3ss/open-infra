@@ -1,5 +1,5 @@
-// API Gateway REST (v1) VTL request/response MAPPING TEMPLATES for the aws-shim (,
-// increment 2). This is the data-plane complement to apigateway_v1.go: for a non-proxy integration
+// API Gateway REST (v1) VTL request/response MAPPING TEMPLATES for the aws-shim
+// (increment 2). This is the data-plane complement to apigateway_v1.go: for a non-proxy integration
 // (type "AWS" = Lambda, or "HTTP") API Gateway transforms the request body through a `requestTemplates`
 // VTL template before forwarding, and the response body through a `responseTemplates` template after.
 //

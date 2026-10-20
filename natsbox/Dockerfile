@@ -1,7 +1,7 @@
 # open-infra-nats-box — the NATS CLI (`nats`), built FROM SOURCE and world-readable.
 #
 # Replaces the reconcile-time pull of the mutable public `natsio/nats-box:latest` (docker.io) in the
-# queue/stream/dataflow/migration/replication setup Jobs (— the same external-`:latest`
+# queue/stream/dataflow/migration/replication setup Jobs (the same external-`:latest`
 # shape that broke when quay.io/minio/mc:latest started 401-ing). Building `nats` from a pinned release
 # against the current Go toolchain rebuilds away stale Go stdlib/dep CVEs, and re-materializing it at
 # 0755 (world-readable) + USER 65532 keeps the setup pods restricted-PSA clean — the same treatment as

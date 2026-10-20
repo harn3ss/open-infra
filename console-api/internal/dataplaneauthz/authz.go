@@ -120,7 +120,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 	// gets. So a Role principal is always "closed": we always run the engine (default-deny), even for a
 	// service none of its statements name, and even when it has no statements at all (a role with no policy
 	// can do nothing). A User stays additive: an S3 policy never governs DynamoDB for a User. This realizes
-	//'s rule that a session's authority is exactly its policies and may only narrow.
+	// the rule that a session's authority is exactly its policies and may only narrow.
 	closed := principalType == "Role"
 	governs := false
 	for _, s := range stmts {

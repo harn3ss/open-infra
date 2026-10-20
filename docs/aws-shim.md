@@ -941,7 +941,7 @@ verbs, and `SimulatePrincipalPolicy`.
 authority is exactly its attached policies**, evaluated **closed / default-deny** (a role with no policy can
 do nothing) — the faithful AWS model, and a deliberate departure from the additive-over-coarse-RBAC model a
 User gets. The coarse k8s-RBAC gate does not apply to an assumed role (k8s RBAC is not the role's authority);
-its policies are. This is the authority model of: the Cedar query carries the assumed
+its policies are. This is the authority model: the Cedar query carries the assumed
 session as the principal, the shim's backend credentials are never the authorization subject (a confused
 deputy would pass the allow case and fail every deny), and a session may only narrow.
 
