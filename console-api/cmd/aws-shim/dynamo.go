@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
@@ -59,6 +60,14 @@ type dynamoHandler struct {
 	// defaults to defaultAWSShimImage when unset.
 	restoreImage string
 	logger       *slog.Logger
+
+	// idxFail backs off re-attempting a failing secondary-index create. The table-sync ticker
+	// re-runs ensureGSI/LSIIndexes every cycle; when the documentdb background index builder can't
+	// authenticate under CNPG, that re-attempted every index every tick and
+	// flooded the Postgres log. We now attempt (and log) a failing (table,index) at most once per
+	// indexRetryBackoff. Guards concurrent access from the sync goroutine + request handlers.
+	idxMu   sync.Mutex
+	idxFail map[string]time.Time
 }
 
 // tableStream returns a table's DynamoDB Streams view type ("" if streams are not enabled for it).
@@ -125,7 +134,7 @@ func (h *dynamoHandler) emitStreamRecord(ctx context.Context, table, viewType, e
 }
 
 func newDynamoHandler(cs kubernetes.Interface, authzNS string, db *mongo.Database, pg *sql.DB, dbName string, logger *slog.Logger) *dynamoHandler {
-	return &dynamoHandler{cs: cs, authzNS: authzNS, db: db, pg: pg, dbName: dbName, logger: logger}
+	return &dynamoHandler{cs: cs, authzNS: authzNS, db: db, pg: pg, dbName: dbName, logger: logger, idxFail: map[string]time.Time{}}
 }
 
 const dynamoErrType = "com.amazonaws.dynamodb.v20120810#"

@@ -64,15 +64,22 @@ func (h *dynamoHandler) ensureLSIIndexes(ctx context.Context, table string, lsis
 		if len(l.KeyAttrs) == 0 {
 			continue
 		}
+		key := "lsi:" + table + ":" + l.Name
+		if !h.indexAttemptAllowed(key) {
+			continue // recently failed — backing off, don't re-attempt or re-log every sync tick
+		}
 		keys := bson.D{}
 		for _, a := range l.KeyAttrs {
 			keys = append(keys, bson.E{Key: a, Value: 1})
 		}
-		if _, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		_, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
 			Keys:    keys,
 			Options: options.Index().SetName("lsi_" + l.Name),
-		}); err != nil {
-			h.logger.Warn("lsi index create failed", "table", table, "index", l.Name, "err", err)
+		})
+		h.recordIndexResult(key, err != nil)
+		if err != nil {
+			h.logger.Warn("lsi index create failed", "table", table, "index", l.Name, "err", err,
+				"note", "backing off "+indexRetryBackoff.String()+" (query path is correct without it: scan+filter)")
 		}
 	}
 }
