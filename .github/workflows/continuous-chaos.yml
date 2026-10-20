@@ -15,8 +15,12 @@
 name: continuous-chaos
 
 on:
-  schedule:
-    - cron: "*/30 * * * *" # every ~30 min (GitHub schedules are best-effort)
+  # Scheduled runs are PAUSED: the dedicated chaos nodes were reclaimed as general cluster
+  # capacity, so there is no chaos-sandbox target (the sandbox pins to openinfra.dev/chaos nodes).
+  # Re-enable by uncommenting and restoring chaos-node segmentation
+  # (platform/storage/chaos-node-longhorn-reconciler.yaml + the node taint/label).
+  # schedule:
+  #   - cron: "*/30 * * * *" # every ~30 min (GitHub schedules are best-effort)
   workflow_dispatch:
     inputs:
       pick_seed:

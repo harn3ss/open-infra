@@ -10,8 +10,11 @@
 name: nightly-chaos
 
 on:
-  schedule:
-    - cron: "17 8 * * *" # ~nightly, off the top of the hour
+  # Scheduled runs are PAUSED: the chaos nodes were reclaimed as general cluster capacity, so there
+  # is no chaos-sandbox target. The individual scenarios remain runnable on demand via
+  # workflow_dispatch. Re-enable by uncommenting and restoring chaos-node segmentation.
+  # schedule:
+  #   - cron: "17 8 * * *" # ~nightly, off the top of the hour
   workflow_dispatch:
     inputs:
       scenario:
