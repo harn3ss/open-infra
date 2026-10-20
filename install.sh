@@ -547,13 +547,13 @@ EOF
     #     50Mi OOMKills the daemon (exit 137) → it crash-loops → new pods stick in
     #     ContainerCreating with "CmdAdd (shim): timed out". 512Mi was the first bump; a burst of
     #     ~30 concurrent CNI ADDs on one node (a bulk apply / scaled deployment fan-out) still
-    #     blows it (: OOM loop that never drains because the queued herd re-hits it
+    #     blows it (an OOM loop that never drains because the queued herd re-hits it
     #     on every restart, wedging the node). 1Gi absorbs a realistic admission burst so it
     #     degrades into slowness, not an OOM loop; the request stays 64Mi so it reserves nothing.
     #     (Multus-thick exposes no clean CNI-ADD concurrency cap, so headroom is the lever.)
     #  3) PRIORITY. Upstream ships NO priorityClassName, so on a node at its pod-count cap (110) the
     #     multus pod cannot schedule — it sits Pending behind ordinary workload and the node's CNI
-    #     deadlocks (: a bulk apply filled the node, a multus re-roll then couldn't get a
+    #     deadlocks (a bulk apply filled the node, a multus re-roll then couldn't get a
     #     slot, and the stuck workload was itself stuck BECAUSE multus was down). A CNI is node-critical:
     #     `system-node-critical` lets it PREEMPT a workload pod for its slot, so the CNI can never be
     #     starved of a pod slot by the very workload that depends on it.

@@ -64,8 +64,8 @@ spec:
             retention: 7d
             resources:
               requests: { memory: 512Mi }
-            # Pin Prometheus off the control-plane node (it was ~3 GiB on a box at 86% RAM + swapping)
-            # onto a node labelled openinfra.dev/monitoring=true (a labelled node), which has headroom. A node
+            # Pin Prometheus off the control-plane node (it was ~3 GiB on a box under memory pressure
+            # + swapping) onto any node labelled openinfra.dev/monitoring=true that has headroom. A node
             # LABEL, not a hostname, per the public-repo rule. TSDB is emptyDir (ephemeral), so this is
             # a plain reschedule — no volume to move. Re-apply the label if that node ever re-registers.
             nodeSelector:
