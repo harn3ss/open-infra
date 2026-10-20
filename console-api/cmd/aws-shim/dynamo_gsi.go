@@ -15,11 +15,41 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+// indexRetryBackoff bounds how often a failing secondary-index create is re-attempted. The
+// documentdb background index builder cannot authenticate its internal libpq connection under
+// CloudNativePG (fe_sendauth) — a backend limitation that is not transient — so
+// without a backoff the ~30s table-sync re-attempted every index every tick and flooded the
+// Postgres log, burying real errors. Queries are correct without the index (scan + filter), so
+// this is a loud-once, back-off cap: a failing (table,index) is attempted (and logged) at most
+// once per window, and still re-probed after it in case the backend is fixed (e.g. a CNPG change).
+const indexRetryBackoff = 30 * time.Minute
+
+// indexAttemptAllowed reports whether a (table,index) create may be attempted now — false while it
+// is inside the backoff window after a recent failure.
+func (h *dynamoHandler) indexAttemptAllowed(key string) bool {
+	h.idxMu.Lock()
+	defer h.idxMu.Unlock()
+	t, ok := h.idxFail[key]
+	return !ok || time.Since(t) >= indexRetryBackoff
+}
+
+// recordIndexResult clears the backoff on success, or starts/refreshes it on failure.
+func (h *dynamoHandler) recordIndexResult(key string, failed bool) {
+	h.idxMu.Lock()
+	defer h.idxMu.Unlock()
+	if failed {
+		h.idxFail[key] = time.Now()
+	} else {
+		delete(h.idxFail, key)
+	}
+}
 
 // gsiDef is a global secondary index: a name and its ordered key attributes (HASH first, then an
 // optional RANGE) — the shape stored in the table registry.
@@ -69,15 +99,22 @@ func (h *dynamoHandler) ensureGSIIndexes(ctx context.Context, table string, gsis
 		if len(g.KeyAttrs) == 0 {
 			continue
 		}
+		key := "gsi:" + table + ":" + g.Name
+		if !h.indexAttemptAllowed(key) {
+			continue // recently failed — backing off, don't re-attempt or re-log every sync tick
+		}
 		keys := bson.D{}
 		for _, a := range g.KeyAttrs {
 			keys = append(keys, bson.E{Key: a, Value: 1})
 		}
-		if _, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		_, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
 			Keys:    keys,
 			Options: options.Index().SetName("gsi_" + g.Name),
-		}); err != nil {
-			h.logger.Warn("gsi index create failed", "table", table, "index", g.Name, "err", err)
+		})
+		h.recordIndexResult(key, err != nil)
+		if err != nil {
+			h.logger.Warn("gsi index create failed", "table", table, "index", g.Name, "err", err,
+				"note", "backing off "+indexRetryBackoff.String()+" (query path is correct without it: scan+filter)")
 		}
 	}
 }
