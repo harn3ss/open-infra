@@ -188,11 +188,21 @@ So the AWS network-isolation model maps like this:
 | VPC / subnet *as a network* | `kind: Vpc` / `kind: Subnet` | kube-ovn per-tenant overlay networks + subnets, when you genuinely need separate address spaces |
 | Security group (the SG itself) | `kind: SecurityGroup` | direct equivalent, enforced by the CNI (kube-ovn) |
 | NACL / CIDR edge rules | `SecurityGroup` CIDR rules | CIDR matches **external** sources at the edge (see *Enforcement semantics* above) |
-| Route tables / IGW / NAT / peering | *(no counterpart)* | cluster networking + egress are the substrate's job, not an app-level kind |
+| Route tables / peering | `kind: Vpc` (`spec.routes` / `spec.peerings`) | `spec.routes` **is** the VPC route table (→ kube-ovn static routes); `spec.peerings` is VPC Peering (a /30 interconnect declared on both VPCs, non-transitive like AWS → kube-ovn `vpcPeerings`) |
+| Transit gateway | `kind: TransitGateway` | transitive hub-and-spoke routing across VPCs |
+| NAT / internet gateway | `kind: NatGateway` | the border device: it NATs private-subnet egress **and** fills the internet-gateway routing-hop role (a real hop that terminates + re-NATs, with EIP / floating-IP association). There is **no separate `InternetGateway` kind** — the NatGateway device is both |
+
+> **Substrate dependency.** `kind: Vpc` / `Subnet` / `NatGateway` / `TransitGateway` and the VPC
+> routes/peerings above require **kube-ovn** as the active CNI; they are **inert on the default
+> Canal substrate** (the `platform/networking/kube-ovn/` manifests are not even synced there — see
+> that directory's `README.md`). Which substrate a cluster runs is an operator decision. `kind:
+> SecurityGroup` remains the portable isolation primitive; the address-plan kinds carry this CNI
+> dependency.
 
 For **workload isolation**, a migration should map `aws_vpc`/`aws_subnet` security boundaries to
 Security Groups ("who may talk to whom"), not recreate the address plan. Where the estate needs the
-actual networks reproduced, `kind: Vpc` / `kind: Subnet` are the targets.
+actual networks reproduced, `kind: Vpc` / `kind: Subnet` (and the routing kinds above, on kube-ovn)
+are the targets.
 
 ## See also
 
