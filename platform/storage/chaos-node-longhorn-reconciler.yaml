@@ -66,6 +66,12 @@ metadata:
 data:
   reconcile.sh: |
     set -eu
+    # PAUSED: the dedicated chaos nodes were reclaimed as general cluster capacity, so this
+    # reconciler must NOT re-add the openinfra.dev/chaos NoSchedule taint — doing so would evict
+    # general workloads back off them. Re-enable chaos-node segmentation by removing this guard
+    # and un-suspending the CronJob below.
+    echo "chaos-node segmentation paused; nodes reclaimed as general capacity — nothing to reconcile"
+    exit 0
     found=0
     for node in $(kubectl get nodes -l openinfra.dev/chaos=true -o name); do
       found=1
@@ -126,6 +132,9 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "3"
 spec:
+  # Suspended: chaos-node segmentation is paused; the nodes were reclaimed as general cluster
+  # capacity. Flip back to false (and remove the reconcile.sh guard) to restore segmentation.
+  suspend: true
   schedule: "*/30 * * * *"
   # Replace, not Forbid: this reconcile is idempotent (re-ensures Longhorn state on chaos nodes), so a
   # superseding run is harmless — whereas Forbid + a run stuck in Terminating wedges every later
