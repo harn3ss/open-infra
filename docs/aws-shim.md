@@ -134,7 +134,7 @@ the sections below; the one-line summary:
 | **[RDS](#rds-real-postgresql-via-cloudnativepg-query-protocol-probe-proven)** | CloudNativePG (real Postgres) | query/XML | postgres only; MultiAZ/replicas/PITR/`StorageEncrypted` refused |
 | **[CloudWatch Logs](#cloudwatch-logs-postgres-backed-json-protocol-probe-proven)** | Postgres | JSON 1.1 | Logs Insights refused; retention genuinely enforced |
 | **[SSM Parameter Store](#ssm-parameter-store-postgres--kms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted SecureString | JSON 1.1 | Standard tier only; Advanced/policies refused |
-| **[API Gateway (HTTP API v2 + REST API v1)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda/HTTP proxy | restJson1 (REST paths) | v2 non-Lambda integrations refused; v1 VTL mapping + non-NONE authorizers are follow-ons |
+| **[API Gateway (HTTP API v2 + REST API v1)](#api-gateway-http-api-v2-two-plane-runtimelambda-proxy-probe-proven)** | Postgres + runtime HTTP→Lambda/HTTP proxy | restJson1 (REST paths) | v2 non-Lambda integrations refused; v1 adds VTL mapping, COGNITO authorizers + request validation (models/validators); Lambda `TOKEN`/`REQUEST` + `AWS_IAM` authorizers refused |
 | **[CloudWatch (metrics + alarms)](#cloudwatch-metrics--alarms-postgres-backed-owned-evaluator-query-protocol-probe-proven)** | Postgres + owned alarm evaluator | query/XML | dashboards + metric-math refused; SNS actions only |
 | **[Kinesis Data Streams](#kinesis-data-streams-postgres-backed-ordered-sharded-replayable-probe-proven)** | Postgres (ordered shard log) | JSON 1.1 | resharding + enhanced fan-out refused |
 | **[Cognito (user pools)](#cognito-user-pools-real-rs256-jwts-probe-proven)** | Postgres + RSA-signed JWTs | JSON 1.1 | SRP / identity pools / hosted UI / MFA refused |
@@ -795,15 +795,30 @@ REQUEST/Lambda authorizers.
 REST v1 (`/restapis/…`) is a sibling handler for the large estate of v1 APIs. It models the v1
 **resource tree** (`CreateRestApi` seeds the root `/`, `CreateResource` builds children), per-resource
 **methods** (`PutMethod`) and **integrations** (`PutIntegration`), an immutable **deployment snapshot**
-(`CreateDeployment` freezes the resource/method/integration tree), and **stages** that point at a deployment
-(`CreateStage`, with stage variables). Invoke resolves **stage → deployment snapshot → resource → method →
-integration**, matching paths with the same precedence as v2 (static > `{var}` > `{proxy+}`). Integrations:
-`AWS_PROXY` (Lambda, payload-format **1.0**, behind the same wiring-time `lambda:InvokeFunction` fence as
-v2), **`HTTP`/`HTTP_PROXY`** (reverse-proxied to an http(s) origin), and `MOCK`. Same two auth planes +
-Postgres (`rest_*` tables) as v2. **Follow-ons (refused/limited honestly):** VTL request/response **mapping
-templates** (the shared-module refactor to reuse the AppSync Velocity engine), and non-`NONE` method
-**authorizers** (IAM/Cognito/custom) — a method asking for more than `NONE` is refused at invoke, never
-silently bypassed.
+(`CreateDeployment` freezes the resource/method/integration tree **plus models + request validators**),
+and **stages** that point at a deployment (`CreateStage`, with stage variables). Invoke resolves **stage →
+deployment snapshot → resource → method → integration**, matching paths with the same precedence as v2
+(static > `{var}` > `{proxy+}`). Integrations: `AWS_PROXY` (Lambda, payload-format **1.0**, behind the same
+wiring-time `lambda:InvokeFunction` fence as v2), **`AWS`** and **`HTTP`** (non-proxy, with **VTL
+request/response mapping templates** — `PutIntegration` request templates, `PutIntegrationResponse` +
+`PutMethodResponse` on the response side), **`HTTP_PROXY`** (reverse-proxied to an http(s) origin), and
+`MOCK`. **Method authorizers:** `COGNITO_USER_POOLS` is enforced at invoke (the caller's JWT validated
+against the pool's issuer/JWKS, the same coreos/go-oidc path as v2); `TOKEN`/`REQUEST` (Lambda) and
+method-level `AWS_IAM` are **refused fail-closed** — an authorizer the shim cannot vet is an authentication
+false green, never silently admitted.
+
+**Request validation (AWS-faithful).** `CreateModel` registers a JSON-Schema payload model and
+`CreateRequestValidator` a named (`validateRequestBody`, `validateRequestParameters`) pair; `PutMethod`
+attaches a `requestValidatorId` + `requestModels` (contentType → model) + `requestParameters`
+(`method.request.(querystring|header|path).<name>` → required). At invoke — **after the authorizer, before
+the integration** — the deployed snapshot's validator checks required parameters (existence, not blank) and
+the body against the model's schema, returning AWS's exact shapes: `400 {"message": "Missing required
+request parameters: [name]"}` and `400 {"message": "Invalid request body"}`. Faithful quirks are preserved:
+parameters are checked before the body, and **body validation is skipped when no model matches the request's
+content type** (AWS: "if no matching content type is found, request validation is not performed"). The
+schema engine is the **shared `internal/apigwschema`** package — the *same* validator tier the v2
+`apigw-validator` runs — so a model validates identically on both surfaces. Same two auth planes + Postgres
+(`rest_*` tables) as v2.
 
 `probe/aws-shim-apigateway.sh` proves this end to end — a real SDK builds the API/integration/route/stage, a
 real HTTP POST to the invoke URL confirms the Lambda received the faithful **2.0 event** (path parameter,

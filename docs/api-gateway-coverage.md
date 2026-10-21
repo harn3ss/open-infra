@@ -68,9 +68,15 @@ this page describes).
 > GraphQL resolvers, so the two front doors can never drift on Velocity semantics; only the injected
 > `$util`/variable surface differs (`$input`/`$context`/`$stageVariables` here). A `COGNITO_USER_POOLS`
 > method authorizer validates the caller's JWT against the pool's issuer/JWKS (the same coreos/go-oidc
-> verifier the v2 authorizer uses). Honest gaps still open on v1: `TOKEN`/`REQUEST` (Lambda)
-> authorizers and `AWS_IAM` invoke signing (both refused fail-closed today, never bypassed), and a
-> provider/CFN resource type. The non-goals above still describe the declarative `HttpApi` model, which
+> verifier the v2 authorizer uses). **Request validation is shipped too:** `create-model` /
+> `create-request-validator` + per-method `requestValidatorId` / `requestModels` / `requestParameters`,
+> enforced at invoke (after the authorizer, before the integration) with AWS's exact `400` shapes
+> (`Invalid request body` / `Missing required request parameters: [...]`) — and, crucially, body
+> validation is skipped when no model matches the content type, as AWS does. The schema engine is the
+> **shared `internal/apigwschema`** package, the *same* validator tier the `apigw-validator` runs for
+> `kind: HttpApi`, so a Model validates identically on both front doors. Honest gaps still open on v1:
+> `TOKEN`/`REQUEST` (Lambda) authorizers and `AWS_IAM` invoke signing (both refused fail-closed today,
+> never bypassed), and a provider/CFN resource type. The non-goals above still describe the declarative `HttpApi` model, which
 > stays stage-less and transformation-free by design; the v1 wire API is where that lifecycle lives.
 
 ## In-cluster WAF (`spec.waf`)

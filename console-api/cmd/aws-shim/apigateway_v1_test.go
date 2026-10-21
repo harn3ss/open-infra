@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -24,6 +26,11 @@ func TestRestV1OpFromRequest(t *testing.T) {
 		{"POST", "/restapis/abc/deployments", "CreateDeployment", "abc", "", "", true},
 		{"POST", "/restapis/abc/stages", "CreateStage", "abc", "", "", true},
 		{"GET", "/restapis/abc/stages", "GetStages", "abc", "", "", true},
+		{"PUT", "/restapis/abc/resources/r1/methods/post/responses/200", "PutMethodResponse", "abc", "r1", "POST", true},
+		{"POST", "/restapis/abc/models", "CreateModel", "abc", "", "", true},
+		{"GET", "/restapis/abc/models", "GetModels", "abc", "", "", true},
+		{"POST", "/restapis/abc/requestvalidators", "CreateRequestValidator", "abc", "", "", true},
+		{"GET", "/restapis/abc/requestvalidators", "GetRequestValidators", "abc", "", "", true},
 		{"GET", "/v2/apis", "", "", "", "", false}, // v2 path is not ours
 		{"POST", "/restapis/abc/unknown", "", "", "", "", false},
 	}
@@ -75,28 +82,28 @@ func TestMatchRestRoute(t *testing.T) {
 	}
 
 	// exact static path
-	if i, _, _, _, ok := matchRestRoute(snap, "GET", "/items"); !ok || i.URI != "listItems" {
+	if i, _, _, ok := matchRestRoute(snap, "GET", "/items"); !ok || i.URI != "listItems" {
 		t.Errorf("/items GET should match listItems; got %q ok=%v", i.URI, ok)
 	}
 	// path variable + exact method beats ANY
-	i, params, _, _, ok := matchRestRoute(snap, "GET", "/items/42")
+	i, _, params, ok := matchRestRoute(snap, "GET", "/items/42")
 	if !ok || i.URI != "getItem" || params["id"] != "42" {
 		t.Errorf("/items/42 GET should match getItem with id=42; got uri=%q params=%v ok=%v", i.URI, params, ok)
 	}
 	// method with no exact → ANY
-	if i, _, _, _, ok := matchRestRoute(snap, "DELETE", "/items/42"); !ok || i.URI != "anyItem" {
+	if i, _, _, ok := matchRestRoute(snap, "DELETE", "/items/42"); !ok || i.URI != "anyItem" {
 		t.Errorf("/items/42 DELETE should fall to ANY (anyItem); got %q ok=%v", i.URI, ok)
 	}
 	// greedy proxy+
-	if i, p, _, _, ok := matchRestRoute(snap, "GET", "/files/a/b/c"); !ok || i.URI != "https://origin" || p["proxy"] != "a/b/c" {
+	if i, _, p, ok := matchRestRoute(snap, "GET", "/files/a/b/c"); !ok || i.URI != "https://origin" || p["proxy"] != "a/b/c" {
 		t.Errorf("/files/a/b/c should match the proxy+ HTTP origin; got uri=%q proxy=%q ok=%v", i.URI, p["proxy"], ok)
 	}
 	// a method whose integration is missing must NOT match
-	if _, _, _, _, ok := matchRestRoute(snap, "GET", "/"); ok {
+	if _, _, _, ok := matchRestRoute(snap, "GET", "/"); ok {
 		t.Errorf("/ GET has a method but no integration — must not match")
 	}
 	// unknown path
-	if _, _, _, _, ok := matchRestRoute(snap, "GET", "/nope"); ok {
+	if _, _, _, ok := matchRestRoute(snap, "GET", "/nope"); ok {
 		t.Errorf("/nope must not match")
 	}
 }
@@ -140,6 +147,111 @@ func TestHeaderFromIdentitySource(t *testing.T) {
 		if got := headerFromIdentitySource(in); got != want {
 			t.Errorf("headerFromIdentitySource(%q)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestRestV1Op_NameAndStatusCode(t *testing.T) {
+	// GetModel carries the model name; GetRequestValidator carries the validator id; PutMethodResponse
+	// carries the status code.
+	r := httptest.NewRequest("GET", "http://apigw/restapis/abc/models/Item", nil)
+	if v, ok := restV1OpFromRequest(r); !ok || v.Op != "GetModel" || v.Name != "Item" {
+		t.Errorf("GetModel got (%+v,%v)", v, ok)
+	}
+	r = httptest.NewRequest("GET", "http://apigw/restapis/abc/requestvalidators/val1", nil)
+	if v, ok := restV1OpFromRequest(r); !ok || v.Op != "GetRequestValidator" || v.Name != "val1" {
+		t.Errorf("GetRequestValidator got (%+v,%v)", v, ok)
+	}
+	r = httptest.NewRequest("PUT", "http://apigw/restapis/abc/resources/r1/methods/post/responses/201", nil)
+	if v, ok := restV1OpFromRequest(r); !ok || v.Op != "PutMethodResponse" || v.StatusCode != "201" || v.HTTPMethod != "POST" {
+		t.Errorf("PutMethodResponse got (%+v,%v)", v, ok)
+	}
+}
+
+func TestValidateRestRequest(t *testing.T) {
+	jsonSchema := func(s string) map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(s), &m); err != nil {
+			t.Fatalf("bad schema: %v", err)
+		}
+		return m
+	}
+	snap := restSnapshot{
+		Validators: []restRequestValidator{
+			{ID: "v-all", ValidateRequestBody: true, ValidateRequestParameters: true},
+			{ID: "v-params", ValidateRequestParameters: true},
+			{ID: "v-body", ValidateRequestBody: true},
+		},
+		Models: []restModel{
+			{Name: "Item", ContentType: "application/json", Schema: jsonSchema(`{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}`)},
+		},
+	}
+	hdr := func(kv ...string) http.Header {
+		h := http.Header{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			h.Set(kv[i], kv[i+1])
+		}
+		return h
+	}
+	q := func(raw string) url.Values { v, _ := url.ParseQuery(raw); return v }
+
+	// no validator → always ok
+	if reason, ok := validateRestRequest(snap, restMethod{}, "application/json", q(""), hdr(), nil, []byte(`{}`)); !ok {
+		t.Errorf("no validator should pass, got %q", reason)
+	}
+	// validator not in the snapshot → ok (additive; never a silent block)
+	if _, ok := validateRestRequest(snap, restMethod{RequestValidatorID: "ghost"}, "application/json", q(""), hdr(), nil, nil); !ok {
+		t.Error("missing validator should pass")
+	}
+
+	// parameters: missing required query + header → 400 listing the short names, sorted
+	mp := restMethod{RequestValidatorID: "v-params", RequestParameters: map[string]bool{
+		"method.request.querystring.q": true, "method.request.header.X-Tok": true}}
+	if reason, ok := validateRestRequest(snap, mp, "application/json", q(""), hdr(), nil, nil); ok || reason != "Missing required request parameters: [X-Tok, q]" {
+		t.Errorf("missing params got ok=%v reason=%q", ok, reason)
+	}
+	// all present + non-blank → pass
+	if _, ok := validateRestRequest(snap, mp, "application/json", q("q=1"), hdr("X-Tok", "t"), nil, nil); !ok {
+		t.Error("all required params present should pass")
+	}
+	// a blank query value counts as missing (AWS: present but not blank)
+	if reason, ok := validateRestRequest(snap, mp, "application/json", q("q="), hdr("X-Tok", "t"), nil, nil); ok || reason != "Missing required request parameters: [q]" {
+		t.Errorf("blank q should be missing; got ok=%v reason=%q", ok, reason)
+	}
+	// path parameter satisfied from the matched route
+	mpath := restMethod{RequestValidatorID: "v-params", RequestParameters: map[string]bool{"method.request.path.id": true}}
+	if _, ok := validateRestRequest(snap, mpath, "application/json", q(""), hdr(), map[string]string{"id": "42"}, nil); !ok {
+		t.Error("present path param should pass")
+	}
+	// a non-required parameter is ignored when absent
+	mopt := restMethod{RequestValidatorID: "v-params", RequestParameters: map[string]bool{"method.request.querystring.opt": false}}
+	if _, ok := validateRestRequest(snap, mopt, "application/json", q(""), hdr(), nil, nil); !ok {
+		t.Error("optional param absent should pass")
+	}
+
+	// body: invalid against the model → "Invalid request body"
+	mb := restMethod{RequestValidatorID: "v-body", RequestModels: map[string]string{"application/json": "Item"}}
+	if reason, ok := validateRestRequest(snap, mb, "application/json", q(""), hdr(), nil, []byte(`{"name":5}`)); ok || reason != "Invalid request body" {
+		t.Errorf("bad body got ok=%v reason=%q", ok, reason)
+	}
+	// valid body → pass (also proves charset params are stripped)
+	if _, ok := validateRestRequest(snap, mb, "application/json; charset=utf-8", q(""), hdr(), nil, []byte(`{"name":"ok"}`)); !ok {
+		t.Error("valid body should pass")
+	}
+	// empty body with a model → invalid (AWS rejects a missing body against a model)
+	if _, ok := validateRestRequest(snap, mb, "application/json", q(""), hdr(), nil, nil); ok {
+		t.Error("empty body against a model should be invalid")
+	}
+	// a content type with no mapped model → body validation skipped, even for garbage (AWS: no matching
+	// content type → validation not performed)
+	if _, ok := validateRestRequest(snap, mb, "text/plain", q(""), hdr(), nil, []byte(`not json`)); !ok {
+		t.Error("unmapped content type should skip body validation")
+	}
+
+	// precedence: parameters are checked before the body — a bad body AND a missing param reports params
+	mboth := restMethod{RequestValidatorID: "v-all", RequestModels: map[string]string{"application/json": "Item"},
+		RequestParameters: map[string]bool{"method.request.querystring.q": true}}
+	if reason, ok := validateRestRequest(snap, mboth, "application/json", q(""), hdr(), nil, []byte(`{"name":5}`)); ok || reason != "Missing required request parameters: [q]" {
+		t.Errorf("params should be checked before body; got ok=%v reason=%q", ok, reason)
 	}
 }
 

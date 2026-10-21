@@ -116,6 +116,20 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		h.putIntegration(ctx, w, r, claims, requestID, v.APIID, v.ResourceID, v.HTTPMethod, body)
 	case "PutIntegrationResponse":
 		h.putIntegrationResponse(ctx, w, requestID, v.APIID, v.ResourceID, v.HTTPMethod, v.StatusCode, body)
+	case "PutMethodResponse":
+		h.putMethodResponse(ctx, w, requestID, v.APIID, v.ResourceID, v.HTTPMethod, v.StatusCode, body)
+	case "CreateModel":
+		h.createModel(ctx, w, requestID, v.APIID, body)
+	case "GetModels":
+		h.getModels(ctx, w, requestID, v.APIID)
+	case "GetModel":
+		h.getModel(ctx, w, requestID, v.APIID, v.Name)
+	case "CreateRequestValidator":
+		h.createRequestValidator(ctx, w, requestID, v.APIID, body)
+	case "GetRequestValidators":
+		h.getRequestValidators(ctx, w, requestID, v.APIID)
+	case "GetRequestValidator":
+		h.getRequestValidator(ctx, w, requestID, v.APIID, v.Name)
 	case "CreateDeployment":
 		h.createDeployment(ctx, w, requestID, v.APIID, body)
 	case "CreateStage":
@@ -267,11 +281,30 @@ func (h *apigwV1Handler) putMethod(ctx context.Context, w http.ResponseWriter, r
 		authType = "NONE"
 	}
 	authID, _ := body["authorizerId"].(string)
-	if err := h.store.putMethod(ctx, apiID, restMethod{ResourceID: resID, HTTPMethod: httpMethod, AuthorizationType: authType, AuthorizerID: authID}); err != nil {
+	validatorID, _ := body["requestValidatorId"].(string)
+	// Request-validation config (AWS PutMethod): a validator id + the request models (contentType →
+	// model name) + required request parameters. Enforced at invoke against the deployed snapshot.
+	m := restMethod{
+		ResourceID: resID, HTTPMethod: httpMethod, AuthorizationType: authType, AuthorizerID: authID,
+		RequestValidatorID: validatorID,
+		RequestModels:      stringMap(body["requestModels"]),
+		RequestParameters:  boolMap(body["requestParameters"]),
+	}
+	if err := h.store.putMethod(ctx, apiID, m); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{"httpMethod": httpMethod, "authorizationType": authType})
+	resp := map[string]any{"httpMethod": httpMethod, "authorizationType": authType}
+	if m.RequestValidatorID != "" {
+		resp["requestValidatorId"] = m.RequestValidatorID
+	}
+	if len(m.RequestModels) > 0 {
+		resp["requestModels"] = m.RequestModels
+	}
+	if len(m.RequestParameters) > 0 {
+		resp["requestParameters"] = m.RequestParameters
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, resp)
 }
 
 func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID, apiID, resID, httpMethod string, body map[string]any) {
@@ -350,6 +383,187 @@ func (h *apigwV1Handler) putIntegrationResponse(ctx context.Context, w http.Resp
 		return
 	}
 	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{"statusCode": statusCode})
+}
+
+// putMethodResponse records a method response (PutMethodResponse): the response models +
+// response-parameter declarations for one statusCode. The method must already exist (AWS semantics); a
+// missing one is a NotFoundException. This is the method-response side of the model — a control-plane
+// contract tools define; the invoke path maps responses via IntegrationResponse, so it is not enforced
+// at runtime (matching AWS, which does not validate responses against method-response models).
+func (h *apigwV1Handler) putMethodResponse(ctx context.Context, w http.ResponseWriter, requestID, apiID, resID, httpMethod, statusCode string, body map[string]any) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	if statusCode == "" {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "PutMethodResponse requires a statusCode.")
+		return
+	}
+	mr := restMethodResponse{
+		ResourceID: resID, HTTPMethod: httpMethod, StatusCode: statusCode,
+		ResponseModels:     stringMap(body["responseModels"]),
+		ResponseParameters: boolMap(body["responseParameters"]),
+	}
+	if err := h.store.putMethodResponse(ctx, apiID, mr); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "no method "+httpMethod+" on resource "+resID+" to attach a response to (call PutMethod first).")
+			return
+		}
+		h.internal(w, requestID, err)
+		return
+	}
+	resp := map[string]any{"statusCode": statusCode}
+	if len(mr.ResponseModels) > 0 {
+		resp["responseModels"] = mr.ResponseModels
+	}
+	if len(mr.ResponseParameters) > 0 {
+		resp["responseParameters"] = mr.ResponseParameters
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, resp)
+}
+
+// createModel registers a reusable payload schema (CreateModel). The schema is JSON Schema; the shared
+// internal/apigwschema validator (the v2 apigw-validator tier) checks request bodies against it.
+func (h *apigwV1Handler) createModel(ctx context.Context, w http.ResponseWriter, requestID, apiID string, body map[string]any) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	name, _ := body["name"].(string)
+	if name == "" {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "CreateModel requires a name.")
+		return
+	}
+	ct, _ := body["contentType"].(string)
+	if ct == "" {
+		ct = "application/json"
+	}
+	desc, _ := body["description"].(string)
+	// AWS accepts the schema as a JSON string; accept either a string or an inline object.
+	schema := schemaFromBody(body["schema"])
+	if err := h.store.createModel(ctx, apiID, restModel{Name: name, ContentType: ct, Schema: schema, Description: desc}); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, modelJSON(restModel{Name: name, ContentType: ct, Schema: schema, Description: desc}))
+}
+
+func (h *apigwV1Handler) getModels(ctx context.Context, w http.ResponseWriter, requestID, apiID string) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	models, err := h.store.listModels(ctx, apiID)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(models))
+	for _, m := range models {
+		items = append(items, modelJSON(m))
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, map[string]any{"item": items})
+}
+
+func (h *apigwV1Handler) getModel(ctx context.Context, w http.ResponseWriter, requestID, apiID, name string) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	m, ok, err := h.store.getModel(ctx, apiID, name)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !ok {
+		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid model name specified: "+name)
+		return
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, modelJSON(m))
+}
+
+// createRequestValidator registers a named (validateRequestBody, validateRequestParameters) pair.
+func (h *apigwV1Handler) createRequestValidator(ctx context.Context, w http.ResponseWriter, requestID, apiID string, body map[string]any) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	name, _ := body["name"].(string)
+	vBody, _ := body["validateRequestBody"].(bool)
+	vParams, _ := body["validateRequestParameters"].(bool)
+	v := restRequestValidator{ID: shortID(10), Name: name, ValidateRequestBody: vBody, ValidateRequestParameters: vParams}
+	if err := h.store.createRequestValidator(ctx, apiID, v); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, validatorJSON(v))
+}
+
+func (h *apigwV1Handler) getRequestValidators(ctx context.Context, w http.ResponseWriter, requestID, apiID string) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	vs, err := h.store.listRequestValidators(ctx, apiID)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(vs))
+	for _, v := range vs {
+		items = append(items, validatorJSON(v))
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, map[string]any{"item": items})
+}
+
+func (h *apigwV1Handler) getRequestValidator(ctx context.Context, w http.ResponseWriter, requestID, apiID, id string) {
+	if !h.mustAPI(ctx, w, requestID, apiID) {
+		return
+	}
+	v, ok, err := h.store.getRequestValidator(ctx, apiID, id)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !ok {
+		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid request validator identifier specified: "+id)
+		return
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, validatorJSON(v))
+}
+
+// schemaFromBody accepts an AWS model schema as either a JSON string (how the SDK sends it) or an inline
+// JSON object, returning the decoded schema map (nil when absent/unparseable).
+func schemaFromBody(v any) map[string]any {
+	switch s := v.(type) {
+	case string:
+		if s == "" {
+			return nil
+		}
+		var m map[string]any
+		if json.Unmarshal([]byte(s), &m) == nil {
+			return m
+		}
+	case map[string]any:
+		return s
+	}
+	return nil
+}
+
+// modelJSON renders a model in AWS's GetModel shape (schema serialized back to a JSON string).
+func modelJSON(m restModel) map[string]any {
+	out := map[string]any{"name": m.Name, "contentType": m.ContentType}
+	if m.Description != "" {
+		out["description"] = m.Description
+	}
+	if len(m.Schema) > 0 {
+		if b, err := json.Marshal(m.Schema); err == nil {
+			out["schema"] = string(b)
+		}
+	}
+	return out
+}
+
+func validatorJSON(v restRequestValidator) map[string]any {
+	return map[string]any{
+		"id": v.ID, "name": v.Name,
+		"validateRequestBody":       v.ValidateRequestBody,
+		"validateRequestParameters": v.ValidateRequestParameters,
+	}
 }
 
 // createAuthorizer registers a method authorizer. The shim enforces COGNITO_USER_POOLS (validate the
@@ -545,20 +759,29 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 	if routePath == "" {
 		routePath = "/"
 	}
-	integ, pathParams, authType, authorizerID, matched := matchRestRoute(snap, r.Method, routePath)
+	integ, meth, pathParams, matched := matchRestRoute(snap, r.Method, routePath)
 	if !matched {
 		writeAGWError(w, http.StatusForbidden, "MissingAuthenticationTokenException", requestID, "Missing Authentication Token")
 		return
 	}
 	// Method authorizer. NONE serves open; COGNITO_USER_POOLS validates the caller's JWT (fail-closed);
 	// AWS_IAM and any unsupported type are refused (never silently bypassed).
-	if authType != "" && authType != "NONE" {
-		if !h.enforceMethodAuthorizer(w, r, snap, authType, authorizerID, requestID) {
+	if meth.AuthorizationType != "" && meth.AuthorizationType != "NONE" {
+		if !h.enforceMethodAuthorizer(w, r, snap, meth.AuthorizationType, meth.AuthorizerID, requestID) {
 			return
 		}
 	}
 
 	reqBody, _ := io.ReadAll(io.LimitReader(r.Body, 6<<20))
+
+	// Request validation (AWS "request validation"): runs AFTER the authorizer, BEFORE the integration,
+	// against the deployed snapshot's validator + models. An AWS-faithful 400 ({"message": "..."}) on
+	// failure; a no-op when the method has no validator attached.
+	if reason, valid := validateRestRequest(snap, meth, r.Header.Get("Content-Type"), r.URL.Query(), r.Header, pathParams, reqBody); !valid {
+		h.logger.Info("apigw v1 request validation rejected", "api", apiID, "stage", stage, "method", r.Method, "path", routePath, "reason", reason)
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, reason)
+		return
+	}
 
 	switch integ.Type {
 	case "AWS_PROXY":
