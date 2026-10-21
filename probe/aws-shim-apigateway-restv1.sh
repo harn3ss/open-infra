@@ -8,6 +8,9 @@
 #     event** (httpMethod, path, pathParameters.id, query, body), and the Lambda's STRUCTURED
 #     {statusCode,body} becomes the real HTTP response
 #   - an **HTTP_PROXY** integration reverse-proxies to an http origin (the shim's REST v1 non-Lambda path)
+#   - **request validation** (CreateModel + CreateRequestValidator + per-method requestModels/parameters):
+#     a missing required parameter and a body failing the Model each get AWS's exact 400 BEFORE the
+#     integration, and a well-formed request is admitted
 # and the NEGATIVES ("prove the no"):
 #   - a valid key ID with a WRONG secret on a management call → SignatureDoesNotMatch
 #   - the #185 wiring fence: a principal that cannot invoke the Lambda is refused at PutIntegration
@@ -239,6 +242,44 @@ VCODE="$(sec_code -H "Authorization: Bearer $VALID_JWT")"
 [ "$VCODE" = "200" ] || fail "a VALID JWT was NOT admitted (got '$VCODE', want 200) — issuer discovery/verify failed"
 log "  ✓ COGNITO_USER_POOLS authorizer: rejects missing/garbage/expired, admits valid"
 
+# --- 4d. request validation: Models + RequestValidator → AWS-faithful 400s before the integration ---
+# A MOCK method (200 on pass) isolates validation from integration concerns. The validator checks BOTH
+# required parameters and the body against a Model; the data plane returns AWS's exact 400 shapes BEFORE
+# the integration runs. Proven: missing required query param → "Missing required request parameters: [q]";
+# a body failing the Model schema → "Invalid request body"; a well-formed request → 200 (MOCK).
+log "request validation: create-model + create-request-validator + per-method config → AWS-faithful 400s"
+MODEL="ValModel${SFX}"
+agw "$WAK" "$WSK" create-model --rest-api-id "$API" --name "$MODEL" --content-type application/json \
+  --schema '{"type":"object","required":["name","qty"],"properties":{"name":{"type":"string","minLength":1},"qty":{"type":"integer","minimum":1}}}' \
+  >/dev/null 2>"$WORK/cm" || fail "create-model failed: $(cat "$WORK/cm")"
+VALIDATOR="$(agw "$WAK" "$WSK" create-request-validator --rest-api-id "$API" --name "val-$SFX" \
+  --validate-request-body --validate-request-parameters --query id 2>/dev/null)" || fail "create-request-validator failed"
+[ -n "$VALIDATOR" ] && [ "$VALIDATOR" != "None" ] || fail "create-request-validator returned no id"
+VALRES="$(agw "$WAK" "$WSK" create-resource --rest-api-id "$API" --parent-id "$ROOT" --path-part validated --query id 2>/dev/null)" || fail "create-resource validated failed"
+python3 - "$WORK" "$API" "$VALRES" "$VALIDATOR" "$MODEL" <<'PY'
+import json, sys
+work, api, res, vid, model = sys.argv[1:6]
+json.dump({"restApiId": api, "resourceId": res, "httpMethod": "POST",
+           "authorizationType": "NONE", "requestValidatorId": vid,
+           "requestModels": {"application/json": model},
+           "requestParameters": {"method.request.querystring.q": True}},
+          open(f"{work}/pm.json", "w"))
+PY
+agw "$WAK" "$WSK" put-method --cli-input-json "file://$WORK/pm.json" >/dev/null 2>"$WORK/pme" || fail "put-method (validated) failed: $(cat "$WORK/pme")"
+agw "$WAK" "$WSK" put-integration --rest-api-id "$API" --resource-id "$VALRES" --http-method POST --type MOCK >/dev/null 2>"$WORK/pie2" || fail "put-integration (MOCK) failed: $(cat "$WORK/pie2")"
+agw "$WAK" "$WSK" create-deployment --rest-api-id "$API" --stage-name prod >/dev/null 2>&1 || fail "redeploy (validated) failed"
+val_code() { local qs="$1"; shift; curl -sS -o "$WORK/vb" -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$@" "${ENDPOINT}/_apigw/${API}/prod/validated${qs}" 2>/dev/null || true; }
+# missing required query param q (body is otherwise valid) → 400, parameters are checked before the body
+[ "$(val_code '' -d '{"name":"ok","qty":2}')" = "400" ] || fail "a request missing required param q was not 400 (body: $(head -c 300 "$WORK/vb"))"
+grep -Fq 'Missing required request parameters: [q]' "$WORK/vb" || fail "param-validation message wrong: $(cat "$WORK/vb")"
+# q present, but the body fails the Model (qty below minimum) → 400 "Invalid request body"
+[ "$(val_code '?q=1' -d '{"name":"ok","qty":0}')" = "400" ] || fail "a body violating the Model was not 400 (body: $(head -c 300 "$WORK/vb"))"
+grep -Fq 'Invalid request body' "$WORK/vb" || fail "body-validation message wrong: $(cat "$WORK/vb")"
+# a well-formed request (q present + valid body) passes validation and reaches the MOCK integration → 200
+VALID_CODE="$(val_code '?q=1' -d '{"name":"ok","qty":2}')"
+[ "$VALID_CODE" = "200" ] || fail "a valid request was not admitted to the integration (got '$VALID_CODE', body: $(head -c 300 "$WORK/vb"))"
+log "  ✓ request validation: missing param → 400 [q]; bad body → 400 Invalid request body; valid → 200 (params checked before body)"
+
 # --- 5a. negative: wrong SigV4 secret on a management call ---
 log "negative: a wrong secret on a management call must be rejected"
 if agw "$WAK" "wrong-secret-xyz" get-rest-apis >/dev/null 2>"$WORK/n1"; then fail "a wrong secret was accepted"; fi
@@ -274,4 +315,4 @@ fi
 grep -qiE 'AccessDenied|not authorized to integrate|denied' "$WORK/n2" || fail "#185 denial error wrong: $(cat "$WORK/n2")"
 log "  ✓ #185 fence holds for REST v1 (plain API allowed; unauthorized Lambda wiring refused)"
 
-printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), a COGNITO_USER_POOLS method authorizer (reject missing/garbage/expired, admit valid), and the auth + #185 wiring-fence boundaries.\n'
+printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), a COGNITO_USER_POOLS method authorizer (reject missing/garbage/expired, admit valid), request validation (Models + RequestValidator → AWS-faithful 400 on a missing parameter or an invalid body, before the integration), and the auth + #185 wiring-fence boundaries.\n'
