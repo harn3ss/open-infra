@@ -108,6 +108,20 @@ func TestMatchRestRoute(t *testing.T) {
 	}
 }
 
+// the mux must route the REST v1 management roots (/restapis, AND the account-level /apikeys and
+// /usageplans collections) to the v1 handler — not just /restapis. Missing /apikeys here is exactly the
+// bug that sent CreateApiKey to the v2 handler ("unrecognized v2 path").
+func TestIsRestV1ManagementRoot(t *testing.T) {
+	for seg, want := range map[string]bool{
+		"restapis": true, "apikeys": true, "usageplans": true,
+		"v2": false, "apis": false, "": false,
+	} {
+		if got := isRestV1ManagementRoot(seg); got != want {
+			t.Errorf("isRestV1ManagementRoot(%q)=%v want %v", seg, got, want)
+		}
+	}
+}
+
 // the mux routes /restapis/* to v1 and everything else to v2.
 func TestApigwMux_Routing(t *testing.T) {
 	// path classification only (no serve) — assert the mux's path predicate via splitPath.

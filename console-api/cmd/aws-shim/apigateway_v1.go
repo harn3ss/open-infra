@@ -1330,11 +1330,19 @@ func (m *apigwMux) authFailure(w http.ResponseWriter, r *http.Request, requestID
 }
 
 func (m *apigwMux) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
-	if segs := splitPath(r.URL.Path); len(segs) > 0 && segs[0] == "restapis" {
+	if segs := splitPath(r.URL.Path); len(segs) > 0 && isRestV1ManagementRoot(segs[0]) {
 		m.v1.serve(w, r, claims, requestID)
 		return
 	}
 	m.v2.serve(w, r, claims, requestID)
+}
+
+// isRestV1ManagementRoot reports whether a management path's first segment belongs to the REST v1
+// surface. REST v1 roots at /restapis/… AND the account-level /apikeys and /usageplans collections —
+// all REST-v1-only (apigatewayv2/HTTP API has none of these), so routing them to v1 never steals a v2
+// path (v2's management paths all begin with "v2").
+func isRestV1ManagementRoot(seg string) bool {
+	return seg == "restapis" || seg == "apikeys" || seg == "usageplans"
 }
 
 // invokeTarget parses the data-plane invoke shape (shared by v1 and v2 — /_apigw/<id>/… or the
