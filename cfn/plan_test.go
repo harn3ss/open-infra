@@ -237,11 +237,11 @@ Resources:
 	}
 }
 
-// API Gateway REST v1 (#295): a REST-v1 stack is recognized at plan (so a migrating template is
-// understood) but NOT create-deployable — REST v1 is a stateful multi-resource sequence held in the
-// aws-shim's Postgres with no single backing kind, provisioned via the `apigateway` REST v1 API, not
-// this engine. Same honest shape as IAM::Role/StepFunctions: maps, deploy refuses rather than faking it.
-func TestPlan_ApiGatewayRestV1PlanOnly(t *testing.T) {
+// API Gateway REST v1 (#295): a REST-v1 stack maps (Partial — faithful-subset caveats) and is
+// create-deployable via the in-cluster doorway (the whole API collates into one provisioning plan on
+// its RestApi; the CLI refuses with no hook). Every AWS::ApiGateway::* type is translator-backed, so
+// Deployable=true; the stack is PROVISIONABLE_WITH_CAVEATS (Partial).
+func TestPlan_ApiGatewayRestV1(t *testing.T) {
 	data := []byte(`
 Resources:
   Api:
@@ -281,13 +281,13 @@ Resources:
 		if byID[id].Kind == "" || byID[id].Status != Partial {
 			t.Errorf("%s should MAP at plan (Partial), got kind=%q status=%q", id, byID[id].Kind, byID[id].Status)
 		}
-		if byID[id].Deployable {
-			t.Errorf("%s has no create translator — want Deployable=false (REST v1 is provisioned via the shim apigateway API, not this engine)", id)
+		if !byID[id].Deployable {
+			t.Errorf("%s is translator-backed — want Deployable=true (collates into the RestApi plan, provisioned via the in-cluster doorway)", id)
 		}
 	}
-	// A stack whose only lossy parts are these maps-but-doesn't-deploy types must be caveated.
+	// Partial (faithful-subset) → caveated, never cleanly provisionable.
 	if p.Verdict != ProvisionableWithCaveats {
-		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (REST v1 maps but doesn't deploy); blockers:\n%s", p.Verdict, blockersJoined(p))
+		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (REST v1 is a faithful subset); blockers:\n%s", p.Verdict, blockersJoined(p))
 	}
 }
 
