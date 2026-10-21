@@ -137,11 +137,17 @@ database:
 
 ## Storage & durability
 
-Database volumes use **local-path** PVs (local NVMe — never CIFS/NFS) for performance by
+Database volumes use **local-path** PVs (local SSD/NVMe — never CIFS/NFS) for performance by
 default (babelfish uses **longhorn**), and replicated engines rely on the DB's own replication
 for HA rather than the storage layer. Set `spec.database.storageClass` to override this per
 database — e.g. `longhorn` to put a non-HA database on replicated storage, or your cluster's
 StorageClass on a substrate that doesn't ship `local-path`. Data persists across pod restarts.
+
+Placement is **enforced by measured disk class**, not just documented: a probe labels every node
+`openinfra.dev/disk-class` (`nvme`/`sata-ssd`/`hdd`) from its real hardware, and a database only
+schedules onto a node measured `nvme` or `sata-ssd`. An unlabeled, HDD, or unmeasured node is
+ineligible (fail-closed) — a database can never silently land on spinning disk. (Bulk/sequential
+and stateless workloads are free to use HDD.)
 Hardening the single-instance/durability story (node-resilient storage for non-HA DBs,
 off-cluster backups) is a planned follow-up.
 

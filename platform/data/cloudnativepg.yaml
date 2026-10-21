@@ -1,7 +1,9 @@
 # CloudNativePG — managed Postgres ("RDS"). Installs the operator only; per-app
 # Postgres clusters are provisioned by the Application abstraction (Crossplane).
-# IMPORTANT: app databases must use a LOCAL NVMe storage class (local-path),
-# never CIFS/NFS — DBs on network filesystems corrupt and stall.
+# IMPORTANT: app databases run on local SSD/NVMe (local-path), never CIFS/NFS — DBs on network
+# filesystems corrupt and stall. This is ENFORCED, not just documented: every node is labelled
+# openinfra.dev/disk-class (measured from real hardware by the disk-class-labeler), and DB pods
+# require disk-class nvme or sata-ssd — an unlabeled/HDD/unmeasured node is ineligible.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

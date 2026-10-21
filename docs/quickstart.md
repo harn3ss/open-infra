@@ -85,4 +85,6 @@ reconciles it automatically. **You changed the YAML; the infra followed.**
   overlaps DHCP. Reserve a range and re-run `./install.sh`.
 - App not reachable → check `k3s kubectl describe ingress` and that cert-manager
   issued the cert (`k3s kubectl get certificate -A`).
-- DB issues → confirm it's on `local-path` (NVMe), **never** a CIFS/NFS class.
+- DB issues → confirm it's on `local-path` (local SSD/NVMe), **never** a CIFS/NFS class. DB pods
+  only schedule onto nodes measured as SSD/NVMe (the `openinfra.dev/disk-class` label); a Pending DB
+  can mean no eligible node is labelled `nvme`/`sata-ssd` yet.

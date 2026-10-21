@@ -175,15 +175,23 @@ spec:
                         # of killing it. Requires the migratable RWX block root disk above.
                         evictionStrategy: LiveMigrate
                         {{- end }}
-                        {{- if $lan }}
-                        # Direct-LAN VMs must land where the parent LAN NIC exists
-                        # (label those nodes openinfra.dev/vm-lan=true).
+                        {{- if or $lan (not $ha) }}
+                        # One nodeSelectorTerm, matchExpressions AND-ed:
+                        # - Direct-LAN VMs must land where the parent LAN NIC exists (openinfra.dev/vm-lan).
+                        # - Fail-closed storage (#307): a non-HA VM's root disk is on local-path, so the
+                        #   launcher node's disk-class must be nvme or sata-ssd. (HA roots live on Longhorn,
+                        #   placed by Longhorn's own disk-class tags, so no node constraint is added here.)
                         affinity:
                           nodeAffinity:
                             requiredDuringSchedulingIgnoredDuringExecution:
                               nodeSelectorTerms:
                                 - matchExpressions:
+                                    {{- if $lan }}
                                     - { key: openinfra.dev/vm-lan, operator: In, values: ["true"] }
+                                    {{- end }}
+                                    {{- if not $ha }}
+                                    - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
+                                    {{- end }}
                         {{- end }}
                         domain:
                           cpu:
