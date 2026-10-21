@@ -98,6 +98,16 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 			gone[r.LogicalID] = true
 			continue
 		}
+		// A REST v1 API (#295) has no k8s object — tear it down via the apigateway hook, by the id
+		// recorded at provision time. Best-effort like a custom-resource Delete: a failed/absent
+		// deprovision (or a CLI destroy with no hook) must not wedge teardown of the rest of the stack.
+		if r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind {
+			if opts.DeprovisionRestAPI != nil && r.ProvisionedID != "" {
+				_ = opts.DeprovisionRestAPI(ctx, r.ProvisionedID)
+			}
+			gone[r.LogicalID] = true
+			continue
+		}
 		if err := ap.Delete(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
 			return fail(fmt.Errorf("deleting %s/%s: %w", r.Kind, r.Name, err))
 		}

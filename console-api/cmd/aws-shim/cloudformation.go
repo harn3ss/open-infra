@@ -60,6 +60,7 @@ type cfnDoorway struct {
 	svcSuffix string       // cluster-local DNS suffix for Knative Functions (custom-resource invoke, #269)
 	invoker   *http.Client // invokes a custom resource's backing Function synchronously
 	logger    *slog.Logger
+	restV1    *apigwV1Handler // drives the apigateway REST v1 store for AWS::ApiGateway::* resources (#295); nil = unconfigured
 }
 
 func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns, svcSuffix string, logger *slog.Logger) (*cfnDoorway, error) {
@@ -207,12 +208,25 @@ func (h *cfnDoorway) stackID(name string) string {
 }
 
 func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptions {
-	return cfn.DeployOptions{
+	o := cfn.DeployOptions{
 		StackName: name, Namespace: h.ns, Params: params, Wait: true, Timeout: cfnWaitTimeout,
 		// In-cluster: a custom resource's backing Function is invokable (#269). The CLI deploy path leaves
 		// this nil, so a custom-resource stack there refuses rather than guessing.
 		Invoke: h.invokeCustomResourceFn,
 	}
+	// In-cluster: an AWS::ApiGateway::RestApi stack is provisioned via the apigateway REST v1 store (#295).
+	// Nil when the apigateway data layer is unconfigured (or on the CLI), so such a stack refuses.
+	if h.restV1 != nil && h.restV1.store != nil {
+		o.ProvisionRestAPI = func(ctx context.Context, planSpec map[string]any) (string, error) {
+			plan, perr := cfn.ParseRestAPIPlan(planSpec)
+			if perr != nil {
+				return "", perr
+			}
+			return h.restV1.provisionRestAPIPlan(ctx, plan)
+		}
+		o.DeprovisionRestAPI = h.restV1.deprovisionRestAPI
+	}
+	return o
 }
 
 // --- stack lifecycle (async) ---

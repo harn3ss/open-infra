@@ -551,6 +551,7 @@ func run(logger *slog.Logger) error {
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
 			logger.Warn("CloudFormation front door disabled", slog.String("error", cerr.Error()))
 		} else {
+			cfnH.restV1 = apigwV1H // AWS::ApiGateway::* stacks provision via the REST v1 store (#295)
 			services["cloudformation"] = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}

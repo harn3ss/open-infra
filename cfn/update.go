@@ -44,6 +44,9 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
 			return nil, fmt.Errorf("updating a stack that was created with a custom resource is not supported (#269) — destroy and recreate the stack instead")
 		}
+		if r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind {
+			return nil, fmt.Errorf("updating a stack that was created with an API Gateway REST v1 API is not supported yet (#295) — the diff path does not re-provision the API; destroy and recreate the stack, or change the API via the apigateway API")
+		}
 	}
 	if !cs.hasChanges() {
 		return current, nil // no-op: nothing to do

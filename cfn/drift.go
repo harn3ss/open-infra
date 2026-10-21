@@ -58,6 +58,11 @@ func DetectDrift(ctx context.Context, opts DeployOptions, ap Applier) (*DriftRep
 		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
 			continue
 		}
+		// A REST v1 API (#295) likewise has no live k8s object — it was provisioned via the apigateway
+		// API, not applied — so skip it rather than report a false Deleted drift.
+		if r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind {
+			continue
+		}
 		live, exists, err := ap.GetSpec(ctx, r.APIVersion, r.Kind, r.Name)
 		if err != nil {
 			return nil, err

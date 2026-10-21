@@ -122,6 +122,19 @@ var translators = map[string]translator{
 	"AWS::AppSync::DataSource":              translateAppSyncChild,
 	"AWS::AppSync::Resolver":                translateAppSyncChild,
 	"AWS::AppSync::FunctionConfiguration":   translateAppSyncChild,
+	// API Gateway REST v1: the whole API collates into one sentinel on its RestApi (#295); every other
+	// AWS::ApiGateway::* type composes into it (translateAPIGatewayChild → nil, or blocks a dangling one).
+	"AWS::ApiGateway::RestApi":          translateAPIGatewayRestAPI,
+	"AWS::ApiGateway::Resource":         translateAPIGatewayChild,
+	"AWS::ApiGateway::Method":           translateAPIGatewayChild,
+	"AWS::ApiGateway::Model":            translateAPIGatewayChild,
+	"AWS::ApiGateway::RequestValidator": translateAPIGatewayChild,
+	"AWS::ApiGateway::Authorizer":       translateAPIGatewayChild,
+	"AWS::ApiGateway::Deployment":       translateAPIGatewayChild,
+	"AWS::ApiGateway::Stage":            translateAPIGatewayChild,
+	"AWS::ApiGateway::ApiKey":           translateAPIGatewayChild,
+	"AWS::ApiGateway::UsagePlan":        translateAPIGatewayChild,
+	"AWS::ApiGateway::UsagePlanKey":     translateAPIGatewayChild,
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).

@@ -53,6 +53,7 @@ type StackResource struct {
 	Name           string         `json:"name"`
 	DeletionPolicy string         `json:"deletionPolicy,omitempty"` // Delete (default) | Retain | Snapshot
 	Spec           map[string]any `json:"spec,omitempty"`           // the applied spec — enables diff (update) and faithful rollback
+	ProvisionedID  string         `json:"provisionedId,omitempty"`  // out-of-band id of a non-k8s resource (e.g. a REST v1 API id), for teardown
 }
 
 // builtResource is one translated, ready-to-apply resource plus its identity/spec record.
@@ -84,7 +85,22 @@ type DeployOptions struct {
 	// this deploy path (the CLI, which isn't in-cluster): a stack with one refuses rather than guessing.
 	// The aws-shim CFN doorway (in-cluster) sets this to an HTTP invoker of the Function's cluster URL.
 	Invoke InvokeFunc
+	// ProvisionRestAPI materializes a collated API Gateway REST v1 plan (#295) via the aws-shim's
+	// apigateway API, returning the created REST API id (for rollback/teardown). DeprovisionRestAPI
+	// deletes a provisioned API (rollback on a later failure, and stack destroy). Both nil = REST v1 is
+	// unsupported on this deploy path (the CLI): a stack with an AWS::ApiGateway::RestApi refuses rather
+	// than guessing. The in-cluster aws-shim doorway sets them to drivers of its own apigateway store.
+	ProvisionRestAPI   ProvisionRestAPIFunc
+	DeprovisionRestAPI DeprovisionRestAPIFunc
 }
+
+// ProvisionRestAPIFunc provisions a collated REST v1 plan (the sentinel's Spec) and returns the created
+// REST API id. Parse the plan with ParseRestAPIPlan.
+type ProvisionRestAPIFunc func(ctx context.Context, planSpec map[string]any) (apiID string, err error)
+
+// DeprovisionRestAPIFunc deletes a provisioned REST v1 API by id (idempotent — a missing api is not an
+// error), for rollback and teardown.
+type DeprovisionRestAPIFunc func(ctx context.Context, apiID string) error
 
 // InvokeFunc synchronously invokes a custom resource's backing Function with the CloudFormation
 // custom-resource event (JSON) and returns the handler's parsed response: {"Status":"SUCCESS"|"FAILED",
@@ -164,11 +180,11 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return nil, fmt.Errorf("a target namespace is required (deploy never guesses one)")
 	}
 
-	// A stack with Lambda-backed custom resources (#269) needs the interleaved deploy: each custom
-	// resource's Function is invoked at its point in dependency order so dependents' Fn::GetAtt resolves
-	// against the returned Data. Stacks WITHOUT one take the exact build-all-then-apply path below,
-	// unchanged — the new path is additive and never touches the common case.
-	if pt, perr := Parse(data); perr == nil && hasCustomResources(pt) {
+	// A stack with Lambda-backed custom resources (#269) OR a REST v1 API (#295) needs the interleaved
+	// deploy: a custom resource's Function is invoked, and a REST v1 sentinel is provisioned via the
+	// apigateway hook, at its point in dependency order. Stacks WITHOUT either take the exact
+	// build-all-then-apply path below, unchanged — the new path is additive and never touches the common case.
+	if pt, perr := Parse(data); perr == nil && (hasCustomResources(pt) || hasAPIGatewayRestV1(pt)) {
 		return deployInterleaved(ctx, data, opts, ap)
 	}
 
@@ -236,6 +252,16 @@ func hasCustomResources(t *Template) bool {
 	return false
 }
 
+// hasAPIGatewayRestV1 reports whether a parsed template declares a REST v1 API (#295).
+func hasAPIGatewayRestV1(t *Template) bool {
+	for _, res := range t.Resources {
+		if res.Type == "AWS::ApiGateway::RestApi" {
+			return true
+		}
+	}
+	return false
+}
+
 // deployInterleaved is the create path for a stack containing custom resources (#269). Unlike the
 // build-all-then-apply path, it walks resources in dependency order one at a time so a custom resource's
 // Function can be invoked at its point in the order, its returned Data recorded, and LATER dependents'
@@ -265,10 +291,16 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	}
 
 	var applied []StackResource
+	var provisionedAPIs []string // REST v1 API ids to tear down on rollback
 	rollback := func(cause error) (*StackRecord, error) {
 		for i := len(applied) - 1; i >= 0; i-- { // reverse order
 			a := applied[i]
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
+		}
+		for i := len(provisionedAPIs) - 1; i >= 0; i-- { // tear down provisioned REST v1 APIs too
+			if opts.DeprovisionRestAPI != nil {
+				_ = opts.DeprovisionRestAPI(ctx, provisionedAPIs[i])
+			}
 		}
 		rec.Status = "CREATE_FAILED"
 		rec.Message = cause.Error()
@@ -297,6 +329,19 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			sr, cerr := invokeCustomResource(ctx, opts, r, id, m)
 			if cerr != nil {
 				return rollback(cerr)
+			}
+			rec.Resources = append(rec.Resources, sr)
+			continue
+		}
+		// A REST v1 API sentinel is provisioned via the apigateway hook (not applied); its created id is
+		// recorded for teardown/rollback.
+		if m.APIVersion == apigwRestV1APIVersion && m.Kind == apigwRestV1Kind {
+			sr, apiID, perr := provisionRestAPI(ctx, opts, id, m)
+			if perr != nil {
+				return rollback(perr)
+			}
+			if apiID != "" {
+				provisionedAPIs = append(provisionedAPIs, apiID)
 			}
 			rec.Resources = append(rec.Resources, sr)
 			continue
@@ -358,6 +403,22 @@ func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, 
 		r.customData[id] = map[string]any{}
 	}
 	return sr, nil
+}
+
+// provisionRestAPI hands a collated REST v1 plan to the apigateway hook and records the created api id
+// on the stack resource (for teardown). Without a hook (a CLI deploy), it refuses rather than guessing —
+// the same stance as a custom resource with no Invoke.
+func provisionRestAPI(ctx context.Context, opts DeployOptions, id string, m *Manifest) (StackResource, string, error) {
+	sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec}
+	if opts.ProvisionRestAPI == nil {
+		return sr, "", fmt.Errorf("REST API %s requires the in-cluster deploy path (the aws-shim CloudFormation doorway); a CLI deploy cannot provision an API Gateway REST v1 API", id)
+	}
+	apiID, err := opts.ProvisionRestAPI(ctx, m.Spec)
+	if err != nil {
+		return sr, "", fmt.Errorf("provisioning REST API %s: %w", id, err)
+	}
+	sr.ProvisionedID = apiID
+	return sr, apiID, nil
 }
 
 // renderManifest builds the applyable YAML for one resource, with stack labels.

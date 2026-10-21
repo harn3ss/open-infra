@@ -79,9 +79,13 @@ this page describes).
 > `apiKeyRequired`, enforced at invoke — the `x-api-key` must be an enabled key associated (via a usage
 > plan) with the invoked api+stage, else `403 Forbidden` (association enforced, not mere existence;
 > checked live, not from the snapshot). Throttle/quota are accepted but not enforced (the shim does not
-> rate-limit — documented carve-out). Honest gaps still open on v1: `TOKEN`/`REQUEST` (Lambda)
-> authorizers and `AWS_IAM` invoke signing (both refused fail-closed today, never bypassed), the
-> `AUTHORIZER` apiKeySource, and a provider/CFN resource type. The non-goals above still describe the declarative `HttpApi` model, which
+> rate-limit — documented carve-out). **CloudFormation can now deploy a REST v1 API end to end:** the
+> cfn engine collates a stack's `AWS::ApiGateway::*` (RestApi + resources + methods + integrations +
+> models/validators/authorizers + deployment + stages + in-stack keys/usage plans) into one plan and the
+> in-cluster aws-shim CloudFormation doorway provisions it by driving this API in order (a CLI deploy
+> refuses — no doorway). Honest gaps still open on v1: `TOKEN`/`REQUEST` (Lambda) authorizers and
+> `AWS_IAM` invoke signing (both refused fail-closed today, never bypassed), the `AUTHORIZER`
+> apiKeySource, stack **update** of a REST-v1 stack (destroy + recreate), and a Terraform provider type. The non-goals above still describe the declarative `HttpApi` model, which
 > stays stage-less and transformation-free by design; the v1 wire API is where that lifecycle lives.
 
 ## In-cluster WAF (`spec.waf`)
