@@ -4,10 +4,11 @@ Real topological network isolation — the AWS VPC/Subnet model as **enforced** 
 NetworkPolicy simulation. `kind: Subnet` with `private: true` is enforced by OVN at the network
 layer: a pod in one private subnet cannot reach another subnet unless explicitly allowed.
 
-**These require the kube-ovn CNI and are inert on a Canal cluster.** That is why this directory sits
-under `networking/kube-ovn/` — the root app-of-apps include glob is `networking/*.yaml`, which does
-**not** match a subdirectory, so these are not synced to the current Canal-based platform. They are
-enabled on the kube-ovn substrate.
+**These require the kube-ovn CNI — which IS open-infra's network substrate — so they are enforced and
+live, not optional.** The root app-of-apps include globs both `networking/*.yaml` and
+`networking/kube-ovn/*.yaml`, so this directory is synced; the running cluster is kube-ovn with
+per-VPC OVN subnets. (On a different, non-kube-ovn substrate these OVN-backed kinds would not apply —
+`kind: SecurityGroup` is the portable isolation primitive for that case.)
 
 - `subnet-xrd.yaml` / `subnet-composition.yaml` — `kind: Subnet` → a kube-ovn `Subnet` (via
   provider-kubernetes), `private`/`allowSubnets` → OVN-enforced isolation. `spec.acls` is the
@@ -55,4 +56,4 @@ subnet. Verified end-to-end 2026-09-06: a LAN client → a `kind: ElasticIp` →
 public subnet, `[ASSURED]` bidirectional through the kind-created gateway.
 
 These are verified live on the kube-ovn substrate (the full claim→composition→kube-ovn→dataplane
-round-trip); they are inert on Canal.
+round-trip) on open-infra's kube-ovn substrate.

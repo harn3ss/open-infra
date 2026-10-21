@@ -8,7 +8,7 @@
 #   dnat — per-port forward (IptablesDnatRule). A single public IP:port -> a private IP:port.
 #
 # REQUIRES kube-ovn and a kind: NatGateway. The VPC must carry a default route to the gateway
-# (kind: Vpc spec.routes) so ingress replies return through it. Inert on Canal.
+# (kind: Vpc spec.routes) so ingress replies return through it. kube-ovn is open-infra's substrate.
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:

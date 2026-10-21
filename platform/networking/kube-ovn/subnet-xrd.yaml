@@ -3,9 +3,9 @@
 # enforced by OVN at the network layer: a pod in one private Subnet cannot reach another Subnet
 # unless explicitly allowed. This is the real AWS Subnet model, not policy approximation.
 #
-# REQUIRES the kube-ovn CNI (docs/authz... substrate migration). It is inert on a Canal cluster —
-# which is why this directory is NOT in the root-app include glob and is enabled only on the
-# kube-ovn substrate.
+# REQUIRES the kube-ovn CNI — open-infra's network substrate — so this is enforced and live: the
+# root-app include glob lists networking/kube-ovn/*.yaml, and the cluster runs kube-ovn with per-VPC
+# OVN subnets.
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:

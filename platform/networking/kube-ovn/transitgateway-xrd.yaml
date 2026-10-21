@@ -6,7 +6,7 @@
 #
 # Each spoke must ALSO be wired on its own kind: Vpc — a peering to this hub (spec.peerings) and a
 # route to every other spoke's CIDR via the hub link (spec.routes) — exactly as AWS needs a TGW
-# attachment + a route per VPC. REQUIRES kube-ovn; inert on Canal.
+# attachment + a route per VPC. REQUIRES kube-ovn (open-infra's substrate).
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:
