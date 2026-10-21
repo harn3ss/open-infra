@@ -103,9 +103,10 @@ spec:
       serviceAccountName: disk-class-labeler
       hostPID: true
       priorityClassName: system-node-critical
-      # Measure on EVERY node, including any that are tainted.
-      tolerations:
-        - { operator: Exists }
+      # Deliberately NO broad `operator: Exists` toleration: an unreachable / powered-off node
+      # (unreachable:NoSchedule) must NOT get a Pending labeler pod, because an unhealthy DaemonSet
+      # wedges ArgoCD's wave-gated sync ("waiting for healthy state of ..."). An unmeasured node is
+      # fail-closed ineligible anyway, so skipping tainted/down nodes loses nothing.
       initContainers:
         # Classify the host's local-path disk from real hardware, into the shared emptyDir.
         - name: measure
