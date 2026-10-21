@@ -11,6 +11,9 @@
 #   - **request validation** (CreateModel + CreateRequestValidator + per-method requestModels/parameters):
 #     a missing required parameter and a body failing the Model each get AWS's exact 400 BEFORE the
 #     integration, and a well-formed request is admitted
+#   - **API keys** (CreateApiKey + CreateUsagePlan + CreateUsagePlanKey + apiKeyRequired): a key-gated
+#     method 403s without / with a wrong / with an enabled-but-UNASSOCIATED key, and 200s only with a
+#     key that is enabled AND associated (via a usage plan) with the invoked api+stage
 # and the NEGATIVES ("prove the no"):
 #   - a valid key ID with a WRONG secret on a management call → SignatureDoesNotMatch
 #   - the #185 wiring fence: a principal that cannot invoke the Lambda is refused at PutIntegration
@@ -280,6 +283,30 @@ VALID_CODE="$(val_code '?q=1' -d '{"name":"ok","qty":2}')"
 [ "$VALID_CODE" = "200" ] || fail "a valid request was not admitted to the integration (got '$VALID_CODE', body: $(head -c 300 "$WORK/vb"))"
 log "  ✓ request validation: missing param → 400 [q]; bad body → 400 Invalid request body; valid → 200 (params checked before body)"
 
+# --- 4e. API keys + usage plans: apiKeyRequired gates on x-api-key, enforced via usage-plan association ---
+# A MOCK method with apiKeyRequired. One key is associated (via a usage plan) with this api+stage; a
+# SECOND enabled key is left UNASSOCIATED. Proves: no key / wrong key / enabled-but-unassociated key all
+# 403, and only the associated+enabled key gets 200 — i.e. association is enforced, not mere existence.
+log "API keys: apiKeyRequired → 403 without/wrong/unassociated key, 200 with an associated+enabled key"
+read -r KEYID KEYVAL <<<"$(agw "$WAK" "$WSK" create-api-key --name "k-$SFX" --enabled --query '[id,value]' 2>/dev/null)"
+{ [ -n "$KEYID" ] && [ "$KEYID" != "None" ] && [ -n "$KEYVAL" ]; } || fail "create-api-key returned no id/value"
+read -r KEYID2 KEYVAL2 <<<"$(agw "$WAK" "$WSK" create-api-key --name "k2-$SFX" --enabled --query '[id,value]' 2>/dev/null)"
+[ -n "$KEYVAL2" ] || fail "create-api-key (2) returned no value"
+UPID="$(agw "$WAK" "$WSK" create-usage-plan --name "up-$SFX" --api-stages "apiId=${API},stage=prod" --query id 2>/dev/null)" || fail "create-usage-plan failed"
+{ [ -n "$UPID" ] && [ "$UPID" != "None" ]; } || fail "create-usage-plan returned no id"
+agw "$WAK" "$WSK" create-usage-plan-key --usage-plan-id "$UPID" --key-id "$KEYID" --key-type API_KEY >/dev/null 2>"$WORK/upk" || fail "create-usage-plan-key failed: $(cat "$WORK/upk")"
+KEYRES="$(agw "$WAK" "$WSK" create-resource --rest-api-id "$API" --parent-id "$ROOT" --path-part keyed --query id 2>/dev/null)" || fail "create-resource keyed failed"
+agw "$WAK" "$WSK" put-method --rest-api-id "$API" --resource-id "$KEYRES" --http-method POST --authorization-type NONE --api-key-required >/dev/null 2>"$WORK/pmk" || fail "put-method (keyed) failed: $(cat "$WORK/pmk")"
+agw "$WAK" "$WSK" put-integration --rest-api-id "$API" --resource-id "$KEYRES" --http-method POST --type MOCK >/dev/null 2>&1 || fail "put-integration (keyed MOCK) failed"
+agw "$WAK" "$WSK" create-deployment --rest-api-id "$API" --stage-name prod >/dev/null 2>&1 || fail "redeploy (keyed) failed"
+key_code() { curl -sS -o /dev/null -w '%{http_code}' -X POST "$@" "${ENDPOINT}/_apigw/${API}/prod/keyed" 2>/dev/null || true; }
+[ "$(key_code)" = "403" ] || fail "a request with NO x-api-key to an apiKeyRequired method was not 403"
+[ "$(key_code -H 'x-api-key: not-a-real-key')" = "403" ] || fail "a wrong x-api-key was not 403"
+[ "$(key_code -H "x-api-key: $KEYVAL2")" = "403" ] || fail "an enabled-but-UNASSOCIATED key was admitted (must be 403 — usage-plan association must be enforced, not mere existence)"
+KC="$(key_code -H "x-api-key: $KEYVAL")"
+[ "$KC" = "200" ] || fail "the associated+enabled key was NOT admitted (got '$KC', want 200)"
+log "  ✓ API keys: no/wrong/unassociated key → 403 Forbidden; associated+enabled key → 200 (usage-plan association enforced)"
+
 # --- 5a. negative: wrong SigV4 secret on a management call ---
 log "negative: a wrong secret on a management call must be rejected"
 if agw "$WAK" "wrong-secret-xyz" get-rest-apis >/dev/null 2>"$WORK/n1"; then fail "a wrong secret was accepted"; fi
@@ -315,4 +342,4 @@ fi
 grep -qiE 'AccessDenied|not authorized to integrate|denied' "$WORK/n2" || fail "#185 denial error wrong: $(cat "$WORK/n2")"
 log "  ✓ #185 fence holds for REST v1 (plain API allowed; unauthorized Lambda wiring refused)"
 
-printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), a COGNITO_USER_POOLS method authorizer (reject missing/garbage/expired, admit valid), request validation (Models + RequestValidator → AWS-faithful 400 on a missing parameter or an invalid body, before the integration), and the auth + #185 wiring-fence boundaries.\n'
+printf '\n✓ PASS — aws-shim API Gateway REST API (v1) is faithful: resource-tree control plane, deployment/stage, the runtime AWS_PROXY→Lambda proxy (faithful 1.0 event; structured response becomes the body), HTTP_PROXY origin proxying, non-proxy AWS VTL request/response mapping (requestTemplates + per-status IntegrationResponse responseTemplates), a COGNITO_USER_POOLS method authorizer (reject missing/garbage/expired, admit valid), request validation (Models + RequestValidator → AWS-faithful 400 on a missing parameter or an invalid body, before the integration), API keys (apiKeyRequired gated on an enabled key associated via a usage plan to the api+stage → 403 otherwise), and the auth + #185 wiring-fence boundaries.\n'

@@ -167,6 +167,33 @@ func TestRestV1Op_NameAndStatusCode(t *testing.T) {
 	}
 }
 
+func TestRestV1Op_APIKeysAndUsagePlans(t *testing.T) {
+	cases := []struct {
+		method, path           string
+		wantOp, wantKey, wPlan string
+		ok                     bool
+	}{
+		{"POST", "/apikeys", "CreateApiKey", "", "", true},
+		{"GET", "/apikeys", "GetApiKeys", "", "", true},
+		{"GET", "/apikeys/key1", "GetApiKey", "key1", "", true},
+		{"POST", "/usageplans", "CreateUsagePlan", "", "", true},
+		{"GET", "/usageplans", "GetUsagePlans", "", "", true},
+		{"GET", "/usageplans/up1", "GetUsagePlan", "", "up1", true},
+		{"POST", "/usageplans/up1/keys", "CreateUsagePlanKey", "", "up1", true},
+		{"GET", "/usageplans/up1/keys", "GetUsagePlanKeys", "", "up1", true},
+		{"DELETE", "/apikeys/key1", "", "", "", false}, // delete not modelled yet
+		{"POST", "/usageplans/up1/unknown", "", "", "", false},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, "http://apigw"+c.path, nil)
+		v, ok := restV1OpFromRequest(r)
+		if ok != c.ok || v.Op != c.wantOp || v.KeyID != c.wantKey || v.PlanID != c.wPlan {
+			t.Errorf("%s %s: got (%+v,%v) want op=%q key=%q plan=%q ok=%v",
+				c.method, c.path, v, ok, c.wantOp, c.wantKey, c.wPlan, c.ok)
+		}
+	}
+}
+
 func TestValidateRestRequest(t *testing.T) {
 	jsonSchema := func(s string) map[string]any {
 		var m map[string]any

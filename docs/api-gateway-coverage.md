@@ -74,9 +74,14 @@ this page describes).
 > (`Invalid request body` / `Missing required request parameters: [...]`) — and, crucially, body
 > validation is skipped when no model matches the content type, as AWS does. The schema engine is the
 > **shared `internal/apigwschema`** package, the *same* validator tier the `apigw-validator` runs for
-> `kind: HttpApi`, so a Model validates identically on both front doors. Honest gaps still open on v1:
-> `TOKEN`/`REQUEST` (Lambda) authorizers and `AWS_IAM` invoke signing (both refused fail-closed today,
-> never bypassed), and a provider/CFN resource type. The non-goals above still describe the declarative `HttpApi` model, which
+> `kind: HttpApi`, so a Model validates identically on both front doors. **API keys + usage plans are
+> shipped too:** `create-api-key` / `create-usage-plan` / `create-usage-plan-key` + per-method
+> `apiKeyRequired`, enforced at invoke — the `x-api-key` must be an enabled key associated (via a usage
+> plan) with the invoked api+stage, else `403 Forbidden` (association enforced, not mere existence;
+> checked live, not from the snapshot). Throttle/quota are accepted but not enforced (the shim does not
+> rate-limit — documented carve-out). Honest gaps still open on v1: `TOKEN`/`REQUEST` (Lambda)
+> authorizers and `AWS_IAM` invoke signing (both refused fail-closed today, never bypassed), the
+> `AUTHORIZER` apiKeySource, and a provider/CFN resource type. The non-goals above still describe the declarative `HttpApi` model, which
 > stays stage-less and transformation-free by design; the v1 wire API is where that lifecycle lives.
 
 ## In-cluster WAF (`spec.waf`)
