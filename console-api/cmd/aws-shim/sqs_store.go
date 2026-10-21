@@ -5,7 +5,7 @@
 // ApproximateReceiveCount, and maxReceiveCount → DLQ — are all trivially correct over a row-locked
 // SQL table, which is why this front door is Postgres-backed rather than JetStream-backed (the
 // receipt-handle boundary is a correctness-and-security boundary; see docs/aws-shim.md and
-//). The receive path is the classic `FOR UPDATE SKIP LOCKED` queue claim: it makes the
+// ). The receive path is the classic `FOR UPDATE SKIP LOCKED` queue claim: it makes the
 // claimed rows invisible for the visibility window, bumps the receive count, and mints a FRESH opaque
 // handle per row in the same statement — so an old handle simply matches no row on delete (stale
 // rejection is structural, not bolted on).

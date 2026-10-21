@@ -1,5 +1,5 @@
 // Iceberg-schema -> Glue/Hive type + column translation for the Glue Data Catalog front door
-//.
+// .
 //
 // The Glue doorway fronts the platform's existing Iceberg REST catalog: a Glue table IS an Iceberg
 // table, and the one real translation it performs is turning an Iceberg table's schema into the Glue
