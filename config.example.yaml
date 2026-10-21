@@ -135,7 +135,8 @@ edge:
     endpoint: ""                # public IP:port of the Lightsail edge
 
 storage:
-  # Fast local NVMe (RWO) for databases. k3s local-path. NEVER put DBs on CIFS/NFS.
+  # Fast local SSD/NVMe (RWO) for databases. k3s local-path. NEVER put DBs on CIFS/NFS.
+  # Enforced: DB pods only schedule onto a node measured disk-class nvme or sata-ssd.
   databaseStorageClass: local-path
   # MinIO object storage topology. false = standalone (default; fine for dev /
   # single node). true = distributed HA (4 erasure-coded drives across nodes;

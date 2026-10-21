@@ -592,6 +592,14 @@ spec:
                     template:
                       metadata: { labels: { app.kubernetes.io/name: {{ $name }}-docdb } }
                       spec:
+                        # Fail-closed storage placement (#307): disk-class must be nvme or sata-ssd
+                        # (this is the DocumentDB tier that holds the data, on local-path).
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                         containers:
                           - name: postgres
                             image: ghcr.io/ferretdb/postgres-documentdb:17
@@ -838,6 +846,13 @@ spec:
                         # reachable when the DB pod runs on the external-gateway node.
                         nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
                         {{- end }}
+                        # Fail-closed storage placement (#307): disk-class must be nvme or sata-ssd.
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                         securityContext: { fsGroup: 1000 }
                         # Postgres refuses a root-owned data dir; chown the Longhorn PVC first.
                         initContainers:
@@ -1139,6 +1154,13 @@ spec:
                           {{ $k }}: {{ $v | quote }}
                           {{- end }}
                         {{- end }}
+                        # Fail-closed storage placement (#307): disk-class must be nvme or sata-ssd.
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                         # SQL Server runs as uid 10001 and must own its data dir; chown the fresh
                         # Longhorn PVC first (fsGroup + an explicit chown, same pattern as babelfish).
                         securityContext: { fsGroup: 10001 }
@@ -1393,8 +1415,15 @@ spec:
                       annotations:
                         openinfra.dev/encryption-key: {{ $dbEncKey | quote }}
                     {{- end }}
-                    {{- if or $dbMultiNode $spec.database.expose }}
+                    # Fail-closed storage placement (#307): instances must land on a node whose local-path
+                    # disk measured nvme or sata-ssd (openinfra.dev/disk-class, set by the disk-class-labeler
+                    # DaemonSet). An unlabeled / hdd / unknown node is INELIGIBLE — unknown never passes as fast.
                     affinity:
+                      nodeAffinity:
+                        requiredDuringSchedulingIgnoredDuringExecution:
+                          nodeSelectorTerms:
+                            - matchExpressions:
+                                - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                       {{- if $dbMultiNode }}
                       enablePodAntiAffinity: true
                       topologyKey: kubernetes.io/hostname
@@ -1405,7 +1434,6 @@ spec:
                       # DB pod on the external-gateway node.
                       nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
                       {{- end }}
-                    {{- end }}
                     # pg_stat_statements: query history powering the database "Peek"
                     # (issue #56 — top running queries). Must be preloaded at server start;
                     # the extension itself is created in the app database below.

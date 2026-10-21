@@ -35,7 +35,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | S3 | object storage | **MinIO** | can reuse an existing NAS data dir |
 | EBS | block volumes | **Longhorn** | `kind: Volume`; RWO, snapshot/restore, hotplug to VMs |
 | EFS/FSx | shared file storage | **Samba (SMB)** on Longhorn | `kind: FileShare`; RWX, Connect helper (net use / mount) |
-| RDS/Aurora | managed Postgres | **CloudNativePG** | **local NVMe PVs, never CIFS/NFS** |
+| RDS/Aurora | managed Postgres | **CloudNativePG** | **local SSD/NVMe PVs (enforced by measured disk-class), never CIFS/NFS** |
 | RDS (SQL Server–compatible) | drop-in for SQL Server apps | **Babelfish for PostgreSQL** | `engine: babelfish` (TDS 1433 + T-SQL); experimental |
 | OpenSearch (vector) | vector search | **pgvector** | `database.vector: true` |
 | Athena + Glue | serverless SQL over the lake | **DuckDB** (files) or **Trino** + Iceberg REST (tables) | `kind: Query` — see [query.md](query.md) |
@@ -98,8 +98,12 @@ Details: [`docs/serverless.md`](serverless.md).
 
 ## Storage tiering
 
-- **Fast local NVMe (RWO)** via k3s `local-path` for **databases** and, by default, **VM root
+- **Fast local SSD/NVMe (RWO)** via k3s `local-path` for **databases** and, by default, **VM root
   disks** — fastest, but node-pinned (HA for DBs comes from replication, not the storage layer).
+  Disk class is **measured, not assumed**: a probe DaemonSet labels each node
+  `openinfra.dev/disk-class` (`nvme`/`sata-ssd`/`hdd`) from real hardware, and DB + non-HA-VM-root
+  placement **fails closed** onto `nvme`/`sata-ssd` — an unlabeled or HDD node is ineligible (bulk
+  and stateless workloads may use HDD).
 - **Replicated Longhorn** for `kind: Volume`, VM **golden images**, and **HA VM root disks**
   (`spec.highAvailability` → `longhorn-migratable`, RWX block, for node-loss recovery + live
   migration). Longhorn survives a node loss; local-path does not.
