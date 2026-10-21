@@ -31,6 +31,11 @@ rules:
   - apiGroups: [""]
     resources: [nodes]
     verbs: [get, list, patch]
+  # Tag the matching Longhorn node CR 'hdd' so normal (empty-selector) Longhorn volumes avoid spinning
+  # disk (#307); only the 'hdd' tag is managed, other tags (e.g. 'chaos') are preserved.
+  - apiGroups: [longhorn.io]
+    resources: [nodes]
+    verbs: [get, list, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -83,6 +88,19 @@ data:
     echo "disk-class(${NODE_NAME}) = ${cls}"
     while true; do
       kubectl label node "${NODE_NAME}" "openinfra.dev/disk-class=${cls}" --overwrite >/dev/null 2>&1 || true
+      # Longhorn fail-closed (#307): a node measured 'hdd' carries the Longhorn 'hdd' tag so normal
+      # (empty-selector) volumes avoid it (allowEmptyNodeSelectorVolume=false); every other class must
+      # NOT carry 'hdd'. Preserve other tags (e.g. 'chaos'); only touch 'hdd', only when it must change.
+      if kubectl -n longhorn-system get nodes.longhorn.io "${NODE_NAME}" >/dev/null 2>&1; then
+        want=$([ "$cls" = hdd ] && echo yes || echo no)
+        cur=$(kubectl -n longhorn-system get nodes.longhorn.io "${NODE_NAME}" -o jsonpath='{.spec.tags}' 2>/dev/null)
+        has=$(printf '%s' "$cur" | grep -q '"hdd"' && echo yes || echo no)
+        if [ "$want" != "$has" ]; then
+          new=$(kubectl -n longhorn-system get nodes.longhorn.io "${NODE_NAME}" -o json 2>/dev/null \
+            | jq -c --arg want "$want" '((.spec.tags // []) | map(select(. != "hdd"))) + (if $want=="yes" then ["hdd"] else [] end)')
+          [ -n "$new" ] && kubectl -n longhorn-system patch nodes.longhorn.io "${NODE_NAME}" --type merge -p "{\"spec\":{\"tags\":${new}}}" >/dev/null 2>&1 || true
+        fi
+      fi
       sleep 300
     done
 ---

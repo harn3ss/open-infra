@@ -102,8 +102,9 @@ Details: [`docs/serverless.md`](serverless.md).
   disks** — fastest, but node-pinned (HA for DBs comes from replication, not the storage layer).
   Disk class is **measured, not assumed**: a probe DaemonSet labels each node
   `openinfra.dev/disk-class` (`nvme`/`sata-ssd`/`hdd`) from real hardware, and DB + non-HA-VM-root
-  placement **fails closed** onto `nvme`/`sata-ssd` — an unlabeled or HDD node is ineligible (bulk
-  and stateless workloads may use HDD).
+  placement **fails closed** onto `nvme`/`sata-ssd` — an unlabeled or HDD node is ineligible. Longhorn
+  replicas for normal volumes avoid HDD-class nodes as well; bulk/sequential data (MinIO staging,
+  backups) can opt into the `longhorn-bulk` StorageClass to use HDD deliberately.
 - **Replicated Longhorn** for `kind: Volume`, VM **golden images**, and **HA VM root disks**
   (`spec.highAvailability` → `longhorn-migratable`, RWX block, for node-loss recovery + live
   migration). Longhorn survives a node loss; local-path does not.

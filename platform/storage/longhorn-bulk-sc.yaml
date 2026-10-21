@@ -1,0 +1,22 @@
+# Bulk/sequential Longhorn StorageClass that WELCOMES spinning disk (#307 point 4).
+# Databases / VM roots fail closed onto nvme|sata-ssd, but bulk + sequential + stateless-ish data
+# (MinIO staging, backups, large append-mostly volumes) may legitimately live on HDD. `nodeSelector:
+# "hdd"` places replicas on Longhorn nodes tagged `hdd` (the disk-class-labeler sets that tag on a
+# node whose local-path disk measured hdd). Normal (empty-selector) volumes still AVOID hdd nodes via
+# the `allowEmptyNodeSelectorVolume: false` default (see longhorn.yaml), so this is opt-in: only a
+# volume created with this class lands on HDD. Dormant until an HDD node actually joins + gets tagged.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-bulk
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  nodeSelector: "hdd"
+  staleReplicaTimeout: "30"
+  fromBackup: ""
