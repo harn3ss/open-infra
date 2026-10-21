@@ -130,6 +130,22 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		h.getRequestValidators(ctx, w, requestID, v.APIID)
 	case "GetRequestValidator":
 		h.getRequestValidator(ctx, w, requestID, v.APIID, v.Name)
+	case "CreateApiKey":
+		h.createAPIKey(ctx, w, requestID, body)
+	case "GetApiKeys":
+		h.getAPIKeys(ctx, w, requestID, r)
+	case "GetApiKey":
+		h.getAPIKey(ctx, w, requestID, v.KeyID, r)
+	case "CreateUsagePlan":
+		h.createUsagePlan(ctx, w, requestID, body)
+	case "GetUsagePlans":
+		h.getUsagePlans(ctx, w, requestID)
+	case "GetUsagePlan":
+		h.getUsagePlan(ctx, w, requestID, v.PlanID)
+	case "CreateUsagePlanKey":
+		h.createUsagePlanKey(ctx, w, requestID, v.PlanID, body)
+	case "GetUsagePlanKeys":
+		h.getUsagePlanKeys(ctx, w, requestID, v.PlanID)
 	case "CreateDeployment":
 		h.createDeployment(ctx, w, requestID, v.APIID, body)
 	case "CreateStage":
@@ -284,17 +300,22 @@ func (h *apigwV1Handler) putMethod(ctx context.Context, w http.ResponseWriter, r
 	validatorID, _ := body["requestValidatorId"].(string)
 	// Request-validation config (AWS PutMethod): a validator id + the request models (contentType →
 	// model name) + required request parameters. Enforced at invoke against the deployed snapshot.
+	apiKeyRequired, _ := body["apiKeyRequired"].(bool)
 	m := restMethod{
 		ResourceID: resID, HTTPMethod: httpMethod, AuthorizationType: authType, AuthorizerID: authID,
 		RequestValidatorID: validatorID,
 		RequestModels:      stringMap(body["requestModels"]),
 		RequestParameters:  boolMap(body["requestParameters"]),
+		APIKeyRequired:     apiKeyRequired,
 	}
 	if err := h.store.putMethod(ctx, apiID, m); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	resp := map[string]any{"httpMethod": httpMethod, "authorizationType": authType}
+	if m.APIKeyRequired {
+		resp["apiKeyRequired"] = true
+	}
 	if m.RequestValidatorID != "" {
 		resp["requestValidatorId"] = m.RequestValidatorID
 	}
@@ -566,6 +587,164 @@ func validatorJSON(v restRequestValidator) map[string]any {
 	}
 }
 
+// --- API keys + usage plans (account-level; the data-plane gate for apiKeyRequired methods) ---
+
+// createAPIKey mints an API key (CreateApiKey). AWS returns the key VALUE on create (the only time it
+// is shown by default); the caller may also supply a value. A key grants nothing until it is associated
+// with a usage plan that targets an api+stage (CreateUsagePlanKey).
+func (h *apigwV1Handler) createAPIKey(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	name, _ := body["name"].(string)
+	enabled := true
+	if v, ok := body["enabled"].(bool); ok {
+		enabled = v
+	}
+	value, _ := body["value"].(string)
+	if value == "" {
+		value = shortID(40)
+	}
+	k := restAPIKey{ID: shortID(10), Name: name, Value: value, Enabled: enabled}
+	if err := h.store.createAPIKey(ctx, k); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, apiKeyJSON(k, true)) // create echoes the value, as AWS does
+}
+
+func (h *apigwV1Handler) getAPIKeys(ctx context.Context, w http.ResponseWriter, requestID string, r *http.Request) {
+	keys, err := h.store.listAPIKeys(ctx)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	incl := r.URL.Query().Get("includeValues") == "true"
+	items := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		items = append(items, apiKeyJSON(k, incl))
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, map[string]any{"item": items})
+}
+
+func (h *apigwV1Handler) getAPIKey(ctx context.Context, w http.ResponseWriter, requestID, id string, r *http.Request) {
+	k, ok, err := h.store.getAPIKey(ctx, id)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !ok {
+		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid API Key identifier specified: "+id)
+		return
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, apiKeyJSON(k, r.URL.Query().Get("includeValue") == "true"))
+}
+
+// createUsagePlan registers a usage plan + its apiStages (which api+stage the plan's keys unlock).
+// throttle/quota fields are accepted but NOT enforced (the shim does not rate-limit — documented).
+func (h *apigwV1Handler) createUsagePlan(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	name, _ := body["name"].(string)
+	p := restUsagePlan{ID: shortID(10), Name: name, APIStages: parseAPIStages(body["apiStages"])}
+	if err := h.store.createUsagePlan(ctx, p); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, usagePlanJSON(p))
+}
+
+func (h *apigwV1Handler) getUsagePlans(ctx context.Context, w http.ResponseWriter, requestID string) {
+	plans, err := h.store.listUsagePlans(ctx)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(plans))
+	for _, p := range plans {
+		items = append(items, usagePlanJSON(p))
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, map[string]any{"item": items})
+}
+
+func (h *apigwV1Handler) getUsagePlan(ctx context.Context, w http.ResponseWriter, requestID, id string) {
+	p, ok, err := h.store.getUsagePlan(ctx, id)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !ok {
+		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid Usage Plan ID specified: "+id)
+		return
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, usagePlanJSON(p))
+}
+
+// createUsagePlanKey associates an existing API key with a usage plan (CreateUsagePlanKey). keyType
+// must be API_KEY; both the plan and the key must exist (NotFound otherwise).
+func (h *apigwV1Handler) createUsagePlanKey(ctx context.Context, w http.ResponseWriter, requestID, planID string, body map[string]any) {
+	keyID, _ := body["keyId"].(string)
+	keyType, _ := body["keyType"].(string)
+	if keyID == "" {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "CreateUsagePlanKey requires keyId.")
+		return
+	}
+	if keyType != "" && keyType != "API_KEY" {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "keyType must be API_KEY.")
+		return
+	}
+	if err := h.store.createUsagePlanKey(ctx, planID, keyID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid Usage Plan ID or API Key identifier specified.")
+			return
+		}
+		h.internal(w, requestID, err)
+		return
+	}
+	writeAGWJSON(w, http.StatusCreated, requestID, map[string]any{"id": keyID, "type": "API_KEY"})
+}
+
+func (h *apigwV1Handler) getUsagePlanKeys(ctx context.Context, w http.ResponseWriter, requestID, planID string) {
+	ids, err := h.store.listUsagePlanKeys(ctx, planID)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, map[string]any{"id": id, "type": "API_KEY"})
+	}
+	writeAGWJSON(w, http.StatusOK, requestID, map[string]any{"item": items})
+}
+
+// parseAPIStages decodes a usage plan's apiStages ([{apiId, stage}]).
+func parseAPIStages(v any) []restUsagePlanAPI {
+	var out []restUsagePlanAPI
+	for _, e := range sliceOf(v) {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		api, _ := m["apiId"].(string)
+		stage, _ := m["stage"].(string)
+		if api != "" && stage != "" {
+			out = append(out, restUsagePlanAPI{APIID: api, Stage: stage})
+		}
+	}
+	return out
+}
+
+func apiKeyJSON(k restAPIKey, includeValue bool) map[string]any {
+	out := map[string]any{"id": k.ID, "name": k.Name, "enabled": k.Enabled}
+	if includeValue {
+		out["value"] = k.Value
+	}
+	return out
+}
+
+func usagePlanJSON(p restUsagePlan) map[string]any {
+	stages := make([]map[string]any, 0, len(p.APIStages))
+	for _, s := range p.APIStages {
+		stages = append(stages, map[string]any{"apiId": s.APIID, "stage": s.Stage})
+	}
+	return map[string]any{"id": p.ID, "name": p.Name, "apiStages": stages}
+}
+
 // createAuthorizer registers a method authorizer. The shim enforces COGNITO_USER_POOLS (validate the
 // caller's JWT against the pool's issuer/JWKS). TOKEN/REQUEST (Lambda) authorizers are refused
 // fail-closed — an authorizer the shim cannot vet must never silently admit a request (the same
@@ -768,6 +947,21 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 	// AWS_IAM and any unsupported type are refused (never silently bypassed).
 	if meth.AuthorizationType != "" && meth.AuthorizationType != "NONE" {
 		if !h.enforceMethodAuthorizer(w, r, snap, meth.AuthorizationType, meth.AuthorizerID, requestID) {
+			return
+		}
+	}
+	// API key gate (AWS apiKeyRequired, apiKeySource HEADER): the x-api-key must be an ENABLED key
+	// associated via a usage plan with this api+stage. Checked LIVE (not the snapshot), so a key can be
+	// enabled/disabled or (dis)associated without a redeploy. Missing/invalid → 403 Forbidden, exactly
+	// as AWS, BEFORE the body is read or the integration runs — never a silent admit of a keyless call.
+	if meth.APIKeyRequired {
+		authorized, err := h.store.apiKeyAuthorized(r.Context(), r.Header.Get("x-api-key"), apiID, stage)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		if !authorized {
+			writeAGWError(w, http.StatusForbidden, "ForbiddenException", requestID, "Forbidden")
 			return
 		}
 	}

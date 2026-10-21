@@ -20,6 +20,8 @@ type restV1Op struct {
 	HTTPMethod string
 	StatusCode string // PutIntegrationResponse / PutMethodResponse
 	Name       string // model name (GetModel) or request-validator id (GetRequestValidator)
+	KeyID      string // API key id (GetApiKey) or the key associated by CreateUsagePlanKey
+	PlanID     string // usage-plan id (GetUsagePlan / usage-plan-key ops)
 }
 
 // restV1OpFromRequest maps a /restapis/... path + method to an op. REST v1 paths:
@@ -39,11 +41,77 @@ type restV1Op struct {
 //	/restapis/{id}/models/{modelName}                                 GET GetModel
 //	/restapis/{id}/requestvalidators                                  POST CreateRequestValidator / GET GetRequestValidators
 //	/restapis/{id}/requestvalidators/{validatorId}                    GET GetRequestValidator
+//
+// API keys + usage plans are ACCOUNT-level (top-level paths, not under /restapis):
+//
+//	/apikeys                                                          POST CreateApiKey / GET GetApiKeys
+//	/apikeys/{apiKeyId}                                               GET GetApiKey
+//	/usageplans                                                       POST CreateUsagePlan / GET GetUsagePlans
+//	/usageplans/{usagePlanId}                                         GET GetUsagePlan
+//	/usageplans/{usagePlanId}/keys                                    POST CreateUsagePlanKey / GET GetUsagePlanKeys
 func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 	segs := splitPath(r.URL.Path)
-	if len(segs) < 1 || segs[0] != "restapis" {
+	if len(segs) < 1 {
 		return restV1Op{}, false
 	}
+	switch segs[0] {
+	case "restapis":
+		return restV1RestapisOp(r, segs)
+	case "apikeys":
+		return restV1APIKeysOp(r, segs)
+	case "usageplans":
+		return restV1UsagePlansOp(r, segs)
+	}
+	return restV1Op{}, false
+}
+
+// restV1APIKeysOp parses /apikeys[/{id}].
+func restV1APIKeysOp(r *http.Request, segs []string) (restV1Op, bool) {
+	switch len(segs) {
+	case 1:
+		switch r.Method {
+		case http.MethodPost:
+			return restV1Op{Op: "CreateApiKey"}, true
+		case http.MethodGet:
+			return restV1Op{Op: "GetApiKeys"}, true
+		}
+	case 2:
+		if r.Method == http.MethodGet {
+			return restV1Op{Op: "GetApiKey", KeyID: segs[1]}, true
+		}
+	}
+	return restV1Op{}, false
+}
+
+// restV1UsagePlansOp parses /usageplans[/{id}[/keys]].
+func restV1UsagePlansOp(r *http.Request, segs []string) (restV1Op, bool) {
+	switch len(segs) {
+	case 1:
+		switch r.Method {
+		case http.MethodPost:
+			return restV1Op{Op: "CreateUsagePlan"}, true
+		case http.MethodGet:
+			return restV1Op{Op: "GetUsagePlans"}, true
+		}
+	case 2:
+		if r.Method == http.MethodGet {
+			return restV1Op{Op: "GetUsagePlan", PlanID: segs[1]}, true
+		}
+	case 3:
+		if segs[2] == "keys" {
+			switch r.Method {
+			case http.MethodPost:
+				return restV1Op{Op: "CreateUsagePlanKey", PlanID: segs[1]}, true
+			case http.MethodGet:
+				return restV1Op{Op: "GetUsagePlanKeys", PlanID: segs[1]}, true
+			}
+		}
+	}
+	return restV1Op{}, false
+}
+
+// restV1RestapisOp parses /restapis/... (the control plane rooted at a REST API).
+func restV1RestapisOp(r *http.Request, segs []string) (restV1Op, bool) {
 	switch len(segs) {
 	case 1: // /restapis
 		switch r.Method {

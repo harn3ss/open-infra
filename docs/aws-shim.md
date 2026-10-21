@@ -820,6 +820,16 @@ schema engine is the **shared `internal/apigwschema`** package — the *same* va
 `apigw-validator` runs — so a model validates identically on both surfaces. Same two auth planes + Postgres
 (`rest_*` tables) as v2.
 
+**API keys + usage plans.** `CreateApiKey` mints a key (value + enabled flag), `CreateUsagePlan` declares
+which `apiStages` (api+stage) the plan unlocks, and `CreateUsagePlanKey` associates a key with a plan. A
+method with `apiKeyRequired` gates the data plane: at invoke the presented **`x-api-key`** must be an
+**enabled** key **associated (via a usage plan) with the invoked api+stage**, else `403
+{"message":"Forbidden"}` — the association is enforced, not mere key existence, and it is checked **live**
+(not from the deployment snapshot), so a key can be enabled/disabled or (dis)associated without a redeploy.
+Keys + plans are account-level. **Throttle/quota (rate/burst/quota) are accepted but NOT enforced** — the
+shim does not rate-limit; a documented carve-out, never faked as if a limit applied. `apiKeySource` is
+`HEADER` (the `AUTHORIZER` source is not fronted).
+
 `probe/aws-shim-apigateway.sh` proves this end to end — a real SDK builds the API/integration/route/stage, a
 real HTTP POST to the invoke URL confirms the Lambda received the faithful **2.0 event** (path parameter,
 method, query, body) and that its returned payload became the HTTP response body, a **JWT authorizer**

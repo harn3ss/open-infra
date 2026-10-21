@@ -265,13 +265,19 @@ Resources:
   Stage:
     Type: AWS::ApiGateway::Stage
     Properties: { RestApiId: !Ref Api, DeploymentId: !Ref Deployment, StageName: prod }
+  Key:
+    Type: AWS::ApiGateway::ApiKey
+    Properties: { Enabled: true }
+  Plan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties: { ApiStages: [ { ApiId: !Ref Api, Stage: prod } ] }
 `)
 	p := mustPlan(t, data, nil, "")
 	byID := map[string]PlannedResource{}
 	for _, r := range p.Resources {
 		byID[r.LogicalID] = r
 	}
-	for _, id := range []string{"Api", "Res", "Method", "Model", "Validator", "Deployment", "Stage"} {
+	for _, id := range []string{"Api", "Res", "Method", "Model", "Validator", "Deployment", "Stage", "Key", "Plan"} {
 		if byID[id].Kind == "" || byID[id].Status != Partial {
 			t.Errorf("%s should MAP at plan (Partial), got kind=%q status=%q", id, byID[id].Kind, byID[id].Status)
 		}
