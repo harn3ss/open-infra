@@ -113,6 +113,7 @@ part of another kind rather than on its own. The caveat is always printed.
 | `AWS::DynamoDB::Table` | `kind: Table` | registers name + key schema (+ TTL) on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, secondary indexes, streams, or per-table SSE — those **block** |
 | `AWS::Cognito::UserPool` / `UserPoolClient` | `kind: UserPool` | a hosted OIDC pool (Keycloak realm); MFA, Lambda triggers, and schema do not transfer |
 | `AWS::ECS::Service` (+ its `TaskDefinition`) | `kind: Application` | a Service and its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer |
+| `AWS::ApiGateway::RestApi` / `Resource` / `Method` / `Deployment` / `Stage` / `Model` / `RequestValidator` / `Authorizer` | the aws-shim `apigateway` REST v1 surface | **recognized at plan, not create-deployable.** REST v1 is a stateful, ordered multi-resource sequence held in the shim's Postgres with no single backing kind, so there is no create translator (the `IAM::Role` / `StepFunctions` precedent); a migrating REST-v1 stack is *understood* at plan, but author/provision it via `aws apigateway …` against the shim (which carries the full surface: resource tree, VTL mapping, a `COGNITO_USER_POOLS` authorizer, and request validation). For a declarative v2 API use `kind: HttpApi`. |
 
 ### Custom resources (`AWS::CloudFormation::CustomResource` / `Custom::*`)
 

@@ -237,6 +237,54 @@ Resources:
 	}
 }
 
+// API Gateway REST v1 (#295): a REST-v1 stack is recognized at plan (so a migrating template is
+// understood) but NOT create-deployable — REST v1 is a stateful multi-resource sequence held in the
+// aws-shim's Postgres with no single backing kind, provisioned via the `apigateway` REST v1 API, not
+// this engine. Same honest shape as IAM::Role/StepFunctions: maps, deploy refuses rather than faking it.
+func TestPlan_ApiGatewayRestV1PlanOnly(t *testing.T) {
+	data := []byte(`
+Resources:
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties: { Name: orders }
+  Res:
+    Type: AWS::ApiGateway::Resource
+    Properties: { RestApiId: !Ref Api, ParentId: root, PathPart: items }
+  Method:
+    Type: AWS::ApiGateway::Method
+    Properties: { RestApiId: !Ref Api, ResourceId: !Ref Res, HttpMethod: POST, AuthorizationType: NONE }
+  Model:
+    Type: AWS::ApiGateway::Model
+    Properties: { RestApiId: !Ref Api, ContentType: application/json, Name: Item, Schema: {} }
+  Validator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties: { RestApiId: !Ref Api, ValidateRequestBody: true }
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties: { RestApiId: !Ref Api }
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties: { RestApiId: !Ref Api, DeploymentId: !Ref Deployment, StageName: prod }
+`)
+	p := mustPlan(t, data, nil, "")
+	byID := map[string]PlannedResource{}
+	for _, r := range p.Resources {
+		byID[r.LogicalID] = r
+	}
+	for _, id := range []string{"Api", "Res", "Method", "Model", "Validator", "Deployment", "Stage"} {
+		if byID[id].Kind == "" || byID[id].Status != Partial {
+			t.Errorf("%s should MAP at plan (Partial), got kind=%q status=%q", id, byID[id].Kind, byID[id].Status)
+		}
+		if byID[id].Deployable {
+			t.Errorf("%s has no create translator — want Deployable=false (REST v1 is provisioned via the shim apigateway API, not this engine)", id)
+		}
+	}
+	// A stack whose only lossy parts are these maps-but-doesn't-deploy types must be caveated.
+	if p.Verdict != ProvisionableWithCaveats {
+		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (REST v1 maps but doesn't deploy); blockers:\n%s", p.Verdict, blockersJoined(p))
+	}
+}
+
 // Lambda versions/aliases (#257): a published Version is a Knative revision (assigned at apply) and an
 // Alias is a weighted traffic tag on a kind: Function — both are recognized at plan but neither is
 // create-deployable (Deployable=false), because the alias->revision binding isn't template-derivable.
