@@ -175,7 +175,7 @@ func TestSQLServer_EditionAndPlacement(t *testing.T) {
 	}
 }
 
-//: a STRIPED restore via explicit keys fetches each stripe to db_<i>.bak and restores the
+// : a STRIPED restore via explicit keys fetches each stripe to db_<i>.bak and restores the
 // whole set with one FROM DISK + N DISK clauses, summed-headroom checked before RESTORE. Single-file
 // markers must be ABSENT on this path.
 func TestSQLServer_RestoreStripedKeys(t *testing.T) {

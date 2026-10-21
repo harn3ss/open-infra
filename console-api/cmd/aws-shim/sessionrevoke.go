@@ -20,7 +20,7 @@ const roleCutoffTTL = 15 * time.Second
 // before that instant is revoked — it falls closed at verify even though its sealed token is
 // otherwise valid and unexpired. This is the faithful analog of AWS's "Revoke sessions" action,
 // which attaches an AWSRevokeOlderSessions inline policy denying tokens issued before a timestamp
-//. ok=false means the role sets no cutoff, so no session is revoked on its account.
+// . ok=false means the role sets no cutoff, so no session is revoked on its account.
 type sessionRevoker interface {
 	RevokedBefore(ctx context.Context, roleName string) (cutoff time.Time, ok bool)
 }
