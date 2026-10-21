@@ -1,0 +1,141 @@
+# Measured per-node disk-class labels (#307).
+#
+# The storage rule "databases go on local-path = local NVMe, never CIFS/NFS" was enforced only by
+# documentation. local-path is just whatever disk the node has, so a DB, VM root disk, or Longhorn
+# replica could silently land on spinning disk — a false green. This probe measures each node's REAL
+# hardware (the physical disk backing local-path) and stamps openinfra.dev/disk-class=nvme|sata-ssd|hdd
+# so placement can fail closed onto fast storage (see the DB/VM composition nodeAffinity and the
+# Longhorn node tags). Measured, never hand-typed: a hand-set label on a Frankenstein box is exactly
+# the claim that drifts.
+#
+# A privileged DaemonSet runs on every node: an init container nsenters the host to classify the disk
+# (tracing LVM/partitions down to the physical device), and the main container self-asserts the label
+# (re-applies every 5 min so a stray removal heals). An unmeasurable node ends up labelled "unknown",
+# which the fail-closed placement treats as INELIGIBLE — unknown must never pass as fast.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: disk-class-labeler
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: disk-class-labeler
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  # Label a node with its measured disk class (kubectl label = a node patch).
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: disk-class-labeler
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: disk-class-labeler
+subjects:
+  - kind: ServiceAccount
+    name: disk-class-labeler
+    namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: disk-class-labeler
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  # Runs in the HOST mount namespace (piped into `nsenter ... -- sh`). Resolves the physical disk
+  # backing local-path and classifies it from real hardware facts. Emits nvme|sata-ssd|hdd|unknown.
+  measure.sh: |
+    P=/var/lib/rancher/k3s/storage
+    [ -d "$P" ] || P=/
+    src=$(findmnt -nro SOURCE --target "$P" 2>/dev/null | head -1)
+    [ -n "$src" ] || src=$(findmnt -nro SOURCE --target / 2>/dev/null | head -1)
+    # Inverse lsblk walks from the mount's device DOWN to the physical disk — handles LVM, dm-crypt,
+    # and plain partitions (the node-4 LVM case a naive df/PKNAME probe reported as "unknown").
+    # -P (key="value" pairs) avoids lsblk's tree-drawing chars (└─) that corrupt the plain NAME column.
+    disk=$(lsblk -nso NAME,TYPE -P "$src" 2>/dev/null | awk -F'"' '/TYPE="disk"/{print $2; exit}')
+    [ -n "$disk" ] || disk=$(lsblk -ndo PKNAME "$src" 2>/dev/null | head -1)
+    rot=$(cat "/sys/block/$disk/queue/rotational" 2>/dev/null || echo "")
+    tran=$(lsblk -dno TRAN "/dev/$disk" 2>/dev/null | tr -d ' ')
+    cls=unknown
+    if [ "$rot" = 0 ]; then
+      if [ "$tran" = nvme ]; then cls=nvme; else cls=sata-ssd; fi
+    elif [ "$rot" = 1 ]; then
+      cls=hdd
+    fi
+    printf '%s' "$cls"
+  # Re-assert the measured label so a stray removal (or a drifted node) self-heals.
+  label.sh: |
+    cls=$(cat /shared/class 2>/dev/null)
+    [ -n "$cls" ] || cls=unknown
+    echo "disk-class(${NODE_NAME}) = ${cls}"
+    while true; do
+      kubectl label node "${NODE_NAME}" "openinfra.dev/disk-class=${cls}" --overwrite >/dev/null 2>&1 || true
+      sleep 300
+    done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: disk-class-labeler
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  selector:
+    matchLabels: { app: disk-class-labeler }
+  template:
+    metadata:
+      labels: { app: disk-class-labeler }
+    spec:
+      serviceAccountName: disk-class-labeler
+      hostPID: true
+      priorityClassName: system-node-critical
+      # Measure on EVERY node, including any that are tainted.
+      tolerations:
+        - { operator: Exists }
+      initContainers:
+        # Classify the host's local-path disk from real hardware, into the shared emptyDir.
+        - name: measure
+          image: ubuntu:24.04
+          securityContext: { privileged: true }
+          command: ["sh", "-c"]
+          args:
+            - |
+              cat /probe/measure.sh | nsenter --target 1 --mount --uts --ipc --net --pid -- sh > /shared/class 2>/dev/null
+              echo "measured disk-class: $(cat /shared/class)"
+          volumeMounts:
+            - { name: probe, mountPath: /probe }
+            - { name: shared, mountPath: /shared }
+      containers:
+        # Apply + continuously re-assert the node label (kubectl via the scoped SA).
+        - name: label
+          image: alpine/k8s:1.30.0 # non-Bitnami (Bitnami purged public tags Aug 2025); has kubectl+sh
+          command: ["sh", "/probe/label.sh"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: { fieldPath: spec.nodeName }
+          volumeMounts:
+            - { name: probe, mountPath: /probe }
+            - { name: shared, mountPath: /shared }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits: { memory: 64Mi }
+      volumes:
+        - name: probe
+          configMap: { name: disk-class-labeler }
+        - name: shared
+          emptyDir: {}

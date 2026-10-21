@@ -41,13 +41,15 @@ seccompProfile); the overlay-rendered workloads emit **zero** violations.
 
 ## Privileged exceptions (NOT patched — cannot be restricted)
 
-Three host-level workloads legitimately need privileges and are left as-is; on a restricted substrate they
+Four host-level workloads legitimately need privileges and are left as-is; on a restricted substrate they
 need a **namespace-level PSA exemption** (label their namespace `pod-security.kubernetes.io/enforce=privileged`)
 or an alternative:
 
 - `audit-offsite-ship` — `hostPath` mount of the node audit log (`/var/log/...`); reading the audit stream
   is inherently host-level.
 - `longhorn-host-prereq` — `privileged` + `hostPID` DaemonSet that installs open-iscsi on the node.
+- `disk-class-labeler` — `privileged` + `hostPID` DaemonSet that nsenters the host to measure the
+  local-path disk class and label the node.
 - `airgap-node-registries` — `privileged` + `hostPath` DaemonSet that writes the node `registries.yaml`.
 
 ## Upstream Crossplane & CNPG (Helm — separate mechanism, #34)

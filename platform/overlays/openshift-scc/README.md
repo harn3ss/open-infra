@@ -38,7 +38,8 @@ non-exception workload retains any `runAsUser`/`runAsGroup`/`fsGroup` field in t
 ## Exceptions & upstream (same as the sibling overlay)
 
 - Privileged host-level workloads — `audit-offsite-ship` (hostPath+root), `longhorn-host-prereq`,
-  `airgap-node-registries` — are left as-is and need a **scoped custom SCC** on OpenShift (e.g. grant
+  `disk-class-labeler` (privileged+hostPID, nsenter disk probe), `airgap-node-registries` — are left
+  as-is and need a **scoped custom SCC** on OpenShift (e.g. grant
   their ServiceAccount a `hostmount-anyuid`/custom SCC), not this overlay.
 - Upstream **Crossplane** (uid 65532 / providers 2000) and **CloudNativePG** (10001) are Helm charts whose
   hardcoded `runAsUser` can't be cleanly stripped, so on OpenShift grant their namespaces the built-in
