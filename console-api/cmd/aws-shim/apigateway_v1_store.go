@@ -32,6 +32,48 @@ type restMethod struct {
 	HTTPMethod        string `json:"httpMethod"` // GET, POST, …, ANY
 	AuthorizationType string `json:"authorizationType"`
 	AuthorizerID      string `json:"authorizerId"`
+	// Request validation (PutMethod) — the AWS "method request" validation contract, enforced at the
+	// data plane against the deployed snapshot (see validateRestRequest). RequestValidatorID names the
+	// restRequestValidator that decides WHAT is validated; RequestModels maps a content-type to a model
+	// name whose JSON Schema the body must satisfy; RequestParameters maps a method.request.* parameter
+	// to whether it is required.
+	RequestValidatorID string            `json:"requestValidatorId,omitempty"`
+	RequestModels      map[string]string `json:"requestModels,omitempty"`     // contentType → model name
+	RequestParameters  map[string]bool   `json:"requestParameters,omitempty"` // method.request.(querystring|header|path).<name> → required
+}
+
+// restModel is a reusable request/response payload schema (CreateModel). Its Schema is the JSON Schema
+// a method's RequestModels points at; the shared internal/apigwschema validator (the same tier the v2
+// apigw-validator runs) checks a request body against it. Identified by name within an API (AWS keys
+// models by name, not an id).
+type restModel struct {
+	Name        string         `json:"name"`
+	ContentType string         `json:"contentType"`
+	Schema      map[string]any `json:"schema"`
+	Description string         `json:"description,omitempty"`
+}
+
+// restRequestValidator is a named (validateRequestBody, validateRequestParameters) pair
+// (CreateRequestValidator). A method references one by id; the two booleans decide whether the body
+// (against the method's RequestModels) and/or the required RequestParameters are checked at invoke.
+type restRequestValidator struct {
+	ID                        string `json:"id"`
+	Name                      string `json:"name"`
+	ValidateRequestBody       bool   `json:"validateRequestBody"`
+	ValidateRequestParameters bool   `json:"validateRequestParameters"`
+}
+
+// restMethodResponse is a method's declared response contract for one statusCode (PutMethodResponse):
+// the response models + which response headers the method may return. It is the AWS "method response"
+// side of the model and is stored for control-plane fidelity (tools that define an API call
+// PutMethodResponse); the invoke path maps responses via IntegrationResponse, so this is not enforced
+// at runtime — matching AWS, which does not validate responses against method-response models.
+type restMethodResponse struct {
+	ResourceID         string            `json:"resourceId"`
+	HTTPMethod         string            `json:"httpMethod"`
+	StatusCode         string            `json:"statusCode"`
+	ResponseModels     map[string]string `json:"responseModels,omitempty"`
+	ResponseParameters map[string]bool   `json:"responseParameters,omitempty"`
 }
 
 type restIntegration struct {
@@ -63,12 +105,16 @@ type restAuthorizer struct {
 	IdentitySource string   `json:"identitySource"` // header the token is read from (default Authorization)
 }
 
-// restSnapshot is the immutable picture a deployment freezes and a stage serves.
+// restSnapshot is the immutable picture a deployment freezes and a stage serves. Models + Validators
+// are frozen in too, so request validation at the data plane reflects the DEPLOYED config (a model or
+// validator change only takes effect on redeploy — exactly AWS's deployment semantics).
 type restSnapshot struct {
-	Resources    []restResource    `json:"resources"`
-	Methods      []restMethod      `json:"methods"`
-	Integrations []restIntegration `json:"integrations"`
-	Authorizers  []restAuthorizer  `json:"authorizers,omitempty"`
+	Resources    []restResource         `json:"resources"`
+	Methods      []restMethod           `json:"methods"`
+	Integrations []restIntegration      `json:"integrations"`
+	Authorizers  []restAuthorizer       `json:"authorizers,omitempty"`
+	Models       []restModel            `json:"models,omitempty"`
+	Validators   []restRequestValidator `json:"validators,omitempty"`
 }
 
 func (s *apigwV1Store) ensureSchema(ctx context.Context) error {
@@ -92,7 +138,35 @@ CREATE TABLE IF NOT EXISTS rest_methods (
     http_method        text NOT NULL,
     authorization_type text NOT NULL DEFAULT 'NONE',
     authorizer_id      text NOT NULL DEFAULT '',
+    request_validator_id text NOT NULL DEFAULT '',
+    request_models       jsonb,
+    request_parameters   jsonb,
     PRIMARY KEY (api_id, resource_id, http_method)
+);
+CREATE TABLE IF NOT EXISTS rest_models (
+    api_id       text NOT NULL,
+    name         text NOT NULL,
+    content_type text NOT NULL DEFAULT 'application/json',
+    schema       jsonb,
+    description  text NOT NULL DEFAULT '',
+    PRIMARY KEY (api_id, name)
+);
+CREATE TABLE IF NOT EXISTS rest_request_validators (
+    api_id        text NOT NULL,
+    validator_id  text NOT NULL,
+    name          text NOT NULL DEFAULT '',
+    validate_body   boolean NOT NULL DEFAULT false,
+    validate_params boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (api_id, validator_id)
+);
+CREATE TABLE IF NOT EXISTS rest_method_responses (
+    api_id              text NOT NULL,
+    resource_id         text NOT NULL,
+    http_method         text NOT NULL,
+    status_code         text NOT NULL,
+    response_models     jsonb,
+    response_parameters jsonb,
+    PRIMARY KEY (api_id, resource_id, http_method, status_code)
 );
 CREATE TABLE IF NOT EXISTS rest_integrations (
     api_id         text NOT NULL,
@@ -135,7 +209,12 @@ CREATE TABLE IF NOT EXISTS rest_stages (
 -- rest_integrations table (increment 1) gains them. CREATE TABLE IF NOT EXISTS above is a no-op on an
 -- existing table, so the ALTERs are what migrate it; both are no-ops on a freshly created table.
 ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS request_templates     jsonb;
-ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS integration_responses jsonb;`)
+ALTER TABLE rest_integrations ADD COLUMN IF NOT EXISTS integration_responses jsonb;
+-- increment 3 (request validation): add the method-request validation columns in place so an
+-- already-live rest_methods table (increment 1) gains them. No-ops on a freshly created table.
+ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_validator_id text NOT NULL DEFAULT '';
+ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_models       jsonb;
+ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_parameters   jsonb;`)
 	return err
 }
 
@@ -185,6 +264,10 @@ func (s *apigwV1Store) deleteAPI(ctx context.Context, id string) (bool, error) {
 		`DELETE FROM rest_integrations WHERE api_id=$1`,
 		`DELETE FROM rest_deployments WHERE api_id=$1`,
 		`DELETE FROM rest_stages WHERE api_id=$1`,
+		`DELETE FROM rest_models WHERE api_id=$1`,
+		`DELETE FROM rest_request_validators WHERE api_id=$1`,
+		`DELETE FROM rest_method_responses WHERE api_id=$1`,
+		`DELETE FROM rest_authorizers WHERE api_id=$1`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, id); err != nil {
 			return false, err
@@ -242,11 +325,14 @@ func (s *apigwV1Store) listResources(ctx context.Context, apiID string) ([]restR
 
 func (s *apigwV1Store) putMethod(ctx context.Context, apiID string, m restMethod) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO rest_methods (api_id, resource_id, http_method, authorization_type, authorizer_id)
-		 VALUES ($1,$2,$3,$4,$5)
+		`INSERT INTO rest_methods (api_id, resource_id, http_method, authorization_type, authorizer_id, request_validator_id, request_models, request_parameters)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 ON CONFLICT (api_id, resource_id, http_method)
-		 DO UPDATE SET authorization_type=EXCLUDED.authorization_type, authorizer_id=EXCLUDED.authorizer_id`,
-		apiID, m.ResourceID, m.HTTPMethod, m.AuthorizationType, m.AuthorizerID)
+		 DO UPDATE SET authorization_type=EXCLUDED.authorization_type, authorizer_id=EXCLUDED.authorizer_id,
+		   request_validator_id=EXCLUDED.request_validator_id, request_models=EXCLUDED.request_models,
+		   request_parameters=EXCLUDED.request_parameters`,
+		apiID, m.ResourceID, m.HTTPMethod, m.AuthorizationType, m.AuthorizerID,
+		m.RequestValidatorID, marshalJSONB(m.RequestModels), marshalJSONB(m.RequestParameters))
 	return err
 }
 
@@ -299,7 +385,7 @@ func marshalJSONB[T any](m map[string]T) []byte {
 }
 
 func (s *apigwV1Store) listMethods(ctx context.Context, apiID string) ([]restMethod, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT resource_id, http_method, authorization_type, authorizer_id FROM rest_methods WHERE api_id=$1`, apiID)
+	rows, err := s.db.QueryContext(ctx, `SELECT resource_id, http_method, authorization_type, authorizer_id, request_validator_id, request_models, request_parameters FROM rest_methods WHERE api_id=$1`, apiID)
 	if err != nil {
 		return nil, err
 	}
@@ -307,8 +393,15 @@ func (s *apigwV1Store) listMethods(ctx context.Context, apiID string) ([]restMet
 	var out []restMethod
 	for rows.Next() {
 		var m restMethod
-		if err := rows.Scan(&m.ResourceID, &m.HTTPMethod, &m.AuthorizationType, &m.AuthorizerID); err != nil {
+		var reqModels, reqParams []byte
+		if err := rows.Scan(&m.ResourceID, &m.HTTPMethod, &m.AuthorizationType, &m.AuthorizerID, &m.RequestValidatorID, &reqModels, &reqParams); err != nil {
 			return nil, err
+		}
+		if len(reqModels) > 0 {
+			_ = json.Unmarshal(reqModels, &m.RequestModels)
+		}
+		if len(reqParams) > 0 {
+			_ = json.Unmarshal(reqParams, &m.RequestParameters)
 		}
 		out = append(out, m)
 	}
@@ -380,7 +473,125 @@ func marshalJSONBSlice(v []string) []byte {
 	return b
 }
 
-// snapshot captures the current resource/method/integration/authorizer tree for a deployment.
+// --- models + request validators + method responses ---
+
+func (s *apigwV1Store) createModel(ctx context.Context, apiID string, m restModel) error {
+	var sch []byte
+	if len(m.Schema) > 0 {
+		sch, _ = json.Marshal(m.Schema)
+	}
+	ct := m.ContentType
+	if ct == "" {
+		ct = "application/json"
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rest_models (api_id, name, content_type, schema, description)
+		 VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (api_id, name)
+		 DO UPDATE SET content_type=EXCLUDED.content_type, schema=EXCLUDED.schema, description=EXCLUDED.description`,
+		apiID, m.Name, ct, sch, m.Description)
+	return err
+}
+
+func (s *apigwV1Store) getModel(ctx context.Context, apiID, name string) (restModel, bool, error) {
+	var m restModel
+	var sch []byte
+	err := s.db.QueryRowContext(ctx, `SELECT name, content_type, schema, description FROM rest_models WHERE api_id=$1 AND name=$2`, apiID, name).
+		Scan(&m.Name, &m.ContentType, &sch, &m.Description)
+	if err == sql.ErrNoRows {
+		return restModel{}, false, nil
+	}
+	if err != nil {
+		return restModel{}, false, err
+	}
+	if len(sch) > 0 {
+		_ = json.Unmarshal(sch, &m.Schema)
+	}
+	return m, true, nil
+}
+
+func (s *apigwV1Store) listModels(ctx context.Context, apiID string) ([]restModel, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name, content_type, schema, description FROM rest_models WHERE api_id=$1 ORDER BY name`, apiID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []restModel
+	for rows.Next() {
+		var m restModel
+		var sch []byte
+		if err := rows.Scan(&m.Name, &m.ContentType, &sch, &m.Description); err != nil {
+			return nil, err
+		}
+		if len(sch) > 0 {
+			_ = json.Unmarshal(sch, &m.Schema)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *apigwV1Store) createRequestValidator(ctx context.Context, apiID string, v restRequestValidator) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rest_request_validators (api_id, validator_id, name, validate_body, validate_params)
+		 VALUES ($1,$2,$3,$4,$5)
+		 ON CONFLICT (api_id, validator_id)
+		 DO UPDATE SET name=EXCLUDED.name, validate_body=EXCLUDED.validate_body, validate_params=EXCLUDED.validate_params`,
+		apiID, v.ID, v.Name, v.ValidateRequestBody, v.ValidateRequestParameters)
+	return err
+}
+
+func (s *apigwV1Store) getRequestValidator(ctx context.Context, apiID, id string) (restRequestValidator, bool, error) {
+	var v restRequestValidator
+	err := s.db.QueryRowContext(ctx, `SELECT validator_id, name, validate_body, validate_params FROM rest_request_validators WHERE api_id=$1 AND validator_id=$2`, apiID, id).
+		Scan(&v.ID, &v.Name, &v.ValidateRequestBody, &v.ValidateRequestParameters)
+	if err == sql.ErrNoRows {
+		return restRequestValidator{}, false, nil
+	}
+	return v, err == nil, err
+}
+
+func (s *apigwV1Store) listRequestValidators(ctx context.Context, apiID string) ([]restRequestValidator, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT validator_id, name, validate_body, validate_params FROM rest_request_validators WHERE api_id=$1 ORDER BY validator_id`, apiID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []restRequestValidator
+	for rows.Next() {
+		var v restRequestValidator
+		if err := rows.Scan(&v.ID, &v.Name, &v.ValidateRequestBody, &v.ValidateRequestParameters); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// putMethodResponse records a method response (PutMethodResponse). The method must exist first (AWS
+// semantics); a missing one returns sql.ErrNoRows so the handler maps it to NotFoundException.
+func (s *apigwV1Store) putMethodResponse(ctx context.Context, apiID string, mr restMethodResponse) error {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM rest_methods WHERE api_id=$1 AND resource_id=$2 AND http_method=$3)`,
+		apiID, mr.ResourceID, mr.HTTPMethod).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return sql.ErrNoRows
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rest_method_responses (api_id, resource_id, http_method, status_code, response_models, response_parameters)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (api_id, resource_id, http_method, status_code)
+		 DO UPDATE SET response_models=EXCLUDED.response_models, response_parameters=EXCLUDED.response_parameters`,
+		apiID, mr.ResourceID, mr.HTTPMethod, mr.StatusCode, marshalJSONB(mr.ResponseModels), marshalJSONB(mr.ResponseParameters))
+	return err
+}
+
+// snapshot captures the current resource/method/integration/authorizer tree + models + validators for
+// a deployment. Models + validators are frozen so data-plane request validation reflects the deployed
+// config (not later edits).
 func (s *apigwV1Store) snapshot(ctx context.Context, apiID string) (restSnapshot, error) {
 	var snap restSnapshot
 	var err error
@@ -394,6 +605,12 @@ func (s *apigwV1Store) snapshot(ctx context.Context, apiID string) (restSnapshot
 		return snap, err
 	}
 	if snap.Authorizers, err = s.listAuthorizers(ctx, apiID); err != nil {
+		return snap, err
+	}
+	if snap.Models, err = s.listModels(ctx, apiID); err != nil {
+		return snap, err
+	}
+	if snap.Validators, err = s.listRequestValidators(ctx, apiID); err != nil {
 		return snap, err
 	}
 	return snap, nil

@@ -5,7 +5,11 @@ package main
 
 import (
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
+
+	"github.com/harn3ss/open-infra/console-api/internal/apigwschema"
 )
 
 // restV1Op is a parsed REST v1 management request.
@@ -14,7 +18,8 @@ type restV1Op struct {
 	APIID      string
 	ResourceID string
 	HTTPMethod string
-	StatusCode string // PutIntegrationResponse
+	StatusCode string // PutIntegrationResponse / PutMethodResponse
+	Name       string // model name (GetModel) or request-validator id (GetRequestValidator)
 }
 
 // restV1OpFromRequest maps a /restapis/... path + method to an op. REST v1 paths:
@@ -26,9 +31,14 @@ type restV1Op struct {
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}        PUT PutMethod
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration  PUT PutIntegration
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration/responses/{statusCode}  PUT PutIntegrationResponse
+//	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/responses/{statusCode}  PUT PutMethodResponse
 //	/restapis/{id}/deployments                                        POST CreateDeployment
 //	/restapis/{id}/stages                                             POST CreateStage / GET GetStages
 //	/restapis/{id}/authorizers                                        POST CreateAuthorizer
+//	/restapis/{id}/models                                             POST CreateModel / GET GetModels
+//	/restapis/{id}/models/{modelName}                                 GET GetModel
+//	/restapis/{id}/requestvalidators                                  POST CreateRequestValidator / GET GetRequestValidators
+//	/restapis/{id}/requestvalidators/{validatorId}                    GET GetRequestValidator
 func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 	segs := splitPath(r.URL.Path)
 	if len(segs) < 1 || segs[0] != "restapis" {
@@ -70,10 +80,35 @@ func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 			if r.Method == http.MethodPost {
 				return restV1Op{Op: "CreateAuthorizer", APIID: segs[1]}, true
 			}
+		case "models":
+			if r.Method == http.MethodPost {
+				return restV1Op{Op: "CreateModel", APIID: segs[1]}, true
+			}
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetModels", APIID: segs[1]}, true
+			}
+		case "requestvalidators":
+			if r.Method == http.MethodPost {
+				return restV1Op{Op: "CreateRequestValidator", APIID: segs[1]}, true
+			}
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetRequestValidators", APIID: segs[1]}, true
+			}
 		}
-	case 4: // /restapis/{id}/resources/{parentId}
-		if segs[2] == "resources" && r.Method == http.MethodPost {
-			return restV1Op{Op: "CreateResource", APIID: segs[1], ResourceID: segs[3]}, true
+	case 4: // /restapis/{id}/<sub>/<name>
+		switch segs[2] {
+		case "resources":
+			if r.Method == http.MethodPost {
+				return restV1Op{Op: "CreateResource", APIID: segs[1], ResourceID: segs[3]}, true
+			}
+		case "models":
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetModel", APIID: segs[1], Name: segs[3]}, true
+			}
+		case "requestvalidators":
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetRequestValidator", APIID: segs[1], Name: segs[3]}, true
+			}
 		}
 	case 6: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}
 		if segs[2] == "resources" && segs[4] == "methods" && r.Method == http.MethodPut {
@@ -82,6 +117,10 @@ func restV1OpFromRequest(r *http.Request) (restV1Op, bool) {
 	case 7: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration
 		if segs[2] == "resources" && segs[4] == "methods" && segs[6] == "integration" && r.Method == http.MethodPut {
 			return restV1Op{Op: "PutIntegration", APIID: segs[1], ResourceID: segs[3], HTTPMethod: strings.ToUpper(segs[5])}, true
+		}
+	case 8: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}/responses/{statusCode}
+		if segs[2] == "resources" && segs[4] == "methods" && segs[6] == "responses" && r.Method == http.MethodPut {
+			return restV1Op{Op: "PutMethodResponse", APIID: segs[1], ResourceID: segs[3], HTTPMethod: strings.ToUpper(segs[5]), StatusCode: segs[7]}, true
 		}
 	case 9: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration/responses/{statusCode}
 		if segs[2] == "resources" && segs[4] == "methods" && segs[6] == "integration" && segs[7] == "responses" && r.Method == http.MethodPut {
@@ -101,8 +140,9 @@ func childFullPath(parentFull, pathPart string) string {
 
 // matchRestRoute picks the best resource+method for (method, path) from a deployment snapshot, with the
 // same precedence as v2 (more static segments, then non-greedy, then an exact method over ANY). It
-// returns the matched integration, the extracted path parameters, the method's auth, and ok.
-func matchRestRoute(snap restSnapshot, method, path string) (integ restIntegration, params map[string]string, authType, authorizerID string, ok bool) {
+// returns the matched integration, the matched method (carrying auth + request-validation config), the
+// extracted path parameters, and ok.
+func matchRestRoute(snap restSnapshot, method, path string) (integ restIntegration, matched restMethod, params map[string]string, ok bool) {
 	// index integrations + resources by id for lookup
 	resByID := map[string]restResource{}
 	for _, r := range snap.Resources {
@@ -122,8 +162,8 @@ func matchRestRoute(snap restSnapshot, method, path string) (integ restIntegrati
 		if !rok {
 			continue
 		}
-		p, static, greedy, matched := matchTemplate(splitPath(res.FullPath), actual)
-		if !matched {
+		p, static, greedy, mtch := matchTemplate(splitPath(res.FullPath), actual)
+		if !mtch {
 			continue
 		}
 		score := static * 1000
@@ -140,7 +180,135 @@ func matchRestRoute(snap restSnapshot, method, path string) (integ restIntegrati
 		if !iok {
 			continue // a method with no integration can't be served
 		}
-		best, integ, params, authType, authorizerID, ok = score, i, p, m.AuthorizationType, m.AuthorizerID, true
+		best, integ, matched, params, ok = score, i, m, p, true
 	}
-	return integ, params, authType, authorizerID, ok
+	return integ, matched, params, ok
+}
+
+// validateRestRequest applies a method's request validator (AWS "request validation") to an incoming
+// request, returning an AWS-faithful 400 reason when the request is invalid. ok=true means the request
+// may proceed to the integration. It mirrors AWS precedence (parameters first, then body) and AWS's
+// faithful quirks: a required parameter counts as missing when absent OR blank, and body validation is
+// SKIPPED (the request passes) when no request model matches the request's content type.
+//
+// A method with no validator, or one referencing a validator absent from the deployed snapshot, imposes
+// no constraint — request validation is additive, so an unattached/missing validator means "no
+// validation", exactly as before the feature (never a silent 403/500).
+func validateRestRequest(snap restSnapshot, m restMethod, contentType string, query url.Values, header http.Header, pathParams map[string]string, body []byte) (reason string, ok bool) {
+	if m.RequestValidatorID == "" {
+		return "", true
+	}
+	var v *restRequestValidator
+	for i := range snap.Validators {
+		if snap.Validators[i].ID == m.RequestValidatorID {
+			v = &snap.Validators[i]
+			break
+		}
+	}
+	if v == nil {
+		return "", true
+	}
+	// 1) parameters — existence only (not type/format), blank counts as missing; report short names.
+	if v.ValidateRequestParameters {
+		var missing []string
+		for name, required := range m.RequestParameters {
+			if required && !requestParamPresent(name, query, header, pathParams) {
+				missing = append(missing, shortParamName(name))
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			return "Missing required request parameters: [" + strings.Join(missing, ", ") + "]", false
+		}
+	}
+	// 2) body — against the model mapped to the request's content type (skip when none matches).
+	if v.ValidateRequestBody {
+		if schema := resolveRequestModelSchema(snap, m, contentType); schema != nil {
+			if apigwschema.ValidateBody(schema, body) != "" {
+				return "Invalid request body", false
+			}
+		}
+	}
+	return "", true
+}
+
+// requestParamPresent reports whether an AWS method.request.(querystring|header|path).<name> parameter
+// is present and non-blank. An unknown parameter location is treated as present (don't block on a shape
+// we don't model).
+func requestParamPresent(name string, query url.Values, header http.Header, pathParams map[string]string) bool {
+	switch {
+	case strings.HasPrefix(name, "method.request.querystring."):
+		return query.Get(strings.TrimPrefix(name, "method.request.querystring.")) != ""
+	case strings.HasPrefix(name, "method.request.header."):
+		return header.Get(strings.TrimPrefix(name, "method.request.header.")) != ""
+	case strings.HasPrefix(name, "method.request.path."):
+		p := strings.TrimPrefix(name, "method.request.path.")
+		return pathParams[p] != ""
+	}
+	return true
+}
+
+// shortParamName reduces a method.request.* expression to the bare parameter name AWS reports in the
+// "Missing required request parameters: [...]" message (e.g. method.request.querystring.petType →
+// petType).
+func shortParamName(name string) string {
+	for _, pfx := range []string{"method.request.querystring.", "method.request.header.", "method.request.path."} {
+		if strings.HasPrefix(name, pfx) {
+			return strings.TrimPrefix(name, pfx)
+		}
+	}
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+// resolveRequestModelSchema finds the JSON Schema to validate the body against: the model mapped to the
+// request's content type, falling back to the application/json mapping. Returns nil (→ skip validation)
+// when no model is mapped for the content type — AWS's documented behavior ("if no matching content
+// type is found, request validation is not performed").
+func resolveRequestModelSchema(snap restSnapshot, m restMethod, contentType string) map[string]any {
+	if len(m.RequestModels) == 0 {
+		return nil
+	}
+	// Exact content-type match only (after normalizing charset params). AWS does not fall back to a
+	// different content type's model: "if no matching content type is found, request validation is not
+	// performed". An absent/blank Content-Type defaults to application/json (handled in normalize).
+	name := m.RequestModels[normalizeContentType(contentType)]
+	if name == "" {
+		return nil
+	}
+	for _, md := range snap.Models {
+		if md.Name == name {
+			return md.Schema
+		}
+	}
+	return nil
+}
+
+// normalizeContentType strips any parameters (";charset=…") and lowercases, defaulting an empty header
+// to application/json (REST APIs treat a bodied request with no content type as JSON).
+func normalizeContentType(ct string) string {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" {
+		return "application/json"
+	}
+	return ct
+}
+
+// boolMap coerces a decoded JSON object into map[string]bool (requestParameters / responseParameters).
+func boolMap(v any) map[string]bool {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(m))
+	for k, val := range m {
+		b, _ := val.(bool)
+		out[k] = b
+	}
+	return out
 }
