@@ -6,8 +6,8 @@
 # carry a default route (kind: Vpc spec.routes 0.0.0.0/0 -> spec.internalIp) so replies return
 # through this hop.
 #
-# REQUIRES kube-ovn (VpcNatGateway + the ovn-vpc-external-network macvlan attachment). Inert on Canal
-# — which is why this lives under networking/kube-ovn/, outside the root-app include glob.
+# REQUIRES kube-ovn (VpcNatGateway + the ovn-vpc-external-network macvlan attachment) — open-infra's
+# network substrate, so this is live (synced via the root-app networking/kube-ovn include glob).
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:

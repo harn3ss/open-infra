@@ -7,7 +7,7 @@
 # like AWS. Scope to a VPC/subnet by filtering the flow records on CIDR at query time in Loki. This
 # is a sampled record stream (1:N), not a per-connection ledger.
 #
-# REQUIRES kube-ovn (OVS br-int). Inert on Canal.
+# REQUIRES kube-ovn (OVS br-int), open-infra's substrate.
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:

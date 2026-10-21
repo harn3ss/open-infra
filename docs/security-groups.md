@@ -192,12 +192,12 @@ So the AWS network-isolation model maps like this:
 | Transit gateway | `kind: TransitGateway` | transitive hub-and-spoke routing across VPCs |
 | NAT / internet gateway | `kind: NatGateway` | the border device: it NATs private-subnet egress **and** fills the internet-gateway routing-hop role (a real hop that terminates + re-NATs, with EIP / floating-IP association). There is **no separate `InternetGateway` kind** — the NatGateway device is both |
 
-> **Substrate dependency.** `kind: Vpc` / `Subnet` / `NatGateway` / `TransitGateway` and the VPC
-> routes/peerings above require **kube-ovn** as the active CNI; they are **inert on the default
-> Canal substrate** (the `platform/networking/kube-ovn/` manifests are not even synced there — see
-> that directory's `README.md`). Which substrate a cluster runs is an operator decision. `kind:
-> SecurityGroup` remains the portable isolation primitive; the address-plan kinds carry this CNI
-> dependency.
+> **Substrate.** `kind: Vpc` / `Subnet` / `NatGateway` / `TransitGateway` and the VPC routes/peerings
+> above require **kube-ovn**, which **is** open-infra's CNI and network substrate — so these kinds are
+> **enforced and live, not optional** (the cluster runs kube-ovn with per-VPC OVN subnets; the
+> `platform/networking/kube-ovn/` manifests are synced via the root-app `networking/kube-ovn` include).
+> `kind: SecurityGroup` is the portable isolation primitive that also holds on a non-kube-ovn
+> substrate; the address-plan kinds additionally need kube-ovn's OVN dataplane.
 
 For **workload isolation**, a migration should map `aws_vpc`/`aws_subnet` security boundaries to
 Security Groups ("who may talk to whom"), not recreate the address plan. Where the estate needs the
