@@ -38,6 +38,11 @@ import (
 // the AWS JSON 1.1 X-Amz-Target prefix the ECR SDKs and aws CLI sign for.
 const ecrTargetPrefix = "AmazonEC2ContainerRegistry_V20150921"
 
+// ecrInternalSubject is the token subject the shim uses when minting registry Bearer tokens for its own
+// metadata reads (tags/list, manifest resolve/delete) against a token-auth registry — distinct from any
+// caller principal, so audit shows these are the shim's internal reads.
+const ecrInternalSubject = "aws-shim:internal-metadata"
+
 // ecrNamePattern is AWS's repository-name constraint (lowercase; '.', '_', '-' only as single separators
 // between alphanumeric runs; '/' as a namespace separator), checked alongside the 256-char length cap.
 const ecrNamePattern = `^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*$`
@@ -552,6 +557,18 @@ func (h *ecrHandler) registryCred(ctx context.Context) (user, pass string, err e
 func (h *ecrHandler) registry(ctx context.Context) (*registryClient, error) {
 	if h.registryURL == "" {
 		return nil, fmt.Errorf("the OCI registry backend is not configured on this shim")
+	}
+	// Token-auth registry (the per-repo bearer-token cutover): the shim is the token issuer, so its own
+	// metadata reads mint a scoped registry token rather than presenting the (now-unused) htpasswd Basic
+	// credential, which a token-auth registry rejects. The control-plane op that reaches this client is
+	// already authorized against the caller; the minted token's access claim is only the repo + actions
+	// that single read/delete needs.
+	if h.tokenAuth && h.signer != nil {
+		mint := func(repo string, actions ...string) (string, error) {
+			access := []ecrAccess{{Type: "repository", Name: repo, Actions: actions}}
+			return h.signer.mintRegistry(ecrInternalSubject, h.issuer, h.service, access, 5*time.Minute)
+		}
+		return newTokenRegistryClient(h.registryURL, mint), nil
 	}
 	user, pass, err := h.registryCred(ctx)
 	if err != nil {

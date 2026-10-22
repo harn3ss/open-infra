@@ -309,6 +309,80 @@ func TestECR_RegistryClientResolveDigest(t *testing.T) {
 	}
 }
 
+// fakeTokenRegistry is a /v2 registry in TOKEN-auth mode: every request must carry a non-empty
+// "Authorization: Bearer <tok>" or it is refused 401 with a Bearer challenge — exactly what rejected the
+// shim's old Basic internal client. The returned func reports the bearer tokens accepted requests presented.
+func fakeTokenRegistry(repo string, tagDigest map[string]string) (*httptest.Server, func() []string) {
+	const manifest = `{"config":{"size":10},"layers":[{"size":20}]}` // config+layers sum = 30
+	base := "/v2/" + repo
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if bearer == "" || bearer == r.Header.Get("Authorization") { // missing, or not a Bearer header
+			w.Header().Set("WWW-Authenticate", `Bearer realm="https://shim/ecr/token",service="ecr-registry"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		seen = append(seen, bearer)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == base+"/tags/list":
+			tags := []string{}
+			for tg := range tagDigest {
+				tags = append(tags, tg)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": repo, "tags": tags})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, base+"/manifests/"):
+			ref := strings.TrimPrefix(r.URL.Path, base+"/manifests/")
+			d, ok := tagDigest[ref]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Docker-Content-Digest", d)
+			_, _ = w.Write([]byte(manifest))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, base+"/manifests/"):
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return srv, func() []string { return seen }
+}
+
+func TestECR_RegistryClientTokenAuth(t *testing.T) {
+	srv, seen := fakeTokenRegistry("foo", map[string]string{"v1": "sha256:abc"})
+	defer srv.Close()
+
+	// A token-auth registry rejects the old Basic internal client — the regression this test guards.
+	if _, err := newRegistryClient(srv.URL, "u", "p").listTags(context.Background(), "foo"); err == nil {
+		t.Fatalf("Basic client against a token-auth registry must fail (401), got nil error")
+	}
+
+	// The token client mints a per-repo bearer scoped to exactly the action each call needs.
+	var minted []string
+	mint := func(repo string, actions ...string) (string, error) {
+		tok := strings.Join(actions, ",") + "@" + repo
+		minted = append(minted, tok)
+		return tok, nil
+	}
+	rc := newTokenRegistryClient(srv.URL, mint)
+	if tags, err := rc.listTags(context.Background(), "foo"); err != nil || len(tags) != 1 || tags[0] != "v1" {
+		t.Fatalf("token listTags = (%v, %v) want ([v1], nil)", tags, err)
+	}
+	if digest, size, err := rc.resolveDigest(context.Background(), "foo", "v1"); err != nil || digest != "sha256:abc" || size != 30 {
+		t.Fatalf("token resolveDigest = (%q, %d, %v) want (sha256:abc, 30, nil)", digest, size, err)
+	}
+	if err := rc.deleteManifest(context.Background(), "foo", "sha256:abc"); err != nil {
+		t.Fatalf("token deleteManifest: %v", err)
+	}
+	if len(minted) != 3 || minted[0] != "pull@foo" || minted[1] != "pull@foo" || minted[2] != "delete@foo" {
+		t.Fatalf("minted scopes = %v want [pull@foo pull@foo delete@foo]", minted)
+	}
+	if got := seen(); len(got) != 3 {
+		t.Fatalf("registry saw %d bearer requests want 3", len(got))
+	}
+}
+
 // --- image ops over the registry ---
 
 func TestECR_ListImages(t *testing.T) {
