@@ -186,6 +186,12 @@ data:
         forcepathstyle: true
         secure: false
         rootdirectory: /
+      # Proxy blob bytes through the registry instead of 307-redirecting clients to a presigned MinIO URL.
+      # The node container runtime (and in-cluster clients reached via the ecr-node-pull agent) can resolve
+      # only the ecr-registry Service name, not minio.minio.svc — a redirect to MinIO is unreachable and
+      # fails the pull. Serving blobs through the registry keeps every client talking to one host.
+      redirect:
+        disable: true
       delete:
         enabled: true
       maintenance:

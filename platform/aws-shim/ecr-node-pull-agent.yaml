@@ -1,0 +1,114 @@
+# In-cluster runtimeImage pull path — the per-node agent.
+#
+# Makes the host container runtime able to pull from the in-cluster ecr-registry (which it otherwise
+# cannot: it is outside the pod network, so it can't resolve cluster DNS; it defaults to HTTPS; and the
+# registry is per-repo token auth). Per node this agent:
+#   1. resolves the ecr-registry + aws-shim Service ClusterIPs via its own pod DNS (CoreDNS),
+#   2. writes host /etc/hosts entries for both svc.cluster.local names -> those ClusterIPs (nodes route to
+#      ClusterIPs; this needs no restart and reconciles if a ClusterIP drifts),
+#   3. writes /etc/rancher/k3s/registries.yaml: an http mirror endpoint for the registry (forces plain
+#      HTTP) + the pull-only node-puller credential (Basic AWS:<jwt>, used for the realm bearer dance),
+#   4. restarts the node runtime ONLY when registries.yaml actually changes (never in a loop).
+#
+# GATED: runs only on nodes labelled openinfra.dev/ecr-pull=enabled, so it is armed node-by-node (arming a
+# node restarts its k3s/k3s-agent once). The node-puller credential is pull-only (see ecr-node-pull.yaml);
+# a leaked node credential can only pull existing images, never push or delete.
+#
+# The credential Secret (ecr-node-puller-cred) is provisioned out of band, NOT in git — mint it with the
+# shim's ECR signing key (scratchpad mint_node_puller.py pattern) and rotate before its 1y expiry.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ecr-node-pull-agent
+  namespace: kube-system
+  labels: { openinfra.dev/component: ecr, app: ecr-node-pull-agent }
+spec:
+  selector:
+    matchLabels: { app: ecr-node-pull-agent }
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 1 } # one node at a time — never cycle the fleet at once
+  template:
+    metadata:
+      labels: { app: ecr-node-pull-agent, openinfra.dev/component: ecr }
+    spec:
+      hostPID: true # to nsenter host PID 1 and restart the runtime unit
+      nodeSelector:
+        openinfra.dev/ecr-pull: enabled # armed per node
+      tolerations:
+        - { operator: Exists } # run on every (labelled) node, including control-plane/tainted
+      containers:
+        - name: configure
+          image: alpine:3.20
+          securityContext:
+            privileged: true # host file write + nsenter to restart the runtime
+          env:
+            - { name: NODE_NAME, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: REGISTRY_HOST, value: "ecr-registry.open-infra-ecr.svc.cluster.local" }
+            - { name: REGISTRY_PORT, value: "5000" }
+            - { name: SHIM_HOST, value: "aws-shim.open-infra-aws-shim.svc.cluster.local" }
+          command: [/bin/sh, -ceu]
+          args:
+            - |
+              CRED_FILE=/cred/password
+              resolve() { # first IPv4 for a name, via the pod resolver (CoreDNS)
+                getent ahostsv4 "$1" 2>/dev/null | awk '{print $1; exit}' \
+                  || nslookup "$1" 2>/dev/null | awk '/^Address/{ip=$NF} END{print ip}'
+              }
+              # find THIS node's runtime unit + registries.yaml path
+              UNIT=""
+              for u in k3s k3s-agent rke2-server rke2-agent; do
+                if nsenter -t 1 -m -u -i -n -p -- systemctl is-active --quiet "$u" 2>/dev/null; then UNIT="$u"; break; fi
+              done
+              case "$UNIT" in rke2-*) DIR=/host/etc/rancher/rke2 ;; *) DIR=/host/etc/rancher/k3s ;; esac
+              TARGET="$DIR/registries.yaml"
+              HOSTS=/host/etc/hosts
+              echo "[$NODE_NAME] unit=${UNIT:-none} registries=$TARGET"
+              while :; do
+                REG_IP="$(resolve "$REGISTRY_HOST")"; SHIM_IP="$(resolve "$SHIM_HOST")"
+                if [ -z "$REG_IP" ] || [ -z "$SHIM_IP" ]; then echo "[$NODE_NAME] DNS not ready; retry"; sleep 15; continue; fi
+                # (2) host /etc/hosts block (idempotent, marker-delimited; no restart on change)
+                BLOCK="$(printf '# BEGIN openinfra-ecr\n%s %s\n%s %s\n# END openinfra-ecr\n' "$REG_IP" "$REGISTRY_HOST" "$SHIM_IP" "$SHIM_HOST")"
+                CUR_HOSTS="$(sed -n '/# BEGIN openinfra-ecr/,/# END openinfra-ecr/p' "$HOSTS" 2>/dev/null || true)"
+                if [ "$CUR_HOSTS" != "$BLOCK" ]; then
+                  sed -i '/# BEGIN openinfra-ecr/,/# END openinfra-ecr/d' "$HOSTS" 2>/dev/null || true
+                  printf '%s\n' "$BLOCK" >> "$HOSTS"
+                  echo "[$NODE_NAME] /etc/hosts updated (reg=$REG_IP shim=$SHIM_IP)"
+                fi
+                # (3) desired registries.yaml (http mirror forces plain HTTP; auth = pull-only node-puller)
+                PW="$(cat "$CRED_FILE")"
+                DESIRED="$(cat <<YAML
+              mirrors:
+                "$REGISTRY_HOST:$REGISTRY_PORT":
+                  endpoint:
+                    - "http://$REGISTRY_HOST:$REGISTRY_PORT"
+              configs:
+                "$REGISTRY_HOST:$REGISTRY_PORT":
+                  auth:
+                    username: AWS
+                    password: "$PW"
+              YAML
+              )"
+                mkdir -p "$DIR"
+                if ! printf '%s\n' "$DESIRED" | cmp -s - "$TARGET" 2>/dev/null; then
+                  printf '%s\n' "$DESIRED" > "$TARGET"
+                  if [ -n "$UNIT" ]; then
+                    echo "[$NODE_NAME] registries.yaml changed -> restarting $UNIT"
+                    nsenter -t 1 -m -u -i -n -p -- systemctl restart "$UNIT" || echo "[$NODE_NAME] WARN restart $UNIT failed (restart manually)"
+                  else
+                    echo "[$NODE_NAME] registries.yaml written; restart the runtime manually"
+                  fi
+                fi
+                sleep 300
+              done
+          volumeMounts:
+            - { name: host-etc, mountPath: /host/etc }
+            - { name: cred, mountPath: /cred, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+      volumes:
+        - name: host-etc
+          hostPath: { path: /etc, type: Directory }
+        - name: cred
+          secret: { secretName: ecr-node-puller-cred }
