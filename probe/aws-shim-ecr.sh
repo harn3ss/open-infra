@@ -10,8 +10,9 @@
 #   - the token bridge: GetAuthorizationToken hands back a credential whose base64 decodes to "AWS:<pw>"
 #     and a proxyEndpoint — the exact input `aws ecr get-login-password | docker login` consumes;
 #   - the lifecycle: CreateRepository returns a faithful repositoryUri/Arn/registryId; an image PUSHED to
-#     the registry with that credential (the same Basic-auth path docker uses, exercised here over /v2)
-#     then appears in ListImages (tag + digest) and DescribeImages (a real, non-zero imageSizeInBytes);
+#     the registry with that credential (over /v2 the way docker does — the per-repo bearer-token dance via
+#     the shim's realm when the registry is token-auth, else legacy htpasswd Basic) then appears in
+#     ListImages (tag + digest) and DescribeImages (a real, non-zero imageSizeInBytes);
 #     DeleteRepository refuses a non-empty repo without force (RepositoryNotEmptyException) and succeeds
 #     with force, removing the record;
 #   - AUTHORITY: a READER caller's CreateRepository is refused at the control-plane gate (the coarse
@@ -73,20 +74,41 @@ ecr_record_exists() {
     -o jsonpath='{range .items[*]}{.data.repositoryName}{"\n"}{end}' 2>/dev/null | grep -qxF "$1"
 }
 
-# oci_push <registry> <cred "AWS:pw"> <repo> <tag>: push a tiny config-only image over /v2 (the same
-# Basic-auth path `docker push` uses). Echoes the manifest PUT status code (201 = created).
+# reg_bearer <shim> <b64 "AWS:pw"> <service> <repo> <actions>: run the Docker registry realm dance — GET
+# the shim's /ecr/token with the GetAuthorizationToken credential as Basic auth and the requested repo
+# scope — and echo the per-repo registry Bearer the shim mints. (We hit the realm at the shim ENDPOINT,
+# not the realm URL in the registry's challenge, since in v1 that URL is in-cluster-only DNS.)
+reg_bearer() {
+  local shim="$1" b64="$2" svc="$3" repo="$4" acts="$5"
+  curl -s -H "Authorization: Basic $b64" "$shim/ecr/token?service=$svc&scope=repository:$repo:$acts" \
+    | grep -o '"token":"[^"]*"' | sed 's/"token":"//;s/"$//'
+}
+
+# oci_push <registry> <shim_endpoint> <b64 "AWS:pw"> <repo> <tag>: push a tiny config-only image over /v2,
+# the way `docker push` does. Auth follows the registry's declared mode: token-auth (the per-repo bearer
+# dance via the shim realm) when /v2/ challenges with Bearer, else legacy htpasswd Basic (the base64
+# credential IS the Basic header value). Echoes the manifest PUT status code (201 = created).
 oci_push() {
-  local reg="$1" cred="$2" repo="$3" tag="$4" cfg cd cs loc u man
+  local reg="$1" shim="$2" b64="$3" repo="$4" tag="$5" cfg cd cs loc u man authz chal svc bearer
   cfg='{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}'
   cd="sha256:$(printf '%s' "$cfg" | sha256sum | cut -d' ' -f1)"
   cs=$(printf '%s' "$cfg" | wc -c)
-  loc=$(curl -s -u "$cred" -X POST "$reg/v2/$repo/blobs/uploads/" -D - -o /dev/null | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')
+  chal=$(curl -s -D - -o /dev/null "$reg/v2/" | tr -d '\r' | awk 'tolower($1)=="www-authenticate:"{print; exit}')
+  case "$chal" in
+    *Bearer*|*bearer*)
+      svc=$(printf '%s' "$chal" | sed -n 's/.*service="\([^"]*\)".*/\1/p'); svc="${svc:-ecr-registry}"
+      bearer=$(reg_bearer "$shim" "$b64" "$svc" "$repo" "push,pull")
+      [ -n "$bearer" ] || { echo "000"; return; }
+      authz="Bearer $bearer";;
+    *) authz="Basic $b64";;
+  esac
+  loc=$(curl -s -H "Authorization: $authz" -X POST "$reg/v2/$repo/blobs/uploads/" -D - -o /dev/null | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}')
   [ -n "$loc" ] || { echo "000"; return; }
   case "$loc" in http*) u="$loc";; *) u="$reg$loc";; esac
   case "$u" in *\?*) u="$u&digest=$cd";; *) u="$u?digest=$cd";; esac
-  curl -s -o /dev/null -u "$cred" -X PUT "$u" -H 'Content-Type: application/octet-stream' --data-binary "$cfg" || { echo "000"; return; }
+  curl -s -o /dev/null -H "Authorization: $authz" -X PUT "$u" -H 'Content-Type: application/octet-stream' --data-binary "$cfg" || { echo "000"; return; }
   man='{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"'"$cd"'","size":'"$cs"'},"layers":[]}'
-  curl -s -o /dev/null -w '%{http_code}' -u "$cred" -X PUT "$reg/v2/$repo/manifests/$tag" \
+  curl -s -o /dev/null -w '%{http_code}' -H "Authorization: $authz" -X PUT "$reg/v2/$repo/manifests/$tag" \
     -H 'Content-Type: application/vnd.oci.image.manifest.v1+json' --data-binary "$man"
 }
 
@@ -164,8 +186,8 @@ esac
 ecr_record_exists "$REPO" || fail "no bookkeeping record after create-repository ${REPO}"
 log "    ✓ repositoryUri=${URI}"
 
-log "push an image to ${REGISTRY}/${REPO}:v1 with the token credential (the /v2 Basic-auth path docker uses)"
-CODE="$(oci_push "$REGISTRY" "$CRED" "$REPO" "v1")"
+log "push an image to ${REGISTRY}/${REPO}:v1 with the token credential (the /v2 push path docker uses)"
+CODE="$(oci_push "$REGISTRY" "$ENDPOINT" "$TOKEN" "$REPO" "v1")"
 [ "$CODE" = "201" ] || fail "image push to the registry failed (manifest PUT HTTP $CODE; is ECR_REGISTRY_ENDPOINT the registry?)"
 log "    ✓ pushed (manifest 201)"
 
