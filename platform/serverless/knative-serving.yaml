@@ -41,6 +41,14 @@ spec:
       # spec.timeout at 900 to match, so the two never disagree. (Raising the cap only PERMITS a
       # longer declared timeout; it doesn't make anything run longer on its own.)
       max-revision-timeout-seconds: "900"
+    deployment:
+      # The Knative controller resolves an image tag to a digest at revision creation by querying the
+      # registry ITSELF (from the controller pod, with no pull credential). For the in-cluster ecr-registry
+      # (per-repo token auth via the shim realm) that anonymous request is refused — so a kind: Function on
+      # code.runtimeImage from ecr-registry never got a Ready revision. Skip tag resolution for that
+      # registry: the revision keeps the tag ref, and the kubelet pulls it with the per-node pull credential
+      # (the ecr-node-pull agent). Keep Knative's local-dev defaults alongside it.
+      registries-skipping-tag-resolving: "kind.local,ko.local,dev.local,ecr-registry.open-infra-ecr.svc.cluster.local:5000"
     # Distributed tracing (#67): per-request spans through the activator + queue-proxy
     # of every kind: Function, shipped to Tempo's Zipkin receiver. Rendered by the
     # operator into the config-tracing ConfigMap (knative-serving ns).
