@@ -1,0 +1,41 @@
+# In-cluster runtimeImage pull path — the node-puller identity.
+#
+# Problem: a Function's code.runtimeImage points at the in-cluster ecr-registry, but the node container
+# runtime (containerd, in the host netns) cannot resolve cluster DNS, speaks HTTPS by default, and the
+# registry is per-repo token auth — so a kubelet pull fails on all three counts. AWS solves the credential
+# half with a per-node credential helper that mints a fresh token per pull from the node's identity; k3s
+# does registry auth statically via registries.yaml, so the in-cluster equivalent is a long-lived,
+# PULL-ONLY, shim-signed credential for a dedicated node-puller principal, written into each node's
+# registries.yaml by the node agent (see ecr-node-pull-agent.yaml). This file is the identity + authz.
+#
+# The credential is pull-only (get on applications — never create/delete), so the worst a leaked node
+# credential can do is pull images that already exist in the in-cluster registry. Push stays scoped to the
+# ECR doorway's create grant. The authorization is the SAME impersonated SubjectAccessReview the control
+# plane runs (no parallel auth layer): the realm authorizes each pull via CanDo(get, applications, <repo>)
+# against the node-puller's group.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ecr-runtime-puller
+  labels: { openinfra.dev/component: ecr }
+rules:
+  # pull == get; list lets a client enumerate tags. NO create (push) and NO delete.
+  - apiGroups: ["openinfra.dev"]
+    resources: ["applications"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ecr-runtime-puller-group
+  labels: { openinfra.dev/component: ecr }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ecr-runtime-puller
+subjects:
+  # The shim impersonates a caller's groups as openinfra:<group>; the node-puller credential carries
+  # groups [openinfra:node-pullers, openinfra:users], so bind the prefixed group here.
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: openinfra:node-pullers
