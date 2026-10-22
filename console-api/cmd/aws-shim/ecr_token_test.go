@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,55 @@ func TestECRToken_CallerRoundTrip(t *testing.T) {
 	other := newTestECRSigner(t)
 	if _, err := other.verifyCaller(tok); err == nil {
 		t.Fatal("a token from another signer must be rejected")
+	}
+}
+
+func TestECRToken_OAuth2PostFlow(t *testing.T) {
+	// containerd's image puller uses the OAuth2 POST token flow (form creds), not the GET/Basic flow.
+	// A kubelet pull from a node registries.yaml credential therefore lands on servePostToken.
+	s := newTestECRSigner(t)
+	h := newECRTestHandler(ecrCS(true), "") // ecrCS(true) => the impersonated SAR allows
+	h.signer = s
+	h.issuer = "openinfra-ecr"
+	h.service = "ecr-registry"
+
+	cred, err := s.mintCaller(ecrCaller{Sub: "node-puller", Groups: []string{"openinfra:node-pullers", "openinfra:users"}}, time.Hour)
+	if err != nil {
+		t.Fatalf("mintCaller: %v", err)
+	}
+	// JWTs are base64url (no &/=), scope chars (:/,) are form-safe, so a hand-built body needs no escaping.
+	body := "grant_type=password&username=AWS&password=" + cred + "&service=ecr-registry&scope=repository:runtime/nodejs18:pull"
+	req := httptest.NewRequest("POST", "http://ecr/ecr/token", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.servePostToken(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST token flow = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	tok, _ := m["token"].(string)
+	if tok == "" || m["access_token"] != tok {
+		t.Fatalf("POST flow must return token + access_token: %s", w.Body.String())
+	}
+	parts := strings.SplitN(tok, ".", 3)
+	pb, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	var claims struct {
+		Access []ecrAccess `json:"access"`
+	}
+	_ = json.Unmarshal(pb, &claims)
+	if len(claims.Access) != 1 || claims.Access[0].Name != "runtime/nodejs18" ||
+		len(claims.Access[0].Actions) != 1 || claims.Access[0].Actions[0] != "pull" {
+		t.Fatalf("POST flow access claim wrong: %+v", claims.Access)
+	}
+
+	// No credential in the form -> 401 (not 403/500).
+	w2 := httptest.NewRecorder()
+	h.servePostToken(w2, httptest.NewRequest("POST", "http://ecr/ecr/token", strings.NewReader("grant_type=password&service=ecr-registry")))
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("POST with no credential = %d, want 401", w2.Code)
 	}
 }
 

@@ -269,14 +269,42 @@ func ecrActionVerb(action string) string {
 	return ""
 }
 
-// serveToken handles GET /ecr/token — the Docker registry bearer-token issuance.
+// serveToken handles GET /ecr/token — the classic Docker registry token flow: the credential arrives as
+// Basic auth and the scopes as ?scope= query params (what `docker`/the GET curl dance use).
 func (h *ecrHandler) serveToken(w http.ResponseWriter, r *http.Request) {
+	_, pass, ok := r.BasicAuth()
+	h.issueRegistryToken(w, r, pass, ok && pass != "", r.URL.Query().Get("service"), r.URL.Query()["scope"])
+}
+
+// servePostToken handles POST /ecr/token — the OAuth2 token flow the Docker registry spec also defines
+// and that containerd's image puller uses whenever it holds a username+password (so a kubelet pull from a
+// node's registries.yaml credential lands here, not on the GET path). The credential + scopes arrive
+// form-encoded (grant_type=password&username=AWS&password=<jwt>&service=&scope=), not as Basic auth.
+func (h *ecrHandler) servePostToken(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeDockerTokenError(w, http.StatusBadRequest, "UNAUTHORIZED", "could not parse token request form")
+		return
+	}
+	// The credential is the form password (grant_type=password); fall back to a Basic header if a client
+	// sent one. The username (AWS) is ignored — identity rides in the credential itself.
+	pass := r.PostFormValue("password")
+	if pass == "" {
+		if _, p, ok := r.BasicAuth(); ok {
+			pass = p
+		}
+	}
+	h.issueRegistryToken(w, r, pass, pass != "", r.FormValue("service"), r.Form["scope"])
+}
+
+// issueRegistryToken is the shared core of both token flows: authenticate the caller credential, authorize
+// each requested repo+action with the SAME impersonated SubjectAccessReview the control plane runs, and
+// mint a registry token whose access claim is only what was granted.
+func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, pass string, haveCred bool, service string, rawScopes []string) {
 	if h.signer == nil {
 		writeDockerTokenError(w, http.StatusNotImplemented, "UNSUPPORTED", "token auth is not configured on this shim")
 		return
 	}
-	_, pass, ok := r.BasicAuth()
-	if !ok || pass == "" {
+	if !haveCred {
 		w.Header().Set("WWW-Authenticate", `Basic realm="ecr"`)
 		writeDockerTokenError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
@@ -287,12 +315,11 @@ func (h *ecrHandler) serveToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claims := iam.Claims{Sub: caller.Sub, Groups: caller.Groups, Role: caller.Role}
-	service := r.URL.Query().Get("service")
 	ctx := r.Context()
 
 	// Authorize each requested repo+action against this caller; grant only what passes.
 	var granted []ecrAccess
-	for _, sc := range r.URL.Query()["scope"] {
+	for _, sc := range rawScopes {
 		for _, one := range strings.Fields(sc) { // some clients join scopes with spaces
 			acc, ok := parseScope(one)
 			if !ok {

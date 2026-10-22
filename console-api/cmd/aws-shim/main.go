@@ -823,7 +823,8 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 	// here, which authenticates the caller credential (Basic auth) and mints a per-repo-scoped
 	// registry token. Authentication is the credential itself, so it's not behind the SigV4 layer.
 	if ecr, ok := services["ecr"].(*ecrHandler); ok {
-		r.Get("/ecr/token", ecr.serveToken)
+		r.Get("/ecr/token", ecr.serveToken)      // classic token flow (Basic auth + ?scope=)
+		r.Post("/ecr/token", ecr.servePostToken) // OAuth2 token flow (form creds), used by containerd's puller
 	}
 
 	// Every other request is an AWS-SDK call; the serviceRouter authenticates once and dispatches
