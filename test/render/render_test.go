@@ -636,7 +636,15 @@ func TestFunction_Code(t *testing.T) {
 		for _, want := range []string{
 			"name: OPENINFRA_CODE_BUCKET", `value: "fn-artifacts"`,
 			"name: OPENINFRA_CODE_KEY", `value: "f.zip"`,
-			"secretRef: { name: fn-s3 }",
+			// AWS reserved runtime vars the runtime now injects (handlers rely on them, e.g. a region).
+			"name: AWS_REGION", `value: "us-east-1"`,
+			"name: AWS_DEFAULT_REGION",
+			"name: AWS_LAMBDA_FUNCTION_NAME",
+			"name: LAMBDA_TASK_ROOT",
+			// Code secret mapped per-key; the S3 endpoint is SERVICE-SCOPED (AWS_ENDPOINT_URL_S3).
+			"name: AWS_ENDPOINT_URL_S3",
+			"secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL",
+			"secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("bucket-source render missing %q; got:\n%s", want, out)
@@ -645,6 +653,14 @@ func TestFunction_Code(t *testing.T) {
 		// Zip source mounts no code ConfigMap volume.
 		if strings.Contains(out, "mountPath: /var/task") {
 			t.Errorf("bucket source must not mount a code configMap:\n%s", out)
+		}
+		// The code secret is mapped per-key, NOT via envFrom, and the handler must get the service-scoped
+		// endpoint, never the GLOBAL AWS_ENDPOINT_URL (which would misroute non-S3 SDK calls to the gateway).
+		if strings.Contains(out, "secretRef: { name: fn-s3 }") {
+			t.Errorf("code secret should be mapped per-key, not via envFrom:\n%s", out)
+		}
+		if strings.Contains(out, "name: AWS_ENDPOINT_URL,") {
+			t.Errorf("handler must not get the global AWS_ENDPOINT_URL (only AWS_ENDPOINT_URL_S3):\n%s", out)
 		}
 	})
 

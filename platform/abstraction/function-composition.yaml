@@ -174,6 +174,29 @@ spec:
                               {{- if $code.layers }}
                               - { name: OPENINFRA_LAYERS, value: {{ $code.layers | toJson | quote }} }
                               {{- end }}
+                              # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                              # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                              # as function env because AWS reserves the names, so the runtime must inject them.
+                              - { name: AWS_REGION, value: "{{ $code.region | default "us-east-1" }}" }
+                              - { name: AWS_DEFAULT_REGION, value: "{{ $code.region | default "us-east-1" }}" }
+                              - { name: AWS_LAMBDA_FUNCTION_NAME, value: "{{ $name }}" }
+                              - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                              - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/{{ $name }}" }
+                              - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                              - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                              - { name: TZ, value: "UTC" }
+                              {{- if $code.runtime }}
+                              - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_{{ $code.runtime }}" }
+                              {{- end }}
+                              {{- if and $csrc.bucket $csrc.secret }}
+                              # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
+                              # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
+                              # global override would point every service — dynamodb, sns, … — at the S3
+                              # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
+                              - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                              - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                              - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_ENDPOINT_URL, optional: true } } }
+                              {{- end }}
                             {{- end }}
                             {{- range $spec.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
@@ -183,11 +206,8 @@ spec:
                               - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
                             {{- end }}
                             {{- end }}
-                            {{- if or $spec.secrets (and $code $csrc.bucket $csrc.secret) }}
+                            {{- if $spec.secrets }}
                             envFrom:
-                            {{- if and $code $csrc.bucket $csrc.secret }}
-                              - secretRef: { name: {{ $csrc.secret }} }
-                            {{- end }}
                             {{- range $spec.secrets }}
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
