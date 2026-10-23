@@ -294,9 +294,183 @@ def probe_controlplane(dyn):
     return [("cluster/control-plane.md", "\n".join(lines) + "\n")], [], ("Control plane", state, "datastore size needs node access")
 
 
+def probe_longhorn(dyn):
+    vres = _res(dyn, "longhorn.io", "Volume")
+    if vres is None:
+        return [], [], ("Longhorn", "not checked (longhorn.io/Volume not accessible)", "")
+    try:
+        vols = _items(vres)
+    except Exception as e:
+        return [], [], ("Longhorn", f"not checked ({type(e).__name__})", "")
+    bad, by_rob = [], {}
+    for v in vols:
+        st = v.get("status") or {}
+        rob = st.get("robustness") or "?"
+        by_rob[rob] = by_rob.get(rob, 0) + 1
+        if rob in ("degraded", "faulted"):
+            m = v.get("metadata") or {}
+            bad.append(("LonghornVolume", m.get("namespace"), m.get("name"), f"robustness={rob} state={st.get('state')}"))
+    lines = ["# Longhorn volumes", "", f"observed_at: {STAMP}", "", f"volumes: {len(vols)}", ""]
+    for r in sorted(by_rob):
+        lines.append(f"- {r}: {by_rob[r]}")
+    nres = _res(dyn, "longhorn.io", "Node")
+    if nres is not None:
+        lines += ["", "## nodes (longhorn)"]
+        for n in _items(nres):
+            m = n.get("metadata") or {}
+            c = _conds(n)
+            lines.append(f"- {m.get('name')}: Ready={c.get('Ready',(None,))[0]} Schedulable={c.get('Schedulable',(None,))[0]}")
+    return [("storage/longhorn.md", "\n".join(lines) + "\n")], bad, ("Longhorn", "ok", f"{len(vols)} volumes, {len(bad)} degraded/faulted")
+
+
+def probe_gitops(dyn):
+    res = _res(dyn, "argoproj.io", "Application")
+    if res is None:
+        return [], [], ("GitOps (ArgoCD)", "not checked (Application not accessible)", "")
+    try:
+        apps = _items(res)
+    except Exception as e:
+        return [], [], ("GitOps (ArgoCD)", f"not checked ({type(e).__name__})", "")
+    bad = []
+    lines = ["# GitOps — ArgoCD Applications", "", f"observed_at: {STAMP}", "",
+             "| app | sync | health | synced-revision |", "|---|---|---|---|"]
+    for a in apps:
+        m = a.get("metadata") or {}
+        s = a.get("status") or {}
+        sync = (s.get("sync") or {}).get("status", "?")
+        health = (s.get("health") or {}).get("status", "?")
+        rev = ((s.get("sync") or {}).get("revision", "") or "")[:8]
+        flag = " ⚠️" if (sync != "Synced" or health == "Degraded") else ""
+        lines.append(f"| {m.get('name')} | {sync} | {health} | {rev}{flag} |")
+        if sync != "Synced" or health == "Degraded":
+            bad.append(("ArgoCDApp", m.get("namespace"), m.get("name"), f"sync={sync} health={health}"))
+    return [("gitops/argocd.md", "\n".join(lines) + "\n")], bad, ("GitOps (ArgoCD)", "ok", f"{len(apps)} apps, {len(bad)} off")
+
+
+def probe_registry(dyn):
+    lines = ["# Registry (ECR doorway) + runtimeImage pull path", "", f"observed_at: {STAMP}", ""]
+    bad = []
+    cmres = _res(dyn, "", "ConfigMap")
+    repos = None
+    if cmres is not None:
+        try:  # scope to the ECR namespace rather than re-listing every ConfigMap cluster-wide
+            cms = cmres.get(namespace="open-infra-ecr").to_dict().get("items", [])
+            repos = sum(1 for cm in cms if ((cm.get("metadata") or {}).get("labels") or {}).get("app.kubernetes.io/managed-by") == "ecr")
+        except Exception:
+            repos = None
+    lines.append(f"ECR repositories (bookkeeping records): {repos if repos is not None else 'not checked'}")
+    dsres = _res(dyn, "apps", "DaemonSet")
+    if dsres is not None:
+        for d in _items(dsres):
+            m = d.get("metadata") or {}
+            if m.get("name") == "ecr-node-pull-agent":
+                st = d.get("status") or {}
+                des, rdy = st.get("desiredNumberScheduled", 0), st.get("numberReady", 0)
+                flag = " ⚠️" if rdy < des else ""
+                lines += ["", f"pull-path agent (ecr-node-pull-agent): {rdy}/{des} armed nodes ready{flag}"]
+                if rdy < des:
+                    bad.append(("ECRpullAgent", m.get("namespace"), "ecr-node-pull-agent", f"{rdy}/{des} ready"))
+    return [("registry/ecr.md", "\n".join(lines) + "\n")], bad, ("Registry + pull-path", "ok", f"{repos if repos is not None else '?'} repos")
+
+
+def probe_networking(dyn):
+    lines = ["# Networking", "", f"observed_at: {STAMP}", ""]
+    bad = []
+    dsres = _res(dyn, "apps", "DaemonSet")
+    if dsres is not None:
+        lines.append("## CNI / network DaemonSets")
+        for d in _items(dsres):
+            m = d.get("metadata") or {}
+            nm = m.get("name", "")
+            if any(k in nm for k in ("kube-ovn", "multus", "kube-proxy")):
+                st = d.get("status") or {}
+                des, rdy = st.get("desiredNumberScheduled", 0), st.get("numberReady", 0)
+                flag = " ⚠️" if rdy < des else ""
+                lines.append(f"- {m.get('namespace')}/{nm}: {rdy}/{des}{flag}")
+                if rdy < des:
+                    bad.append(("CNI", m.get("namespace"), nm, f"{rdy}/{des} ready"))
+    npres = _res(dyn, "networking.k8s.io", "NetworkPolicy")
+    if npres is not None:
+        from collections import Counter
+        c = Counter((p.get("metadata") or {}).get("namespace") for p in _items(npres))
+        lines += ["", "## NetworkPolicies per namespace"]
+        for ns in sorted(c):
+            lines.append(f"- {ns}: {c[ns]}")
+    mres = _res(dyn, "metallb.io", "IPAddressPool")
+    if mres is not None:
+        lines += ["", "## MetalLB IPAddressPools"]
+        for p in _items(mres):
+            m = p.get("metadata") or {}
+            lines.append(f"- {m.get('name')}: {(p.get('spec') or {}).get('addresses', [])}")
+    return [("network/overview.md", "\n".join(lines) + "\n")], bad, ("Networking", "ok", "")
+
+
+def probe_policy(dyn):
+    res = _res(dyn, "kyverno.io", "ClusterPolicy")
+    if res is None:
+        return [], [], ("Policy (Kyverno)", "not checked (ClusterPolicy not accessible)", "")
+    try:
+        pols = _items(res)
+    except Exception as e:
+        return [], [], ("Policy (Kyverno)", f"not checked ({type(e).__name__})", "")
+    bad = []
+    lines = ["# Policy (Kyverno)", "", f"observed_at: {STAMP}", "", f"ClusterPolicies: {len(pols)}", "",
+             "| policy | action | ready |", "|---|---|---|"]
+    for p in pols:
+        m = p.get("metadata") or {}
+        sp = p.get("spec") or {}
+        action = sp.get("validationFailureAction") or ("background" if sp.get("background") else "?")
+        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in ((p.get("status") or {}).get("conditions") or []))
+        lines.append(f"| {m.get('name')} | {action} | {ready} |")
+        if not ready:
+            bad.append(("KyvernoPolicy", "", m.get("name"), "not Ready"))
+    return [("policy/kyverno.md", "\n".join(lines) + "\n")], bad, ("Policy (Kyverno)", "ok", f"{len(pols)} policies")
+
+
+def probe_chaos(dyn):
+    lines = ["# Chaos", "", f"observed_at: {STAMP}", ""]
+    total = 0
+    for kind in ("PodChaos", "NetworkChaos", "StressChaos", "IOChaos", "Schedule", "Workflow"):
+        r = _res(dyn, "chaos-mesh.org", kind)
+        if r is not None:
+            try:
+                total += len(_items(r))
+            except Exception:
+                pass
+    lines.append(f"chaos-mesh experiments present: {total}")
+    nres = _res(dyn, "", "Node")
+    if nres is not None:
+        tainted = []
+        for n in _items(nres):
+            for t in ((n.get("spec") or {}).get("taints", []) or []):
+                if "chaos" in (t.get("key", "")).lower():
+                    tainted.append((n.get("metadata") or {}).get("name"))
+        lines.append(f"nodes with a chaos taint: {tainted or 'none'}")
+    return [("chaos/state.md", "\n".join(lines) + "\n")], [], ("Chaos", "ok", f"{total} experiments")
+
+
+def probe_node_metrics(dyn):
+    res = _res(dyn, "metrics.k8s.io", "NodeMetrics")
+    if res is None:
+        return [], [], ("Node metrics", "not checked (metrics.k8s.io not accessible)", "")
+    try:
+        items = _items(res)
+    except Exception as e:
+        return [], [], ("Node metrics", f"not checked ({type(e).__name__})", "")
+    lines = ["# Node metrics (CPU / memory usage)", "", f"observed_at: {STAMP}", "",
+             "| node | cpu | memory |", "|---|---|---|"]
+    for n in items:
+        m = n.get("metadata") or {}
+        u = n.get("usage") or {}
+        lines.append(f"| {m.get('name')} | {u.get('cpu')} | {u.get('memory')} |")
+    return [("cluster/node-metrics.md", "\n".join(lines) + "\n")], [], ("Node metrics", "ok", f"{len(items)} nodes")
+
+
 def deep_probes(dyn):
     files, unhealthy, status = [], [], []
-    for fn in (probe_databases, probe_controlplane, probe_knative, probe_mirror):
+    for fn in (probe_databases, probe_controlplane, probe_knative, probe_mirror,
+               probe_longhorn, probe_gitops, probe_registry, probe_networking,
+               probe_policy, probe_chaos, probe_node_metrics):
         try:
             f, u, s = fn(dyn)
             files += f
