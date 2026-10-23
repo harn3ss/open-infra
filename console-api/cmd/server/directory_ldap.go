@@ -41,7 +41,7 @@ type ldapSearchResp struct {
 	Entries []ldapEntry `json:"entries"`
 }
 
-// domainToBaseDN turns "ams-aws-prod.com" into "DC=ams-aws-prod,DC=com".
+// domainToBaseDN turns "corp.example.com" into "DC=corp,DC=example,DC=com".
 func domainToBaseDN(domain string) string {
 	parts := strings.Split(strings.TrimSpace(domain), ".")
 	dc := make([]string, 0, len(parts))
