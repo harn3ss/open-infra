@@ -10,8 +10,9 @@
 // declared handler and serves it over HTTP — turning the Lambda handler(event, context)
 // model into the request-driven HTTP service Knative expects.
 //
-// Contract (Node builtins only at module scope — the AWS SDK is required lazily, so the
-// inline-ConfigMap path never loads it):
+// Contract (Node builtins ONLY — the handler .zip is fetched with a built-in SigV4-signed S3/MinIO
+// GET; there is no AWS SDK dependency, so this shim runs on every Node version, including the older
+// escape-hatch runtimes the SDK's floating major had broken):
 //   OPENINFRA_HANDLER = "<module>.<export>"  e.g. "index.handler" -> index.js exports.handler
 //   OPENINFRA_TASK_DIR = handler code root (default /var/task)
 //   OPENINFRA_CODE_BUCKET / OPENINFRA_CODE_KEY = the handler .zip (S3/MinIO) — optional
@@ -29,6 +30,9 @@
 "use strict";
 
 const http = require("http");
+const https = require("https");
+const crypto = require("crypto");
+const url = require("url");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -39,32 +43,111 @@ const OPT_DIR = process.env.OPENINFRA_OPT_DIR || "/opt";
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const START = Date.now();
 
-function s3Client() {
-  // Lazy require so the inline-ConfigMap path never loads the SDK. Path-style addressing when a
-  // custom AWS_ENDPOINT_URL (MinIO / any S3 gateway) is set; untouched on real AWS.
-  const { S3Client } = require("@aws-sdk/client-s3");
-  const endpoint = process.env.AWS_ENDPOINT_URL || undefined;
-  return new S3Client({
-    endpoint,
-    forcePathStyle: Boolean(endpoint),
-    region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1",
+// --- Code fetch: a built-in SigV4-signed S3/MinIO GET. No AWS SDK, so cold-start code fetch works on
+// every Node version (the SDK's floating `@aws-sdk/client-s3@3` required Node >= 18 and broke the older
+// escape-hatch runtimes). Uses only crypto + http(s). Same env contract as before:
+//   AWS_ENDPOINT_URL (MinIO / S3 gateway; path-style), AWS_REGION, AWS_ACCESS_KEY_ID,
+//   AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN (optional).
+function s3Config() {
+  const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
+  // Path-style against a custom endpoint (MinIO / any S3 gateway); fall back to AWS S3 for that region.
+  const endpoint = process.env.AWS_ENDPOINT_URL || ("https://s3." + region + ".amazonaws.com");
+  return {
+    endpoint: endpoint,
+    region: region,
+    accessKey: process.env.AWS_ACCESS_KEY_ID || "",
+    secretKey: process.env.AWS_SECRET_ACCESS_KEY || "",
+    sessionToken: process.env.AWS_SESSION_TOKEN || "",
+  };
+}
+
+function sha256hex(data) { return crypto.createHash("sha256").update(data).digest("hex"); }
+function hmac(key, data) { return crypto.createHmac("sha256", key).update(data, "utf8").digest(); }
+
+// Percent-encode each path segment for the SigV4 canonical URI, keeping "/" separators.
+function encodeS3Path(key) {
+  return key.split("/").map(function (seg) {
+    return encodeURIComponent(seg).replace(/[!'()*]/g, function (c) {
+      return "%" + c.charCodeAt(0).toString(16).toUpperCase();
+    });
+  }).join("/");
+}
+
+// Build an AWS SigV4 ("AWS4-HMAC-SHA256") GET for a path-style S3/MinIO object. Empty-body GET, so the
+// payload hash is SHA-256("").  Returns http(s).request options.
+function signedGet(cfg, bucket, key) {
+  const ep = url.parse(cfg.endpoint);
+  const host = ep.host; // host[:port]
+  const canonicalUri = "/" + bucket + "/" + encodeS3Path(key);
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, ""); // YYYYMMDDTHHMMSSZ
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = sha256hex("");
+  let canonicalHeaders = "host:" + host + "\n" +
+    "x-amz-content-sha256:" + payloadHash + "\n" +
+    "x-amz-date:" + amzDate + "\n";
+  let signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+  if (cfg.sessionToken) {
+    canonicalHeaders += "x-amz-security-token:" + cfg.sessionToken + "\n";
+    signedHeaders += ";x-amz-security-token";
+  }
+  const canonicalRequest = "GET\n" + canonicalUri + "\n\n" + canonicalHeaders + "\n" + signedHeaders + "\n" + payloadHash;
+  const credScope = dateStamp + "/" + cfg.region + "/s3/aws4_request";
+  const stringToSign = "AWS4-HMAC-SHA256\n" + amzDate + "\n" + credScope + "\n" + sha256hex(canonicalRequest);
+  const kSigning = hmac(hmac(hmac(hmac("AWS4" + cfg.secretKey, dateStamp), cfg.region), "s3"), "aws4_request");
+  const signature = crypto.createHmac("sha256", kSigning).update(stringToSign, "utf8").digest("hex");
+  const headers = {
+    "Host": host,
+    "x-amz-date": amzDate,
+    "x-amz-content-sha256": payloadHash,
+    "Authorization": "AWS4-HMAC-SHA256 Credential=" + cfg.accessKey + "/" + credScope +
+      ", SignedHeaders=" + signedHeaders + ", Signature=" + signature,
+  };
+  if (cfg.sessionToken) headers["x-amz-security-token"] = cfg.sessionToken;
+  return { protocol: ep.protocol, host: ep.hostname, port: ep.port, path: canonicalUri, headers: headers };
+}
+
+// Stream a signed GET straight to a file (no whole-object buffering). Rejects on any non-200.
+function httpGetToFile(signed, destFile) {
+  return new Promise(function (resolve, reject) {
+    const mod = signed.protocol === "https:" ? https : http;
+    const req = mod.request({ host: signed.host, port: signed.port, path: signed.path, method: "GET", headers: signed.headers }, function (res) {
+      if (res.statusCode !== 200) {
+        const errChunks = [];
+        res.on("data", function (c) { errChunks.push(c); });
+        res.on("end", function () { reject(new Error("GET " + signed.path + " -> HTTP " + res.statusCode + ": " + Buffer.concat(errChunks).toString("utf8").slice(0, 400))); });
+        return;
+      }
+      const out = fs.createWriteStream(destFile);
+      res.pipe(out);
+      out.on("finish", function () { out.close(function () { resolve(); }); });
+      out.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end();
   });
 }
 
-async function fetchUnzip(client, bucket, key, dest) {
-  const { GetObjectCommand } = require("@aws-sdk/client-s3");
-  const out = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  const chunks = [];
-  for await (const c of out.Body) chunks.push(c);
-  const buf = Buffer.concat(chunks);
+async function fetchUnzip(cfg, bucket, key, dest) {
+  const signed = signedGet(cfg, bucket, key);
   fs.mkdirSync(dest, { recursive: true });
-  const tmp = path.join(os.tmpdir(), `oi-${process.pid}-${chunks.length}.zip`);
-  fs.writeFileSync(tmp, buf);
+  const tmp = path.join(os.tmpdir(), `oi-${process.pid}-${Date.now()}.zip`);
+  await httpGetToFile(signed, tmp);
+  const size = fs.statSync(tmp).size;
   // Node has no stdlib zip-archive reader; use the system `unzip` (in the base image), the same
   // way the python shim uses zipfile. -o overwrite, -q quiet.
   execFileSync("unzip", ["-o", "-q", tmp, "-d", dest]);
   fs.unlinkSync(tmp);
-  process.stderr.write(`open-infra-runtime: unpacked s3://${bucket}/${key} (${buf.length} bytes) into ${dest}\n`);
+  process.stderr.write(`open-infra-runtime: unpacked s3://${bucket}/${key} (${size} bytes) into ${dest}\n`);
+}
+
+// randomUUID with a fallback for Node < 14.17 (the older escape-hatch runtimes lack crypto.randomUUID).
+function randomUUID() {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.randomBytes(16);
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // variant
+  const h = b.toString("hex");
+  return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
 }
 
 async function fetchCode() {
@@ -75,11 +158,11 @@ async function fetchCode() {
   const layersRaw = process.env.OPENINFRA_LAYERS || "";
   if (!bucket && !layersRaw) return;
   try {
-    const client = s3Client();
-    if (bucket) await fetchUnzip(client, bucket, process.env.OPENINFRA_CODE_KEY || "", TASK_DIR);
+    const cfg = s3Config();
+    if (bucket) await fetchUnzip(cfg, bucket, process.env.OPENINFRA_CODE_KEY || "", TASK_DIR);
     if (layersRaw) {
       for (const layer of JSON.parse(layersRaw)) {
-        await fetchUnzip(client, layer.bucket, layer.key || "", OPT_DIR);
+        await fetchUnzip(cfg, layer.bucket, layer.key || "", OPT_DIR);
       }
     }
   } catch (e) {
@@ -96,7 +179,7 @@ function addLayerPaths() {
     path.join(OPT_DIR, "nodejs", "node_modules"),
     path.join(OPT_DIR, "nodejs", `node${process.versions.node.split(".")[0]}`, "node_modules"),
   ].filter((p) => {
-    try { return fs.statSync(p).isDirectory(); } catch { return false; }
+    try { return fs.statSync(p).isDirectory(); } catch (_e) { return false; }
   });
   if (candidates.length) {
     process.env.NODE_PATH = [process.env.NODE_PATH, ...candidates].filter(Boolean).join(path.delimiter);
@@ -110,7 +193,7 @@ function packageIsModule(dir) {
   try {
     const pj = path.join(dir, "package.json");
     if (fs.existsSync(pj)) return JSON.parse(fs.readFileSync(pj, "utf8")).type === "module";
-  } catch { /* unreadable/invalid package.json -> default CommonJS */ }
+  } catch (_e) { /* unreadable/invalid package.json -> default CommonJS */ }
   return false;
 }
 
@@ -141,8 +224,11 @@ async function loadHandler() {
   let mod;
   try {
     if (file && esm) {
-      const { pathToFileURL } = require("url");
-      mod = await import(pathToFileURL(file).href);
+      // Dynamic import() via the Function constructor so this shim PARSES on Node < 12, where `import()`
+      // is a syntax error. ESM handlers only exist on Node >= 12 anyway; on older Node an .mjs/ESM
+      // handler throws a clear error here (caught below) instead of making the whole shim fail to load.
+      const dynamicImport = new Function("u", "return import(u);");
+      mod = await dynamicImport(url.pathToFileURL(file).href);
     } else {
       mod = require(file || base);
     }
@@ -168,7 +254,7 @@ async function loadHandler() {
 function lambdaContext() {
   const deadline = Date.now() + parseInt(process.env.OPENINFRA_TIMEOUT_S || "300", 10) * 1000;
   return {
-    awsRequestId: require("crypto").randomUUID(),
+    awsRequestId: randomUUID(),
     functionName: process.env.OPENINFRA_FUNCTION_NAME || "function",
     functionVersion: "$LATEST",
     memoryLimitInMB: String(parseInt(process.env.OPENINFRA_MEMORY_MB || "0", 10) || 128),
@@ -225,7 +311,7 @@ function main() {
         try {
           event = raw.trim() ? JSON.parse(raw) : {};
           if (event === null || typeof event !== "object" || Array.isArray(event)) event = { body: event };
-        } catch {
+        } catch (_e) {
           event = { body: raw };
         }
         const q = req.url.split("?");
