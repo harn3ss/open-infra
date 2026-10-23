@@ -1,0 +1,67 @@
+# EOL-runtime image pre-pull — keeps the end-of-life Lambda runtime base images resident on every
+# image-pulling node, so a scale-to-zero function on an EOL runtime does NOT pay an image-pull inside
+# its (often small, e.g. 6 s) request timeout on first activation. Without this, a node that has never
+# pulled the image can 504 on the first invoke purely from pull latency — which looks like a behavioural
+# difference even though the runtime is fine.
+#
+# Mechanism: a DaemonSet whose pod holds one SLEEPING container per EOL image. A running container keeps
+# its image "in use", so the kubelet's image GC never evicts it (a one-shot pull would not survive GC).
+# No imagePullSecret: ecr-registry auth is node-level (registries.yaml) on the openinfra.dev/ecr-pull
+# nodes, which is exactly the nodeSelector here.
+#
+# ⚠️ Images are referenced by :latest + IfNotPresent, so after an EOL image is re-pushed, restart this
+# DaemonSet to re-pull the new digest:  kubectl -n open-infra-prepull rollout restart ds/eol-runtime-prepull
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-prepull
+  labels:
+    openinfra.dev/component: eol-runtime-prepull
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: eol-runtime-prepull
+  namespace: open-infra-prepull
+  labels:
+    app: eol-runtime-prepull
+    openinfra.dev/component: eol-runtime-prepull
+spec:
+  selector:
+    matchLabels:
+      app: eol-runtime-prepull
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: eol-runtime-prepull
+    spec:
+      # Only nodes whose containerd can auth to ecr-registry (node-level registries.yaml). Label-based,
+      # never hostnames. mlbox lacks the label (and is drained), so it is excluded automatically.
+      nodeSelector:
+        openinfra.dev/ecr-pull: enabled
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 2
+      # Default (zero) priority on purpose: a pre-pull holder must YIELD to real workloads — under node
+      # pressure it should be evicted first and must never preempt a function pod (the Oct-14 lesson).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        # One sleeping holder per EOL runtime image. 5 are in active use today (dotnetcore31, nodejs12/14/
+        # 16/18); the rest are kept warm for the runtimes that later import waves will bring online.
+        - { name: dotnetcore31, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/dotnetcore31:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: nodejs8,  image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/nodejs8:latest",  command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: nodejs10, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/nodejs10:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: nodejs12, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/nodejs12:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: nodejs14, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/nodejs14:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: nodejs16, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/nodejs16:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: nodejs18, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/nodejs18:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: python36, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/python36:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: python37, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/python37:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: python38, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/python38:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
+        - { name: python39, image: "ecr-registry.open-infra-ecr.svc.cluster.local:5000/runtime/python39:latest", command: ["sleep","infinity"], imagePullPolicy: IfNotPresent, resources: { requests: { cpu: "1m", memory: "4Mi" }, limits: { memory: "24Mi" } }, securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } } }
