@@ -6,8 +6,9 @@
 # Built + pushed by .github/workflows/build-lambda-runtimes.yml as
 # ghcr.io/harn3ss/open-infra-lambda-nodejs. Plain interpreter; NOT FIPS (FIPS is a substrate property,
 # not a first-party image one — see docs).
-# NODE_VERSION selects the base (20 = the default image, 22 = the open-infra-lambda-nodejs22
-# build). The bootstrap shim is version-independent, so one Dockerfile builds both.
+# NODE_VERSION selects the base (20 = the default image, 22 = the open-infra-lambda-nodejs22 build) AND
+# the handler-facing AWS SDK it ships (@aws-sdk v3 for >=18, monolithic aws-sdk v2 for <=16 — matching
+# what AWS Lambda's own runtimes bundle). The bootstrap shim itself is version-independent.
 ARG NODE_VERSION=20
 FROM node:${NODE_VERSION}-slim
 
@@ -15,22 +16,42 @@ LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
       openinfra.dev/component="lambda-runtime-nodejs" \
       openinfra.dev/fips="false"
 
+# Re-declare NODE_VERSION after FROM so the RUN below can read it (ARGs before FROM are out of stage scope).
+ARG NODE_VERSION
+# Pinned AWS SDK versions — NEVER a floating major (a floating `@aws-sdk/client-s3@3` is exactly what
+# required Node >= 18 and broke every older runtime). Bump deliberately.
+ARG AWS_SDK_V3=3.726.0
+ARG AWS_SDK_V2=2.1692.0
+
 # unzip: Node has no stdlib zip-archive reader, so the bucket-source .zip is extracted with the system
 #        tool (the python shim uses stdlib zipfile for the same job).
-# NO AWS SDK: the shim fetches the code-bucket object with a built-in SigV4-signed GET (crypto + http),
-#        so the image carries no @aws-sdk dependency. The old `npm install -g @aws-sdk/client-s3@3` was a
-#        floating major that required Node >= 18 and broke every escape-hatch runtime below it
-#        (getRandomValues on 16, a `||=` SyntaxError on 14 and older) — the image could not fetch its own
-#        code. Handlers that need an AWS SDK vendor it (code zip or layer), the platform's BYO-deps model.
-# apt-get upgrade: pull Debian bookworm security updates for base-image OS packages
-#        (perl-base, libgnutls30, libpcre2-8-0, libcap2, …) so the image isn't pinned to the
-#        base layer's snapshot — the durable fix for the recurring OS-package CVE treadmill.
-# rm npm/npx: the function runtime only runs `node bootstrap.js` — there is no in-image `npm install` at
-#        all now. npm's own bundled node_modules (tar, minimatch, glob, sigstore, pacote, …) are pure
-#        build-tooling CVE surface that nothing here executes, so the npm CLI is removed outright.
+# AWS SDK (handler-facing, version-matched to AWS Lambda): AWS's Node runtimes ship the SDK so a handler
+#        can require() it WITHOUT bundling it — nodejs18/20/22 ship @aws-sdk v3, nodejs<=16 shipped the
+#        monolithic aws-sdk v2. We mirror that so a mirrored Lambda runs byte-identical to its source
+#        (no vendoring/transform of the customer package). PINNED, not floating. IMPORTANT: bootstrap.js
+#        does NOT use the SDK — it fetches the code bucket with a built-in SigV4 GET (crypto + http), so
+#        cold start works on every Node version; the SDK here is purely for handler code. v3 ships a
+#        common client set (extend the list as the estate declares more clients; v2 is one package = all).
+# apt-get upgrade: pull Debian security updates for base-image OS packages (perl-base, libgnutls30,
+#        libpcre2-8-0, libcap2, …) so the image isn't pinned to the base layer's snapshot.
+# rm npm/npx: the runtime only runs `node bootstrap.js`; npm is used once at build for the SDK install
+#        then removed — its bundled node_modules (tar, minimatch, glob, sigstore, pacote, …) are
+#        build-tooling CVE surface that nothing here executes.
 RUN apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends unzip ca-certificates \
+ && if [ "${NODE_VERSION%%.*}" -ge 18 ] 2>/dev/null; then \
+      npm install -g \
+        @aws-sdk/client-s3@${AWS_SDK_V3} @aws-sdk/client-dynamodb@${AWS_SDK_V3} \
+        @aws-sdk/lib-dynamodb@${AWS_SDK_V3} @aws-sdk/client-sns@${AWS_SDK_V3} \
+        @aws-sdk/client-sqs@${AWS_SDK_V3} @aws-sdk/client-lambda@${AWS_SDK_V3} \
+        @aws-sdk/client-sts@${AWS_SDK_V3} @aws-sdk/client-ssm@${AWS_SDK_V3} \
+        @aws-sdk/client-secrets-manager@${AWS_SDK_V3} @aws-sdk/client-kms@${AWS_SDK_V3} \
+        @aws-sdk/client-eventbridge@${AWS_SDK_V3} @aws-sdk/client-cloudwatch-logs@${AWS_SDK_V3} ; \
+    else \
+      npm install -g aws-sdk@${AWS_SDK_V2} ; \
+    fi \
+ && npm cache clean --force \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
  && rm -rf /var/lib/apt/lists/*
 
