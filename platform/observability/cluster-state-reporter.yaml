@@ -94,6 +94,26 @@ rules:
       - keda.sh
       - eventing.keda.sh
       - metallb.io
+      # added from the first snapshot's coverage.md (groups the SA was 403'd on)
+      - iam.openinfra.dev
+      - k8s.cni.cncf.io
+      - snapshot.storage.k8s.io
+      - groupsnapshot.storage.k8s.io
+      - reports.kyverno.io
+      - barmancloud.cnpg.io
+      - backup.kubevirt.io
+      - forklift.cdi.kubevirt.io
+      - secrets.crossplane.io
+      - k8s.mariadb.com
+      - gateway.networking.k8s.io
+      - resource.k8s.io
+      - helm.cattle.io
+      - k3s.cattle.io
+      - traefik.io
+      - hub.traefik.io
+      - chaos-mesh.org
+      - cilium.io
+      - bitnami.com
     resources: ["*"]
     verbs: ["get", "list", "watch"]
 ---
