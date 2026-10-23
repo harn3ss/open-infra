@@ -26,8 +26,13 @@ FUNC_READY=$(kubectl get functions.openinfra.dev -A -o json 2>/dev/null | python
 EP=$(n endpoints); EPS=$(n endpointslices)
 
 # --- datastore (kine/SQLite today; etcd fields show '-' until migrated) ---
-STATE_MB=$(bytes_mb "$(stat -c %s "$DB_DIR/state.db" 2>/dev/null || echo 0)")
-WAL_MB=$(bytes_mb "$(stat -c %s "$DB_DIR/state.db-wal" 2>/dev/null || echo 0)")
+if [ -d "$DB_DIR/etcd/member" ]; then                 # embedded etcd backend
+  STATE_MB=$(bytes_mb "$(stat -c %s "$DB_DIR/etcd/member/snap/db" 2>/dev/null || echo 0)")
+  WAL_MB=$(bytes_mb "$(du -sb "$DB_DIR/etcd/member/wal" 2>/dev/null | cut -f1 || echo 0)")
+else                                                   # SQLite/kine backend
+  STATE_MB=$(bytes_mb "$(stat -c %s "$DB_DIR/state.db" 2>/dev/null || echo 0)")
+  WAL_MB=$(bytes_mb "$(stat -c %s "$DB_DIR/state.db-wal" 2>/dev/null || echo 0)")
+fi
 
 # --- OVN NB/SB db (kube-ovn central) ---
 OVNPOD=$(kubectl -n kube-system get pods -l app=ovn-central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
