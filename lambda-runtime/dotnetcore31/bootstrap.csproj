@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AssemblyName>bootstrap</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Code-source (S3/MinIO) fetch path, as in the net8 shim. AWSSDK.S3 3.7.x targets netstandard2.0,
+         so it runs on .NET Core 3.1 (this is why the dotnet shim keeps the SDK for the fetch, unlike the
+         node shim which had to hand-roll SigV4). The inline-ConfigMap path never touches it. -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.*" />
+  </ItemGroup>
+</Project>
