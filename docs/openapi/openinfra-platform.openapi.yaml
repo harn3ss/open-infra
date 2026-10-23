@@ -5796,6 +5796,12 @@ components:
                 handler:
                   type: string
                   description: Entrypoint '<module>.<function>', e.g. 'app.handler' -> function handler in app.py.
+                region:
+                  type: string
+                  description: "AWS region to present to the handler as AWS_REGION / AWS_DEFAULT_REGION \u2014 AWS's runtime\
+                    \ injects these and handlers need them (e.g. to build an SDK client), but they cannot be set as function\
+                    \ env because AWS reserves the names. Set this to the function's real source region; unset defaults to\
+                    \ us-east-1."
                 source:
                   type: object
                   description: Where the handler code lives. Exactly one of configMap (inline source files, for small handlers)
