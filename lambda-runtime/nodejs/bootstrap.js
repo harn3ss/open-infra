@@ -51,7 +51,9 @@ const START = Date.now();
 function s3Config() {
   const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
   // Path-style against a custom endpoint (MinIO / any S3 gateway); fall back to AWS S3 for that region.
-  const endpoint = process.env.AWS_ENDPOINT_URL || ("https://s3." + region + ".amazonaws.com");
+  // Service-scoped AWS_ENDPOINT_URL_S3 first (so a handler's global endpoint isn't forced to the S3
+  // gateway); fall back to the legacy global AWS_ENDPOINT_URL, then to real AWS S3 for the region.
+  const endpoint = process.env.AWS_ENDPOINT_URL_S3 || process.env.AWS_ENDPOINT_URL || ("https://s3." + region + ".amazonaws.com");
   return {
     endpoint: endpoint,
     region: region,

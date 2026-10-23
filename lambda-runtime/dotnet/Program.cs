@@ -62,7 +62,9 @@ static class Bootstrap
         if (string.IsNullOrEmpty(bucket) && string.IsNullOrEmpty(layersRaw)) return;
 
         var cfg = new AmazonS3Config { ForcePathStyle = true };
-        var endpoint = Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL");
+        // Service-scoped AWS_ENDPOINT_URL_S3 first (so the handler's global endpoint isn't forced to the
+        // S3 gateway); fall back to the legacy global AWS_ENDPOINT_URL.
+        var endpoint = Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL_S3") ?? Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL");
         if (!string.IsNullOrEmpty(endpoint)) cfg.ServiceURL = endpoint;
         else cfg.RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(
             Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1");

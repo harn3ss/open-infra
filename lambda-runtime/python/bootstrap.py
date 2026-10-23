@@ -72,7 +72,9 @@ def _s3_client():
     import boto3
     from botocore.config import Config
 
-    endpoint = os.environ.get("AWS_ENDPOINT_URL") or None
+    # Service-scoped AWS_ENDPOINT_URL_S3 first (so the handler's global endpoint isn't forced to the S3
+    # gateway); fall back to the legacy global AWS_ENDPOINT_URL.
+    endpoint = os.environ.get("AWS_ENDPOINT_URL_S3") or os.environ.get("AWS_ENDPOINT_URL") or None
     cfg = Config(s3={"addressing_style": "path"}) if endpoint else None
     return boto3.client("s3", endpoint_url=endpoint, config=cfg)
 
