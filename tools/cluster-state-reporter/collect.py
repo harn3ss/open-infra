@@ -116,6 +116,197 @@ def allowlisted(obj, kind):
     }
 
 
+# ---- Layer 2: deep probes (specific, where generic conditions don't tell the whole story) -----------
+# Each probe returns (files, unhealthy_additions, status) where status = (name, state, detail) and
+# state is "ok" | "partial" | "not checked (reason)". No probe reads a Secret or queries a DB — anything
+# that would need credentials or host access is reported as not-checked, never defaulted OK.
+def _res(dyn, group, kind):
+    try:
+        for r in dyn.resources.search(group=group, kind=kind):
+            if r.__class__.__name__ == "ResourceList" or "/" in (getattr(r, "name", "") or ""):
+                continue
+            if "list" in (getattr(r, "verbs", None) or []):
+                return r
+    except Exception:
+        return None
+    return None
+
+
+def _items(res):
+    return res.get().to_dict().get("items", [])
+
+
+def _conds(o):
+    return {c.get("type"): (c.get("status"), c.get("reason") or "", c.get("message") or "")
+            for c in ((o.get("status") or {}).get("conditions") or [])}
+
+
+def probe_databases(dyn):
+    # The DB abstraction is kind: Application with spec.database (engine sqlserver/babelfish/postgres/mysql).
+    res = _res(dyn, "openinfra.dev", "Application")
+    if res is None:
+        return [], [], ("Database restore-state", "not checked (kind: Application not accessible)", "")
+    try:
+        items = _items(res)
+    except Exception as e:
+        return [], [], ("Database restore-state", f"not checked (list failed: {type(e).__name__})", "")
+    lines = ["# Databases — engine, restore state, readiness", "", f"observed_at: {STAMP}", "",
+             "Restore state is inferred from the Application claim: the engine keeps it NotReady until RESTORE "
+             "completes and surfaces a failed restore as a NotReady reason. Row counts vs source need a read-only "
+             "SQL login — the collector holds no DB credentials, so **row counts are not checked**.", "",
+             "| database | engine | restore | Ready |", "|---|---|---|---|"]
+    unhealthy = []
+    sql_count = 0
+    found = 0
+    for o in items:
+        spec = o.get("spec") or {}
+        db = spec.get("database") or {}
+        engine = (db.get("engine") or "").lower()
+        if not engine:
+            continue
+        found += 1
+        if engine in ("sqlserver", "babelfish"):
+            sql_count += 1
+        meta = o.get("metadata") or {}
+        nm, ns = meta.get("name"), meta.get("namespace")
+        has_restore = bool(db.get("restoreFrom"))
+        cds = _conds(o)
+        ready, rreason, rmsg = cds.get("Ready", (None, "", ""))
+        if not has_restore:
+            st = "— (fresh)"
+        elif ready == "True":
+            st = "**restored**"
+        elif ready == "False":
+            st = f"restoring/FAILED ({rreason})"
+        else:
+            st = f"unknown (Ready={ready})"
+        flag = " ⚠️" if (ready != "True") else ""
+        lines.append(f"| `{ns}/{nm}` | {engine} | {st} | {ready}{flag} |")
+        if ready != "True":
+            why = f"restore {st}" if has_restore else f"DB not Ready ({rreason})"
+            unhealthy.append(("Database", ns, nm, why))
+    if found == 0:
+        lines.append("| _none_ | | | |")
+    return [("databases/overview.md", "\n".join(lines) + "\n")], unhealthy, ("Database restore-state", "ok", f"{found} DBs ({sql_count} SQL-Server-family)")
+
+
+def probe_knative(dyn):
+    lines = ["# Knative", "", f"observed_at: {STAMP}", ""]
+    unhealthy = []
+    state = "ok"
+    dres = _res(dyn, "apps", "Deployment")
+    if dres is None:
+        state = "partial"
+        lines.append("components: not checked (Deployment not accessible)")
+    else:
+        lines.append("## components (knative-serving)")
+        for d in _items(dres):
+            m = d.get("metadata") or {}
+            if m.get("namespace") != "knative-serving":
+                continue
+            s = d.get("status") or {}
+            rdy, rep = s.get("readyReplicas", 0) or 0, s.get("replicas", 0) or 0
+            flag = " ⚠️" if rdy < rep else ""
+            lines.append(f"- {m.get('name')}: {rdy}/{rep} ready{flag}")
+            if rdy < rep:
+                unhealthy.append(("KnativeComponent", "knative-serving", m.get("name"), f"{rdy}/{rep} ready"))
+    for grp, kind, label in [("serving.knative.dev", "Service", "ksvc"),
+                             ("serving.knative.dev", "Revision", "revisions"),
+                             ("autoscaling.internal.knative.dev", "PodAutoscaler", "podautoscalers")]:
+        r = _res(dyn, grp, kind)
+        if r is None:
+            lines += ["", f"## {label}: not checked (not accessible)"]
+            continue
+        try:
+            xs = _items(r)
+            rdy = sum(1 for x in xs if _conds(x).get("Ready", (None,))[0] == "True")
+            lines += ["", f"## {label}: {rdy}/{len(xs)} Ready"]
+        except Exception as e:
+            lines += ["", f"## {label}: not checked ({type(e).__name__})"]
+    return [("cluster/knative.md", "\n".join(lines) + "\n")], unhealthy, ("Knative", state, "")
+
+
+def probe_mirror(dyn):
+    res = _res(dyn, "openinfra.dev", "Function")
+    if res is None:
+        return [], [], ("Mirror inventory (Functions)", "not checked (kind: Function not accessible)", "")
+    try:
+        items = _items(res)
+    except Exception as e:
+        return [], [], ("Mirror inventory (Functions)", f"not checked ({type(e).__name__})", "")
+    from collections import Counter
+    by_rt = {}  # runtime -> [total, ready]
+    unhealthy = []
+    for o in items:
+        code = (o.get("spec") or {}).get("code") or {}
+        rt = code.get("runtime") or (("runtimeImage:" + (code.get("runtimeImage", "").split("/")[-1])) if code.get("runtimeImage") else "unset")
+        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in ((o.get("status") or {}).get("conditions") or []))
+        t = by_rt.setdefault(rt, [0, 0])
+        t[0] += 1
+        t[1] += 1 if ready else 0
+    lines = ["# Mirror inventory — Functions by runtime", "", f"observed_at: {STAMP}", "",
+             f"total Functions: {len(items)}", "", "| runtime | Ready / total |", "|---|---|"]
+    for rt in sorted(by_rt):
+        t = by_rt[rt]
+        flag = " ⚠️" if t[1] < t[0] else ""
+        lines.append(f"| {rt} | {t[1]} / {t[0]}{flag} |")
+    # tenant quota (main-dev)
+    qres = _res(dyn, "", "ResourceQuota")
+    if qres is not None:
+        try:
+            for q in _items(qres):
+                m = q.get("metadata") or {}
+                if m.get("namespace") != "main-dev":
+                    continue
+                hard = (q.get("status") or {}).get("hard", {})
+                used = (q.get("status") or {}).get("used", {})
+                lines += ["", f"## tenant quota ({m.get('name')})",
+                          f"- services: {used.get('services')}/{hard.get('services')}",
+                          f"- pods: {used.get('pods')}/{hard.get('pods')}"]
+        except Exception:
+            pass
+    total_ready = sum(t[1] for t in by_rt.values())
+    return [("mirror/inventory.md", "\n".join(lines) + "\n")], unhealthy, ("Mirror inventory", "ok", f"{total_ready}/{len(items)} Functions Ready")
+
+
+def probe_controlplane(dyn):
+    lines = ["# control plane", "", f"observed_at: {STAMP}", "",
+             "datastore: k3s embedded (kine over SQLite) — **size / fsync / snapshot age: not checked** "
+             "(needs node filesystem access; a Layer 3 off-cluster/node probe).", ""]
+    nres = _res(dyn, "", "Node")
+    state = "partial"  # thin without node access
+    if nres is not None:
+        try:
+            nodes = _items(nres)
+            ready = sum(1 for n in nodes if _conds(n).get("Ready", (None,))[0] == "True")
+            lines += [f"nodes: {ready}/{len(nodes)} Ready", ""]
+            for n in nodes:
+                m = n.get("metadata") or {}
+                st = n.get("status") or {}
+                r = _conds(n).get("Ready", (None,))[0]
+                sched = (n.get("spec") or {}).get("unschedulable")
+                ver = (st.get("nodeInfo") or {}).get("kubeletVersion", "?")
+                flag = " ⚠️" if r != "True" else (" (cordoned)" if sched else "")
+                lines.append(f"- {m.get('name')}: Ready={r} {ver}{flag}")
+            state = "ok"
+        except Exception as e:
+            lines.append(f"nodes: not checked ({type(e).__name__})")
+    return [("cluster/control-plane.md", "\n".join(lines) + "\n")], [], ("Control plane", state, "datastore size needs node access")
+
+
+def deep_probes(dyn):
+    files, unhealthy, status = [], [], []
+    for fn in (probe_databases, probe_controlplane, probe_knative, probe_mirror):
+        try:
+            f, u, s = fn(dyn)
+            files += f
+            unhealthy += u
+            status.append(s)
+        except Exception as e:
+            status.append((fn.__name__, f"not checked (probe error: {type(e).__name__}: {str(e)[:60]})", ""))
+    return files, unhealthy, status
+
+
 # ---- collection -------------------------------------------------------------------------------------
 def collect():
     try:
@@ -163,7 +354,8 @@ def collect():
                 per_ns.setdefault(r["ns"], {}).setdefault(res.kind, {"healthy": 0, "unhealthy": 0, "unknown": 0, "nosignal": 0})
                 per_ns[r["ns"]][res.kind][r["health"]] += 1
     dur = round(time.time() - t0, 1)
-    return per_kind, per_ns, coverage, seen_resources, dur
+    probe_files, probe_unhealthy, probe_status = deep_probes(dyn)
+    return per_kind, per_ns, coverage, seen_resources, dur, probe_files, probe_unhealthy, probe_status
 
 
 # ---- rendering --------------------------------------------------------------------------------------
@@ -183,8 +375,10 @@ def chunk_lines(lines, header):
     return [(f".part-{i+1}", header + f"\n_part {i+1} of {len(chunks)}_\n\n" + "\n".join(c) + "\n") for i, c in enumerate(chunks)]
 
 
-def render(per_kind, per_ns, coverage, seen_resources, dur, outdir):
+def render(per_kind, per_ns, coverage, seen_resources, dur, probe_files, probe_unhealthy, probe_status):
     files = {}  # path -> text
+    for p, t in probe_files:  # Layer 2 deep-probe files
+        files[p] = t
     tot = {"healthy": 0, "unhealthy": 0, "unknown": 0, "nosignal": 0}
     unhealthy_all = []  # (kind, ns, name, detail)
 
@@ -232,11 +426,13 @@ def render(per_kind, per_ns, coverage, seen_resources, dur, outdir):
     for suffix, text in chunk_lines(cov_rows, cov_header):
         files[f"coverage{suffix}.md"] = text
 
-    verdict = "UNHEALTHY" if tot["unhealthy"] else ("DEGRADED-SIGNAL" if tot["unknown"] else "OK")
+    verdict = "UNHEALTHY" if (tot["unhealthy"] or probe_unhealthy) else ("DEGRADED-SIGNAL" if tot["unknown"] else "OK")
     summary = {
         "observed_at": STAMP, "verdict": verdict, "totals": tot,
         "resource_types_listed": seen_resources, "resource_types_unread": len(coverage),
         "collect_seconds": dur, "unhealthy": [{"kind": k, "ns": n, "name": nm, "detail": d} for k, n, nm, d in unhealthy_all],
+        "probes": [{"name": n, "state": s, "detail": d} for n, s, d in probe_status],
+        "deep_findings": [{"kind": k, "ns": n, "name": nm, "detail": d} for k, n, nm, d in probe_unhealthy],
     }
     files["summary.json"] = json.dumps(summary, sort_keys=True) + "\n"  # compact: one line (machine-read)
 
@@ -247,7 +443,7 @@ def render(per_kind, per_ns, coverage, seen_resources, dur, outdir):
     idx_rows = [f"| {p} | {len(files[p].splitlines())} |" for p in sorted(files)]
     for suffix, text in chunk_lines(idx_rows, idx_header):
         files[f"INDEX{suffix}.md"] = text
-    return files, summary, unhealthy_all, tot, verdict
+    return files, summary, unhealthy_all, tot, verdict, probe_unhealthy, probe_status
 
 
 # ---- redaction (fail-closed) ------------------------------------------------------------------------
@@ -294,18 +490,27 @@ def publish_repo(files):
     return "committed"
 
 
-def issue_body(summary, unhealthy_all, tot, verdict):
-    stale = ""  # this run is fresh by definition
+def issue_body(summary, unhealthy_all, tot, verdict, probe_unhealthy, probe_status):
     lines = [f"# Environment state — {verdict}", "",
              f"snapshot **{STAMP}** · collector {summary['collect_seconds']}s · "
              f"{summary['resource_types_listed']} resource types read, {summary['resource_types_unread']} unread (coverage)",
              "",
-             f"**healthy {tot['healthy']} · unhealthy {tot['unhealthy']} · unknown {tot['unknown']} · no-signal {tot['nosignal']}**",
-             "", "## Unhealthy"]
+             f"**healthy {tot['healthy']} · unhealthy {tot['unhealthy']} · unknown {tot['unknown']} · no-signal {tot['nosignal']}**"]
+    # Layer 2 deep-probe status (each reports ok / partial / not-checked)
+    lines += ["", "## Deep probes"]
+    for n, s, d in probe_status:
+        mark = "✅" if s == "ok" else ("⚠️" if s == "partial" else "❓")
+        lines.append(f"- {mark} **{n}**: {s}{(' — ' + d) if d else ''}")
+    if probe_unhealthy:
+        lines += ["", "### Deep-probe findings"]
+        for k, n, nm, d in probe_unhealthy[:25]:
+            loc = f"{n}/" if n else ""
+            lines.append(f"- **{k}** `{loc}{nm}` — {d}")
+    lines += ["", "## Unhealthy (generic health)"]
     if not unhealthy_all:
         lines.append("_none observed_")
     else:
-        shown = unhealthy_all[:60]
+        shown = unhealthy_all[:50]
         for k, n, nm, d in shown:
             loc = f"{n}/" if n else ""
             lines.append(f"- **{k}** `{loc}{nm}` — {d}")
@@ -332,8 +537,9 @@ def publish_issue(body):
 
 
 def main():
-    per_kind, per_ns, coverage, seen, dur = collect()
-    files, summary, unhealthy_all, tot, verdict = render(per_kind, per_ns, coverage, seen, dur, None)
+    per_kind, per_ns, coverage, seen, dur, probe_files, probe_unhealthy, probe_status = collect()
+    files, summary, unhealthy_all, tot, verdict, probe_unhealthy, probe_status = render(
+        per_kind, per_ns, coverage, seen, dur, probe_files, probe_unhealthy, probe_status)
     hits = redaction_scan(files)
     if hits:
         sys.stderr.write(f"REDACTION TRIPPED — publishing nothing (fail closed). {len(hits)} match(es):\n")
@@ -348,8 +554,14 @@ def main():
         print("  unhealthy by kind (top 20):")
         for k, c in bykind.most_common(20):
             print(f"    {k}: {c}")
-        print("  sample details:")
-        for k, n, nm, d in unhealthy_all[:12]:
+        print("  deep probes:")
+        for n, s, d in probe_status:
+            print(f"    {n}: {s}{(' — ' + d) if d else ''}")
+        print(f"  deep-probe findings: {len(probe_unhealthy)}")
+        for k, n, nm, d in probe_unhealthy[:8]:
+            print(f"    {k} {n or '-'}/{nm}: {d}")
+        print("  sample generic-unhealthy:")
+        for k, n, nm, d in unhealthy_all[:8]:
             print(f"    {k} {n or '-'}/{nm}: {d}")
         oversize = [(p, len(t.splitlines())) for p, t in files.items() if len(t.splitlines()) > 300]
         print(f"  files over 300 lines: {oversize}")
@@ -361,9 +573,9 @@ def main():
             print(f"    {c}× {r}")
         return
     repo_result = publish_repo(files)
-    code = publish_issue(issue_body(summary, unhealthy_all, tot, verdict))
+    code = publish_issue(issue_body(summary, unhealthy_all, tot, verdict, probe_unhealthy, probe_status))
     print(f"snapshot {STAMP}: verdict={verdict} types={seen} unhealthy={tot['unhealthy']} "
-          f"repo={repo_result} issue_http={code} collect={dur}s")
+          f"deep_findings={len(probe_unhealthy)} repo={repo_result} issue_http={code} collect={dur}s")
 
 
 if __name__ == "__main__":
