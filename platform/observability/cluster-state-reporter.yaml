@@ -160,6 +160,6 @@ spec:
             - name: tokens
               secret:
                 secretName: cluster-state-publisher
-                defaultMode: 0400
+                defaultMode: 0444 # readable by the non-root (uid 10001) collector; pod-local tmpfs
             - name: tmp
               emptyDir: {}
