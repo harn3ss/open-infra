@@ -4069,6 +4069,23 @@ components:
               type: string
               description: Memory request/limit for the primary container (e.g. "512Mi" or "1Gi"). When unset, a small default
                 is used (an ECS container's Memory maps here).
+            quota:
+              type: object
+              description: "Namespace-wide object-count ceilings (compiles to a ResourceQuota). These are generous safety\
+                \ caps to stop runaway loops, not a sizing tool \u2014 a ResourceQuota is namespace-scoped, so when several\
+                \ apps share a namespace the most restrictive wins. Raise `services` for a namespace that holds many Knative\
+                \ Functions (each scale-to-zero Function needs ~3 Services). Unset fields keep the defaults."
+              properties:
+                services:
+                  type: string
+                  description: Max Services (default "60"). A Knative Function needs ~3.
+                pods:
+                  type: string
+                  description: Max Pods (default "100"). Scale-to-zero Functions idle at 0 pods; this bounds apply/invocation
+                    spikes.
+                persistentvolumeclaims:
+                  type: string
+                  description: Max PersistentVolumeClaims (default "60").
             volumeMounts:
               type: array
               description: "Mount shared pod volumes (declared in spec.volumes) into the primary container \u2014 the ECS\
