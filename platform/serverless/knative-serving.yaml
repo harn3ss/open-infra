@@ -57,5 +57,31 @@ spec:
       zipkin-endpoint: "http://tempo.monitoring.svc.cluster.local:9411/api/v2/spans"
       debug: "false"
       sample-rate: "0.1"
+  # Control-plane HA. The components were single-replica: at ~2,000 KPAs
+  # the autoscaler is a reconcile choke point and the activator fronts every scale-to-zero cold start, so a
+  # single activator is a cluster-wide cold-start SPOF. Run two replicas (leader election for the controllers;
+  # the activator load-balances) and give each explicit requests/limits sized off the measured baseline
+  # (autoscaler 43m/71Mi, controller 9m/104Mi at 368 KPAs → headroom for ~2,000). Reversible: set replicas 1.
   high-availability:
-    replicas: 1
+    replicas: 2
+  deployments:
+    - name: activator
+      resources:
+        - container: activator
+          requests: { cpu: 100m, memory: 128Mi }
+          limits: { cpu: "1", memory: 512Mi }
+    - name: autoscaler
+      resources:
+        - container: autoscaler
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 1Gi }
+    - name: controller
+      resources:
+        - container: controller
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 1Gi }
+    - name: webhook
+      resources:
+        - container: webhook
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { cpu: 500m, memory: 512Mi }
