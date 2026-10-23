@@ -31,7 +31,15 @@ import sys
 import time
 import traceback
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:  # Python 3.6: ThreadingHTTPServer was added in 3.7 — define it the way 3.7 does.
+    import socketserver
+    from http.server import HTTPServer
+
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        daemon_threads = True
 
 TASK_DIR = os.environ.get("OPENINFRA_TASK_DIR", "/var/task")
 PORT = int(os.environ.get("PORT", "8080"))

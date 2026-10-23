@@ -127,9 +127,19 @@ function httpGetToFile(signed, destFile) {
   });
 }
 
+// Recursive mkdir that works on EVERY Node version. fs.mkdirSync's `recursive` option is Node 10.12+;
+// on older Node it is silently ignored AND the call throws when the dir already exists — and /var/task
+// (and /opt) always exist, so `recursive: true` broke the fetch path on nodejs8. A guard + per-level
+// create is safe everywhere and also actually creates nested paths on old Node (which the flag does not).
+function mkdirp(dir) {
+  if (fs.existsSync(dir)) return;
+  mkdirp(path.dirname(dir));
+  try { fs.mkdirSync(dir); } catch (e) { if (e.code !== "EEXIST") throw e; }
+}
+
 async function fetchUnzip(cfg, bucket, key, dest) {
   const signed = signedGet(cfg, bucket, key);
-  fs.mkdirSync(dest, { recursive: true });
+  mkdirp(dest);
   const tmp = path.join(os.tmpdir(), `oi-${process.pid}-${Date.now()}.zip`);
   await httpGetToFile(signed, tmp);
   const size = fs.statSync(tmp).size;
