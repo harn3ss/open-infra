@@ -8,9 +8,10 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
-    <!-- The bucket (S3/MinIO) code-source path. The inline-ConfigMap path never touches it. Floating
-         3.7.x so the base image picks up patch fixes on rebuild; the API surface used (AmazonS3Client,
-         GetObjectAsync, ForcePathStyle, ServiceURL) is stable across 3.7. -->
-    <PackageReference Include="AWSSDK.S3" Version="3.7.*" />
+    <!-- The bucket (S3/MinIO) code-source path. The inline-ConfigMap path never touches it. PINNED
+         (not floating 3.7.*) so the image digest is reproducible from this commit — a runtime image is a
+         stable baseline and a float makes next month's rebuild a different digest. API surface used
+         (AmazonS3Client, GetObjectAsync, ForcePathStyle, ServiceURL) is stable across 3.7. -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.511.8" />
   </ItemGroup>
 </Project>

@@ -9,7 +9,8 @@
   <ItemGroup>
     <!-- Code-source (S3/MinIO) fetch path, as in the net8 shim. AWSSDK.S3 3.7.x targets netstandard2.0,
          so it runs on .NET Core 3.1 (this is why the dotnet shim keeps the SDK for the fetch, unlike the
-         node shim which had to hand-roll SigV4). The inline-ConfigMap path never touches it. -->
-    <PackageReference Include="AWSSDK.S3" Version="3.7.*" />
+         node shim which had to hand-roll SigV4). The inline-ConfigMap path never touches it. PINNED
+         (not 3.7.*) so this EOL baseline image is reproducible from the commit. -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.511.8" />
   </ItemGroup>
 </Project>

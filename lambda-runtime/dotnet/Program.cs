@@ -129,8 +129,16 @@ static class Bootstrap
     static async Task<object> InvokeAsync(string eventJson)
     {
         var args = new object[_params.Length];
-        if (_params.Length >= 1) args[0] = DeserializeEvent(eventJson, _params[0].ParameterType);
-        if (_params.Length >= 2) args[1] = LambdaContextProxy.Create(_params[1].ParameterType);
+        // Bind by parameter TYPE, not position: AWS's .NET runtime accepts (), (TIn), (TIn, ctx) and
+        // (ctx), so the ILambdaContext can be absent, first or second. Detect it by type (full name, to
+        // avoid referencing Amazon.Lambda.Core) -> context proxy; the event deserializes into any
+        // non-context parameter. Fixes a context-only handler, which previously had the event JSON
+        // deserialized into the ILambdaContext interface (NotSupportedException -> 502).
+        for (int i = 0; i < _params.Length; i++)
+        {
+            var pt = _params[i].ParameterType;
+            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt) : DeserializeEvent(eventJson, pt);
+        }
         var result = _method.Invoke(_target, args);
         if (result is Task task)
         {
@@ -140,6 +148,10 @@ static class Bootstrap
         }
         return result;
     }
+
+    // The ILambdaContext parameter, identified by type name so the shim never references
+    // Amazon.Lambda.Core (matches any version of the handler's own context type).
+    static bool IsLambdaContextType(Type t) => t.IsInterface && t.FullName == "Amazon.Lambda.Core.ILambdaContext";
 
     static object DeserializeEvent(string json, Type t)
     {
