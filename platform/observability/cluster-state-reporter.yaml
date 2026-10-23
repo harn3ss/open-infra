@@ -1,0 +1,165 @@
+# Machine cluster-state reporter (polyhedron#314) — a scheduled, READ-ONLY observer that snapshots the
+# whole cluster into harn3ss/cluster-state (one commit per run) and rewrites the pinned front-page issue
+# polyhedron#315. Discovery-driven: a new kind/namespace appears in the next snapshot with no code change.
+#
+# Security (per #314): get/list/watch only, NO write verbs, and NO access to Secrets — the core-group
+# rule deliberately omits `secrets`, and the collector additionally skips kind: Secret. The publishing
+# tokens live in the cluster-state-publisher Secret (provisioned out of band from .env, NOT in git).
+# A new API GROUP (not just a new kind in an existing group) would need adding below; until then the
+# collector records it in coverage.md as "not checked (RBAC)" — never silently healthy.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-cluster-state
+  labels: { openinfra.dev/component: cluster-state }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-state-collector
+  namespace: open-infra-cluster-state
+  labels: { openinfra.dev/component: cluster-state }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-state-observer
+  labels: { openinfra.dev/component: cluster-state }
+rules:
+  # Core group WITHOUT secrets (the one sensitive core resource is deliberately excluded).
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - endpoints
+      - namespaces
+      - nodes
+      - persistentvolumeclaims
+      - persistentvolumes
+      - configmaps
+      - events
+      - replicationcontrollers
+      - resourcequotas
+      - limitranges
+      - serviceaccounts
+      - podtemplates
+    verbs: ["get", "list", "watch"]
+  # Non-core groups — resources ["*"] (none of these groups contains a Secret-like resource).
+  - apiGroups:
+      - apps
+      - batch
+      - autoscaling
+      - networking.k8s.io
+      - policy
+      - storage.k8s.io
+      - scheduling.k8s.io
+      - coordination.k8s.io
+      - node.k8s.io
+      - discovery.k8s.io
+      - events.k8s.io
+      - rbac.authorization.k8s.io
+      - apiextensions.k8s.io
+      - apiregistration.k8s.io
+      - admissionregistration.k8s.io
+      - certificates.k8s.io
+      - flowcontrol.apiserver.k8s.io
+      - metrics.k8s.io
+      - openinfra.dev
+      - apiextensions.crossplane.io
+      - kubernetes.crossplane.io
+      - pkg.crossplane.io
+      - serving.knative.dev
+      - operator.knative.dev
+      - networking.internal.knative.dev
+      - autoscaling.internal.knative.dev
+      - caching.internal.knative.dev
+      - kubevirt.io
+      - cdi.kubevirt.io
+      - pool.kubevirt.io
+      - snapshot.kubevirt.io
+      - clone.kubevirt.io
+      - export.kubevirt.io
+      - instancetype.kubevirt.io
+      - migrations.kubevirt.io
+      - postgresql.cnpg.io
+      - longhorn.io
+      - kubeovn.io
+      - argoproj.io
+      - kyverno.io
+      - wgpolicyk8s.io
+      - cert-manager.io
+      - acme.cert-manager.io
+      - velero.io
+      - monitoring.coreos.com
+      - keda.sh
+      - eventing.keda.sh
+      - metallb.io
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-state-observer
+  labels: { openinfra.dev/component: cluster-state }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-state-observer
+subjects:
+  - kind: ServiceAccount
+    name: cluster-state-collector
+    namespace: open-infra-cluster-state
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cluster-state-reporter
+  namespace: open-infra-cluster-state
+  labels: { openinfra.dev/component: cluster-state }
+spec:
+  schedule: "0 */4 * * *" # every 4 h
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels: { app: cluster-state-reporter, openinfra.dev/component: cluster-state }
+        spec:
+          serviceAccountName: cluster-state-collector
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: collect
+              image: ghcr.io/harn3ss/open-infra-cluster-state:latest
+              imagePullPolicy: Always
+              env:
+                - { name: STATE_REPO, value: "harn3ss/cluster-state" }
+                - { name: ISSUE_REPO, value: "harn3ss/polyhedron" }
+                - { name: ISSUE_NUMBER, value: "315" }
+                - { name: INTERVAL_HOURS, value: "4" }
+              volumeMounts:
+                - { name: tokens, mountPath: /secrets, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { cpu: "1", memory: 512Mi }
+          volumes:
+            - name: tokens
+              secret:
+                secretName: cluster-state-publisher
+                defaultMode: 0400
+            - name: tmp
+              emptyDir: {}
