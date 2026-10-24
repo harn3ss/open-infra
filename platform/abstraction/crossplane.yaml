@@ -57,6 +57,17 @@ spec:
         podSecurityContextRBACManager:
           seccompProfile:
             type: RuntimeDefault
+        # Full-estate sizing (2026-10-24): the core pod OOMKilled at the 1Gi chart default once the
+        # otf full-estate fill landed (~2,030 Function XRs + their composed objects held in the informer
+        # cache), crashlooping (r85+) and stalling ALL reconciliation — functions stuck NotReady, statuses
+        # stale. Observed ~2.1Gi steady at full estate; set 4Gi with headroom. rbac-manager bumped too
+        # (it was flapping). A live patch is futile here — selfHeal reverts it — so this lives in GitOps.
+        resourcesCrossplane:
+          limits: { cpu: "1", memory: 4Gi }
+          requests: { cpu: 100m, memory: 1Gi }
+        resourcesRBACManager:
+          limits: { cpu: 500m, memory: 1Gi }
+          requests: { cpu: 100m, memory: 256Mi }
   destination:
     server: https://kubernetes.default.svc
     namespace: crossplane-system
