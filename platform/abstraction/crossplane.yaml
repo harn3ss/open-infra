@@ -17,6 +17,11 @@ spec:
     targetRevision: 1.17.1
     helm:
       values: |
+        # Single replica (below), so leader election buys nothing — and at full-estate scale it became
+        # actively harmful: a slow API (reconcile storm over ~2,030 XRs) made the LE lease renewal time out,
+        # crossplane lost the lease and crashed, each restart did a full resync that hammered the API harder
+        # — a self-amplifying crashloop that froze convergence (2026-10-24). Disable it for the single replica.
+        leaderElection: false
         provider:
           packages:
             # Lets the Composition create arbitrary k8s objects (Deployment, CNPG
