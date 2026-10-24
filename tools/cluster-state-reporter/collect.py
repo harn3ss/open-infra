@@ -141,6 +141,62 @@ def _conds(o):
             for c in ((o.get("status") or {}).get("conditions") or [])}
 
 
+# ---- honesty: three-state probe result (polyhedron#319) ---------------------------------------------
+# A probe's state is derived from what it actually measured THIS run, never asserted:
+#   healthy            — every sub-check the probe claims was measured, and all passed.
+#   unhealthy (…)      — a measured sub-check failed (findings exist).
+#   partial (…)        — the probe ran but could not measure some parts (each named).
+#   not checked (…)    — the probe could not run at all (reason).
+# The front page renders ✅ ONLY for exactly "healthy"; partial/unhealthy → ⚠️; not-checked → ❓.
+# There is deliberately no "ok": "the probe ran" is not "the thing is healthy".
+HEALTHY = "healthy"
+
+def probe_state(findings, unchecked):
+    """findings: list of measured problems. unchecked: list of parts this run could NOT measure."""
+    f = len(findings) if findings else 0
+    uc = "; ".join(unchecked) if unchecked else ""
+    if f and uc:
+        return f"unhealthy ({f} finding(s); not checked: {uc})"
+    if f:
+        return f"unhealthy ({f} finding(s))"
+    if uc:
+        return f"partial (not checked: {uc})"
+    return HEALTHY
+
+def state_mark(state):
+    if state == HEALTHY:
+        return "✅"
+    if state.startswith("not checked"):
+        return "❓"
+    return "⚠️"  # partial or unhealthy — never a green check
+
+def detect_datastore(dyn):
+    """Return (description, checked_bool). Derived from the API, never asserted. k3s labels an
+    embedded-etcd server node `node-role.kubernetes.io/etcd=true` and surfaces an `EtcdIsVoter`
+    node condition; kine/SQLite and external-DB servers carry neither. We can confirm embedded etcd
+    from the API; we cannot distinguish kine/SQLite from an external DB without node access, so that
+    case is reported as not-checked rather than guessed."""
+    nres = _res(dyn, "", "Node")
+    if nres is None:
+        return "not checked (Node not accessible)", False
+    try:
+        nodes = _items(nres)
+    except Exception as e:
+        return f"not checked (Node list failed: {type(e).__name__})", False
+    etcd_nodes = []
+    for n in nodes:
+        labels = (n.get("metadata") or {}).get("labels") or {}
+        conds = _conds(n)
+        if labels.get("node-role.kubernetes.io/etcd") in ("true", "") and "node-role.kubernetes.io/etcd" in labels:
+            etcd_nodes.append((n.get("metadata") or {}).get("name"))
+        elif "EtcdIsVoter" in conds:
+            etcd_nodes.append((n.get("metadata") or {}).get("name"))
+    if etcd_nodes:
+        return f"embedded etcd (k3s managed) — {len(etcd_nodes)} member node(s): {', '.join(sorted(n for n in etcd_nodes if n))}", True
+    return ("not checked (no node carries node-role.kubernetes.io/etcd or EtcdIsVoter; "
+            "kine/SQLite or external DB — needs node access to confirm)"), False
+
+
 def probe_databases(dyn):
     # The DB abstraction is kind: Application with spec.database (engine sqlserver/babelfish/postgres/mysql).
     res = _res(dyn, "openinfra.dev", "Application")
@@ -158,6 +214,7 @@ def probe_databases(dyn):
     unhealthy = []
     sql_count = 0
     found = 0
+    restored_inferred = 0
     for o in items:
         spec = o.get("spec") or {}
         db = spec.get("database") or {}
@@ -175,7 +232,8 @@ def probe_databases(dyn):
         if not has_restore:
             st = "— (fresh)"
         elif ready == "True":
-            st = "**restored**"
+            st = "restore completed (inferred: claim Ready; contents not checked)"
+            restored_inferred += 1
         elif ready == "False":
             st = f"restoring/FAILED ({rreason})"
         else:
@@ -187,35 +245,51 @@ def probe_databases(dyn):
             unhealthy.append(("Database", ns, nm, why))
     if found == 0:
         lines.append("| _none_ | | | |")
-    return [("databases/overview.md", "\n".join(lines) + "\n")], unhealthy, ("Database restore-state", "ok", f"{found} DBs ({sql_count} SQL-Server-family)")
+    # "restored" is inferred from Ready, not verified against source contents (no DB creds) — so any
+    # inferred-restore keeps the probe "partial", never a clean ✅.
+    unchecked = []
+    if restored_inferred:
+        unchecked.append(f"restore contents of {restored_inferred} DB(s) (inferred from Ready, not verified)")
+    state = probe_state(unhealthy, unchecked)
+    return [("databases/overview.md", "\n".join(lines) + "\n")], unhealthy, ("Database restore-state", state, f"{found} DBs ({sql_count} SQL-Server-family)")
 
+
+def _knative_component(labels):
+    # Discover Knative components by label, not by a hard-coded namespace (polyhedron#319 item 8):
+    # the operator sets app.kubernetes.io/part-of (and /name) = knative-serving on its deployments.
+    labels = labels or {}
+    return (labels.get("app.kubernetes.io/part-of") == "knative-serving"
+            or labels.get("app.kubernetes.io/name") == "knative-serving")
 
 def probe_knative(dyn):
     lines = ["# Knative", "", f"observed_at: {STAMP}", ""]
-    unhealthy = []
-    state = "ok"
+    unhealthy, unchecked = [], []
     dres = _res(dyn, "apps", "Deployment")
     if dres is None:
-        state = "partial"
+        unchecked.append("components (Deployment not accessible)")
         lines.append("components: not checked (Deployment not accessible)")
     else:
-        lines.append("## components (knative-serving)")
-        for d in _items(dres):
-            m = d.get("metadata") or {}
-            if m.get("namespace") != "knative-serving":
-                continue
-            s = d.get("status") or {}
-            rdy, rep = s.get("readyReplicas", 0) or 0, s.get("replicas", 0) or 0
-            flag = " ⚠️" if rdy < rep else ""
-            lines.append(f"- {m.get('name')}: {rdy}/{rep} ready{flag}")
-            if rdy < rep:
-                unhealthy.append(("KnativeComponent", "knative-serving", m.get("name"), f"{rdy}/{rep} ready"))
+        comps = [d for d in _items(dres) if _knative_component((d.get("metadata") or {}).get("labels"))]
+        if not comps:
+            unchecked.append("components (no Deployments labelled app.kubernetes.io/part-of=knative-serving found)")
+            lines.append("components: not checked (no knative-serving-labelled Deployments found)")
+        else:
+            lines.append("## components (discovered by app.kubernetes.io/part-of=knative-serving)")
+            for d in comps:
+                m = d.get("metadata") or {}
+                s = d.get("status") or {}
+                rdy, rep = s.get("readyReplicas", 0) or 0, s.get("replicas", 0) or 0
+                flag = " ⚠️" if rdy < rep else ""
+                lines.append(f"- {m.get('namespace')}/{m.get('name')}: {rdy}/{rep} ready{flag}")
+                if rdy < rep:
+                    unhealthy.append(("KnativeComponent", m.get("namespace"), m.get("name"), f"{rdy}/{rep} ready"))
     for grp, kind, label in [("serving.knative.dev", "Service", "ksvc"),
                              ("serving.knative.dev", "Revision", "revisions"),
                              ("autoscaling.internal.knative.dev", "PodAutoscaler", "podautoscalers")]:
         r = _res(dyn, grp, kind)
         if r is None:
             lines += ["", f"## {label}: not checked (not accessible)"]
+            unchecked.append(f"{label} (not accessible)")
             continue
         try:
             xs = _items(r)
@@ -223,6 +297,8 @@ def probe_knative(dyn):
             lines += ["", f"## {label}: {rdy}/{len(xs)} Ready"]
         except Exception as e:
             lines += ["", f"## {label}: not checked ({type(e).__name__})"]
+            unchecked.append(f"{label} (list failed: {type(e).__name__})")
+    state = probe_state(unhealthy, unchecked)
     return [("cluster/knative.md", "\n".join(lines) + "\n")], unhealthy, ("Knative", state, "")
 
 
@@ -234,7 +310,6 @@ def probe_mirror(dyn):
         items = _items(res)
     except Exception as e:
         return [], [], ("Mirror inventory (Functions)", f"not checked ({type(e).__name__})", "")
-    from collections import Counter
     by_rt = {}  # runtime -> [total, ready]
     unhealthy = []
     for o in items:
@@ -244,38 +319,59 @@ def probe_mirror(dyn):
         t = by_rt.setdefault(rt, [0, 0])
         t[0] += 1
         t[1] += 1 if ready else 0
+        if not ready:  # item 4: Not-Ready Functions ARE findings of this probe, not only generic health
+            m = o.get("metadata") or {}
+            rc = next((c for c in ((o.get("status") or {}).get("conditions") or []) if c.get("type") == "Ready"), {})
+            unhealthy.append(("Function", m.get("namespace"), m.get("name"), (rc.get("reason") or "not Ready")))
+    total_ready = sum(t[1] for t in by_rt.values())
     lines = ["# Mirror inventory — Functions by runtime", "", f"observed_at: {STAMP}", "",
-             f"total Functions: {len(items)}", "", "| runtime | Ready / total |", "|---|---|"]
+             f"total Functions: {len(items)} · Ready {total_ready} · NotReady {len(items) - total_ready}", "",
+             "| runtime | Ready / total |", "|---|---|"]
     for rt in sorted(by_rt):
         t = by_rt[rt]
         flag = " ⚠️" if t[1] < t[0] else ""
         lines.append(f"| {rt} | {t[1]} / {t[0]}{flag} |")
-    # tenant quota (main-dev)
+    # tenant quotas — ALL namespaces that carry a ResourceQuota (item 6), read errors surfaced (item 5)
+    unchecked = []
     qres = _res(dyn, "", "ResourceQuota")
-    if qres is not None:
+    if qres is None:
+        lines += ["", "## tenant quotas: not checked (ResourceQuota not accessible)"]
+        unchecked.append("tenant quotas (ResourceQuota not accessible)")
+    else:
         try:
-            for q in _items(qres):
+            quotas = _items(qres)
+            lines += ["", "## tenant quotas (all namespaces)"]
+            shown = 0
+            for q in sorted(quotas, key=lambda x: ((x.get("metadata") or {}).get("namespace") or "", (x.get("metadata") or {}).get("name") or "")):
                 m = q.get("metadata") or {}
-                if m.get("namespace") != "main-dev":
-                    continue
-                hard = (q.get("status") or {}).get("hard", {})
-                used = (q.get("status") or {}).get("used", {})
-                lines += ["", f"## tenant quota ({m.get('name')})",
-                          f"- services: {used.get('services')}/{hard.get('services')}",
-                          f"- pods: {used.get('pods')}/{hard.get('pods')}"]
-        except Exception:
-            pass
-    total_ready = sum(t[1] for t in by_rt.values())
-    return [("mirror/inventory.md", "\n".join(lines) + "\n")], unhealthy, ("Mirror inventory", "ok", f"{total_ready}/{len(items)} Functions Ready")
+                hard = (q.get("status") or {}).get("hard", {}) or {}
+                used = (q.get("status") or {}).get("used", {}) or {}
+                parts = [f"{k}: {used.get(k)}/{hard.get(k)}" for k in ("services", "pods", "persistentvolumeclaims") if k in hard]
+                lines.append(f"- `{m.get('namespace')}/{m.get('name')}` — {', '.join(parts) if parts else '(no services/pods/pvc limits)'}")
+                shown += 1
+            if shown == 0:
+                lines.append("- _none found_")
+        except Exception as e:
+            lines += ["", f"## tenant quotas: not checked (list failed: {type(e).__name__})"]
+            unchecked.append(f"tenant quotas (list failed: {type(e).__name__})")
+    state = probe_state(unhealthy, unchecked)
+    return [("mirror/inventory.md", "\n".join(lines) + "\n")], unhealthy, ("Mirror inventory", state, f"{total_ready}/{len(items)} Functions Ready")
 
 
 def probe_controlplane(dyn):
+    ds_desc, ds_checked = detect_datastore(dyn)  # item 1: OBSERVED from the API, never asserted
     lines = ["# control plane", "", f"observed_at: {STAMP}", "",
-             "datastore: k3s embedded (kine over SQLite) — **size / fsync / snapshot age: not checked** "
-             "(needs node filesystem access; a Layer 3 off-cluster/node probe).", ""]
+             f"datastore type: {ds_desc}",
+             "datastore size / fsync / snapshot age: not checked (needs node filesystem access; a Layer 3 "
+             "off-cluster/node probe).", ""]
+    findings, unchecked = [], ["datastore size/fsync/snapshot age (needs node access)"]
+    if not ds_checked:
+        unchecked.append("datastore type")
     nres = _res(dyn, "", "Node")
-    state = "partial"  # thin without node access
-    if nres is not None:
+    if nres is None:
+        lines.append("nodes: not checked (Node not accessible)")
+        unchecked.append("nodes (Node not accessible)")
+    else:
         try:
             nodes = _items(nres)
             ready = sum(1 for n in nodes if _conds(n).get("Ready", (None,))[0] == "True")
@@ -288,10 +384,13 @@ def probe_controlplane(dyn):
                 ver = (st.get("nodeInfo") or {}).get("kubeletVersion", "?")
                 flag = " ⚠️" if r != "True" else (" (cordoned)" if sched else "")
                 lines.append(f"- {m.get('name')}: Ready={r} {ver}{flag}")
-            state = "ok"
+                if r != "True":
+                    findings.append(("Node", None, m.get("name"), f"Ready={r}"))
         except Exception as e:
             lines.append(f"nodes: not checked ({type(e).__name__})")
-    return [("cluster/control-plane.md", "\n".join(lines) + "\n")], [], ("Control plane", state, "datastore size needs node access")
+            unchecked.append(f"nodes (list failed: {type(e).__name__})")
+    state = probe_state(findings, unchecked)
+    return [("cluster/control-plane.md", "\n".join(lines) + "\n")], findings, ("Control plane", state, ds_desc if ds_checked else "datastore type + size need node access")
 
 
 def probe_longhorn(dyn):
@@ -313,14 +412,22 @@ def probe_longhorn(dyn):
     lines = ["# Longhorn volumes", "", f"observed_at: {STAMP}", "", f"volumes: {len(vols)}", ""]
     for r in sorted(by_rob):
         lines.append(f"- {r}: {by_rob[r]}")
+    unchecked = []
     nres = _res(dyn, "longhorn.io", "Node")
-    if nres is not None:
+    if nres is None:
+        lines += ["", "## nodes (longhorn): not checked (longhorn.io/Node not accessible)"]
+        unchecked.append("longhorn nodes (not accessible)")
+    else:
         lines += ["", "## nodes (longhorn)"]
         for n in _items(nres):
             m = n.get("metadata") or {}
             c = _conds(n)
-            lines.append(f"- {m.get('name')}: Ready={c.get('Ready',(None,))[0]} Schedulable={c.get('Schedulable',(None,))[0]}")
-    return [("storage/longhorn.md", "\n".join(lines) + "\n")], bad, ("Longhorn", "ok", f"{len(vols)} volumes, {len(bad)} degraded/faulted")
+            nr = c.get("Ready", (None,))[0]
+            lines.append(f"- {m.get('name')}: Ready={nr} Schedulable={c.get('Schedulable',(None,))[0]}")
+            if nr not in ("True", None):
+                bad.append(("LonghornNode", None, m.get("name"), f"Ready={nr}"))
+    state = probe_state(bad, unchecked)
+    return [("storage/longhorn.md", "\n".join(lines) + "\n")], bad, ("Longhorn", state, f"{len(vols)} volumes, {len(bad)} degraded/faulted")
 
 
 def probe_gitops(dyn):
@@ -344,65 +451,91 @@ def probe_gitops(dyn):
         lines.append(f"| {m.get('name')} | {sync} | {health} | {rev}{flag} |")
         if sync != "Synced" or health == "Degraded":
             bad.append(("ArgoCDApp", m.get("namespace"), m.get("name"), f"sync={sync} health={health}"))
-    return [("gitops/argocd.md", "\n".join(lines) + "\n")], bad, ("GitOps (ArgoCD)", "ok", f"{len(apps)} apps, {len(bad)} off")
+    return [("gitops/argocd.md", "\n".join(lines) + "\n")], bad, ("GitOps (ArgoCD)", probe_state(bad, []), f"{len(apps)} apps, {len(bad)} off")
 
 
 def probe_registry(dyn):
     lines = ["# Registry (ECR doorway) + runtimeImage pull path", "", f"observed_at: {STAMP}", ""]
-    bad = []
+    bad, unchecked = [], []
     cmres = _res(dyn, "", "ConfigMap")
     repos = None
-    if cmres is not None:
+    if cmres is None:
+        unchecked.append("ECR repo count (ConfigMap not accessible)")
+    else:
         try:  # scope to the ECR namespace rather than re-listing every ConfigMap cluster-wide
             cms = cmres.get(namespace="open-infra-ecr").to_dict().get("items", [])
             repos = sum(1 for cm in cms if ((cm.get("metadata") or {}).get("labels") or {}).get("app.kubernetes.io/managed-by") == "ecr")
-        except Exception:
+        except Exception as e:
             repos = None
+            unchecked.append(f"ECR repo count (list failed: {type(e).__name__})")
     lines.append(f"ECR repositories (bookkeeping records): {repos if repos is not None else 'not checked'}")
     dsres = _res(dyn, "apps", "DaemonSet")
-    if dsres is not None:
+    agent_found = False
+    if dsres is None:
+        unchecked.append("pull-path agent (DaemonSet not accessible)")
+    else:
         for d in _items(dsres):
             m = d.get("metadata") or {}
             if m.get("name") == "ecr-node-pull-agent":
+                agent_found = True
                 st = d.get("status") or {}
                 des, rdy = st.get("desiredNumberScheduled", 0), st.get("numberReady", 0)
                 flag = " ⚠️" if rdy < des else ""
                 lines += ["", f"pull-path agent (ecr-node-pull-agent): {rdy}/{des} armed nodes ready{flag}"]
                 if rdy < des:
                     bad.append(("ECRpullAgent", m.get("namespace"), "ecr-node-pull-agent", f"{rdy}/{des} ready"))
-    return [("registry/ecr.md", "\n".join(lines) + "\n")], bad, ("Registry + pull-path", "ok", f"{repos if repos is not None else '?'} repos")
+        if not agent_found:  # item 7: absence is a finding, not a silent pass
+            lines += ["", "pull-path agent (ecr-node-pull-agent): NOT FOUND — the runtimeImage pull path is unverified"]
+            bad.append(("ECRpullAgent", None, "ecr-node-pull-agent", "DaemonSet not found"))
+    state = probe_state(bad, unchecked)
+    return [("registry/ecr.md", "\n".join(lines) + "\n")], bad, ("Registry + pull-path", state, f"{repos if repos is not None else '?'} repos")
 
 
 def probe_networking(dyn):
     lines = ["# Networking", "", f"observed_at: {STAMP}", ""]
-    bad = []
+    bad, unchecked = [], []
     dsres = _res(dyn, "apps", "DaemonSet")
-    if dsres is not None:
+    if dsres is None:
+        lines.append("## CNI / network DaemonSets: not checked (DaemonSet not accessible)")
+        unchecked.append("CNI DaemonSets (not accessible)")
+    else:
         lines.append("## CNI / network DaemonSets")
+        cni_seen = 0
         for d in _items(dsres):
             m = d.get("metadata") or {}
             nm = m.get("name", "")
             if any(k in nm for k in ("kube-ovn", "multus", "kube-proxy")):
+                cni_seen += 1
                 st = d.get("status") or {}
                 des, rdy = st.get("desiredNumberScheduled", 0), st.get("numberReady", 0)
                 flag = " ⚠️" if rdy < des else ""
                 lines.append(f"- {m.get('namespace')}/{nm}: {rdy}/{des}{flag}")
                 if rdy < des:
                     bad.append(("CNI", m.get("namespace"), nm, f"{rdy}/{des} ready"))
+        if cni_seen == 0:
+            lines.append("- none found (no kube-ovn/multus/kube-proxy DaemonSet) — CNI health unverified")
+            unchecked.append("CNI DaemonSets (none matched kube-ovn/multus/kube-proxy)")
     npres = _res(dyn, "networking.k8s.io", "NetworkPolicy")
-    if npres is not None:
+    if npres is None:
+        lines += ["", "## NetworkPolicies: not checked (NetworkPolicy not accessible)"]
+        unchecked.append("NetworkPolicies (not accessible)")
+    else:
         from collections import Counter
         c = Counter((p.get("metadata") or {}).get("namespace") for p in _items(npres))
         lines += ["", "## NetworkPolicies per namespace"]
         for ns in sorted(c):
             lines.append(f"- {ns}: {c[ns]}")
     mres = _res(dyn, "metallb.io", "IPAddressPool")
-    if mres is not None:
+    if mres is None:
+        lines += ["", "## MetalLB IPAddressPools: not checked (metallb.io/IPAddressPool not accessible)"]
+        unchecked.append("MetalLB IPAddressPools (not accessible)")
+    else:
         lines += ["", "## MetalLB IPAddressPools"]
         for p in _items(mres):
             m = p.get("metadata") or {}
             lines.append(f"- {m.get('name')}: {(p.get('spec') or {}).get('addresses', [])}")
-    return [("network/overview.md", "\n".join(lines) + "\n")], bad, ("Networking", "ok", "")
+    state = probe_state(bad, unchecked)
+    return [("network/overview.md", "\n".join(lines) + "\n")], bad, ("Networking", state, "")
 
 
 def probe_policy(dyn):
@@ -424,29 +557,37 @@ def probe_policy(dyn):
         lines.append(f"| {m.get('name')} | {action} | {ready} |")
         if not ready:
             bad.append(("KyvernoPolicy", "", m.get("name"), "not Ready"))
-    return [("policy/kyverno.md", "\n".join(lines) + "\n")], bad, ("Policy (Kyverno)", "ok", f"{len(pols)} policies")
+    return [("policy/kyverno.md", "\n".join(lines) + "\n")], bad, ("Policy (Kyverno)", probe_state(bad, []), f"{len(pols)} policies")
 
 
 def probe_chaos(dyn):
     lines = ["# Chaos", "", f"observed_at: {STAMP}", ""]
     total = 0
+    kinds_accessible = 0
+    unchecked = []
     for kind in ("PodChaos", "NetworkChaos", "StressChaos", "IOChaos", "Schedule", "Workflow"):
         r = _res(dyn, "chaos-mesh.org", kind)
         if r is not None:
+            kinds_accessible += 1
             try:
                 total += len(_items(r))
-            except Exception:
-                pass
+            except Exception as e:
+                unchecked.append(f"chaos {kind} (list failed: {type(e).__name__})")
     lines.append(f"chaos-mesh experiments present: {total}")
+    if kinds_accessible == 0:  # chaos-mesh not installed / not accessible — we measured nothing
+        unchecked.append("chaos-mesh experiments (no chaos-mesh.org kinds accessible)")
     nres = _res(dyn, "", "Node")
-    if nres is not None:
+    if nres is None:
+        lines.append("nodes with a chaos taint: not checked (Node not accessible)")
+        unchecked.append("chaos node taints (Node not accessible)")
+    else:
         tainted = []
         for n in _items(nres):
             for t in ((n.get("spec") or {}).get("taints", []) or []):
                 if "chaos" in (t.get("key", "")).lower():
                     tainted.append((n.get("metadata") or {}).get("name"))
         lines.append(f"nodes with a chaos taint: {tainted or 'none'}")
-    return [("chaos/state.md", "\n".join(lines) + "\n")], [], ("Chaos", "ok", f"{total} experiments")
+    return [("chaos/state.md", "\n".join(lines) + "\n")], [], ("Chaos", probe_state([], unchecked), f"{total} experiments")
 
 
 def probe_node_metrics(dyn):
@@ -463,7 +604,9 @@ def probe_node_metrics(dyn):
         m = n.get("metadata") or {}
         u = n.get("usage") or {}
         lines.append(f"| {m.get('name')} | {u.get('cpu')} | {u.get('memory')} |")
-    return [("cluster/node-metrics.md", "\n".join(lines) + "\n")], [], ("Node metrics", "ok", f"{len(items)} nodes")
+    # informational probe: it measured per-node usage for every node it listed, no pass/fail sub-check
+    state = HEALTHY if items else "partial (not checked: no NodeMetrics returned)"
+    return [("cluster/node-metrics.md", "\n".join(lines) + "\n")], [], ("Node metrics", state, f"{len(items)} nodes")
 
 
 def deep_probes(dyn):
@@ -671,10 +814,10 @@ def issue_body(summary, unhealthy_all, tot, verdict, probe_unhealthy, probe_stat
              "",
              f"**healthy {tot['healthy']} · unhealthy {tot['unhealthy']} · unknown {tot['unknown']} · no-signal {tot['nosignal']}**"]
     # Layer 2 deep-probe status (each reports ok / partial / not-checked)
-    lines += ["", "## Deep probes"]
+    lines += ["", "## Deep probes", "", "_✅ = every claimed sub-check measured and passed · ⚠️ = finding or partial "
+              "(some parts not checked, named) · ❓ = probe could not run._"]
     for n, s, d in probe_status:
-        mark = "✅" if s == "ok" else ("⚠️" if s == "partial" else "❓")
-        lines.append(f"- {mark} **{n}**: {s}{(' — ' + d) if d else ''}")
+        lines.append(f"- {state_mark(s)} **{n}**: {s}{(' — ' + d) if d else ''}")
     if probe_unhealthy:
         lines += ["", "### Deep-probe findings"]
         for k, n, nm, d in probe_unhealthy[:25]:
