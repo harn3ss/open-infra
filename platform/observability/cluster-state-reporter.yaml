@@ -174,8 +174,12 @@ spec:
                 readOnlyRootFilesystem: true
                 capabilities: { drop: ["ALL"] }
               resources:
-                requests: { cpu: 50m, memory: 128Mi }
-                limits: { cpu: "1", memory: 512Mi }
+                # Sized for the full-estate snapshot (~2,030 Functions / ~1,940 ksvc / ~5,600 Services /
+                # ~1,935 revisions + their XRs/deployments). The whole-env gather OOMKilled at 512Mi once
+                # the otf full-estate fill landed (2026-10-24); raised to 2Gi. 2,030 is the estate cap, so
+                # this holds. If the reporter OOMs again, stream/paginate the collector rather than raise.
+                requests: { cpu: 50m, memory: 512Mi }
+                limits: { cpu: "1", memory: 2Gi }
           volumes:
             - name: tokens
               secret:
