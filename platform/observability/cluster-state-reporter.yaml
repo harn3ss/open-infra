@@ -146,7 +146,12 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 1
-      activeDeadlineSeconds: 900
+      # The whole-cluster scan takes ~894s in-cluster at the full estate (~2,030 Functions / ~6,000
+      # Services / ~30k objects over the in-cluster API on a 1-CPU pod) — right at the old 900s deadline,
+      # which started killing runs with DeadlineExceeded once the estate landed (2026-10-24). 1800s gives
+      # 2× headroom. NOTE: ~15min for a 4-hourly reporter is itself too slow — the collector should scope
+      # or paginate the high-cardinality list()s at this scale (follow-up, see polyhedron#319).
+      activeDeadlineSeconds: 1800
       template:
         metadata:
           labels: { app: cluster-state-reporter, openinfra.dev/component: cluster-state }
