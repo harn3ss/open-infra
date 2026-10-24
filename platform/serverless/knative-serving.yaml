@@ -64,12 +64,16 @@ spec:
   # (autoscaler 43m/71Mi, controller 9m/104Mi at 368 KPAs → headroom for ~2,000). Reversible: set replicas 1.
   high-availability:
     replicas: 2
+  # Full-estate re-sizing (2026-10-24): at the real full-estate load (~2,030 ksvc / ~6,000 Services /
+  # ~2,000 revisions+routes) the #313-baseline limits were undersized. The activator OOMKilled on
+  # recovery-storm spikes (512Mi), net-kourier-controller OOM-crashlooped programming ~2,000 routes
+  # (500Mi chart default), and the controller runs ~55% of 1Gi and scales with the estate. Raised below.
   deployments:
     - name: activator
       resources:
         - container: activator
-          requests: { cpu: 100m, memory: 128Mi }
-          limits: { cpu: "1", memory: 512Mi }
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 1Gi }
     - name: autoscaler
       resources:
         - container: autoscaler
@@ -78,10 +82,18 @@ spec:
     - name: controller
       resources:
         - container: controller
-          requests: { cpu: 100m, memory: 256Mi }
-          limits: { cpu: "1", memory: 1Gi }
+          requests: { cpu: 100m, memory: 512Mi }
+          limits: { cpu: "1", memory: 2Gi }
     - name: webhook
       resources:
         - container: webhook
           requests: { cpu: 50m, memory: 64Mi }
           limits: { cpu: 500m, memory: 512Mi }
+    # Kourier programs the data-plane route for every ksvc; at ~2,000 routes it OOM-crashlooped at the
+    # 500Mi chart default, holding functions NotReady (RoutesReady=False). Operator applies this via the
+    # KnativeServing CR once synced (a live deploy patch is reverted by ArgoCD self-heal).
+    - name: net-kourier-controller
+      resources:
+        - container: controller
+          requests: { cpu: 200m, memory: 256Mi }
+          limits: { cpu: "1", memory: 1Gi }
