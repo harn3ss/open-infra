@@ -123,6 +123,12 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: dc
             spec:
+              # Readiness must reflect the workload, not just that the Object was
+              # applied: derive from the StatefulSet's readyReplicas, matching
+              # the sqlserver/babelfish kinds.
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: object.spec.replicas == 0 || (has(object.status) && has(object.status.readyReplicas) && object.status.readyReplicas == object.spec.replicas)
               forProvider:
                 manifest:
                   apiVersion: apps/v1
@@ -138,6 +144,10 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-dc } }
                       spec:
+                        # In a namespace with many Services, the default per-Service env
+                        # injection can exceed the exec limit and prevent the pod from
+                        # starting. Nothing here uses the service-link vars, so opt out.
+                        enableServiceLinks: false
                         hostname: dc1
                         containers:
                           - name: dc

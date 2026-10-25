@@ -255,6 +255,13 @@ else
   curl -sfL "https://raw.githubusercontent.com/kubeovn/kube-ovn/${KUBEOVN_VERSION}/dist/images/install.sh" -o "$KUBEOVN_INSTALLER" \
     || DIE "failed to download kube-ovn installer ${KUBEOVN_VERSION}"
   sed -i "s#^SVC_CIDR=.*#SVC_CIDR=\"${KUBEOVN_SVC_CIDR}\"#" "$KUBEOVN_INSTALLER"
+  # enable-lb=false: kube-ovn does NOT load-balance k8s Services — kube-proxy owns them
+  # (ClusterIP DNAT + no-endpoint REJECT), which is what the notes above already intend.
+  # With enable-lb=true, OVN removes a no-backend (scale-to-zero) Service's VIP and the
+  # traffic is forwarded to the default gateway instead of REJECTed locally; in a cluster
+  # with many idle Services that floods the gateway. kube-proxy REJECTs empty Services
+  # locally. (enable-lb-svc already defaults false; MetalLB does LoadBalancer IPs.)
+  sed -i "s#^ENABLE_LB=.*#ENABLE_LB=\"false\"#" "$KUBEOVN_INSTALLER"
   bash "$KUBEOVN_INSTALLER" || DIE "kube-ovn install failed"
   rm -f "$KUBEOVN_INSTALLER"
 fi
