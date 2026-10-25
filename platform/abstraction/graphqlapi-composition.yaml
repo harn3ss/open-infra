@@ -164,6 +164,8 @@ spec:
                           # Roll the pod whenever the authored config changes (the reload mechanism).
                           openinfra.dev/config-checksum: "{{ $checksum }}"
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $needsAuth }}
                         # A resolver uses field-level auth: (a SubjectAccessReview against the API
                         # server), which needs a SA that can create subjectaccessreviews. The

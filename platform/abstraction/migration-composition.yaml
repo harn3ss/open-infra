@@ -227,6 +227,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-migration-dbz } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         securityContext: { fsGroup: 185 }
                         initContainers:
                           - name: ensure-stream
@@ -275,6 +277,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-migration-schemasync } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         restartPolicy: OnFailure
@@ -319,6 +323,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-migration-applysink } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:

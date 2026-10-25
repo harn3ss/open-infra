@@ -251,6 +251,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-{{ $node }}-dbz } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         securityContext: { fsGroup: 185 }
                         initContainers:
                           - name: ensure-stream
@@ -294,6 +296,8 @@ spec:
                     backoffLimit: 30
                     template:
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         restartPolicy: OnFailure
@@ -342,6 +346,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-reconciler } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:
@@ -393,6 +399,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-drift } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:
@@ -443,6 +451,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-{{ $fn }}-pump } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         initContainers:
@@ -492,6 +502,8 @@ spec:
                     backoffLimit: 30
                     template:
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         restartPolicy: OnFailure
@@ -537,6 +549,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:
@@ -582,6 +596,8 @@ spec:
                     backoffLimit: 30
                     template:
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         restartPolicy: OnFailure
@@ -620,6 +636,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:
@@ -663,6 +681,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         containers:

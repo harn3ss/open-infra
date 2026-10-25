@@ -83,6 +83,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-smb } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         containers:
                           - name: samba
                             image: dperson/samba

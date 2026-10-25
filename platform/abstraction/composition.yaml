@@ -147,6 +147,8 @@ spec:
                           ovn.kubernetes.io/logical_switch: {{ $spec.subnet }}
                         {{- end }}
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $spec.expose }}
                         # A lan-expose EIP is a kube-ovn distributed FIP, reachable from
                         # the LAN only when the backing pod runs on the external-gateway
@@ -595,6 +597,8 @@ spec:
                     template:
                       metadata: { labels: { app.kubernetes.io/name: {{ $name }}-docdb } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Fail-closed storage placement (#307): disk-class must be nvme or sata-ssd
                         # (this is the DocumentDB tier that holds the data, on local-path).
                         affinity:
@@ -662,6 +666,8 @@ spec:
                           # DB tier is deliberately NOT an SG member (a SecurityGroup fences the
                           # app's ingress port; on the DB it would blackhole the DB's own ports).
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $spec.database.expose }}
                         # DB LAN endpoint (distributed FIP) requires the pod on the gateway node.
                         nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
@@ -844,6 +850,8 @@ spec:
                           app: {{ $name }}-babelfish
                           # DB tier is deliberately NOT an SG member (see the app-tier note).
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $spec.database.expose }}
                         # A DB LAN endpoint (lan-expose EIP = distributed FIP) is only
                         # reachable when the DB pod runs on the external-gateway node.
@@ -1148,6 +1156,8 @@ spec:
                       metadata:
                         labels: { app: {{ $name }}-sqlserver }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $spec.database.expose }}
                         # A DB LAN endpoint (lan-expose EIP) is only reachable on the external-gateway node.
                         nodeSelector: { ovn.kubernetes.io/external-gw: "true" }

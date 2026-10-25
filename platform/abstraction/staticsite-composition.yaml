@@ -68,6 +68,8 @@ spec:
                     # → infinite re-run loop; the finished Job persists as its done-marker (see bucket-composition.yaml).
                     template:
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         serviceAccountName: openinfra-bucket-setup
                         restartPolicy: OnFailure
                         volumes:
@@ -149,6 +151,8 @@ spec:
                         ttlSecondsAfterFinished: 600
                         template:
                           spec:
+                            # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                            enableServiceLinks: false
                             # Untrusted repo code runs here: no cluster credentials, non-root, capped.
                             automountServiceAccountToken: false
                             restartPolicy: Never
@@ -282,6 +286,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-site } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         initContainers:
                           - name: sync-init
                             image: alpine/k8s:1.30.0

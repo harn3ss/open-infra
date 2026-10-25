@@ -119,6 +119,8 @@ spec:
                     template:
                       metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $useGpu }}
                         runtimeClassName: nvidia
                         {{- end }}
@@ -221,6 +223,8 @@ spec:
                     # → infinite re-run loop; the finished Job persists as its done-marker (see bucket-composition.yaml).
                     template:
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         serviceAccountName: openinfra-bucket-setup
                         restartPolicy: OnFailure
                         volumes:
@@ -298,6 +302,8 @@ spec:
                     template:
                       metadata: { labels: { app.kubernetes.io/name: {{ $name }} } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $useGpu }}
                         runtimeClassName: nvidia
                         affinity:

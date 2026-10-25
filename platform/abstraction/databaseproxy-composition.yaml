@@ -88,6 +88,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-proxy } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a node whose arch matches the rendered first-party image.
                         nodeSelector: { kubernetes.io/arch: {{ $nodeArch }} }
                         securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }

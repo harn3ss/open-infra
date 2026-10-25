@@ -173,6 +173,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-dbz, openinfra.dev/replication: "{{ $name }}" } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         {{- if $sched.nodeSelector }}
                         nodeSelector:{{ toYaml $sched.nodeSelector | nindent 26 }}
                         {{- end }}
@@ -215,6 +217,8 @@ spec:
                     backoffLimit: 30
                     template:
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a matching-arch node (first-party image), merged with any user nodeSelector.
                         nodeSelector:{{ toYaml (merge (dict "kubernetes.io/arch" $nodeArch) ($sched.nodeSelector | default dict)) | nindent 26 }}
                         {{- if $sched.tolerations }}
@@ -261,6 +265,8 @@ spec:
                     template:
                       metadata: { labels: { app: {{ $name }}-repl-{{ $sname }}-{{ $dname }}-sink, openinfra.dev/replication: "{{ $name }}" } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         # Pin to a matching-arch node (first-party image), merged with any user nodeSelector.
                         nodeSelector:{{ toYaml (merge (dict "kubernetes.io/arch" $nodeArch) ($sched.nodeSelector | default dict)) | nindent 26 }}
                         {{- if $sched.tolerations }}
