@@ -188,6 +188,11 @@ spec:
                               {{- if $code.runtime }}
                               - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_{{ $code.runtime }}" }
                               {{- end }}
+                              # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                              # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                              # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                              # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                              - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
                               {{- if and $csrc.bucket $csrc.secret }}
                               # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
                               # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
