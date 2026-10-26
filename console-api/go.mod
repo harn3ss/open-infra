@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/go-ldap/ldap/v3 v3.4.14
 	github.com/go-sql-driver/mysql v1.10.1
