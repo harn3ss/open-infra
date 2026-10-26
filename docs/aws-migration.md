@@ -25,9 +25,16 @@ CloudFormation." The honest boundaries:
   schema on the aws-shim's data layer; functions only where the shim's DynamoDB front door is
   enabled — no capacity/indexes/streams), Cognito → `kind: UserPool`, ECS → `kind: Application`.
   The caveats are printed, never hidden.
-- **Breaks / refused (fail-loud, never a silent partial)** — nested stacks, Lambda-backed custom
-  resources, and the general AWS resource catalog are unsupported. Each produces a `REJECTED`
-  verdict naming the reason.
+- **Breaks / refused (fail-loud, never a silent partial)** — Lambda-backed custom resources and the
+  general AWS resource catalog are unsupported. Each produces a `REJECTED` verdict naming the reason.
+- **Nested stacks — flattened, not refused** — the `cfn` CLI inlines each `AWS::CloudFormation::Stack`
+  child into one combined template (child `TemplateURL`s resolved as local files), which then deploys
+  through the normal plan/deploy/update/destroy/drift path. It fails closed on anything it cannot
+  rewrite correctly — a nested-nested stack, a child's `Conditions`/`Mappings`/`Fn::Sub`, an intrinsic
+  `TemplateURL`, an unmappable `Ref`/`GetAtt`, an id collision, or an unbound parameter — refusing
+  rather than emitting a silent partial. Through the aws-shim CloudFormation doorway (inline templates
+  only, no child-URL fetch, SSRF-safe) a nested stack instead gets a `REJECTED` verdict; deploy it via
+  the CLI, or flatten it first.
 - **Create fidelity is narrower than the mapping** — a resource type that *maps* does not always
   *create*, because AWS resource content often has no faithful open-infra form (IAM's
   `service:Action` permission namespace vs open-infra's `kind:verb` RBAC; KMS key policies; a
