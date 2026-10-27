@@ -36,6 +36,15 @@ spec:
           # for readability. Digest = the RELEASE.2026-08-04 multi-arch index. Bump both together.
           tag: RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
           pullPolicy: IfNotPresent
+        # The chart's post-install/upgrade hook job (minio-post-job, which provisions users/policies via
+        # the `mc` client) defaults to quay.io/minio/mc -- paywalled exactly like the server image, so the
+        # hook sat in ImagePullBackOff and BLOCKED every sync of this app (a resources change could not
+        # apply). Point mcImage at the same reachable first-party mc client our own setup hooks already
+        # use. Digest-pinned (tag carries the @sha256, as with the server image above).
+        mcImage:
+          repository: ghcr.io/harn3ss/open-infra-mc
+          tag: latest@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
+          pullPolicy: IfNotPresent
         # Pin root creds to the operator-managed `minio` Secret (#151 fault 2). Without this the
         # chart derives them via a Helm `lookup` that preserves the existing Secret — but ArgoCD
         # renders with `helm template`, which does NOT execute `lookup`, so every sync regenerates
