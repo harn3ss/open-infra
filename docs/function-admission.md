@@ -25,13 +25,16 @@ Set on a function with one field — `spec.burstable: true` (default `false`). I
 | 2 | **`containerConcurrency: 1`** — one request per instance | one invocation per execution environment | composition |
 | 3 | **`max-scale`** (from `reservedConcurrency`, else `scaling.max`) — per-function ceiling | reserved concurrency | composition |
 | 4 | **Tenant `count/pods` quota** (scoped to function priority) — one running pod == one in-flight request | account concurrent-executions limit | `platform/compliance/function-concurrency-quota.yaml` |
-| 5 | **Shed at the cap** — pod CREATE rejected by quota admission *before the pod exists*; async sources retry | throttle, don't kill | quota + Knative |
+| 5 | **Shed at the cap** — pod CREATE rejected by quota *before the pod exists*; a sync invoke via the shim returns a true `429` | throttle, don't kill | quota + Knative + aws-shim |
 | 6 | **Tenant `requests.memory` quota** — ceiling on total reserved memory | — | same policy |
 | 7 | **Low-priority, non-preempting pods** — reclaimed before platform pods under node pressure | (AWS isolates; see gaps) | `platform/serverless/function-priorityclass.yaml` |
 
-Only function pods become Burstable. **MinIO, databases, the Knative/Crossplane control plane, Longhorn,
-and the registry stay Guaranteed** and keep default/higher priority, so a ballooning function is the thing
-that pays — never the platform.
+Only function pods become Burstable. **MinIO is Guaranteed** (set 2026-10-27: `requests == limits`,
+memory 4Gi / cpu 1000m) so it is reclaimed last and memory-bounded — it was the storage layer whose
+eviction cascaded the 2026-10-26 outage. The rest of the platform (databases, the Knative/Crossplane
+control plane, Longhorn, the registry) is still a mix of BestEffort/Burstable; raising those to
+Guaranteed is a **separate platform-QoS hardening track**, not part of this model's acceptance. The
+low-priority function class (row 7) means a ballooning function is reclaimed before any of them regardless.
 
 ## Per-runtime memory floor — NOT MEASURED YET
 
@@ -80,11 +83,14 @@ Override per function without a composition edit: `spec.memoryRequest: "192Mi"`.
   this — it throttles at the edge. (4)+(6) make it rare, not impossible. QoS + the low priority class
   ensure the *function furthest over its request* is the one reclaimed, not a quiet neighbour or a
   platform pod — but it is a real difference from Lambda.
-- **At the cap, callers currently get `503`, not `429`.** Knative's activator sheds with 503 when it
-  cannot admit (per-function) or when the tenant quota rejects the scale-up (account). AWS returns
-  `429 TooManyRequestsException`. A true 429 needs an **edge mapping** (gateway rule translating
-  capacity-shed 503 → 429), which is follow-on work. **Async** sources already back off and retry (Knative
-  Eventing / the function's event pump), so throttling an async path is lossless.
+- **At the tenant concurrency cap, a sync invoke through the aws-shim now returns a true `429
+  TooManyRequestsException`** (+ `Retry-After`). The shim pre-checks the `function-concurrency-quota`
+  `count/pods` at the front door and rejects there, rather than forwarding into Knative's activator —
+  which would queue the request until it timed out into a `503` (`console-api/cmd/aws-shim/lambda.go`).
+  Two residual edges, stated honestly: a request sent **directly to the Knative URL** (bypassing the
+  shim) still sees the activator's `503`; and the **per-function `max-scale`** ceiling (as opposed to the
+  tenant quota) is still shed by the activator as `503`, not 429. **Async** sources back off and retry
+  (Knative Eventing / the function's event pump), so throttling an async path is lossless.
 - Any capture-and-compare rig MUST treat a throttle (`429`/`503` at the cap) as **back-off-and-retry, never
   a runtime divergence** — otherwise throttling manufactures false not-equivalent findings.
 
@@ -115,6 +121,8 @@ and takes no action on its own. It proves, on live cluster evidence:
 
 ## Done means (observed, not configured)
 
-On-cluster, on the drained estate: function pods report QoS **Burstable**; platform pods **Guaranteed**;
-the tenant cap sheds at its limit; the failure-test evidence is committed; and the per-runtime request
-values are backed by committed measurements (no remaining "not measured" placeholder for a runtime in use).
+On-cluster, on the drained estate: function pods report QoS **Burstable**; **MinIO is Guaranteed** (the
+one platform pod whose eviction caused an outage — the broader platform-QoS pass is a separate issue);
+the tenant cap sheds at its limit (a sync invoke through the shim gets a true `429`); the failure-test
+evidence is committed; and the per-runtime request values are backed by committed measurements (no
+remaining "not measured" placeholder for a runtime in use).

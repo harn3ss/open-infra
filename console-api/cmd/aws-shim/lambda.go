@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -131,6 +134,23 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		return
 	}
 
+	// AWS throttles a SYNCHRONOUS invoke with 429 TooManyRequestsException when concurrent executions
+	// are at the account limit. Our analog is the per-tenant function-concurrency ResourceQuota
+	// (count/pods, scoped to the openinfra-function priority — one running burstable pod == one in-flight
+	// request). Check it at the front door: at the cap, reject with 429 rather than forwarding into
+	// Knative's activator, which would queue the request until it times out into a 503 (the documented
+	// 503-not-429 gap). Async (Event) invokes were durably queued above and DryRun already returned, so
+	// only the sync path reaches here. Inert when the tenant has not opted into the quota.
+	if throttled, retryAfter := h.concurrencyThrottled(r.Context()); throttled {
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		h.logger.Info("lambda throttled at tenant concurrency cap", "function", name, "namespace", h.fnNS)
+		writeLambdaError(w, http.StatusTooManyRequests, "TooManyRequestsException", requestID,
+			"Rate Exceeded: the tenant function-concurrency limit has been reached")
+		return
+	}
+
 	// Resolve to the Function's cluster-local Knative address and forward the payload. Hitting the
 	// cluster-local URL is what drives Knative scale-from-zero. A qualifier routes to the alias's
 	// Knative traffic tag (<alias>-<name>); $LATEST / unset hits the default route.
@@ -170,6 +190,27 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// concurrencyThrottled reports whether the function namespace's function-concurrency-quota has reached
+// its count/pods limit — i.e. Knative could not create another function pod right now, so a sync invoke
+// needing one would otherwise queue in the activator and time out into a 503. It is the AWS-correct
+// surfacing of the native ResourceQuota (which stays the hard backstop); best-effort by design — a
+// missing or unreadable quota means "no cap enforced here" (not throttled), so a tenant that has not
+// opted into the quota behaves exactly as before. retryAfter is a conservative seconds hint for the
+// caller's back-off (AWS sends one on a throttle).
+func (h *lambdaHandler) concurrencyThrottled(ctx context.Context) (throttled bool, retryAfter string) {
+	rq, err := h.cs.CoreV1().ResourceQuotas(h.fnNS).Get(ctx, "function-concurrency-quota", metav1.GetOptions{})
+	if err != nil {
+		return false, "" // no quota (not opted in) or unreadable — the native quota remains the backstop
+	}
+	const podsKey = corev1.ResourceName("count/pods")
+	hard, hok := rq.Status.Hard[podsKey]
+	used, uok := rq.Status.Used[podsKey]
+	if hok && uok && used.Cmp(hard) >= 0 {
+		return true, "1"
+	}
+	return false, ""
 }
 
 // parseInvokePath matches POST /2015-03-31/functions/{name}/invocations (optionally
