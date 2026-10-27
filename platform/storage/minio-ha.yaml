@@ -51,7 +51,16 @@ spec:
           size: 20Gi
           # storageClass left default; for NAS reuse, bind a pre-made PV instead.
         resources:
-          requests: { memory: 512Mi }
+          # Guaranteed QoS: requests == limits for BOTH cpu and memory. MinIO is critical platform
+          # storage (object store + the container-registry backend + the function-code bucket), so it
+          # must be evicted LAST under node memory pressure and its memory must be BOUNDED. Before this
+          # it ran Burstable with only a 512Mi request and no limit, so every drive sat OVER its request
+          # (590-1546Mi observed) in the kubelet's first-to-evict bucket -- which is how MinIO going down
+          # took object storage, the registry and the function-code bucket out together (2026-10-26).
+          # Values: memory 4Gi (ample headroom over the 1546Mi busiest drive; the storage nodes have
+          # 20Gi+ free), cpu 1000m (observed <110m, ~10x headroom -> no throttling at this scale).
+          requests: { memory: 4Gi, cpu: 1000m }
+          limits:   { memory: 4Gi, cpu: 1000m }
         # Pin drives to nodes labelled openinfra.dev/storage=true (your always-on
         # storage nodes), never ephemeral ones — otherwise stopping a node drops
         # MinIO below write quorum. Soft anti-affinity then spreads the 4 drives.
