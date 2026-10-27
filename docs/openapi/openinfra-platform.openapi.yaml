@@ -4191,6 +4191,19 @@ components:
                   description: "sqlserver only: set true to accept Microsoft's SQL Server EULA (https://go.microsoft.com/fwlink/?linkid=857698).\
                     \ REQUIRED for engine=sqlserver \u2014 the engine fails closed and provisions nothing (no image is pulled)\
                     \ until you do. open-infra never accepts it for you."
+                recoveryModel:
+                  type: string
+                  enum:
+                  - simple
+                  - full
+                  default: simple
+                  description: "sqlserver only: the DB's recovery model, applied after provisioning/restore. simple (DEFAULT)\
+                    \ = the transaction log is truncated at each checkpoint, so it CANNOT run away and fill the volume/node\
+                    \ \u2014 the right choice for dev, test, and mirror/estate restores. full = point-in-time recovery, BUT\
+                    \ the log grows until a transaction-log backup truncates it; choose full ONLY if you run regular log backups\
+                    \ (open-infra does NOT run them for you), or the log will balloon until the volume is full (and, on an\
+                    \ uncapped local-path volume, the whole node's disk \u2014 which is why the default is simple). Also applied\
+                    \ to the instance's model database so databases created later inherit it."
                 placement:
                   type: object
                   additionalProperties:
@@ -5851,8 +5864,30 @@ components:
               description: GPUs per instance (serverless inference); 0 = CPU
             memory:
               type: string
-              description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") \u2014 the AWS\
-                \ Lambda memory-size knob. Set as both request and limit. Unset = cluster default."
+              description: "Memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") \u2014 the AWS Lambda memory-size\
+                \ knob, and the per-invocation ceiling. Default (burstable false): set as BOTH request and limit \u2192 Guaranteed\
+                \ QoS (the full amount is RESERVED even while the pod is idle). With burstable: true it becomes the LIMIT\
+                \ only (a single invocation still gets the full ceiling) while the request is a smaller per-runtime floor.\
+                \ Unset = cluster default; REQUIRED when burstable is true."
+            burstable:
+              type: boolean
+              default: false
+              description: "Bill memory by real use instead of reserved use \u2014 the AWS Lambda admission model. false (default)\
+                \ = Guaranteed QoS: request == limit == memory, so every warm/idle instance reserves its full configured memory\
+                \ (the capacity trap when thousands of functions are mostly idle). true = Burstable QoS: request = a small\
+                \ per-runtime floor (see memoryRequest), limit = memory; the instance still bursts to the full limit for an\
+                \ invocation but reserves far less while warm. true also runs the function strictly Lambda-style (one request\
+                \ per instance, containerConcurrency 1) and places its pods in the low-priority openinfra-function class so\
+                \ that, under node memory pressure, function pods are reclaimed before platform pods (MinIO, databases, control\
+                \ plane). ALWAYS pair it with a per-tenant function-concurrency + memory quota BEFORE enabling it for a group\
+                \ of functions \u2014 Burstable without that quota is unbraked overcommit (see docs/function-admission.md).\
+                \ Requires memory."
+            memoryRequest:
+              type: string
+              description: "burstable only: override the per-runtime memory-request FLOOR (e.g. \"192Mi\") with a value backed\
+                \ by measurement. Unset = the per-runtime default floor, which is currently an UNMEASURED 128Mi placeholder\
+                \ for every runtime (replace with measured warm-set values \u2014 see docs/function-admission.md). Ignored\
+                \ when burstable is false."
             timeout:
               type: integer
               minimum: 1
