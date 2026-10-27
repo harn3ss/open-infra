@@ -33,6 +33,18 @@ spec:
     features:
       kubernetes.podspec-runtimeclassname: enabled
       kubernetes.podspec-nodeselector: enabled
+      # Let a revision set spec.priorityClassName. BURSTABLE functions (kind: Function spec.burstable) set
+      # priorityClassName: openinfra-function — the load-bearing key of the Lambda admission model: it is
+      # (1) the scopeSelector the per-tenant ResourceQuota matches on, so the quota caps ONLY function pods
+      # (platform/compliance/function-concurrency-quota.yaml), and (2) the scheduler-reclaim class (value
+      # -10, non-preempting) so functions yield memory before platform pods. Without this flag Knative's
+      # webhook REJECTS any revision that names a priorityClass, so burstable can't deploy at all.
+      # Knative has NO per-namespace feature gating, so enabling it is necessarily CLUSTER-WIDE: every
+      # KService may now name a priorityClass. That broadened capability is fenced by a Kyverno guard
+      # (platform/compliance/function-priorityclass-guard.yaml) that allowlists the name to
+      # empty|openinfra-function, so the only class a function pod can carry is the safe low-priority one.
+      # Non-burstable functions set no priorityClassName and are unaffected. Inert until a burstable pod exists.
+      kubernetes.podspec-priorityclassname: enabled
       # Honor the per-revision queue.sidecar.serving.knative.dev/*-resource-* annotations. The function
       # composition sets a small explicit queue-proxy request+limit on BURSTABLE functions so the pod's
       # memory reservation is predictable and a per-tenant requests.memory quota accepts it (a quota that

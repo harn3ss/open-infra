@@ -1,0 +1,66 @@
+# Allowlist guard on Knative Service priorityClassName — fences the cluster-wide feature flag.
+#
+# Why: enabling kubernetes.podspec-priorityclassname in Knative config-features (platform/serverless/
+# knative-serving.yaml) is the only way to let a burstable function pod carry the openinfra-function
+# priority class — but Knative has NO per-namespace feature gating, so the flag is CLUSTER-WIDE. Left
+# unfenced, ANY Knative Service could name ANY PriorityClass, including a high-value or preempting one
+# (e.g. system-cluster-critical), which would let a function jump the scheduler ahead of platform pods —
+# the exact inversion the openinfra-function class (value -10, non-preempting) exists to prevent.
+#
+# This pins the OPENED capability to the USED capability: a Knative Service may set
+# spec.template.spec.priorityClassName only to the low-priority, non-preempting openinfra-function class,
+# or leave it empty. The function composition only ever sets openinfra-function, so the normal path is
+# unaffected; a raw/hand-authored KService naming any other class is rejected at admission.
+#
+# This is DEFENSE IN DEPTH over the primary control: tenants author kind: Function (an XR), not raw
+# KServices — only the composition's controller SA creates function KServices, and it hardcodes
+# openinfra-function. So failurePolicy is Ignore (a Kyverno outage must never wedge KService creation
+# cluster-wide); during an outage the composition still only ever sets the safe class.
+#
+# Part of the OPT-IN `compliance` component (Kyverno). Clusters not running compliance rely on the
+# primary control (RBAC on direct KService creation) alone.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: function-priorityclass-guard
+  annotations:
+    policies.kyverno.io/title: Knative Service priorityClassName allowlist
+    policies.kyverno.io/category: Tenancy / resource governance
+    policies.kyverno.io/description: >-
+      Enabling kubernetes.podspec-priorityclassname in Knative config-features is cluster-wide (Knative has
+      no per-namespace feature gating), so any Knative Service could name any PriorityClass. This pins the
+      capability to what the function composition actually uses: a Knative Service may set
+      priorityClassName only to the low-priority, non-preempting openinfra-function class (or leave it empty).
+    # kyverno.io is a CRD from the opt-in compliance component, and serving.knative.dev is a CRD from the
+    # serverless component — skip the dry-run so a fresh/DR sync does not deadlock before either CRD exists,
+    # and apply after Kyverno (wave 1).
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # Enforce: block a KService naming a disallowed priorityClass at admission (when Kyverno is up).
+  validationFailureAction: Enforce
+  # Ignore (not Fail): a Kyverno outage must NOT wedge KService creation cluster-wide. The primary control
+  # (only the composition SA creates function KServices, and it hardcodes openinfra-function) still holds.
+  failurePolicy: Ignore
+  # Admission-time only; no background scan (the rule reads request.object at admission).
+  background: false
+  rules:
+    - name: priorityclassname-allowlist
+      match:
+        any:
+          # group/version/kind form so this matches ONLY the Knative Service CRD, never a core v1 Service.
+          - resources:
+              kinds:
+                - serving.knative.dev/v1/Service
+      validate:
+        message: >-
+          A Knative Service may set spec.template.spec.priorityClassName only to 'openinfra-function'
+          (the low-priority, non-preempting function class) or leave it empty.
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.template.spec.priorityClassName || '' }}"
+                operator: AnyNotIn
+                value:
+                  - ""
+                  - openinfra-function
