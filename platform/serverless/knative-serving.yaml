@@ -33,6 +33,12 @@ spec:
     features:
       kubernetes.podspec-runtimeclassname: enabled
       kubernetes.podspec-nodeselector: enabled
+      # Honor the per-revision queue.sidecar.serving.knative.dev/*-resource-* annotations. The function
+      # composition sets a small explicit queue-proxy request+limit on BURSTABLE functions so the pod's
+      # memory reservation is predictable and a per-tenant requests.memory quota accepts it (a quota that
+      # tracks requests.memory rejects any in-scope pod with a request-less container). Inert for every
+      # revision that carries no such annotation — i.e. every non-burstable function.
+      queueproxy.resource-defaults: enabled
     defaults:
       # AWS Lambda's max timeout is 900s, and spec.timeout on kind: Function is the Lambda-timeout
       # analog, so 900 is the kind's real ceiling. Knative's built-in cap is 600, which rejected a

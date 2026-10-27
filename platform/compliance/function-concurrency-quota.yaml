@@ -1,0 +1,90 @@
+# Per-tenant FUNCTION concurrency + memory cap — the AWS Lambda account-concurrency / memory analog,
+# enforced natively and BEFORE a pod is created.
+#
+# Why: Burstable function pods (kind: Function spec.burstable) overcommit memory, so a single tenant
+# must not be able to launch unbounded concurrent executions or reserve unbounded memory and starve a
+# node. This generates a native ResourceQuota SCOPED to the openinfra-function PriorityClass, so it caps
+# ONLY burstable function pods — never the tenant's VMs, Applications, or Guaranteed functions:
+#   count/pods      = concurrent executions. Burstable functions run containerConcurrency 1, so one
+#                     running function pod == one in-flight request == the Lambda "concurrent executions"
+#                     unit. At the cap, the Knative autoscaler's next pod CREATE is rejected by quota
+#                     admission (the enforcement happens before the pod exists); the request is shed, not
+#                     scheduled — see the 429/503 note in docs/function-admission.md.
+#   requests.memory = ceiling on the total memory RESERVED by the tenant's burstable functions (requests
+#                     are the real reservation; the limit is only a per-pod burst ceiling).
+#
+# Like platform/compliance/tenant-pod-budget.yaml, the ENFORCEMENT is a native ResourceQuota; Kyverno
+# only GENERATES it and never blocks admission (failurePolicy: Ignore keeps a Kyverno outage a no-op).
+# Part of the opt-in `compliance` component (Kyverno). The RBAC that lets Kyverno's background controller
+# create/sync ResourceQuotas is granted once in tenant-pod-budget.yaml
+# (kyverno-background-controller-resourcequotas) and is reused here — no extra grant needed.
+#
+# OPT-IN PER NAMESPACE — set the label(s) BEFORE flipping that tenant's functions to burstable (shipping
+# Burstable without the quota is unbraked overcommit):
+#     kubectl label namespace <ns> openinfra.dev/function-concurrency=200 openinfra.dev/function-memory=48Gi
+# The concurrency label is the trigger; function-memory is optional (defaults to a generous 64Gi ceiling
+# so the concurrency cap still applies if it is omitted). No concurrency label => no quota (inert; safe to
+# ship before anyone opts in). Change a value and Kyverno re-syncs the quota; remove the label and Kyverno
+# removes it. Equivalent hand-applied manifest for clusters NOT running the compliance component is in
+# docs/function-admission.md.
+#
+# NOTE: a requests.memory ResourceQuota requires every IN-SCOPE pod (priority openinfra-function) to
+# declare a memory request on EVERY container. Burstable function pods do: the user container gets the
+# per-runtime floor, and the queue-proxy sidecar gets an explicit request from the composition (which is
+# why knative config-features sets queueproxy.resource-defaults: enabled). A function that opts into
+# burstable but omits spec.memory is rejected at render time, so an in-scope request-less pod cannot occur.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: function-concurrency-quota
+  annotations:
+    policies.kyverno.io/title: Tenant function concurrency + memory cap
+    policies.kyverno.io/category: Tenancy / resource governance
+    policies.kyverno.io/description: >-
+      Generates a native ResourceQuota (scoped to the openinfra-function PriorityClass) into any namespace
+      labelled openinfra.dev/function-concurrency=<N>, capping a tenant's burstable function pods
+      (count/pods = concurrent executions) and the memory they reserve (requests.memory).
+    # kyverno.io is a CRD from the opt-in compliance component — skip the dry-run so a fresh/DR sync does
+    # not deadlock before the CRD exists, and apply after Kyverno (wave 1).
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # REQUIRED so this genuinely never blocks admission: a GENERATE policy with Kyverno's default (Fail)
+  # fails CLOSED on the resources Kyverno registers for it (namespaces + the resourcequotas it syncs) when
+  # the Kyverno admission controller is down — blocking their creation cluster-wide. Ignore makes a Kyverno
+  # outage a no-op; the quota is simply (re)generated later by the background controller.
+  failurePolicy: Ignore
+  background: true
+  generateExisting: true
+  rules:
+    - name: function-concurrency-quota
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - key: openinfra.dev/function-concurrency
+                    operator: Exists
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: function-concurrency-quota
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              openinfra.dev/managed-by: function-concurrency-quota
+          spec:
+            hard:
+              count/pods: "{{request.object.metadata.labels.\"openinfra.dev/function-concurrency\"}}"
+              requests.memory: "{{request.object.metadata.labels.\"openinfra.dev/function-memory\" || '64Gi'}}"
+            # Scope to the burstable-function priority class so this caps ONLY function pods — a tenant's
+            # VMs, Applications, and Guaranteed functions are untouched (they carry no openinfra-function
+            # priority and so are not in scope).
+            scopeSelector:
+              matchExpressions:
+                - scopeName: PriorityClass
+                  operator: In
+                  values: [openinfra-function]

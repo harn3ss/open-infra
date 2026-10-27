@@ -586,6 +586,73 @@ func TestFunction_ReservedConcurrency(t *testing.T) {
 	}
 }
 
+// Burstable (spec.burstable) is the Lambda admission model and the reservation-not-use fix: request = a
+// per-runtime floor, limit = memory (so request != limit → Burstable QoS, not Guaranteed); one request
+// per instance (containerConcurrency 1 + target 1); and the low-priority openinfra-function class so
+// function pods are reclaimed before platform pods under node pressure. Default (unset) stays Guaranteed.
+func TestFunction_Burstable(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	mk := func(spec map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{"labels": map[string]any{
+				"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "team-a"}},
+		}}}}
+	}
+
+	// Burstable code function: request = the python floor (128Mi), limit = memory (512Mi).
+	out := render(t, tmpl, mk(map[string]any{
+		"memory":    "512Mi",
+		"burstable": true,
+		"code": map[string]any{"runtime": "python3.12", "handler": "app.handler",
+			"source": map[string]any{"configMap": "fn-code"}},
+	}))
+	for _, want := range []string{
+		`requests: { memory: "128Mi" }`, // the floor — NOT the full 512Mi (the reservation fix)
+		`memory: "512Mi"`,               // limit = configured memory (per-invocation ceiling)
+		"containerConcurrency: 1",       // Lambda one-request-per-instance
+		`target: "1"`,
+		"priorityClassName: openinfra-function",
+		`queue.sidecar.serving.knative.dev/memory-resource-request: "32Mi"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("burstable render missing %q; got:\n%s", want, grepCtx(out, "resources"))
+		}
+	}
+	// request must NOT equal the limit (that would be Guaranteed again — the bug this fixes).
+	if strings.Contains(out, `requests: { memory: "512Mi" }`) {
+		t.Errorf("burstable request must be the floor, not the full limit (Guaranteed regression):\n%s", grepCtx(out, "requests"))
+	}
+
+	// memoryRequest overrides the per-runtime floor.
+	out = render(t, tmpl, mk(map[string]any{
+		"image":         "ghcr.io/x/fn:latest",
+		"memory":        "1Gi",
+		"burstable":     true,
+		"memoryRequest": "256Mi",
+	}))
+	if !strings.Contains(out, `requests: { memory: "256Mi" }`) {
+		t.Errorf("memoryRequest must override the floor; got:\n%s", grepCtx(out, "requests"))
+	}
+
+	// Default (burstable unset): Guaranteed QoS preserved — request == limit, no priority class, no cc.
+	out = render(t, tmpl, mk(map[string]any{"image": "ghcr.io/x/fn:latest", "memory": "512Mi"}))
+	if !strings.Contains(out, `requests: { memory: "512Mi" }`) {
+		t.Errorf("non-burstable must stay Guaranteed (request == limit == memory); got:\n%s", grepCtx(out, "requests"))
+	}
+	if strings.Contains(out, "priorityClassName") {
+		t.Errorf("non-burstable function must not set a priority class:\n%s", grepCtx(out, "priority"))
+	}
+	if strings.Contains(out, "containerConcurrency") {
+		t.Errorf("non-burstable (no reservedConcurrency) must not force containerConcurrency:\n%s", grepCtx(out, "containerConcurrency"))
+	}
+
+	// Fail-closed: burstable requires spec.memory (the limit/ceiling).
+	if err := renderErr(tmpl, mk(map[string]any{"image": "ghcr.io/x/fn:latest", "burstable": true})); err == nil {
+		t.Errorf("burstable without spec.memory must fail render (needs the limit/ceiling)")
+	}
+}
+
 // kind: Function spec.code — the Lambda Zip/handler ingestion model: a handler shipped
 // as code (inline ConfigMap, or a zip in a bucket) runs on the managed python runtime
 // base image. Covers both sources and the fail-loud image|code / source guards.

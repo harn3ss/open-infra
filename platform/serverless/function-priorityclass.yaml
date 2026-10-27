@@ -1,0 +1,28 @@
+# Priority class for kind: Function pods that opt into Burstable QoS (spec.burstable: true).
+#
+# Why: a Burstable function pod requests only a per-runtime floor but may burst to its full Lambda
+# memory limit. Under node memory pressure the kubelet/scheduler must reclaim memory from FUNCTION
+# pods before platform pods (MinIO, databases, the Knative/Crossplane control plane, Longhorn, the
+# registry — all of which stay Guaranteed and carry default or higher priority). This class is the
+# scheduler-level half of "only function pods are overcommitted; the platform never pays for a
+# function's balloon." It pairs with QoS (Burstable is reclaimed before Guaranteed) and the per-tenant
+# quota (platform/compliance/function-concurrency-quota.yaml).
+#
+# This does NOT make AWS-grade isolation: Kubernetes can still OOM/evict a Burstable pod because of a
+# neighbour, which AWS never does (it throttles at the edge). The tenant quota + memory ceiling make
+# that rare, not impossible; this class makes the function — not the platform — the one that pays.
+#
+# value -10: below default workloads (0), so function pods lose first, but ABOVE the nightly chaos
+# sandbox (chaos-sandbox-low = -100), which must remain the absolute lowest. preemptionPolicy Never:
+# scheduling a function pod NEVER preempts or evicts anything else, so enabling this is non-disruptive.
+# Inert until a pod references it (only burstable functions do), so it is safe to ship before rollout.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: openinfra-function
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+value: -10
+globalDefault: false
+preemptionPolicy: Never
+description: "kind: Function burstable pods — reclaimed before platform pods under node pressure; preempts nothing."

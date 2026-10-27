@@ -116,7 +116,29 @@ spec:
                           key:    { type: string, description: "Object key of the layer .zip within the bucket." }
                 port:  { type: integer, default: 8080, description: "Container port the function listens on" }
                 gpu:   { type: integer, default: 0, description: "GPUs per instance (serverless inference); 0 = CPU" }
-                memory:  { type: string, description: "Guaranteed memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob. Set as both request and limit. Unset = cluster default." }
+                memory:  { type: string, description: "Memory per instance as a Kubernetes quantity (e.g. \"512Mi\", \"1Gi\") — the AWS Lambda memory-size knob, and the per-invocation ceiling. Default (burstable false): set as BOTH request and limit → Guaranteed QoS (the full amount is RESERVED even while the pod is idle). With burstable: true it becomes the LIMIT only (a single invocation still gets the full ceiling) while the request is a smaller per-runtime floor. Unset = cluster default; REQUIRED when burstable is true." }
+                burstable:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Bill memory by real use instead of reserved use — the AWS Lambda admission model. false
+                    (default) = Guaranteed QoS: request == limit == memory, so every warm/idle instance reserves
+                    its full configured memory (the capacity trap when thousands of functions are mostly idle).
+                    true = Burstable QoS: request = a small per-runtime floor (see memoryRequest), limit = memory;
+                    the instance still bursts to the full limit for an invocation but reserves far less while warm.
+                    true also runs the function strictly Lambda-style (one request per instance,
+                    containerConcurrency 1) and places its pods in the low-priority openinfra-function class so
+                    that, under node memory pressure, function pods are reclaimed before platform pods (MinIO,
+                    databases, control plane). ALWAYS pair it with a per-tenant function-concurrency + memory
+                    quota BEFORE enabling it for a group of functions — Burstable without that quota is unbraked
+                    overcommit (see docs/function-admission.md). Requires memory.
+                memoryRequest:
+                  type: string
+                  description: >-
+                    burstable only: override the per-runtime memory-request FLOOR (e.g. "192Mi") with a value
+                    backed by measurement. Unset = the per-runtime default floor, which is currently an
+                    UNMEASURED 128Mi placeholder for every runtime (replace with measured warm-set values —
+                    see docs/function-admission.md). Ignored when burstable is false.
                 timeout: { type: integer, minimum: 1, maximum: 900, description: "Max wall-clock seconds per request (Knative revision timeout) — the AWS Lambda timeout knob. 1–900 (900 = Lambda's own maximum, and the platform's configured Knative ceiling). Unset = Knative default (300s)." }
                 expose: { type: boolean, default: true, description: "Publish the function on the Knative gateway so it is reachable from the LAN (default true). Set false to make it cluster-local — labels the Knative Service networking.knative.dev/visibility: cluster-local, so only in-cluster callers can reach it." }
                 scaling:

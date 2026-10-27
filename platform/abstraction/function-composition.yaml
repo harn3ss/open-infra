@@ -58,6 +58,21 @@ spec:
             {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
             {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "kind: Function spec.code.layers require a bucket source with a creds secret (source.bucket + source.secret)" }}{{- end }}
             {{- end }}
+            {{- /* Burstable admission (the Lambda memory model). Default false = today's Guaranteed QoS
+                   (request == limit == memory). true: request = a per-runtime floor, limit = memory, so a
+                   warm/idle pod reserves the floor not the full ceiling (a single invocation still bursts to
+                   limit). Burstable also runs the function strictly one-request-per-instance and in the
+                   low-priority openinfra-function class. See docs/function-admission.md. Fails closed:
+                   burstable needs spec.memory (the ceiling). Floors are UNMEASURED 128Mi placeholders — set
+                   per-runtime from measurement, or per-function via spec.memoryRequest. */}}
+            {{- $burst := $spec.burstable | default false }}
+            {{- $rt := "" }}{{- if $code }}{{- $rt = ($code.runtime | default "") }}{{- end }}
+            {{- $floors := dict "python3.12" "128Mi" "python3.13" "128Mi" "nodejs20" "128Mi" "nodejs22" "128Mi" "dotnet8" "128Mi" }}
+            {{- $memReq := "" }}
+            {{- if $burst }}
+            {{-   if not $spec.memory }}{{- fail "kind: Function spec.burstable: true requires spec.memory (Burstable sets request=per-runtime floor, limit=memory)" }}{{- end }}
+            {{-   $memReq = $spec.memoryRequest | default (index $floors $rt) | default "128Mi" }}
+            {{- end }}
             {{- /* Weighted aliases (Knative traffic) must sum to 100, as Knative requires. */}}
             {{- if $spec.aliases }}
             {{-   $sum := 0 }}
@@ -134,9 +149,26 @@ spec:
                           # instances = at most this many concurrent executions. Overrides scaling.max/target.
                           autoscaling.knative.dev/max-scale: "{{ $spec.reservedConcurrency }}"
                           autoscaling.knative.dev/target: "1"
+                          {{- else if $burst }}
+                          # Burstable / Lambda admission model: one request per instance (containerConcurrency
+                          # 1 below), per-function ceiling = scaling.max (the reserved-concurrency analog). The
+                          # ACCOUNT total is capped by a per-tenant quota (docs/function-admission.md).
+                          autoscaling.knative.dev/max-scale: "{{ $scaling.max | default 10 }}"
+                          autoscaling.knative.dev/target: "1"
                           {{- else }}
                           autoscaling.knative.dev/max-scale: "{{ $scaling.max | default 10 }}"
                           autoscaling.knative.dev/target: "{{ $scaling.target | default 100 }}"
+                          {{- end }}
+                          {{- if $burst }}
+                          # Queue-proxy sidecar sizing (honored only with config-features
+                          # queueproxy.resource-defaults: enabled, set in platform/serverless/knative-serving.yaml):
+                          # give the sidecar an explicit small request + limit so the pod's reservation is the
+                          # function floor plus a KNOWN sidecar cost, and so a per-tenant requests.memory quota
+                          # (which requires every in-scope container to declare a memory request) never rejects
+                          # the pod for a request-less sidecar. Inert on non-burstable revisions (no annotation).
+                          queue.sidecar.serving.knative.dev/cpu-resource-request: "25m"
+                          queue.sidecar.serving.knative.dev/memory-resource-request: "32Mi"
+                          queue.sidecar.serving.knative.dev/memory-resource-limit: "64Mi"
                           {{- end }}
                         {{- if $spec.securityGroups }}
                         # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
@@ -146,9 +178,10 @@ spec:
                           {{- end }}
                         {{- end }}
                       spec:
-                        {{- if $spec.reservedConcurrency }}
-                        # Reserved concurrency: one request per instance (Lambda's 1-per-sandbox model),
-                        # so max-scale above is a hard ceiling on concurrent executions.
+                        {{- if or $spec.reservedConcurrency $burst }}
+                        # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
+                        # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
+                        # the "concurrent executions" unit the per-tenant concurrency quota counts).
                         containerConcurrency: 1
                         {{- end }}
                         {{- if $spec.timeout }}
@@ -158,6 +191,13 @@ spec:
                         {{- if gt (int $gpu) 0 }}
                         runtimeClassName: nvidia
                         nodeSelector: { openinfra.dev/gpu: "true" }
+                        {{- end }}
+                        {{- if $burst }}
+                        # Burstable function pods are overcommitted, so they must lose first under node memory
+                        # pressure — not MinIO, databases, or the control plane (which stay Guaranteed and
+                        # higher-priority). openinfra-function is below default workloads and non-preempting, so
+                        # scheduling a function never evicts anything else. See function-priorityclass.yaml.
+                        priorityClassName: openinfra-function
                         {{- end }}
                         containers:
                           - image: {{ $img }}
@@ -222,10 +262,15 @@ spec:
                               - { name: openinfra-code, mountPath: /var/task, readOnly: true }
                             {{- end }}
                             {{- if or $spec.memory (gt (int $gpu) 0) }}
-                            # memory → guaranteed container memory (the AWS Lambda memory knob); gpu → device limit.
+                            # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                            # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                            # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                            # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                            # bursts to the full limit for an invocation but reserves far less when warm. This is
+                            # the reservation-not-use fix — see docs/function-admission.md.
                             resources:
                               {{- if $spec.memory }}
-                              requests: { memory: {{ $spec.memory | quote }} }
+                              requests: { memory: {{ if $burst }}{{ $memReq | quote }}{{ else }}{{ $spec.memory | quote }}{{ end }} }
                               {{- end }}
                               limits:
                                 {{- if $spec.memory }}
