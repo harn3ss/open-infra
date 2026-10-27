@@ -24,6 +24,15 @@ spec:
       values: |
         mode: distributed
         replicas: 4
+        # Image: the chart's default quay.io/minio/minio is no longer anonymously pullable — upstream
+        # gated its public container images behind authentication (Sep 2026) and archived the project.
+        # Use the AGPL community fork pgsty/minio: a true drop-in (same minio binary, root UID,
+        # /usr/bin/docker-entrypoint.sh) whose 2026 build reads the existing xl-v3 erasure data in place.
+        # Pinned to a release tag; move to a digest pin once validated. See the MinIO migration finding.
+        image:
+          repository: docker.io/pgsty/minio
+          tag: RELEASE.2026-08-04T00-00-00Z
+          pullPolicy: IfNotPresent
         # Pin root creds to the operator-managed `minio` Secret (#151 fault 2). Without this the
         # chart derives them via a Helm `lookup` that preserves the existing Secret — but ArgoCD
         # renders with `helm template`, which does NOT execute `lookup`, so every sync regenerates
