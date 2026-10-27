@@ -31,7 +31,10 @@ spec:
         # Pinned to a release tag; move to a digest pin once validated. See the MinIO migration finding.
         image:
           repository: docker.io/pgsty/minio
-          tag: RELEASE.2026-08-04T00-00-00Z
+          # Pinned by DIGEST (immutable): the chart renders repository:tag, so tag carries the
+          # release name AND the @sha256 digest — a valid ref that pulls by digest, with the tag kept
+          # for readability. Digest = the RELEASE.2026-08-04 multi-arch index. Bump both together.
+          tag: RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
           pullPolicy: IfNotPresent
         # Pin root creds to the operator-managed `minio` Secret (#151 fault 2). Without this the
         # chart derives them via a Helm `lookup` that preserves the existing Secret — but ArgoCD
