@@ -113,6 +113,8 @@ func TestSQLServer_RestoreFrom(t *testing.T) {
 		"mountPath: /restore, subPath: restore",           // staged on the SIZED data volume, not a node emptyDir
 		"test -f /restore/.done",                          // readiness gate: NotReady until the restore completes
 		"terminationMessagePolicy: FallbackToLogsOnError", // a failed restore surfaces its reason
+		"ALTER DATABASE [$DB] SET RECOVERY SIMPLE;",       // restored DB forced off FULL so its log can't run away
+		"ALTER DATABASE [model] SET RECOVERY SIMPLE;",     // new DBs on the instance inherit SIMPLE too
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("restoring sqlserver render missing %q; got:\n%s", want, grepCtx(out, "restore"))
@@ -122,6 +124,35 @@ func TestSQLServer_RestoreFrom(t *testing.T) {
 	// the node); the restore-stage volume is gone entirely.
 	if strings.Contains(out, "name: restore-stage") {
 		t.Errorf("restore staging must be on the sized data volume, not the old restore-stage emptyDir; got:\n%s", grepCtx(out, "restore"))
+	}
+}
+
+// recoveryModel defaults to SIMPLE so a restored DB's transaction log is auto-truncated and can't run
+// away and fill the volume/node (a FULL-recovery DB whose log was never backed up grew to 1.1 TB and
+// DiskPressure-tainted a node). FULL is honored for callers who run their own log backups.
+func TestSQLServer_RecoveryModel(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+
+	// Default (restoreFrom, no recoveryModel): restored DB + model set to SIMPLE, never FULL.
+	def := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":  true,
+		"restoreFrom": map[string]any{"bucket": "import", "key": "db.bak", "secret": "restore-creds"},
+	}))
+	if !strings.Contains(def, "ALTER DATABASE [$DB] SET RECOVERY SIMPLE;") {
+		t.Errorf("default recoveryModel must set the restored DB to SIMPLE; got:\n%s", grepCtx(def, "RECOVERY"))
+	}
+	if strings.Contains(def, "RECOVERY FULL;") {
+		t.Errorf("default recoveryModel must not render FULL; got:\n%s", grepCtx(def, "RECOVERY"))
+	}
+
+	// Explicit full: honored (caller owns their log backups).
+	full := render(t, tmpl, mkSQLServer(map[string]any{
+		"acceptEula":    true,
+		"recoveryModel": "full",
+		"restoreFrom":   map[string]any{"bucket": "import", "key": "db.bak", "secret": "restore-creds"},
+	}))
+	if !strings.Contains(full, "ALTER DATABASE [$DB] SET RECOVERY FULL;") {
+		t.Errorf("recoveryModel: full must render RECOVERY FULL; got:\n%s", grepCtx(full, "RECOVERY"))
 	}
 }
 

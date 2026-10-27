@@ -122,6 +122,11 @@ spec:
                       type: boolean
                       default: false
                       description: "sqlserver only: set true to accept Microsoft's SQL Server EULA (https://go.microsoft.com/fwlink/?linkid=857698). REQUIRED for engine=sqlserver — the engine fails closed and provisions nothing (no image is pulled) until you do. open-infra never accepts it for you."
+                    recoveryModel:
+                      type: string
+                      enum: [simple, full]
+                      default: simple
+                      description: "sqlserver only: the DB's recovery model, applied after provisioning/restore. simple (DEFAULT) = the transaction log is truncated at each checkpoint, so it CANNOT run away and fill the volume/node — the right choice for dev, test, and mirror/estate restores. full = point-in-time recovery, BUT the log grows until a transaction-log backup truncates it; choose full ONLY if you run regular log backups (open-infra does NOT run them for you), or the log will balloon until the volume is full (and, on an uncapped local-path volume, the whole node's disk — which is why the default is simple). Also applied to the instance's model database so databases created later inherit it."
                     placement:
                       type: object
                       additionalProperties: { type: string }

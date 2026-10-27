@@ -946,6 +946,11 @@ spec:
                    (engineFamily: sqlserver) fronts it with zero config. */}}
             {{- $accept := $spec.database.acceptEula | default false }}
             {{- $edition := $spec.database.edition | default "Developer" }}
+            {{- /* recoveryModel: default SIMPLE so the transaction log is auto-truncated and can't run away
+                   and fill the volume/node (a FULL-recovery DB whose log is never backed up grew to 1.1 TB and
+                   DiskPressure-tainted a node). Applied after RESTORE (a restored DB keeps the backup's model,
+                   which is usually FULL). FULL is honored for callers who run their own log backups. */}}
+            {{- $recoveryModel := upper ($spec.database.recoveryModel | default "simple") }}
             {{- $mssqlImg := "mcr.microsoft.com/mssql/server:2022-latest" }}
             {{- $saPass := printf "Mssql-%s-9Z" (printf "%s-sa" .observed.composite.resource.metadata.uid | sha256sum | trunc 16) }}
             {{- /* restoreFrom: land a backup into this instance on bring-up (the migration landing path).
@@ -1076,6 +1081,12 @@ spec:
                       done < <(printf '%s\n' "$FLO")
                       echo "restore: restoring '$DB' from $N stripe(s)$MOVES"
                       q -Q "RESTORE DATABASE [$DB] $DISKS WITH REPLACE, RECOVERY$MOVES"
+                      # A restored DB keeps the backup's recovery model (usually FULL); force it to the configured
+                      # model so the transaction log can't run away and fill the volume/node (default SIMPLE).
+                      echo "restore: setting recovery model {{ $recoveryModel }}"
+                      q -Q "ALTER DATABASE [$DB] SET RECOVERY {{ $recoveryModel }};"
+                      # also set the instance's model DB so any database created later inherits it (best-effort)
+                      "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -Q "ALTER DATABASE [model] SET RECOVERY {{ $recoveryModel }};" || echo "restore: note: could not set model recovery model"
                       echo "restore: complete — reclaiming staged backup set"
                       rm -f /restore/db_*.bak
                       touch "$DONE"
@@ -1113,6 +1124,12 @@ spec:
                       done < <(q -s '~' -W -h -1 -Q "SET NOCOUNT ON; RESTORE FILELISTONLY FROM DISK=N'$BAK'")
                       echo "restore: restoring '$DB'$MOVES"
                       q -Q "RESTORE DATABASE [$DB] FROM DISK=N'$BAK' WITH REPLACE, RECOVERY$MOVES"
+                      # A restored DB keeps the backup's recovery model (usually FULL); force it to the configured
+                      # model so the transaction log can't run away and fill the volume/node (default SIMPLE).
+                      echo "restore: setting recovery model {{ $recoveryModel }}"
+                      q -Q "ALTER DATABASE [$DB] SET RECOVERY {{ $recoveryModel }};"
+                      # also set the instance's model DB so any database created later inherits it (best-effort)
+                      "$SQLCMD" -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -Q "ALTER DATABASE [model] SET RECOVERY {{ $recoveryModel }};" || echo "restore: note: could not set model recovery model"
                       echo "restore: complete — reclaiming staged backup"
                       rm -f "$BAK"   # free the staging space on the data volume now the DB is restored
                       touch "$DONE"
