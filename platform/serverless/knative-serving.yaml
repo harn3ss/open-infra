@@ -51,6 +51,17 @@ spec:
       # tracks requests.memory rejects any in-scope pod with a request-less container). Inert for every
       # revision that carries no such annotation — i.e. every non-burstable function.
       queueproxy.resource-defaults: enabled
+    gc:
+      # Reclaim the Knative Services held by SUPERSEDED (non-active) revisions. Knative's default config-gc
+      # keeps up to 20 non-active revisions per route before GC even considers them, so a function updated a
+      # few times permanently holds every old revision's Services (~2 each) against a shared Services ceiling
+      # (6,500). That silently exhausts the ceiling for ANY user who iterates a function in place -- a
+      # general-platform problem, independent of the estate mirror (which has its own retire-the-claim step).
+      # Keep a small rollback buffer; GC the rest once aged out. An ACTIVE (routed) revision is never GC'd.
+      min-non-active-revisions: "2"        # was the implicit default 20 -- keep 2 for rollback, GC beyond
+      max-non-active-revisions: "10"       # hard cap regardless of age
+      retain-since-create-time: "48h"      # (Knative default) a superseded revision GCs after it ages out
+      retain-since-last-active-time: "15h" # (Knative default)
     defaults:
       # AWS Lambda's max timeout is 900s, and spec.timeout on kind: Function is the Lambda-timeout
       # analog, so 900 is the kind's real ceiling. Knative's built-in cap is 600, which rejected a
