@@ -1,0 +1,150 @@
+# Canonical registry of AWS services the aws-shim fronts — the SINGLE source of truth for the
+# service list and count that appear in README.md and docs/aws-shim.md.
+#
+# WHY THIS FILE EXISTS: the list and count used to be hand-typed in two places and drifted (a
+# service could be built + probe-proven yet still documented as "not fronted"). probe/shimgen.py
+# renders the docs from this file and, on --check, FAILS CI if:
+#   - any probe/aws-shim-*.sh is not claimed by exactly one service here (a new probe forces a
+#     registry entry — the anti-drift guarantee), or
+#   - a `probes:` entry names a probe file that does not exist, or
+#   - a `tier: proven` service has no probe (proven means observed), or
+#   - a `tier: gated|planned` service claims a probe (promote it to proven instead).
+#
+# tier:
+#   proven  — built AND proven by a real-AWS-SDK compatibility probe (probe/aws-shim-*.sh, exit 0
+#             live). These are what "N probe-proven services" counts.
+#   gated   — the doorway is WRITTEN but not probe-proven and ships OFF behind a component. A
+#             different state from "not built", with a different owner (enable a component, not
+#             build one).
+#   planned — no handler yet: an honest 501, never a silent fake.
+#
+# `cell` is the short backend phrase shown next to the service name. `experimental: true` marks a
+# service whose engine is on the experimental tier (see README "Maturity & guarantees").
+
+services:
+  # --- identity, security, keys ---
+  - name: S3
+    cell: "→ MinIO"
+    tier: proven
+    probes: [s3]
+  - name: STS
+    cell: "identity + `AssumeRole` / web-identity"
+    tier: proven
+    probes: [sts]
+  - name: IAM
+    cell: "roles/policies/users → AWS policy JSON → Cedar"
+    tier: proven
+    probes: [iam, iam-timecond, iam-username-like]
+  - name: KMS
+    cell: "→ Vault Transit"
+    tier: proven
+    probes: [kms, kms-keypolicy]
+  - name: Secrets Manager
+    cell: "→ Vault-Transit-encrypted, versioned"
+    tier: proven
+    probes: [secretsmanager]
+  - name: Cognito
+    cell: "user pools → real RS256 JWTs (JWKS-verifiable)"
+    tier: proven
+    probes: [cognito]
+
+  # --- compute ---
+  - name: Lambda
+    cell: "→ Knative `Function`s"
+    tier: proven
+    probes: [lambda]
+  - name: ECS
+    cell: "service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation"
+    tier: proven
+    probes: [ecs]
+  - name: EKS
+    cell: "`DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server"
+    tier: proven
+    probes: [eks]
+  - name: ECR
+    cell: "→ a backing OCI registry (Distribution /v2)"
+    tier: proven
+    probes: [ecr, ecr-perrepo]
+
+  # --- data ---
+  - name: RDS
+    cell: "→ real PostgreSQL (CloudNativePG)"
+    tier: proven
+    probes: [rds]
+  - name: DynamoDB
+    cell: "→ FerretDB (+ transactions, Streams)"
+    tier: proven
+    probes: [dynamodb, dynamodb-lsi, dynamodb-restore, dynamodb-streams]
+  - name: Athena
+    cell: "serverless SQL → Trino over the Iceberg lake"
+    tier: proven
+    probes: [athena]
+  - name: Glue
+    cell: "Data Catalog → the Iceberg REST metastore"
+    tier: proven
+    probes: [glue]
+
+  # --- messaging / streaming ---
+  - name: SQS
+    cell: "→ Postgres-backed queues"
+    tier: proven
+    probes: [sqs]
+  - name: SNS
+    cell: "→ durable SQS fan-out"
+    tier: proven
+    probes: [sns]
+  - name: EventBridge
+    cell: "scheduled + event-driven rules"
+    tier: proven
+    probes: [eventbridge]
+  - name: Kinesis Data Streams
+    cell: "ordered, sharded, replayable (Postgres)"
+    tier: proven
+    probes: [kinesis]
+
+  # --- app / config / observability ---
+  - name: SSM Parameter Store
+    cell: "→ Postgres + KMS-encrypted `SecureString`"
+    tier: proven
+    probes: [ssm]
+  - name: API Gateway
+    cell: "HTTP API v2 + REST v1 → runtime proxy to Lambda"
+    tier: proven
+    probes: [apigateway, apigateway-restv1, apigateway-restv1-cfn]
+  - name: CloudWatch
+    cell: "metrics + alarms that evaluate and fire SNS"
+    tier: proven
+    probes: [cloudwatch]
+  - name: CloudWatch Logs
+    cell: "→ Postgres"
+    tier: proven
+    probes: [cloudwatchlogs]
+
+  # --- workflow / provisioning ---
+  - name: Step Functions
+    cell: "owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS)"
+    tier: proven
+    experimental: true
+    probes: [stepfunctions]
+  - name: CloudFormation
+    cell: "owned cfn engine; stacks provision under the caller's authority (impersonation)"
+    tier: proven
+    probes: [cloudformation, cfn-customresource]
+  - name: AppSync
+    cell: "→ open-appsync (VTL-faithful engine)"
+    tier: proven
+    experimental: true
+    probes: [appsync]
+
+  # --- written but gated OFF (no probe yet) ---
+  - name: SES
+    cell: "SES v1 `SendEmail`/`SendRawEmail` over the in-cluster SMTP relay (`kind: EmailSender`)"
+    tier: gated
+    note: "OFF until the operator enables the `mail` component and sets `SES_SMTP_RELAY`; not yet probe-proven, so it counts as not-fronted on the probe bar."
+    probes: []
+
+  # --- honest 501 (no handler) ---
+  - name: Route 53
+    cell: "DNS"
+    tier: planned
+    probes: []

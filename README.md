@@ -10,12 +10,15 @@
 
 > A **self-hosted cloud that speaks AWS**, running entirely inside your own trust boundary.
 > Point your existing AWS **SDK, CLI, Terraform, or CloudFormation** at it and it answers the way AWS
-> does — SigV4-authenticated, **twenty-five services and counting, each backed by a real datastore and
+> does — SigV4-authenticated, every fronted service **backed by a real datastore and
 > proven by a real-SDK compatibility probe**. Or declare intent in one `infra.yaml` and `git push`.
 > Either way you get an AWS-like managed surface — autoscaling HTTPS apps, managed databases, object
 > storage, queues, VMs, serverless + GPU inference, an analytics lake, CDC pipelines, Active Directory —
-> GitOps-reconciled on hardware you control and built to a **NIST 800-53 control framework**:
-> secure-by-default, least-privilege, fully audited. The experience feels like AWS; the bill is $0.
+> GitOps-reconciled on hardware you control and **designed with the NIST SP 800-53 control families as
+> the target**: secure-by-default and least-privilege, shipping the technical controls and evidence for an
+> operator to pursue an authorization — not a claim to *be* certified
+> ([Security & compliance](#security--compliance)). The experience feels like AWS, with **no per-service
+> cloud bill — you pay for the hardware you own**.
 
 **Two ways in, one platform.**
 
@@ -52,6 +55,23 @@ spec:
 
 Three surfaces, one set of objects and one policy world underneath: the **AWS wire protocol** (the shim),
 **`infra.yaml`/GitOps + Terraform**, and the **web console**.
+
+---
+
+## Who it's for, and what it isn't
+
+**Who it's for.** Organisations that need cloud-style infrastructure but can't justify — or safely
+evaluate — a hyperscaler: schools, hospitals, local governments, and teams that must keep data inside
+their own walls. open-infra gives them an AWS-shaped platform on hardware they already own and control.
+
+**Scope.** Enough parity with AWS to build and run real, simple-to-moderate solutions — the services in
+the table above and the probe-proven wire surface below — **not all of AWS**.
+
+**Non-goals, on purpose.** The long tail of AWS is out of scope: CloudFront, Route 53 as a hosted zone,
+and the hundreds of services beyond the mapped set. Asked for a service it has not made faithful, the
+shim returns an **honest `501`** rather than a silent fake — *narrow and proven beats broad and
+hand-wavy*. Some mapped capabilities are **experimental** (marked as such, with the caveats in
+[Maturity & guarantees](#maturity--guarantees)); treat those accordingly.
 
 ---
 
@@ -97,24 +117,45 @@ CNCF projects — not a reinvention of databases or storage.
 | SageMaker Feature Store | online feature store (`kind: FeatureGroup`) | per-group Valkey + PutRecord/GetRecord API for real-time features (experimental) |
 | EC2 | virtual machines (`kind: VirtualMachine`) | KubeVirt + CDI (Linux + Windows) |
 | Directory Service | Active Directory (`kind: Directory`) | Samba AD DC |
-| Security Groups | firewall rule sets (`kind: SecurityGroup`) | Cilium NetworkPolicy |
+| Security Groups | firewall rule sets (`kind: SecurityGroup`) | Kubernetes NetworkPolicy (enforced by kube-ovn) |
 | IAM | users, groups, policies, roles (`kind: User`/`Group`/`Policy`/`Role`) | k8s RBAC + impersonation, with a permission boundary |
 | CloudFormation / CDK | a stack template | `infra.yaml` → Crossplane, **or** the `cfn` engine that ingests a template ([`docs/cloudformation.md`](docs/cloudformation.md)) |
 | Terraform / OpenTofu | infra as HCL | [`harn3ss/openinfra`](https://registry.terraform.io/providers/harn3ss/openinfra/latest) provider |
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | CloudTrail | audit trail | k8s API-server audit log → Loki, with a console **Audit** view (every action attributed to a person) |
 | Cost Explorer | "what AWS would've charged" | console panel pricing live capacity vs AWS list rates |
-| Secrets Manager | secrets | Sealed Secrets |
+| Secrets Manager | secrets | Vault Transit–encrypted, versioned secret store |
 | AWS Backup | backup/DR | Velero |
 | Fault Injection Simulator | chaos engineering (`kind: FaultInjection`) | Chaos Mesh |
 
 Full mapping and rationale: [`docs/architecture.md`](docs/architecture.md).
 
-That table is **concept parity** — an open-infra-native surface that *feels* like AWS. Alongside it is
-**wire parity**: for apps (and IaC) that must speak the AWS protocol unchanged, the opt-in AWS-SDK shim
-answers as AWS for **twenty-five probe-proven services** — see
+That table is **concept parity** — an open-infra-native surface that *feels* like AWS. It is not a claim
+to all of AWS: rows marked **(experimental)** carry the caveats in
+[Maturity & guarantees](#maturity--guarantees), and the long tail of AWS is a deliberate non-goal (see
+[Who it's for, and what it isn't](#who-its-for-and-what-it-isnt)). Alongside it is **wire parity**: for
+apps (and IaC) that must speak the AWS protocol unchanged, the opt-in AWS-SDK shim answers as AWS for
+**every service with a passing compatibility probe** — see
 [AWS-SDK compatibility](#aws-sdk-compatibility-the-shim). Concept parity to build native; wire parity to
 lift-and-shift what you already have.
+
+---
+
+## Requirements
+
+**Hardware.** One or more Linux boxes (**amd64**). A single box runs everything in `dev` mode; **3+
+nodes** is the recommended floor for HA and for spreading databases, VMs and GPU work. Rough per-node
+minimum **4 cores / 16 GB RAM / 100 GB disk** — more for VMs (KubeVirt) and the data engines. GPU
+features (`kind: Model`, training) need an NVIDIA GPU on at least one node.
+
+**Network.** A **flat network works** — kube-ovn provides tenant isolation with overlay networks, so
+**no physical VLANs are required**. What it does need:
+
+- a **free LAN IP range** for MetalLB to hand out as load-balancer / floating IPs (`expose: true`);
+- **unblocked node-to-node traffic**, including the overlay tunnel between nodes.
+
+Regulated deployments (NIST **SC-7**, boundary protection) will usually still want management / workload /
+user network segmentation on top — **supported, not required**.
 
 ---
 
@@ -214,18 +255,21 @@ world — not a parallel auth**), calls the real backend, and re-dresses the res
 byte-shape. It is **not** an emulator: the services it fronts hit **durable backends**, not fakes, so —
 unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 
-**Twenty-five services are fronted, and every one is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`,
-exit 0 live) — not asserted, observed:
+<!-- BEGIN shimgen:readme-matrix — generated by probe/shimgen.py from probe/shim-services.yaml; do not edit -->
+**Twenty-five services are fronted, and every one is proven by a real-AWS-SDK compatibility probe** (`probe/aws-shim-*.sh`, exit 0 live) — not asserted, observed:
 
 | | | |
 |---|---|---|
-| **S3** → MinIO | **SQS** → Postgres | **KMS** → Vault Transit |
-| **STS** (identity + `AssumeRole`) | **SNS** → durable SQS fan-out | **Secrets Manager** → Vault-KMS-encrypted, versioned |
-| **Lambda** → Knative `Function`s | **EventBridge** → scheduled + event-driven | **RDS** → **real PostgreSQL** (CloudNativePG) |
-| **DynamoDB** → FerretDB (+ transactions) | **AppSync** → open-appsync (experimental) | **CloudWatch Logs** → Postgres |
-| **SSM Parameter Store** → Postgres + KMS-encrypted `SecureString` | **API Gateway** (HTTP API v2) → runtime proxy to Lambda | **CloudWatch** (metrics + alarms) → alarms that evaluate + fire SNS |
-| **Kinesis Data Streams** → ordered, sharded, replayable (Postgres) | **Cognito** (user pools) → real RS256 JWTs (JWKS-verifiable) | **IAM** (roles/policies/users) → AWS policy JSON→Cedar |
-| **Step Functions** → owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS) | **CloudFormation** → the owned cfn engine; stacks provision under the caller's authority (impersonation) | **ECS** → service + task definition collate into one `kind: Application` (the cfn engine); caller-authority via impersonation |
+| **S3** → MinIO | **STS** identity + `AssumeRole` / web-identity | **IAM** roles/policies/users → AWS policy JSON → Cedar |
+| **KMS** → Vault Transit | **Secrets Manager** → Vault-Transit-encrypted, versioned | **Cognito** user pools → real RS256 JWTs (JWKS-verifiable) |
+| **Lambda** → Knative `Function`s | **ECS** service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation | **EKS** `DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server |
+| **ECR** → a backing OCI registry (Distribution /v2) | **RDS** → real PostgreSQL (CloudNativePG) | **DynamoDB** → FerretDB (+ transactions, Streams) |
+| **Athena** serverless SQL → Trino over the Iceberg lake | **Glue** Data Catalog → the Iceberg REST metastore | **SQS** → Postgres-backed queues |
+| **SNS** → durable SQS fan-out | **EventBridge** scheduled + event-driven rules | **Kinesis Data Streams** ordered, sharded, replayable (Postgres) |
+| **SSM Parameter Store** → Postgres + KMS-encrypted `SecureString` | **API Gateway** HTTP API v2 + REST v1 → runtime proxy to Lambda | **CloudWatch** metrics + alarms that evaluate and fire SNS |
+| **CloudWatch Logs** → Postgres | **Step Functions** (experimental) owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS) | **CloudFormation** owned cfn engine; stacks provision under the caller's authority (impersonation) |
+| **AppSync** (experimental) → open-appsync (VTL-faithful engine) |  |  |
+<!-- END shimgen:readme-matrix -->
 
 ```sh
 # An unmodified AWS SDK / CLI, aimed at open-infra — one env var.
@@ -241,9 +285,9 @@ sub-resource of `kind: User`; authorization is the same impersonated check every
 service is a per-service handler that **graduated one at a time** — built → exercised → *proven by a probe*
 → counted — and several carry **deliberate, documented divergences** (AppSync/open-appsync is experimental;
 RDS refuses MultiAZ/replicas/`StorageEncrypted`; SQS refuses FIFO; and so on — the honest carve-outs are
-listed per service). Services the shim has **not** made faithful — Route 53, EKS, and the
+listed per service). Services the shim has **not** made faithful — Route 53 and the
 rest of AWS — return an **honest `501`**, never a silent fake: **narrow and proven beats broad and
-hand-wavy**. "Twenty-five probe-proven services" is not "all of AWS"; it is a specific, verified surface.
+hand-wavy**. A probe-proven surface is not "all of AWS"; it is a specific, verified one.
 
 Opt-in, **OFF by default** — enable with `components.awsShim: true`. Full detail — client setup, the
 identity model, the per-service matrix, the divergences, and the probes — is in
@@ -257,7 +301,8 @@ ingests a CloudFormation template directly — [`docs/cloudformation.md`](docs/c
 
 ## Status
 
-**Validated on a live 3-node cluster (2 with GPUs).** One `install.sh` stands up
+**Validated continuously on a live multi-node cluster** (amd64, with GPU nodes for inference and
+training). One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Valkey, Longhorn, kube-prometheus-stack
 + Loki, Sealed Secrets, Knative, Velero, KubeVirt). The validated architecture is
