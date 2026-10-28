@@ -8806,6 +8806,32 @@ components:
                 \ best performance, but pins the VM to its node's exact CPU. For live migration or node-loss recovery across\
                 \ heterogeneous CPUs, set the newest model common to all nodes (e.g. Broadwell-noTSX). HA VMs fall back to\
                 \ Nehalem when this is unset."
+            firmware:
+              type: object
+              description: "Boot firmware. OMITTED (default): legacy BIOS on a freshly-cloned disk \u2014 the catalog's Linux\
+                \ cloud images and the Windows golden images are MBR/BIOS. A MIGRATED disk (existingRootClaim) carries its\
+                \ boot mode baked into its partition layout, so it MUST set firmware.mode and the composition REFUSES to guess\
+                \ (a UEFI-installed disk, GPT + EFI system partition, will not boot under BIOS). Maps to KubeVirt domain.firmware.bootloader."
+              properties:
+                mode:
+                  type: string
+                  enum:
+                  - bios
+                  - uefi
+                  description: "bios = legacy SeaBIOS/MBR (default for fresh clones). uefi = OVMF/EFI, required by GPT disks\
+                    \ and modern (UEFI) AMIs. REQUIRED when existingRootClaim is set \u2014 a migrated disk's boot mode cannot\
+                    \ be guessed."
+                secureBoot:
+                  type: boolean
+                  default: false
+                  description: 'UEFI Secure Boot (OVMF secure-boot firmware). Requires mode: uefi; enables SMM. The guest
+                    must be Secure-Boot compatible.'
+                tpm:
+                  type: boolean
+                  default: false
+                  description: "Attach an ephemeral vTPM 2.0 device (KubeVirt domain.devices.tpm). Needed by some Secure Boot\
+                    \ / Windows 11 guests. Ephemeral \u2014 not persisted across recreate (persistent vTPM state needs the\
+                    \ VMPersistentState feature gate, not enabled)."
         status:
           type: object
           properties:
