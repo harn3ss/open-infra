@@ -36,6 +36,19 @@ control plane, Longhorn, the registry) is still a mix of BestEffort/Burstable; r
 Guaranteed is a **separate platform-QoS hardening track**, not part of this model's acceptance. The
 low-priority function class (row 7) means a ballooning function is reclaimed before any of them regardless.
 
+**Reclaim mechanism (verified 2026-10-27).** Two layers protect the platform under node memory pressure:
+(1) **kubelet eviction** — `eviction-hard: memory.available<2Gi` is set on every node (k3s drop-in
+`/etc/rancher/k3s/config.yaml.d/zzz-eviction.yaml`; kept present by the `kubelet-eviction-reconcile`
+DaemonSet). Below 2Gi free the kubelet gracefully evicts the lowest-priority over-request pod — a
+function (`-10`) — *before* the kernel OOM killer, honoring the PriorityClass. Proven on-cluster: the
+burstable function was Evicted while a Guaranteed pod on the same node survived, with ~2Gi still free.
+(2) **kernel OOM backstop** — if pressure ever outruns the kubelet, `oom_score_adj` still protects the
+platform: Guaranteed pods (MinIO, DBs) sit at `-997`, a burstable function at ~`992`, so the function
+dies first. The `-10` PriorityClass only affects the kubelet path (and scheduling); the kernel OOM path
+is governed purely by QoS, which is why MinIO being **Guaranteed** is load-bearing.
+⚠️ The 2Gi drop-in is HOST config (not GitOps): a reprovisioned node re-acquires the file from the
+reconcile DaemonSet but ACTIVATES it only on its next k3s restart.
+
 ## Per-runtime memory floor — NOT MEASURED YET
 
 `requests.memory` for a burstable pod comes from a per-runtime floor table in the composition. **Every
@@ -80,9 +93,10 @@ Override per function without a composition edit: `spec.memoryRequest: "192Mi"`.
 ## Known gaps — state them, don't paper over
 
 - **Burstable pods can still be evicted/OOMed by a neighbour** under node memory pressure. AWS never does
-  this — it throttles at the edge. (4)+(6) make it rare, not impossible. QoS + the low priority class
-  ensure the *function furthest over its request* is the one reclaimed, not a quiet neighbour or a
-  platform pod — but it is a real difference from Lambda.
+  this — it throttles at the edge. (4)+(6) make it rare, not impossible, and the reclaim is now ordered
+  (see "Reclaim mechanism" above): the kubelet evicts the *function furthest over its request* first
+  (gracefully, below 2Gi free), and the kernel-OOM backstop picks it by `oom_score_adj` — never a quiet
+  neighbour or a platform pod. Still a real difference from Lambda (which throttles rather than evicts).
 - **At the tenant concurrency cap, a sync invoke through the aws-shim now returns a true `429
   TooManyRequestsException`** (+ `Retry-After`). The shim pre-checks the `function-concurrency-quota`
   `count/pods` at the front door and rejects there, rather than forwarding into Knative's activator —
