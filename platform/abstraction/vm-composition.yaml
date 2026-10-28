@@ -94,6 +94,25 @@ spec:
             {{- $adopt := $spec.existingRootClaim | default "" }}
             {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
             {{- $cpuModel := $spec.cpuModel | default "" }}
+            {{- /* Boot firmware (bios|uefi + secureBoot + vTPM). A MIGRATED disk (existingRootClaim)
+                   carries its boot mode baked into its partition layout, so guessing BIOS for a
+                   UEFI-installed disk bricks the boot — refuse to guess, require firmware.mode. A fresh
+                   clone boots the catalog image, which is MBR/BIOS, so it defaults to bios. */}}
+            {{- $fw := $spec.firmware | default dict }}
+            {{- $fwMode := $fw.mode | default "" }}
+            {{- if and $adopt (not $fwMode) }}
+            {{-   fail "kind: VirtualMachine existingRootClaim requires spec.firmware.mode (bios|uefi): a migrated disk's boot mode cannot be guessed — a UEFI-installed disk (GPT/ESP) will not boot under BIOS. Set it from the source instance's boot mode." }}
+            {{- end }}
+            {{- if and $isWin (not $adopt) (eq $fwMode "uefi") }}
+            {{-   fail "kind: VirtualMachine spec.firmware.mode: uefi on a FRESH windows-server-* clone: the golden images are MBR/BIOS, so a UEFI clone would not boot. Boot a UEFI disk via existingRootClaim, or build a UEFI golden via kind: VmImage." }}
+            {{- end }}
+            {{- $fwMode = $fwMode | default "bios" }}
+            {{- $secureBoot := $fw.secureBoot | default false }}
+            {{- $vTPM := $fw.tpm | default false }}
+            {{- if and $secureBoot (ne $fwMode "uefi") }}
+            {{-   fail "kind: VirtualMachine spec.firmware.secureBoot requires spec.firmware.mode: uefi." }}
+            {{- end }}
+            {{- $efi := eq $fwMode "uefi" }}
             ---
             # --- The VM. dataVolumeTemplates provisions the persistent root disk via
             #     CDI (registry import for Linux; clone of the golden PVC for Windows).
@@ -208,14 +227,26 @@ spec:
                           resources:
                             requests:
                               memory: {{ $memory }}
+                          {{- if $efi }}
+                          # UEFI/OVMF boot (spec.firmware.mode: uefi). secureBoot → OVMF secure-boot
+                          # firmware (needs SMM, set in features below). A migrated UEFI disk (GPT + EFI
+                          # system partition) boots only under this; see spec.firmware / existingRootClaim.
+                          firmware:
+                            bootloader:
+                              efi:
+                                secureBoot: {{ $secureBoot }}
+                          {{- end }}
                           {{- if $isWin }}
-                          # Windows: q35 BIOS (no EFI — matches the MBR golden image)
-                          # + Hyper-V enlightenments for performance.
+                          # Windows: q35 + Hyper-V enlightenments. Boot firmware is spec.firmware (fresh
+                          # clones use the MBR/BIOS golden; a migrated UEFI disk sets firmware.mode: uefi).
                           machine:
                             type: q35
                           features:
                             acpi: {}
                             apic: {}
+                            {{- if $secureBoot }}
+                            smm: { enabled: true }   # required by the OVMF Secure Boot firmware
+                            {{- end }}
                             hyperv:
                               relaxed: {}
                               vapic: {}
@@ -227,8 +258,15 @@ spec:
                               hpet:
                                 present: false
                               hyperv: {}
+                          {{- else if $secureBoot }}
+                          # Non-Windows Secure Boot still needs SMM for the OVMF secure-boot firmware.
+                          features:
+                            smm: { enabled: true }
                           {{- end }}
                           devices:
+                            {{- if $vTPM }}
+                            tpm: {}   # ephemeral vTPM 2.0 (Secure Boot / Windows 11 guests)
+                            {{- end }}
                             disks:
                               - name: root
                                 disk:

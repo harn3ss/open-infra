@@ -111,6 +111,33 @@ Longhorn) without reinstalling. To migrate an existing VM's disk: clone it to a
 it isn't garbage-collected, and apply the volume swap + template removal atomically —
 KubeVirt's webhook rejects a dataVolumeTemplate that's no longer referenced.)
 
+### `firmware` — boot mode (BIOS vs UEFI / Secure Boot)
+
+By default a VM boots **legacy BIOS** (SeaBIOS/MBR) — the catalog's Linux cloud images and the Windows
+golden images are MBR. A disk installed under **UEFI** (GPT boot + an EFI system partition, common for
+modern AMIs) will *not* boot under BIOS, so set the firmware explicitly:
+
+```yaml
+spec:
+  firmware:
+    mode: uefi          # bios (default) | uefi (OVMF/EFI)
+    secureBoot: true    # optional; requires mode: uefi (enables SMM)
+    tpm: true           # optional; ephemeral vTPM 2.0 (some Secure Boot / Windows 11 guests need it)
+```
+
+**A migrated disk must declare its boot mode.** When `existingRootClaim` is set, `firmware.mode` is
+**required** — the platform refuses to guess, because guessing BIOS for a UEFI-installed disk yields an
+unbootable VM. Set it to the mode the disk was actually installed under.
+
+- `secureBoot: true` needs `mode: uefi`; it selects the OVMF secure-boot firmware and enables SMM. The
+  guest image must itself be Secure-Boot compatible.
+- `tpm` is **ephemeral** — not persisted across recreate (persistent vTPM needs the KubeVirt
+  `VMPersistentState` feature gate).
+- A **fresh** `windows-server-*` clone can only be `bios` (the golden images are MBR). To run a UEFI
+  Windows VM, boot a UEFI disk via `existingRootClaim`, or build a UEFI golden via `kind: VmImage`.
+- UEFI/Secure Boot require a KubeVirt build with the OVMF (secure-boot) firmware on your nodes — shipped
+  by default.
+
 ## Access
 
 - **Linux** — SSH as `openinfra`. Your `sshKey` is installed via cloud-init; a

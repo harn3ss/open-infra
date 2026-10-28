@@ -1105,6 +1105,64 @@ func TestVirtualMachine_ArchPin(t *testing.T) {
 	}
 }
 
+// vmCtxFW is vmCtx plus extra spec fields (firmware, existingRootClaim, …).
+func vmCtxFW(os string, extra map[string]any) map[string]any {
+	ctx := vmCtx(os, "")
+	s := ctx["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)["spec"].(map[string]any)
+	for k, v := range extra {
+		s[k] = v
+	}
+	return ctx
+}
+
+// TestVirtualMachine_Firmware covers the firmware knob (#308): BIOS default, uefi/secureBoot/vTPM
+// rendering, and the fail-closed rules — a migrated disk (existingRootClaim) must declare its boot mode
+// (never guess), secureBoot needs uefi, and a fresh windows-server-* clone can't be uefi (golden is MBR).
+func TestVirtualMachine_Firmware(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+
+	// Default (no firmware) = legacy BIOS: no EFI/firmware stanza at all.
+	def := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
+	if strings.Contains(def, "efi:") || strings.Contains(def, "firmware:") {
+		t.Errorf("default VM must be BIOS (no firmware/efi stanza); got:\n%s", grepCtx(def, "firmware"))
+	}
+	if strings.Contains(render(t, tmpl, vmCtx("windows-server-2022", "")), "efi:") {
+		t.Error("fresh Windows clone defaults to the BIOS golden (no efi)")
+	}
+
+	// UEFI on a migrated disk: EFI bootloader, secureBoot false, no SMM, no TPM.
+	uefi := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"existingRootClaim": "mydisk", "firmware": map[string]any{"mode": "uefi"},
+	}))
+	if !strings.Contains(uefi, "bootloader:") || !strings.Contains(uefi, "efi:") || !strings.Contains(uefi, "secureBoot: false") {
+		t.Errorf("uefi must render firmware.bootloader.efi.secureBoot: false; got:\n%s", grepCtx(uefi, "firmware"))
+	}
+	if strings.Contains(uefi, "smm:") || strings.Contains(uefi, "tpm:") {
+		t.Errorf("plain uefi must NOT render smm/tpm; got:\n%s", grepCtx(uefi, "firmware"))
+	}
+
+	// UEFI + Secure Boot + vTPM: efi secureBoot true, SMM feature, TPM device.
+	sb := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"existingRootClaim": "mydisk", "firmware": map[string]any{"mode": "uefi", "secureBoot": true, "tpm": true},
+	}))
+	if !strings.Contains(sb, "secureBoot: true") || !strings.Contains(sb, "smm:") || !strings.Contains(sb, "tpm:") {
+		t.Errorf("uefi+secureBoot+tpm must render secureBoot: true + smm + tpm; got:\n%s", grepCtx(sb, "firmware"))
+	}
+
+	// Fail-closed: a migrated disk with no firmware.mode must REFUSE (never guess).
+	if renderErr(tmpl, vmCtxFW("windows-server-2022", map[string]any{"existingRootClaim": "mydisk"})) == nil {
+		t.Error("existingRootClaim without firmware.mode must fail (refuse to guess the boot mode)")
+	}
+	// secureBoot without uefi must fail.
+	if renderErr(tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"firmware": map[string]any{"mode": "bios", "secureBoot": true}})) == nil {
+		t.Error("firmware.secureBoot with mode: bios must fail")
+	}
+	// A fresh Windows clone can't be uefi (golden is MBR/BIOS).
+	if renderErr(tmpl, vmCtxFW("windows-server-2022", map[string]any{"firmware": map[string]any{"mode": "uefi"}})) == nil {
+		t.Error("fresh Windows clone with firmware.mode: uefi must fail (golden is BIOS)")
+	}
+}
+
 // TestVmImage_ArchAmd64 asserts the golden-building installer VM declares architecture: amd64 — the
 // golden catalog is x86 Windows, and without this virt-api on a non-amd64 control plane rejects the q35
 // installer at admission (inferring the CP arch). (#51)

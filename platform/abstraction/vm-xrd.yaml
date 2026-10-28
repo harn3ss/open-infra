@@ -94,6 +94,27 @@ spec:
                 highAvailability: { type: boolean, default: false, description: "Node-independent storage and live migration. Default false = root disk on local-path NVMe (faster, but pinned to one node). true provisions the root disk on Longhorn (replicated, migratable RWX block) and sets evictionStrategy: LiveMigrate, so the VM survives a node loss (reschedule + reboot) and live-migrates off a drained node with zero downtime. See cpuModel for cross-CPU portability." }
                 existingRootClaim: { type: string, description: "Boot from an existing root PVC instead of cloning a fresh disk from the OS image — used to migrate or restore a VM onto a pre-populated disk (e.g. one cloned onto Longhorn). When set, no root DataVolume is provisioned." }
                 cpuModel: { type: string, description: "Guest CPU model to require (KubeVirt domain.cpu.model). Empty (default) uses host-model — best performance, but pins the VM to its node's exact CPU. For live migration or node-loss recovery across heterogeneous CPUs, set the newest model common to all nodes (e.g. Broadwell-noTSX). HA VMs fall back to Nehalem when this is unset." }
+                firmware:
+                  type: object
+                  description: >-
+                    Boot firmware. OMITTED (default): legacy BIOS on a freshly-cloned disk — the catalog's
+                    Linux cloud images and the Windows golden images are MBR/BIOS. A MIGRATED disk
+                    (existingRootClaim) carries its boot mode baked into its partition layout, so it MUST
+                    set firmware.mode and the composition REFUSES to guess (a UEFI-installed disk, GPT + EFI
+                    system partition, will not boot under BIOS). Maps to KubeVirt domain.firmware.bootloader.
+                  properties:
+                    mode:
+                      type: string
+                      enum: [bios, uefi]
+                      description: "bios = legacy SeaBIOS/MBR (default for fresh clones). uefi = OVMF/EFI, required by GPT disks and modern (UEFI) AMIs. REQUIRED when existingRootClaim is set — a migrated disk's boot mode cannot be guessed."
+                    secureBoot:
+                      type: boolean
+                      default: false
+                      description: "UEFI Secure Boot (OVMF secure-boot firmware). Requires mode: uefi; enables SMM. The guest must be Secure-Boot compatible."
+                    tpm:
+                      type: boolean
+                      default: false
+                      description: "Attach an ephemeral vTPM 2.0 device (KubeVirt domain.devices.tpm). Needed by some Secure Boot / Windows 11 guests. Ephemeral — not persisted across recreate (persistent vTPM state needs the VMPersistentState feature gate, not enabled)."
             status:
               type: object
               properties:
