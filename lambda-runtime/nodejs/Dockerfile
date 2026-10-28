@@ -20,7 +20,10 @@ LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
 ARG NODE_VERSION
 # Pinned AWS SDK versions — NEVER a floating major (a floating `@aws-sdk/client-s3@3` is exactly what
 # required Node >= 18 and broke every older runtime). Bump deliberately.
-ARG AWS_SDK_V3=3.726.0
+# 3.726.0 transitively bundled fast-xml-parser 4.4.1 (CVE-2026-25896 critical + -26278/-33036 high); the
+# current SDK no longer depends on fast-xml-parser at all (verified across all 12 clients), so this pin
+# clears those 36 image CVEs by removing the package rather than patching it.
+ARG AWS_SDK_V3=3.1159.0
 ARG AWS_SDK_V2=2.1692.0
 
 # unzip: Node has no stdlib zip-archive reader, so the bucket-source .zip is extracted with the system

@@ -21,8 +21,9 @@ RUN git clone --depth 1 --branch ${MC_VERSION} https://github.com/minio/mc /src
 WORKDIR /src
 # Recompiling with the current Go clears the stdlib CVEs; bumping the Trivy-flagged deps clears theirs.
 # (prometheus is a transitive dep mc embeds for metrics — its two flagged CVEs are server-side
-# remote-read/Azure-SD paths mc never uses, but bumping to the fixed release clears them cleanly.)
-RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@latest google.golang.org/grpc@latest github.com/prometheus/prometheus@v0.311.3 \
+# remote-read/Azure-SD paths mc never uses, but bumping to the fixed release clears them cleanly.
+# klauspost/compress is bumped for CVE-2026-63209: mc's pinned release embeds v1.18.5, fixed in 1.18.7.)
+RUN go get golang.org/x/crypto@latest golang.org/x/net@latest golang.org/x/text@latest google.golang.org/grpc@latest github.com/klauspost/compress@latest github.com/prometheus/prometheus@v0.311.3 \
  && go mod tidy \
  && CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X github.com/minio/mc/cmd.Version=${MC_VERSION} -X github.com/minio/mc/cmd.ReleaseTag=${MC_VERSION}" \

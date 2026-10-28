@@ -19,8 +19,12 @@ ARG TARGETARCH
 RUN git clone --depth 1 --branch ${NATSCLI_VERSION} https://github.com/nats-io/natscli /src
 WORKDIR /src
 # The CLI main lives in ./nats (the documented `go install .../natscli/nats` path). Recompiling with the
-# current Go clears stdlib CVEs from the stale prebuilt.
-RUN CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /nats ./nats
+# current Go clears stdlib CVEs from the stale prebuilt; bumping the Trivy-flagged deps clears theirs
+# (natscli v0.5.0 pins golang.org/x/net 0.59.0 — CVE-2026-78669, fixed in 0.60.0 — the same dep-bump
+# pattern open-infra-mc uses).
+RUN go get golang.org/x/net@latest \
+ && go mod tidy \
+ && CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /nats ./nats
 
 FROM alpine:3.24
 # not a Go build artifact carrying a FIPS claim — plain upstream nats CLI
