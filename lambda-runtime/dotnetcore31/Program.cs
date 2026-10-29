@@ -191,18 +191,25 @@ static class Bootstrap
             string body;
             using (var sr = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8)) body = await sr.ReadToEndAsync();
 
-            // The event is the JSON body; attach HTTP facts under _http for HTTP-triggered handlers.
-            string eventJson = BuildEvent(body, req);
+            // Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
+            // the shim's Invoke, open-appsync, and Step Functions all do. The raw return value is the
+            // payload (a {statusCode,...} object is DATA, never an HTTP mapping), a thrown error is
+            // signalled by X-Amz-Function-Error with HTTP still 200, and the event is passed verbatim (no
+            // _http). Without the header the legacy API-Gateway proxy mapping applies — API GW only.
+            bool direct = string.Equals(req.Headers["X-Openinfra-Invoke"], "direct", StringComparison.Ordinal);
+            string eventJson = BuildEvent(body, req, direct);
             object result;
             try { result = await InvokeAsync(eventJson); }
             catch (Exception e)
             {
                 var inner = (e as TargetInvocationException)?.InnerException ?? e;
                 Console.Error.WriteLine("open-infra-runtime: handler raised:\n" + inner);
-                Send(ctx, 502, JsonSerializer.Serialize(new { errorType = inner.GetType().Name, errorMessage = inner.Message }));
+                var errJson = JsonSerializer.Serialize(new { errorType = inner.GetType().Name, errorMessage = inner.Message });
+                if (direct) Send(ctx, 200, errJson, "application/json", "Unhandled");
+                else Send(ctx, 502, errJson);
                 return;
             }
-            WriteResult(ctx, result);
+            WriteResult(ctx, result, direct);
         }
         catch (Exception e)
         {
@@ -215,7 +222,7 @@ static class Bootstrap
     // (both present in 3.1): copy the body's object properties through verbatim (or wrap a non-object as
     // {"body": ...}), then attach {"_http": {...}}. Semantics match net8 (our _http wins over any in the
     // body).
-    static string BuildEvent(string body, HttpListenerRequest req)
+    static string BuildEvent(string body, HttpListenerRequest req, bool direct)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms))
@@ -229,7 +236,7 @@ static class Bootstrap
                 {
                     foreach (var prop in doc.RootElement.EnumerateObject())
                     {
-                        if (prop.Name == "_http") continue; // our _http (below) wins, matching net8's overwrite
+                        if (!direct && prop.Name == "_http") continue; // proxy mode: our _http (below) wins; direct: pass verbatim
                         w.WritePropertyName(prop.Name);
                         prop.Value.WriteTo(w);
                     }
@@ -245,25 +252,30 @@ static class Bootstrap
                 }
                 doc?.Dispose();
             }
-            w.WritePropertyName("_http");
-            w.WriteStartObject();
-            w.WriteString("method", req.HttpMethod);
-            w.WriteString("path", req.Url.AbsolutePath);
-            w.WriteString("query", req.Url.Query.TrimStart('?'));
-            w.WritePropertyName("headers");
-            w.WriteStartObject();
-            foreach (string h in req.Headers) w.WriteString(h, req.Headers[h]);
-            w.WriteEndObject(); // headers
-            w.WriteEndObject(); // _http
+            if (!direct) // AWS Invoke passes the event verbatim; only API-Gateway mode attaches _http
+            {
+                w.WritePropertyName("_http");
+                w.WriteStartObject();
+                w.WriteString("method", req.HttpMethod);
+                w.WriteString("path", req.Url.AbsolutePath);
+                w.WriteString("query", req.Url.Query.TrimStart('?'));
+                w.WritePropertyName("headers");
+                w.WriteStartObject();
+                foreach (string h in req.Headers) w.WriteString(h, req.Headers[h]);
+                w.WriteEndObject(); // headers
+                w.WriteEndObject(); // _http
+            }
             w.WriteEndObject(); // root
         }
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 
     // API-Gateway proxy shape (an object with statusCode) -> used verbatim; anything else -> 200 + JSON.
-    static void WriteResult(HttpListenerContext ctx, object result)
+    // In direct-invoke mode the raw value IS the payload — never an HTTP proxy mapping.
+    static void WriteResult(HttpListenerContext ctx, object result, bool direct)
     {
         var json = result is string s ? s : (result == null ? "null" : JsonSerializer.Serialize(result));
+        if (direct) { Send(ctx, 200, json); return; }
         try
         {
             var el = JsonSerializer.Deserialize<JsonElement>(json);
@@ -291,11 +303,12 @@ static class Bootstrap
         val = default; return false;
     }
 
-    static void Send(HttpListenerContext ctx, int status, string body, string contentType = "application/json")
+    static void Send(HttpListenerContext ctx, int status, string body, string contentType = "application/json", string functionError = null)
     {
         var bytes = Encoding.UTF8.GetBytes(body ?? "");
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = contentType;
+        if (functionError != null) ctx.Response.Headers["X-Amz-Function-Error"] = functionError;
         ctx.Response.ContentLength64 = bytes.Length;
         ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
         ctx.Response.OutputStream.Close();

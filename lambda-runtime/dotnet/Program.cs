@@ -187,18 +187,25 @@ static class Bootstrap
             string body;
             using (var sr = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8)) body = await sr.ReadToEndAsync();
 
-            // The event is the JSON body; attach HTTP facts under _http for HTTP-triggered handlers.
-            string eventJson = BuildEvent(body, req);
+            // Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
+            // the shim's Invoke, open-appsync, and Step Functions all do. The raw return value is the
+            // payload (a {statusCode,...} object is DATA, never an HTTP mapping), a thrown error is
+            // signalled by X-Amz-Function-Error with HTTP still 200, and the event is passed verbatim (no
+            // _http). Without the header the legacy API-Gateway proxy mapping applies — API GW only.
+            bool direct = string.Equals(req.Headers["X-Openinfra-Invoke"], "direct", StringComparison.Ordinal);
+            string eventJson = BuildEvent(body, req, direct);
             object result;
             try { result = await InvokeAsync(eventJson); }
             catch (Exception e)
             {
                 var inner = (e as TargetInvocationException)?.InnerException ?? e;
                 Console.Error.WriteLine("open-infra-runtime: handler raised:\n" + inner);
-                Send(ctx, 502, JsonSerializer.Serialize(new { errorType = inner.GetType().Name, errorMessage = inner.Message }));
+                var errJson = JsonSerializer.Serialize(new { errorType = inner.GetType().Name, errorMessage = inner.Message });
+                if (direct) Send(ctx, 200, errJson, "application/json", "Unhandled");
+                else Send(ctx, 502, errJson);
                 return;
             }
-            WriteResult(ctx, result);
+            WriteResult(ctx, result, direct);
         }
         catch (Exception e)
         {
@@ -206,13 +213,14 @@ static class Bootstrap
         }
     }
 
-    static string BuildEvent(string body, HttpListenerRequest req)
+    static string BuildEvent(string body, HttpListenerRequest req, bool direct)
     {
         JsonNode node;
         try { node = string.IsNullOrWhiteSpace(body) ? new System.Text.Json.Nodes.JsonObject() : JsonNode.Parse(body); }
         catch { node = new System.Text.Json.Nodes.JsonObject { ["body"] = body }; }
         if (node is not System.Text.Json.Nodes.JsonObject obj)
             obj = new System.Text.Json.Nodes.JsonObject { ["body"] = node };
+        if (direct) return obj.ToJsonString();  // AWS Invoke: the event is passed verbatim, no _http
         var headers = new System.Text.Json.Nodes.JsonObject();
         foreach (string h in req.Headers) headers[h] = req.Headers[h];
         obj["_http"] = new System.Text.Json.Nodes.JsonObject
@@ -226,9 +234,11 @@ static class Bootstrap
     }
 
     // API-Gateway proxy shape (an object with statusCode) -> used verbatim; anything else -> 200 + JSON.
-    static void WriteResult(HttpListenerContext ctx, object result)
+    // In direct-invoke mode the raw value IS the payload — never an HTTP proxy mapping.
+    static void WriteResult(HttpListenerContext ctx, object result, bool direct)
     {
         var json = result is string s ? s : (result == null ? "null" : JsonSerializer.Serialize(result));
+        if (direct) { Send(ctx, 200, json); return; }
         try
         {
             var el = JsonSerializer.Deserialize<JsonElement>(json);
@@ -256,11 +266,12 @@ static class Bootstrap
         val = default; return false;
     }
 
-    static void Send(HttpListenerContext ctx, int status, string body, string contentType = "application/json")
+    static void Send(HttpListenerContext ctx, int status, string body, string contentType = "application/json", string functionError = null)
     {
         var bytes = Encoding.UTF8.GetBytes(body ?? "");
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = contentType;
+        if (functionError != null) ctx.Response.Headers["X-Amz-Function-Error"] = functionError;
         ctx.Response.ContentLength64 = bytes.Length;
         ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
         ctx.Response.OutputStream.Close();

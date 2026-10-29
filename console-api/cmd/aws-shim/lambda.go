@@ -167,6 +167,10 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	if ct := r.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
+	// Direct-invoke: the runtime returns the handler's RAW value as the payload and signals a thrown
+	// error via X-Amz-Function-Error (HTTP stays 200) — AWS Invoke semantics — instead of mapping the
+	// return to an API-Gateway proxy response (which is only for the apigateway doorway).
+	req.Header.Set("X-Openinfra-Invoke", "direct")
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -180,11 +184,14 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 
 	// Lambda returns 200 for a completed RequestResponse invocation, with the function's payload as
 	// the body; a function-side error is signalled by the X-Amz-Function-Error header, not the HTTP
-	// status. We map a downstream HTTP error onto that convention.
+	// status. In direct-invoke mode the runtime sets that header itself on a thrown handler error, so
+	// propagate it; a non-2xx WITHOUT it is a genuine infra/invocation error, mapped onto the same header.
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
-	if resp.StatusCode >= http.StatusBadRequest {
+	if fe := resp.Header.Get("X-Amz-Function-Error"); fe != "" {
+		w.Header().Set("X-Amz-Function-Error", fe)
+	} else if resp.StatusCode >= http.StatusBadRequest {
 		w.Header().Set("X-Amz-Function-Error", "Unhandled")
 	}
 	w.Header().Set("x-amzn-RequestId", requestID)

@@ -319,6 +319,13 @@ function main() {
       req.on("data", (c) => parts.push(c));
       req.on("end", async () => {
         const raw = Buffer.concat(parts).toString("utf8");
+        // Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
+        // the shim's Invoke, open-appsync, and Step Functions all do. Then the handler's RAW return
+        // value is the response payload (a {statusCode,...} shape is DATA, never an HTTP mapping), a
+        // thrown error is signalled by the X-Amz-Function-Error header with HTTP still 200, and the
+        // event is passed through verbatim (no _http). Without the header, the legacy API-Gateway proxy
+        // mapping below applies — for genuine API Gateway callers only.
+        const direct = req.headers["x-openinfra-invoke"] === "direct";
         let event;
         try {
           event = raw.trim() ? JSON.parse(raw) : {};
@@ -326,14 +333,26 @@ function main() {
         } catch (_e) {
           event = { body: raw };
         }
-        const q = req.url.split("?");
-        event._http = { method: req.method, path: q[0], query: q[1] || "", headers: req.headers };
+        if (!direct) {
+          const q = req.url.split("?");
+          event._http = { method: req.method, path: q[0], query: q[1] || "", headers: req.headers };
+        }
         let result;
         try {
           result = await invoke(handler, event, lambdaContext());
         } catch (e) {
           process.stderr.write("open-infra-runtime: handler raised:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
-          return send(502, JSON.stringify({ errorType: (e && e.name) || "Error", errorMessage: (e && e.message) || String(e) }));
+          const errBody = JSON.stringify({ errorType: (e && e.name) || "Error", errorMessage: (e && e.message) || String(e) });
+          if (direct) {
+            const eb = Buffer.from(errBody);
+            res.writeHead(200, { "Content-Type": "application/json", "Content-Length": eb.length, "X-Amz-Function-Error": "Unhandled" });
+            return res.end(eb);
+          }
+          return send(502, errBody);
+        }
+        if (direct) {
+          // The raw return value IS the payload — never an HTTP proxy mapping.
+          return send(200, result !== undefined ? JSON.stringify(result) : "null");
         }
         // API-Gateway proxy shape -> verbatim; else 200 + JSON.
         if (result && typeof result === "object" && "statusCode" in result) {

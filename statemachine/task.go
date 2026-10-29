@@ -62,23 +62,26 @@ func newHTTPInvoker(namespace string, creds *taskCreds) *httpInvoker {
 	}
 }
 
-func (h *httpInvoker) resolveURL(resource string) (string, *taskError) {
+// resolveURL returns the Task's URL and whether it addresses a kind: Function (vs a raw http(s) URL).
+// A Function is invoked with AWS lambda:invoke semantics (direct-invoke); a raw URL keeps plain HTTP
+// semantics (a non-2xx is a failure).
+func (h *httpInvoker) resolveURL(resource string) (url string, isFunction bool, terr *taskError) {
 	switch {
 	case strings.HasPrefix(resource, "function:"):
 		name := strings.TrimPrefix(resource, "function:")
 		if name == "" {
-			return "", &taskError{ErrRuntime, "empty function name in Resource"}
+			return "", false, &taskError{ErrRuntime, "empty function name in Resource"}
 		}
-		return fmt.Sprintf("http://%s.%s.svc.cluster.local/", name, h.namespace), nil
+		return fmt.Sprintf("http://%s.%s.svc.cluster.local/", name, h.namespace), true, nil
 	case strings.HasPrefix(resource, "http://"), strings.HasPrefix(resource, "https://"):
-		return resource, nil
+		return resource, false, nil
 	default:
-		return "", &taskError{ErrRuntime, fmt.Sprintf("unsupported Task Resource %q (use function:<name> or an http(s):// URL)", resource)}
+		return "", false, &taskError{ErrRuntime, fmt.Sprintf("unsupported Task Resource %q (use function:<name> or an http(s):// URL)", resource)}
 	}
 }
 
 func (h *httpInvoker) Invoke(ctx context.Context, resource string, input any, timeoutSeconds int) (any, *taskError) {
-	url, terr := h.resolveURL(resource)
+	url, isFunction, terr := h.resolveURL(resource)
 	if terr != nil {
 		return nil, terr
 	}
@@ -97,6 +100,11 @@ func (h *httpInvoker) Invoke(ctx context.Context, resource string, input any, ti
 		return nil, &taskError{ErrTaskFailed, err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if isFunction {
+		// Direct-invoke (AWS lambda:invoke): the runtime returns the handler's RAW value as the Task
+		// result and signals a thrown error via X-Amz-Function-Error — not an API-Gateway proxy mapping.
+		req.Header.Set("X-Openinfra-Invoke", "direct")
+	}
 	// Thread the state-machine role's STS session to the Task so it acts under the ROLE's authority,
 	// not the controller's ambient position. A Task (Function) that calls AWS reads these and signs with
 	// them; the shim then authorizes as the role (the confused-deputy fix).
@@ -116,6 +124,20 @@ func (h *httpInvoker) Invoke(ctx context.Context, resource string, input any, ti
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // cap result at 1MiB
 
+	// A Function in direct-invoke mode signals a THROWN handler error via X-Amz-Function-Error (HTTP
+	// stays 200). Everything it RETURNS — even a { statusCode: 500, ... } shape — is the Task result,
+	// exactly as Step Functions' lambda:invoke treats a Lambda return. Raw http(s) Tasks fall through to
+	// plain HTTP semantics below.
+	if isFunction && resp.Header.Get("X-Amz-Function-Error") != "" {
+		name, cause, _ := errorFromBody(respBody)
+		if name == "" {
+			name = ErrTaskFailed
+		}
+		if cause == "" {
+			cause = truncate(string(respBody), 512)
+		}
+		return nil, &taskError{name, cause}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		name := resp.Header.Get("X-Openinfra-Error")
 		cause := resp.Header.Get("X-Openinfra-Cause")

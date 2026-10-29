@@ -154,10 +154,12 @@ HANDLER = None  # resolved in main()
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def _send(self, status, body_bytes, content_type="application/json"):
+    def _send(self, status, body_bytes, content_type="application/json", extra_headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body_bytes)))
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body_bytes)
 
@@ -168,26 +170,41 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
+        # Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
+        # the shim's Invoke, open-appsync, and Step Functions all do. The handler's RAW return value is
+        # the payload (a {statusCode,...} dict is DATA, never an HTTP mapping), a thrown error is
+        # signalled by X-Amz-Function-Error with HTTP still 200, and the event is passed verbatim (no
+        # _http). Without the header the legacy API-Gateway proxy mapping applies — API GW callers only.
+        direct = self.headers.get("X-Openinfra-Invoke") == "direct"
         try:
             event = json.loads(raw) if raw.strip() else {}
             if not isinstance(event, dict):
                 event = {"body": event}
         except Exception:
             event = {"body": raw.decode("utf-8", "replace")}
-        # Always surface the HTTP facts for HTTP-triggered handlers.
-        q = self.path.split("?", 1)
-        event["_http"] = {
-            "method": self.command,
-            "path": q[0],
-            "query": q[1] if len(q) > 1 else "",
-            "headers": {k: v for k, v in self.headers.items()},
-        }
+        if not direct:
+            # Surface the HTTP facts for HTTP-triggered (API Gateway) handlers.
+            q = self.path.split("?", 1)
+            event["_http"] = {
+                "method": self.command,
+                "path": q[0],
+                "query": q[1] if len(q) > 1 else "",
+                "headers": {k: v for k, v in self.headers.items()},
+            }
         try:
             result = HANDLER(event, LambdaContext())
         except Exception as e:
             sys.stderr.write("open-infra-runtime: handler raised:\n")
             traceback.print_exc()
-            self._send(502, json.dumps({"errorType": type(e).__name__, "errorMessage": str(e)}).encode())
+            err = json.dumps({"errorType": type(e).__name__, "errorMessage": str(e)}).encode()
+            if direct:
+                self._send(200, err, extra_headers={"X-Amz-Function-Error": "Unhandled"})
+            else:
+                self._send(502, err)
+            return
+        if direct:
+            # The raw return value IS the payload — never an HTTP proxy mapping.
+            self._send(200, json.dumps(result).encode() if result is not None else b"null")
             return
         # API-Gateway proxy shape -> use verbatim; else 200 + JSON.
         if isinstance(result, dict) and "statusCode" in result:

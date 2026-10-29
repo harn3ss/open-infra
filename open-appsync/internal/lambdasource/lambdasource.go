@@ -71,6 +71,10 @@ func (s *Store) Execute(ctx context.Context, op runtime.Operation) (any, error) 
 		return nil, fmt.Errorf("lambdasource: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Direct-invoke: the runtime returns the handler's RAW value (what becomes $ctx.result) and signals
+	// a thrown error via X-Amz-Function-Error, instead of mapping the return to an API-Gateway proxy
+	// response. This matches AWS, where AppSync calls Lambda Invoke directly.
+	req.Header.Set("X-Openinfra-Invoke", "direct")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -82,9 +86,17 @@ func (s *Store) Execute(ctx context.Context, op runtime.Operation) (any, error) 
 	if err != nil {
 		return nil, fmt.Errorf("lambdasource: read response: %w", err)
 	}
-	// A non-2xx from the function is an invocation error (like a Lambda function error).
+	// A THROWN handler error is signalled by X-Amz-Function-Error and is the ONLY "failure" (→ a
+	// resolver error). A RETURNED value — including one shaped like { statusCode: 500, ... } — is
+	// ordinary data and becomes $ctx.result, exactly as AppSync→Lambda Invoke behaves (the runtime
+	// returns HTTP 200 for both and does not proxy-map the return).
+	if fe := resp.Header.Get("X-Amz-Function-Error"); fe != "" {
+		return nil, fmt.Errorf("lambdasource: function error (%s): %s", fe, bytes.TrimSpace(raw))
+	}
+	// A non-2xx WITHOUT that header is a genuine invocation/transport failure (e.g. Knative could not
+	// scale the function up), not a handler return — surface it as an error too.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("lambdasource: function returned status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
+		return nil, fmt.Errorf("lambdasource: invocation failed, status %d: %s", resp.StatusCode, bytes.TrimSpace(raw))
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, nil
