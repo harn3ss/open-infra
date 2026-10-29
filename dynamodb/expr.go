@@ -854,3 +854,47 @@ func decodeToken(v any) int {
 }
 
 func encodeToken(offset int) string { return strconv.Itoa(offset) }
+
+// scanDefaultLimit caps an unbounded Scan (no client Limit) so one request can never materialise an
+// entire large table. DynamoDB itself pages a Scan (at 1 MB) and returns LastEvaluatedKey; we page by
+// item count. A table at or below this size returns in a single page, unchanged.
+const scanDefaultLimit = 1000
+
+// pageScanResult applies DynamoDB Scan paging to an IN-MEMORY item list (MemStore): it honours
+// op["limit"], op["nextToken"] (an offset) and op["select"]=="COUNT", and bounds an unbounded scan to
+// scanDefaultLimit. This is the same op contract the FerretStore enforces server-side (SetSkip/SetLimit
+// and CountDocuments for a COUNT), so the two stores page identically. See dynamodb/ferret.go.
+func pageScanResult(all []any, op Operation) map[string]any {
+	countOnly := op["select"] == "COUNT"
+	offset := decodeToken(op["nextToken"])
+	if offset < 0 || offset > len(all) {
+		offset = 0
+	}
+	limit := 0
+	if l, ok := toFloat(op["limit"]); ok && l > 0 {
+		limit = int(l)
+	}
+	// Select=COUNT with no client Limit: return the full count without building a result set.
+	if countOnly && limit <= 0 && offset == 0 {
+		return map[string]any{"items": []any{}, "count": float64(len(all)), "scannedCount": float64(len(all))}
+	}
+	page := limit
+	if page <= 0 {
+		page = scanDefaultLimit
+	}
+	end := offset + page
+	if end > len(all) {
+		end = len(all)
+	}
+	sl := all[offset:end]
+	res := map[string]any{"count": float64(len(sl)), "scannedCount": float64(len(sl))}
+	if countOnly {
+		res["items"] = []any{}
+	} else {
+		res["items"] = sl
+	}
+	if end < len(all) {
+		res["nextToken"] = encodeToken(end)
+	}
+	return res
+}

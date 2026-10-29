@@ -66,20 +66,77 @@ func (s *FerretStore) Execute(ctx context.Context, op Operation) (any, error) {
 		return docToItem(doc), nil
 
 	case "Scan":
-		cur, err := s.coll.Find(ctx, bson.M{})
+		// Memory-safe scan: one request never materialises the whole table.
+		//  - Select=COUNT with no client Limit counts SERVER-SIDE (CountDocuments) — no result set built.
+		//  - Otherwise page with Skip/Limit, capped at scanDefaultLimit even when the client sends no
+		//    Limit, returning an offset nextToken so a client (or an unmodified SDK) paginates — the
+		//    same op contract MemStore honours via pageScanResult. A COUNT page projects to _id only.
+		countOnly := op["select"] == "COUNT"
+		offset := decodeToken(op["nextToken"])
+		if offset < 0 {
+			offset = 0
+		}
+		limit := 0
+		if l, ok := toFloat(op["limit"]); ok && l > 0 {
+			limit = int(l)
+		}
+		if countOnly && limit <= 0 && offset == 0 {
+			n, err := s.coll.CountDocuments(ctx, bson.M{})
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"items": []any{}, "count": float64(n), "scannedCount": float64(n)}, nil
+		}
+		page := limit
+		if page <= 0 {
+			page = scanDefaultLimit
+		}
+		findOpts := options.Find().SetLimit(int64(page) + 1) // +1 sentinel: detect "there is more"
+		if offset > 0 {
+			findOpts.SetSkip(int64(offset))
+		}
+		if countOnly {
+			findOpts.SetProjection(bson.M{"_id": 1}) // a COUNT page only needs to count rows, not ship them
+		}
+		cur, err := s.coll.Find(ctx, bson.M{}, findOpts)
 		if err != nil {
 			return nil, err
 		}
 		defer cur.Close(ctx)
 		items := []any{}
+		got := 0
 		for cur.Next(ctx) {
-			var doc bson.M
-			if err := cur.Decode(&doc); err != nil {
-				return nil, err
+			got++
+			if got > page { // the sentinel row — more than one page exists; stop
+				break
 			}
-			items = append(items, docToItem(doc))
+			if !countOnly {
+				var doc bson.M
+				if err := cur.Decode(&doc); err != nil {
+					return nil, err
+				}
+				items = append(items, docToItem(doc))
+			}
 		}
-		return map[string]any{"items": items, "scannedCount": float64(len(items))}, cur.Err()
+		if err := cur.Err(); err != nil {
+			return nil, err
+		}
+		more := got > page
+		counted := got
+		if more {
+			counted = page
+		}
+		res := map[string]any{"count": float64(counted), "scannedCount": float64(counted)}
+		if countOnly {
+			res["items"] = []any{}
+		} else {
+			res["items"] = items
+			res["count"] = float64(len(items))
+		}
+		if more {
+			res["nextToken"] = encodeToken(offset + page)
+		}
+		return res, nil
 
 	case "UpdateItem":
 		key := plainMap(fromDynamoDB(op["key"]))

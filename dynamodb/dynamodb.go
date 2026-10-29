@@ -166,7 +166,8 @@ func (s *MemStore) Execute(_ context.Context, op Operation) (any, error) {
 		for _, k := range s.sortedKeys() {
 			list = append(list, s.items[k])
 		}
-		return map[string]any{"items": list, "scannedCount": float64(len(list))}, nil
+		// Honour Limit / Select=COUNT / pagination, and bound an unbounded scan (see pageScanResult).
+		return pageScanResult(list, op), nil
 	case "UpdateItem":
 		key := plainMap(fromDynamoDB(op["key"]))
 		ks := keyString(key)

@@ -539,6 +539,11 @@ spec:
               containerPort: 4566
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
+            # Go's GC does NOT read the cgroup limit, so under the default GOGC it can grow the heap to
+            # ~2x the live set and OOMKill under memory.limits — taking the SHARED front door down for
+            # every tenant. GOMEMLIMIT (a soft ceiling ~90% of the limit) makes the GC keep peak heap
+            # bounded, trading CPU for not-dying. Same pattern as the audit-offsite sidecar (#294).
+            - { name: GOMEMLIMIT, value: "448MiB" }
             # Distributed tracing (#67): export spans to Tempo's OTLP receiver (http:// = insecure gRPC).
             - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://tempo.monitoring.svc.cluster.local:4317" }
             - { name: MINIO_ENDPOINT, value: "minio.minio.svc.cluster.local:9000" }
@@ -666,8 +671,11 @@ spec:
             capabilities:
               drop: [ALL]
           resources:
-            requests: { cpu: 25m, memory: 64Mi }
-            limits: { cpu: 500m, memory: 256Mi }
+            # The shared AWS front door fronts ~25 services; 256Mi/64Mi was too small and scheduled it
+            # as needing far less than it does. Raised to a realistic floor (GOMEMLIMIT above keeps the
+            # heap under the 512Mi limit).
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
 ---
 apiVersion: v1
 kind: Service

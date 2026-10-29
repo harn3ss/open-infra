@@ -533,7 +533,19 @@ func (h *dynamoHandler) scan(ctx context.Context, w http.ResponseWriter, request
 	if h.refuseProjection(w, requestID, body) {
 		return
 	}
-	res, err := h.store(table).Execute(ctx, dynamodb.Operation{"operation": "Scan"})
+	// Pass Limit / ExclusiveStartKey / Select through so the store pages the scan (and counts
+	// server-side for Select=COUNT) — one request never materialises a whole large table.
+	op := dynamodb.Operation{"operation": "Scan"}
+	if lim, ok := body["Limit"].(float64); ok {
+		op["limit"] = lim
+	}
+	if tok := startToken(body["ExclusiveStartKey"]); tok != "" {
+		op["nextToken"] = tok
+	}
+	if sel, _ := body["Select"].(string); strings.EqualFold(sel, "COUNT") {
+		op["select"] = "COUNT"
+	}
+	res, err := h.store(table).Execute(ctx, op)
 	if err != nil {
 		h.mapStoreError(w, requestID, err)
 		return
