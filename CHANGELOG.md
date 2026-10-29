@@ -6,25 +6,84 @@ the product's public contract.
 
 ## Unreleased
 
-### Databases — SQL Server restore readiness
-- **A `engine: sqlserver` claim with `restoreFrom` now stays NotReady until the restore actually
-  completes.** Its readiness derives from the database pod being ready (gated by the restore sidecar),
-  not merely from the resource having been created — so a long-running or failed restore surfaces as a
-  NotReady claim with the reason, instead of a silently-healthy claim while the database is still (or
-  never) being restored. Striped restores via `restoreFrom.prefix` now enumerate the backup set
-  correctly, and a completed restore is not re-downloaded on a pod restart.
+## v3.3.0 — 2026-10-29
 
-### IAM — NotAction / NotResource
-- **AWS `NotAction`/`NotResource` now translate**, instead of being refused. They map to new
-  **complement axes** on a data-plane policy statement — `notActions` ("any action except these") and
-  `notResources` ("any resource except these") — enforced by the Cedar engine across the AWS policy
-  importer (`policyengine.ImportAWS`), the CloudFormation `AWS::IAM::Policy` translator, the aws-shim IAM
-  doorway, and native `kind: Policy spec.dataPlane` authoring. This unblocks importing the AWS managed
-  policies that are written with `NotAction`.
-- **Fail-closed by construction.** A statement may set `actions` **or** `notActions` (never both), and
-  `resources` **or** `notResources`; a `NotResource` whose exclusion can't be mapped to a shim-fronted
-  resource is **refused** rather than silently widened to all resources; and a `NotAction` grant is
-  recognised by the per-service governance gate, so a `Deny NotAction` can never be bypassed.
+Where v3.2.0 made the managed services *real*, v3.3.0 makes them **resilient and operable at estate
+scale**. The serverless surface gains the Lambda execution model in full — Burstable sizing, a tenant
+concurrency cap that returns a true 429, and a broad runtime catalog (current and EOL) you can even
+override with your own image. Managed SQL Server learns to restore from native `.bak` backups. The
+AWS-SDK shim grows API Gateway **REST v1** depth and, more importantly, learns to **degrade one service
+instead of falling over** — a single read-only caller can no longer take the shared front door down.
+Storage gains **measured, fail-closed disk-class placement** so databases and VM roots land on the right
+media. Everything is additive and opt-in wherever it touches cost; nothing in the existing surface
+changes.
+
+### Security & resilience — the shared front door holds
+- **A single tenant can no longer take the AWS-SDK shim down.** A large or unbounded DynamoDB `Scan`
+  could exhaust the shared front door's memory and OOM it for *every* tenant. `Select=COUNT` now counts
+  server-side without building a result set, `Limit` is honoured, an unbounded scan is capped into pages
+  with a continuation token (an unmodified SDK paginates), and the process runs under a heap ceiling
+  sized to its container — so one read can never spend the whole pod's memory.
+- **A backend outage degrades only its own service.** If a service's datastore is unreachable the shim
+  answers an honest error for *that* service (and adds a startup probe), instead of crashlooping the
+  whole front door and taking the other two dozen services down with it.
+- **Supply chain.** The Lambda runtime, `mc` and `nats` images were rebuilt to clear all outstanding
+  high/critical image CVEs (a stale bundled XML parser, compression and networking libraries); the
+  Python runtime drops `pip` and floors its dependencies to patched releases.
+
+### Serverless — the Lambda execution model
+- **Burstable sizing + a real concurrency cap.** A Function can run Burstable (request a floor, burst to
+  its limit), and a tenant carries a concurrency/memory budget; at the cap the shim returns a true
+  **429 throttle** (not a queued 503), the way Lambda does.
+- **A broad runtime catalog.** Added **nodejs22** and **python3.13**; **ESM** handlers (`.mjs` /
+  `type: module`) load on the Node runtime; and for legacy estates, **EOL escape-hatch** runtimes
+  (including .NET Core 3.1) plus **`spec.code.runtimeImage`** to bring your own runtime image. The Node
+  runtime ships the AWS SDK version-matched to AWS Lambda; both shims start on their oldest supported
+  release; EOL base images pre-pull onto image-pull nodes.
+- **Operability.** Superseded revisions now free their Services (GC), the Knative control plane runs HA
+  with explicit resources, the maximum execution timeout is raised to 900s, and a memory-evicted pod
+  reconciles cleanly. The **console** gains a **Code tab** for Functions — read the handler source,
+  runtime settings, and download the package, like the AWS Lambda console.
+
+### Managed databases — SQL Server restore
+- **Restore a managed SQL Server from a native `.bak`** on bring-up, including **striped multi-file**
+  backups (RDS-style backup-to-S3), with a capacity preflight, sized restore staging, and **readiness
+  that stays NotReady until the restore actually completes** — a failed or long-running restore surfaces
+  as a NotReady claim with its reason, never a silently-healthy-but-empty database. A completed restore
+  is not re-downloaded on a pod restart.
+- **Recovery model defaults to SIMPLE** so a restored database's transaction log can't grow unbounded.
+
+### AWS-SDK shim — API Gateway REST v1
+- **REST v1 gains request validation** (a shared JSON-schema tier), **API keys + usage plans**, and
+  CloudFormation deploy of REST v1 resource types — closing the gap to the HTTP API v2 surface.
+- **ECR** serves the OAuth2 token flow so `containerd` / `docker` image pulls authenticate correctly.
+
+### Storage — disk-class placement
+- **Databases and VM root disks now land on the right media, fail-closed.** Nodes are labelled with a
+  **measured** disk class, a bulk-HDD class is available, and a DB or VM-root claim that cannot be placed
+  on qualifying storage is **refused** rather than scheduled onto the wrong disk.
+
+### Virtual machines
+- **Firmware knob** — `spec.firmware` selects **BIOS or UEFI**, with optional **Secure Boot** and an
+  ephemeral **vTPM**, so UEFI / Secure-Boot guests can be represented. It is **fail-closed on a migrated
+  disk**: an adopted root disk must declare its boot mode (a UEFI-installed disk will not boot under
+  BIOS) and the composition refuses to guess. Added a **windows-server-2016** golden image.
+
+### IAM & policy
+- **AWS `NotAction` / `NotResource` now translate** to Cedar complement axes (`notActions` /
+  `notResources`) across the policy importer, CloudFormation, the shim, and native `kind: Policy`
+  authoring — unblocking the AWS managed policies written with `NotAction`. Fail-closed by construction:
+  a statement sets actions *or* notActions (never both), and an unmappable exclusion is **refused**, not
+  silently widened. `Role.policies` is now optional.
+
+### Configuration
+- **`kind: Parameter` supports value-by-reference** — `value` is now optional, so a parameter can point
+  at a managed source instead of carrying a literal.
+
+### Compliance & audit
+- **Opt-in per-tenant pod-budget guardrail** (a per-namespace ResourceQuota, generate-only so it never
+  fails a workload closed) and **operator-tunable audit retention** (an `audit-config` ConfigMap plus an
+  optional self-trim lifecycle on the audit bucket).
 
 ## v3.2.0 — 2026-10-12
 
