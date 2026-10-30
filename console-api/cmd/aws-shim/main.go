@@ -669,20 +669,34 @@ func run(logger *slog.Logger) error {
 		logger.Info("aws-shim listening", "addr", addr, "version", version,
 			"minioEndpoint", getenv("MINIO_ENDPOINT", defaultMinioEndpoint),
 			"keysNamespace", keysNS, "usersNamespace", usersNS)
-		cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
-		var lerr error
-		if cert != "" && key != "" {
-			lerr = srv.ListenAndServeTLS(cert, key)
-		} else {
-			// Plain HTTP is expected in-cluster (TLS terminated at the ingress/mesh); clients set
-			// AWS_ENDPOINT_URL to the http:// service address. TLS_CERT_FILE/TLS_KEY_FILE enable
-			// direct TLS for the SDK-trusts-the-cert deployment.
-			lerr = srv.ListenAndServe()
-		}
-		if lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
+		// Plain HTTP on the primary address: the in-cluster endpoint-injection path (v3 SDKs set
+		// AWS_ENDPOINT_URL_<svc> to this http:// service address) and the API-Gateway invoke base.
+		if lerr := srv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 			serverErr <- lerr
 		}
 	}()
+
+	// Optional TLS listener for the DNS-interception path. A client that resolves an AWS hostname to
+	// this shim (CoreDNS rewrite, function-scoped) connects over HTTPS on 443. Serving TLS with an
+	// internal-CA cert whose SANs cover the AWS service hostnames — trusted in the runtime images —
+	// lets BOTH aws-sdk v3 AND v2 (which ignores AWS_ENDPOINT_URL_* and endpoint_url entirely) reach
+	// the shim transparently, with no customer-code change and no per-service endpoint config. The
+	// plain :4566 listener above is unchanged, so the existing endpoint-injection path is unaffected.
+	var tlsSrv *http.Server
+	if cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE"); cert != "" && key != "" {
+		tlsSrv = &http.Server{
+			Addr:              getenv("TLS_LISTEN_ADDR", ":8443"),
+			Handler:           otelhttp.NewHandler(router, "aws-shim"),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		go func() {
+			logger.Info("aws-shim TLS (DNS-interception) listening", "addr", tlsSrv.Addr)
+			if lerr := tlsSrv.ListenAndServeTLS(cert, key); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
+				serverErr <- lerr
+			}
+		}()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -805,6 +819,9 @@ func run(logger *slog.Logger) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if tlsSrv != nil {
+		_ = tlsSrv.Shutdown(shutdownCtx)
+	}
 	return srv.Shutdown(shutdownCtx)
 }
 
