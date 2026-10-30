@@ -32,6 +32,29 @@ spec:
 Lambda's memory dial (open-infra does not couple CPU to it the way AWS does). `timeout` becomes the
 Knative revision timeout — the analog of Lambda's per-invoke timeout.
 
+### Request timeout (honoured end to end)
+
+`timeout` is bounded to **1–900 seconds** (900 = Lambda's own maximum and the platform's ceiling). The
+value is honoured **end to end**, not just at the revision: the shared ingress gateway (Kourier/Envoy)
+has an *idle* timeout — the time a request may produce **no bytes** — and it is deliberately set *above*
+900s cluster-wide, so a request is governed by **its own revision timeout**, never cut earlier by the
+gateway. Declaring a timeout above 900 is **rejected at admission** (the XRD maximum), rather than
+accepted and then quietly under-served.
+
+> Why this is called out: the gateway idle timeout defaults to **300s** when unset. A function whose
+> revision timeout is 900 but which goes quiet (no bytes) for 5 minutes would otherwise be cut at exactly
+> 300s with an HTTP 504 — even though every declared timeout in the path says 900. The platform sets the
+> gateway idle above the ceiling so that can't happen. (A fast response, or one that streams bytes
+> steadily, never approaches an *idle* timeout regardless.)
+
+**Telling a timeout from a failure.** A request that exceeds its timeout returns **HTTP 504** from the
+revision's queue-proxy (the component that enforces the per-request budget) — distinct from a function
+*error*, which is the function's own status (e.g. a 5xx the handler returns, or `X-Amz-Function-Error`
+on a [direct invoke](./serverless.md)). A 504 at ~`timeout` seconds means the request ran out its budget;
+a non-504 error is the function's own. If you need to attribute a 504 at the gateway level (a wedged
+stream reclaimed by the idle backstop) versus the revision timeout, Kourier access logging carries Envoy
+response flags — an operator can enable `enable-service-access-logging` in `config-kourier` to see them.
+
 `open-infra init function` scaffolds this. It compiles to a Knative Service with
 KPA autoscaling.
 

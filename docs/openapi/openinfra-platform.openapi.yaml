@@ -5893,8 +5893,10 @@ components:
               minimum: 1
               maximum: 900
               description: "Max wall-clock seconds per request (Knative revision timeout) \u2014 the AWS Lambda timeout knob.\
-                \ 1\u2013900 (900 = Lambda's own maximum, and the platform's configured Knative ceiling). Unset = Knative\
-                \ default (300s)."
+                \ 1\u2013900 (900 = Lambda's own maximum, and the platform's configured ceiling). This is honoured END TO\
+                \ END: the shared gateway's idle timeout is set above 900s, so a value up to 900 is delivered in full, not\
+                \ silently capped lower by the gateway. Declaring above 900 is rejected at admission (the maximum here), rather\
+                \ than accepted and quietly under-served. Unset = Knative default (300s)."
             expose:
               type: boolean
               default: true

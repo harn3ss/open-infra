@@ -30,6 +30,34 @@ spec:
   config:
     network:
       ingress-class: "kourier.ingress.networking.knative.dev"
+    # Kourier (the shared ingress gateway) Envoy settings. config-kourier ships with ONLY an
+    # `_example` block, so every key falls back to its Envoy default — including stream-idle-timeout,
+    # whose Envoy default is 300s. That default is NAMESPACE-BLIND and it is an IDLE timeout (time with
+    # no bytes, not total duration), so it silently cut any quiet request at exactly 300s regardless of
+    # the revision's spec.timeoutSeconds, config-defaults max-revision-timeout-seconds, or a claim's
+    # declared `timeout` — all of which say 900. A tenant could declare 900 and be honoured only to 300,
+    # invisibly, and a 504-at-300 on a Service whose every declared timeout is 900 reads as a platform
+    # defect. (A fast or a steadily-streaming response never approaches it, which is why it stayed hidden
+    # until something genuinely went quiet for 5 minutes.)
+    #
+    # Lift the key out of `_example` and set it ABOVE the 900s ceiling the platform already promises:
+    #   stream-idle-timeout = max-revision-timeout-seconds (900) + a 60s backstop margin = 960s.
+    # The choice (this is a cluster-wide lever, so it is sized for every tenant, not just long requests):
+    #  - It must be >= the max revision timeout, or the gateway contradicts the per-request budget the
+    #    platform grants — the bug above. 960 >= 900, for EVERY function (max declarable timeout is 900).
+    #  - The +60 margin makes the per-request REVISION timeout (enforced by the queue-proxy, <= 900) the
+    #    deadline that always fires first, so a timed-out request returns an attributable function-side
+    #    504 rather than racing a bare Envoy idle-cut. The gateway idle is then a pure backstop for a
+    #    stream so wedged that even the revision timeout did not close it — reclaimed at 960s.
+    #  - It is NOT a floor: every request is still governed by its own (<=900) revision timeout, which
+    #    closes the stream long before 960s. Default-timeout (300s) functions are entirely unaffected —
+    #    they still cut at their own 300s revision timeout, now cleanly (no 300-vs-300 gateway race).
+    # "0s" (Kourier's documented "no timeout at all") was rejected: it removes the idle-reclaim protection
+    # that reclaims connections held by clients that have gone away. The XRD caps spec.timeout at 900 and
+    # a render-test (kourier_timeout_coupling_test.go) asserts XRD max == max-revision-timeout <= this
+    # value, so the three ceilings cannot silently drift back apart.
+    kourier:
+      stream-idle-timeout: "960s"
     features:
       kubernetes.podspec-runtimeclassname: enabled
       kubernetes.podspec-nodeselector: enabled
