@@ -2389,6 +2389,18 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: map[string]any{"database": db}}
+	// The mysql engine is backed by MariaDB — MySQL wire-compatible, but not MySQL itself. Server
+	// version-specific features and collations do NOT transfer, which is exactly the trap in a MySQL 8
+	// lift-and-shift: a schema/dump pinned to utf8mb4_0900_ai_ci (the 8.0 default collation, based on
+	// Unicode 9.0 UCA) will FAIL to import because MariaDB has no such collation. Surface it loudly here
+	// rather than let the import fail opaquely — the EngineVersion (when 8.x) sharpens the warning.
+	if db["engine"] == "mysql" {
+		msg := "the mysql engine is backed by MariaDB (MySQL wire-compatible, credentials injected as DATABASE_URL) — not MySQL itself. Server-specific collations do NOT transfer: a MySQL 8 schema/dump using utf8mb4_0900_ai_ci (the 8.0 default) will not import, since MariaDB lacks that collation — remap it (e.g. to utf8mb4_unicode_ci) in the dump before import. There is no real MySQL 8 engine today."
+		if ev, ok := concrete(props["EngineVersion"]); ok && strings.HasPrefix(ev, "8.") {
+			msg = "EngineVersion " + ev + ": " + msg
+		}
+		m.Caveats = append(m.Caveats, msg)
+	}
 	// StorageType/Iops are EBS-style perf knobs with no honest DB-storage equivalent here (same
 	// disproven case as EC2::Volume IOPS): open-infra DB storage is a StorageClass PVC, not
 	// provisioned-IOPS EBS — mapping the number would fabricate a performance contract.

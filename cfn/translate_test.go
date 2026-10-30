@@ -929,6 +929,29 @@ func TestTranslate_RDS_PerfKnobsStayCaveats(t *testing.T) {
 	}
 }
 
+// A MySQL lift-and-shift gets MariaDB — a caveat must warn that MySQL-8-only collations
+// (utf8mb4_0900_ai_ci) won't import, so the trap is visible before the data load, not after.
+func TestTranslate_RDS_MySQLMariaDBCollationCaveat(t *testing.T) {
+	m, fs := translateRDSDBInstance("Db", map[string]any{
+		"Engine": "mysql", "EngineVersion": "8.0.35", "DBName": "app",
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a plain mysql instance must translate cleanly: %s", findingsText(fs))
+	}
+	joined := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(joined, "MariaDB") || !strings.Contains(joined, "utf8mb4_0900_ai_ci") {
+		t.Fatalf("a mysql engine must caveat the MariaDB backing + the MySQL-8 collation trap: %v", m.Caveats)
+	}
+	if !strings.Contains(joined, "8.0.35") {
+		t.Fatalf("an 8.x EngineVersion should sharpen the caveat with the version: %v", m.Caveats)
+	}
+	// postgres must NOT get the mysql caveat.
+	mp, _ := translateRDSDBInstance("Db", map[string]any{"Engine": "postgres"}, nil)
+	if strings.Contains(strings.Join(mp.Caveats, "\n"), "MariaDB") {
+		t.Fatalf("postgres must not carry the mysql/MariaDB caveat: %v", mp.Caveats)
+	}
+}
+
 func TestTranslate_RDS_EncryptedBlocks(t *testing.T) {
 	_, fs := translateRDSDBInstance("Db", map[string]any{"Engine": "mysql", "StorageEncrypted": true}, nil)
 	if !strings.Contains(findingsText(fs), "StorageEncrypted") {
