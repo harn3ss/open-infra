@@ -130,6 +130,29 @@ Resources:
 	}
 }
 
+// The common lift-and-shift refusals (ELB/ASG/LaunchTemplate/CloudFront) are unsupported, but each
+// refuses with a pointer to the open-infra path rather than the bare "no backing kind" default — so
+// an assessment reads as guidance. None maps (Kind stays empty) and none is a silent approximation.
+func TestMapping_LiftAndShiftRefusalsGuide(t *testing.T) {
+	for _, tc := range []struct {
+		cfnType, mustMention string
+	}{
+		{"AWS::ElasticLoadBalancingV2::LoadBalancer", "ingress"},
+		{"AWS::ElasticLoadBalancing::LoadBalancer", "ingress"},
+		{"AWS::AutoScaling::AutoScalingGroup", "autoscaling"},
+		{"AWS::EC2::LaunchTemplate", "VirtualMachine"},
+		{"AWS::CloudFront::Distribution", "CDN"},
+	} {
+		e := Lookup(tc.cfnType)
+		if e.Status != Unsupported || e.Kind != "" {
+			t.Errorf("%s: want unsupported/no-kind, got {%q,%q}", tc.cfnType, e.Status, e.Kind)
+		}
+		if !strings.Contains(e.Note, tc.mustMention) {
+			t.Errorf("%s: note should mention %q as the open-infra path, got: %s", tc.cfnType, tc.mustMention, e.Note)
+		}
+	}
+}
+
 // Plan-level: a default route to an in-stack IGW and its route table are now create-deployable
 // (implicit), so they no longer sit in the gated "maps at plan only" set.
 func TestPlan_DefaultRouteAndTableDeployable(t *testing.T) {
