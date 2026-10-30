@@ -35,6 +35,11 @@ type s3Handler struct {
 	authzNS string                  // namespace the coarse object-storage RBAC gate is evaluated in
 	authz   *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger  *slog.Logger
+	// vhostSuffixes are the host suffixes under which a leading label is the BUCKET (virtual-hosted
+	// addressing), e.g. "s3.amazonaws.com" or the external S3 hostname. An unmodified AWS SDK (no
+	// forcePathStyle) addresses "<bucket>.<suffix>", so without this a default client — and every
+	// presigned URL it generates — fails. Empty = path-style only (the v1 default).
+	vhostSuffixes []string
 }
 
 // s3op describes a decoded S3 request: the operation kind and the target bucket/key.
@@ -53,8 +58,9 @@ func (h *s3Handler) authFailure(w http.ResponseWriter, r *http.Request, requestI
 // serve handles an already-authenticated S3 request: decode intent → authorize via the shared
 // impersonated SubjectAccessReview (one policy world) → dispatch to MinIO → re-encode byte-faithful.
 func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
-	// 1. Decode the S3 intent from path-style addressing (/{bucket}/{key}).
-	op, ok := decodeS3(r)
+	// 1. Decode the S3 intent — virtual-hosted (bucket in the Host) if the host matches a configured
+	// suffix, else path-style (/{bucket}/{key}).
+	op, ok := h.decode(r)
 	if !ok {
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 		return
@@ -116,9 +122,72 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	}
 }
 
-// decodeS3 maps HTTP method + path-style URL onto an s3op. Virtual-host addressing (bucket in the
-// Host header) is intentionally unsupported in v1 — clients must use path-style (documented), the
-// same one-line client setting LocalStack/MinIO expect.
+// decode maps a request onto an s3op, choosing virtual-hosted addressing (bucket in the Host header)
+// when the host matches a configured vhostSuffix, else path-style. Virtual-hosted is what an
+// unmodified AWS SDK (no forcePathStyle) and the presigned URLs it mints use when AWS_ENDPOINT_URL
+// names a hostname; path-style stays the explicit LocalStack/MinIO-style client option.
+func (h *s3Handler) decode(r *http.Request) (s3op, bool) {
+	if b := vhostBucket(hostNoPort(r.Host), h.vhostSuffixes); b != "" {
+		return decodeVHost(r, b)
+	}
+	return decodeS3(r)
+}
+
+// hostNoPort lowercases a Host header and strips any :port (leaving a bracketed IPv6 literal intact).
+func hostNoPort(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if i := strings.LastIndexByte(h, ':'); i >= 0 && !strings.Contains(h[i:], "]") {
+		h = h[:i]
+	}
+	return h
+}
+
+// vhostBucket returns the bucket label when host is "<bucket>.<suffix>" for one of the suffixes, or
+// "" for a bare suffix (path-style endpoint) or no match. Only a single-label bucket is accepted: a
+// dotted bucket name cannot be virtual-hosted over TLS anyway, so such a request is treated as
+// path-style rather than mis-split.
+func vhostBucket(host string, suffixes []string) string {
+	for _, suf := range suffixes {
+		suf = strings.ToLower(strings.Trim(strings.TrimSpace(suf), "."))
+		if suf == "" {
+			continue
+		}
+		if prefix, ok := strings.CutSuffix(host, "."+suf); ok && prefix != "" && !strings.Contains(prefix, ".") {
+			return prefix
+		}
+	}
+	return ""
+}
+
+// decodeVHost maps a virtual-hosted request (bucket already known from the Host) onto an s3op, where
+// the whole URL path is the object key.
+func decodeVHost(r *http.Request, bucket string) (s3op, bool) {
+	key := strings.TrimPrefix(r.URL.Path, "/")
+	switch {
+	case key == "": // "<bucket-host>/"
+		switch r.Method {
+		case http.MethodGet:
+			return s3op{kind: "list-objects", bucket: bucket}, true
+		case http.MethodHead:
+			return s3op{kind: "head-bucket", bucket: bucket}, true
+		}
+	default: // "<bucket-host>/{key}"
+		switch r.Method {
+		case http.MethodGet:
+			return s3op{kind: "get", bucket: bucket, key: key}, true
+		case http.MethodHead:
+			return s3op{kind: "head", bucket: bucket, key: key}, true
+		case http.MethodPut:
+			return s3op{kind: "put", bucket: bucket, key: key, write: true}, true
+		case http.MethodDelete:
+			return s3op{kind: "delete", bucket: bucket, key: key, write: true}, true
+		}
+	}
+	return s3op{}, false
+}
+
+// decodeS3 maps HTTP method + path-style URL onto an s3op (/{bucket}/{key}). Virtual-hosted
+// addressing is handled by h.decode before this is reached; this remains the path-style decoder.
 func decodeS3(r *http.Request) (s3op, bool) {
 	p := strings.TrimPrefix(r.URL.Path, "/")
 	bucket, key, _ := strings.Cut(p, "/")

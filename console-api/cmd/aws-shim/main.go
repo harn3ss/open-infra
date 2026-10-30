@@ -495,7 +495,7 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	services := map[string]awsService{
-		"s3":              &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger},
+		"s3":              &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger, vhostSuffixes: splitCommaTrim(getenv("S3_VHOST_SUFFIXES", ""))},
 		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":          lambdaH,
 		"appsync":         newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
@@ -920,6 +920,18 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitCommaTrim parses a comma-separated env value into a slice, trimming whitespace and dropping
+// empties — "" yields nil.
+func splitCommaTrim(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func logLevelFromEnv() slog.Level {

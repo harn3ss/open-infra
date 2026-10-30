@@ -40,7 +40,9 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -245,8 +247,11 @@ func canonicalQuery(rawQuery string) string {
 		}
 		k, v, _ := strings.Cut(p, "=")
 		// The incoming query is percent-encoded; decode then re-encode canonically so our
-		// encoding is byte-identical to the client's regardless of its encoding choices.
-		pairs = append(pairs, kv{uriEncode(decode(k), false), uriEncode(decode(v), false)})
+		// encoding is byte-identical to the client's regardless of its encoding choices. Query
+		// tokens encode the full reserved set INCLUDING '/' (unlike path segments), so '/' becomes
+		// %2F — this is what makes a presigned URL's X-Amz-Credential (AKID/date/region/...) sign
+		// correctly; a path-style '/' in the query is not a path separator here.
+		pairs = append(pairs, kv{uriEncode(decode(k), true), uriEncode(decode(v), true)})
 	}
 	sort.Slice(pairs, func(i, j int) bool {
 		if pairs[i].k != pairs[j].k {
@@ -351,6 +356,147 @@ func unhex(c byte) int {
 		return int(c-'A') + 10
 	}
 	return -1
+}
+
+// ErrSignatureExpired means a presigned URL's X-Amz-Expires window had elapsed when the request
+// arrived. It is distinct from ErrSignatureMismatch so the caller can return S3's "Request has
+// expired" (AccessDenied) — an expired but correctly-signed URL is not an attack and is safe to
+// name as expired. It is returned ONLY after the signature verifies, so a forged URL never learns
+// anything beyond the generic mismatch.
+var ErrSignatureExpired = errors.New("awssig: presigned URL expired")
+
+// presignedMaxExpires is S3's ceiling on X-Amz-Expires: 7 days, in seconds. A URL claiming a longer
+// window is rejected rather than honoured, exactly as S3 does.
+const presignedMaxExpires = 7 * 24 * 60 * 60
+
+// Presigned is the query-string SigV4 material of a presigned URL (AWS "Query Parameters" auth): the
+// signature travels in X-Amz-Signature and the signed headers are typically just "host", so a plain
+// browser with no AWS headers can fetch it. It embeds Credential (identity + scope + the presented
+// signature) and adds the request date and expiry window from the query.
+type Presigned struct {
+	Credential
+	AmzDate string // X-Amz-Date, ISO8601 basic (20060102T150405Z)
+	Expires int    // X-Amz-Expires, seconds
+}
+
+// ParsePresigned reads the X-Amz-* query parameters of a presigned URL. Like ParseAuthorization it
+// performs NO verification — it only reports the claimed key + scope so the caller can look up the
+// secret before VerifyPresigned recomputes the signature. It returns ErrNoAuthorization when the
+// request is not a presigned URL at all (no X-Amz-Algorithm), so the caller may fall through to the
+// header path.
+func ParsePresigned(req *http.Request) (Presigned, error) {
+	q := req.URL.Query()
+	algo := q.Get("X-Amz-Algorithm")
+	if algo == "" {
+		return Presigned{}, ErrNoAuthorization
+	}
+	if algo != algorithm {
+		return Presigned{}, fmt.Errorf("%w: unexpected X-Amz-Algorithm", ErrMalformedAuthorization)
+	}
+	scope := strings.SplitN(q.Get("X-Amz-Credential"), "/", 5)
+	if len(scope) != 5 || scope[4] != terminator {
+		return Presigned{}, fmt.Errorf("%w: bad X-Amz-Credential", ErrMalformedAuthorization)
+	}
+	var p Presigned
+	p.AccessKeyID, p.Date, p.Region, p.Service = scope[0], scope[1], scope[2], scope[3]
+	p.SignedHeaders = strings.Split(q.Get("X-Amz-SignedHeaders"), ";")
+	p.Signature = q.Get("X-Amz-Signature")
+	p.AmzDate = q.Get("X-Amz-Date")
+	exp, err := strconv.Atoi(q.Get("X-Amz-Expires"))
+	if err != nil {
+		return Presigned{}, fmt.Errorf("%w: bad X-Amz-Expires", ErrMalformedAuthorization)
+	}
+	p.Expires = exp
+	if p.AccessKeyID == "" || p.Signature == "" || p.AmzDate == "" || len(p.SignedHeaders) == 0 || p.SignedHeaders[0] == "" {
+		return Presigned{}, fmt.Errorf("%w: missing component", ErrMalformedAuthorization)
+	}
+	return p, nil
+}
+
+// VerifyPresigned recomputes the presigned-URL signature from secretKey, constant-time compares it
+// against the presented X-Amz-Signature, and enforces the X-Amz-Expires window against now. It uses
+// the UNSIGNED-PAYLOAD canonical payload hash (a presigned GET/PUT does not sign a body hash) and
+// the canonical query with X-Amz-Signature removed — AWS's query-parameter signing procedure.
+//
+// Expiry is reported (ErrSignatureExpired) only AFTER the signature verifies, so a forged or
+// tampered URL collapses to the indistinguishable ErrSignatureMismatch and cannot learn whether a
+// guessed window was still open.
+func VerifyPresigned(req *http.Request, p Presigned, secretKey string, now time.Time) error {
+	if secretKey == "" {
+		return ErrSignatureMismatch
+	}
+	if p.Expires <= 0 || p.Expires > presignedMaxExpires {
+		return fmt.Errorf("%w: X-Amz-Expires out of range", ErrMalformedAuthorization)
+	}
+	t, err := time.Parse("20060102T150405Z", p.AmzDate)
+	if err != nil {
+		return fmt.Errorf("%w: bad X-Amz-Date", ErrMalformedAuthorization)
+	}
+	want, err := presignedSignature(req, p, secretKey)
+	if err != nil {
+		return err
+	}
+	if subtle.ConstantTimeCompare([]byte(want), []byte(p.Signature)) != 1 {
+		return ErrSignatureMismatch
+	}
+	if now.After(t.Add(time.Duration(p.Expires) * time.Second)) {
+		return ErrSignatureExpired
+	}
+	return nil
+}
+
+// presignedSignature is the presigned analog of signature(): same canonical-request → string-to-sign
+// → HMAC math, but with the UNSIGNED-PAYLOAD payload hash and the signature parameter stripped from
+// the canonical query. The header path (signature()) is left untouched.
+func presignedSignature(req *http.Request, p Presigned, secretKey string) (string, error) {
+	signed := append([]string(nil), p.SignedHeaders...)
+	sort.Strings(signed)
+	var hdrs strings.Builder
+	for _, name := range signed {
+		hdrs.WriteString(name)
+		hdrs.WriteByte(':')
+		hdrs.WriteString(canonicalHeaderValue(req, name))
+		hdrs.WriteByte('\n')
+	}
+	canonReq := strings.Join([]string{
+		req.Method,
+		canonicalURI(req.URL.EscapedPath(), p.Service),
+		canonicalQuery(rawQueryWithout(req.URL.RawQuery, "X-Amz-Signature")),
+		hdrs.String(),
+		strings.Join(signed, ";"),
+		unsignedPayload,
+	}, "\n")
+	sts := stringToSign(p.AmzDate, p.CredentialScope(), canonReq)
+	return hex.EncodeToString(hmacSHA256(deriveSigningKey(secretKey, p.Credential), sts)), nil
+}
+
+// SignPresigned is the inverse of VerifyPresigned: it computes the X-Amz-Signature a correct client
+// would present for req under p, using secretKey. It exists so a test (or an internal signer) can
+// produce a genuinely-valid presigned request from the same math Verify checks, rather than
+// reimplementing it.
+func SignPresigned(req *http.Request, p Presigned, secretKey string) (string, error) {
+	return presignedSignature(req, p, secretKey)
+}
+
+// rawQueryWithout returns rawQuery with every pair whose decoded key equals name removed. Used to
+// drop X-Amz-Signature from the canonical query (a presigned request signs every query parameter
+// EXCEPT its own signature).
+func rawQueryWithout(rawQuery, name string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	var kept []string
+	for _, p := range strings.Split(rawQuery, "&") {
+		if p == "" {
+			continue
+		}
+		k, _, _ := strings.Cut(p, "=")
+		if decode(k) == name {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, "&")
 }
 
 // uriEncode percent-encodes per RFC 3986, leaving the unreserved set (A-Za-z0-9-_.~) intact.

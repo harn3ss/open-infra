@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
@@ -41,6 +42,14 @@ type authenticator struct {
 // by the handler against the specific action — keeping "who you are" strictly separate from "what
 // you may do", and ensuring the authorization check runs against the very identity that was proven.
 func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.Claims, error) {
+	// Presigned URL (query-string SigV4): no Authorization header — the credential and signature
+	// ride in the query (X-Amz-Algorithm=AWS4-HMAC-SHA256). A browser fetching a presigned GET/PUT
+	// has no AWS headers to header-sign, so this is the only path by which those requests can
+	// authenticate. It is verified exactly like a header-signed request (recompute from the key's
+	// secret) and returns the same Claims, so the handler's RBAC/Cedar authorization is unchanged.
+	if r.Header.Get("Authorization") == "" && r.URL.Query().Get("X-Amz-Algorithm") != "" {
+		return a.authenticatePresigned(ctx, r)
+	}
 	cred, err := awssig.ParseAuthorization(r.Header.Get("Authorization"))
 	if err != nil {
 		return iam.Claims{}, errAuth
@@ -83,6 +92,52 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 	// The heart of it: recompute the signature from the stored secret and constant-time compare.
 	// A caller who merely NAMES a valid key but cannot reproduce its signature is rejected here.
 	if err := awssig.Verify(r, cred, key.SecretKey); err != nil {
+		return iam.Claims{}, errAuth
+	}
+	groups, ok := a.resolve(ctx, key.Owner)
+	if !ok {
+		return iam.Claims{}, errAuth
+	}
+	return iam.Claims{Sub: key.Owner, Groups: groups}, nil
+}
+
+// authenticatePresigned is the query-string (presigned URL) analog of authenticate: same identity
+// resolution and the same fail-closed, single-errAuth posture, but the SigV4 material comes from the
+// query and expiry (X-Amz-Expires) is enforced. It supports the assumed-role case too, where the
+// session token rides in the (signed) X-Amz-Security-Token query parameter.
+func (a *authenticator) authenticatePresigned(ctx context.Context, r *http.Request) (iam.Claims, error) {
+	p, err := awssig.ParsePresigned(r)
+	if err != nil {
+		return iam.Claims{}, errAuth
+	}
+	now := time.Now()
+	if tok := r.URL.Query().Get("X-Amz-Security-Token"); tok != "" {
+		if a.sts == nil {
+			return iam.Claims{}, errAuth
+		}
+		sess, ok := a.sts.Verify(p.AccessKeyID, tok)
+		if !ok {
+			return iam.Claims{}, errAuth
+		}
+		if err := awssig.VerifyPresigned(r, p, sess.SecretKey, now); err != nil {
+			return iam.Claims{}, errAuth
+		}
+		if a.revoke != nil {
+			if cutoff, on := a.revoke.RevokedBefore(ctx, sess.RoleName); on && sess.IssuedAt.Before(cutoff) {
+				return iam.Claims{}, errAuth
+			}
+		}
+		return iam.Claims{
+			Sub:         "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
+			Groups:      sess.Groups,
+			AssumedRole: sess.RoleName,
+		}, nil
+	}
+	key, ok := a.keys.Lookup(ctx, p.AccessKeyID)
+	if !ok {
+		return iam.Claims{}, errAuth
+	}
+	if err := awssig.VerifyPresigned(r, p, key.SecretKey, now); err != nil {
 		return iam.Claims{}, errAuth
 	}
 	groups, ok := a.resolve(ctx, key.Owner)

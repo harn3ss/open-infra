@@ -77,6 +77,16 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	authHdr := r.Header.Get("Authorization")
 	cred, err := awssig.ParseAuthorization(authHdr)
 	if err != nil {
+		// Presigned URL (query-string SigV4): no Authorization header, so ParseAuthorization fails —
+		// but the service is named in X-Amz-Credential (…/<service>/aws4_request). Recover the
+		// credential from the query and route by it exactly as the header path does; the shared
+		// authenticate() below re-detects presigned and verifies the query signature + expiry. A
+		// request that is neither header-signed nor a valid presigned URL falls through unchanged.
+		if p, perr := awssig.ParsePresigned(r); perr == nil {
+			cred, err = p.Credential, nil
+		}
+	}
+	if err != nil {
 		// sts:AssumeRoleWithWebIdentity (workload identity) carries NO SigV4 — the projected
 		// ServiceAccount token in the form IS the credential. Route it to STS before any other
 		// non-SigV4 handling; the handler verifies the token and fails closed.
