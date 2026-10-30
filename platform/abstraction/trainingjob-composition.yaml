@@ -224,7 +224,12 @@ spec:
                               {{- end }}
                             {{- end }}
                             resources:
-                              requests: { cpu: 500m, memory: 1Gi }
+                              # request == limit -> Guaranteed QoS. A one-shot Job has no warm-idle
+                              # fleet, so there is no reservation trap to avoid (unlike a Function);
+                              # reserving what the job may use keeps request <= limit (a fixed floor
+                              # above a small user limit would render an invalid pod) and stops
+                              # concurrent jobs from OOMing a node. GPU is an extended resource: limit only.
+                              requests: { cpu: "{{ $cpu }}", memory: {{ $mem | quote }} }
                               limits:
                                 cpu: "{{ $cpu }}"
                                 memory: {{ $mem | quote }}
