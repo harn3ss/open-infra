@@ -44,10 +44,11 @@ func TestMapping_EIPNatGatewayFamily(t *testing.T) {
 	}
 }
 
-// The rest of the networking surface — NetworkAcl, VPCPeeringConnection, TransitGateway, RouteTable,
-// Route — is recognized at plan but NOT create-deployable, for the same reason as EIP/NatGateway:
-// the kube-ovn model needs IPs / links / rule collation AWS auto-assigns or splits across resources,
-// so a faithful create translator can't be derived and the honest move is author-natively.
+// The rest of the networking surface — NetworkAcl, VPCPeeringConnection, TransitGateway, FlowLog — is
+// recognized at plan but NOT create-deployable, for the same reason as EIP/NatGateway: the kube-ovn
+// model needs IPs / links / rule collation AWS auto-assigns or splits across resources, so a faithful
+// create translator can't be derived and the honest move is author-natively. (RouteTable and the
+// default Route graduated to create-deployable as implicit no-ops — see the Route translator tests.)
 func TestMapping_NetworkingPlanOnly(t *testing.T) {
 	for _, tc := range []struct {
 		cfnType, kind string
@@ -55,8 +56,6 @@ func TestMapping_NetworkingPlanOnly(t *testing.T) {
 		{"AWS::EC2::NetworkAcl", "Subnet(acls)"},
 		{"AWS::EC2::VPCPeeringConnection", "Vpc(peerings)"},
 		{"AWS::EC2::TransitGateway", "TransitGateway"},
-		{"AWS::EC2::RouteTable", "Vpc(routes)"},
-		{"AWS::EC2::Route", "Vpc(routes)"},
 		{"AWS::EC2::FlowLog", "FlowLog"},
 	} {
 		e := Lookup(tc.cfnType)

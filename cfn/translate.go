@@ -101,6 +101,8 @@ var translators = map[string]translator{
 	"AWS::EC2::VPCGatewayAttachment":        translateEC2ImplicitGateway,
 	"AWS::EC2::SubnetNetworkAclAssociation": translateEC2ImplicitGateway,
 	"AWS::EC2::SubnetRouteTableAssociation": translateEC2ImplicitGateway,
+	"AWS::EC2::RouteTable":                  translateEC2RouteTable,
+	"AWS::EC2::Route":                       translateEC2Route,
 	"AWS::DynamoDB::Table":                  translateDynamoDBTable,
 	"AWS::IAM::User":                        translateIAMUser,
 	"AWS::IAM::Policy":                      translateIAMPolicy,
@@ -1178,6 +1180,70 @@ func translateEC2SecurityGroupRule(id string, props map[string]any, ctx *stackCt
 //   - SubnetRouteTableAssociation: kube-ovn routes are VPC-scoped (kind: Vpc spec.routes).
 func translateEC2ImplicitGateway(_ string, _ map[string]any, _ *stackCtx) (*Manifest, []Finding) {
 	return nil, nil
+}
+
+// ---- AWS::EC2::RouteTable -> (implicit) ----
+//
+// A route table is a pure container. In kube-ovn routes are VPC-scoped (kind: Vpc spec.routes), not
+// a standalone table, so a RouteTable provisions nothing on its own — the routes that "live in" it
+// are the AWS::EC2::Route resources, each translated in its own right. Deployable as a no-op so a
+// template that carries a RouteTable is not blocked; a RouteTable's only properties are VpcId (the
+// in-stack binding is implicit) and Tags, so anything else refuses fail-closed.
+func translateEC2RouteTable(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{"VpcId": true, "Tags": true}
+	return nil, blockUnknownProps(id, props, known)
+}
+
+// ---- AWS::EC2::Route -> (implicit) for the default-egress case, else refuse ----
+//
+// One AWS route is a DestinationCidrBlock plus a target (a gateway/nat/peering/instance id). A
+// kind: Vpc spec.routes entry needs cidr -> a NEXT-HOP IP, and the open-infra border device is a
+// kind: NatGateway whose internalIp AWS auto-assigns and the template never carries. So exactly one
+// shape translates faithfully, and it translates to nothing to create:
+//
+//	the default route 0.0.0.0/0 (or ::/0) -> an in-stack AWS::EC2::InternetGateway
+//
+// On open-infra a public subnet's internet egress is a property of having a kind: NatGateway border
+// device (which plays the Internet-Gateway role on a flat /24), and the VPC's default route to it is
+// set when the NatGateway is authored natively — the CFN default route carries no further derivable
+// fact, so it is implicit (provisions nothing, like the InternetGateway it targets). Any OTHER route
+// — a non-default CIDR, or a target that is not an in-stack InternetGateway (a NatGateway, a VPC
+// peering, an instance, a raw igw-/nat- id) — carries real next-hop intent we cannot derive, so it
+// REFUSES fail-closed (never a silently-dropped route) and points at authoring the route natively.
+func translateEC2Route(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"RouteTableId": true, "DestinationCidrBlock": true, "DestinationIpv6CidrBlock": true,
+		"GatewayId": true, "NatGatewayId": true, "VpcPeeringConnectionId": true,
+		"InstanceId": true, "NetworkInterfaceId": true, "TransitGatewayId": true,
+		"CarrierGatewayId": true, "EgressOnlyInternetGatewayId": true,
+		"LocalGatewayId": true, "VpcEndpointId": true, "CoreNetworkArn": true,
+	}
+	if f := blockUnknownProps(id, props, known); len(f) > 0 {
+		return nil, f
+	}
+	cidr, _ := concrete(props["DestinationCidrBlock"])
+	if cidr == "" {
+		cidr, _ = concrete(props["DestinationIpv6CidrBlock"])
+	}
+	isDefault := cidr == "0.0.0.0/0" || cidr == "::/0"
+
+	// The target must be a !Ref to an in-stack AWS::EC2::InternetGateway for the implicit case.
+	igwTarget := false
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if t, isRef := refTarget(raw["GatewayId"]); isRef {
+				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::InternetGateway" {
+					igwTarget = true
+				}
+			}
+		}
+	}
+	if isDefault && igwTarget {
+		// Default internet egress == having a NatGateway border device; nothing standalone to create.
+		return nil, nil
+	}
+	return nil, []Finding{{"Resource " + id,
+		"only the default route 0.0.0.0/0 -> an in-stack AWS::EC2::InternetGateway translates (it is implicit: egress is a property of the kind: NatGateway border device). This route targets something else, or a non-default CIDR — author it on the kind: Vpc (spec.routes: cidr -> the NatGateway internalIp), so no next-hop is fabricated"}}
 }
 
 // ---- AWS::DynamoDB::Table -> kind: Table ----
