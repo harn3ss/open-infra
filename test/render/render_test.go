@@ -543,6 +543,13 @@ func TestFunction_MemoryAndTimeout(t *testing.T) {
 			t.Errorf("Function render missing %q; got:\n%s", want, grepCtx(out, "resources"))
 		}
 	}
+	// responseStartTimeoutSeconds (max time to the FIRST byte) must equal timeout. Knative defaults it to
+	// 300s independently of timeoutSeconds, so without this a quiet-but-working request is cut at 300s even
+	// when timeout is higher — a second 300s boundary separate from the gateway idle timeout. Couple them.
+	if !strings.Contains(out, "responseStartTimeoutSeconds: 60") {
+		t.Errorf("Function must render responseStartTimeoutSeconds == timeout (else a quiet request is cut at "+
+			"Knative's 300s default); got:\n%s", grepCtx(out, "timeout"))
+	}
 	// A CPU function must NOT request a GPU device.
 	if strings.Contains(out, "nvidia.com/gpu") {
 		t.Errorf("a memory-only (CPU) function must not request a GPU:\n%s", grepCtx(out, "resources"))

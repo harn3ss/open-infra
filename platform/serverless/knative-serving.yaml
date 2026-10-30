@@ -56,6 +56,15 @@ spec:
     # that reclaims connections held by clients that have gone away. The XRD caps spec.timeout at 900 and
     # a render-test (kourier_timeout_coupling_test.go) asserts XRD max == max-revision-timeout <= this
     # value, so the three ceilings cannot silently drift back apart.
+    #
+    # OPERATIONAL CAVEAT (observed): net-kourier-controller reads config-kourier at STARTUP and builds the
+    # Envoy listener then; it does NOT re-render the listener's stream-idle-timeout on a LIVE ConfigMap
+    # change. So changing this value on an already-running cluster requires one restart for the data plane
+    # to pick it up:   kubectl rollout restart deploy/net-kourier-controller -n knative-serving
+    # (verify with the gateway Envoy admin: config_dump shows "stream_idle_timeout": "960s"). A FRESH
+    # controller — install, reboot, OOM restart, operator upgrade — reads the current value automatically,
+    # so the committed state is self-correcting on any controller restart; only the in-place edit needs the
+    # nudge. This was done when the value was first set.
     kourier:
       stream-idle-timeout: "960s"
     features:

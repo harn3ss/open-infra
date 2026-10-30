@@ -34,26 +34,31 @@ Knative revision timeout — the analog of Lambda's per-invoke timeout.
 
 ### Request timeout (honoured end to end)
 
-`timeout` is bounded to **1–900 seconds** (900 = Lambda's own maximum and the platform's ceiling). The
-value is honoured **end to end**, not just at the revision: the shared ingress gateway (Kourier/Envoy)
-has an *idle* timeout — the time a request may produce **no bytes** — and it is deliberately set *above*
-900s cluster-wide, so a request is governed by **its own revision timeout**, never cut earlier by the
-gateway. Declaring a timeout above 900 is **rejected at admission** (the XRD maximum), rather than
-accepted and then quietly under-served.
+`timeout` is bounded to **1–900 seconds** (900 = Lambda's own maximum and the platform's ceiling), and it
+is the **single effective deadline** for your request. That takes aligning *two* separate timeouts that
+each otherwise default to **300s** and would silently cut a long request early — so a declared `timeout`
+of 900 is really honoured to 900, not quietly to 300:
 
-> Why this is called out: the gateway idle timeout defaults to **300s** when unset. A function whose
-> revision timeout is 900 but which goes quiet (no bytes) for 5 minutes would otherwise be cut at exactly
-> 300s with an HTTP 504 — even though every declared timeout in the path says 900. The platform sets the
-> gateway idle above the ceiling so that can't happen. (A fast response, or one that streams bytes
-> steadily, never approaches an *idle* timeout regardless.)
+- **The revision response-start timeout** — the time the request may take to produce its **first byte**.
+  Knative defaults this to 300s *independently* of your `timeout`, so a function that computes quietly for
+  more than 5 minutes before responding (a long report, a batch read, a slow migration step) would be cut
+  at 300s even though `timeout` is 900. The platform sets it **equal to your `timeout`**, so it never
+  fires before your own deadline. This is the one that bites a *working* quiet function.
+- **The shared gateway (Kourier/Envoy) idle timeout** — the time a request may produce **no bytes** at the
+  ingress hop. Its Envoy default is also 300s; the platform sets it **above** the 900s ceiling cluster-wide
+  so the gateway never cuts before the revision does.
 
-**Telling a timeout from a failure.** A request that exceeds its timeout returns **HTTP 504** from the
-revision's queue-proxy (the component that enforces the per-request budget) — distinct from a function
-*error*, which is the function's own status (e.g. a 5xx the handler returns, or `X-Amz-Function-Error`
-on a [direct invoke](./serverless.md)). A 504 at ~`timeout` seconds means the request ran out its budget;
-a non-504 error is the function's own. If you need to attribute a 504 at the gateway level (a wedged
-stream reclaimed by the idle backstop) versus the revision timeout, Kourier access logging carries Envoy
-response flags — an operator can enable `enable-service-access-logging` in `config-kourier` to see them.
+Declaring a timeout above 900 is **rejected at admission** (the XRD maximum), rather than accepted and
+then quietly under-served. (A fast response, or one that streams bytes steadily, never approaches either
+timeout regardless — they only bite a request that is *quiet*, not a slow one that keeps sending data.)
+
+**Telling a timeout from a failure.** A request that exceeds its deadline returns **HTTP 504** from the
+revision's queue-proxy (the component that enforces both the request budget and the response-start
+timeout) — distinct from a function *error*, which is the function's own status (e.g. a 5xx the handler
+returns, or `X-Amz-Function-Error` on a direct invoke). A 504 at ~`timeout` seconds means the request ran
+out its budget; a non-504 error is the function's own. To attribute a 504 at the *gateway* level (a wedged
+stream reclaimed by the idle backstop) versus the revision, Kourier access logging carries Envoy response
+flags — an operator can enable `enable-service-access-logging` in `config-kourier` to see them.
 
 `open-infra init function` scaffolds this. It compiles to a Knative Service with
 KPA autoscaling.

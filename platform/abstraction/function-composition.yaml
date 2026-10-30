@@ -187,6 +187,14 @@ spec:
                         {{- if $spec.timeout }}
                         # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
                         timeoutSeconds: {{ $spec.timeout }}
+                        # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
+                        # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
+                        # long report, a batch read, a slow migration step) is silently cut at 300s even when the
+                        # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
+                        # idle timeout; raising only the gateway does not move it. Couple it to the declared
+                        # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
+                        # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
+                        responseStartTimeoutSeconds: {{ $spec.timeout }}
                         {{- end }}
                         {{- if gt (int $gpu) 0 }}
                         runtimeClassName: nvidia
