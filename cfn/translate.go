@@ -543,6 +543,51 @@ func resolveSubnetRef(id, prop string, props map[string]any, ctx *stackCtx) (str
 	return "", "unresolved"
 }
 
+// sgRefName resolves ONE security-group reference (a RAW, pre-resolution value) to a kind:
+// SecurityGroup name: a {Ref: X} / {Fn::GetAtt: [X, GroupId]} to an in-stack AWS::EC2::SecurityGroup
+// → k8sName(X) (AWS::EC2::SecurityGroup translates to a matching kind: SecurityGroup); a plain string
+// name → itself (substitution); a raw sg- id → ("", raw=true) so the caller can refuse it like an
+// AMI/subnet id. A {Ref} to something that is not an in-stack SG → ("", false): skipped, not fatal.
+func sgRefName(rawVal any, ctx *stackCtx) (name string, raw bool) {
+	if t, ok := getAttTarget(rawVal); ok { // handles {Ref: X} and {Fn::GetAtt: [X, GroupId]}
+		if ctx != nil {
+			if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::SecurityGroup" {
+				return k8sName(t), false
+			}
+		}
+		return "", false
+	}
+	if s, ok := concrete(rawVal); ok && s != "" {
+		if strings.HasPrefix(strings.ToLower(s), "sg-") {
+			return "", true
+		}
+		return s, false
+	}
+	return "", false
+}
+
+// resolveSGList resolves a list-valued security-group property (SecurityGroupIds, SecurityGroups, or a
+// NetworkInterface GroupSet) from a raw property list to kind: SecurityGroup names. A raw sg- id in
+// the list is a blocking Finding (opaque, like an AMI); in-stack !Refs and plain names map.
+func resolveSGList(id, label string, rawList any, ctx *stackCtx) (names []string, findings []Finding) {
+	list, ok := rawList.([]any)
+	if !ok {
+		return nil, nil
+	}
+	for _, entry := range list {
+		n, isRaw := sgRefName(entry, ctx)
+		if isRaw {
+			findings = append(findings, Finding{"Resource " + id,
+				label + " contains a raw AWS security-group id (opaque) — reference an in-stack AWS::EC2::SecurityGroup or name a kind: SecurityGroup"})
+			continue
+		}
+		if n != "" {
+			names = append(names, n)
+		}
+	}
+	return names, findings
+}
+
 func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"ImageId": true, "InstanceType": true, "KeyName": true, "UserData": true,
@@ -637,15 +682,66 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		}
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
-
-	// Security-group isolation is a separate half (SG -> kind: SecurityGroup/NetworkPolicy) — dropping
-	// it quietly would misrepresent the VM's reachability.
-	for _, p := range []string{"SecurityGroupIds", "SecurityGroups", "NetworkInterfaces"} {
-		if _, ok := props[p]; ok {
-			cav = append(cav, p+" dropped — SECURITY: security-group isolation maps via kind: SecurityGroup (attach securityGroups natively; CFN SG translation is a follow-on). Do not assume the isolation it implied.")
+	// --- Network wiring: security-group attachment, subnet placement, public reachability ---
+	// Attach security groups to the VM and honor the primary NetworkInterface (DeviceIndex 0), rather
+	// than dropping them as a security caveat. SG !Refs resolve to kind: SecurityGroup names
+	// (spec.securityGroups); the NIC's SubnetId places the VM the same way a top-level SubnetId does;
+	// AssociatePublicIpAddress maps to expose — a LAN-reachable IP, the nearest open-infra analog of
+	// an auto-assigned public IP. A raw sg-/subnet- id in any of these is refused (opaque), like an AMI.
+	var sgNames []string
+	{
+		// Prefer the RAW properties (so an in-stack {Ref: SG} / {Fn::GetAtt} is still visible); fall
+		// back to the resolved props when there is no stack context (unit calls), where a concrete
+		// name or an opaque sg- id is still actionable.
+		var rawP map[string]any
+		if ctx != nil {
+			rawP, _ = ctx.rawProps(id)
+		}
+		listFor := func(prop string) any {
+			if rawP != nil {
+				return rawP[prop]
+			}
+			return props[prop]
+		}
+		n, ff := resolveSGList(id, "SecurityGroupIds", listFor("SecurityGroupIds"), ctx)
+		sgNames, f = append(sgNames, n...), append(f, ff...)
+		n, ff = resolveSGList(id, "SecurityGroups", listFor("SecurityGroups"), ctx)
+		sgNames, f = append(sgNames, n...), append(f, ff...)
+		if nis, ok := listFor("NetworkInterfaces").([]any); ok && len(nis) > 0 {
+			{
+				ni0 := primaryNIC(nis)
+				if ni0 != nil {
+					if sref, present := ni0["SubnetId"]; present {
+						if t, ok := getAttTarget(sref); ok && ctx != nil {
+							if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::Subnet" {
+								spec["subnet"] = k8sName(t)
+							}
+						} else if s, ok := concrete(sref); ok && s != "" {
+							if strings.HasPrefix(strings.ToLower(s), "subnet-") {
+								f = append(f, Finding{"Resource " + id, "NetworkInterfaces[0].SubnetId is a raw AWS subnet id (opaque) — name a kind: Subnet or reference an in-stack AWS::EC2::Subnet"})
+							} else {
+								spec["subnet"] = s
+							}
+						}
+					}
+					n, ff := resolveSGList(id, "NetworkInterfaces[0].GroupSet", ni0["GroupSet"], ctx)
+					sgNames, f = append(sgNames, n...), append(f, ff...)
+					if publicIPRequested(ni0["AssociatePublicIpAddress"]) {
+						spec["expose"] = true
+					}
+				}
+				if len(nis) > 1 {
+					cav = append(cav, "only the primary NetworkInterface (DeviceIndex 0) is mapped; additional interfaces were dropped")
+				}
+			}
 		}
 	}
+	if len(sgNames) > 0 {
+		spec["securityGroups"] = dedupStrings(sgNames)
+	}
+
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
+
 	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "IamInstanceProfile", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
 		if _, ok := props[p]; ok {
 			cav = append(cav, p+" dropped — no open-infra equivalent")
@@ -653,6 +749,61 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 	m.Caveats = cav
 	return m, f
+}
+
+// primaryNIC returns the NetworkInterface with DeviceIndex 0 (the primary), or the first entry when
+// no DeviceIndex is set. DeviceIndex may be an int, a float (JSON), or a string.
+func primaryNIC(nis []any) map[string]any {
+	var first map[string]any
+	for i, raw := range nis {
+		ni, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if i == 0 {
+			first = ni
+		}
+		switch di := ni["DeviceIndex"].(type) {
+		case string:
+			if di == "0" {
+				return ni
+			}
+		case float64:
+			if di == 0 {
+				return ni
+			}
+		case int:
+			if di == 0 {
+				return ni
+			}
+		}
+	}
+	return first
+}
+
+// publicIPRequested reports whether an AssociatePublicIpAddress value is truthy (bool true or the
+// string "true", which CloudFormation often uses).
+func publicIPRequested(v any) bool {
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	if s, ok := concrete(v); ok {
+		return strings.EqualFold(s, "true")
+	}
+	return false
+}
+
+// dedupStrings returns xs with duplicates removed, preserving first-seen order.
+func dedupStrings(xs []string) []string {
+	seen := make(map[string]bool, len(xs))
+	var out []string
+	for _, x := range xs {
+		if !seen[x] {
+			seen[x] = true
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // ---- AWS::EC2::VPC -> kind: Vpc ----

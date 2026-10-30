@@ -97,16 +97,33 @@ func TestTranslate_EC2Instance_UnknownInstanceTypeCaveat(t *testing.T) {
 	}
 }
 
-// #120 subnet half: a raw AWS subnet id is opaque and refuses; security groups stay a SECURITY caveat.
-func TestTranslate_EC2Instance_RawSubnetRefusesSGCaveat(t *testing.T) {
-	m, fs := translateEC2Instance("Web", map[string]any{
+// A raw AWS subnet id is opaque and refuses; a raw AWS security-group id likewise refuses (opaque),
+// rather than being silently dropped — both must be named as in-stack resources or kind: names.
+func TestTranslate_EC2Instance_RawSubnetAndSGRefuse(t *testing.T) {
+	_, fs := translateEC2Instance("Web", map[string]any{
 		"ImageId": "ubuntu-24.04", "SubnetId": "subnet-123", "SecurityGroupIds": []any{"sg-1"},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "raw AWS subnet id") {
-		t.Fatalf("a raw subnet- id must refuse with help, got: %s", findingsText(fs))
+	txt := findingsText(fs)
+	if !strings.Contains(txt, "raw AWS subnet id") {
+		t.Fatalf("a raw subnet- id must refuse with help, got: %s", txt)
 	}
-	if !strings.Contains(strings.Join(m.Caveats, "\n"), "SECURITY") {
-		t.Fatalf("SecurityGroupIds must stay a SECURITY caveat: %v", m.Caveats)
+	if !strings.Contains(txt, "raw AWS security-group id") {
+		t.Fatalf("a raw sg- id must refuse with help, got: %s", txt)
+	}
+}
+
+// A SecurityGroupIds naming a kind: SecurityGroup (plain name, not a raw sg- id) attaches it to the
+// VM via spec.securityGroups — the isolation is honored, not dropped.
+func TestTranslate_EC2Instance_SecurityGroupNameAttaches(t *testing.T) {
+	m, fs := translateEC2Instance("Web", map[string]any{
+		"ImageId": "ubuntu-24.04", "SecurityGroupIds": []any{"app-tier-sg"},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a kind: SecurityGroup name must attach cleanly: %s", findingsText(fs))
+	}
+	sgs, _ := m.Spec["securityGroups"].([]string)
+	if len(sgs) != 1 || sgs[0] != "app-tier-sg" {
+		t.Fatalf("SecurityGroupIds should attach to spec.securityGroups=[app-tier-sg], got %#v", m.Spec["securityGroups"])
 	}
 }
 
