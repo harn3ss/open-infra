@@ -38,6 +38,18 @@ spec:
           properties:
             spec:
               type: object
+              x-kubernetes-validations:
+                # A burstable function renders memoryRequest as the container's memory REQUEST and
+                # memory as its LIMIT; a container's request may not exceed its limit, or the
+                # Deployment is refused one layer down at creation and the Service sits NotReady
+                # with no cause visible on the claim (the claim is where a tenant looks, and it
+                # looks fine). This is a pure arithmetic invariant on two fields of the SAME claim,
+                # so reject it here at admission — naming both values — instead of emitting an
+                # invalid pod. quantity() normalizes units (1Gi vs 512Mi). Only enforced when both
+                # are set (memoryRequest is ignored unless burstable). Verified live by server
+                # dry-run (160Mi>128Mi rejected, 512Mi<1Gi accepted, cross-unit both ways).
+                - rule: "!has(self.memoryRequest) || !has(self.memory) || quantity(self.memoryRequest).compareTo(quantity(self.memory)) <= 0"
+                  messageExpression: "'spec.memoryRequest (' + self.memoryRequest + ') must not exceed spec.memory (' + self.memory + '): memoryRequest becomes the container memory request and memory its limit, and a request cannot exceed its limit — lower memoryRequest or raise memory.'"
               # Exactly one of spec.image (BYO container) or spec.code (a handler on a managed
               # runtime base image) — enforced in the composition. image is no longer required at
               # the schema level so a code-only Function validates; existing image Functions are

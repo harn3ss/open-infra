@@ -5762,6 +5762,12 @@ components:
           $ref: '#/components/schemas/ObjectMeta'
         spec:
           type: object
+          x-kubernetes-validations:
+          - rule: '!has(self.memoryRequest) || !has(self.memory) || quantity(self.memoryRequest).compareTo(quantity(self.memory))
+              <= 0'
+            messageExpression: "'spec.memoryRequest (' + self.memoryRequest + ') must not exceed spec.memory (' + self.memory\
+              \ + '): memoryRequest becomes the container memory request and memory its limit, and a request cannot exceed\
+              \ its limit \u2014 lower memoryRequest or raise memory.'"
           properties:
             image:
               type: string

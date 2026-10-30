@@ -65,6 +65,13 @@ estate (warm RSS per runtime, with headroom), then report the source of each num
 
 Override per function without a composition edit: `spec.memoryRequest: "192Mi"`.
 
+`memoryRequest` becomes the container's memory **request** and `memory` its **limit**, so
+`memoryRequest` must not exceed `memory` — a request above its limit is an invalid pod. The XRD
+rejects an inverted claim at admission, naming both values (e.g. *memoryRequest (160Mi) must not
+exceed memory (128Mi)*), rather than accepting it and failing cryptically at Deployment creation.
+So a function whose per-runtime floor would exceed its configured size must either raise `memory`
+or set a `memoryRequest` at or below it.
+
 ## Enabling it (per tenant, per wave)
 
 **Order matters — the quota goes on first.** Burstable without the quota is unbraked overcommit.
