@@ -105,6 +105,8 @@ var translators = map[string]translator{
 	"AWS::EC2::Route":                       translateEC2Route,
 	"AWS::DynamoDB::Table":                  translateDynamoDBTable,
 	"AWS::IAM::User":                        translateIAMUser,
+	"AWS::IAM::Role":                        translateIAMRole,
+	"AWS::IAM::InstanceProfile":             translateIAMInstanceProfile,
 	"AWS::IAM::Policy":                      translateIAMPolicy,
 	"AWS::IAM::ManagedPolicy":               translateManagedPolicy,
 	"AWS::SSM::Parameter":                   translateSSMParameter,
@@ -803,9 +805,20 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		spec["securityGroups"] = dedupStrings(sgNames)
 	}
 
+	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
+	// bind the VM to that kind: Role (the instance assumes it via the instance-metadata path, no static
+	// keys). An out-of-stack profile/arn can't be resolved to a kind: Role here — caveat, don't guess.
+	if _, present := props["IamInstanceProfile"]; present {
+		if role, ok := resolveInstanceRole(id, ctx); ok {
+			spec["instanceRole"] = role
+		} else {
+			cav = append(cav, "IamInstanceProfile could not be resolved to an in-stack AWS::IAM::Role — set spec.instanceRole to the kind: Role the VM should assume (it must trust the vm principal)")
+		}
+	}
+
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
 
-	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "IamInstanceProfile", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
+	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
 		if _, ok := props[p]; ok {
 			cav = append(cav, p+" dropped — no open-infra equivalent")
 		}
@@ -1532,6 +1545,160 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 		m.Caveats = append(m.Caveats, "LoginProfile dropped — set the user's password via an open-infra password Secret, not an inline console password")
 	}
 	return m, f
+}
+
+// ---- AWS::IAM::Role (EC2 instance-trust) -> kind: Role (trust: [vm]) ----
+//
+// The create-faithful part of an EC2 instance role is its TRUST: an AssumeRolePolicyDocument whose only
+// principal is the ec2.amazonaws.com service maps to a kind: Role that trusts the "vm" service
+// principal — assumable by a VM that names it as spec.instanceRole (the instance-metadata path). That
+// is the one trust shape derivable from the template; any OTHER principal (an AWS account/ARN, a
+// federated/SAML/OIDC principal, or a mix) has no faithful open-infra form and REFUSES, exactly as a
+// non-EC2 role did before.
+//
+// Permissions are NOT folded in: a kind: Role aggregates named kind: Policy objects (spec.policies),
+// and a translator emits a single manifest, so the role's inline Policies / ManagedPolicyArns cannot be
+// created alongside it here. They surface as a loud caveat (import each as a kind: Policy via the IAM
+// data-plane doorway and list it in spec.policies). The role is created with correct trust and no
+// permissions — a valid "trust anchor", exactly as the XRD and AWS both allow — never silently granting
+// or dropping access.
+func translateIAMRole(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{
+		"AssumeRolePolicyDocument": true, "RoleName": true, "Description": true,
+		"ManagedPolicyArns": true, "Policies": true, "PermissionsBoundary": true,
+		"Path": true, "Tags": true, "MaxSessionDuration": true,
+	}
+	var f []Finding
+	f = append(f, blockUnknownProps(id, props, known)...)
+
+	if !ec2TrustOnly(props["AssumeRolePolicyDocument"]) {
+		f = append(f, Finding{"Resource " + id, "only an EC2 instance-trust role translates: the AssumeRolePolicyDocument must Allow sts:AssumeRole for the ec2.amazonaws.com service principal and nothing else. A role trusting an account/ARN, a federated/SAML/OIDC principal, or a mix has no template-derivable open-infra trust — author the kind: Role natively (spec.trust)"})
+		return nil, f
+	}
+	spec := map[string]any{"trust": []any{"vm"}}
+	if d, ok := concrete(props["Description"]); ok && d != "" {
+		spec["description"] = d
+	}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Role", Name: k8sName(id), Spec: spec}
+	if _, ok := props["Policies"]; ok {
+		m.Caveats = append(m.Caveats, "inline Policies are NOT attached — a kind: Role aggregates named kind: Policy objects. Import each policy document via the IAM data-plane doorway (kind: Policy spec.dataPlane) and list it in this Role's spec.policies; until then the role grants nothing (trust anchor)")
+	}
+	if _, ok := props["ManagedPolicyArns"]; ok {
+		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore) have no open-infra equivalent; grant the needed data-plane access via a kind: Policy in spec.policies")
+	}
+	if _, ok := props["PermissionsBoundary"]; ok {
+		m.Caveats = append(m.Caveats, "PermissionsBoundary not mapped — set spec.permissionBoundary to a kind: Policy natively if a boundary is required")
+	}
+	return m, f
+}
+
+// ec2TrustOnly reports whether an AssumeRolePolicyDocument Allows sts:AssumeRole for the
+// ec2.amazonaws.com service principal and NOTHING else — the one trust shape with a faithful
+// open-infra mapping (spec.trust: [vm]).
+func ec2TrustOnly(doc any) bool {
+	m, ok := doc.(map[string]any)
+	if !ok {
+		return false
+	}
+	stmts, ok := m["Statement"].([]any)
+	if !ok || len(stmts) == 0 {
+		return false
+	}
+	for _, raw := range stmts {
+		s, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		if eff, _ := concrete(s["Effect"]); eff != "Allow" {
+			return false
+		}
+		p, ok := s["Principal"].(map[string]any)
+		if !ok || len(p) != 1 {
+			return false
+		}
+		if !onlyStringValue(p["Service"], "ec2.amazonaws.com") {
+			return false
+		}
+		if !allAssumeRole(s["Action"]) {
+			return false
+		}
+	}
+	return true
+}
+
+// onlyStringValue reports whether v is exactly want, either as a bare string or a single-element list.
+func onlyStringValue(v any, want string) bool {
+	if s, ok := concrete(v); ok {
+		return s == want
+	}
+	if l, ok := v.([]any); ok && len(l) == 1 {
+		s, ok := concrete(l[0])
+		return ok && s == want
+	}
+	return false
+}
+
+// allAssumeRole reports whether every action in v is sts:AssumeRole (string or list).
+func allAssumeRole(v any) bool {
+	check := func(x any) bool { s, ok := concrete(x); return ok && s == "sts:AssumeRole" }
+	if l, ok := v.([]any); ok {
+		if len(l) == 0 {
+			return false
+		}
+		for _, a := range l {
+			if !check(a) {
+				return false
+			}
+		}
+		return true
+	}
+	return check(v)
+}
+
+// ---- AWS::IAM::InstanceProfile -> (implicit) ----
+//
+// An instance profile is the AWS container that binds a Role to an EC2 instance. open-infra binds the
+// role directly on the VM (kind: VirtualMachine spec.instanceRole), so the profile provisions nothing
+// on its own — an EC2::Instance's IamInstanceProfile is resolved THROUGH it to the role name. A no-op
+// so a stack carrying it is not blocked.
+func translateIAMInstanceProfile(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{"Roles": true, "InstanceProfileName": true, "Path": true, "Tags": true}
+	return nil, blockUnknownProps(id, props, known)
+}
+
+// resolveInstanceRole turns an EC2::Instance's IamInstanceProfile into a kind: Role name. It follows a
+// !Ref/!GetAtt to an in-stack AWS::IAM::InstanceProfile, then that profile's first Roles entry (a
+// !Ref to an in-stack AWS::IAM::Role), returning that role's k8s name. Returns ("", false) when it
+// cannot resolve to an in-stack role (an out-of-stack profile/arn), so the caller can caveat rather
+// than guess a role name.
+func resolveInstanceRole(id string, ctx *stackCtx) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	raw, ok := ctx.rawProps(id)
+	if !ok {
+		return "", false
+	}
+	profID, ok := getAttTarget(raw["IamInstanceProfile"])
+	if !ok {
+		return "", false
+	}
+	prof, in := ctx.template.Resources[profID]
+	if !in || prof.Type != "AWS::IAM::InstanceProfile" {
+		return "", false
+	}
+	roles, ok := prof.Properties["Roles"].([]any)
+	if !ok || len(roles) == 0 {
+		return "", false
+	}
+	roleID, ok := getAttTarget(roles[0])
+	if !ok {
+		return "", false
+	}
+	if r, in := ctx.template.Resources[roleID]; !in || r.Type != "AWS::IAM::Role" {
+		return "", false
+	}
+	return k8sName(roleID), true
 }
 
 // ---- AWS::IAM::Policy -> kind: Policy (spec.dataPlane) ----

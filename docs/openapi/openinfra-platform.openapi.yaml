@@ -7752,9 +7752,11 @@ components:
             trust:
               type: array
               description: "Trust policy \u2014 the principals permitted to assume this role via sts:AssumeRole (kind: User\
-                \ names, or \"*\" for any authenticated principal). A role with no trust entries cannot be assumed by anyone\
-                \ (fail closed), exactly as an AWS role needs a trust policy. An assumed session acts with the role's attached\
-                \ policies."
+                \ names, or \"*\" for any authenticated principal). The service principal \"vm\" additionally makes the role\
+                \ assumable by a VM INSTANCE that names it as its spec.instanceRole \u2014 the open-infra analog of an AWS\
+                \ role trusting ec2.amazonaws.com (the instance obtains credentials from the instance metadata service, no\
+                \ static keys). A role with no trust entries cannot be assumed by anyone (fail closed), exactly as an AWS\
+                \ role needs a trust policy. An assumed session acts with the role's attached policies."
               items:
                 type: string
             permissionBoundary:
@@ -8804,6 +8806,13 @@ components:
                 \ with KubeVirt bridge binding) and does NOT work on this stack \u2014 a macvlan sub-interface cannot be a\
                 \ KubeVirt bridge port; use macvtap instead. macvtap/bridge require networking.vmLan enabled at install and\
                 \ nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md."
+            instanceRole:
+              type: string
+              description: "Name of a kind: Role (in this namespace) this VM assumes for aws-shim access \u2014 the EC2 instance-profile\
+                \ / IAM-role analog. The VM obtains short-lived, rotating credentials for this role from the instance metadata\
+                \ service at boot (no static keys on disk), exactly as an EC2 instance does via its instance profile. The\
+                \ named Role MUST trust the VM service principal (spec.trust including \"vm\"); a Role that does not is never\
+                \ assumable this way (fail closed). Omit for a VM with no AWS identity."
             securityGroups:
               type: array
               items:

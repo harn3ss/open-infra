@@ -122,10 +122,14 @@ Resources:
 	if strings.Contains(blockersJoined(p), "InstanceProfile") || strings.Contains(blockersJoined(p), "EIPAssociation") {
 		t.Fatalf("InstanceProfile/EIPAssociation must not be blockers, got:\n%s", blockersJoined(p))
 	}
-	// They map (Kind set) but are gated (not create-deployable) — the honest disposition.
+	// Neither is a hard blocker any more (both map). InstanceProfile is now create-deployable (an
+	// implicit no-op — the role binding lives on the VM); EIPAssociation still maps-but-gated.
 	for _, r := range p.Resources {
-		if (r.CFNType == "AWS::IAM::InstanceProfile" || r.CFNType == "AWS::EC2::EIPAssociation") && (r.Kind == "" || r.Deployable) {
-			t.Fatalf("%s should map (Kind set) and be gated (not Deployable): kind=%q deployable=%v", r.CFNType, r.Kind, r.Deployable)
+		if r.CFNType == "AWS::IAM::InstanceProfile" && (r.Kind == "" || !r.Deployable) {
+			t.Fatalf("InstanceProfile should map and be create-deployable (implicit): kind=%q deployable=%v", r.Kind, r.Deployable)
+		}
+		if r.CFNType == "AWS::EC2::EIPAssociation" && (r.Kind == "" || r.Deployable) {
+			t.Fatalf("EIPAssociation should map (Kind set) and be gated (not Deployable): kind=%q deployable=%v", r.Kind, r.Deployable)
 		}
 	}
 }

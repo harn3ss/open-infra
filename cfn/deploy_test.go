@@ -144,12 +144,12 @@ func TestDeploy_NoTranslator_NothingApplied(t *testing.T) {
 	tmpl := []byte(`
 Resources:
   R:
-    Type: AWS::IAM::Role
+    Type: AWS::IAM::Group
     Properties: { Path: / }
 `)
-	// sanity: it plans clean (IAM::Role is plan-supported)
+	// sanity: it plans clean (IAM::Group is plan-supported but has no create translator)
 	if p := mustPlan(t, tmpl, nil, ""); p.Verdict == Rejected {
-		t.Fatalf("precondition: IAM::Role should plan supported, got %s", p.Verdict)
+		t.Fatalf("precondition: IAM::Group should plan supported, got %s", p.Verdict)
 	}
 	f := &fakeApplier{}
 	_, err := Deploy(context.Background(), tmpl, deployOpts(), f)

@@ -98,6 +98,15 @@ spec:
                   enum: [masquerade, bridge, macvtap]
                   default: masquerade
                   description: "Network attachment. masquerade (default, supported) puts the VM behind the pod network (NAT) — reach it in-cluster via its Service, or from the LAN via expose/MetalLB. macvtap is the supported direct-LAN mode: a second NIC attaches straight to the physical LAN via a macvtap device (the VM pulls its own DHCP lease and is a first-class LAN host, e.g. reachable on SMB/445). bridge is the legacy LAN mode (Multus+macvlan with KubeVirt bridge binding) and does NOT work on this stack — a macvlan sub-interface cannot be a KubeVirt bridge port; use macvtap instead. macvtap/bridge require networking.vmLan enabled at install and nodes labelled openinfra.dev/vm-lan=true; see docs/virtual-machines.md."
+                instanceRole:
+                  type: string
+                  description: >-
+                    Name of a kind: Role (in this namespace) this VM assumes for aws-shim access — the
+                    EC2 instance-profile / IAM-role analog. The VM obtains short-lived, rotating
+                    credentials for this role from the instance metadata service at boot (no static keys
+                    on disk), exactly as an EC2 instance does via its instance profile. The named Role
+                    MUST trust the VM service principal (spec.trust including "vm"); a Role that does not
+                    is never assumable this way (fail closed). Omit for a VM with no AWS identity.
                 securityGroups:
                   type: array
                   items: { type: string }

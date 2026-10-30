@@ -57,6 +57,20 @@ func TestVM_DataDisks_ProvisionInOrder(t *testing.T) {
 	}
 }
 
+// spec.instanceRole labels the VMI/launcher pod so the metadata responder can map the caller pod to
+// its role. No instanceRole → no such label (a VM with no AWS identity).
+func TestVM_InstanceRole_LabelsForMetadataResponder(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	with := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
+	if !strings.Contains(with, "openinfra.dev/instance-role: app-role") {
+		t.Errorf("instanceRole must label the VMI/launcher pod; got:\n%s", grepCtx(with, "labels"))
+	}
+	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
+	if strings.Contains(without, "openinfra.dev/instance-role") {
+		t.Errorf("a VM with no instanceRole must carry no instance-role label; got:\n%s", grepCtx(without, "instance-role"))
+	}
+}
+
 // An HA VM's data disks must follow the root's storage policy — longhorn-migratable RWX Block — so
 // they live-migrate with the VM (a local-path data disk would pin the VM and break migration).
 func TestVM_DataDisks_FollowHAStoragePolicy(t *testing.T) {

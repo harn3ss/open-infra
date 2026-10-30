@@ -92,6 +92,10 @@ spec:
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
+            {{- /* Instance identity (IMDS): the kind: Role this VM assumes. Labelled onto the VMI +
+                   launcher pod so the instance-metadata responder can map the caller pod -> its role
+                   and mint scoped credentials. Inert until the responder is deployed. */}}
+            {{- $instanceRole := $spec.instanceRole | default "" }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -200,6 +204,11 @@ spec:
                                  so attached SGs' NetworkPolicies select the VM. */}}
                           {{- range $sg := ($spec.securityGroups | default list) }}
                           openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
+                          {{- /* Instance identity: the metadata responder maps the caller pod's IP to
+                                 this VMI and mints credentials for the named role. */}}
+                          {{- if $instanceRole }}
+                          openinfra.dev/instance-role: {{ $instanceRole }}
                           {{- end }}
                         {{- if $spec.subnet }}
                         annotations:
