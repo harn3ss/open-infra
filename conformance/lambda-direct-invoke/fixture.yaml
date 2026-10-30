@@ -1,0 +1,77 @@
+# Platform-owned e2e fixture proving the Lambda runtime's direct-invoke path end to end:
+# an open-appsync resolver -> a REAL kind: Function -> GraphQL, with the handler returning the
+# { statusCode, message, data } shape (NO body) that the old API-Gateway proxy mapping turned into null.
+#
+# With direct-invoke, $ctx.result is the WHOLE returned object, so the resolver's response template can
+# return $ctx.result.data and the GraphQL caller gets the data. Under the old proxy mapping the function
+# response would be an empty body -> $ctx.result null -> the field resolves to null. So a non-null
+# `probe.data` is the proof.
+#
+# This is a FIXTURE in this repo (not customer code). Apply it to run the e2e, then delete it:
+#   kubectl apply -f conformance/lambda-direct-invoke/fixture.yaml
+#   # (see README.md for the query + teardown)
+#
+# No customer data, names, or identifiers appear here — a synthetic handler and schema only.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-direct-invoke-code
+  namespace: default
+data:
+  # Returns the {statusCode, message, data} shape with NO `body`; throws when asked, to exercise the
+  # function-error signal (X-Amz-Function-Error) that direct-invoke surfaces as a resolver error.
+  index.js: |
+    exports.handler = async (event) => {
+      if (event && event.boom) { throw new Error("fixture: deliberate throw"); }
+      return {
+        statusCode: 200,
+        message: "ok",
+        data: { id: (event && event.id) || "probe", name: "open-infra" },
+      };
+    };
+---
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: fixture-direct-invoke-fn
+  namespace: default
+spec:
+  code:
+    runtime: nodejs22
+    handler: index.handler
+    source:
+      configMap: fixture-direct-invoke-code
+  # Cluster-local only; this fixture is invoked in-cluster by open-appsync.
+  expose: false
+---
+apiVersion: openinfra.dev/v1
+kind: GraphQLApi
+metadata:
+  name: fixture-direct-invoke
+  namespace: default
+spec:
+  schema: |
+    "A probe result returned by the fixture function."
+    type Probe { id: ID! name: String! }
+    type Query {
+      "Invokes the fixture Function and returns its .data — non-null only if direct-invoke carries the whole return."
+      probe(id: ID!): Probe
+    }
+  dataSources:
+    - name: fn
+      type: lambda
+      # The fixture Function's cluster-local Knative URL. Confirm/adjust with:
+      #   kubectl get ksvc -A | grep fixture-direct-invoke-fn
+      endpoint: "http://fixture-direct-invoke-fn.default.svc.cluster.local/"
+  resolvers:
+    - type: Query
+      field: probe
+      dataSource: fn
+      runtime: appsync-vtl
+      # Direct Lambda invoke: the whole payload is the event; the handler's raw return becomes $ctx.result.
+      request: |
+        { "version": "2018-05-29", "operation": "Invoke", "payload": { "id": $util.toJson($ctx.args.id) } }
+      # Return the function return's .data — proof that $ctx.result is the WHOLE object (not a proxy body).
+      response: |
+        $util.toJson($ctx.result.data)
