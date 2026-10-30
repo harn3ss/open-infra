@@ -38,6 +38,49 @@ func TestTranslate_EC2Instance_CatalogOS_Faithful(t *testing.T) {
 	}
 }
 
+// Extra EBS BlockDeviceMappings become boot-time data disks: the root device sets diskSize, each
+// other device → spec.dataDisks (named from its DeviceName), with the virtio device-name caveat.
+func TestTranslate_EC2Instance_ExtraBDMsToDataDisks(t *testing.T) {
+	m, fs := translateEC2Instance("Db", map[string]any{
+		"ImageId": "ubuntu-24.04",
+		"BlockDeviceMappings": []any{
+			map[string]any{"DeviceName": "/dev/sda1", "Ebs": map[string]any{"VolumeSize": float64(20)}},
+			map[string]any{"DeviceName": "/dev/sdf", "Ebs": map[string]any{"VolumeSize": float64(50), "VolumeType": "gp3"}},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a root + one unencrypted data disk must translate cleanly: %s", findingsText(fs))
+	}
+	if m.Spec["diskSize"] != "20Gi" {
+		t.Fatalf("root device should set diskSize=20Gi, got %#v", m.Spec["diskSize"])
+	}
+	dds, _ := m.Spec["dataDisks"].([]map[string]any)
+	if len(dds) != 1 || dds[0]["size"] != "50Gi" || dds[0]["name"] != "sdf" {
+		t.Fatalf("the /dev/sdf device should map to a dataDisk {name: sdf, size: 50Gi}, got %#v", m.Spec["dataDisks"])
+	}
+	caveats := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(caveats, "virtio") || !strings.Contains(caveats, "/dev/vdb") {
+		t.Fatalf("a device-name divergence caveat (virtio /dev/vdb, not the AWS name) is required: %v", m.Caveats)
+	}
+	if !strings.Contains(caveats, "VolumeType") {
+		t.Fatalf("VolumeType on a data disk should be a dropped-knob caveat: %v", m.Caveats)
+	}
+}
+
+// Fail-closed: an Encrypted data disk refuses rather than silently creating an unencrypted one.
+func TestTranslate_EC2Instance_EncryptedDataDiskRefuses(t *testing.T) {
+	_, fs := translateEC2Instance("Db", map[string]any{
+		"ImageId": "ubuntu-24.04",
+		"BlockDeviceMappings": []any{
+			map[string]any{"DeviceName": "/dev/sda1", "Ebs": map[string]any{"VolumeSize": float64(20)}},
+			map[string]any{"DeviceName": "/dev/sdf", "Ebs": map[string]any{"VolumeSize": float64(50), "Encrypted": true}},
+		},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "encrypted data BlockDeviceMapping") {
+		t.Fatalf("an encrypted data disk must refuse (no VM disk encryption today), got: %s", findingsText(fs))
+	}
+}
+
 // A raw ami- id is opaque: refuse with a message that names the catalog.
 func TestTranslate_EC2Instance_RawAmiRefusesWithHelp(t *testing.T) {
 	_, fs := translateEC2Instance("Web", map[string]any{"ImageId": "ami-0abc1234"}, nil)

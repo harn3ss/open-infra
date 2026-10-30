@@ -92,6 +92,14 @@ spec:
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
+            {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
+                   as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
+                   HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
+            {{- $dataDisks := list }}
+            {{- range $i, $dd := ($spec.dataDisks | default list) }}
+            {{-   $ddname := $dd.name | default (printf "data%d" (add $i 1)) }}
+            {{-   $dataDisks = append $dataDisks (dict "name" $ddname "size" $dd.size) }}
+            {{- end }}
             {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
             {{- $cpuModel := $spec.cpuModel | default "" }}
             {{- /* Boot firmware (bios|uefi + secureBoot + vTPM). A MIGRATED disk (existingRootClaim)
@@ -136,8 +144,11 @@ spec:
                       openinfra.dev/os: {{ $spec.os }}
                   spec:
                     runStrategy: {{ if $running }}Always{{ else }}Halted{{ end }}
-                    {{- if not $adopt }}
+                    {{- /* Root DV when not adopting; data-disk DVs always. Render the key if either
+                           exists so an adopted-root VM can still get fresh data disks. */}}
+                    {{- if or (not $adopt) $dataDisks }}
                     dataVolumeTemplates:
+                      {{- if not $adopt }}
                       - metadata:
                           name: {{ $name }}-root
                         spec:
@@ -160,6 +171,25 @@ spec:
                             registry:
                               url: "docker://{{ $profile.image }}"
                             {{- end }}
+                      {{- end }}
+                      {{- /* Blank data disks (#115). Same HA storage policy as root, so an HA VM's
+                             data disks live-migrate with it. Guest formats/mounts them. */}}
+                      {{- range $dd := $dataDisks }}
+                      - metadata:
+                          name: {{ $name }}-{{ $dd.name }}
+                        spec:
+                          storage:
+                            accessModes: [{{ if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+                            {{- if $ha }}
+                            volumeMode: Block
+                            {{- end }}
+                            resources:
+                              requests:
+                                storage: {{ $dd.size }}
+                            storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
+                          source:
+                            blank: {}
+                      {{- end }}
                     {{- end }}
                     template:
                       metadata:
@@ -284,6 +314,13 @@ spec:
                                 disk:
                                   bus: virtio
                               {{- end }}
+                              {{- /* Extra data disks (#115), virtio, in order — /dev/vdb, /dev/vdc, …
+                                     No bootOrder so they never compete with the root disk for boot. */}}
+                              {{- range $dd := $dataDisks }}
+                              - name: {{ $dd.name }}
+                                disk:
+                                  bus: virtio
+                              {{- end }}
                             interfaces:
                               - name: default
                                 masquerade: {}
@@ -369,6 +406,12 @@ spec:
                                   eth0: { dhcp4: true }
                                   eth1: { dhcp4: true }
                               {{- end }}
+                          {{- end }}
+                          {{- /* Extra data disks (#115): bind each virtio device to its DataVolume. */}}
+                          {{- range $dd := $dataDisks }}
+                          - name: {{ $dd.name }}
+                            dataVolume:
+                              name: {{ $name }}-{{ $dd.name }}
                           {{- end }}
             {{- if $isWin }}
             ---

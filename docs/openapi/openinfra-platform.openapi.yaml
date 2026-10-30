@@ -8733,6 +8733,27 @@ components:
               description: 'Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to
                 fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image''s C: can''t be
                 reliably auto-grown).'
+            dataDisks:
+              type: array
+              description: "Additional persistent data disks attached at boot, beyond the root disk (the EC2 extra-BlockDeviceMapping\
+                \ equivalent \u2014 e.g. a dedicated disk for a database's data directory). Each is a BLANK block volume (CDI),\
+                \ attached as a virtio device in the order listed: the first is /dev/vdb, the next /dev/vdc, and so on. NOTE\
+                \ the device names are virtio, NOT the AWS Nitro /dev/nvme1n1 or the /dev/sd* names \u2014 reference a data\
+                \ disk by UUID/label, or alias it in your userData, rather than a hard-coded /dev/nvme* path. Each disk follows\
+                \ the root's storage policy (highAvailability \u2192 longhorn-migratable RWX block, else local-path) and is\
+                \ retained across reboots and stop/start. The guest is responsible for partitioning/formatting/mounting it."
+              items:
+                type: object
+                required:
+                - size
+                properties:
+                  name:
+                    type: string
+                    description: "Stable name for this disk (the DataVolume/PVC suffix and the in-guest device order key).\
+                      \ Defaults to data1, data2, \u2026 in list order. Renaming replaces the disk."
+                  size:
+                    type: string
+                    description: Disk size, e.g. 50Gi.
             sshKey:
               type: string
               description: SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is

@@ -654,20 +654,81 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		cav = append(cav, "UserData could not be statically resolved (Fn::Sub/Fn::Base64 over references) — it was NOT applied; provide literal user data or configure the VM natively")
 	}
 
-	// --- BlockDeviceMappings: root device size -> diskSize; extras -> caveat ---
+	// --- BlockDeviceMappings: root device size -> diskSize; extra EBS devices -> spec.dataDisks ---
+	// The root device (a root-like DeviceName, else the first EBS device) sets diskSize. Every other
+	// EBS device becomes a boot-time data disk (spec.dataDisks), named from its DeviceName so it is
+	// recognizable. FAIL-CLOSED on encryption: a data disk marked Encrypted REFUSES, because VM disks
+	// have no at-rest encryption option today and silently creating an unencrypted disk the template
+	// said was encrypted would drop a security guarantee (same rule as EC2::Volume / RDS).
 	if bdms, ok := props["BlockDeviceMappings"].([]any); ok {
-		mappedRoot := false
-		for _, raw := range bdms {
+		rootDevNames := map[string]bool{
+			"/dev/sda1": true, "/dev/sda": true, "/dev/xvda": true, "/dev/xvda1": true, "/dev/nvme0n1": true,
+		}
+		// Pick the root index: an explicit root-like DeviceName wins; else the first EBS device.
+		rootIdx := -1
+		for i, raw := range bdms {
 			bdm, _ := raw.(map[string]any)
-			ebs, _ := bdm["Ebs"].(map[string]any)
-			if ebs != nil && !mappedRoot {
-				if vs, has := ebs["VolumeSize"]; has {
-					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))
-					mappedRoot = true
-					continue
+			if dn, _ := concrete(bdm["DeviceName"]); rootDevNames[dn] {
+				rootIdx = i
+				break
+			}
+		}
+		if rootIdx < 0 {
+			for i, raw := range bdms {
+				if bdm, _ := raw.(map[string]any); bdm["Ebs"] != nil {
+					rootIdx = i
+					break
 				}
 			}
-			cav = append(cav, "an extra BlockDeviceMapping was dropped — only the root device size maps to diskSize; attach additional disks as a kind: Volume")
+		}
+		var dataDisks []map[string]any
+		mappedExtraDevName := false
+		for i, raw := range bdms {
+			bdm, _ := raw.(map[string]any)
+			ebs, _ := bdm["Ebs"].(map[string]any)
+			if ebs == nil {
+				cav = append(cav, "a BlockDeviceMapping without an Ebs block was dropped (ephemeral/NoDevice has no open-infra equivalent)")
+				continue
+			}
+			if i == rootIdx {
+				if vs, has := ebs["VolumeSize"]; has {
+					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))
+				}
+				continue
+			}
+			// A non-root EBS device -> a data disk.
+			if enc, _ := ebs["Encrypted"].(bool); enc {
+				f = append(f, Finding{"Resource " + id, "an encrypted data BlockDeviceMapping cannot be honored — VM data disks have no at-rest encryption option today, and creating it unencrypted would drop the Encrypted guarantee. Omit Encrypted, or attach encrypted block storage via a kind: Volume (LUKS keyed by a kind: EncryptionKey)"})
+				continue
+			}
+			vs, has := ebs["VolumeSize"]
+			if !has {
+				f = append(f, Finding{"Resource " + id, "a data BlockDeviceMapping has no VolumeSize — a blank data disk needs an explicit size (a SnapshotId-only device has no open-infra source to restore from)"})
+				continue
+			}
+			disk := map[string]any{"size": fmt.Sprintf("%dGi", toInt(vs))}
+			if dn, _ := concrete(bdm["DeviceName"]); dn != "" {
+				if nm := k8sName(strings.TrimPrefix(dn, "/dev/")); nm != "" {
+					disk["name"] = nm
+				}
+			}
+			dataDisks = append(dataDisks, disk)
+			mappedExtraDevName = true
+			// Perf/lifecycle knobs with no honest VM-disk equivalent (same as EC2::Volume).
+			for _, p := range []string{"VolumeType", "Iops", "Throughput"} {
+				if _, ok := ebs[p]; ok {
+					cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": "+p+" dropped — a VM data disk is a StorageClass PVC (Longhorn/local-path), not provisioned-IOPS EBS")
+				}
+			}
+			if dot, ok := ebs["DeleteOnTermination"].(bool); ok && !dot {
+				cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": DeleteOnTermination=false does NOT map — a VM data disk shares the VM's lifecycle (it is deleted with the VM); detach-and-keep is not modeled")
+			}
+		}
+		if len(dataDisks) > 0 {
+			spec["dataDisks"] = dataDisks
+		}
+		if mappedExtraDevName {
+			cav = append(cav, "DEVICE NAMES: data disks attach as virtio devices in order (/dev/vdb, /dev/vdc, …), NOT the AWS DeviceName (/dev/sdf) or a Nitro name (/dev/nvme1n1). A UserData script that formats/mounts a data disk by a hard-coded /dev/nvme* or /dev/sd* path must be changed to the virtio path, or reference the disk by filesystem UUID/label.")
 		}
 	}
 
