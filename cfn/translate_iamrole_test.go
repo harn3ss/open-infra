@@ -123,6 +123,64 @@ Resources:
 	}
 }
 
+// #347 Phase 0.4 (regression): an inline Policies entry wrapped in !If must resolve to its chosen
+// branch, not be read as a literal {Fn::If: ...} map with no PolicyDocument and refused. The fix
+// resolves the WHOLE raw Policies list (synthInStackARNs + resolve) before reading entries, so the
+// !If evaluates and an AWS::NoValue branch drops out.
+func TestTranslate_IAMRole_InlinePolicyIfResolves(t *testing.T) {
+	tmpl := `
+Parameters:
+  Extra: { Type: String, Default: "true" }
+Conditions:
+  ExtraOn: !Equals [!Ref Extra, "true"]
+Resources:
+  Config:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: app-config }
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - !If
+          - ExtraOn
+          - PolicyName: app
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - { Effect: Allow, Action: "s3:GetObject", Resource: !GetAtt Config.Arn }
+          - !Ref AWS::NoValue
+`
+	// ON (default): the !If resolves to its first branch and becomes a companion Policy. Before
+	// the fix the raw entry was the literal {Fn::If: ...} with no PolicyDocument, so it refused.
+	on := ecsCtx(t, tmpl)
+	m, fs := translateIAMRole("AppRole", resolvedProps(t, on, "AppRole"), on)
+	if len(fs) != 0 {
+		t.Fatalf("an !If-wrapped inline policy must resolve, not refuse: %s", findingsText(fs))
+	}
+	if len(m.Extra) != 1 {
+		t.Fatalf("want 1 companion Policy from the ON branch, got %d", len(m.Extra))
+	}
+	dp, _ := m.Extra[0].Spec["dataPlane"].(map[string]any)
+	flat := strings.ToLower(strings.Join(deepStrings(dp["statements"]), " "))
+	if !strings.Contains(flat, "app-config") {
+		t.Fatalf("the resolved policy must scope to the in-stack bucket, got %#v", dp["statements"])
+	}
+	// OFF: the entry resolves to AWS::NoValue and drops out — no companion, and no finding (a
+	// conditioned-off inline policy is absent, not an error).
+	off := ctxWithParams(t, tmpl, map[string]string{"Extra": "false"})
+	mOff, fsOff := translateIAMRole("AppRole", resolvedProps(t, off, "AppRole"), off)
+	if len(fsOff) != 0 {
+		t.Fatalf("a conditioned-OFF inline policy must not produce a finding: %s", findingsText(fsOff))
+	}
+	if len(mOff.Extra) != 0 {
+		t.Fatalf("the OFF branch must yield no companion Policy, got %d", len(mOff.Extra))
+	}
+}
+
 // A role trusting anything other than the ec2 service (here an AWS account principal) refuses —
 // no template-derivable open-infra trust.
 func TestTranslate_IAMRole_NonEc2TrustRefuses(t *testing.T) {

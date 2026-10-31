@@ -1698,11 +1698,18 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 // it falls back to the already-resolved list when there is no stack context.
 func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest, []Finding) {
 	list, _ := resolved.([]any)
-	useRaw := false
 	if ctx != nil {
 		if raw, ok := ctx.rawProps(roleID); ok {
-			if rp, ok := raw["Policies"].([]any); ok {
-				list, useRaw = rp, true
+			if rawPol, ok := raw["Policies"]; ok {
+				// Resolve the WHOLE raw Policies value, not each PolicyDocument in isolation: first
+				// synthesize in-stack !GetAtt <X>.Arn to synthetic ARNs, then resolve the rest. This
+				// evaluates an !If (Fn::If) wrapping an entry — or the whole list — and drops
+				// AWS::NoValue branches, so a conditionally-included inline policy resolves to its
+				// chosen branch. Reading the raw per-entry map instead made every !If-wrapped entry a
+				// literal {Fn::If: ...} with no PolicyDocument, so it was always refused (the regression).
+				if rl, ok := ctx.resolver.resolve(synthInStackARNs(rawPol, ctx)).([]any); ok {
+					list = rl
+				}
 			}
 		}
 	}
@@ -1724,11 +1731,8 @@ func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest
 			continue
 		}
 		pname := p["PolicyName"]
-		if useRaw && ctx != nil {
-			// Synthesize in-stack !GetAtt <X>.Arn Resources to real ARNs, then resolve remaining intrinsics.
-			doc = ctx.resolver.resolve(synthInStackARNs(doc, ctx))
-			pname = ctx.resolveVal(pname)
-		}
+		// doc and pname are already fully resolved — the whole raw Policies list was run through
+		// synthInStackARNs + resolve above, so in-stack ARNs and intrinsics are already applied.
 		docJSON, err := json.Marshal(doc)
 		if err != nil {
 			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] PolicyDocument is not serializable: %s", i, err.Error())})

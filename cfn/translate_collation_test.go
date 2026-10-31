@@ -101,6 +101,66 @@ Resources:
 	}
 }
 
+// SECURITY (#347 Phase 0.3): the API Gateway collation walks — apigwAllOfType, apigwRestAPICount
+// and apigwUsagePlanKeys — are bespoke (they predate collatedChildren), so each must filter
+// conditioned-OFF resources itself. A gated-off ApiKey or UsagePlan attached anyway is a rule the
+// template said to leave out, deployed silently; a gated-off second RestApi miscounts single-vs-multi.
+func TestApigwCollation_ExcludesConditionedOff(t *testing.T) {
+	tmpl := `
+Parameters:
+  Premium: { Type: String, Default: "false" }
+Conditions:
+  PremiumOn: !Equals [!Ref Premium, "true"]
+Resources:
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties: { Name: main }
+  SecondApi:
+    Type: AWS::ApiGateway::RestApi
+    Condition: PremiumOn
+    Properties: { Name: premium }
+  KeyA:
+    Type: AWS::ApiGateway::ApiKey
+    Properties: { Name: base }
+  KeyPremium:
+    Type: AWS::ApiGateway::ApiKey
+    Condition: PremiumOn
+    Properties: { Name: premium }
+  Plan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties: { UsagePlanName: plan }
+  LinkBase:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties: { UsagePlanId: !Ref Plan, KeyId: !Ref KeyA, KeyType: API_KEY }
+  LinkPremium:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Condition: PremiumOn
+    Properties: { UsagePlanId: !Ref Plan, KeyId: !Ref KeyPremium, KeyType: API_KEY }
+`
+	// OFF (default): one API, one key, one plan-key link.
+	off := ecsCtx(t, tmpl)
+	if keys := off.apigwAllOfType("AWS::ApiGateway::ApiKey"); len(keys) != 1 || keys[0] != "KeyA" {
+		t.Errorf("conditioned-OFF ApiKey must be excluded — want [KeyA], got %v", keys)
+	}
+	if n := off.apigwRestAPICount(); n != 1 {
+		t.Errorf("conditioned-OFF RestApi must not be counted — want 1, got %d", n)
+	}
+	if pk := off.apigwUsagePlanKeys("Plan"); len(pk) != 1 || pk[0] != "KeyA" {
+		t.Errorf("conditioned-OFF UsagePlanKey must be excluded — want [KeyA], got %v", pk)
+	}
+	// ON: both of each collate (proving the skip is condition-driven, not a parse miss).
+	on := ctxWithParams(t, tmpl, map[string]string{"Premium": "true"})
+	if keys := on.apigwAllOfType("AWS::ApiGateway::ApiKey"); len(keys) != 2 {
+		t.Errorf("with the condition ON both ApiKeys collate — want 2, got %v", keys)
+	}
+	if n := on.apigwRestAPICount(); n != 2 {
+		t.Errorf("with the condition ON both RestApis count — want 2, got %d", n)
+	}
+	if pk := on.apigwUsagePlanKeys("Plan"); len(pk) != 2 {
+		t.Errorf("with the condition ON both UsagePlanKeys collate — want 2, got %v", pk)
+	}
+}
+
 // snsQueuesForFunction (a bespoke collation) also excludes a conditioned-OFF subscription/topic.
 func TestSnsQueuesForFunction_ExcludesConditionedOff(t *testing.T) {
 	tmpl := `

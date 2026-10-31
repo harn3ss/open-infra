@@ -322,7 +322,10 @@ func (c *stackCtx) apigwParentRef(parentIDRaw any, apiID string) string {
 func (c *stackCtx) apigwAllOfType(cfnType string) []string {
 	var ids []string
 	for cid, res := range c.template.Resources {
-		if res.Type == cfnType {
+		// included() is the guard: a resource its template Conditions-off must not be collated
+		// into the API, exactly as it must not be provisioned. Without it a gated-off ApiKey or
+		// UsagePlan is attached anyway — a silently-deployed rule the template said to leave out.
+		if res.Type == cfnType && c.included(res) {
 			ids = append(ids, cid)
 		}
 	}
@@ -333,7 +336,7 @@ func (c *stackCtx) apigwAllOfType(cfnType string) []string {
 func (c *stackCtx) apigwRestAPICount() int {
 	n := 0
 	for _, res := range c.template.Resources {
-		if res.Type == "AWS::ApiGateway::RestApi" {
+		if res.Type == "AWS::ApiGateway::RestApi" && c.included(res) {
 			n++
 		}
 	}
@@ -345,7 +348,7 @@ func (c *stackCtx) apigwRestAPICount() int {
 func (c *stackCtx) apigwUsagePlanKeys(planID string) []string {
 	var keys []string
 	for cid, res := range c.template.Resources {
-		if res.Type != "AWS::ApiGateway::UsagePlanKey" {
+		if res.Type != "AWS::ApiGateway::UsagePlanKey" || !c.included(res) {
 			continue
 		}
 		raw, _ := c.rawProps(cid)
