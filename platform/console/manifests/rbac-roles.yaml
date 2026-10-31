@@ -144,6 +144,14 @@ rules:
       - backupplans
       - backupvaults
       - configrules
+      # aws-shim coarse authz scopes (#345.6 / #347 Phase 0.2): repositories = ECR
+      # (registry login/push/pull), secrets = Secrets Manager. These are the shim's OWN
+      # resource types (split off "applications"), so a power user keeps ECR + Secrets
+      # Manager once the shim gates on them. NOTE: "secrets" here is secrets.openinfra.dev
+      # (apiGroup openinfra.dev), NOT core k8s Secrets — the "NOT secrets/RBAC" above still
+      # holds (no apiGroups:[""] secrets, no rbac.authorization.k8s.io here).
+      - repositories
+      - secrets
       # kube-ovn networking family (#120)
       - vpcs
       - subnets
