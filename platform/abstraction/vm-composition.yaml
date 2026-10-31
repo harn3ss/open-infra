@@ -532,7 +532,7 @@ spec:
                           {{ $user }}:{{ $pass }}
                       packages:
                         - qemu-guest-agent
-                      {{- if or $spec.userData $instanceRole }}
+                      {{- if or $spec.userData $instanceRole $dataDisks }}
                       write_files:
                         {{- if $instanceRole }}
                         - path: /etc/environment
@@ -544,6 +544,23 @@ spec:
                           permissions: '0755'
                           content: {{ $spec.userData | toJson }}
                         {{- end }}
+                        {{- if $dataDisks }}
+                        {{- /* AWS Nitro device-name aliases (#115/#344): an unmodified lift-and-shift
+                               UserData script formats/mounts its data disk by the Nitro name AWS gives it
+                               (/dev/nvme1n1, …), but KubeVirt presents the disks as virtio (/dev/vdb, …).
+                               udev symlinks bridge the two so the script runs unchanged. Root is
+                               nvme0n1 -> vda; data disk i (0-based) is nvme(i+1)n1 -> vd{b,c,…}. Partitions
+                               alias through %n (vdb1 -> nvme1n1p1). */}}
+                        {{- $vdl := list "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" }}
+                        - path: /etc/udev/rules.d/99-openinfra-aws-device-names.rules
+                          content: |
+                            KERNEL=="vda", SYMLINK+="nvme0n1"
+                            KERNEL=="vda[0-9]*", SYMLINK+="nvme0n1p%n"
+                            {{- range $i, $dd := $dataDisks }}
+                            KERNEL=="vd{{ index $vdl $i }}", SYMLINK+="nvme{{ add $i 1 }}n1"
+                            KERNEL=="vd{{ index $vdl $i }}[0-9]*", SYMLINK+="nvme{{ add $i 1 }}n1p%n"
+                            {{- end }}
+                        {{- end }}
                       {{- end }}
                       {{- if $instanceRole }}
                       {{- /* Mount the workload-identity token iso and COPY the token to a readable
@@ -554,6 +571,13 @@ spec:
                         - [ bash, -c, "mkdir -p /mnt/openinfra-identity /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; cp -f /mnt/openinfra-identity/token /run/openinfra-identity/token 2>/dev/null && chmod 0644 /run/openinfra-identity/token || true" ]
                       {{- end }}
                       runcmd:
+                        {{- if $dataDisks }}
+                        # Materialize the AWS Nitro device-name symlinks BEFORE the user's UserData runs,
+                        # so a script that formats/mounts /dev/nvme1n1 finds it.
+                        - [ udevadm, control, --reload-rules ]
+                        - [ udevadm, trigger ]
+                        - [ udevadm, settle ]
+                        {{- end }}
                         - [systemctl, enable, --now, qemu-guest-agent]
                         {{- if $spec.userData }}
                         - [/bin/sh, /opt/openinfra-userdata]

@@ -57,6 +57,36 @@ func TestVM_DataDisks_ProvisionInOrder(t *testing.T) {
 	}
 }
 
+// Data disks get AWS Nitro device-name aliases so an unmodified lift-and-shift UserData script that
+// formats/mounts /dev/nvme1n1 works on KubeVirt virtio disks (/dev/vdb). The composition drops a udev
+// rules file and triggers udev before the user's script runs.
+func TestVM_DataDisks_NitroDeviceNameAliases(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"dataDisks": []any{
+			map[string]any{"size": "50Gi"},                  // → /dev/vdb → nvme1n1
+			map[string]any{"name": "extra", "size": "30Gi"}, // → /dev/vdc → nvme2n1
+		},
+	}))
+	for _, want := range []string{
+		"99-openinfra-aws-device-names.rules",
+		`KERNEL=="vdb", SYMLINK+="nvme1n1"`,
+		`KERNEL=="vdb[0-9]*", SYMLINK+="nvme1n1p%n"`, // partitions too
+		`KERNEL=="vdc", SYMLINK+="nvme2n1"`,
+		`KERNEL=="vda", SYMLINK+="nvme0n1"`, // root alias
+		"udevadm",                           // udev is reloaded/triggered before UserData
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Nitro device-name aliasing missing %q; got:\n%s", want, grepCtx(out, "nvme"))
+		}
+	}
+	// A VM with NO data disks must not carry the alias rules file.
+	none := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
+	if strings.Contains(none, "aws-device-names") {
+		t.Errorf("a VM with no data disks must not emit the Nitro alias rules; got:\n%s", grepCtx(none, "device-names"))
+	}
+}
+
 // spec.instanceRole wires the VM's workload identity: a per-VM ServiceAccount (annotated with the
 // role), its token projected onto an "identity" serviceAccount disk, and cloud-init pointing the AWS
 // container-credentials provider at the shim. No instanceRole → none of this (a VM with no identity).
