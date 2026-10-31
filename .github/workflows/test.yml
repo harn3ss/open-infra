@@ -207,3 +207,17 @@ jobs:
 
       - name: chaos shell scripts parse (bash -n)
         run: for f in chaos/*.sh; do bash -n "$f"; done
+
+  vm-creds-cli:
+    name: vm-creds-cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # #347 Phase 2.12 (§3.4): the real aws CLIs must resolve VM container credentials using the
+      # EXACT env the VM composition renders — the end-to-end guard for the #11
+      # AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE fix. ubuntu-latest ships aws-cli v2 (the hard gate);
+      # install the distro v1 for the best-effort old-SDK check.
+      - name: install distro awscli (v1) for the best-effort old-SDK check
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq awscli || true
+      - name: VM container-credentials CLI test
+        run: python3 test/vm-creds/container_creds_cli_test.py
