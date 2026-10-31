@@ -126,6 +126,11 @@ spec:
         - backupplans:*
         - backupvaults:*
         - configrules:*
+        # Registry repositories (ECR front door) and Secrets Manager each have their OWN coarse
+        # resource type at the shim, so registry login/push and secret access are least-privilege
+        # separable (#345.6) — a power user operates both, so both are listed here explicitly.
+        - repositories:*
+        - secrets:*
       resources: ["*"]
     - effect: Allow
       actions: ["faultinjections:Get", "faultinjections:List", "faultinjections:Watch"]

@@ -127,8 +127,10 @@ func (h *secretsHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	// One policy world: coarse impersonated SubjectAccessReview.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, secretName); !allowed {
+	// Coarse impersonated SubjectAccessReview. Secrets Manager has its OWN resource type ("secrets") so
+	// reading/writing secrets is a distinct grant from registry login/push (which gates on "repositories")
+	// — least privilege for one front door does not leak into the other (#345.6).
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "secrets", h.authzNS, secretName); !allowed {
 		h.auditDeny(ctx, op, secretName, reason)
 		writeSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return

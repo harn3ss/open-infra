@@ -511,7 +511,10 @@ never transcoded.
 with `InvalidRequestException` while `RestoreSecret` still brings it back; `ForceDeleteWithoutRecovery`
 skips the window. ARNs carry AWS's six-character random suffix, stable for the secret's life.
 
-Authorized through the one policy world at **per-secret** granularity: **`secretsmanager:GetSecretValue`
+Authorized through the one policy world at **per-secret** granularity. The coarse gate is the impersonated
+`SubjectAccessReview` on **`openinfra.dev/secrets`** — Secrets Manager's **own** coarse resource type, distinct
+from the registry's (`repositories`), so a grant to read/write secrets is not the same grant as registry
+login/push and neither leaks into the other. On top of that: **`secretsmanager:GetSecretValue`
 is separable from `secretsmanager:DescribeSecret`** (metadata-read is a different privilege from
 value-read), and a principal scoped to secret A cannot read secret B. Every operation writes a structured
 `secretsmanager audit` record (principal, op, secret, version/stage, decision) → Loki. This doorway is
@@ -1161,10 +1164,14 @@ real config+layers **size** — are answered from the **backing registry's `/v2`
 deletes each distinct manifest before the record.
 
 **Authorization is the one policy world** every front door uses: the coarse impersonated `SubjectAccessReview`
-on `openinfra.dev/applications` (repository create/config → `create`, reads/token → `get`, deletions →
-`delete`) plus the additive fine-grained Cedar `ecr:<Op>` at repository granularity. The **control plane is
-therefore caller-gated** — a reader cannot create or delete repositories. The doorway's own records are
-written with the shim ServiceAccount (the analog of AWS's service-side metadata, never a customer resource).
+on **`openinfra.dev/repositories`** (repository create/config → `create`, reads/token → `get`, deletions →
+`delete`) plus the additive fine-grained Cedar `ecr:<Op>` at repository granularity. The registry has its **own
+coarse resource type** (`repositories`) — distinct from Secrets Manager's (`secrets`) — so a grant that lets a
+principal log in and push images does **not** also let it read every Secrets Manager secret, and vice versa;
+least privilege for one front door never leaks into the other. The managed `PowerUserAccess`/`ReadOnlyAccess`
+policies carry `repositories:*`/`repositories:Get…`; `AdministratorAccess` (`*:*`) covers it. The **control
+plane is therefore caller-gated** — a reader cannot create or delete repositories. The doorway's own records
+are written with the shim ServiceAccount (the analog of AWS's service-side metadata, never a customer resource).
 
 **Refused, not faked** (each returns a 400 `InvalidParameterException` naming the op + why): **image scanning**
 (no scanner backend), **lifecycle policies**, **cross-region replication**, **repository/registry resource

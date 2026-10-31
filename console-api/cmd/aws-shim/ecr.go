@@ -189,8 +189,10 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	body := readJSONBody(r)
 	repoName := ecrResource(op, body)
 
-	// One policy world: the coarse impersonated SubjectAccessReview (resource-agnostic, as every front door).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, repoName); !allowed {
+	// Coarse impersonated SubjectAccessReview. ECR has its OWN resource type ("repositories") so a grant
+	// for registry login/push does NOT also unlock Secrets Manager (which gates on "secrets") — the two
+	// front doors are least-privilege-separable, not coupled through a shared "applications" gate (#345.6).
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repoName); !allowed {
 		h.audit(ctx, op, repoName, "deny", reason)
 		writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
