@@ -32,6 +32,22 @@ import (
 
 const compositionPath = "../../platform/abstraction/composition.yaml"
 
+// The Application ingress NetworkPolicy must admit the kube-ovn join subnet (100.64.0.0/16): kube-ovn
+// SNATs in-cluster Service (ClusterIP) traffic and hostNetwork ingress to a node join IP, so without it
+// the netpol blocks the app's OWN Service name from its own namespace (the #345.2 bug).
+func TestApplication_NetpolAdmitsJoinSubnet(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec":     map[string]any{"image": "ghcr.io/x/app:latest"},
+		"metadata": map[string]any{"uid": "00000000-0000-0000-0000-000000000abc", "labels": map[string]any{"crossplane.io/claim-name": "myapp", "crossplane.io/claim-namespace": "default"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	np := grepCtx(out, "NetworkPolicy")
+	if !strings.Contains(out, "cidr: 100.64.0.0/16") {
+		t.Errorf("the Application ingress netpol must admit the kube-ovn join subnet (100.64.0.0/16); got:\n%s", np)
+	}
+}
+
 func TestManagedDB_HibernationAlwaysExplicit(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 

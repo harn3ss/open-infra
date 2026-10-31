@@ -508,9 +508,15 @@ spec:
                       services: "{{ $quota.services | default "60" }}"
             ---
             # --- Tenant isolation: restrict ingress to the app's pods to the same
-            #     namespace + the ingress controller (kube-system). Egress stays
-            #     open so DNS / DB / MinIO / NATS keep working. (k3s exempts
-            #     kubelet health probes, verified.) ---
+            #     namespace + the ingress controller (kube-system) + the kube-ovn join
+            #     subnet. Egress stays open so DNS / DB / MinIO / NATS keep working.
+            #     (kube-ovn exempts kubelet health probes, verified.)
+            #
+            #     The join subnet (100.64.0.0/16, set by install.sh) is REQUIRED: kube-ovn
+            #     SNATs in-cluster Service (ClusterIP) traffic — and hostNetwork ingress like
+            #     Traefik — to a node's join IP (100.64.0.x), so without it an Application
+            #     could not even be reached by its OWN Service name from its own namespace
+            #     (the namespaceSelector never matches a join-subnet source). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -528,12 +534,17 @@ spec:
                     ingress:
                       - from:
                           # same namespace (matched via the auto-applied name label;
-                          # Cilium enforces the policy)
+                          # kube-ovn enforces the policy)
                           - namespaceSelector:
                               matchLabels: { kubernetes.io/metadata.name: {{ $ns }} }
                           # the ingress controller (Traefik) so external traffic works
                           - namespaceSelector:
                               matchLabels: { kubernetes.io/metadata.name: kube-system }
+                          # the kube-ovn join subnet: ClusterIP Service traffic (and
+                          # hostNetwork ingress) is SNAT'd to a node join IP (100.64.0.x),
+                          # so this is what admits same-namespace Service-name calls and
+                          # Traefik. Without it the netpol blocks the app's own Service.
+                          - ipBlock: { cidr: 100.64.0.0/16 }
             {{- if $spec.database }}
             {{- if eq $dbEngine "mongo" }}
             ---
