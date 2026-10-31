@@ -102,7 +102,7 @@ spec:
             {{- $dataDisks := list }}
             {{- range $i, $dd := ($spec.dataDisks | default list) }}
             {{-   $ddname := $dd.name | default (printf "data%d" (add $i 1)) }}
-            {{-   $dataDisks = append $dataDisks (dict "name" $ddname "size" $dd.size) }}
+            {{-   $dataDisks = append $dataDisks (dict "name" $ddname "size" $dd.size "encrypted" ($dd.encrypted | default false) "encryptionKey" ($dd.encryptionKey | default "")) }}
             {{- end }}
             {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
             {{- $cpuModel := $spec.cpuModel | default "" }}
@@ -181,16 +181,27 @@ spec:
                       {{- range $dd := $dataDisks }}
                       - metadata:
                           name: {{ $name }}-{{ $dd.name }}
+                          {{- if $dd.encrypted }}
+                          annotations:
+                            # LUKS at rest: the volume-crypto reconciler keys this disk from the named
+                            # EncryptionKey (CDI copies DataVolume annotations onto the PVC it creates,
+                            # which is what the reconciler selects on). Destroying the key crypto-erases it.
+                            openinfra.dev/encryption-key: {{ $dd.encryptionKey | quote }}
+                          {{- end }}
                         spec:
                           storage:
-                            accessModes: [{{ if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
-                            {{- if $ha }}
+                            {{- /* An encrypted disk is longhorn-encrypted (LUKS) and RWO — there is no
+                                   encrypted+migratable class — so it ignores the HA/local-path policy
+                                   (and pins live migration, as documented). Otherwise: HA → migratable
+                                   RWX block; non-HA → local-path. */}}
+                            accessModes: [{{ if $dd.encrypted }}ReadWriteOnce{{ else if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+                            {{- if or $ha $dd.encrypted }}
                             volumeMode: Block
                             {{- end }}
                             resources:
                               requests:
                                 storage: {{ $dd.size }}
-                            storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
+                            storageClassName: {{ if $dd.encrypted }}longhorn-encrypted{{ else if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                           source:
                             blank: {}
                       {{- end }}

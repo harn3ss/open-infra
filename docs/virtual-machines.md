@@ -178,13 +178,24 @@ spec:
   diskSize: 20Gi
   dataDisks:
     - { name: pgdata, size: 100Gi }
+    - { name: secrets, size: 10Gi, encrypted: true, encryptionKey: db-key }  # LUKS at rest
 ```
 
-Each is a blank block volume attached as a virtio device in order — `/dev/vdb`, `/dev/vdc`, … (**not**
-the AWS `/dev/sdf` or Nitro `/dev/nvme1n1` names; reference them by filesystem UUID/label, or in your
-`userData`). Each follows the root's storage policy (`highAvailability` → longhorn-migratable RWX block
-so they live-migrate with the VM, else local-path) and is retained across reboots and stop/start. The
-guest partitions/formats/mounts them.
+Each is a blank block volume attached as a virtio device in order — `/dev/vdb`, `/dev/vdc`, …. A udev
+rule **aliases the AWS Nitro names** (`/dev/nvme1n1`, …) and their partitions onto the virtio devices
+(root `nvme0n1`→`vda`, data disk *i* `nvme(i+1)n1`→`vd{b,c,…}`), so a lift-and-shift `userData` script
+that formats/mounts by a hard-coded `/dev/nvme*` path works unmodified; you can also reference a disk by
+filesystem UUID/label. Each follows the root's storage policy (`highAvailability` → longhorn-migratable
+RWX block so they live-migrate with the VM, else local-path) and is retained across reboots and
+stop/start. The guest partitions/formats/mounts them.
+
+**Encryption at rest.** Set `encrypted: true` + `encryptionKey: <kind: EncryptionKey name>` to put a
+data disk on LUKS (Longhorn `longhorn-encrypted`), keyed by a Vault Transit data key wrapped by that
+`EncryptionKey` — destroying the key crypto-erases the disk (the EC2 `Ebs.Encrypted` analog; `cfn` maps
+an encrypted `BlockDeviceMapping` whose `KmsKeyId` references an in-stack `AWS::KMS::Key`). Requires the
+opt-in encryption component. An encrypted disk is **RWO** (there is no encrypted+migratable class), so on
+a `highAvailability` VM it pins live migration — keep encrypted data on a non-HA VM, or accept that the
+VM won't live-migrate while it's attached.
 
 ## Access
 

@@ -57,6 +57,31 @@ func TestVM_DataDisks_ProvisionInOrder(t *testing.T) {
 	}
 }
 
+// An encrypted data disk renders as a longhorn-encrypted RWO Block volume carrying the
+// openinfra.dev/encryption-key annotation (what the volume-crypto reconciler selects on), regardless
+// of the VM's HA policy — there is no encrypted+migratable class.
+func TestVM_DataDisks_Encrypted(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"dataDisks": []any{
+			map[string]any{"name": "db", "size": "100Gi", "encrypted": true, "encryptionKey": "db-key"},
+		},
+	}))
+	for _, want := range []string{
+		"name: myvm-db",
+		"storageClassName: longhorn-encrypted",
+		"openinfra.dev/encryption-key: \"db-key\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("encrypted data disk missing %q; got:\n%s", want, grepCtx(out, "db"))
+		}
+	}
+	// An encrypted disk is RWO even though nothing forced HA here (no RWX migratable encrypted class).
+	if strings.Contains(grepCtx(out, "myvm-db"), "ReadWriteMany") {
+		t.Errorf("an encrypted data disk must be RWO, not RWX; got:\n%s", grepCtx(out, "myvm-db"))
+	}
+}
+
 // Data disks get AWS Nitro device-name aliases so an unmodified lift-and-shift UserData script that
 // formats/mounts /dev/nvme1n1 works on KubeVirt virtio disks (/dev/vdb). The composition drops a udev
 // rules file and triggers udev before the user's script runs.

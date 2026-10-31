@@ -8742,10 +8742,11 @@ components:
               description: "Additional persistent data disks attached at boot, beyond the root disk (the EC2 extra-BlockDeviceMapping\
                 \ equivalent \u2014 e.g. a dedicated disk for a database's data directory). Each is a BLANK block volume (CDI),\
                 \ attached as a virtio device in the order listed: the first is /dev/vdb, the next /dev/vdc, and so on. NOTE\
-                \ the device names are virtio, NOT the AWS Nitro /dev/nvme1n1 or the /dev/sd* names \u2014 reference a data\
-                \ disk by UUID/label, or alias it in your userData, rather than a hard-coded /dev/nvme* path. Each disk follows\
-                \ the root's storage policy (highAvailability \u2192 longhorn-migratable RWX block, else local-path) and is\
-                \ retained across reboots and stop/start. The guest is responsible for partitioning/formatting/mounting it."
+                \ the device names are virtio; a udev rule aliases the AWS Nitro names (/dev/nvme1n1, \u2026) and the partition\
+                \ names onto them, so a lift-and-shift userData script that mounts by a hard-coded /dev/nvme* path works unmodified.\
+                \ Each disk follows the root's storage policy (highAvailability \u2192 longhorn-migratable RWX block, else\
+                \ local-path) UNLESS it is encrypted, and is retained across reboots and stop/start. The guest is responsible\
+                \ for partitioning/formatting/mounting it."
               items:
                 type: object
                 required:
@@ -8758,6 +8759,18 @@ components:
                   size:
                     type: string
                     description: Disk size, e.g. 50Gi.
+                  encrypted:
+                    type: boolean
+                    description: "Encrypt this data disk at rest with LUKS (Longhorn longhorn-encrypted class), keyed by encryptionKey\
+                      \ \u2014 the EC2 `BlockDeviceMapping.Ebs.Encrypted` equivalent. The per-disk passphrase is a Vault Transit\
+                      \ data key wrapped by the named kind: EncryptionKey, so destroying that key crypto-erases the disk.\
+                      \ Requires the opt-in encryption component and encryptionKey. An encrypted disk is RWO (there is no\
+                      \ encrypted+migratable class), so on a highAvailability VM it pins live migration \u2014 keep encrypted\
+                      \ data on a non-HA VM, or accept that the VM won't live-migrate."
+                  encryptionKey:
+                    type: string
+                    description: 'Name of the kind: EncryptionKey (a Vault Transit KEK) whose data key protects this disk.
+                      Required when encrypted is true; ignored otherwise.'
             sshKey:
               type: string
               description: SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is

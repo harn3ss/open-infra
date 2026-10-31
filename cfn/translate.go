@@ -466,6 +466,23 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	return m, f
 }
 
+// ebsEncryptionKey resolves an encrypted EBS block's KmsKeyId — which must !Ref an in-stack
+// AWS::KMS::Key — to that key's kind: EncryptionKey name, the same contract translateVolume uses for a
+// standalone volume. ok=false means there is no mappable in-stack key (the caller refuses rather than
+// keying the disk with an AWS-managed default, which open-infra has no equivalent for).
+func ebsEncryptionKey(rawEbs any, ctx *stackCtx) (string, bool) {
+	ebs, _ := rawEbs.(map[string]any)
+	if ebs == nil || ctx == nil {
+		return "", false
+	}
+	if t, ok := getAttTarget(ebs["KmsKeyId"]); ok {
+		if k, in := ctx.template.Resources[t]; in && k.Type == "AWS::KMS::Key" {
+			return k8sName(t), true
+		}
+	}
+	return "", false
+}
+
 // ---- AWS::EC2::Instance -> kind: VirtualMachine ----
 //
 // Translated the way CloudFormation does, with ONE honest substitution (#115): the ImageId names an
@@ -687,10 +704,17 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// --- BlockDeviceMappings: root device size -> diskSize; extra EBS devices -> spec.dataDisks ---
 	// The root device (a root-like DeviceName, else the first EBS device) sets diskSize. Every other
 	// EBS device becomes a boot-time data disk (spec.dataDisks), named from its DeviceName so it is
-	// recognizable. FAIL-CLOSED on encryption: a data disk marked Encrypted REFUSES, because VM disks
-	// have no at-rest encryption option today and silently creating an unencrypted disk the template
-	// said was encrypted would drop a security guarantee (same rule as EC2::Volume / RDS).
+	// recognizable. An Encrypted data device maps to a LUKS (longhorn-encrypted) disk keyed by a
+	// customer kind: EncryptionKey — KmsKeyId must reference an in-stack AWS::KMS::Key (same contract as
+	// EC2::Volume); Encrypted without a mappable key REFUSES rather than silently dropping the guarantee.
 	if bdms, ok := props["BlockDeviceMappings"].([]any); ok {
+		// Raw BlockDeviceMappings so an Ebs.KmsKeyId !Ref can be followed to an in-stack KMS key.
+		var rawBDMs []any
+		if ctx != nil {
+			if rp, ok := ctx.rawProps(id); ok {
+				rawBDMs, _ = rp["BlockDeviceMappings"].([]any)
+			}
+		}
 		rootDevNames := map[string]bool{
 			"/dev/sda1": true, "/dev/sda": true, "/dev/xvda": true, "/dev/xvda1": true, "/dev/nvme0n1": true,
 		}
@@ -726,10 +750,24 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				}
 				continue
 			}
-			// A non-root EBS device -> a data disk.
-			if enc, _ := ebs["Encrypted"].(bool); enc {
-				f = append(f, Finding{"Resource " + id, "an encrypted data BlockDeviceMapping cannot be honored — VM data disks have no at-rest encryption option today, and creating it unencrypted would drop the Encrypted guarantee. Omit Encrypted, or attach encrypted block storage via a kind: Volume (LUKS keyed by a kind: EncryptionKey)"})
-				continue
+			// A non-root EBS device -> a data disk. An Encrypted device -> a LUKS data disk keyed by a
+			// customer kind: EncryptionKey (KmsKeyId must !Ref an in-stack AWS::KMS::Key).
+			enc, _ := ebs["Encrypted"].(bool)
+			_, hasKms := ebs["KmsKeyId"]
+			var encKey string
+			if enc || hasKms {
+				var rawEbs any
+				if i < len(rawBDMs) {
+					if rb, _ := rawBDMs[i].(map[string]any); rb != nil {
+						rawEbs = rb["Ebs"]
+					}
+				}
+				k, ok := ebsEncryptionKey(rawEbs, ctx)
+				if !ok {
+					f = append(f, Finding{"Resource " + id, "an encrypted data BlockDeviceMapping needs KmsKeyId referencing an in-stack AWS::KMS::Key — open-infra keys a VM data disk with a customer kind: EncryptionKey (LUKS on longhorn-encrypted), not an AWS-managed default key. NB an encrypted data disk is RWO, so on a highAvailability VM it pins live migration."})
+					continue
+				}
+				encKey = k
 			}
 			vs, has := ebs["VolumeSize"]
 			if !has {
@@ -741,6 +779,10 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				if nm := k8sName(strings.TrimPrefix(dn, "/dev/")); nm != "" {
 					disk["name"] = nm
 				}
+			}
+			if encKey != "" {
+				disk["encrypted"] = true
+				disk["encryptionKey"] = encKey
 			}
 			dataDisks = append(dataDisks, disk)
 			mappedExtraDevName = true

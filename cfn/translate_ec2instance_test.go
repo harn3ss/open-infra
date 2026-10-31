@@ -67,8 +67,9 @@ func TestTranslate_EC2Instance_ExtraBDMsToDataDisks(t *testing.T) {
 	}
 }
 
-// Fail-closed: an Encrypted data disk refuses rather than silently creating an unencrypted one.
-func TestTranslate_EC2Instance_EncryptedDataDiskRefuses(t *testing.T) {
+// Fail-closed: an Encrypted data disk with NO mappable key refuses rather than silently creating an
+// unencrypted one (open-infra has no AWS-managed default key).
+func TestTranslate_EC2Instance_EncryptedDataDiskNeedsKey(t *testing.T) {
 	_, fs := translateEC2Instance("Db", map[string]any{
 		"ImageId": "ubuntu-24.04",
 		"BlockDeviceMappings": []any{
@@ -76,8 +77,35 @@ func TestTranslate_EC2Instance_EncryptedDataDiskRefuses(t *testing.T) {
 			map[string]any{"DeviceName": "/dev/sdf", "Ebs": map[string]any{"VolumeSize": float64(50), "Encrypted": true}},
 		},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "encrypted data BlockDeviceMapping") {
-		t.Fatalf("an encrypted data disk must refuse (no VM disk encryption today), got: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "encrypted data BlockDeviceMapping needs KmsKeyId") {
+		t.Fatalf("an encrypted data disk with no key must refuse, got: %s", findingsText(fs))
+	}
+}
+
+// An Encrypted data disk whose KmsKeyId !Refs an in-stack AWS::KMS::Key maps to a LUKS data disk keyed
+// by that key's kind: EncryptionKey — the EC2 encrypted-EBS → kind: Volume-style encryption analog.
+func TestTranslate_EC2Instance_EncryptedDataDiskToEncryptionKey(t *testing.T) {
+	tmpl := `
+Resources:
+  DataKey:
+    Type: AWS::KMS::Key
+    Properties: { Description: db }
+  Db:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ubuntu-24.04
+      BlockDeviceMappings:
+        - { DeviceName: /dev/sda1, Ebs: { VolumeSize: 20 } }
+        - { DeviceName: /dev/sdf,  Ebs: { VolumeSize: 50, Encrypted: true, KmsKeyId: !Ref DataKey } }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2Instance("Db", resolvedProps(t, ctx, "Db"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("an encrypted data disk with an in-stack KMS key must translate cleanly: %s", findingsText(fs))
+	}
+	dds, _ := m.Spec["dataDisks"].([]map[string]any)
+	if len(dds) != 1 || dds[0]["encrypted"] != true || dds[0]["encryptionKey"] != "datakey" {
+		t.Fatalf("the encrypted device should map to {encrypted: true, encryptionKey: datakey}, got %#v", m.Spec["dataDisks"])
 	}
 }
 
