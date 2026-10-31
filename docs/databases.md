@@ -30,9 +30,24 @@ The connection string is injected into the app's pods as `DATABASE_URL` (postgre
 | `engine` | Backed by | Wire protocol | Notes |
 |----------|-----------|---------------|-------|
 | `postgres` | **CloudNativePG** (CNPG) | PostgreSQL | The default. `vector: true` adds pgvector. |
-| `mysql` | **MariaDB** | MySQL | `highAvailability` → 3-node Galera (synchronous). |
+| `mysql` | **MariaDB** | MySQL | `highAvailability` → 3-node Galera (synchronous). **MariaDB, not MySQL 8** — see the limitation below. |
 | `mongo` | **FerretDB** on DocumentDB-Postgres | MongoDB | Document store; stateless proxy over a Postgres backend. |
 | `babelfish` | **Babelfish for PostgreSQL** | **TDS (SQL Server)** + PostgreSQL | **Experimental.** SQL-Server-compatible: point unmodified T-SQL apps at TDS `1433`. Single-instance StatefulSet on Longhorn (not CNPG), backed up via Velero. |
+
+### `mysql` is MariaDB — MySQL-8-only features are not supported
+
+`engine: mysql` runs **MariaDB**, which is MySQL-wire-compatible but is **not MySQL 8**. An app that
+depends on MySQL-8-only SQL cannot use the managed database — in practice the things that bite are the
+`utf8mb4_0900_*` collations (MariaDB has `utf8mb4_general_ci` / `uca1400_*`, not the MySQL-8 `_0900_`
+family), expression defaults like `DEFAULT (JSON_OBJECT(...))`, and enforced `CHECK` constraints
+(MariaDB parses but historically did not enforce some). Migrations written against MySQL 8 will fail to
+apply.
+
+**If you need real MySQL 8, bring your own** — run `mysql:8.0` as a plain `StatefulSet` alongside your
+`kind: Application` and point the app at it (open-infra does not yet offer a `mysql8` engine). One gotcha
+worth knowing: a freshly-provisioned Longhorn **ext4** volume contains a `lost+found` directory, and MySQL
+refuses to initialize into a non-empty data directory — set the data dir to a **subdirectory** of the
+mount (e.g. `--datadir=/var/lib/mysql/data`, created on first boot) rather than the mount root.
 
 ### `babelfish` — SQL-Server-compatible (experimental)
 

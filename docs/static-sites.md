@@ -32,6 +32,14 @@ The server re-syncs every `spec.syncIntervalSeconds` (default 30s), so a new upl
 without redeploying. For a plain multi-file site (no client-side router), set `spec.spa: false` and
 optionally `spec.errorDocument: 404.html`.
 
+> **Where to run the upload.** `MINIO_ENDPOINT` in the `<name>-minio` secret is the **cluster-internal**
+> MinIO address (`minio.minio.svc.cluster.local:9000`), so the `s3 sync` above works from **inside the
+> cluster** — a CI runner that deploys in-cluster (see the per-PR recipe below), or a one-shot Job/pod.
+> From a **developer laptop** off the cluster, either run it through a `kubectl port-forward`
+> (`kubectl -n minio port-forward svc/minio 9000:9000`, then `--endpoint-url http://localhost:9000`), or,
+> once a LAN-reachable TLS S3 endpoint is in place, point `--endpoint-url` at that. A first-class
+> LAN-reachable publish endpoint is the open item (it shares the routed-ingress exposure work).
+
 ## Managed build (`spec.build`) — the Amplify analog
 
 > AWS equivalent: **Amplify Hosting's connected-repo build** (git push → build → deploy).
