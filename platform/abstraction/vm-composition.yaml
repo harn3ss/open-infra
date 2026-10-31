@@ -411,7 +411,7 @@ spec:
                                   - path: /opt/openinfra-userdata
                                     permissions: '0755'
                                     content: |
-                                      {{- $spec.userData | nindent 22 }}
+                                      {{- $spec.userData | nindent 26 }}
                                   {{- end }}
                                 {{- end }}
                                 runcmd:
