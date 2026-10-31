@@ -65,9 +65,16 @@ func TestVM_InstanceRole_LabelsForMetadataResponder(t *testing.T) {
 	if !strings.Contains(with, "openinfra.dev/instance-role: app-role") {
 		t.Errorf("instanceRole must label the VMI/launcher pod; got:\n%s", grepCtx(with, "labels"))
 	}
+	// cloud-init must point the AWS SDK's metadata flow at the shim (so the VM fetches role creds).
+	if !strings.Contains(with, "AWS_EC2_METADATA_SERVICE_ENDPOINT=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566") {
+		t.Errorf("instanceRole must inject the IMDS endpoint into /etc/environment; got:\n%s", grepCtx(with, "environment"))
+	}
 	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
 	if strings.Contains(without, "openinfra.dev/instance-role") {
 		t.Errorf("a VM with no instanceRole must carry no instance-role label; got:\n%s", grepCtx(without, "instance-role"))
+	}
+	if strings.Contains(without, "AWS_EC2_METADATA_SERVICE_ENDPOINT") {
+		t.Errorf("a VM with no instanceRole must not inject the IMDS endpoint; got:\n%s", grepCtx(without, "METADATA"))
 	}
 }
 

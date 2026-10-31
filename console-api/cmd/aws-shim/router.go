@@ -49,6 +49,7 @@ type serviceRouter struct {
 	jwt        *jwtAuthenticator     // OIDC/Cognito verifier for the appsync data plane; nil = JWT auth off
 	lambdaAuth *lambdaAuthorizer     // @aws_lambda authorizer Function for the appsync data plane; nil = off
 	services   map[string]awsService // keyed by AWS service name: "s3", "sts", "lambda", "appsync"
+	imds       *imdsHandler          // EC2 instance metadata (VM role credentials); nil = IMDS off
 	logger     *slog.Logger
 }
 
@@ -72,6 +73,15 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if cog.wellKnown(w, r) {
 			return
 		}
+	}
+
+	// EC2 instance metadata (IMDS): a VM bootstraps its role credentials here, identified by its source
+	// (launcher-pod) IP — there is no SigV4 yet, that is what IMDS issues. Recognized BEFORE SigV4
+	// parsing, at the IMDS path prefix only, so it never shadows a signed AWS call; a non-VM caller
+	// resolves to no role and gets 404.
+	if rt.imds != nil && rt.imds.isIMDSPath(r) {
+		rt.imds.serve(w, r, requestID)
+		return
 	}
 
 	authHdr := r.Header.Get("Authorization")

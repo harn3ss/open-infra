@@ -393,14 +393,26 @@ spec:
                                     {{ $user }}:{{ $pass }}
                                 packages:
                                   - qemu-guest-agent
-                                {{- if $spec.userData }}
-                                # EC2 UserData equivalent (#115): the user's first-boot script, run
-                                # AFTER the base setup so the VM stays reachable if the script fails.
+                                {{- if or $spec.userData $instanceRole }}
                                 write_files:
+                                  {{- if $instanceRole }}
+                                  # Instance identity (IMDS): point the AWS SDK's metadata flow at the
+                                  # aws-shim so the default credential chain fetches rotating creds for
+                                  # spec.instanceRole — no static keys. pam_env reads /etc/environment
+                                  # on every login/ssh session; a service wanting it adds
+                                  # EnvironmentFile=/etc/environment to its unit.
+                                  - path: /etc/environment
+                                    append: true
+                                    content: "AWS_EC2_METADATA_SERVICE_ENDPOINT=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566\n"
+                                  {{- end }}
+                                  {{- if $spec.userData }}
+                                  # EC2 UserData equivalent (#115): the user's first-boot script, run
+                                  # AFTER the base setup so the VM stays reachable if the script fails.
                                   - path: /opt/openinfra-userdata
                                     permissions: '0755'
                                     content: |
                                       {{- $spec.userData | nindent 22 }}
+                                  {{- end }}
                                 {{- end }}
                                 runcmd:
                                   - [systemctl, enable, --now, qemu-guest-agent]

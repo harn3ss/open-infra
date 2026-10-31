@@ -92,6 +92,11 @@ rules:
   - apiGroups: [iam.openinfra.dev]
     resources: [policies, roles, users, groups]
     verbs: [get, list, watch]
+  # EC2 instance metadata (IMDS): map a caller VM's launcher-pod source IP to its VM identity
+  # (read-only, cluster-wide — launcher pods live in the VMs' own namespaces).
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -539,6 +544,10 @@ spec:
               containerPort: 4566
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
+            # EC2 instance metadata (IMDS): serve rotating role credentials to a kind: VirtualMachine
+            # with spec.instanceRole, identified by its launcher-pod source IP. Inert for a VM that
+            # declares no instanceRole (and for every non-VM caller — it resolves to no role).
+            - { name: IMDS_ENABLED, value: "true" }
             # Go's GC does NOT read the cgroup limit, so under the default GOGC it can grow the heap to
             # ~2x the live set and OOMKill under memory.limits — taking the SHARED front door down for
             # every tenant. GOMEMLIMIT (a soft ceiling ~90% of the limit) makes the GC keep peak heap

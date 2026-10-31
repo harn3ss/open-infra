@@ -654,7 +654,21 @@ func run(logger *slog.Logger) error {
 		services["eks"] = eksH
 		logger.Info("EKS front door enabled", slog.String("cluster", eksName), slog.String("endpoint", eksEndpoint))
 	}
-	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services)
+	// EC2 instance metadata (IMDS): serves rotating role credentials to a kind: VirtualMachine with
+	// spec.instanceRole, identified by its launcher-pod source IP (no SigV4 — IMDS bootstraps creds).
+	// Opt-in (IMDS_ENABLED) and reuses the STS Minter + dynamic client; inert until a VM carries a role.
+	var imdsH *imdsHandler
+	if getenv("IMDS_ENABLED", "") == "true" && stsMinter != nil && dyn != nil {
+		imdsH = &imdsHandler{
+			pods:   &k8sPodRoleLookup{cs: cs},
+			trust:  &k8sRoleTrustChecker{dyn: dyn},
+			minter: stsMinter,
+			ttl:    awssts.DefaultDuration,
+			logger: logger,
+		}
+		logger.Info("EC2 instance metadata (IMDS) enabled: VMs with spec.instanceRole get rotating credentials")
+	}
+	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, imdsH)
 
 	addr := getenv("LISTEN_ADDR", ":4566")
 	srv := &http.Server{
@@ -825,7 +839,7 @@ func run(logger *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService) http.Handler {
+func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService, imds *imdsHandler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -851,7 +865,7 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		names = append(names, n)
 	}
 	logger.Info("aws services registered", "services", names)
-	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, logger: logger})
+	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, imds: imds, logger: logger})
 	return r
 }
 
