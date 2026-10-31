@@ -1273,24 +1273,30 @@ func cfnPort(v any) (int, bool) {
 	return 0, false
 }
 
-// sgStandaloneRules returns the in-stack logical ids of `cfnType` (AWS::EC2::SecurityGroupIngress or
-// ...Egress) whose GroupId !Refs sgID, in deterministic order — the standalone rules collated into that SG.
-func (c *stackCtx) sgStandaloneRules(sgID, cfnType string) []string {
+// collatedChildren returns the logical ids of INCLUDED resources of cfnType whose raw property refProp
+// is a !Ref/!GetAtt to targetID — the shared shape of every collation (an SG's standalone rules, a
+// pool's clients, an API's children, …). The `included` guard is the point: a child the template gates
+// OFF with a false Condition must NOT be folded into its parent (otherwise a rule/policy the operator
+// turned off is deployed anyway — the fail-open class first found on standalone SG rules). Deterministic.
+func (c *stackCtx) collatedChildren(cfnType, refProp, targetID string) []string {
 	var ids []string
-	for rid, res := range c.template.Resources {
-		if res.Type != cfnType {
+	for cid, res := range c.template.Resources {
+		if res.Type != cfnType || !c.included(res) {
 			continue
 		}
-		if !c.included(res) {
-			continue // a rule its template gates OFF (Condition false) must not be collated (fail-open otherwise)
-		}
-		raw, _ := c.rawProps(rid)
-		if t, ok := refTarget(raw["GroupId"]); ok && t == sgID {
-			ids = append(ids, rid)
+		raw, _ := c.rawProps(cid)
+		if t, ok := getAttTarget(raw[refProp]); ok && t == targetID {
+			ids = append(ids, cid)
 		}
 	}
 	sortStrs(ids)
 	return ids
+}
+
+// sgStandaloneRules returns the INCLUDED in-stack logical ids of `cfnType` (AWS::EC2::SecurityGroupIngress
+// or ...Egress) whose GroupId !Refs sgID — the standalone rules collated into that SG.
+func (c *stackCtx) sgStandaloneRules(sgID, cfnType string) []string {
+	return c.collatedChildren(cfnType, "GroupId", sgID)
 }
 
 // translateEC2SecurityGroupRule is the no-op half of the standalone-rule collation: a
@@ -2210,18 +2216,7 @@ func translateCognitoUserPool(id string, props map[string]any, ctx *stackCtx) (*
 // cognitoClients returns the in-stack AWS::Cognito::UserPoolClient logical ids whose UserPoolId
 // references poolID, in deterministic order.
 func (c *stackCtx) cognitoClients(poolID string) []string {
-	var ids []string
-	for cid, res := range c.template.Resources {
-		if res.Type != "AWS::Cognito::UserPoolClient" {
-			continue
-		}
-		raw, _ := c.rawProps(cid)
-		if t, ok := getAttTarget(raw["UserPoolId"]); ok && t == poolID {
-			ids = append(ids, cid)
-		}
-	}
-	sortStrs(ids)
-	return ids
+	return c.collatedChildren("AWS::Cognito::UserPoolClient", "UserPoolId", poolID)
 }
 
 // translateCognitoUserPoolClient is the no-op half of the collation: a client whose UserPoolId
@@ -2923,6 +2918,11 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 				f = append(f, Finding{"Resource " + pid, "AWS::S3::BucketPolicy requires a PolicyDocument"})
 			case !s3PolicyPrincipalsPublic(doc):
 				f = append(f, Finding{"Resource " + pid, "the BucketPolicy has a Statement whose Principal is not \"*\" (public) — AWS IAM ARN principals do not resolve to MinIO principals, so the policy would be stored but not enforce as intended; refusing rather than applying a policy that silently won't restrict as written. Use Principal \"*\" for a public policy, or govern identity-scoped access via open-infra IAM (kind: Policy spec.dataPlane at the aws-shim)."})
+			case hasUnresolvedPlaceholder(doc):
+				// An intrinsic that did not resolve to a concrete value (e.g. Resource: !Sub
+				// "arn:aws:s3:::${Bucket}/*" with a generated bucket name) survives as "<ref:Bucket>" —
+				// a policy that doesn't match the real bucket. Refuse rather than store it.
+				f = append(f, Finding{"Resource " + pid, "BucketPolicy PolicyDocument still contains an unresolved intrinsic after resolution (e.g. a !Sub/!Ref ARN of a bucket with a generated name) — give the bucket an explicit BucketName the policy can reference, or author spec.policy natively; refusing rather than storing a policy that won't match the bucket"})
 			default:
 				b, err := json.Marshal(doc)
 				if err != nil {
@@ -2940,6 +2940,30 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	}
 	m.Caveats = append(m.Caveats, noopNotes...)
 	return m, f
+}
+
+// hasUnresolvedPlaceholder reports whether any string leaf in v is an unresolved resolver placeholder
+// (e.g. "<ref:X>") — so a collated document carrying an intrinsic that didn't resolve to a concrete
+// value is refused rather than stored. Walks maps/slices (marshaling-independent, so it is not fooled
+// by json.Marshal's HTML-escaping of "<"/">").
+func hasUnresolvedPlaceholder(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return placeholderRe.MatchString(t)
+	case map[string]any:
+		for _, e := range t {
+			if hasUnresolvedPlaceholder(e) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range t {
+			if hasUnresolvedPlaceholder(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isExplicitFalse reports whether v is an explicit boolean false (as a Go bool, or the string "false"
@@ -3008,8 +3032,8 @@ func (c *stackCtx) s3BucketPolicyTarget(policyID string) (string, bool) {
 func (c *stackCtx) s3BucketPolicyFor(bucketID string) (string, bool) {
 	var ids []string
 	for pid, res := range c.template.Resources {
-		if res.Type == "AWS::S3::BucketPolicy" {
-			ids = append(ids, pid)
+		if res.Type == "AWS::S3::BucketPolicy" && c.included(res) {
+			ids = append(ids, pid) // a conditioned-OFF BucketPolicy must NOT be collated (it would be a public policy, deployed despite being gated off)
 		}
 	}
 	sortStrs(ids)
@@ -3339,7 +3363,11 @@ func (c *stackCtx) snsQueuesForFunction(fnID string) []string {
 	}
 	sortStrs(ids)
 	for _, rid := range ids {
-		switch c.template.Resources[rid].Type {
+		res := c.template.Resources[rid]
+		if !c.included(res) {
+			continue // a conditioned-OFF Subscription/Topic must not fold a queue into the Function
+		}
+		switch res.Type {
 		case "AWS::SNS::Subscription":
 			raw, _ := c.rawProps(rid)
 			sp, _ := c.resolveProps(rid)
@@ -3468,18 +3496,7 @@ func translateAppSyncChild(id string, _ map[string]any, ctx *stackCtx) (*Manifes
 // appsyncChildren returns, in deterministic order, the logical ids of resources of cfnType whose
 // ApiId references apiID.
 func (c *stackCtx) appsyncChildren(cfnType, apiID string) []string {
-	var ids []string
-	for cid, res := range c.template.Resources {
-		if res.Type != cfnType {
-			continue
-		}
-		raw, _ := c.rawProps(cid)
-		if t, ok := getAttTarget(raw["ApiId"]); ok && t == apiID {
-			ids = append(ids, cid)
-		}
-	}
-	sortStrs(ids)
-	return ids
+	return c.collatedChildren(cfnType, "ApiId", apiID)
 }
 
 // appsyncDataSource maps one AWS::AppSync::DataSource to an open-appsync data source; the bool

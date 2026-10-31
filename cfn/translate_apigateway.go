@@ -290,18 +290,7 @@ func translateAPIGatewayChild(logicalID string, _ map[string]any, ctx *stackCtx)
 
 // apigwChildren returns the logical ids of all resources of cfnType whose RestApiId !Ref/!GetAtt's apiID.
 func (c *stackCtx) apigwChildren(cfnType, apiID string) []string {
-	var ids []string
-	for cid, res := range c.template.Resources {
-		if res.Type != cfnType {
-			continue
-		}
-		raw, _ := c.rawProps(cid)
-		if t, ok := getAttTarget(raw["RestApiId"]); ok && t == apiID {
-			ids = append(ids, cid)
-		}
-	}
-	sortStrs(ids)
-	return ids
+	return c.collatedChildren(cfnType, "RestApiId", apiID)
 }
 
 // apigwParentAPI returns the RestApi logical id a resource references via RestApiId, if in-stack.
