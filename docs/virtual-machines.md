@@ -138,6 +138,54 @@ unbootable VM. Set it to the mode the disk was actually installed under.
 - UEFI/Secure Boot require a KubeVirt build with the OVMF (secure-boot) firmware on your nodes — shipped
   by default.
 
+## AWS workload identity (`instanceRole`) — credentials at boot, no static keys
+
+Give a VM an AWS identity the way EC2 does — a role it assumes — so the AWS SDK inside the guest gets
+**rotating, temporary credentials with no static keys on disk**:
+
+```yaml
+spec:
+  os: ubuntu-24.04
+  instanceRole: app-role   # a kind: Role (this namespace) the VM assumes
+```
+
+The named `kind: Role` must **trust the `vm` principal** (the analog of an AWS role trusting
+`ec2.amazonaws.com`), and carries whatever data-plane Policies the workload needs:
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Role
+metadata: { name: app-role }
+spec:
+  trust: ["vm"]            # opt in to being instance-assumable
+  policies: [app-s3-read]  # kind: Policy objects granting the access
+```
+
+How it works (the ECS/EKS Pod Identity pattern, not EC2 IMDS — kube-ovn's SNAT makes source-IP IMDS
+unworkable): the VM gets a dedicated ServiceAccount whose token KubeVirt projects into the guest;
+cloud-init points the AWS SDK's **container-credentials provider** at the aws-shim
+(`AWS_CONTAINER_CREDENTIALS_FULL_URI` / `_TOKEN_FILE`); the shim verifies the token, reads the role off
+the ServiceAccount, and mints temporary credentials. So inside the VM, `aws s3 cp …` (or any SDK) just
+works — `aws sts get-caller-identity` returns `assumed-role/<role>/<vm>`. Linux only (Windows is a
+follow-on). The role's permissions are enforced at the aws-shim exactly as for any assumed-role session.
+
+## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
+
+Attach additional persistent disks at boot, beyond the root — e.g. a dedicated disk for a database:
+
+```yaml
+spec:
+  diskSize: 20Gi
+  dataDisks:
+    - { name: pgdata, size: 100Gi }
+```
+
+Each is a blank block volume attached as a virtio device in order — `/dev/vdb`, `/dev/vdc`, … (**not**
+the AWS `/dev/sdf` or Nitro `/dev/nvme1n1` names; reference them by filesystem UUID/label, or in your
+`userData`). Each follows the root's storage policy (`highAvailability` → longhorn-migratable RWX block
+so they live-migrate with the VM, else local-path) and is retained across reboots and stop/start. The
+guest partitions/formats/mounts them.
+
 ## Access
 
 - **Linux** — SSH as `openinfra`. Your `sshKey` is installed via cloud-init; a
