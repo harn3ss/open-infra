@@ -1,0 +1,31 @@
+# External, browser-reachable entry to the aws-shim's S3 (and the rest of the AWS-compat front
+# door) over a stable TLS hostname — so an unmodified client OUTSIDE the cluster can reach S3 and
+# fetch a pre-signed URL (#344 A2). Access is SigV4-enforced exactly as in-cluster: an
+# unauthenticated request gets a 403, a valid signature or pre-signed URL is served. Traefik routes
+# the host to the shim; cert-manager issues the cert.
+#
+# PLACEHOLDER host (192-0-2-1 = TEST-NET). Replace 192-0-2-1 with your Traefik LB IP (dashes, not
+# dots) — e.g. install.sh substitutes it — or point a real DNS name here and swap the issuer for a
+# public ACME one. Path-style (s3.<host>/<bucket>/<key>) works as-is; virtual-hosted-bucket
+# addressing additionally needs a wildcard host (*.s3.<host>) with a DNS-01 wildcard cert.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aws-shim-s3
+  namespace: open-infra-aws-shim
+  annotations:
+    cert-manager.io/cluster-issuer: openinfra-issuer
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [s3.192-0-2-1.sslip.io]
+      secretName: aws-shim-s3-tls
+  rules:
+    - host: s3.192-0-2-1.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: aws-shim, port: { number: 4566 } }
