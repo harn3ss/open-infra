@@ -1007,13 +1007,26 @@ func TestTranslate_S3_Faithful(t *testing.T) {
 	}
 }
 
-func TestTranslate_S3_EncryptionBlocks(t *testing.T) {
-	_, fs := translateS3Bucket("B", map[string]any{
-		"BucketName":       "b",
-		"BucketEncryption": map[string]any{"ServerSideEncryptionConfiguration": []any{}},
+// #347 Phase 1.8 (#344 4.3): BucketEncryption maps with a CAVEAT (not a refusal) — open-infra
+// encrypts at the MinIO-tenant level (objectEncryption/SSE-KMS via KES→Vault), not per-bucket. The
+// bucket translates cleanly; the caveat names the tenant dependency (and the SSE algorithm) and the
+// at-rest risk if the tenant has objectEncryption off, so it lands in the fidelity summary.
+func TestTranslate_S3_EncryptionCaveat(t *testing.T) {
+	m, fs := translateS3Bucket("B", map[string]any{
+		"BucketName": "b",
+		"BucketEncryption": map[string]any{"ServerSideEncryptionConfiguration": []any{
+			map[string]any{"ServerSideEncryptionByDefault": map[string]any{"SSEAlgorithm": "aws:kms"}},
+		}},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "BucketEncryption") {
-		t.Fatalf("BucketEncryption must refuse (no silent unencrypted bucket), findings: %s", findingsText(fs))
+	if len(fs) != 0 {
+		t.Fatalf("BucketEncryption must NOT refuse (it maps with a caveat), findings: %s", findingsText(fs))
+	}
+	cav := strings.Join(m.Caveats, " ")
+	if !strings.Contains(cav, "objectEncryption") || !strings.Contains(cav, "tenant") {
+		t.Fatalf("BucketEncryption caveat must name the tenant-level objectEncryption dependency, caveats: %v", m.Caveats)
+	}
+	if !strings.Contains(cav, "aws:kms") {
+		t.Fatalf("BucketEncryption caveat should surface the requested SSE algorithm, caveats: %v", m.Caveats)
 	}
 }
 

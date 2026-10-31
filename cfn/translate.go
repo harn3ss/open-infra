@@ -2896,9 +2896,9 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 // LifecycleConfiguration (expiration rules) map too. An in-stack AWS::S3::BucketPolicy targeting this
 // bucket is COLLATED in as spec.policy (a public "*"-principal policy only — an AWS IAM ARN principal
 // doesn't resolve to a MinIO principal, so such a policy would be stored and silently NOT enforce; it
-// refuses instead). BucketEncryption REFUSES with a pointer to the opt-in objectEncryption stack
-// (per-bucket SSE isn't declarable here) rather than creating an unencrypted bucket that looks
-// encrypted. CorsConfiguration REFUSES — per-bucket CORS is a MinIO ceiling (PutBucketCors returns
+// refuses instead). BucketEncryption maps with a CAVEAT (open-infra encrypts at the MinIO-tenant
+// level via the opt-in objectEncryption stack, not per-bucket), surfacing the tenant dependency in
+// the fidelity summary rather than blocking the stack. CorsConfiguration REFUSES — per-bucket CORS is a MinIO ceiling (PutBucketCors returns
 // MalformedXML; MinIO does CORS globally via MINIO_API_CORS_ALLOW_ORIGIN), so it is refused loudly
 // rather than silently dropped. Website, notifications, replication, public-access and the rest block
 // via the strict allowlist. Tags are a caveat.
@@ -2913,8 +2913,29 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	var noopNotes []string
 	f = append(f, blockUnknownProps(id, props, known)...)
 
-	if _, ok := props["BucketEncryption"]; ok {
-		f = append(f, Finding{"Resource " + id, "BucketEncryption is not translatable here — per-bucket SSE requires the opt-in objectEncryption stack (SSE-KMS via KES→Vault, applied at the MinIO-tenant level); refusing rather than creating an unencrypted bucket that looks encrypted. Enable objectEncryption on the MinIO tenant and the bucket's objects are encrypted at rest without this property."})
+	// #347 Phase 1.8 (#344 4.3): BucketEncryption maps with a CAVEAT, not a refusal. open-infra
+	// encrypts at rest at the MinIO-TENANT level (the opt-in objectEncryption stack: SSE-KMS via
+	// KES→Vault), not per-bucket, so the template's SSEAlgorithm/KMSMasterKeyID aren't applied to this
+	// bucket individually. Objects ARE encrypted iff the tenant has objectEncryption on; if it does
+	// not, the bucket is unencrypted despite the template — the caveat says so (it lands in the
+	// fidelity summary) rather than blocking the whole stack with a refusal.
+	if be, ok := props["BucketEncryption"]; ok {
+		alg := ""
+		if m, _ := be.(map[string]any); m != nil {
+			if sseList, _ := m["ServerSideEncryptionConfiguration"].([]any); len(sseList) > 0 {
+				if r0, _ := sseList[0].(map[string]any); r0 != nil {
+					if sd, _ := r0["ServerSideEncryptionByDefault"].(map[string]any); sd != nil {
+						alg, _ = concrete(sd["SSEAlgorithm"])
+					}
+				}
+			}
+		}
+		note := "BucketEncryption is honored by the MinIO-tenant objectEncryption stack (SSE-KMS via KES→Vault), applied tenant-wide — the template's SSEAlgorithm"
+		if alg != "" {
+			note += " (" + alg + ")"
+		}
+		note += "/KMSMasterKeyID are NOT applied to this bucket individually. Objects are encrypted at rest ONLY IF the tenant has objectEncryption enabled; if it does not, this bucket is unencrypted despite the template — verify tenant objectEncryption is on."
+		noopNotes = append(noopNotes, note)
 	}
 	if _, ok := props["CorsConfiguration"]; ok {
 		f = append(f, Finding{"Resource " + id, "CorsConfiguration has no faithful open-infra mapping — MinIO does not support per-bucket CORS via the S3 API (PutBucketCors returns MalformedXML on this release); CORS is configured globally via MINIO_API_CORS_ALLOW_ORIGIN. Refusing rather than silently dropping."})

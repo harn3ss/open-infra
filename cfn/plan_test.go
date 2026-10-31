@@ -51,7 +51,6 @@ func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 	b := blockersJoined(p)
 	for _, want := range []string{
 		"ec2.amazonaws.com",                        // AppRole trusts lambda, not the ec2 service principal
-		"BucketEncryption",                         // Assets per-bucket SSE needs the opt-in objectEncryption stack
 		"PackageType: Image",                       // Api is a zip/Runtime Lambda
 		"ASL definition references cross-resource", // Workflow Task Resource is a sibling ARN
 	} {
@@ -87,12 +86,14 @@ func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 		}
 	}
 
-	// Assets still MAPS (partial, kind: Bucket) and carries the per-resource translate refusal.
+	// Assets still MAPS (partial, kind: Bucket). #347 Phase 1.8: BucketEncryption is now a CAVEAT,
+	// not a refusal, so Assets no longer carries a translate refusal for it (the stack is still
+	// REJECTED by the other resources above).
 	if assets == nil || assets.Status != Partial || assets.Kind != "Bucket" {
 		t.Fatalf("Assets should map partial to kind: Bucket, got %+v", assets)
 	}
-	if len(assets.TranslateRefusals) == 0 || !strings.Contains(strings.Join(assets.TranslateRefusals, " "), "BucketEncryption") {
-		t.Fatalf("Assets must carry its translate refusal (BucketEncryption), got %+v", assets.TranslateRefusals)
+	if strings.Contains(strings.Join(assets.TranslateRefusals, " "), "BucketEncryption") {
+		t.Fatalf("Assets must NOT refuse on BucketEncryption anymore (it maps with a caveat), got %+v", assets.TranslateRefusals)
 	}
 }
 
