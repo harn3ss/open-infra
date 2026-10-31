@@ -1,0 +1,36 @@
+# ECR push identity — a user/CI principal that pushes (and pulls) images through the in-cluster
+# registry's aws-shim ECR doorway. Registry auth is the SAME impersonated SubjectAccessReview the
+# control plane runs: the ECR doorway (ecr.go) and the token/docker-login realm (ecr_token.go)
+# authorize each request on the coarse `repositories` type — ECR's own authz type, split off the
+# shared `applications` gate so a registry grant and app/data access are least-privilege-separable
+# (#345.6 / #347.0.2). A pusher needs create (push) + get/list (pull / enumerate tags).
+#
+# NOTE (#347 review item 2): this role was hand-applied out-of-band on 2026-10-22 granting the OLD
+# `applications` type and was never committed. The 0.2 split moved the ECR doorway to `repositories`,
+# which stranded this role (pushes denied). Moving it to `repositories` and committing it here so it
+# is GitOps-managed and tracked, not live-only drift.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ecr-pusher
+  labels: { openinfra.dev/component: ecr }
+rules:
+  - apiGroups: ["openinfra.dev"]
+    resources: ["repositories"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ecr-pusher-group
+  labels: { openinfra.dev/component: ecr }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ecr-pusher
+subjects:
+  # The shim impersonates a caller's groups as openinfra:<group>; the push credential carries
+  # group openinfra:ecr-pushers, so bind the prefixed group here.
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: openinfra:ecr-pushers
