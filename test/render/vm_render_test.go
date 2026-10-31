@@ -142,12 +142,17 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		"name: myvm-cloudinit",
 		// The credentials endpoint is the LOOPBACK relay (botocore/JS reject a non-loopback host):
 		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials",
-		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token",
+		// #347 Phase 2.11: the token-file env var is AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE (the name
+		// the AWS SDKs actually honor) — the old AWS_CONTAINER_CREDENTIALS_TOKEN_FILE was never read.
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token",
 		// ...served by a systemd socket-proxy to the shim, env also in a systemd Manager drop-in:
 		"ListenStream=127.0.0.1:16349",
 		"systemd-socket-proxyd aws-shim.open-infra-aws-shim.svc.cluster.local:4566",
 		"DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials",
 		"openinfra-aws-creds.socket",
+		// #347 Phase 2.11 (§3.3): the token is stripped of trailing whitespace when materialized —
+		// the SDK sends the file's bytes verbatim as the Authorization header, so a stray newline breaks it.
+		"tr -d '[:space:]' < /run/openinfra-identity/token",
 		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
 	} {
 		if !strings.Contains(with, want) {
@@ -160,7 +165,7 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	if !strings.Contains(without, "name: myvm-cloudinit") {
 		t.Errorf("every Linux VM should render a cloud-init Secret; got:\n%s", grepCtx(without, "cloudinit"))
 	}
-	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER_CREDENTIALS", "instance-role"} {
+	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER", "instance-role"} {
 		if strings.Contains(without, absent) {
 			t.Errorf("a VM with no instanceRole must not render %q; got:\n%s", absent, grepCtx(without, absent))
 		}

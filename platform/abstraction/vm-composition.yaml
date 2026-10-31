@@ -559,13 +559,13 @@ spec:
                                runcmd fires, so it predates the drop-in). FULL_URI is the loopback relay. */}}
                         - path: /etc/environment
                           append: true
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token\n"
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token\n"
                         - path: /etc/openinfra-aws.env
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token\n"
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token\n"
                         - path: /etc/systemd/system.conf.d/10-openinfra-aws.conf
                           content: |
                             [Manager]
-                            DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }} AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token
+                            DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }} AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token
                         {{- /* Loopback relay: botocore/JS only trust a loopback container-creds host, and
                                the shim is a ClusterIP service, so systemd-socket-proxyd forwards
                                127.0.0.1:$credsPort -> the shim (DNS resolved per connection). The SA token
@@ -614,9 +614,12 @@ spec:
                       {{- /* Mount the workload-identity token iso and COPY the token to a readable
                              path on every boot. KubeVirt's iso carries Rock Ridge perms (token is
                              0640 root-ish), so a mount mode= does not make it app-readable — copy it
-                             to /run (tmpfs; re-done each boot, survives reboots). */}}
+                             to /run (tmpfs; re-done each boot, survives reboots). Strip any trailing
+                             whitespace/newline: the SDK sends the file's bytes verbatim as the
+                             container-credentials Authorization header, so a stray newline corrupts
+                             it (a JWT has no internal whitespace, so stripping all is safe). */}}
                       bootcmd:
-                        - [ bash, -c, "mkdir -p /mnt/openinfra-identity /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; cp -f /mnt/openinfra-identity/token /run/openinfra-identity/token 2>/dev/null && chmod 0644 /run/openinfra-identity/token || true" ]
+                        - [ bash, -c, "mkdir -p /mnt/openinfra-identity /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; cp -f /mnt/openinfra-identity/token /run/openinfra-identity/token 2>/dev/null && tr -d '[:space:]' < /run/openinfra-identity/token > /run/openinfra-identity/token.strip && mv /run/openinfra-identity/token.strip /run/openinfra-identity/token && chmod 0644 /run/openinfra-identity/token || true" ]
                       {{- end }}
                       runcmd:
                         {{- if $instanceRole }}
