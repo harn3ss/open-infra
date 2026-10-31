@@ -158,9 +158,31 @@ awsq "$RAK" "$RSK" get-object --bucket "$BUCKET" --key probe.txt "$WORK/reader.t
 cmp -s "$WORK/in.txt" "$WORK/reader.txt" || fail "reader read returned wrong bytes"
 log "  ✓ reader read succeeded"
 
+# --- 7. Pre-signed GET URL (query-string SigV4): the browser-download path --------------------
+# The app hands pre-signed GetObject URLs to the user's browser — a plain HTTP client with NO AWS
+# credentials. So curl must fetch the object from the URL alone, and an EXPIRED URL must be refused.
+if command -v curl >/dev/null; then
+  log "pre-signed GET: generate, fetch with curl (NO creds), compare bytes"
+  PS_URL="$(AWS_ACCESS_KEY_ID="$WAK" AWS_SECRET_ACCESS_KEY="$WSK" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" s3 presign "s3://${BUCKET}/probe.txt" --expires-in 120 2>/dev/null)"
+  [ -n "$PS_URL" ] || fail "could not generate a pre-signed URL"
+  curl -fsS "$PS_URL" -o "$WORK/presigned.txt" 2>"$WORK/ps.err" \
+    || fail "pre-signed GET fetch (no creds) failed: $(cat "$WORK/ps.err")"
+  cmp -s "$WORK/in.txt" "$WORK/presigned.txt" || fail "pre-signed GET returned wrong bytes"
+  log "  ✓ pre-signed GET fetched with no creds, bytes identical"
+
+  log "negative: an EXPIRED pre-signed URL must be refused"
+  PS_EXP="$(AWS_ACCESS_KEY_ID="$WAK" AWS_SECRET_ACCESS_KEY="$WSK" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" s3 presign "s3://${BUCKET}/probe.txt" --expires-in 1 2>/dev/null)"
+  sleep 2
+  code="$(curl -s -o /dev/null -w '%{http_code}' "$PS_EXP")"
+  [ "$code" = "403" ] || fail "an expired pre-signed URL must be refused (403), got ${code}"
+  log "  ✓ expired pre-signed URL refused (403)"
+fi
+
 # --- cleanup the object we wrote --------------------------------------------------------------
 awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key probe.txt >/dev/null 2>&1 || true
 awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key chunk.txt >/dev/null 2>&1 || true
 
 echo
-echo "✓ PASS — aws-shim S3 surface is byte-faithful and enforces auth + the write boundary."
+echo "✓ PASS — aws-shim S3 surface is byte-faithful, serves pre-signed URLs, and enforces auth + the write boundary."
