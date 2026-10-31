@@ -834,7 +834,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 
 	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
-	// bind the VM to that kind: Role (the instance assumes it via the instance-metadata path, no static
+	// bind the VM to that kind: Role (the instance assumes it via the container-credentials path, no static
 	// keys). An out-of-stack profile/arn can't be resolved to a kind: Role here — caveat, don't guess.
 	if _, present := props["IamInstanceProfile"]; present {
 		if role, ok := resolveInstanceRole(id, ctx); ok {
@@ -1588,7 +1588,7 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 //
 // The create-faithful part of an EC2 instance role is its TRUST: an AssumeRolePolicyDocument whose only
 // principal is the ec2.amazonaws.com service maps to a kind: Role that trusts the "vm" service
-// principal — assumable by a VM that names it as spec.instanceRole (the instance-metadata path). That
+// principal — assumable by a VM that names it as spec.instanceRole (the container-credentials path). That
 // is the one trust shape derivable from the template; any OTHER principal (an AWS account/ARN, a
 // federated/SAML/OIDC principal, or a mix) has no faithful open-infra form and REFUSES, exactly as a
 // non-EC2 role did before.
