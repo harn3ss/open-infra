@@ -197,6 +197,48 @@ Resources:
 	}
 }
 
+// An IAM Role with an inline Policy deploys as the kind: Role FOLLOWED BY its companion kind: Policy
+// (the inline policy, data-plane) — the multi-manifest (Extra) path, applied parent-then-companion.
+func TestDeploy_IAMRole_InlinePolicyCompanion(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: "sts:AssumeRole" }
+      Policies:
+        - PolicyName: s3-read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: "s3:GetObject", Resource: "arn:aws:s3:::app-config/*" }
+`)
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
+	}
+	got := f.appliedNonCM()
+	want := []string{"Role/approle", "Policy/approle-s3-read"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("apply order = %v, want %v (Role then its companion Policy)", got, want)
+	}
+	// Both are recorded in the stack (so destroy/rollback reach the companion too).
+	var kinds []string
+	for _, r := range rec.Resources {
+		kinds = append(kinds, r.Kind+"/"+r.Name)
+	}
+	if !contains(kinds, "Policy/approle-s3-read") {
+		t.Fatalf("companion Policy must be in the stack record, got %v", kinds)
+	}
+}
+
 // A DynamoDB table deploys to a kind: Table with a faithful key schema + TTL.
 func TestDeploy_DynamoDBTable(t *testing.T) {
 	tmpl := []byte(`

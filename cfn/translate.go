@@ -30,6 +30,10 @@ type Manifest struct {
 	Name       string
 	Spec       map[string]any
 	Caveats    []string // declared, non-silent losses (e.g. a KMS key policy that has no equivalent)
+	// Extra holds companion manifests a single CFN resource expands into — e.g. an IAM Role's inline
+	// Policies become companion kind: Policy objects. They are applied right AFTER this manifest, in
+	// order, and inherit its DeletionPolicy. Most translators leave this nil.
+	Extra []*Manifest
 }
 
 // translator produces a Manifest from a resource's already-resolved Properties, or a set of
@@ -1613,16 +1617,85 @@ func translateIAMRole(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 		spec["description"] = d
 	}
 	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Role", Name: k8sName(id), Spec: spec}
-	if _, ok := props["Policies"]; ok {
-		m.Caveats = append(m.Caveats, "inline Policies are NOT attached — a kind: Role aggregates named kind: Policy objects. Import each policy document via the IAM data-plane doorway (kind: Policy spec.dataPlane) and list it in this Role's spec.policies; until then the role grants nothing (trust anchor)")
+	// Inline Policies -> companion kind: Policy objects (spec.dataPlane, appliesTo Role::<name>), which
+	// govern this role's assumed sessions at the aws-shim. This is the narrow data-plane subset the
+	// finding asked for: s3/sqs/... actions on recognizable in-stack ARNs, imported by the same engine
+	// AWS::IAM::Policy uses. Fail-closed: any part the importer cannot honor blocks the whole Role (a
+	// silently-dropped Allow/Deny is a scope hole).
+	if pol, ok := props["Policies"]; ok {
+		extras, pf := roleInlinePolicies(id, pol)
+		if len(pf) > 0 {
+			f = append(f, pf...)
+			return nil, f
+		}
+		m.Extra = extras
+		m.Caveats = append(m.Caveats, fmt.Sprintf("inline Policies translated to %d companion kind: Policy object(s) (spec.dataPlane, appliesTo Role::%s) that govern this role's assumed sessions — enforced where the aws-shim data-plane front doors are enabled (opt-in, off by default)", len(extras), k8sName(id)))
 	}
 	if _, ok := props["ManagedPolicyArns"]; ok {
-		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore) have no open-infra equivalent; grant the needed data-plane access via a kind: Policy in spec.policies")
+		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore, AmazonEC2ContainerRegistryPullOnly) grant AWS-service plumbing (the SSM agent, ECR pull) that the shim does not front and has no open-infra equivalent. App-level data-plane access comes from the inline Policies above or a kind: Policy in spec.policies")
 	}
 	if _, ok := props["PermissionsBoundary"]; ok {
 		m.Caveats = append(m.Caveats, "PermissionsBoundary not mapped — set spec.permissionBoundary to a kind: Policy natively if a boundary is required")
 	}
 	return m, f
+}
+
+// roleInlinePolicies translates an IAM Role's inline Policies into companion kind: Policy manifests,
+// each a data-plane policy (spec.dataPlane) whose appliesTo is this role (Role::<name>) so it governs
+// the role's assumed sessions. It reuses the same importer as AWS::IAM::Policy, and is fail-closed:
+// any statement the data plane cannot honor (an unfronted service, an unrecognizable ARN, a Condition)
+// produces a Finding that blocks the Role rather than attaching a partial grant.
+func roleInlinePolicies(roleID string, raw any) ([]*Manifest, []Finding) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, []Finding{{"Resource " + roleID, "Policies must be a list of { PolicyName, PolicyDocument }"}}
+	}
+	roleName := k8sName(roleID)
+	var out []*Manifest
+	var f []Finding
+	for i, entry := range list {
+		p, ok := entry.(map[string]any)
+		if !ok {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] is not an object", i)})
+			continue
+		}
+		doc, ok := p["PolicyDocument"]
+		if !ok {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] requires a PolicyDocument", i)})
+			continue
+		}
+		docJSON, err := json.Marshal(doc)
+		if err != nil {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] PolicyDocument is not serializable: %s", i, err.Error())})
+			continue
+		}
+		stmts, unsupported, err := policyengine.ImportAWS(string(docJSON))
+		if err != nil {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] did not parse as an AWS policy: %s", i, err.Error())})
+			continue
+		}
+		for _, u := range unsupported {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d]: cannot faithfully translate this policy: %s — narrow the inline policy to s3/sqs/dynamodb/... actions on recognizable in-stack ARNs with no conditions, or author a kind: Policy spec.dataPlane natively", i, u)})
+		}
+		if len(stmts) == 0 && len(unsupported) == 0 {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] has no statements the data plane can honor", i)})
+		}
+		if len(f) > 0 {
+			continue // keep collecting findings across policies, but emit no partial manifest
+		}
+		name := roleName + "-inline-" + strconv.Itoa(i)
+		if n, ok := concrete(p["PolicyName"]); ok && n != "" {
+			name = roleName + "-" + k8sName(n)
+		}
+		out = append(out, &Manifest{
+			APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: name,
+			Spec: map[string]any{"dataPlane": map[string]any{
+				"appliesTo":  []any{"Role::" + roleName},
+				"statements": statementsToSpec(stmts),
+			}},
+		})
+	}
+	return out, f
 }
 
 // ec2TrustOnly reports whether an AssumeRolePolicyDocument Allows sts:AssumeRole for the

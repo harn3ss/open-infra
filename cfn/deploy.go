@@ -108,6 +108,31 @@ type DeprovisionRestAPIFunc func(ctx context.Context, apiID string) error
 // RETURNS the response rather than PUT-ing it to a pre-signed S3 URL.
 type InvokeFunc func(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, error)
 
+// expandManifest renders a translated manifest and any companion manifests it carries (m.Extra — e.g.
+// an IAM Role's inline Policies become companion kind: Policy objects) into builtResources in apply
+// order: the parent first, then each companion. A companion's LogicalID is namespaced under the parent
+// (id/name) so the stack record is unambiguous, and it inherits the parent's DeletionPolicy.
+func expandManifest(id string, res Resource, m *Manifest, opts DeployOptions) ([]builtResource, error) {
+	all := append([]*Manifest{m}, m.Extra...)
+	out := make([]builtResource, 0, len(all))
+	for i, mm := range all {
+		yml, err := renderManifest(mm, opts)
+		if err != nil {
+			return nil, err
+		}
+		lid := id
+		if i > 0 {
+			lid = id + "/" + mm.Name
+		}
+		out = append(out, builtResource{
+			res: StackResource{LogicalID: lid, APIVersion: mm.APIVersion, Kind: mm.Kind, Name: mm.Name,
+				DeletionPolicy: res.DeletionPolicy, Spec: mm.Spec},
+			yml: yml, cav: mm.Caveats,
+		})
+	}
+	return out, nil
+}
+
 // buildManifests runs the plan gate then the translate gate, returning every included
 // resource translated and ordered by dependency. It is the shared fail-closed front half of
 // deploy and update: a REJECTED plan, a type with no create translator, or any untranslatable
@@ -128,7 +153,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	r.evalConditions()
 	ctx := &stackCtx{template: t, resolver: r}
 
-	byID := map[string]builtResource{}
+	byID := map[string][]builtResource{}
 	var findings []Finding
 	for _, id := range t.rawOrder {
 		res := t.Resources[id]
@@ -150,15 +175,11 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 		if m == nil {
 			continue // a no-op resource (e.g. an ECS Cluster, or a TaskDefinition a Service composes)
 		}
-		yml, err := renderManifest(m, opts)
+		built, err := expandManifest(id, res, m, opts)
 		if err != nil {
 			return nil, err
 		}
-		byID[id] = builtResource{
-			res: StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name,
-				DeletionPolicy: res.DeletionPolicy, Spec: m.Spec},
-			yml: yml, cav: m.Caveats,
-		}
+		byID[id] = built
 	}
 	findings = append(findings, r.findings...)
 	if len(findings) > 0 {
@@ -166,9 +187,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	var order []builtResource
 	for _, id := range plan.Order {
-		if b, ok := byID[id]; ok {
-			order = append(order, b)
-		}
+		order = append(order, byID[id]...)
 	}
 	return order, nil
 }
@@ -346,19 +365,20 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			rec.Resources = append(rec.Resources, sr)
 			continue
 		}
-		yml, rerr := renderManifest(m, opts)
-		if rerr != nil {
-			return rollback(rerr)
+		built, berr := expandManifest(id, res, m, opts)
+		if berr != nil {
+			return rollback(berr)
 		}
-		sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, DeletionPolicy: res.DeletionPolicy, Spec: m.Spec}
-		if aerr := ap.Apply(ctx, yml); aerr != nil {
-			return rollback(fmt.Errorf("applying %s/%s: %w", m.Kind, m.Name, aerr))
-		}
-		applied = append(applied, sr)
-		rec.Resources = append(rec.Resources, sr)
-		if opts.Wait {
-			if werr := ap.WaitReady(ctx, m.APIVersion, m.Kind, m.Name, opts.Timeout); werr != nil {
-				return rollback(fmt.Errorf("%s/%s did not become ready: %w", m.Kind, m.Name, werr))
+		for _, b := range built {
+			if aerr := ap.Apply(ctx, b.yml); aerr != nil {
+				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, aerr))
+			}
+			applied = append(applied, b.res)
+			rec.Resources = append(rec.Resources, b.res)
+			if opts.Wait {
+				if werr := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); werr != nil {
+					return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, werr))
+				}
 			}
 		}
 	}
