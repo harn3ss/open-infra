@@ -92,10 +92,11 @@ func TestTranslate_EC2Route_UnknownPropRefuses(t *testing.T) {
 	}
 }
 
-// Plan-level: an instance profile + an EIP association used to be hard blockers (no backing kind),
-// which made a whole lift-and-shift stack REJECTED. They now map at plan (gated, not create-faithful),
-// so a stack carrying them is understood — PROVISIONABLE_WITH_CAVEATS — and the blockers name neither.
-func TestPlan_InstanceProfileAndEipAssociationMapNotBlock(t *testing.T) {
+// Plan-level parity: an InstanceProfile is create-deployable (an implicit no-op — the role binding
+// lives on the VM), so it is NOT a blocker. The EIP + EIPAssociation pair MAPS (Kind set) but has no
+// create translator — deploy refuses it — so the stack is REJECTED with a "no create translator" reason
+// (NOT a "no backing kind" reason), and InstanceProfile is never named as the problem.
+func TestPlan_InstanceProfileDeployable_EipPairGatesVerdict(t *testing.T) {
 	tmpl := `
 Resources:
   Role:
@@ -119,14 +120,22 @@ Resources:
     Properties: { AllocationId: { Fn::GetAtt: [ Eip, AllocationId ] }, InstanceId: { Ref: App } }
 `
 	p := mustPlan(t, []byte(tmpl), nil, "s")
-	if p.Verdict == Rejected {
-		t.Fatalf("stack must not be REJECTED now that InstanceProfile/EIPAssociation map; blockers:\n%s", blockersJoined(p))
+	// The EIP pair maps-but-undeployable → REJECTED (plan agrees with deploy).
+	if p.Verdict != Rejected {
+		t.Fatalf("stack must be REJECTED (EIP/EIPAssociation map but have no create translator); blockers:\n%s", blockersJoined(p))
 	}
-	if strings.Contains(blockersJoined(p), "InstanceProfile") || strings.Contains(blockersJoined(p), "EIPAssociation") {
-		t.Fatalf("InstanceProfile/EIPAssociation must not be blockers, got:\n%s", blockersJoined(p))
+	b := blockersJoined(p)
+	// The EIP pair is a "no create translator" refusal (they MAP), not a "no backing kind" one.
+	if strings.Contains(b, "no backing kind") {
+		t.Fatalf("EIP/EIPAssociation MAP (Kind set) — the reason must be 'no create translator', not 'no backing kind':\n%s", b)
 	}
-	// Neither is a hard blocker any more (both map). InstanceProfile is now create-deployable (an
-	// implicit no-op — the role binding lives on the VM); EIPAssociation still maps-but-gated.
+	if !strings.Contains(b, "no create translator") {
+		t.Fatalf("expected a 'no create translator' blocker for the EIP pair, got:\n%s", b)
+	}
+	// InstanceProfile must never be named as a blocker (it is deployable, an implicit no-op).
+	if strings.Contains(b, "InstanceProfile") {
+		t.Fatalf("InstanceProfile is deployable and must not be a blocker, got:\n%s", b)
+	}
 	for _, r := range p.Resources {
 		if r.CFNType == "AWS::IAM::InstanceProfile" && (r.Kind == "" || !r.Deployable) {
 			t.Fatalf("InstanceProfile should map and be create-deployable (implicit): kind=%q deployable=%v", r.Kind, r.Deployable)

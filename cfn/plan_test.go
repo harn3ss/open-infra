@@ -233,9 +233,13 @@ Resources:
     Properties: { Path: / }
 `)
 	p := mustPlan(t, data, nil, "")
-	// The stack maps (no blockers) but the Group can't be created, so it is not cleanly provisionable.
-	if p.Verdict != ProvisionableWithCaveats {
-		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (a mapped-but-undeployable Group); blockers:\n%s", p.Verdict, blockersJoined(p))
+	// The Group maps to a kind but has no create translator → deploy refuses it, so plan REJECTS (parity),
+	// and the blocker says exactly why — it still MAPS, it just can't be created.
+	if p.Verdict != Rejected {
+		t.Fatalf("verdict = %s, want REJECTED (a mapped-but-undeployable Group); blockers:\n%s", p.Verdict, blockersJoined(p))
+	}
+	if b := blockersJoined(p); !strings.Contains(b, "Group") || !strings.Contains(b, "no create translator") {
+		t.Fatalf("the blocker must name the Group + 'no create translator', got:\n%s", b)
 	}
 	byID := map[string]PlannedResource{}
 	for _, r := range p.Resources {
@@ -340,8 +344,12 @@ Resources:
 			t.Errorf("%s has no create translator — want Deployable=false (Knative revisions aren't template-derivable)", id)
 		}
 	}
-	// A stack whose only lossy parts are these must be caveated, never cleanly provisionable.
-	if p.Verdict != ProvisionableWithCaveats {
-		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS (version/alias map but don't deploy); blockers:\n%s", p.Verdict, blockersJoined(p))
+	// They map but have no create translator, so deploy refuses them — plan REJECTS (parity), naming the
+	// structural reason. Traffic is declared natively via kind: Function spec.aliases instead.
+	if p.Verdict != Rejected {
+		t.Fatalf("verdict = %s, want REJECTED (version/alias map but deploy refuses them); blockers:\n%s", p.Verdict, blockersJoined(p))
+	}
+	if !strings.Contains(blockersJoined(p), "no create translator") {
+		t.Fatalf("the blocker must say 'no create translator', got:\n%s", blockersJoined(p))
 	}
 }

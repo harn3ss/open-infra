@@ -129,6 +129,12 @@ func BuildPlanWithExports(data []byte, params, exports map[string]string, stackN
 			if !entry.mappable() {
 				plan.Blockers = append(plan.Blockers,
 					fmt.Sprintf("%s (%s): %s — %s", id, res.Type, entry.Status, noteOr(entry.Note, "no backing kind")))
+			} else if !hasTranslator(res.Type) {
+				// Maps to a kind at plan but has no create translator: deploy (all-or-nothing) refuses it
+				// with "has no create translator", so plan must REJECT too — a PROVISIONABLE* verdict that
+				// deploy would refuse is the overstatement #344 is closing. The structural reason is the note.
+				plan.Blockers = append(plan.Blockers,
+					fmt.Sprintf("%s (%s): maps to kind: %s at plan but has no create translator — deploy refuses it (%s)", id, res.Type, entry.Kind, noteOr(entry.Note, "documented structural refusal; author it natively")))
 			}
 		}
 		plan.Resources = append(plan.Resources, pr)

@@ -147,9 +147,10 @@ Resources:
     Type: AWS::IAM::Group
     Properties: { Path: / }
 `)
-	// sanity: it plans clean (IAM::Group is plan-supported but has no create translator)
-	if p := mustPlan(t, tmpl, nil, ""); p.Verdict == Rejected {
-		t.Fatalf("precondition: IAM::Group should plan supported, got %s", p.Verdict)
+	// sanity: IAM::Group maps to a kind but has no create translator, so plan now REJECTS it too (plan
+	// and deploy agree — a PROVISIONABLE* verdict never hides a resource deploy would refuse).
+	if p := mustPlan(t, tmpl, nil, ""); p.Verdict != Rejected {
+		t.Fatalf("precondition: IAM::Group maps but has no translator → plan should REJECT, got %s", p.Verdict)
 	}
 	f := &fakeApplier{}
 	_, err := Deploy(context.Background(), tmpl, deployOpts(), f)
