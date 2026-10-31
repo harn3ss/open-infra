@@ -6,12 +6,18 @@
 # an unrelated feature — precisely the thing a boundary exists to prevent.
 #
 # CI (TestPolicyBoundaryNoDrift in console-api) asserts:
-#   1. boundary ∪ excluded  ==  every XRD's claimNames.plural   (a new kind fails the build
-#      until it is consciously placed in one list or the other)
-#   2. boundary and excluded are disjoint
+#   1. (boundary MINUS shimResources) ∪ excluded == every XRD's claimNames.plural  (a new kind
+#      fails the build until it is consciously placed in one list or the other)
+#   2. boundary and excluded are disjoint; shimResources ⊆ boundary and name no XRD kind
 #   3. the $known dict in policy-composition.yaml            ==  boundary   (compile-time drop)
 #   4. the openinfra.dev resources in provider-setup.yaml    ==  boundary   (API-server fence)
 #   5. policyResources in console-api/cmd/server/iam_policies.go == boundary (BFF validation)
+#
+# `boundary` is what a Policy may grant on. Most entries are XRD claim plurals (a kind you can
+# write). A FEW are `shimResources`: aws-shim front-door authz scopes that have NO XRD — they
+# exist only as coarse Cedar/RBAC types at the shim. They are grantable (so they are in
+# `boundary`, enforced in all four mirrors), but assertion 1 subtracts them before the
+# XRD-coverage check, so they neither demand nor pretend to be a kind.
 #
 # Change the boundary HERE, then run `go test ./...` in console-api; it will name every file
 # that still disagrees. There is no generator — the other four stay hand-authored and the
@@ -54,6 +60,19 @@ boundary:
   - backupplans
   - backupvaults
   - configrules
+  # shimResources (below) — grantable, but not XRDs:
+  - repositories
+  - secrets
+
+# shim-only coarse authz types: in `boundary` (grantable, and mirrored into $known /
+# provider-setup / policyResources like any boundary entry) but backed by NO XRD. They are the
+# aws-shim front doors that were split off the shared "applications" gate so neither grant leaks
+# into the other (#345.6 / #347.0.2). Assertion 1 subtracts these before comparing boundary to
+# the XRD claim plurals. Keep this list TINY and reasoned — each entry is something a Policy can
+# grant with no corresponding kind, so it must earn its place.
+shimResources:
+  - repositories: "ECR front door (registry login / push / pull). Its own coarse type so a registry grant does not also read Secrets Manager."
+  - secrets:      "Secrets Manager front door. Scopes to secrets.openinfra.dev — NEVER core k8s Secrets, since the Policy composition hardcodes apiGroups:[openinfra.dev]. Its own coarse type so a secret grant does not also reach the registry."
 
 # Kinds a Policy may NOT grant on, each with the reason it is excluded. Exhaustive on
 # purpose: every XRD must appear in exactly one of these two lists, so a new kind cannot be

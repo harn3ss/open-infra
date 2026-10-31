@@ -139,6 +139,11 @@ rules:
       - backupplans
       - backupvaults
       - configrules
+      # shimResources — ECR / Secrets Manager coarse authz types (no XRD). Held here so the
+      # compile-fence (create a ClusterRole granting only verbs you hold) admits a Policy that
+      # grants on them; see platform/abstraction/policy-boundary.yaml (#345.6 / #347.0.2).
+      - repositories
+      - secrets
     verbs: [get, list, watch, create, update, patch, delete]
 
   # Knative Services for the kind: Function (serverless) abstraction.

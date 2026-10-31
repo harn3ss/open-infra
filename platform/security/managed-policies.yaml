@@ -5,9 +5,10 @@
 #
 #   * Control plane  — RBAC verbs (Get/List/Watch/Create/Update/Patch/Delete or *) on
 #     openinfra.dev kinds. spec.statements compile to a labelled ClusterRole. A Policy can
-#     ONLY name the 31 openinfra.dev resources in the permission boundary
-#     (platform/abstraction/policy-boundary.yaml); anything else is DROPPED by the
-#     composition, so every action below stays inside that whitelist.
+#     ONLY name the openinfra.dev resources in the permission boundary
+#     (platform/abstraction/policy-boundary.yaml — the XRD kinds plus the shim-only authz
+#     scopes repositories/secrets); anything else is DROPPED by the composition, so every
+#     action below stays inside that whitelist.
 #   * Data plane     — Cedar authorization at the aws-shim front doors. Only three services
 #     are governed: s3 (Bucket), dynamodb (Table), lambda (Function). Actions come from
 #     ui/src/lib/iam-cedar-vocab.ts. dataPlane.appliesTo is intentionally OMITTED: these are

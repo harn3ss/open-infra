@@ -33,6 +33,11 @@ func TestValidateStatements(t *testing.T) {
 	ok([]policyStatement{{Actions: []string{"*:List"}}})         // effect defaults to Allow
 	ok([]policyStatement{{Actions: []string{"queries:Create"}}}) // last resource in the list
 	ok([]policyStatement{{Actions: []string{"volumes:get"}}})    // lowercase verb accepted
+	// shimResources are grantable: repositories (ECR) and secrets (Secrets Manager) are valid
+	// coarse authz scopes, split off "applications" (#345.6 / #347.0.2). "secrets" here is
+	// secrets.openinfra.dev, NOT core k8s Secrets (the composition hardcodes apiGroups:[openinfra.dev]).
+	ok([]policyStatement{{Actions: []string{"repositories:*"}}})
+	ok([]policyStatement{{Actions: []string{"secrets:Get"}}})
 
 	bad("at least one statement", nil)
 	bad("at least one action", []policyStatement{{Effect: "Allow"}})
@@ -40,8 +45,9 @@ func TestValidateStatements(t *testing.T) {
 	bad("<resource>:<verb>", []policyStatement{{Actions: []string{"volumesGet"}}})
 	bad("<resource>:<verb>", []policyStatement{{Actions: []string{"volumes:"}}})
 	// The one that matters: a resource outside the boundary must be refused here, not
-	// silently dropped by the composition.
-	bad("unknown resource", []policyStatement{{Actions: []string{"secrets:Get"}}})
+	// silently dropped by the composition. Use an EXCLUDED identity object — granting on it
+	// would be privilege escalation, so it must never validate.
+	bad("unknown resource", []policyStatement{{Actions: []string{"users:Get"}}})
 	bad("unknown resource", []policyStatement{{Actions: []string{"clusterroles:*"}}})
 	bad("unknown verb", []policyStatement{{Actions: []string{"volumes:Frobnicate"}}})
 }
@@ -62,6 +68,7 @@ func TestPolicyResourcesMatchBoundary(t *testing.T) {
 		"tables", "buckets", "queues",
 		"backupplans", "backupvaults",
 		"configrules",
+		"repositories", "secrets", // shimResources: ECR / Secrets Manager coarse authz types (no XRD)
 	}
 	if len(policyResources) != len(want) {
 		t.Fatalf("policyResources has %d entries, want %d — mirror the change in "+
@@ -163,8 +170,10 @@ func TestValidatePolicyReq(t *testing.T) {
 	if msg := validatePolicyReq(policyReq{}); !strings.Contains(msg, "at least one statement") {
 		t.Errorf("empty policy should be rejected, got %q", msg)
 	}
-	// A bad control-plane statement is still caught.
-	if msg := validatePolicyReq(policyReq{Statements: []policyStatement{{Actions: []string{"secrets:Get"}}}}); !strings.Contains(msg, "unknown resource") {
+	// A bad control-plane statement is still caught. "users" is an EXCLUDED identity object
+	// (granting on it is privilege escalation); "secrets" is now a valid shim scope, so it is
+	// no longer the right negative example here (#347.0.2).
+	if msg := validatePolicyReq(policyReq{Statements: []policyStatement{{Actions: []string{"users:Get"}}}}); !strings.Contains(msg, "unknown resource") {
 		t.Errorf("out-of-boundary statement should be rejected, got %q", msg)
 	}
 	// A bad data-plane block is caught too.

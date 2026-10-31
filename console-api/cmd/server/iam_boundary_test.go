@@ -46,21 +46,55 @@ func TestPolicyBoundaryNoDrift(t *testing.T) {
 		}
 	})
 
-	// ── 1. boundary ∪ excluded == every XRD claim plural ──
+	// ── 2b. shimResources ⊆ boundary, and name NO XRD kind ──
+	// A shim resource is grantable (so it lives in boundary and all four mirrors) but is NOT a
+	// kind. If it drifted OUT of boundary it would be dropped by the composition; if it named a
+	// real XRD it would belong in boundary proper, not as a shim exception.
+	t.Run("shim_resources_in_boundary_not_xrds", func(t *testing.T) {
+		bset := toSet(boundary)
+		for _, s := range bnd.shimResources {
+			if !bset[s] {
+				t.Errorf("shimResource %q is not in boundary — a grantable shim type must be in boundary too", s)
+			}
+		}
+		xset := toSet(allXRDClaimPlurals(t))
+		for _, s := range bnd.shimResources {
+			if xset[s] {
+				t.Errorf("shimResource %q IS an XRD claim plural — it is a real kind, so list it in boundary only, not as a shim exception", s)
+			}
+		}
+	})
+
+	// ── 1. (boundary MINUS shimResources) ∪ excluded == every XRD claim plural ──
+	// shimResources are grantable scopes with no XRD, so they are subtracted before the
+	// XRD-coverage check; everything else in boundary must still be a declared kind.
 	t.Run("covers_every_xrd", func(t *testing.T) {
 		plurals := allXRDClaimPlurals(t)
-		declared := append(append([]string{}, boundary...), excluded...)
+		shim := toSet(bnd.shimResources)
+		var declared []string
+		for _, b := range boundary {
+			if !shim[b] {
+				declared = append(declared, b)
+			}
+		}
+		declared = append(declared, excluded...)
 		if msg := diffSets("XRD claim plurals", declared, plurals,
-			"add it to boundary (grantable) or excluded (with a reason) in policy-boundary.yaml"); msg != "" {
+			"add it to boundary (grantable) or excluded (with a reason) in policy-boundary.yaml; "+
+				"a shim-only authz scope with no XRD goes in boundary AND shimResources"); msg != "" {
 			t.Error(msg)
 		}
 	})
 
-	// ── excluded reasons must be present (a name without a reason is a future mystery) ──
+	// ── excluded / shimResource reasons must be present (a name without a reason is a future mystery) ──
 	t.Run("excluded_reasons_present", func(t *testing.T) {
 		for name, reason := range bnd.excludedReasons {
 			if strings.TrimSpace(reason) == "" {
 				t.Errorf("excluded %q has no reason — every exclusion must say why", name)
+			}
+		}
+		for name, reason := range bnd.shimResourceReasons {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("shimResource %q has no reason — every shim-only scope must say why it is grantable without a kind", name)
 			}
 		}
 	})
@@ -113,6 +147,11 @@ type boundaryData struct {
 	boundary        []string
 	excluded        []string
 	excludedReasons map[string]string
+	// shimResources are boundary entries that have NO XRD — aws-shim front-door authz scopes
+	// (repositories, secrets). They are grantable (in boundary + all four mirrors), but
+	// assertion 1 subtracts them before comparing boundary to the XRD claim plurals.
+	shimResources       []string
+	shimResourceReasons map[string]string
 }
 
 func loadBoundaryFile(t *testing.T) boundaryData {
@@ -122,17 +161,24 @@ func loadBoundaryFile(t *testing.T) boundaryData {
 		t.Fatalf("read policy-boundary.yaml: %v", err)
 	}
 	var doc struct {
-		Boundary []string            `json:"boundary"`
-		Excluded []map[string]string `json:"excluded"` // list of single-key {name: reason}
+		Boundary      []string            `json:"boundary"`
+		Excluded      []map[string]string `json:"excluded"`      // list of single-key {name: reason}
+		ShimResources []map[string]string `json:"shimResources"` // list of single-key {name: reason}
 	}
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse policy-boundary.yaml: %v", err)
 	}
-	d := boundaryData{boundary: doc.Boundary, excludedReasons: map[string]string{}}
+	d := boundaryData{boundary: doc.Boundary, excludedReasons: map[string]string{}, shimResourceReasons: map[string]string{}}
 	for _, m := range doc.Excluded {
 		for name, reason := range m {
 			d.excluded = append(d.excluded, name)
 			d.excludedReasons[name] = reason
+		}
+	}
+	for _, m := range doc.ShimResources {
+		for name, reason := range m {
+			d.shimResources = append(d.shimResources, name)
+			d.shimResourceReasons[name] = reason
 		}
 	}
 	return d

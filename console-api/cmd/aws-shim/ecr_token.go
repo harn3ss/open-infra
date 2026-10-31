@@ -331,7 +331,7 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 				if verb == "" {
 					continue
 				}
-				if ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, acc.Name); ok {
+				if ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, acc.Name); ok {
 					allowed = append(allowed, action)
 				}
 			}

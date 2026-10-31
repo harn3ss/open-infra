@@ -8,11 +8,12 @@
 # PULL-ONLY, shim-signed credential for a dedicated node-puller principal, written into each node's
 # registries.yaml by the node agent (see ecr-node-pull-agent.yaml). This file is the identity + authz.
 #
-# The credential is pull-only (get on applications — never create/delete), so the worst a leaked node
+# The credential is pull-only (get on repositories — never create/delete), so the worst a leaked node
 # credential can do is pull images that already exist in the in-cluster registry. Push stays scoped to the
 # ECR doorway's create grant. The authorization is the SAME impersonated SubjectAccessReview the control
-# plane runs (no parallel auth layer): the realm authorizes each pull via CanDo(get, applications, <repo>)
-# against the node-puller's group.
+# plane runs (no parallel auth layer): the realm authorizes each pull via CanDo(get, repositories, <repo>)
+# against the node-puller's group. ECR uses its OWN coarse authz type (repositories), split from the shared
+# "applications" gate so a registry grant and app/data access are least-privilege-separable (#345.6 / #347.0.2).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -20,8 +21,10 @@ metadata:
   labels: { openinfra.dev/component: ecr }
 rules:
   # pull == get; list lets a client enumerate tags. NO create (push) and NO delete.
+  # repositories is ECR's own coarse authz type (#345.6 / #347.0.2) — must match the realm's
+  # CanDo(get, repositories, <repo>) in ecr_token.go, or every node pull is denied.
   - apiGroups: ["openinfra.dev"]
-    resources: ["applications"]
+    resources: ["repositories"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

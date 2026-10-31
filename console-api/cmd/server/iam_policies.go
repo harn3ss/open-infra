@@ -40,6 +40,11 @@ var policyResources = []string{
 	"tables", "buckets", "queues",
 	"backupplans", "backupvaults",
 	"configrules",
+	// ECR (repositories) and Secrets Manager (secrets) are the aws-shim's own coarse authz
+	// types, split from "applications" so neither grant leaks into the other (#345.6 / #347.0.2).
+	// They scope to repositories.openinfra.dev / secrets.openinfra.dev — the Policy composition
+	// hardcodes apiGroups: [openinfra.dev], so "secrets" is never core k8s Secrets.
+	"repositories", "secrets",
 }
 
 // policyVerbs are the verbs an action may use (case-insensitive), plus "*".
