@@ -139,6 +139,45 @@ func TestUpdate_Rollback_RestoresPriorStack(t *testing.T) {
 	}
 }
 
+// #347 review item 3: the shared default EncryptionKey is Retain — removing the disk that created
+// it (here the whole encrypted Volume) must NOT delete the key, since a sibling disk in the
+// namespace may still use it. The Volume itself IS deleted.
+func TestUpdate_RetainedDefaultKey_SurvivesRemoval(t *testing.T) {
+	initial := []byte(`
+Resources:
+  Data:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 10, Encrypted: true }
+  Keep:
+    Type: AWS::KMS::Key
+    Properties: { Description: keep }
+`)
+	updated := []byte(`
+Resources:
+  Keep:
+    Type: AWS::KMS::Key
+    Properties: { Description: keep }
+`)
+	f := &fakeApplier{}
+	if _, err := Deploy(context.Background(), initial, deployOpts(), f); err != nil {
+		t.Fatalf("initial deploy: %v", err)
+	}
+	f.applied, f.deleted = nil, nil
+	rec, err := Update(context.Background(), updated, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if rec.Status != "UPDATE_COMPLETE" {
+		t.Fatalf("status = %s, want UPDATE_COMPLETE", rec.Status)
+	}
+	if !contains(f.deleted, "Volume/data") {
+		t.Errorf("the removed Volume must be deleted, deleted: %v", f.deleted)
+	}
+	if contains(f.deleted, "EncryptionKey/"+defaultEBSKeyName) {
+		t.Errorf("the shared Retain default EncryptionKey must NOT be deleted on removal, deleted: %v", f.deleted)
+	}
+}
+
 func TestUpdate_NoStack_Refused(t *testing.T) {
 	if _, err := Update(context.Background(), initialStack, deployOpts(), &fakeApplier{}); err == nil ||
 		!strings.Contains(err.Error(), "no stack") {

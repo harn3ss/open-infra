@@ -217,6 +217,11 @@ Resources:
 	for _, e := range m.Extra {
 		if e.Kind == "EncryptionKey" && e.Name == defaultEBSKeyName {
 			foundKey = true
+			// #347 review item 3: the shared default key must be Retain so a stack
+			// destroy/update/rollback can't delete a key a sibling disk still uses.
+			if e.DeletionPolicy != "Retain" {
+				t.Fatalf("default EncryptionKey companion must be Retain (shared, namespace-owned), got %q", e.DeletionPolicy)
+			}
 		}
 	}
 	if !foundKey {

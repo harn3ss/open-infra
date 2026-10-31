@@ -32,8 +32,14 @@ type Manifest struct {
 	Caveats    []string // declared, non-silent losses (e.g. a KMS key policy that has no equivalent)
 	// Extra holds companion manifests a single CFN resource expands into — e.g. an IAM Role's inline
 	// Policies become companion kind: Policy objects. They are applied right AFTER this manifest, in
-	// order, and inherit its DeletionPolicy. Most translators leave this nil.
+	// order, and inherit its DeletionPolicy unless they set their own (DeletionPolicy, below). Most
+	// translators leave this nil.
 	Extra []*Manifest
+	// DeletionPolicy, when non-empty, OVERRIDES the parent resource's DeletionPolicy for this manifest
+	// (Delete | Retain | Snapshot). Used for a SHARED companion that must outlive the stack that first
+	// created it — e.g. the per-namespace default EncryptionKey, which other stacks' disks also key
+	// on, so it is Retain and a stack destroy/update/rollback must not delete it. Empty = inherit.
+	DeletionPolicy string
 }
 
 // translator produces a Manifest from a resource's already-resolved Properties, or a set of
@@ -494,6 +500,12 @@ func defaultEBSEncryptionKey() *Manifest {
 			"description":  "default data-disk encryption key — open-infra analog of AWS aws/ebs; created on first use for an Encrypted volume/disk with no KmsKeyId",
 			"rotationDays": 365,
 		},
+		// SHARED, namespace-scoped singleton: other stacks' disks in the same namespace key on this
+		// same object. Retain so a stack destroy/update/rollback never deletes a key a sibling still
+		// uses (it is create-if-absent on next use). Deleting the kind: EncryptionKey wouldn't erase
+		// the Vault transit key anyway (that is the separate kind: Destruction path) — it would just
+		// strand every disk that references it until re-created. #347 review item 3.
+		DeletionPolicy: "Retain",
 	}
 }
 

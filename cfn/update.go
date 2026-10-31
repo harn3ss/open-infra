@@ -16,6 +16,7 @@ package cfn
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -75,8 +76,13 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 
 	var added []StackResource // to delete on rollback
 	rollback := func(cause error) (*StackRecord, error) {
-		// Delete everything this update added, newest first.
+		// Delete everything this update added, newest first — but honor Retain: a Retain resource
+		// (e.g. the shared default EncryptionKey) must survive rollback, since a sibling may already
+		// use it and it may have pre-existed this update (#347 review item 3).
 		for i := len(added) - 1; i >= 0; i-- {
+			if strings.EqualFold(added[i].DeletionPolicy, "Retain") {
+				continue
+			}
 			_ = ap.Delete(ctx, added[i].APIVersion, added[i].Kind, added[i].Name)
 		}
 		// Re-apply the entire prior stack: restores modified specs and re-creates removed
@@ -111,9 +117,14 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			}
 		}
 	}
-	// Delete Removes in reverse dependency order (cs lists them reversed already).
+	// Delete Removes in reverse dependency order (cs lists them reversed already). Honor Retain: a
+	// Retain resource is left in place (now unmanaged), matching destroy's behavior — e.g. removing
+	// one disk must not delete a shared default EncryptionKey another disk still uses (#347 review item 3).
 	for _, c := range cs.Changes {
 		if c.Action != Remove {
+			continue
+		}
+		if strings.EqualFold(currentByID[c.LogicalID].DeletionPolicy, "Retain") {
 			continue
 		}
 		if err := ap.Delete(ctx, currentByID[c.LogicalID].APIVersion, c.Kind, c.Name); err != nil {

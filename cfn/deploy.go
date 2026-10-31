@@ -124,9 +124,15 @@ func expandManifest(id string, res Resource, m *Manifest, opts DeployOptions) ([
 		if i > 0 {
 			lid = id + "/" + mm.Name
 		}
+		// A companion inherits the parent's DeletionPolicy unless it sets its own override (a SHARED
+		// companion like the default EncryptionKey pins Retain so the stack lifecycle can't delete it).
+		dp := res.DeletionPolicy
+		if mm.DeletionPolicy != "" {
+			dp = mm.DeletionPolicy
+		}
 		out = append(out, builtResource{
 			res: StackResource{LogicalID: lid, APIVersion: mm.APIVersion, Kind: mm.Kind, Name: mm.Name,
-				DeletionPolicy: res.DeletionPolicy, Spec: mm.Spec},
+				DeletionPolicy: dp, Spec: mm.Spec},
 			yml: yml, cav: mm.Caveats,
 		})
 	}
