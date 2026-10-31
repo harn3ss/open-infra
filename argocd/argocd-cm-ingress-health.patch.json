@@ -1,0 +1,1 @@
+{"data":{"resource.customizations.health.networking.k8s.io_Ingress":"hs = {}\nhs.status = \"Healthy\"\nhs.message = \"Ingress present (Traefik in this cluster does not publish status.loadBalancer on Ingresses; a synced Ingress is treated as Healthy)\"\nreturn hs\n"}}

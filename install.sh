@@ -658,6 +658,14 @@ RUN "$KUBECTL create namespace argocd --dry-run=client -o yaml | $KUBECTL apply 
 RUN "$KUBECTL -n argocd apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
 RUN "$KUBECTL -n argocd rollout status deploy/argocd-server --timeout=300s || true"
 
+# Ingress health override: Traefik here does not publish status.loadBalancer on Ingresses, so Argo CD's
+# DEFAULT Ingress health is perpetually "Progressing" — and an Ingress created inside a sync wave then
+# wedges the whole sync waiting for a health state that never arrives. Treat a synced Ingress as Healthy.
+# Re-applied every run because the upstream apply above resets argocd-cm. (See argocd/README.md.)
+LOG "applying Argo CD Ingress-health override…"
+RUN "$KUBECTL -n argocd patch configmap argocd-cm --type merge --patch-file ${REPO_DIR}/argocd/argocd-cm-ingress-health.patch.json"
+RUN "$KUBECTL -n argocd rollout restart statefulset argocd-application-controller >/dev/null 2>&1 || true"
+
 # ── 4. App-of-apps ───────────────────────────────────────────
 if [ -z "$GITOPS_REPO" ]; then
   WARN "gitops.repoUrl unset — applying the bundled root-app pointed at THIS repo for a local trial."
