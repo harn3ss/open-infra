@@ -591,7 +591,11 @@ spec:
                         {{- end }}
                         - [systemctl, enable, --now, qemu-guest-agent]
                         {{- if $spec.userData }}
-                        - [/bin/sh, /opt/openinfra-userdata]
+                        # EXEC the script so its shebang is honored (AWS runs UserData this way). Passing it
+                        # to `sh` would ignore `#!/bin/bash` and run it under dash, where the standard
+                        # `set -euxo pipefail` opener aborts on line 1 (dash has no pipefail). The file is
+                        # 0755 and always carries a shebang (cfn prepends `#!/bin/sh` when none is given).
+                        - [/opt/openinfra-userdata]
                         {{- end }}
             {{- end }}
             {{- if $instanceRole }}

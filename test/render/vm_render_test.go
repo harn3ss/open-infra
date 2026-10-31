@@ -82,6 +82,19 @@ func TestVM_DataDisks_Encrypted(t *testing.T) {
 	}
 }
 
+// A UserData script is EXEC'd (its shebang honored), not passed to `sh` — otherwise a `#!/bin/bash`
+// script with the standard `set -euxo pipefail` opener would run under dash and die on line 1.
+func TestVM_UserData_ExecNotSh(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"userData": "#!/bin/bash\nset -euxo pipefail\necho hi\n"}))
+	if !strings.Contains(out, "- [/opt/openinfra-userdata]") {
+		t.Errorf("UserData must be exec'd directly (honoring its shebang); got:\n%s", grepCtx(out, "openinfra-userdata"))
+	}
+	if strings.Contains(out, "/bin/sh, /opt/openinfra-userdata") {
+		t.Errorf("UserData must NOT be passed to /bin/sh (that ignores #!/bin/bash); got:\n%s", grepCtx(out, "openinfra-userdata"))
+	}
+}
+
 // Data disks get AWS Nitro device-name aliases so an unmodified lift-and-shift UserData script that
 // formats/mounts /dev/nvme1n1 works on KubeVirt virtio disks (/dev/vdb). The composition drops a udev
 // rules file and triggers udev before the user's script runs.
