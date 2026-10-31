@@ -92,10 +92,16 @@ spec:
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
-            {{- /* Instance identity (IMDS): the kind: Role this VM assumes. Labelled onto the VMI +
-                   launcher pod so the instance-metadata responder can map the caller pod -> its role
-                   and mint scoped credentials. Inert until the responder is deployed. */}}
+            {{- /* Instance identity: the kind: Role this VM assumes via the AWS container-credentials
+                   provider. The guest's AWS SDK/CLI reads creds from a LOOPBACK endpoint — botocore (and
+                   the JS v3 http provider) refuse a container-credentials URL whose host is not loopback /
+                   link-local, so the shim (a ClusterIP service) is reached through a small systemd
+                   socket-proxy on 127.0.0.1:$credsPort. The SDK sends the projected SA token (from
+                   TOKEN_FILE) as the Authorization header, which the proxy forwards to the shim verbatim. */}}
             {{- $instanceRole := $spec.instanceRole | default "" }}
+            {{- $shimHostPort := "aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
+            {{- $credsPort := "16349" }}
+            {{- $credsURI := printf "http://127.0.0.1:%s/v1/vm-credentials" $credsPort }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -546,9 +552,40 @@ spec:
                       {{- if or $spec.userData $instanceRole $dataDisks }}
                       write_files:
                         {{- if $instanceRole }}
+                        {{- /* The container-credentials env, written to THREE places so every consumer
+                               sees it: /etc/environment (login shells), a systemd Manager drop-in (every
+                               systemd service — the Docker daemon, the app's units), and a standalone file
+                               the boot-script wrapper sources (cloud-final.service is already running when
+                               runcmd fires, so it predates the drop-in). FULL_URI is the loopback relay. */}}
                         - path: /etc/environment
                           append: true
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token\n"
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token\n"
+                        - path: /etc/openinfra-aws.env
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token\n"
+                        - path: /etc/systemd/system.conf.d/10-openinfra-aws.conf
+                          content: |
+                            [Manager]
+                            DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }} AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token
+                        {{- /* Loopback relay: botocore/JS only trust a loopback container-creds host, and
+                               the shim is a ClusterIP service, so systemd-socket-proxyd forwards
+                               127.0.0.1:$credsPort -> the shim (DNS resolved per connection). The SA token
+                               the SDK sends as Authorization is forwarded unchanged. */}}
+                        - path: /etc/systemd/system/openinfra-aws-creds.socket
+                          content: |
+                            [Unit]
+                            Description=open-infra VM credentials loopback relay (socket)
+                            [Socket]
+                            ListenStream=127.0.0.1:{{ $credsPort }}
+                            [Install]
+                            WantedBy=sockets.target
+                        - path: /etc/systemd/system/openinfra-aws-creds.service
+                          content: |
+                            [Unit]
+                            Description=open-infra VM credentials loopback relay
+                            Requires=openinfra-aws-creds.socket
+                            After=openinfra-aws-creds.socket network-online.target
+                            [Service]
+                            ExecStart=/usr/lib/systemd/systemd-socket-proxyd {{ $shimHostPort }}
                         {{- end }}
                         {{- if $spec.userData }}
                         - path: /opt/openinfra-userdata
@@ -582,6 +619,12 @@ spec:
                         - [ bash, -c, "mkdir -p /mnt/openinfra-identity /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; cp -f /mnt/openinfra-identity/token /run/openinfra-identity/token 2>/dev/null && chmod 0644 /run/openinfra-identity/token || true" ]
                       {{- end }}
                       runcmd:
+                        {{- if $instanceRole }}
+                        # Pick up the DefaultEnvironment drop-in and start the loopback credentials relay
+                        # BEFORE the boot script, so an `aws s3 cp` at first boot can reach it.
+                        - [ systemctl, daemon-reload ]
+                        - [ systemctl, enable, --now, openinfra-aws-creds.socket ]
+                        {{- end }}
                         {{- if $dataDisks }}
                         # Materialize the AWS Nitro device-name symlinks BEFORE the user's UserData runs,
                         # so a script that formats/mounts /dev/nvme1n1 finds it.
@@ -591,11 +634,12 @@ spec:
                         {{- end }}
                         - [systemctl, enable, --now, qemu-guest-agent]
                         {{- if $spec.userData }}
-                        # EXEC the script so its shebang is honored (AWS runs UserData this way). Passing it
-                        # to `sh` would ignore `#!/bin/bash` and run it under dash, where the standard
-                        # `set -euxo pipefail` opener aborts on line 1 (dash has no pipefail). The file is
-                        # 0755 and always carries a shebang (cfn prepends `#!/bin/sh` when none is given).
-                        - [/opt/openinfra-userdata]
+                        # EXEC the script so its shebang is honored (AWS runs UserData this way; passing it
+                        # to `sh` would ignore `#!/bin/bash` and run it under dash, where `set -o pipefail`
+                        # aborts on line 1). Source the creds env first — cloud-final.service is already
+                        # running, so it predates the systemd DefaultEnvironment drop-in. The file is 0755
+                        # and always carries a shebang (cfn prepends `#!/bin/sh` when none is given).
+                        - [ bash, -c, "set -a; [ -f /etc/openinfra-aws.env ] && . /etc/openinfra-aws.env; set +a; exec /opt/openinfra-userdata" ]
                         {{- end }}
             {{- end }}
             {{- if $instanceRole }}

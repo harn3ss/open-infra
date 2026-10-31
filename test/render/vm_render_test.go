@@ -87,7 +87,7 @@ func TestVM_DataDisks_Encrypted(t *testing.T) {
 func TestVM_UserData_ExecNotSh(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
 	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"userData": "#!/bin/bash\nset -euxo pipefail\necho hi\n"}))
-	if !strings.Contains(out, "- [/opt/openinfra-userdata]") {
+	if !strings.Contains(out, "exec /opt/openinfra-userdata") {
 		t.Errorf("UserData must be exec'd directly (honoring its shebang); got:\n%s", grepCtx(out, "openinfra-userdata"))
 	}
 	if strings.Contains(out, "/bin/sh, /opt/openinfra-userdata") {
@@ -140,8 +140,14 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		// cloud-init lives in a Secret (KubeVirt's 2048-byte inline cap), referenced by the VMI:
 		"secretRef",
 		"name: myvm-cloudinit",
-		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
+		// The credentials endpoint is the LOOPBACK relay (botocore/JS reject a non-loopback host):
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials",
 		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token",
+		// ...served by a systemd socket-proxy to the shim, env also in a systemd Manager drop-in:
+		"ListenStream=127.0.0.1:16349",
+		"systemd-socket-proxyd aws-shim.open-infra-aws-shim.svc.cluster.local:4566",
+		"DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials",
+		"openinfra-aws-creds.socket",
 		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
 	} {
 		if !strings.Contains(with, want) {
