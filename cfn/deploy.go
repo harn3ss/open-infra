@@ -92,6 +92,10 @@ type DeployOptions struct {
 	// than guessing. The in-cluster aws-shim doorway sets them to drivers of its own apigateway store.
 	ProvisionRestAPI   ProvisionRestAPIFunc
 	DeprovisionRestAPI DeprovisionRestAPIFunc
+	// Caps are deploy-environment facts translators depend on (e.g. whether MinIO has SSE-KMS on).
+	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
+	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
+	Caps Capabilities
 }
 
 // ProvisionRestAPIFunc provisions a collated REST v1 plan (the sentinel's Spec) and returns the created
@@ -144,7 +148,7 @@ func expandManifest(id string, res Resource, m *Manifest, opts DeployOptions) ([
 // deploy and update: a REJECTED plan, a type with no create translator, or any untranslatable
 // property returns an error and no manifests — there is no partial result.
 func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
-	plan, err := BuildPlanWithExports(data, opts.Params, opts.Exports, opts.StackName)
+	plan, err := BuildPlanWithCaps(data, opts.Params, opts.Exports, opts.StackName, opts.Caps)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +161,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
-	ctx := &stackCtx{template: t, resolver: r}
+	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
 
 	byID := map[string][]builtResource{}
 	var findings []Finding
@@ -293,7 +297,7 @@ func hasAPIGatewayRestV1(t *Template) bool {
 // Fn::GetAtt resolved against it. Same fail-closed rollback as Deploy. A stack with no custom resource
 // never reaches here (Deploy branches on hasCustomResources), so the common path is untouched.
 func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
-	plan, err := BuildPlanWithExports(data, opts.Params, opts.Exports, opts.StackName)
+	plan, err := BuildPlanWithCaps(data, opts.Params, opts.Exports, opts.StackName, opts.Caps)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +311,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	r.customData = map[string]map[string]any{}
-	sctx := &stackCtx{template: t, resolver: r}
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}

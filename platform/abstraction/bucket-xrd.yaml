@@ -9,7 +9,7 @@
 # maps rather than riding an empty data-only Application.
 #
 # NOT modelled here: server-side encryption (that is the opt-in objectEncryption stack — SSE-KMS via
-# KES->Vault, applied at the MinIO-tenant level, see docs/object-encryption.md), website hosting,
+# KES->Vault, applied at the MinIO-tenant level, see docs/encryption.md), website hosting,
 # replication, and CORS. Per-bucket CORS is a documented MinIO ceiling: MinIO rejects the S3
 # PutBucketCors call (MalformedXML) and does CORS globally via MINIO_API_CORS_ALLOW_ORIGIN, not per
 # bucket. Object Lock and bucket POLICIES are modelled (objectLock / policy below).

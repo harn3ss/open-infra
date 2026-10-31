@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +62,19 @@ type cfnDoorway struct {
 	invoker   *http.Client // invokes a custom resource's backing Function synchronously
 	logger    *slog.Logger
 	restV1    *apigwV1Handler // drives the apigateway REST v1 store for AWS::ApiGateway::* resources (#295); nil = unconfigured
+	// objectEncryption (OBJECT_ENCRYPTION=true) asserts that every NEW MinIO bucket is SSE-KMS-encrypted
+	// at rest by default — an outcome, not "KMS is configured": KES being deployed, or MinIO carrying the
+	// MINIO_KMS_KES_* config while only buckets with `mc encrypt set` are encrypted, is not enough, since
+	// a bucket this front door creates later would be unencrypted (docs/encryption.md). Default false =
+	// fail-closed: an S3 BucketEncryption request refuses rather than deploy an unencrypted bucket the
+	// template asked to encrypt (#347 Phase 1.8).
+	objectEncryption bool
+}
+
+// caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
+// deploy all use the same value, so a PROVISIONABLE* plan still means deploy won't refuse.
+func (h *cfnDoorway) caps() cfn.Capabilities {
+	return cfn.Capabilities{ObjectEncryption: h.objectEncryption}
 }
 
 func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns, svcSuffix string, logger *slog.Logger) (*cfnDoorway, error) {
@@ -78,7 +92,8 @@ func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region,
 	// A generous timeout: Knative scale-from-zero makes the FIRST request to a custom resource's Function
 	// block while the pod cold-starts; the request is queued, not dropped.
 	return &cfnDoorway{cfg: cfg, shimDyn: shimDyn, mapper: mapper, account: account, region: region, ns: ns,
-		svcSuffix: svcSuffix, invoker: &http.Client{Timeout: 3 * time.Minute}, logger: logger}, nil
+		svcSuffix: svcSuffix, invoker: &http.Client{Timeout: 3 * time.Minute}, logger: logger,
+		objectEncryption: os.Getenv("OBJECT_ENCRYPTION") == "true"}, nil
 }
 
 // invokeCustomResourceFn is the cfn.InvokeFunc for a Lambda-backed custom resource (#269): it POSTs the
@@ -213,6 +228,8 @@ func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptio
 		// In-cluster: a custom resource's backing Function is invokable (#269). The CLI deploy path leaves
 		// this nil, so a custom-resource stack there refuses rather than guessing.
 		Invoke: h.invokeCustomResourceFn,
+		// The same Capabilities the doorway's plan/changeset/validate use (#347 Phase 1.8).
+		Caps: h.caps(),
 	}
 	// In-cluster: an AWS::ApiGateway::RestApi stack is provisioned via the apigateway REST v1 store (#295).
 	// Nil when the apigateway data layer is unconfigured (or on the CLI), so such a stack refuses.
@@ -247,7 +264,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	// Synchronous validation gate — an unsupported type / bad template is refused WHOLE here, before
 	// anything is created (the DoD's "refused at validation, nothing created"). This mirrors the engine's
 	// own plan gate but surfaces it as an immediate ValidationError to the caller.
-	plan, perr := cfn.BuildPlan([]byte(body), params, name)
+	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, nil, name, h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -293,7 +310,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
 	}
-	plan, perr := cfn.BuildPlan([]byte(body), params, name)
+	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, nil, name, h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -443,7 +460,7 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	plan, perr := cfn.BuildPlan([]byte(body), nil, "validate")
+	plan, perr := cfn.BuildPlanWithCaps([]byte(body), nil, nil, "validate", h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return

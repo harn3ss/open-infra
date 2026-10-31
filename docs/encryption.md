@@ -145,6 +145,15 @@ holding backups or the audit WORM chain (SSE-KMS encrypts only NEW writes):
    `MINIO_KMS_KES_CERT_FILE` / `_KEY_FILE` (from the `minio-kes-client` Secret) and `MINIO_KMS_KES_CAPATH`
    (its `ca.crt`).
 2. `mc encrypt set sse-kms <key> myminio/<bucket>` on a target bucket.
+3. *(Optional — CloudFormation `BucketEncryption`.)* The aws-shim's CloudFormation front door honors an
+   `AWS::S3::Bucket` `BucketEncryption` only when `OBJECT_ENCRYPTION=true` is set on the aws-shim
+   Deployment, and **that flag asserts that every *new* bucket is SSE-KMS-encrypted by default.** Steps 1–2
+   are not enough on their own: step 2 encrypts the buckets you name, but a bucket the front door creates
+   later is not covered (`kind: Bucket` does not set bucket encryption). So set the flag only once new
+   buckets really are encrypted by default. Unset/false (the default) is fail-closed: the front door
+   *refuses* a `BucketEncryption` template rather than create an unencrypted bucket it asked to encrypt.
+   (Plan, change sets, validation and deploy all read the same flag, so a plan that passes won't refuse at
+   deploy.) The offline `cfn` CLI can't vouch for this and always refuses.
 
 New objects are then wrapped by a key held in Vault; **destroying that key crypto-erases them** — the
 object persists but reads fail `failed to decrypt ciphertext`. `probe/sse-kms.sh` validates the whole flow

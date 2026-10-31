@@ -1044,26 +1044,48 @@ func TestTranslate_S3_Faithful(t *testing.T) {
 	}
 }
 
-// #347 Phase 1.8 (#344 4.3): BucketEncryption maps with a CAVEAT (not a refusal) — open-infra
-// encrypts at the MinIO-tenant level (objectEncryption/SSE-KMS via KES→Vault), not per-bucket. The
-// bucket translates cleanly; the caveat names the tenant dependency (and the SSE algorithm) and the
-// at-rest risk if the tenant has objectEncryption off, so it lands in the fidelity summary.
-func TestTranslate_S3_EncryptionCaveat(t *testing.T) {
-	m, fs := translateS3Bucket("B", map[string]any{
-		"BucketName": "b",
-		"BucketEncryption": map[string]any{"ServerSideEncryptionConfiguration": []any{
-			map[string]any{"ServerSideEncryptionByDefault": map[string]any{"SSEAlgorithm": "aws:kms"}},
-		}},
-	}, nil)
+// #347 Phase 1.8 (#344 4.3, corrected per review of 236d5b5b): BucketEncryption is honored ONLY when
+// the deploy environment reports objectEncryption on. Then it maps with a caveat naming the tenant-wide
+// SSE-KMS (and the requested algorithm). When it's off or unknown — the zero Capabilities, or no ctx at
+// all — it REFUSES, so a template that asks for encryption at rest can never deploy an unencrypted
+// bucket with only a fidelity note to show for it.
+const encBucketTmpl = `
+Resources:
+  B:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: b
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: "aws:kms" }
+`
+
+func TestTranslate_S3_EncryptionCaveatWhenObjectEncryptionOn(t *testing.T) {
+	ctx := ecsCtx(t, encBucketTmpl)
+	ctx.caps = Capabilities{ObjectEncryption: true}
+	m, fs := translateS3Bucket("B", ecsResolvedService(t, ctx, "B"), ctx)
 	if len(fs) != 0 {
-		t.Fatalf("BucketEncryption must NOT refuse (it maps with a caveat), findings: %s", findingsText(fs))
+		t.Fatalf("with objectEncryption on, BucketEncryption must map (caveat), not refuse: %s", findingsText(fs))
 	}
 	cav := strings.Join(m.Caveats, " ")
 	if !strings.Contains(cav, "objectEncryption") || !strings.Contains(cav, "tenant") {
-		t.Fatalf("BucketEncryption caveat must name the tenant-level objectEncryption dependency, caveats: %v", m.Caveats)
+		t.Fatalf("caveat must name the tenant-wide objectEncryption, caveats: %v", m.Caveats)
 	}
 	if !strings.Contains(cav, "aws:kms") {
-		t.Fatalf("BucketEncryption caveat should surface the requested SSE algorithm, caveats: %v", m.Caveats)
+		t.Fatalf("caveat should surface the requested SSE algorithm, caveats: %v", m.Caveats)
+	}
+}
+
+func TestTranslate_S3_EncryptionRefusesWhenObjectEncryptionOff(t *testing.T) {
+	ctx := ecsCtx(t, encBucketTmpl) // zero Capabilities = fail-closed
+	_, fs := translateS3Bucket("B", ecsResolvedService(t, ctx, "B"), ctx)
+	if txt := findingsText(fs); !strings.Contains(txt, "BucketEncryption") || !strings.Contains(txt, "objectEncryption") {
+		t.Fatalf("with objectEncryption off/unknown, BucketEncryption must refuse naming objectEncryption, findings: %s", txt)
+	}
+	// No environment knowledge at all (nil ctx) is also fail-closed.
+	_, fs = translateS3Bucket("B", map[string]any{"BucketName": "b", "BucketEncryption": map[string]any{}}, nil)
+	if !strings.Contains(findingsText(fs), "BucketEncryption") {
+		t.Fatalf("nil ctx must refuse BucketEncryption (fail-closed), findings: %s", findingsText(fs))
 	}
 }
 

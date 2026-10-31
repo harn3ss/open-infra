@@ -64,8 +64,30 @@ func BuildPlan(data []byte, params map[string]string, stackName string) (*Plan, 
 }
 
 // BuildPlanWithExports is BuildPlan with a cross-stack Exports map (export name -> value) made
-// available to Fn::ImportValue. BuildPlan passes nil (no exports supplied).
+// available to Fn::ImportValue. BuildPlan passes nil (no exports supplied). It plans with ZERO
+// capabilities — i.e. fail-closed for anything that depends on the deploy environment.
 func BuildPlanWithExports(data []byte, params, exports map[string]string, stackName string) (*Plan, error) {
+	return BuildPlanWithCaps(data, params, exports, stackName, Capabilities{})
+}
+
+// Capabilities are facts about the DEPLOY ENVIRONMENT that a translator's verdict depends on. Plan
+// and deploy must evaluate a template with the SAME capabilities, so a PROVISIONABLE* plan still
+// means deploy won't refuse. The zero value is fail-closed: an unknown capability is treated as
+// absent. The in-cluster aws-shim CloudFormation doorway sets them from its environment; the CLI
+// (outside the cluster, unable to vouch for them) leaves them zero.
+type Capabilities struct {
+	// ObjectEncryption: this environment GUARANTEES that a NEW MinIO bucket is encrypted at rest with
+	// SSE-KMS by default. That is an outcome, not a component: the objectEncryption stack being on,
+	// KES merely being deployed, or MinIO carrying the MINIO_KMS_KES_* config while only the buckets
+	// someone ran `mc encrypt set` on are encrypted — none of those is enough, because a bucket the
+	// CloudFormation front door creates later would still be unencrypted (kind: Bucket does not set
+	// bucket encryption). When true, an S3 BucketEncryption maps with a caveat; when false it REFUSES,
+	// rather than deploying an unencrypted bucket the template asked to encrypt (#347 Phase 1.8).
+	ObjectEncryption bool
+}
+
+// BuildPlanWithCaps is BuildPlanWithExports with explicit deploy-environment Capabilities.
+func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName string, caps Capabilities) (*Plan, error) {
 	t, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -162,7 +184,7 @@ func BuildPlanWithExports(data []byte, params, exports map[string]string, stackN
 		}
 		tr := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
 		tr.evalConditions()
-		tctx := &stackCtx{template: t, resolver: tr}
+		tctx := &stackCtx{template: t, resolver: tr, caps: caps}
 		for _, id := range t.rawOrder {
 			res := t.Resources[id]
 			if res.Condition != "" && !tr.conds[res.Condition] {

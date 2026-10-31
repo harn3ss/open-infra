@@ -51,6 +51,7 @@ func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 	b := blockersJoined(p)
 	for _, want := range []string{
 		"ec2.amazonaws.com",                        // AppRole trusts lambda, not the ec2 service principal
+		"BucketEncryption",                         // Assets asks for SSE; zero Capabilities = objectEncryption not vouched for → refuse
 		"PackageType: Image",                       // Api is a zip/Runtime Lambda
 		"ASL definition references cross-resource", // Workflow Task Resource is a sibling ARN
 	} {
@@ -86,14 +87,27 @@ func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 		}
 	}
 
-	// Assets still MAPS (partial, kind: Bucket). #347 Phase 1.8: BucketEncryption is now a CAVEAT,
-	// not a refusal, so Assets no longer carries a translate refusal for it (the stack is still
-	// REJECTED by the other resources above).
+	// Assets still MAPS (partial, kind: Bucket) and — with zero Capabilities (fail-closed) — carries the
+	// per-resource BucketEncryption refusal.
 	if assets == nil || assets.Status != Partial || assets.Kind != "Bucket" {
 		t.Fatalf("Assets should map partial to kind: Bucket, got %+v", assets)
 	}
-	if strings.Contains(strings.Join(assets.TranslateRefusals, " "), "BucketEncryption") {
-		t.Fatalf("Assets must NOT refuse on BucketEncryption anymore (it maps with a caveat), got %+v", assets.TranslateRefusals)
+	if !strings.Contains(strings.Join(assets.TranslateRefusals, " "), "BucketEncryption") {
+		t.Fatalf("with objectEncryption unknown, Assets must carry its BucketEncryption refusal, got %+v", assets.TranslateRefusals)
+	}
+
+	// #347 Phase 1.8: the SAME template planned in an environment that reports objectEncryption on no
+	// longer refuses Assets on BucketEncryption (it maps with a caveat). Plan and deploy share the
+	// Capabilities, so this verdict is what deploy will do.
+	pOn, err := BuildPlanWithCaps(readFixture(t, "webapp.yaml"), map[string]string{"Stage": "dev"}, nil, "web", Capabilities{ObjectEncryption: true})
+	if err != nil {
+		t.Fatalf("plan with caps: %v", err)
+	}
+	for i := range pOn.Resources {
+		if pOn.Resources[i].LogicalID == "Assets" &&
+			strings.Contains(strings.Join(pOn.Resources[i].TranslateRefusals, " "), "BucketEncryption") {
+			t.Fatalf("with objectEncryption on, Assets must not refuse on BucketEncryption, got %+v", pOn.Resources[i].TranslateRefusals)
+		}
 	}
 }
 
