@@ -64,11 +64,11 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
 	with := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
 	for _, want := range []string{
-		"kind: ServiceAccount",                   // the per-VM SA object
-		"name: vm-myvm",                          // SA named for the VM
-		"openinfra.dev/instance-role: app-role",  // SA annotation the shim reads
-		"serviceAccountName: vm-myvm",            // the projected SA volume
-		"serial: SATOKEN",                        // the identity disk's stable serial
+		"kind: ServiceAccount",                  // the per-VM SA object
+		"name: vm-myvm",                         // SA named for the VM
+		"openinfra.dev/instance-role: app-role", // SA annotation the shim reads
+		"serviceAccountName: vm-myvm",           // the projected SA volume
+		"serial: SATOKEN",                       // the identity disk's stable serial
 		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
 		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token",
 		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
