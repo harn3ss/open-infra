@@ -1,0 +1,19 @@
+# Control-plane authorization grant for VM workload credentials (#344): the aws-shim's
+# /v1/vm-credentials endpoint reads a VM's per-VM ServiceAccount to resolve its instance role
+# (the openinfra.dev/instance-role annotation), exactly as EKS Pod Identity reads a SA's
+# role annotation. That is a `get serviceaccounts` on the control plane, which the Cedar
+# control-plane authorizer governs — so it is granted here as a kind: Policy spec.controlPlane
+# block (the declarative corpus extension), not only in RBAC (which Cedar overrides).
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: aws-shim-vm-identity
+  namespace: open-infra-console
+spec:
+  description: "aws-shim reads a VM's ServiceAccount to resolve its instance role (VM workload credentials, #344)."
+  controlPlane:
+    appliesTo: ["ServiceAccount::open-infra-aws-shim/aws-shim"]
+    statements:
+      - effect: Allow
+        actions: ["get"]
+        resources: ["serviceaccounts::*"]
