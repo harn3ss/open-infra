@@ -193,6 +193,39 @@ Resources:
 	}
 }
 
+// Cross-stack SG reference: an ingress rule's SourceSecurityGroupId given as a parameter (a sibling
+// stack's SG name passed in) resolves to that kind: SecurityGroup name — like SecurityGroupIds does —
+// instead of refusing. A raw sg- id still refuses (opaque).
+func TestTranslate_EC2SecurityGroup_SourceSGFromParameter(t *testing.T) {
+	tmpl := `
+Parameters:
+  AppSgName: { Type: String, Default: "app-sg" }
+Resources:
+  DbSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: db
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 3306, ToPort: 3306, SourceSecurityGroupId: !Ref AppSgName }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("DbSG", ecsResolvedService(t, ctx, "DbSG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("a parameter-valued SourceSecurityGroupId must resolve to a SG name: %s", findingsText(fs))
+	}
+	peer := m.Spec["ingress"].([]any)[0].(map[string]any)["from"].([]any)[0].(map[string]any)
+	if peer["securityGroup"] != "app-sg" {
+		t.Fatalf("SourceSecurityGroupId from a parameter should map to securityGroup=app-sg: %#v", peer)
+	}
+
+	// A raw sg- id passed through a parameter still refuses (opaque, like an AMI).
+	raw := ctxWithParams(t, tmpl, map[string]string{"AppSgName": "sg-0abc123"})
+	_, fsRaw := translateEC2SecurityGroup("DbSG", ecsResolvedService(t, raw, "DbSG"), raw)
+	if !strings.Contains(findingsText(fsRaw), "sg- id") {
+		t.Fatalf("a parameter resolving to a raw sg- id must refuse, got: %s", findingsText(fsRaw))
+	}
+}
+
 // A CidrIp given as `!Ref Param` resolves to the parameter's value — inline and in a collated standalone
 // rule — instead of being emitted as the literal intrinsic. Regression for the map[Ref:X]-as-CIDR bug,
 // where the raw {Ref: X} was fmt.Sprint'd to "map[Ref:X]" and treated as a real CIDR.

@@ -1147,27 +1147,30 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 			rule["ports"] = ports
 		} // empty = all ports (kind: SecurityGroup convention)
 
-		// Source/destination — a CidrIp, or an in-stack SG reference. Exactly one.
+		// Source/destination — a CidrIp, or a SecurityGroup reference. Exactly one. The SG reference is
+		// resolved exactly like SecurityGroupIds (sgRefName): an in-stack AWS::EC2::SecurityGroup !Ref
+		// (followed from the raw form) → its kind: SecurityGroup name; a parameter whose VALUE names a
+		// kind: SecurityGroup (the cross-stack case — a sibling stack's SG name passed in as a param) →
+		// that name; a raw sg- id → refused (opaque, like an AMI).
 		peer := map[string]any{}
 		if cidr, ok := concrete(ctx.resolveVal(r["CidrIp"])); ok && cidr != "" {
 			peer["cidr"] = cidr
-		} else if sgid, isRef := refTarget(r[sgField]); isRef {
-			inStackSG := false
-			if ctx != nil {
-				if rr, ok := ctx.template.Resources[sgid]; ok && rr.Type == "AWS::EC2::SecurityGroup" {
-					inStackSG = true
-				}
-			}
-			if !inStackSG {
-				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s must !Ref an in-stack AWS::EC2::SecurityGroup (an out-of-stack sg- id cannot be resolved)", dir, i, sgField)})
-				continue
-			}
-			peer["securityGroup"] = k8sName(sgid)
 		} else if _, hasSG := r[sgField]; hasSG {
-			// A literal/concrete SourceSecurityGroupId (an existing sg- id, or a Fn::GetAtt) — not an
-			// in-stack !Ref we can resolve. Refuse rather than guess the group's membership.
-			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s must !Ref an in-stack AWS::EC2::SecurityGroup (an out-of-stack sg- id cannot be resolved)", dir, i, sgField)})
-			continue
+			name, refuseRaw := sgRefName(r[sgField], ctx)
+			if name == "" && !refuseRaw {
+				// Not an in-stack !Ref — resolve a parameter value to a kind: SecurityGroup name.
+				name, refuseRaw = sgRefName(ctx.resolveVal(r[sgField]), ctx)
+			}
+			switch {
+			case refuseRaw:
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s is a raw AWS sg- id (opaque) — !Ref an in-stack AWS::EC2::SecurityGroup, or pass a parameter naming a kind: SecurityGroup", dir, i, sgField)})
+				continue
+			case name == "":
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s must !Ref an in-stack AWS::EC2::SecurityGroup or resolve to a kind: SecurityGroup name (an out-of-stack sg- id or a cross-resource GetAtt cannot be resolved)", dir, i, sgField)})
+				continue
+			default:
+				peer["securityGroup"] = name
+			}
 		} else if _, ok := r["CidrIpv6"]; ok {
 			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: CidrIpv6 does not map — kind: SecurityGroup CIDR enforcement is IPv4 (author natively)", dir, i)})
 			continue
@@ -2705,15 +2708,49 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		"BucketName": true, "VersioningConfiguration": true, "LifecycleConfiguration": true,
 		"BucketEncryption": true, "CorsConfiguration": true, "Tags": true,
 		"ObjectLockEnabled": true, "ObjectLockConfiguration": true,
+		"PublicAccessBlockConfiguration": true, "OwnershipControls": true,
 	}
 	var f []Finding
+	var noopNotes []string
 	f = append(f, blockUnknownProps(id, props, known)...)
 
 	if _, ok := props["BucketEncryption"]; ok {
-		f = append(f, Finding{"Resource " + id, "BucketEncryption is not translatable here — per-bucket SSE requires the opt-in objectEncryption stack (SSE-KMS via KES→Vault, applied at the MinIO-tenant level); refusing rather than creating an unencrypted bucket that looks encrypted"})
+		f = append(f, Finding{"Resource " + id, "BucketEncryption is not translatable here — per-bucket SSE requires the opt-in objectEncryption stack (SSE-KMS via KES→Vault, applied at the MinIO-tenant level); refusing rather than creating an unencrypted bucket that looks encrypted. Enable objectEncryption on the MinIO tenant and the bucket's objects are encrypted at rest without this property."})
 	}
 	if _, ok := props["CorsConfiguration"]; ok {
 		f = append(f, Finding{"Resource " + id, "CorsConfiguration has no faithful open-infra mapping — MinIO does not support per-bucket CORS via the S3 API (PutBucketCors returns MalformedXML on this release); CORS is configured globally via MINIO_API_CORS_ALLOW_ORIGIN. Refusing rather than silently dropping."})
+	}
+
+	// PublicAccessBlockConfiguration — MinIO buckets are private-by-default with no ACLs, which IS the
+	// all-public-access-blocked posture AWS hardening templates ask for. All-true/absent is a faithful
+	// no-op. A field explicitly FALSE asks to LOOSEN public access, which open-infra has no faithful form
+	// for — refuse rather than create a bucket that silently stays private despite the template.
+	if pab, ok := props["PublicAccessBlockConfiguration"].(map[string]any); ok {
+		loosened := false
+		for _, k := range []string{"BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"} {
+			if isExplicitFalse(pab[k]) {
+				loosened = true
+				f = append(f, Finding{"Resource " + id, "PublicAccessBlockConfiguration." + k + "=false asks to loosen public access; MinIO buckets are private-by-default with no ACLs and cannot be made public this way — refusing rather than creating a bucket that stays private despite the template"})
+			}
+		}
+		if !loosened {
+			noopNotes = append(noopNotes, "PublicAccessBlockConfiguration is a no-op — MinIO buckets are already private with no public ACLs (all-blocked is the default posture)")
+		}
+	}
+
+	// OwnershipControls — MinIO does not implement S3 ACLs, so BucketOwnerEnforced (ACLs disabled) is its
+	// native, faithful posture: a no-op. ObjectWriter / BucketOwnerPreferred re-enable ACL-based ownership,
+	// which MinIO can't honor and which can loosen access — refuse rather than silently ignore it.
+	if oc, ok := props["OwnershipControls"].(map[string]any); ok {
+		rules, _ := oc["Rules"].([]any)
+		for _, rr := range rules {
+			rm, _ := rr.(map[string]any)
+			own, _ := concrete(rm["ObjectOwnership"])
+			if own != "" && own != "BucketOwnerEnforced" {
+				f = append(f, Finding{"Resource " + id, "OwnershipControls ObjectOwnership " + own + " re-enables S3 ACLs, which MinIO does not implement (only BucketOwnerEnforced — ACLs disabled — is faithful); refusing rather than silently ignoring an ownership mode that could loosen access"})
+			}
+		}
+		noopNotes = append(noopNotes, "OwnershipControls is a no-op — MinIO has no S3 ACLs, so BucketOwnerEnforced (ACLs disabled) is already in force")
 	}
 
 	spec := map[string]any{}
@@ -2786,7 +2823,21 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	if _, ok := props["Tags"]; ok {
 		m.Caveats = append(m.Caveats, "Tags dropped — no open-infra equivalent for a MinIO bucket")
 	}
+	m.Caveats = append(m.Caveats, noopNotes...)
 	return m, f
+}
+
+// isExplicitFalse reports whether v is an explicit boolean false (as a Go bool, or the string "false"
+// from a templated value) — distinct from an absent/nil value. Used where an explicit false is a
+// meaningful loosening signal (e.g. a PublicAccessBlock field) that an absent default is not.
+func isExplicitFalse(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return !t
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "false")
+	}
+	return false
 }
 
 // ---- AWS::S3::BucketPolicy -> collated into its in-stack AWS::S3::Bucket ----

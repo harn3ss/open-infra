@@ -1017,6 +1017,56 @@ func TestTranslate_S3_EncryptionBlocks(t *testing.T) {
 	}
 }
 
+// PublicAccessBlockConfiguration with everything blocked (the AWS hardening posture) is a faithful
+// no-op — MinIO buckets are private-by-default with no ACLs — and translates cleanly with a loud caveat.
+func TestTranslate_S3_PublicAccessBlockAllTrueNoOp(t *testing.T) {
+	m, fs := translateS3Bucket("B", map[string]any{
+		"BucketName": "b",
+		"PublicAccessBlockConfiguration": map[string]any{
+			"BlockPublicAcls": true, "IgnorePublicAcls": true, "BlockPublicPolicy": true, "RestrictPublicBuckets": true,
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("all-blocked PublicAccessBlock must be a no-op, got: %s", findingsText(fs))
+	}
+	if !strings.Contains(strings.Join(m.Caveats, " "), "PublicAccessBlockConfiguration is a no-op") {
+		t.Fatalf("the no-op must be surfaced as a caveat, got: %v", m.Caveats)
+	}
+}
+
+// A PublicAccessBlock field explicitly FALSE asks to loosen public access — no faithful MinIO form, refuse.
+func TestTranslate_S3_PublicAccessBlockLooseningRefuses(t *testing.T) {
+	_, fs := translateS3Bucket("B", map[string]any{
+		"BucketName":                     "b",
+		"PublicAccessBlockConfiguration": map[string]any{"BlockPublicPolicy": false},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "BlockPublicPolicy=false") {
+		t.Fatalf("an explicit loosening must refuse, got: %s", findingsText(fs))
+	}
+}
+
+// OwnershipControls BucketOwnerEnforced (ACLs disabled) is MinIO's native posture — a no-op; an
+// ACL-enabling mode (ObjectWriter) has no faithful MinIO form and refuses.
+func TestTranslate_S3_OwnershipControls(t *testing.T) {
+	m, fs := translateS3Bucket("B", map[string]any{
+		"BucketName":        "b",
+		"OwnershipControls": map[string]any{"Rules": []any{map[string]any{"ObjectOwnership": "BucketOwnerEnforced"}}},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("BucketOwnerEnforced must be a no-op, got: %s", findingsText(fs))
+	}
+	if !strings.Contains(strings.Join(m.Caveats, " "), "OwnershipControls is a no-op") {
+		t.Fatalf("the no-op must be surfaced, got: %v", m.Caveats)
+	}
+	_, fs = translateS3Bucket("B", map[string]any{
+		"BucketName":        "b",
+		"OwnershipControls": map[string]any{"Rules": []any{map[string]any{"ObjectOwnership": "ObjectWriter"}}},
+	}, nil)
+	if !strings.Contains(findingsText(fs), "ObjectWriter") {
+		t.Fatalf("an ACL-enabling ownership mode must refuse, got: %s", findingsText(fs))
+	}
+}
+
 func TestTranslate_S3_UnsupportedFeatureBlocks(t *testing.T) {
 	_, fs := translateS3Bucket("B", map[string]any{
 		"BucketName":           "b",
