@@ -80,6 +80,49 @@ func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 	}
 }
 
+// An inline policy whose Resource is an in-stack resource's !GetAtt <X>.Arn (a bucket, a queue) is
+// resolved to that resource's ARN before import, so the companion Policy scopes to the real resource
+// instead of refusing an unresolvable <X.Arn> (#344 4.5).
+func TestTranslate_IAMRole_InStackArnInInlinePolicy(t *testing.T) {
+	tmpl := `
+Resources:
+  Config:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: app-config }
+  Jobs:
+    Type: AWS::SQS::Queue
+    Properties: { QueueName: app-jobs }
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: "s3:GetObject", Resource: !GetAtt Config.Arn }
+              - { Effect: Allow, Action: "sqs:SendMessage", Resource: !GetAtt Jobs.Arn }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("an in-stack !GetAtt .Arn Resource must resolve, not refuse: %s", findingsText(fs))
+	}
+	if len(m.Extra) != 1 {
+		t.Fatalf("want 1 companion Policy, got %d", len(m.Extra))
+	}
+	dp, _ := m.Extra[0].Spec["dataPlane"].(map[string]any)
+	flat := strings.ToLower(strings.Join(deepStrings(dp["statements"]), " "))
+	// The companion policy must scope to the in-stack bucket + queue by their AWS names.
+	if !strings.Contains(flat, "app-config") || !strings.Contains(flat, "app-jobs") {
+		t.Fatalf("the in-stack ARNs must resolve to the bucket/queue names, got %#v", dp["statements"])
+	}
+}
+
 // A role trusting anything other than the ec2 service (here an AWS account principal) refuses —
 // no template-derivable open-infra trust.
 func TestTranslate_IAMRole_NonEc2TrustRefuses(t *testing.T) {

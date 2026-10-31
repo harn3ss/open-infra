@@ -1641,13 +1641,12 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 // federated/SAML/OIDC principal, or a mix) has no faithful open-infra form and REFUSES, exactly as a
 // non-EC2 role did before.
 //
-// Permissions are NOT folded in: a kind: Role aggregates named kind: Policy objects (spec.policies),
-// and a translator emits a single manifest, so the role's inline Policies / ManagedPolicyArns cannot be
-// created alongside it here. They surface as a loud caveat (import each as a kind: Policy via the IAM
-// data-plane doorway and list it in spec.policies). The role is created with correct trust and no
-// permissions — a valid "trust anchor", exactly as the XRD and AWS both allow — never silently granting
-// or dropping access.
-func translateIAMRole(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+// Permissions: the role's inline Policies ARE folded in, as companion kind: Policy objects (spec.dataPlane,
+// appliesTo Role::<name>) via Manifest.Extra — the data-plane subset the shim fronts, imported by the same
+// engine AWS::IAM::Policy uses. A policy Resource that references an in-stack bucket/queue/… by !GetAtt
+// <X>.Arn is resolved to that resource's ARN first, so the common template shape translates. ManagedPolicyArns
+// stay a caveat (AWS-service plumbing with no open-infra equivalent).
+func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"AssumeRolePolicyDocument": true, "RoleName": true, "Description": true,
 		"ManagedPolicyArns": true, "Policies": true, "PermissionsBoundary": true,
@@ -1671,7 +1670,7 @@ func translateIAMRole(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 	// AWS::IAM::Policy uses. Fail-closed: any part the importer cannot honor blocks the whole Role (a
 	// silently-dropped Allow/Deny is a scope hole).
 	if pol, ok := props["Policies"]; ok {
-		extras, pf := roleInlinePolicies(id, pol)
+		extras, pf := roleInlinePolicies(id, pol, ctx)
 		if len(pf) > 0 {
 			f = append(f, pf...)
 			return nil, f
@@ -1693,9 +1692,21 @@ func translateIAMRole(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 // the role's assumed sessions. It reuses the same importer as AWS::IAM::Policy, and is fail-closed:
 // any statement the data plane cannot honor (an unfronted service, an unrecognizable ARN, a Condition)
 // produces a Finding that blocks the Role rather than attaching a partial grant.
-func roleInlinePolicies(roleID string, raw any) ([]*Manifest, []Finding) {
-	list, ok := raw.([]any)
-	if !ok {
+//
+// It prefers the RAW Policies list (from ctx) so that a Resource given as !GetAtt <X>.Arn on an in-stack
+// bucket/queue/… is synthesized to that resource's ARN before import (the common inline-policy shape);
+// it falls back to the already-resolved list when there is no stack context.
+func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest, []Finding) {
+	list, _ := resolved.([]any)
+	useRaw := false
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(roleID); ok {
+			if rp, ok := raw["Policies"].([]any); ok {
+				list, useRaw = rp, true
+			}
+		}
+	}
+	if list == nil {
 		return nil, []Finding{{"Resource " + roleID, "Policies must be a list of { PolicyName, PolicyDocument }"}}
 	}
 	roleName := k8sName(roleID)
@@ -1711,6 +1722,12 @@ func roleInlinePolicies(roleID string, raw any) ([]*Manifest, []Finding) {
 		if !ok {
 			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] requires a PolicyDocument", i)})
 			continue
+		}
+		pname := p["PolicyName"]
+		if useRaw && ctx != nil {
+			// Synthesize in-stack !GetAtt <X>.Arn Resources to real ARNs, then resolve remaining intrinsics.
+			doc = ctx.resolver.resolve(synthInStackARNs(doc, ctx))
+			pname = ctx.resolveVal(pname)
 		}
 		docJSON, err := json.Marshal(doc)
 		if err != nil {
@@ -1732,7 +1749,7 @@ func roleInlinePolicies(roleID string, raw any) ([]*Manifest, []Finding) {
 			continue // keep collecting findings across policies, but emit no partial manifest
 		}
 		name := roleName + "-inline-" + strconv.Itoa(i)
-		if n, ok := concrete(p["PolicyName"]); ok && n != "" {
+		if n, ok := concrete(pname); ok && n != "" {
 			name = roleName + "-" + k8sName(n)
 		}
 		out = append(out, &Manifest{
@@ -1744,6 +1761,74 @@ func roleInlinePolicies(roleID string, raw any) ([]*Manifest, []Finding) {
 		})
 	}
 	return out, f
+}
+
+// synthInStackARNs walks a raw policy document and replaces every {Fn::GetAtt: [X, Arn]} (or "X.Arn")
+// that targets an in-stack resource of a shim-fronted type with that resource's synthetic ARN, so the
+// policy importer resolves it to the right Bucket::/Queue::/… principal instead of refusing an
+// unresolvable <X.Arn>. Every other node is left for the normal resolver. This is the in-stack
+// bucket/queue ARN case the inline-policy ask (B2) called for.
+func synthInStackARNs(v any, ctx *stackCtx) any {
+	switch t := v.(type) {
+	case map[string]any:
+		if len(t) == 1 {
+			if ga, ok := t["Fn::GetAtt"]; ok {
+				if id, attr, ok := splitGetAtt(ga); ok && attr == "Arn" {
+					if arn, ok := inStackARN(id, ctx); ok {
+						return arn
+					}
+				}
+			}
+		}
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = synthInStackARNs(e, ctx)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = synthInStackARNs(e, ctx)
+		}
+		return out
+	}
+	return v
+}
+
+// inStackARN synthesizes the ARN of an in-stack resource of a shim-fronted type, using its AWS name
+// (QueueName/BucketName/… when set, else the k8s-safe logical id — the same name the open-infra kind
+// gets) so the imported data-plane policy scopes to the resource the app actually addresses. Region and
+// account are the pseudo-param placeholders (open-infra has no real AWS account). ok=false for a type
+// the shim does not front (the importer then refuses, as before).
+func inStackARN(id string, ctx *stackCtx) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	res, in := ctx.template.Resources[id]
+	if !in {
+		return "", false
+	}
+	name := func(prop string) string {
+		p, _ := ctx.resolveProps(id)
+		if n, ok := concrete(p[prop]); ok && n != "" {
+			return n
+		}
+		return k8sName(id)
+	}
+	const region, acct = "openinfra", "000000000000"
+	switch res.Type {
+	case "AWS::S3::Bucket":
+		return "arn:aws:s3:::" + name("BucketName"), true
+	case "AWS::SQS::Queue":
+		return fmt.Sprintf("arn:aws:sqs:%s:%s:%s", region, acct, name("QueueName")), true
+	case "AWS::SNS::Topic":
+		return fmt.Sprintf("arn:aws:sns:%s:%s:%s", region, acct, name("TopicName")), true
+	case "AWS::DynamoDB::Table":
+		return fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s", region, acct, name("TableName")), true
+	case "AWS::Lambda::Function":
+		return fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", region, acct, name("FunctionName")), true
+	}
+	return "", false
 }
 
 // ec2TrustOnly reports whether an AssumeRolePolicyDocument Allows sts:AssumeRole for the

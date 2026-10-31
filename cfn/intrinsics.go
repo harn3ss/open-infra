@@ -88,13 +88,21 @@ func (r *resolver) resolve(v any) any {
 		}
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			out[k] = r.resolve(val)
+			rv := r.resolve(val)
+			if rv == nil {
+				continue // AWS::NoValue (incl. via Fn::If) removes the enclosing property
+			}
+			out[k] = rv
 		}
 		return out
 	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = r.resolve(e)
+		out := make([]any, 0, len(t))
+		for _, e := range t {
+			rv := r.resolve(e)
+			if rv == nil {
+				continue // AWS::NoValue (incl. via Fn::If) drops a list element, rather than leaving a nil hole
+			}
+			out = append(out, rv)
 		}
 		return out
 	default:

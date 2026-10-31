@@ -50,6 +50,35 @@ func TestResolve_SupportedIntrinsics(t *testing.T) {
 	}
 }
 
+// AWS::NoValue removes the enclosing list element (and map property), rather than leaving a nil hole —
+// so `!If [Cond, X, !Ref AWS::NoValue]` with Cond false collapses the list, keeping a valid template.
+func TestResolve_NoValueDropsElement(t *testing.T) {
+	tmpl := &Template{
+		Conditions: map[string]any{"IsProd": map[string]any{"Fn::Equals": []any{map[string]any{"Ref": "Env"}, "prod"}}},
+		Resources:  map[string]Resource{},
+	}
+	r := resolverFor(t, tmpl) // Env=prod -> IsProd true
+	// A list: [ kept, !If[IsProd-true -> NoValue], kept2 ] — the middle collapses out.
+	list := []any{
+		"keep-a",
+		map[string]any{"Fn::If": []any{"IsProd", map[string]any{"Ref": "AWS::NoValue"}, "would-be-b"}},
+		"keep-c",
+	}
+	got, _ := r.resolve(list).([]any)
+	if len(got) != 2 || got[0] != "keep-a" || got[1] != "keep-c" {
+		t.Fatalf("AWS::NoValue must drop the list element, got %#v", got)
+	}
+	// A map: a property set to NoValue is removed.
+	m := map[string]any{"Keep": "x", "Drop": map[string]any{"Ref": "AWS::NoValue"}}
+	gm, _ := r.resolve(m).(map[string]any)
+	if _, has := gm["Drop"]; has {
+		t.Fatalf("AWS::NoValue must remove the map property, got %#v", gm)
+	}
+	if gm["Keep"] != "x" {
+		t.Fatalf("a non-NoValue property must survive, got %#v", gm)
+	}
+}
+
 func TestResolve_UnsupportedIntrinsicFinds(t *testing.T) {
 	tmpl := &Template{Resources: map[string]Resource{}}
 	r := resolverFor(t, tmpl)
