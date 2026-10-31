@@ -69,6 +69,9 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		"openinfra.dev/instance-role: app-role", // SA annotation the shim reads
 		"serviceAccountName: vm-myvm",           // the projected SA volume
 		"serial: SATOKEN",                       // the identity disk's stable serial
+		// cloud-init lives in a Secret (KubeVirt's 2048-byte inline cap), referenced by the VMI:
+		"userDataSecretRef",
+		"name: myvm-cloudinit",
 		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
 		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token",
 		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
@@ -77,7 +80,12 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 			t.Errorf("instanceRole wiring missing %q; got:\n%s", want, grepCtx(with, "identity"))
 		}
 	}
+	// A VM with no instanceRole still uses the cloud-init Secret (Linux), but carries none of the
+	// workload-identity wiring.
 	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
+	if !strings.Contains(without, "name: myvm-cloudinit") {
+		t.Errorf("every Linux VM should render a cloud-init Secret; got:\n%s", grepCtx(without, "cloudinit"))
+	}
 	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER_CREDENTIALS", "instance-role"} {
 		if strings.Contains(without, absent) {
 			t.Errorf("a VM with no instanceRole must not render %q; got:\n%s", absent, grepCtx(without, absent))

@@ -389,63 +389,12 @@ spec:
                           {{- else }}
                           - name: cloudinit
                             cloudInitNoCloud:
-                              userData: |-
-                                #cloud-config
-                                hostname: {{ $name }}
-                                users:
-                                  - name: {{ $user }}
-                                    sudo: ALL=(ALL) NOPASSWD:ALL
-                                    shell: /bin/bash
-                                    lock_passwd: false
-                                    {{- if $spec.sshKey }}
-                                    ssh_authorized_keys:
-                                      - {{ $spec.sshKey }}
-                                    {{- end }}
-                                ssh_pwauth: true
-                                chpasswd:
-                                  expire: false
-                                  list: |
-                                    {{ $user }}:{{ $pass }}
-                                packages:
-                                  - qemu-guest-agent
-                                {{- if or $spec.userData $instanceRole }}
-                                write_files:
-                                  {{- if $instanceRole }}
-                                  # Workload identity (spec.instanceRole): the AWS container-credentials
-                                  # provider — point the SDK at the aws-shim's /v1/vm-credentials endpoint
-                                  # and give it the per-VM ServiceAccount token (projected onto the
-                                  # identity disk, mounted below). The SDK's default credential chain then
-                                  # fetches rotating role credentials — no static keys. pam_env reads
-                                  # /etc/environment for login/ssh sessions; a service adds
-                                  # EnvironmentFile=/etc/environment to its unit.
-                                  - path: /etc/environment
-                                    append: true
-                                    content: "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token\n"
-                                  {{- end }}
-                                  {{- if $spec.userData }}
-                                  # EC2 UserData equivalent (#115): the user's first-boot script, run
-                                  # AFTER the base setup so the VM stays reachable if the script fails.
-                                  - path: /opt/openinfra-userdata
-                                    permissions: '0755'
-                                    content: |
-                                      {{- $spec.userData | nindent 26 }}
-                                  {{- end }}
-                                {{- end }}
-                                {{- if $instanceRole }}
-                                # Mount the workload-identity token disk (iso9660) read-but-readable on
-                                # every boot, so the container-credentials provider can read the token.
-                                # The disk carries serial SATOKEN (/dev/disk/by-id/virtio-SATOKEN); fall
-                                # back to its iso label. bootcmd runs on each boot, so it survives reboots.
-                                bootcmd:
-                                  - [ bash, -c, "mkdir -p /mnt/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro,mode=0644 /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro,mode=0644 -L cfgdata /mnt/openinfra-identity 2>/dev/null || true" ]
-                                {{- end }}
-                                runcmd:
-                                  - [systemctl, enable, --now, qemu-guest-agent]
-                                  {{- if $spec.userData }}
-                                  - [/bin/sh, /opt/openinfra-userdata]
-                                  {{- end }}
+                              {{- /* The full #cloud-config lives in the <vm>-cloudinit Secret (below):
+                                     KubeVirt caps INLINE userData at 2048 bytes, which an instanceRole
+                                     config exceeds. A Secret has no such limit. networkData stays inline. */}}
+                              userDataSecretRef:
+                                name: {{ $name }}-cloudinit
                               {{- if $lan }}
-                              # DHCP both NICs: eth0 (pod) + eth1 (direct LAN).
                               networkData: |
                                 version: 2
                                 ethernets:
@@ -543,6 +492,67 @@ spec:
                     {{- else }}
                     ACCESS: "ssh {{ $user }}@HOST"
                     {{- end }}
+            {{- if not $isWin }}
+            ---
+            # --- cloud-init Secret: the full #cloud-config. KubeVirt caps INLINE cloudInitNoCloud
+            #     userData at 2048 bytes (an instanceRole config exceeds it); a Secret is unbounded.
+            #     The VMI references it via cloudInitNoCloud.userDataSecretRef. The user's first-boot
+            #     script is embedded with toJson (a quoted scalar) rather than a nested block scalar,
+            #     so there is no fragile indentation coupling.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: vm-cloudinit
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $name }}-cloudinit, namespace: {{ $ns }} }
+                  stringData:
+                    userdata: |
+                      #cloud-config
+                      hostname: {{ $name }}
+                      users:
+                        - name: {{ $user }}
+                          sudo: ALL=(ALL) NOPASSWD:ALL
+                          shell: /bin/bash
+                          lock_passwd: false
+                          {{- if $spec.sshKey }}
+                          ssh_authorized_keys:
+                            - {{ $spec.sshKey }}
+                          {{- end }}
+                      ssh_pwauth: true
+                      chpasswd:
+                        expire: false
+                        list: |
+                          {{ $user }}:{{ $pass }}
+                      packages:
+                        - qemu-guest-agent
+                      {{- if or $spec.userData $instanceRole }}
+                      write_files:
+                        {{- if $instanceRole }}
+                        - path: /etc/environment
+                          append: true
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token\n"
+                        {{- end }}
+                        {{- if $spec.userData }}
+                        - path: /opt/openinfra-userdata
+                          permissions: '0755'
+                          content: {{ $spec.userData | toJson }}
+                        {{- end }}
+                      {{- end }}
+                      {{- if $instanceRole }}
+                      bootcmd:
+                        - [ bash, -c, "mkdir -p /mnt/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro,mode=0644 /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro,mode=0644 -L cfgdata /mnt/openinfra-identity 2>/dev/null || true" ]
+                      {{- end }}
+                      runcmd:
+                        - [systemctl, enable, --now, qemu-guest-agent]
+                        {{- if $spec.userData }}
+                        - [/bin/sh, /opt/openinfra-userdata]
+                        {{- end }}
+            {{- end }}
             {{- if $instanceRole }}
             ---
             # --- Per-VM workload identity (spec.instanceRole): a dedicated ServiceAccount whose token
