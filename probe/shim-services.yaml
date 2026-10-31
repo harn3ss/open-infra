@@ -30,7 +30,7 @@ services:
   - name: STS
     cell: "identity + `AssumeRole` / web-identity"
     tier: proven
-    probes: [sts]
+    probes: [sts, vm-credentials]
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
