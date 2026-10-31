@@ -210,6 +210,9 @@ func printPlan(p *Plan) {
 		if r.Included && r.Kind != "" && !r.Deployable {
 			mark = "[gate]" // maps to a kind, but gated from creation (no create translator)
 		}
+		if r.Included && len(r.TranslateRefusals) > 0 {
+			mark = "[refuse]" // has a translator, but a property it can't model faithfully — deploy refuses
+		}
 		line := fmt.Sprintf("  %s %-20s %-34s", mark, r.LogicalID, r.CFNType)
 		if r.Kind != "" {
 			line += "-> " + r.Kind
@@ -225,6 +228,9 @@ func printPlan(p *Plan) {
 		}
 		if r.Included && r.Kind != "" && !r.Deployable {
 			fmt.Printf("      ⚠ maps at plan only — NOT deployable (no create translator): %s\n", noteOr(r.Note, "ceiling by design"))
+		}
+		for _, tr := range r.TranslateRefusals {
+			fmt.Printf("      ✗ refused at translate (deploy would reject): %s\n", tr)
 		}
 	}
 

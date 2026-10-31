@@ -43,6 +43,10 @@ type PlannedResource struct {
 	Included   bool     // false when a Condition excluded it
 	Condition  string   // the gating condition, if any
 	DependsOn  []string // resolved dependency ids (included resources only)
+	// TranslateRefusals holds property-level refusals the create translator raised when plan ran the
+	// translate gate (the same gate deploy runs in buildManifests). Non-empty means deploy WOULD
+	// refuse this resource; each refusal is also a plan Blocker, so the verdict reflects it.
+	TranslateRefusals []string `json:",omitempty"`
 }
 
 type Plan struct {
@@ -132,6 +136,49 @@ func BuildPlanWithExports(data []byte, params, exports map[string]string, stackN
 	plan.Findings = r.findings
 	for _, f := range r.findings {
 		plan.Blockers = append(plan.Blockers, f.Where+": "+f.Reason)
+	}
+
+	// Translate gate: run the create translators now so a property-level refusal — which otherwise
+	// surfaces only at deploy (buildManifests) — is reported HERE, making a PROVISIONABLE* verdict mean
+	// deploy won't balk. plan stays read-only (translators provision nothing; a fresh resolver keeps
+	// this pass from double-reporting the intrinsic findings above). Skipped when a required parameter
+	// is missing (already a blocker; placeholder values would add noise), and for the interleaved deploy
+	// path (custom resources / REST v1 API), whose Fn::GetAtt values resolve only during apply — running
+	// the translators now could refuse falsely, so those stacks keep the mapping-only verdict.
+	if len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && !hasAPIGatewayRestV1(t) {
+		byID := map[string]*PlannedResource{}
+		for i := range plan.Resources {
+			byID[plan.Resources[i].LogicalID] = &plan.Resources[i]
+		}
+		seen := map[string]bool{}
+		for _, b := range plan.Blockers {
+			seen[b] = true
+		}
+		tr := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
+		tr.evalConditions()
+		tctx := &stackCtx{template: t, resolver: tr}
+		for _, id := range t.rawOrder {
+			res := t.Resources[id]
+			if res.Condition != "" && !tr.conds[res.Condition] {
+				continue
+			}
+			tf := translatorFor(res.Type)
+			if tf == nil {
+				continue // unmappable/undeployable is already reported above; don't double-count here
+			}
+			tr.where = "Resource " + id
+			resolved, _ := tr.resolve(res.Properties).(map[string]any)
+			_, fs := tf(id, resolved, tctx)
+			for _, f := range fs {
+				if pr := byID[id]; pr != nil {
+					pr.TranslateRefusals = append(pr.TranslateRefusals, f.Reason)
+				}
+				if msg := f.Where + ": " + f.Reason; !seen[msg] {
+					seen[msg] = true
+					plan.Blockers = append(plan.Blockers, msg)
+				}
+			}
+		}
 	}
 
 	// Dependency ordering over included resources only.

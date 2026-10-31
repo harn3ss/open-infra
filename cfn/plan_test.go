@@ -35,23 +35,39 @@ func idx(order []string, id string) int {
 
 func blockersJoined(p *Plan) string { return strings.Join(p.Blockers, "\n") }
 
-// The realistic template: supported + one partial (S3) => PROVISIONABLE_WITH_CAVEATS, a
-// condition-excluded resource, and a real dependency order.
-func TestPlan_Webapp_DevCaveats(t *testing.T) {
+// The realistic template exercises mapping, intrinsics, a condition, and dependency ordering — and
+// now that plan runs the TRANSLATE GATE (the same gate deploy runs), it is honestly REJECTED: its
+// shapes are faithful-AWS but open-infra refuses them at deploy (a KMS-SSE bucket, a lambda-trust role,
+// a zip/Runtime Lambda, an ASL that references a sibling's ARN). plan surfaces each refusal per-resource
+// instead of letting deploy discover them — this is the "a PROVISIONABLE* verdict means deploy won't
+// refuse" guarantee. The mapping/ordering/condition logic is still asserted.
+func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 	p := mustPlan(t, readFixture(t, "webapp.yaml"), map[string]string{"Stage": "dev"}, "web")
 
-	if p.Verdict != ProvisionableWithCaveats {
-		t.Fatalf("verdict = %s, want PROVISIONABLE_WITH_CAVEATS; blockers:\n%s", p.Verdict, blockersJoined(p))
+	if p.Verdict != Rejected {
+		t.Fatalf("verdict = %s, want REJECTED (the translate gate refuses several faithful-AWS shapes); blockers:\n%s", p.Verdict, blockersJoined(p))
 	}
-	if len(p.Blockers) != 0 {
-		t.Fatalf("expected no blockers, got:\n%s", blockersJoined(p))
+	// Each deploy-refusal is surfaced at PLAN now, not at deploy.
+	b := blockersJoined(p)
+	for _, want := range []string{
+		"ec2.amazonaws.com",                        // AppRole trusts lambda, not the ec2 service principal
+		"BucketEncryption",                         // Assets per-bucket SSE needs the opt-in objectEncryption stack
+		"PackageType: Image",                       // Api is a zip/Runtime Lambda
+		"ASL definition references cross-resource", // Workflow Task Resource is a sibling ARN
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("plan must surface the deploy-refusal %q:\n%s", want, b)
+		}
 	}
 
 	// ProdAlarms is gated on IsProd, which is false at Stage=dev.
-	var prod *PlannedResource
+	var prod, assets *PlannedResource
 	for i := range p.Resources {
-		if p.Resources[i].LogicalID == "ProdAlarms" {
+		switch p.Resources[i].LogicalID {
+		case "ProdAlarms":
 			prod = &p.Resources[i]
+		case "Assets":
+			assets = &p.Resources[i]
 		}
 	}
 	if prod == nil || prod.Included {
@@ -61,7 +77,7 @@ func TestPlan_Webapp_DevCaveats(t *testing.T) {
 		t.Fatalf("excluded ProdAlarms must not be in provisioning order: %v", p.Order)
 	}
 
-	// Dependency order: keys/roles before the things that reference them; Workflow last.
+	// Dependency order is still computed (keys/roles before dependents; Workflow last), even when rejected.
 	for _, pair := range [][2]string{
 		{"AppKey", "Assets"}, {"AppKey", "Api"}, {"AppRole", "Api"},
 		{"Assets", "Api"}, {"Api", "Workflow"},
@@ -71,22 +87,21 @@ func TestPlan_Webapp_DevCaveats(t *testing.T) {
 		}
 	}
 
-	// The S3 caveat must be surfaced, not swallowed.
-	var assets *PlannedResource
-	for i := range p.Resources {
-		if p.Resources[i].LogicalID == "Assets" {
-			assets = &p.Resources[i]
-		}
-	}
+	// Assets still MAPS (partial, kind: Bucket) and carries the per-resource translate refusal.
 	if assets == nil || assets.Status != Partial || assets.Kind != "Bucket" {
 		t.Fatalf("Assets should map partial to kind: Bucket, got %+v", assets)
+	}
+	if len(assets.TranslateRefusals) == 0 || !strings.Contains(strings.Join(assets.TranslateRefusals, " "), "BucketEncryption") {
+		t.Fatalf("Assets must carry its translate refusal (BucketEncryption), got %+v", assets.TranslateRefusals)
 	}
 }
 
 func TestPlan_Webapp_ProdIncludesConditional(t *testing.T) {
 	p := mustPlan(t, readFixture(t, "webapp.yaml"), map[string]string{"Stage": "prod"}, "web")
-	if p.Verdict != ProvisionableWithCaveats {
-		t.Fatalf("verdict = %s, want caveats; blockers:\n%s", p.Verdict, blockersJoined(p))
+	// Still rejected by the translate gate (the conditional only adds ProdAlarms), but ProdAlarms is now
+	// included in the order — the condition-inclusion logic is independent of the verdict.
+	if p.Verdict != Rejected {
+		t.Fatalf("verdict = %s, want REJECTED; blockers:\n%s", p.Verdict, blockersJoined(p))
 	}
 	if idx(p.Order, "ProdAlarms") == -1 {
 		t.Fatalf("ProdAlarms should be included at Stage=prod: %v", p.Order)
@@ -302,7 +317,7 @@ func TestPlan_LambdaVersionAliasPlanOnly(t *testing.T) {
 Resources:
   Fn:
     Type: AWS::Lambda::Function
-    Properties: { Runtime: python3.12, Handler: app.handler, Role: x, Code: { ZipFile: "x" } }
+    Properties: { PackageType: Image, Code: { ImageUri: ghcr.io/x/fn:latest } }
   Ver:
     Type: AWS::Lambda::Version
     Properties: { FunctionName: !Ref Fn }
