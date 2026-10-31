@@ -391,8 +391,10 @@ spec:
                             cloudInitNoCloud:
                               {{- /* The full #cloud-config lives in the <vm>-cloudinit Secret (below):
                                      KubeVirt caps INLINE userData at 2048 bytes, which an instanceRole
-                                     config exceeds. A Secret has no such limit. networkData stays inline. */}}
-                              userDataSecretRef:
+                                     config exceeds. A Secret has no such limit. networkData stays inline.
+                                     NB KubeVirt's userData secret field is `secretRef` (the legacy name),
+                                     not `userDataSecretRef` (which it silently prunes). */}}
+                              secretRef:
                                 name: {{ $name }}-cloudinit
                               {{- if $lan }}
                               networkData: |

@@ -70,7 +70,7 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		"serviceAccountName: vm-myvm",           // the projected SA volume
 		"serial: SATOKEN",                       // the identity disk's stable serial
 		// cloud-init lives in a Secret (KubeVirt's 2048-byte inline cap), referenced by the VMI:
-		"userDataSecretRef",
+		"secretRef",
 		"name: myvm-cloudinit",
 		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
 		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token",
