@@ -162,7 +162,21 @@ spec:
                         containers:
                           - name: app
                             image: {{ $spec.image }}
-                            ports: [ { containerPort: {{ $spec.port }} } ]
+                            {{- if $spec.command }}
+                            command: {{ $spec.command | toJson }}
+                            {{- end }}
+                            {{- if $spec.args }}
+                            args: {{ $spec.args | toJson }}
+                            {{- end }}
+                            {{- if or $spec.port $spec.additionalPorts }}
+                            ports:
+                              {{- if $spec.port }}
+                              - { containerPort: {{ $spec.port }} }
+                              {{- end }}
+                              {{- range $p := ($spec.additionalPorts | default list) }}
+                              - { containerPort: {{ $p.targetPort | default $p.port }}{{ if $p.protocol }}, protocol: {{ $p.protocol }}{{ end }} }
+                              {{- end }}
+                            {{- end }}
                             # Requests drive the HPA; limits bound the app (tenant). spec.cpu/memory
                             # (an ECS container's Cpu/Memory) override the small defaults when set.
                             resources:
@@ -177,9 +191,16 @@ spec:
                               - { name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra, readOnly: true }
                             {{- end }}
                             {{- end }}
-                            # Health checks auto-injected — k8s self-heals.
+                            {{- if $spec.port }}
+                            # Health checks auto-injected — k8s self-heals. The startup probe gives a slow
+                            # first boot (DB init, AV signature download) time to begin listening before
+                            # liveness can kill it: failureThreshold*10s = startupGraceSeconds (default 150).
+                            # A port-less workload (a queue worker) renders NO probe — nothing listens, and
+                            # k8s still restarts it if the process exits.
+                            startupProbe:   { tcpSocket: { port: {{ $spec.port }} }, periodSeconds: 10, failureThreshold: {{ div (add (int ($spec.startupGraceSeconds | default 150)) 9) 10 }} }
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
+                            {{- end }}
                             {{- if or $spec.env $spec.database $spec.queues $assume }}
                             env:
                             {{- if $assume }}
@@ -193,7 +214,7 @@ spec:
                               - { name: AWS_REGION, value: "us-east-1" }
                             {{- end }}
                             {{- range $spec.env }}
-                              - { name: {{ .name }}, value: "{{ .value }}" }
+                              - { name: {{ .name }}, value: {{ .value | toJson }} }
                             {{- end }}
                             {{- if $spec.database }}
                             {{- if eq $dbEngine "mongo" }}
@@ -248,6 +269,12 @@ spec:
                           {{- range $s := ($spec.sidecars | default list) }}
                           - name: {{ $s.name }}
                             image: {{ $s.image }}
+                            {{- if $s.command }}
+                            command: {{ $s.command | toJson }}
+                            {{- end }}
+                            {{- if $s.args }}
+                            args: {{ $s.args | toJson }}
+                            {{- end }}
                             {{- if $s.port }}
                             ports: [ { containerPort: {{ $s.port }} } ]
                             {{- end }}
@@ -258,13 +285,22 @@ spec:
                             {{- if $s.env }}
                             env:
                             {{- range $s.env }}
-                              - { name: {{ .name }}, value: "{{ .value }}" }
+                              - { name: {{ .name }}, value: {{ .value | toJson }} }
                             {{- end }}
                             {{- end }}
                             {{- if $s.volumeMounts }}
                             volumeMounts:
                             {{- range $s.volumeMounts }}
                               - { name: {{ .name }}, mountPath: {{ .mountPath }} }
+                            {{- end }}
+                            {{- end }}
+                            {{- /* Sidecars get the SAME secret bundle as the primary (spec.secrets +
+                                   bucket creds) — a worker sidecar that needs the app's DB/API
+                                   credentials now receives them, instead of only the primary. */}}
+                            {{- if $envFrom }}
+                            envFrom:
+                            {{- range $envFrom }}
+                              - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
                           {{- end }}
@@ -354,8 +390,12 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+            {{- if or $spec.port $spec.additionalPorts }}
             ---
-            # --- Service ---
+            # --- Service --- (only when the app exposes a port; a port-less worker has none).
+            #     The HTTP port (80 -> spec.port) plus any spec.additionalPorts — e.g. an SMTP 1025
+            #     or a second protocol an app serves beside its HTTP port. Multi-port Services need
+            #     named ports, so the HTTP port is named `http` (the Ingress references it by number).
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -369,7 +409,14 @@ spec:
                   metadata: { name: {{ $name }}, namespace: {{ $ns }} }
                   spec:
                     selector: { app.kubernetes.io/name: {{ $name }} }
-                    ports: [ { port: 80, targetPort: {{ $spec.port }} } ]
+                    ports:
+                      {{- if $spec.port }}
+                      - { name: http, port: 80, targetPort: {{ $spec.port }} }
+                      {{- end }}
+                      {{- range $p := ($spec.additionalPorts | default list) }}
+                      - { name: {{ $p.name }}, port: {{ $p.port }}, targetPort: {{ $p.targetPort | default $p.port }}{{ if $p.protocol }}, protocol: {{ $p.protocol }}{{ end }} }
+                      {{- end }}
+            {{- end }}
             {{- if $spec.expose }}
             ---
             # --- LAN endpoint: the app's port on a stable LAN IP, for raw TCP /
@@ -428,8 +475,13 @@ spec:
                       - hosts: [ {{ $spec.domain }} ]
                         secretName: {{ $name }}-tls
             {{- end }}
+            {{- $hpaMin := int ($scaling.min | default 1) }}
+            {{- $hpaMax := int ($scaling.max | default 5) }}
+            {{- if gt $hpaMax $hpaMin }}
             ---
-            # --- HPA ("ASG") ---
+            # --- HPA ("ASG") — only when there is room to scale (max > min). A fixed-size app
+            #     (min == max, e.g. {min: 1, max: 1}) gets NO HPA: an HPA with equal bounds has
+            #     nothing to do and just logs FailedGetResourceMetric/FailedComputeMetricsReplicas. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -443,13 +495,14 @@ spec:
                   metadata: { name: {{ $name }}, namespace: {{ $ns }} }
                   spec:
                     scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $name }} }
-                    minReplicas: {{ $scaling.min | default 1 }}
-                    maxReplicas: {{ $scaling.max | default 5 }}
+                    minReplicas: {{ $hpaMin }}
+                    maxReplicas: {{ $hpaMax }}
                     metrics:
                       - type: Resource
                         resource:
                           name: cpu
                           target: { type: Utilization, averageUtilization: {{ $scaling.targetCPUPercent | default 70 }} }
+            {{- end }}
             {{- end }}
             ---
             # --- Tenant isolation: per-container defaults + max size (so the

@@ -4060,7 +4060,20 @@ components:
                 buckets, or queues).
             port:
               type: integer
-              description: The port your container listens on (e.g. 8080). Needed to serve the app over HTTPS or a LAN IP.
+              description: "The port your container listens on (e.g. 8080). Needed to serve the app over HTTPS or a LAN IP.\
+                \ OMIT it for a worker with no listening socket (a queue consumer) \u2014 no Service or TCP health probe is\
+                \ created, and k8s still restarts the container if it exits."
+            command:
+              type: array
+              items:
+                type: string
+              description: Override the image ENTRYPOINT (an ECS container's `command` / a Pod `command`). Lets one image
+                run several roles (api, worker, migrate) selected by command/args.
+            args:
+              type: array
+              items:
+                type: string
+              description: Arguments to the entrypoint/command (a Pod `args`).
             cpu:
               type: string
               description: CPU request/limit for the primary container (e.g. "500m" or "2"). When unset, a small default is
@@ -4069,6 +4082,33 @@ components:
               type: string
               description: Memory request/limit for the primary container (e.g. "512Mi" or "1Gi"). When unset, a small default
                 is used (an ECS container's Memory maps here).
+            startupGraceSeconds:
+              type: integer
+              description: "How long a slow first boot may take before the liveness probe can kill the container (a startup\
+                \ probe's budget; default 150). Raise it for images whose first start is slow \u2014 a database's initial\
+                \ data-dir init, an antivirus signature download \u2014 so they are not killed mid-initialization."
+            additionalPorts:
+              type: array
+              description: "Extra Service ports beyond the HTTP port (80 -> spec.port) \u2014 e.g. an SMTP 1025 or a second\
+                \ protocol the app serves. Each also becomes a declared containerPort."
+              items:
+                type: object
+                required:
+                - name
+                - port
+                properties:
+                  name:
+                    type: string
+                    description: Port name (required for a multi-port Service), e.g. smtp.
+                  port:
+                    type: integer
+                    description: The Service port.
+                  targetPort:
+                    type: integer
+                    description: The container port it maps to (defaults to port).
+                  protocol:
+                    type: string
+                    description: TCP (default) or UDP.
             quota:
               type: object
               description: "Namespace-wide object-count ceilings (compiles to a ResourceQuota). These are generous safety\
@@ -4152,7 +4192,8 @@ components:
                 max:
                   type: integer
                   default: 5
-                  description: Maximum replicas the autoscaler may scale up to.
+                  description: "Maximum replicas the autoscaler may scale up to. Set equal to min (e.g. min: 1, max: 1) for\
+                    \ a FIXED-size app \u2014 no HPA is created at all (an HPA with equal bounds has nothing to do)."
                 targetCPUPercent:
                   type: integer
                   default: 70
@@ -4397,6 +4438,17 @@ components:
                   image:
                     type: string
                     description: Sidecar container image.
+                  command:
+                    type: array
+                    items:
+                      type: string
+                    description: "Override the sidecar image ENTRYPOINT \u2014 lets the same image run a different role (e.g.\
+                      \ a worker) beside the primary."
+                  args:
+                    type: array
+                    items:
+                      type: string
+                    description: Arguments to the sidecar entrypoint/command.
                   port:
                     type: integer
                     description: Optional container port the sidecar listens on.

@@ -48,6 +48,68 @@ func TestApplication_NetpolAdmitsJoinSubnet(t *testing.T) {
 	}
 }
 
+// Application #345.4 gaps: command/args, a port-less worker (no Service/probe), additionalPorts,
+// a fixed-size app (no HPA), env-value escaping, and sidecars that get the app's secrets.
+func TestApplication_WorkloadShapes(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	mk := func(spec map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec":     spec,
+			"metadata": map[string]any{"uid": "00000000-0000-0000-0000-000000000abc", "labels": map[string]any{"crossplane.io/claim-name": "myapp", "crossplane.io/claim-namespace": "default"}},
+		}}}}
+	}
+
+	// A port-less worker with command/args: no ports, no probe, no Service, but command/args render.
+	worker := render(t, tmpl, mk(map[string]any{
+		"image":   "ghcr.io/x/app:latest",
+		"command": []any{"/bin/worker"},
+		"args":    []any{"--queue", "jobs"},
+	}))
+	if !strings.Contains(worker, `command: ["/bin/worker"]`) || !strings.Contains(worker, `args: ["--queue","jobs"]`) {
+		t.Errorf("command/args must render as JSON arrays; got:\n%s", grepCtx(worker, "command"))
+	}
+	if strings.Contains(worker, "tcpSocket") {
+		t.Errorf("a port-less worker must have NO TCP probe; got:\n%s", grepCtx(worker, "Probe"))
+	}
+	if strings.Contains(worker, "kind: Service") {
+		t.Errorf("a port-less worker must have NO Service; got:\n%s", grepCtx(worker, "Service"))
+	}
+
+	// A fixed-size app (min==max) gets NO HPA; a startup probe appears when there IS a port.
+	fixed := render(t, tmpl, mk(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "scaling": map[string]any{"min": 1, "max": 1}}))
+	if strings.Contains(fixed, "HorizontalPodAutoscaler") {
+		t.Errorf("a fixed-size app (min==max) must get NO HPA; got:\n%s", grepCtx(fixed, "Horizontal"))
+	}
+	if !strings.Contains(fixed, "startupProbe") {
+		t.Errorf("an app with a port must get a startupProbe (slow-boot grace); got:\n%s", grepCtx(fixed, "Probe"))
+	}
+	// A scalable app (max>min) keeps its HPA.
+	if scaled := render(t, tmpl, mk(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "scaling": map[string]any{"min": 1, "max": 5}})); !strings.Contains(scaled, "HorizontalPodAutoscaler") {
+		t.Errorf("a scalable app (max>min) must keep its HPA")
+	}
+
+	// additionalPorts (Mailpit SMTP) land on the Service + the container; env with a quote is escaped;
+	// a sidecar gets the app's secret bundle (envFrom).
+	full := render(t, tmpl, mk(map[string]any{
+		"image":           "ghcr.io/x/app:latest",
+		"port":            8025,
+		"additionalPorts": []any{map[string]any{"name": "smtp", "port": 1025}},
+		"env":             []any{map[string]any{"name": "GREETING", "value": `he said "hi"`}},
+		"secrets":         []any{"app-config"},
+		"sidecars":        []any{map[string]any{"name": "worker", "image": "ghcr.io/x/app:latest"}},
+	}))
+	if !strings.Contains(full, "name: smtp") || !strings.Contains(full, "port: 1025") {
+		t.Errorf("additionalPorts must appear on the Service; got:\n%s", grepCtx(full, "smtp"))
+	}
+	if !strings.Contains(full, `value: "he said \"hi\""`) {
+		t.Errorf("an env value with a quote must be JSON-escaped; got:\n%s", grepCtx(full, "GREETING"))
+	}
+	// Both primary and the sidecar carry envFrom for the app's secret (so the sidecar gets credentials).
+	if strings.Count(full, "secretRef: { name: app-config, optional: true }") < 2 {
+		t.Errorf("the sidecar must get the app's secret bundle (envFrom), like the primary; got:\n%s", grepCtx(full, "app-config"))
+	}
+}
+
 func TestManagedDB_HibernationAlwaysExplicit(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 
