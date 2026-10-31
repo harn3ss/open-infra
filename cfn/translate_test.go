@@ -288,6 +288,18 @@ func ecsCtx(t *testing.T, tmpl string) *stackCtx {
 	return &stackCtx{template: tt, resolver: r}
 }
 
+// ctxWithParams is ecsCtx with explicit parameter values (so a Condition or a !Ref resolves to a chosen
+// value rather than the schema default).
+func ctxWithParams(t *testing.T, tmpl string, params map[string]string) *stackCtx {
+	tt, err := Parse([]byte(tmpl))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	r := newResolver(tt, resolveParams(tt, params), nil, pseudoParams("s"))
+	r.evalConditions()
+	return &stackCtx{template: tt, resolver: r}
+}
+
 func ecsResolvedService(t *testing.T, ctx *stackCtx, id string) map[string]any {
 	res := ctx.template.Resources[id]
 	ctx.resolver.where = "Resource " + id

@@ -83,6 +83,30 @@ func (c *stackCtx) rawProps(id string) (map[string]any, bool) {
 	return res.Properties, true
 }
 
+// included reports whether a resource is active given its Condition: true when it has none, or its
+// named condition evaluated true. A conditioned-OFF resource must provision nothing and must not be
+// collated into another kind — otherwise a rule the template gates off would be deployed anyway.
+func (c *stackCtx) included(res Resource) bool {
+	if res.Condition == "" {
+		return true
+	}
+	if c == nil || c.resolver == nil {
+		return true
+	}
+	return c.resolver.conds[res.Condition]
+}
+
+// resolveVal resolves a single raw property value through the stack resolver, turning a {Ref: Param}
+// into the parameter's value and leaving an unresolvable intrinsic as a placeholder concrete() refuses.
+// It is for reading a scalar out of an otherwise-raw rule (where the raw form is kept only to follow a
+// SG !Ref to its logical id). A nil ctx/resolver returns the value unchanged (concrete() still guards it).
+func (c *stackCtx) resolveVal(v any) any {
+	if c == nil || c.resolver == nil {
+		return v
+	}
+	return c.resolver.resolve(v)
+}
+
 // translators is the create-fidelity registry. A CFN type is create-provisionable only if it
 // appears here AND its translator accepts every property. Grow it the gated way.
 var translators = map[string]translator{
@@ -1098,8 +1122,11 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 		}
 		rule := map[string]any{}
 
-		// Protocol — TCP/UDP only; "-1" (all protocols) and icmp/other cannot be expressed exactly.
-		proto, _ := concrete(r["IpProtocol"])
+		// Resolve the rule's SCALAR fields (CidrIp/ports/protocol) through the stack resolver so a
+		// `!Ref Param` becomes the parameter's value (and an unresolvable intrinsic stays a placeholder
+		// concrete() refuses). The rule is iterated raw ONLY so a SourceSecurityGroupId !Ref below can be
+		// followed to its in-stack logical id — never to emit an intrinsic literally as a value.
+		proto, _ := concrete(ctx.resolveVal(r["IpProtocol"]))
 		switch strings.ToLower(strings.TrimSpace(proto)) {
 		case "tcp":
 			rule["protocol"] = "TCP"
@@ -1111,7 +1138,7 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 		}
 
 		// Ports — single port, or all-ports; a true range cannot be expressed as a ports LIST faithfully.
-		ports, perr := sgPorts(r["FromPort"], r["ToPort"])
+		ports, perr := sgPorts(ctx.resolveVal(r["FromPort"]), ctx.resolveVal(r["ToPort"]))
 		if perr != "" {
 			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s", dir, i, perr)})
 			continue
@@ -1122,7 +1149,7 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 
 		// Source/destination — a CidrIp, or an in-stack SG reference. Exactly one.
 		peer := map[string]any{}
-		if cidr, ok := concrete(r["CidrIp"]); ok && cidr != "" {
+		if cidr, ok := concrete(ctx.resolveVal(r["CidrIp"])); ok && cidr != "" {
 			peer["cidr"] = cidr
 		} else if sgid, isRef := refTarget(r[sgField]); isRef {
 			inStackSG := false
@@ -1204,6 +1231,9 @@ func (c *stackCtx) sgStandaloneRules(sgID, cfnType string) []string {
 	for rid, res := range c.template.Resources {
 		if res.Type != cfnType {
 			continue
+		}
+		if !c.included(res) {
+			continue // a rule its template gates OFF (Condition false) must not be collated (fail-open otherwise)
 		}
 		raw, _ := c.rawProps(rid)
 		if t, ok := refTarget(raw["GroupId"]); ok && t == sgID {
@@ -3526,6 +3556,15 @@ var placeholderRe = regexp.MustCompile(`<(ref:|param:|unsupported:|base64:)|<[A-
 // "we do not have a concrete value", which callers must treat as a blocker, never a guess.
 func concrete(v any) (string, bool) {
 	if v == nil {
+		return "", false
+	}
+	// A non-scalar (an unresolved intrinsic like {Ref: X}, or any structured value) is never a usable
+	// scalar. fmt.Sprint would render {Ref: X} as "map[Ref:X]" — which slips past placeholderRe and
+	// would be emitted as if it were a real value (e.g. a CIDR). Refuse it: callers treat ok=false as a
+	// blocker, which is the fail-CLOSED outcome. Resolve the value (through the stack resolver) before
+	// calling concrete if a concrete scalar is expected.
+	switch v.(type) {
+	case map[string]any, []any:
 		return "", false
 	}
 	s := fmt.Sprint(v)

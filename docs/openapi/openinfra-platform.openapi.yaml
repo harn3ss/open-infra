@@ -7959,6 +7959,7 @@ components:
                         cidr:
                           type: string
                           description: edge/LAN source, e.g. 192.0.2.0/24 or 0.0.0.0/0
+                          pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$
                         securityGroup:
                           type: string
                           description: members of another SecurityGroup (same namespace)
@@ -7992,6 +7993,7 @@ components:
                       properties:
                         cidr:
                           type: string
+                          pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$
                         securityGroup:
                           type: string
                         namespace:

@@ -87,12 +87,13 @@ func TestTranslate_EC2SecurityGroup_FailClosed(t *testing.T) {
 		rule string
 		want string
 	}{
-		"protocol -1 (all)":   {`{ IpProtocol: "-1", CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
-		"icmp":                {`{ IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
-		"true port range":     {`{ IpProtocol: tcp, FromPort: 8000, ToPort: 8100, CidrIp: 0.0.0.0/0 }`, "port range"},
-		"ipv6 source":         {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0" }`, "CidrIpv6"},
-		"no source":           {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443 }`, "needs a CidrIp"},
-		"out-of-stack SG ref": {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: sg-0abc123 }`, "in-stack AWS::EC2::SecurityGroup"},
+		"protocol -1 (all)":      {`{ IpProtocol: "-1", CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
+		"icmp":                   {`{ IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
+		"true port range":        {`{ IpProtocol: tcp, FromPort: 8000, ToPort: 8100, CidrIp: 0.0.0.0/0 }`, "port range"},
+		"ipv6 source":            {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0" }`, "CidrIpv6"},
+		"no source":              {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443 }`, "needs a CidrIp"},
+		"out-of-stack SG ref":    {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: sg-0abc123 }`, "in-stack AWS::EC2::SecurityGroup"},
+		"unresolvable !Ref CIDR": {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref NoSuchParam }`, "needs a CidrIp"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -140,6 +141,95 @@ Resources:
 	// The standalone child translators are no-ops when in-stack (the group owns the rule).
 	if mm, cf := translateEC2SecurityGroupRule("ExtraIngress", ecsResolvedService(t, ctx, "ExtraIngress"), ctx); mm != nil || len(cf) != 0 {
 		t.Fatalf("an in-stack standalone rule must be a clean no-op: manifest=%v findings=%s", mm, findingsText(cf))
+	}
+}
+
+// SECURITY (regression): a standalone AWS::EC2::SecurityGroupIngress the template gates OFF with a false
+// Condition must NOT be collated into the SG. Before the fix, sgStandaloneRules ignored res.Condition, so
+// a rule the operator turned off (classically SSH-from-anywhere) was deployed anyway — a fail-OPEN.
+func TestTranslate_EC2SecurityGroup_ConditionedOffStandaloneRuleAbsent(t *testing.T) {
+	tmpl := `
+Parameters:
+  EnableAdmin: { Type: String, Default: "false" }
+  OfficeCidr:  { Type: String, Default: "10.20.0.0/16" }
+Conditions:
+  AdminOn: !Equals [!Ref EnableAdmin, "true"]
+Resources:
+  WebSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: web
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref OfficeCidr }
+  AdminOpenToWorld:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: AdminOn
+    Properties: { GroupId: !Ref WebSG, IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0 }
+`
+	// Condition OFF (default EnableAdmin=false): the port-22 rule must be absent.
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("WebSG", ecsResolvedService(t, ctx, "WebSG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("must translate cleanly: %s", findingsText(fs))
+	}
+	ing, _ := m.Spec["ingress"].([]any)
+	if len(ing) != 1 {
+		t.Fatalf("a conditioned-OFF standalone rule must not be collated — want the 1 inline rule only, got %d: %#v", len(ing), m.Spec["ingress"])
+	}
+	r0 := ing[0].(map[string]any)
+	if p, _ := r0["ports"].([]any); len(p) != 1 || p[0] != 443 {
+		t.Fatalf("the surviving rule must be the inline :443, never the gated-off :22: %#v", r0)
+	}
+
+	// Condition ON (EnableAdmin=true): the same rule IS collated — proving the skip is condition-driven,
+	// not a blanket drop of standalone rules.
+	on := ctxWithParams(t, tmpl, map[string]string{"EnableAdmin": "true"})
+	mOn, fsOn := translateEC2SecurityGroup("WebSG", ecsResolvedService(t, on, "WebSG"), on)
+	if len(fsOn) != 0 {
+		t.Fatalf("condition-ON must translate cleanly: %s", findingsText(fsOn))
+	}
+	if ingOn, _ := mOn.Spec["ingress"].([]any); len(ingOn) != 2 {
+		t.Fatalf("with the condition ON the port-22 rule must be collated — want 2 ingress rules, got %d: %#v", len(ingOn), mOn.Spec["ingress"])
+	}
+}
+
+// A CidrIp given as `!Ref Param` resolves to the parameter's value — inline and in a collated standalone
+// rule — instead of being emitted as the literal intrinsic. Regression for the map[Ref:X]-as-CIDR bug,
+// where the raw {Ref: X} was fmt.Sprint'd to "map[Ref:X]" and treated as a real CIDR.
+func TestTranslate_EC2SecurityGroup_RefCidrResolves(t *testing.T) {
+	tmpl := `
+Parameters:
+  OfficeCidr: { Type: String, Default: "10.20.0.0/16" }
+  DnsCidr:    { Type: String, Default: "10.30.0.0/16" }
+Resources:
+  WebSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: web
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref OfficeCidr }
+  ExtraIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties: { GroupId: !Ref WebSG, IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref DnsCidr }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("WebSG", ecsResolvedService(t, ctx, "WebSG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("a !Ref CIDR must resolve, not refuse: %s", findingsText(fs))
+	}
+	ing, _ := m.Spec["ingress"].([]any)
+	if len(ing) != 2 {
+		t.Fatalf("want 2 ingress rules (inline + collated standalone): %#v", m.Spec["ingress"])
+	}
+	got := map[string]bool{}
+	for _, raw := range ing {
+		c := raw.(map[string]any)["from"].([]any)[0].(map[string]any)["cidr"]
+		got[c.(string)] = true
+	}
+	for _, want := range []string{"10.20.0.0/16", "10.30.0.0/16"} {
+		if !got[want] {
+			t.Fatalf("a !Ref CIDR must resolve to the parameter value %q; got %#v", want, got)
+		}
 	}
 }
 
