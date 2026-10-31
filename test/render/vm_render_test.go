@@ -57,24 +57,31 @@ func TestVM_DataDisks_ProvisionInOrder(t *testing.T) {
 	}
 }
 
-// spec.instanceRole labels the VMI/launcher pod so the metadata responder can map the caller pod to
-// its role. No instanceRole → no such label (a VM with no AWS identity).
-func TestVM_InstanceRole_LabelsForMetadataResponder(t *testing.T) {
+// spec.instanceRole wires the VM's workload identity: a per-VM ServiceAccount (annotated with the
+// role), its token projected onto an "identity" serviceAccount disk, and cloud-init pointing the AWS
+// container-credentials provider at the shim. No instanceRole → none of this (a VM with no identity).
+func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
 	with := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
-	if !strings.Contains(with, "openinfra.dev/instance-role: app-role") {
-		t.Errorf("instanceRole must label the VMI/launcher pod; got:\n%s", grepCtx(with, "labels"))
-	}
-	// cloud-init must point the AWS SDK's metadata flow at the shim (so the VM fetches role creds).
-	if !strings.Contains(with, "AWS_EC2_METADATA_SERVICE_ENDPOINT=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566") {
-		t.Errorf("instanceRole must inject the IMDS endpoint into /etc/environment; got:\n%s", grepCtx(with, "environment"))
+	for _, want := range []string{
+		"kind: ServiceAccount",                   // the per-VM SA object
+		"name: vm-myvm",                          // SA named for the VM
+		"openinfra.dev/instance-role: app-role",  // SA annotation the shim reads
+		"serviceAccountName: vm-myvm",            // the projected SA volume
+		"serial: SATOKEN",                        // the identity disk's stable serial
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
+		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token",
+		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("instanceRole wiring missing %q; got:\n%s", want, grepCtx(with, "identity"))
+		}
 	}
 	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
-	if strings.Contains(without, "openinfra.dev/instance-role") {
-		t.Errorf("a VM with no instanceRole must carry no instance-role label; got:\n%s", grepCtx(without, "instance-role"))
-	}
-	if strings.Contains(without, "AWS_EC2_METADATA_SERVICE_ENDPOINT") {
-		t.Errorf("a VM with no instanceRole must not inject the IMDS endpoint; got:\n%s", grepCtx(without, "METADATA"))
+	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER_CREDENTIALS", "instance-role"} {
+		if strings.Contains(without, absent) {
+			t.Errorf("a VM with no instanceRole must not render %q; got:\n%s", absent, grepCtx(without, absent))
+		}
 	}
 }
 
