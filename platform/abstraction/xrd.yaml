@@ -28,9 +28,10 @@ spec:
   claimNames:
     kind: Application        # what users write in infra.yaml
     plural: applications
-    # A distinct short name so `kubectl get oiapp` resolves to THIS Application, not Argo CD's
-    # applications.argoproj.io (which otherwise wins `kubectl get application`). (#345.5)
-    shortNames: [oiapp]
+    # NOTE: a short name (e.g. `oiapp`) cannot be ADDED here on a live XRD — spec.claimNames is
+    # IMMUTABLE in Crossplane, so patching it is rejected and the whole XRD apply fails. Adding one
+    # needs the XRD recreated (which deletes every claim), so #345.5 is deferred as not-worth-the-churn
+    # for a convenience alias; use `kubectl get applications.openinfra.dev` to disambiguate from Argo CD.
   defaultCompositionRef:
     name: application
   versions:
