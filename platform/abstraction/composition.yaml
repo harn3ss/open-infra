@@ -37,6 +37,14 @@ spec:
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $scaling := $spec.scaling | default dict }}
+            {{- /* Scaling bounds, hoisted here so both the Deployment and the HPA below see them.
+                   An HPA is rendered only when it can actually scale (max > min); when it is NOT
+                   (a fixed-size app, min == max), the Deployment must pin replicas itself, or
+                   min == max > 1 (e.g. {min: 3, max: 3}) silently runs a single replica because
+                   nothing sets the count. */}}
+            {{- $hpaMin := int ($scaling.min | default 1) }}
+            {{- $hpaMax := int ($scaling.max | default 5) }}
+            {{- $hpaRendered := gt $hpaMax $hpaMin }}
             {{- $quota := $spec.quota | default dict }}
             {{- /* assumeRole (#111 workload identity, IRSA-shaped): the app runs under a dedicated
                    ServiceAccount, projects an SA token, and the AWS SDK exchanges it for the role's
@@ -131,6 +139,13 @@ spec:
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/name: {{ $name }} }
                   spec:
+                    {{- if not $hpaRendered }}
+                    # No HPA (max <= min): the HPA owns the replica count only when it can scale,
+                    # so a fixed-size app must set replicas on the Deployment — otherwise
+                    # min == max > 1 runs a single replica. When an HPA IS rendered, replicas is
+                    # omitted on purpose, so the Deployment and the HPA don't fight over the count.
+                    replicas: {{ $hpaMin }}
+                    {{- end }}
                     selector: { matchLabels: { app.kubernetes.io/name: {{ $name }} } }
                     template:
                       metadata:
@@ -475,13 +490,12 @@ spec:
                       - hosts: [ {{ $spec.domain }} ]
                         secretName: {{ $name }}-tls
             {{- end }}
-            {{- $hpaMin := int ($scaling.min | default 1) }}
-            {{- $hpaMax := int ($scaling.max | default 5) }}
-            {{- if gt $hpaMax $hpaMin }}
+            {{- if $hpaRendered }}
             ---
             # --- HPA ("ASG") — only when there is room to scale (max > min). A fixed-size app
             #     (min == max, e.g. {min: 1, max: 1}) gets NO HPA: an HPA with equal bounds has
-            #     nothing to do and just logs FailedGetResourceMetric/FailedComputeMetricsReplicas. ---
+            #     nothing to do and just logs FailedGetResourceMetric/FailedComputeMetricsReplicas.
+            #     That fixed size is pinned as Deployment.replicas above (= $hpaMin). ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:

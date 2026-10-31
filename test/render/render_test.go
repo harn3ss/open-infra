@@ -110,6 +110,39 @@ func TestApplication_WorkloadShapes(t *testing.T) {
 	}
 }
 
+// #347 Phase 0.5: a fixed-size app with min == max > 1 must run that many replicas. No HPA is
+// rendered when it can't scale (max <= min), so the Deployment itself must pin replicas, or the
+// app silently runs a single pod. When an HPA IS rendered, the Deployment must NOT set replicas
+// (the HPA owns the count — a pinned replicas would fight it on every reconcile).
+func TestApplication_FixedSizeReplicas(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	mk := func(spec map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec":     spec,
+			"metadata": map[string]any{"uid": "00000000-0000-0000-0000-000000000abc", "labels": map[string]any{"crossplane.io/claim-name": "myapp", "crossplane.io/claim-namespace": "default"}},
+		}}}}
+	}
+
+	// Fixed size 3 (min == max == 3): no HPA, and the Deployment pins replicas: 3.
+	fixed := render(t, tmpl, mk(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "scaling": map[string]any{"min": 3, "max": 3}}))
+	if strings.Contains(fixed, "HorizontalPodAutoscaler") {
+		t.Errorf("min == max must render NO HPA; got:\n%s", grepCtx(fixed, "Horizontal"))
+	}
+	if !strings.Contains(fixed, "replicas: 3") {
+		t.Errorf("min == max == 3 must pin replicas: 3 on the Deployment (else it runs 1); got:\n%s", grepCtx(fixed, "replicas"))
+	}
+
+	// Scalable (max > min): the HPA owns the count, so the Deployment must NOT pin replicas.
+	// (minReplicas: 2 on the HPA has a capital R, so it won't match the lowercase probe below.)
+	scaled := render(t, tmpl, mk(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "scaling": map[string]any{"min": 2, "max": 5}}))
+	if !strings.Contains(scaled, "HorizontalPodAutoscaler") {
+		t.Errorf("max > min must keep the HPA")
+	}
+	if strings.Contains(scaled, "replicas: 2") {
+		t.Errorf("a scalable app must NOT pin replicas on the Deployment (the HPA owns it); got:\n%s", grepCtx(scaled, "replicas"))
+	}
+}
+
 func TestManagedDB_HibernationAlwaysExplicit(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 
