@@ -7530,6 +7530,51 @@ components:
               items:
                 type: string
               description: Extra secrets to inject with envFrom.
+            volumes:
+              type: array
+              description: "Files to mount into the container \u2014 a ConfigMap (e.g. a seed/migration script or a SQL dump\
+                \ delivered as config), a Secret, or an existing durable kind: Volume (mode: Filesystem, same namespace).\
+                \ Lets a one-shot job read files it needs, not just env. Each entry sets exactly one of configMap / secret\
+                \ / volume."
+              items:
+                type: object
+                required:
+                - name
+                properties:
+                  name:
+                    type: string
+                    description: Volume name, referenced by volumeMounts.
+                  configMap:
+                    type: string
+                    description: Mount this ConfigMap's keys as files (in this namespace).
+                  secret:
+                    type: string
+                    description: Mount this Secret's keys as files (in this namespace).
+                  volume:
+                    type: string
+                    description: "Mount this kind: Volume (mode: Filesystem, same namespace) as durable storage \u2014 e.g.\
+                      \ to load a SQL dump staged on a PVC."
+            volumeMounts:
+              type: array
+              description: Where to mount spec.volumes inside the processing container.
+              items:
+                type: object
+                required:
+                - name
+                - mountPath
+                properties:
+                  name:
+                    type: string
+                    description: Name of a volume declared in spec.volumes.
+                  mountPath:
+                    type: string
+                    description: Path to mount it at inside the container.
+                  subPath:
+                    type: string
+                    description: 'Optional: mount a single file/key within the volume (e.g. a specific ConfigMap key).'
+                  readOnly:
+                    type: boolean
+                    description: Mount read-only (default false).
             backoffLimit:
               type: integer
               default: 0

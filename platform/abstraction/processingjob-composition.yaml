@@ -229,6 +229,34 @@ spec:
                                 {{- if $useGpu }}
                                 nvidia.com/gpu: {{ $gpu }}
                                 {{- end }}
+                            {{- if $spec.volumeMounts }}
+                            volumeMounts:
+                              {{- range $m := $spec.volumeMounts }}
+                              - name: {{ $m.name }}
+                                mountPath: {{ $m.mountPath }}
+                                {{- if $m.subPath }}
+                                subPath: {{ $m.subPath }}
+                                {{- end }}
+                                {{- if $m.readOnly }}
+                                readOnly: true
+                                {{- end }}
+                              {{- end }}
+                            {{- end }}
+                        {{- if $spec.volumes }}
+                        # Mount files the one-shot job needs (a seed/migration script or a SQL dump as a
+                        # ConfigMap, a Secret, or a durable kind: Volume PVC) — not just env.
+                        volumes:
+                          {{- range $v := $spec.volumes }}
+                          - name: {{ $v.name }}
+                            {{- if $v.configMap }}
+                            configMap: { name: {{ $v.configMap }} }
+                            {{- else if $v.secret }}
+                            secret: { secretName: {{ $v.secret }} }
+                            {{- else if $v.volume }}
+                            persistentVolumeClaim: { claimName: {{ $v.volume }} }
+                            {{- end }}
+                          {{- end }}
+                        {{- end }}
             ---
             apiVersion: openinfra.dev/v1
             kind: XProcessingJob

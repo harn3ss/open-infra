@@ -2,6 +2,7 @@ package render
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,35 @@ func compositeCtx(spec map[string]any) map[string]any {
 			"crossplane.io/claim-namespace": "team",
 		}},
 	}}}}
+}
+
+// #345.9: ProcessingJob can mount files — a ConfigMap (e.g. a seed/migration script or a SQL dump),
+// a Secret, or a durable kind: Volume PVC — via spec.volumes + spec.volumeMounts, not just env.
+func TestProcessingJob_VolumesAndMounts(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/processingjob-composition.yaml")
+	out := render(t, tmpl, compositeCtx(map[string]any{
+		"image": "x", "cpu": "50m", "memory": "64Mi", "gpu": int64(0),
+		"volumes": []any{
+			map[string]any{"name": "seed", "configMap": "migrations"},
+			map[string]any{"name": "dump", "volume": "sql-dump-pvc"},
+		},
+		"volumeMounts": []any{
+			map[string]any{"name": "seed", "mountPath": "/seed", "readOnly": true},
+			map[string]any{"name": "dump", "mountPath": "/dump", "subPath": "backup.sql"},
+		},
+	}))
+	for _, want := range []string{
+		"configMap: { name: migrations }",
+		"persistentVolumeClaim: { claimName: sql-dump-pvc }",
+		"mountPath: /seed",
+		"readOnly: true",
+		"mountPath: /dump",
+		"subPath: backup.sql",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ProcessingJob volume render missing %q; got:\n%s", want, grepCtx(out, "volume"))
+		}
+	}
 }
 
 // Every one-shot/scheduled job kind sets the container request == limit (Guaranteed QoS). The bug
