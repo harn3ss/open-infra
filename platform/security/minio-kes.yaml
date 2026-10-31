@@ -130,13 +130,27 @@ metadata:
   namespace: minio
   annotations: { argocd.argoproj.io/sync-wave: "2" }
 spec:
-  replicas: 1
+  # HA: KES is STATELESS (every key lives in Vault, the keystore), so it scales horizontally. Two
+  # replicas spread across nodes mean a routine node drain (maintenance, upgrades) no longer drops the
+  # SSE-KMS front door. (This does NOT remove the hard Vault
+  # dependency: if Vault is down or sealed, every replica fails to init its keystore and exits — that
+  # is an operator duty, vault unseal, not something replicas can paper over. It fixes the node-churn
+  # class, which is what drove the bulk of the historical restarts.)
+  replicas: 2
   selector: { matchLabels: { app: kes } }
   template:
     metadata: { labels: { app: kes } }
     spec:
       serviceAccountName: minio-kes
       securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      # Spread the replicas across nodes so one node drain/reboot can't take both down at once.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: { matchLabels: { app: kes } }
       containers:
         - name: kes
           image: minio/kes:2024-09-11T07-22-50Z
@@ -146,12 +160,30 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/kes }
             - { name: certs, mountPath: /certs }
+          # A TCP readiness probe on the API port: marks a replica NotReady (pulled from the Service)
+          # until it is actually listening — a bare TCP connect, so it never trips on the mTLS handshake
+          # (KES requires a client cert for the API; an httpGet probe would fail the handshake and cause
+          # the very restarts we are reducing). No liveness probe: KES already exits on a lost keystore,
+          # and a flapping liveness check would only add restarts.
+          readinessProbe:
+            tcpSocket: { port: 7373 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { cpu: 300m, memory: 256Mi }
       volumes:
         - { name: config, configMap: { name: kes-config } }
         - { name: certs, secret: { secretName: kes-server-tls } }
+---
+# Keep at least one KES replica during a voluntary disruption (node drain / cluster upgrade), so the
+# SSE-KMS front door stays up through routine maintenance instead of blipping.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: kes, namespace: minio }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: kes } }
 ---
 apiVersion: v1
 kind: Service
