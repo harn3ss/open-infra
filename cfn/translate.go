@@ -425,11 +425,14 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	if v, ok := props["MultiAttachEnabled"].(bool); ok && v {
 		spec["shared"] = true
 	}
-	// Encryption: open-infra encrypts with a CUSTOMER key (kind: EncryptionKey / Vault Transit), so
-	// KmsKeyId must reference an in-stack AWS::KMS::Key (which maps to that EncryptionKey). There is
-	// no default-managed key — Encrypted without a mappable KmsKeyId blocks rather than inventing one.
+	// Encryption: open-infra encrypts with a CUSTOMER key (kind: EncryptionKey / Vault Transit). A
+	// KmsKeyId that !Refs an in-stack AWS::KMS::Key maps to that key. A KmsKeyId that does NOT map (an
+	// ARN/alias to an out-of-stack or AWS-managed key) still refuses — we can't fabricate a specific
+	// external key. But Encrypted with NO KmsKeyId uses the per-namespace default key (below), the way
+	// AWS uses the account-default aws/ebs key.
 	encrypted, _ := props["Encrypted"].(bool)
 	_, hasKms := props["KmsKeyId"]
+	needDefaultKey := false
 	if encrypted || hasKms {
 		spec["encrypted"] = true
 		var kid string
@@ -442,10 +445,17 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 				}
 			}
 		}
-		if kid != "" {
+		switch {
+		case kid != "":
 			spec["encryptionKey"] = k8sName(kid)
-		} else {
-			f = append(f, Finding{"Resource " + id, "an encrypted volume needs KmsKeyId referencing an in-stack AWS::KMS::Key — open-infra keys volumes with a customer kind: EncryptionKey (via that KMS key), not an AWS-managed default key"})
+		case hasKms:
+			f = append(f, Finding{"Resource " + id, "KmsKeyId must reference an in-stack AWS::KMS::Key — open-infra keys volumes with a customer kind: EncryptionKey (via that KMS key); an ARN/alias to an out-of-stack or AWS-managed key has no mappable equivalent. Omit KmsKeyId to use the per-namespace default key."})
+		default:
+			// #347 Phase 1.7 (#344 4.2): Encrypted with NO KmsKeyId — AWS keys it with the account-default
+			// aws/ebs key; open-infra keys it with the per-namespace default kind: EncryptionKey, created
+			// on first use (emitted as a companion below).
+			spec["encryptionKey"] = defaultEBSKeyName
+			needDefaultKey = true
 		}
 	}
 	if _, ok := props["SnapshotId"]; ok {
@@ -453,6 +463,10 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: k8sName(id), Spec: spec}
+	if needDefaultKey {
+		m.Extra = append(m.Extra, defaultEBSEncryptionKey())
+		m.Caveats = append(m.Caveats, "Encrypted with no KmsKeyId — keyed by the per-namespace default kind: EncryptionKey \""+defaultEBSKeyName+"\" (the open-infra analog of AWS's account-default aws/ebs key), created on first use")
+	}
 	// #114 (Part 2, disproven): VolumeType/Iops/Throughput INTENT does not map to a Longhorn setting.
 	// Longhorn is replica-based distributed storage; it provisions durability (replica count), not
 	// IOPS. Mapping an AWS IOPS number onto a Longhorn knob and calling it equivalent would fabricate
@@ -466,10 +480,27 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	return m, f
 }
 
+// defaultEBSKeyName is the per-namespace default kind: EncryptionKey an Encrypted EBS disk with NO
+// KmsKeyId is keyed by — the open-infra analog of AWS's account-default aws/ebs key (#347 Phase 1.7 /
+// #344 4.2). Created on first use (emitted as a companion), idempotent by name.
+const defaultEBSKeyName = "ebs-default"
+
+// defaultEBSEncryptionKey is the companion kind: EncryptionKey that backs an Encrypted-without-KmsKeyId
+// disk. Annual rotation, mirroring AWS default-key behavior.
+func defaultEBSEncryptionKey() *Manifest {
+	return &Manifest{
+		APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: defaultEBSKeyName,
+		Spec: map[string]any{
+			"description":  "default data-disk encryption key — open-infra analog of AWS aws/ebs; created on first use for an Encrypted volume/disk with no KmsKeyId",
+			"rotationDays": 365,
+		},
+	}
+}
+
 // ebsEncryptionKey resolves an encrypted EBS block's KmsKeyId — which must !Ref an in-stack
-// AWS::KMS::Key — to that key's kind: EncryptionKey name, the same contract translateVolume uses for a
-// standalone volume. ok=false means there is no mappable in-stack key (the caller refuses rather than
-// keying the disk with an AWS-managed default, which open-infra has no equivalent for).
+// AWS::KMS::Key — to that key's kind: EncryptionKey name. ok=false means a KmsKeyId was given but does
+// not map to an in-stack key. The no-KmsKeyId default-key case is handled by the caller (it needs no
+// stack resolution), the way AWS uses the account-default aws/ebs key (#347 Phase 1.7).
 func ebsEncryptionKey(rawEbs any, ctx *stackCtx) (string, bool) {
 	ebs, _ := rawEbs.(map[string]any)
 	if ebs == nil || ctx == nil {
@@ -647,6 +678,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 	var f []Finding
 	var cav []string
+	vmNeedDefaultKey := false // #347 Phase 1.7: an encrypted data disk with no KmsKeyId used the default key
 	f = append(f, blockUnknownProps(id, props, known)...)
 
 	spec := map[string]any{}
@@ -756,18 +788,26 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 			_, hasKms := ebs["KmsKeyId"]
 			var encKey string
 			if enc || hasKms {
-				var rawEbs any
-				if i < len(rawBDMs) {
-					if rb, _ := rawBDMs[i].(map[string]any); rb != nil {
-						rawEbs = rb["Ebs"]
+				if hasKms {
+					var rawEbs any
+					if i < len(rawBDMs) {
+						if rb, _ := rawBDMs[i].(map[string]any); rb != nil {
+							rawEbs = rb["Ebs"]
+						}
 					}
+					k, ok := ebsEncryptionKey(rawEbs, ctx)
+					if !ok {
+						f = append(f, Finding{"Resource " + id, "an encrypted data BlockDeviceMapping's KmsKeyId must reference an in-stack AWS::KMS::Key — open-infra keys a VM data disk with a customer kind: EncryptionKey (LUKS on longhorn-encrypted); an ARN/alias to an out-of-stack or AWS-managed key has no mappable equivalent. Omit KmsKeyId to use the per-namespace default key. NB an encrypted data disk is RWO, so on a highAvailability VM it pins live migration."})
+						continue
+					}
+					encKey = k
+				} else {
+					// #347 Phase 1.7 (#344 4.2): Encrypted with NO KmsKeyId — the AWS account-default
+					// aws/ebs key; open-infra keys it with the per-namespace default kind: EncryptionKey,
+					// created on first use (companion emitted after the manifest is built).
+					encKey = defaultEBSKeyName
+					vmNeedDefaultKey = true
 				}
-				k, ok := ebsEncryptionKey(rawEbs, ctx)
-				if !ok {
-					f = append(f, Finding{"Resource " + id, "an encrypted data BlockDeviceMapping needs KmsKeyId referencing an in-stack AWS::KMS::Key — open-infra keys a VM data disk with a customer kind: EncryptionKey (LUKS on longhorn-encrypted), not an AWS-managed default key. NB an encrypted data disk is RWO, so on a highAvailability VM it pins live migration."})
-					continue
-				}
-				encKey = k
 			}
 			vs, has := ebs["VolumeSize"]
 			if !has {
@@ -887,6 +927,10 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
+	if vmNeedDefaultKey {
+		m.Extra = append(m.Extra, defaultEBSEncryptionKey())
+		cav = append(cav, "an encrypted data disk has no KmsKeyId — keyed by the per-namespace default kind: EncryptionKey \""+defaultEBSKeyName+"\" (open-infra analog of AWS's account-default aws/ebs key), created on first use")
+	}
 
 	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
 		if _, ok := props[p]; ok {

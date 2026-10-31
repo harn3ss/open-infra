@@ -196,17 +196,49 @@ Resources:
 	}
 }
 
-// Encrypted without a mappable customer key blocks — no default-managed key is invented.
-func TestTranslate_Volume_EncryptedWithoutKeyBlocks(t *testing.T) {
+// #347 Phase 1.7 (#344 4.2): Encrypted with NO KmsKeyId maps to the per-namespace default
+// kind: EncryptionKey (the AWS aws/ebs analog), emitted as a companion, instead of refusing.
+func TestTranslate_Volume_EncryptedNoKeyUsesDefault(t *testing.T) {
 	ctx := ecsCtx(t, `
 Resources:
   Data:
     Type: AWS::EC2::Volume
     Properties: { Size: 10, Encrypted: true }
 `)
+	m, fs := translateVolume("Data", ecsResolvedService(t, ctx, "Data"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("encrypted-without-KmsKeyId must NOT refuse (uses the default key), findings: %s", findingsText(fs))
+	}
+	if m.Spec["encrypted"] != true || m.Spec["encryptionKey"] != defaultEBSKeyName {
+		t.Fatalf("must key the volume with the default EncryptionKey %q, spec: %#v", defaultEBSKeyName, m.Spec)
+	}
+	// The default key is emitted as a companion (created on first use).
+	foundKey := false
+	for _, e := range m.Extra {
+		if e.Kind == "EncryptionKey" && e.Name == defaultEBSKeyName {
+			foundKey = true
+		}
+	}
+	if !foundKey {
+		t.Fatalf("must emit the default kind: EncryptionKey %q as a companion, got Extra: %+v", defaultEBSKeyName, m.Extra)
+	}
+	if !strings.Contains(strings.Join(m.Caveats, " "), "default") {
+		t.Fatalf("must caveat the default-key substitution, caveats: %v", m.Caveats)
+	}
+}
+
+// A KmsKeyId that does NOT reference an in-stack AWS::KMS::Key still refuses — we can't fabricate a
+// specific external key (only the no-KmsKeyId case falls back to the default).
+func TestTranslate_Volume_EncryptedUnmappableKeyRefuses(t *testing.T) {
+	ctx := ecsCtx(t, `
+Resources:
+  Data:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 10, Encrypted: true, KmsKeyId: "arn:aws:kms:us-east-1:111122223333:key/abcd" }
+`)
 	_, fs := translateVolume("Data", ecsResolvedService(t, ctx, "Data"), ctx)
-	if !strings.Contains(findingsText(fs), "customer kind: EncryptionKey") {
-		t.Fatalf("encrypted-without-a-key must block, findings: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "in-stack AWS::KMS::Key") {
+		t.Fatalf("an unmappable KmsKeyId must refuse, findings: %s", findingsText(fs))
 	}
 }
 

@@ -67,18 +67,31 @@ func TestTranslate_EC2Instance_ExtraBDMsToDataDisks(t *testing.T) {
 	}
 }
 
-// Fail-closed: an Encrypted data disk with NO mappable key refuses rather than silently creating an
-// unencrypted one (open-infra has no AWS-managed default key).
-func TestTranslate_EC2Instance_EncryptedDataDiskNeedsKey(t *testing.T) {
-	_, fs := translateEC2Instance("Db", map[string]any{
+// #347 Phase 1.7 (#344 4.2): an Encrypted data disk with NO KmsKeyId maps to the per-namespace default
+// kind: EncryptionKey (the AWS aws/ebs analog), emitted as a companion — not a refusal.
+func TestTranslate_EC2Instance_EncryptedDataDiskNoKeyUsesDefault(t *testing.T) {
+	m, fs := translateEC2Instance("Db", map[string]any{
 		"ImageId": "ubuntu-24.04",
 		"BlockDeviceMappings": []any{
 			map[string]any{"DeviceName": "/dev/sda1", "Ebs": map[string]any{"VolumeSize": float64(20)}},
 			map[string]any{"DeviceName": "/dev/sdf", "Ebs": map[string]any{"VolumeSize": float64(50), "Encrypted": true}},
 		},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "encrypted data BlockDeviceMapping needs KmsKeyId") {
-		t.Fatalf("an encrypted data disk with no key must refuse, got: %s", findingsText(fs))
+	if len(fs) != 0 {
+		t.Fatalf("an encrypted data disk with no KmsKeyId must NOT refuse (uses the default key), got: %s", findingsText(fs))
+	}
+	disks, _ := m.Spec["dataDisks"].([]map[string]any)
+	if len(disks) != 1 || disks[0]["encrypted"] != true || disks[0]["encryptionKey"] != defaultEBSKeyName {
+		t.Fatalf("the data disk must be encrypted with the default key %q, disks: %#v", defaultEBSKeyName, disks)
+	}
+	foundKey := false
+	for _, e := range m.Extra {
+		if e.Kind == "EncryptionKey" && e.Name == defaultEBSKeyName {
+			foundKey = true
+		}
+	}
+	if !foundKey {
+		t.Fatalf("must emit the default kind: EncryptionKey %q as a companion, got Extra: %+v", defaultEBSKeyName, m.Extra)
 	}
 }
 
