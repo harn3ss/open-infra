@@ -537,7 +537,7 @@ spec:
                         {{- if $instanceRole }}
                         - path: /etc/environment
                           append: true
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token\n"
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials\nAWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token\n"
                         {{- end }}
                         {{- if $spec.userData }}
                         - path: /opt/openinfra-userdata
@@ -546,8 +546,12 @@ spec:
                         {{- end }}
                       {{- end }}
                       {{- if $instanceRole }}
+                      {{- /* Mount the workload-identity token iso and COPY the token to a readable
+                             path on every boot. KubeVirt's iso carries Rock Ridge perms (token is
+                             0640 root-ish), so a mount mode= does not make it app-readable — copy it
+                             to /run (tmpfs; re-done each boot, survives reboots). */}}
                       bootcmd:
-                        - [ bash, -c, "mkdir -p /mnt/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro,mode=0644 /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro,mode=0644 -L cfgdata /mnt/openinfra-identity 2>/dev/null || true" ]
+                        - [ bash, -c, "mkdir -p /mnt/openinfra-identity /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; cp -f /mnt/openinfra-identity/token /run/openinfra-identity/token 2>/dev/null && chmod 0644 /run/openinfra-identity/token || true" ]
                       {{- end }}
                       runcmd:
                         - [systemctl, enable, --now, qemu-guest-agent]

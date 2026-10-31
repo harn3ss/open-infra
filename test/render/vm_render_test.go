@@ -73,7 +73,7 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		"secretRef",
 		"name: myvm-cloudinit",
 		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
-		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/mnt/openinfra-identity/token",
+		"AWS_CONTAINER_CREDENTIALS_TOKEN_FILE=/run/openinfra-identity/token",
 		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
 	} {
 		if !strings.Contains(with, want) {
