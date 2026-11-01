@@ -298,10 +298,16 @@ func TestTranslate_EC2Instance_MetadataOptionsMap(t *testing.T) {
 			t.Fatalf("disabled IPv6/tags options need no caveat: %v", m.Caveats)
 		}
 	}
-	// No MetadataOptions -> no spec.metadataOptions (the VM's defaults: optional tokens, hop limit 2).
+	// No MetadataOptions -> no spec.metadataOptions, and a block without HttpPutResponseHopLimit sets no
+	// hop limit: the template never overrides the VirtualMachine's own defaults, which are AWS's (hop
+	// limit 1). CloudFormation must not pick a hop limit AWS would not.
 	m, _ := translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04"}, nil)
 	if _, ok := m.Spec["metadataOptions"]; ok {
 		t.Fatalf("no MetadataOptions must leave spec.metadataOptions unset: %#v", m.Spec)
+	}
+	m, _ = translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04", "MetadataOptions": map[string]any{"HttpTokens": "required"}}, nil)
+	if mo, _ := m.Spec["metadataOptions"].(map[string]any); mo == nil || mo["httpPutResponseHopLimit"] != nil {
+		t.Fatalf("a MetadataOptions without a hop limit must set none, got %#v", m.Spec["metadataOptions"])
 	}
 }
 
