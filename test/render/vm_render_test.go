@@ -178,8 +178,11 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		"kind: ServiceAccount",                  // the per-VM SA object
 		"name: vm-myvm",                         // SA named for the VM
 		"openinfra.dev/instance-role: app-role", // SA annotation the shim reads
-		"serviceAccountName: vm-myvm",           // the projected SA volume
-		"serial: SATOKEN",                       // the identity disk's stable serial
+		// The VMI the shim checks the token's launcher pod against is named by this annotation (the
+		// VirtualMachine, hence its VMI, carries the same name: asserted below).
+		"openinfra.dev/vm: myvm\n",
+		"serviceAccountName: vm-myvm", // the projected SA volume
+		"serial: SATOKEN",             // the identity disk's stable serial
 		// cloud-init lives in a Secret (KubeVirt's 2048-byte inline cap), referenced by the VMI:
 		"secretRef",
 		"name: myvm-cloudinit",
@@ -200,6 +203,9 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		if !strings.Contains(with, want) {
 			t.Errorf("instanceRole wiring missing %q; got:\n%s", want, grepCtx(with, "identity"))
 		}
+	}
+	if !regexp.MustCompile(`kind: VirtualMachine\s+metadata:\s+name: myvm\s`).MatchString(with) {
+		t.Errorf("the VirtualMachine must be named myvm, the name the ServiceAccount's openinfra.dev/vm annotation gives")
 	}
 	// #347 item 13: the agent adds the Authorization header itself, so no token env var is rendered
 	// (old SDKs don't know *_TOKEN_FILE, and a token file every process can read is a credential leak),
