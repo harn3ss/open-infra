@@ -157,6 +157,11 @@ rules:
   - apiGroups: [""]
     resources: [serviceaccounts]
     verbs: [get]
+  # ...and confirm the token belongs to that VM's own launcher pod: the VMI must list the token's pod
+  # as active and mount the ServiceAccount (any pod running as the SA would otherwise do).
+  - apiGroups: [kubevirt.io]
+    resources: [virtualmachineinstances]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

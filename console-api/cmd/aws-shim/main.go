@@ -681,7 +681,7 @@ func run(logger *slog.Logger) error {
 	var vmCredsH *vmCredsHandler
 	if getenv("IMDS_ENABLED", "") == "true" && stsMinter != nil && dyn != nil {
 		vmCredsH = &vmCredsHandler{
-			resolver: &k8sSARoleResolver{cs: cs, audience: getenv("VM_CREDS_AUDIENCE", "")},
+			resolver: &k8sSARoleResolver{cs: cs, dyn: dyn, audience: getenv("VM_CREDS_AUDIENCE", "")},
 			trust:    &k8sRoleTrustChecker{dyn: dyn},
 			minter:   stsMinter,
 			ttl:      awssts.DefaultDuration,

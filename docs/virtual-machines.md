@@ -170,7 +170,11 @@ assumed-role session.
 How it works: the VM gets a dedicated ServiceAccount whose token KubeVirt projects into the guest, where
 it is readable by root only. An **instance metadata agent** (started by cloud-init before `userData`
 runs) presents that token to the aws-shim, which verifies it with a Kubernetes TokenReview, reads the
-role off the ServiceAccount, and mints temporary credentials. Identity travels in the token — the source
+role off the ServiceAccount, and mints temporary credentials. A token for the ServiceAccount is not
+enough by itself: it must be bound to the VM's own launcher pod — the VirtualMachineInstance must list
+that pod as active and mount the ServiceAccount — so no other pod running as the same ServiceAccount
+can collect the role. (ServiceAccounts named `vm-<name>` are VM identities, so an `Application` named
+`vm-*` cannot use `assumeRole`.) Identity travels in the token — the source
 IP is never the credential, so one VM can never obtain another's role (masquerade VMs reach cluster
 services through their node's gateway address, which every VM on the node shares). The agent calls the
 shim's in-cluster TLS port (`https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567`) and verifies

@@ -12,6 +12,7 @@ import (
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
@@ -31,7 +32,11 @@ import (
 // does), reads the VM's role off the ServiceAccount's openinfra.dev/instance-role annotation, and mints
 // awssts session credentials — but ONLY if that role's trust policy includes the "vm" principal (the
 // role must opt in to being instance-assumable). The token is unforgeable (k8s-signed, TokenReview-
-// verified) and scoped to one VM's SA, so a VM can obtain only its own role's credentials.
+// verified) and bound to the VM's own launcher pod (see k8sSARoleResolver), so a VM can obtain only its
+// own role's credentials, and no other pod running as the same ServiceAccount can obtain them at all.
+//
+// The token carries the API server's default audience: KubeVirt's serviceAccount volume projects the
+// launcher pod's own token and has no audience setting. The launcher-pod binding is what confines it.
 type vmCredsHandler struct {
 	resolver saRoleResolver   // token -> (role, namespace) via TokenReview + SA annotation
 	trust    roleTrustChecker // role.spec.trust must include "vm" (reused from imds.go)
@@ -118,15 +123,28 @@ type saRoleResolver interface {
 // k8sSARoleResolver verifies a ServiceAccount token via a TokenReview, then reads the role off the
 // ServiceAccount's annotations. The SA is the per-VM identity the composition creates and projects
 // into the guest; its openinfra.dev/instance-role annotation names the Role, and openinfra.dev/vm the VM.
+//
+// A valid token for the SA is not enough on its own: any pod that runs as that ServiceAccount holds
+// one (an Application named vm-<x> in the VM's namespace runs as an SA of that very name). So the token
+// must also be bound to the VM's own launcher pod: KubeVirt projects the token of the virt-launcher
+// pod, the TokenReview reports that pod's UID, and the VMI named by the SA's openinfra.dev/vm
+// annotation must list that pod as active (status.activePods, written only by KubeVirt) and mount
+// this ServiceAccount (spec.volumes). Tenants cannot create pods or VMIs directly.
 type k8sSARoleResolver struct {
 	cs       kubernetes.Interface
+	dyn      dynamic.Interface
 	audience string // the audience the projected VM token carries; "" validates against the apiserver default
 }
 
 const (
 	annInstanceRole = "openinfra.dev/instance-role"
 	annVMName       = "openinfra.dev/vm"
+	// TokenReview extras the API server sets for a pod-bound ServiceAccount token.
+	extraPodName = "authentication.kubernetes.io/pod-name"
+	extraPodUID  = "authentication.kubernetes.io/pod-uid"
 )
+
+var vmiGVR = schema.GroupVersionResource{Group: "kubevirt.io", Version: "v1", Resource: "virtualmachineinstances"}
 
 func (r *k8sSARoleResolver) resolveSARole(ctx context.Context, token string) (saIdentity, bool) {
 	spec := authnv1.TokenReviewSpec{Token: token}
@@ -147,20 +165,58 @@ func (r *k8sSARoleResolver) resolveSARole(ctx context.Context, token string) (sa
 		return saIdentity{}, false
 	}
 	ns, saName := parts[0], parts[1]
+	podUID := firstExtra(out.Status.User.Extra, extraPodUID)
+	if podUID == "" || firstExtra(out.Status.User.Extra, extraPodName) == "" {
+		return saIdentity{}, false // not a pod-bound token: no launcher pod to check it against
+	}
 	sa, err := r.cs.CoreV1().ServiceAccounts(ns).Get(ctx, saName, metav1.GetOptions{})
 	if err != nil {
 		return saIdentity{}, false
 	}
-	id := saIdentity{
+	vmName := sa.Annotations[annVMName]
+	if vmName == "" {
+		return saIdentity{}, false // not a VM identity: the VM composition always sets openinfra.dev/vm
+	}
+	if !r.launcherOf(ctx, ns, vmName, saName, podUID) {
+		return saIdentity{}, false
+	}
+	return saIdentity{
 		role:      sa.Annotations[annInstanceRole],
 		namespace: ns,
 		caller:    u,
-		vmName:    sa.Annotations[annVMName],
+		vmName:    vmName,
+	}, true
+}
+
+// launcherOf reports whether pod podUID is an active launcher pod of VMI ns/vmName and that VMI
+// projects ServiceAccount saName into its guest. Fails closed on any read error.
+func (r *k8sSARoleResolver) launcherOf(ctx context.Context, ns, vmName, saName, podUID string) bool {
+	if r.dyn == nil {
+		return false
 	}
-	if id.vmName == "" {
-		id.vmName = saName
+	vmi, err := r.dyn.Resource(vmiGVR).Namespace(ns).Get(ctx, vmName, metav1.GetOptions{})
+	if err != nil {
+		return false
 	}
-	return id, true
+	active, _, _ := unstructured.NestedMap(vmi.Object, "status", "activePods")
+	if _, ok := active[podUID]; !ok {
+		return false
+	}
+	vols, _, _ := unstructured.NestedSlice(vmi.Object, "spec", "volumes")
+	for _, v := range vols {
+		vm, _ := v.(map[string]any)
+		if name, _, _ := unstructured.NestedString(vm, "serviceAccount", "serviceAccountName"); name == saName {
+			return true
+		}
+	}
+	return false
+}
+
+func firstExtra(extra map[string]authnv1.ExtraValue, key string) string {
+	if v := extra[key]; len(v) > 0 {
+		return v[0]
+	}
+	return ""
 }
 
 // roleTrustChecker reports whether a role (in the VM's namespace) is instance-assumable — its

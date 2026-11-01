@@ -82,3 +82,41 @@ func TestPassRole_AdminsYesPowerUsersNo(t *testing.T) {
 		t.Errorf("open-infra-poweruser must hold no iam.openinfra.dev rights (passrole included)")
 	}
 }
+
+// An Application's workload ServiceAccount is named after the app, and vm-<x> is a VirtualMachine's
+// identity: an Application named vm-<x> with assumeRole would run as the VM's ServiceAccount. The
+// composition refuses it; any other name renders its ServiceAccount as before.
+func TestPassRole_ApplicationCannotTakeAVMServiceAccount(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	ctx := func(name, assume string) map[string]any {
+		spec := map[string]any{"image": "ghcr.io/me/app:latest", "port": 8080}
+		if assume != "" {
+			spec["assumeRole"] = assume
+		}
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec,
+			"metadata": map[string]any{"uid": "uid-1", "labels": map[string]any{
+				"crossplane.io/claim-name": name, "crossplane.io/claim-namespace": "shop"}},
+		}}}}
+	}
+	err := renderErr(tmpl, ctx("vm-web01", "webrole"))
+	if err == nil || !strings.Contains(err.Error(), "cannot use assumeRole") {
+		t.Fatalf("an app named vm-* with assumeRole must be refused, got err=%v", err)
+	}
+	// Without assumeRole there is no ServiceAccount, so the name is fine.
+	if err := renderErr(tmpl, ctx("vm-web01", "")); err != nil {
+		t.Fatalf("vm-* without assumeRole must render: %v", err)
+	}
+	out := render(t, tmpl, ctx("web01", "webrole"))
+	if !strings.Contains(out, "kind: ServiceAccount") || !strings.Contains(out, "name: web01\n") {
+		t.Fatalf("a normal app with assumeRole must still render its ServiceAccount")
+	}
+}
+
+// The VM credentials endpoint confirms a token is the VM launcher pod's own, which needs the shim to
+// read VirtualMachineInstances (status.activePods, spec.volumes). Read-only.
+func TestPassRole_ShimCanReadVMIsForTheLauncherCheck(t *testing.T) {
+	cr := yamlDoc(t, "../../platform/aws-shim/aws-shim.yaml", "ClusterRole", "open-infra-aws-shim-policies")
+	mustContain(t, "open-infra-aws-shim-policies", cr,
+		"apiGroups: [kubevirt.io]\n    resources: [virtualmachineinstances]\n    verbs: [get]")
+}

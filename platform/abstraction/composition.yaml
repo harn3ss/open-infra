@@ -52,6 +52,10 @@ spec:
                    temporary credentials via sts:AssumeRoleWithWebIdentity on the shim. The role's
                    trust must name system:serviceaccount:<ns>:<name>. */}}
             {{- $assume := $spec.assumeRole | default "" }}
+            {{- /* The workload ServiceAccount is named after the app, and vm-<x> is a VirtualMachine's own
+                   identity (vm-composition.yaml): an app of that name would run as the VM's
+                   ServiceAccount, fight over it, and hold a token for it. The prefix is reserved. */}}
+            {{- if and $assume (hasPrefix "vm-" $name) }}{{- fail (printf "kind: Application %s/%s: an app named vm-* cannot use assumeRole (ServiceAccounts named vm-<name> are VirtualMachine identities); rename the app" $ns $name) }}{{- end }}
             {{- $stsEndpoint := "http://open-infra-aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
             {{- $stsAudience := "sts.openinfra" }}
             {{- /* database.engine: postgres (CloudNativePG) or mongo (FerretDB on
