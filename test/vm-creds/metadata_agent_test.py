@@ -13,6 +13,8 @@ import json
 import os
 import shutil
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -43,6 +45,7 @@ def make_config(**over):
     cfg = common.golden_config()
     cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": 0})
     cfg["relay"].update({"port": 0})
+    cfg["trustPlatformCA"] = False  # never touch this host's trust store (PlatformCATest covers it)
     ud = os.path.join(TMP, "user-data")
     with open(ud, "w") as fh:
         fh.write("#!/bin/bash\necho hi\n")
@@ -408,6 +411,217 @@ class RelayTest(unittest.TestCase):
 
             with Running(make_config(), fetch=fetch) as r:
                 self.assertEqual(r.request(r.relay, "GET", "/v1/vm-credentials")[0], want)
+
+
+# Public, test-only certificates (no keys anywhere): a self-signed root with basicConstraints CA:TRUE,
+# and a self-signed leaf with CA:FALSE.
+TEST_CA = b"""-----BEGIN CERTIFICATE-----
+MIIB4DCCAYWgAwIBAgIUbyqT2isHCS4bhb9aiZOu3ZIR0zYwCgYIKoZIzj0EAwIw
+PDEYMBYGA1UECgwPb3Blbi1pbmZyYSB0ZXN0MSAwHgYDVQQDDBdvcGVuLWluZnJh
+IHRlc3Qgcm9vdCBDQTAgFw0yNjExMDEwMTQxNDBaGA8yMTI2MTAwODAxNDE0MFow
+PDEYMBYGA1UECgwPb3Blbi1pbmZyYSB0ZXN0MSAwHgYDVQQDDBdvcGVuLWluZnJh
+IHRlc3Qgcm9vdCBDQTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABGMFSZXYGp5J
+Lh+qAJjZDH7ksnsUc6XC0BooXIfGzHHcANObPL2EyjT6EhwyI+GyzD6k8o2egyzE
+oXJrCYdUYuejYzBhMB0GA1UdDgQWBBQ7wRnjrWL4yv0PBp78pSoz9+2HvTAfBgNV
+HSMEGDAWgBQ7wRnjrWL4yv0PBp78pSoz9+2HvTAPBgNVHRMBAf8EBTADAQH/MA4G
+A1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAgNJADBGAiEA35GyhQLO/z0kouYdIHiB
+2hauQxRq3LuG3Q1aoJrUkSgCIQCPEpq8zT3Ujmr8mt01Y4FM/fQs6/peKnz19YIc
+E47Mmw==
+-----END CERTIFICATE-----
+"""
+TEST_LEAF = b"""-----BEGIN CERTIFICATE-----
+MIIBkjCCATigAwIBAgIULgH6EFz3cRvvlbbzl6QFF8PoNGowCgYIKoZIzj0EAwIw
+HzEdMBsGA1UEAwwUb3Blbi1pbmZyYSB0ZXN0IGxlYWYwIBcNMjYxMTAxMDE0MTQw
+WhgPMjEyNjEwMDgwMTQxNDBaMB8xHTAbBgNVBAMMFG9wZW4taW5mcmEgdGVzdCBs
+ZWFmMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEyhusPyTvECumNTGLrzxnnluM
+T14Ru/KMdGgPFuvGv1mbVEtlkaTWqLVTvRjLgZOwWnGKzptCD28WAwALeO1mGaNQ
+ME4wHQYDVR0OBBYEFBA5F5PCn9JrNb/cxE4bdcqWVbCuMB8GA1UdIwQYMBaAFBA5
+F5PCn9JrNb/cxE4bdcqWVbCuMAwGA1UdEwEB/wQCMAAwCgYIKoZIzj0EAwIDSAAw
+RQIgIi2VxwUScD+um64biyKS+h/GjZqvSVLQVLtxzhNuZOwCIQDabg5iz76cuChN
+Jnl0Af5d6agHsdOfBE4u7mjR5635Kw==
+-----END CERTIFICATE-----
+"""
+
+
+class FakeRun(object):
+    def __init__(self, rc=0):
+        self.rc, self.calls = rc, []
+
+    def __call__(self, cmd, check=True):
+        self.calls.append(list(cmd))
+
+        class P(object):
+            returncode, stdout, stderr = self.rc, "", "refresh failed" if self.rc else ""
+        return P()
+
+
+class PlatformCATest(unittest.TestCase):
+    """#347 item 15: the guest trusts the platform root CA (fetched from the shim) at boot."""
+
+    def test_validate_accepts_only_ca_certificates(self):
+        pem = agent.validate_ca_pem(TEST_CA)
+        self.assertTrue(pem.startswith("-----BEGIN CERTIFICATE-----\n"))
+        self.assertEqual(pem.count("BEGIN CERTIFICATE"), 1)
+        self.assertEqual(agent.validate_ca_pem(TEST_CA + TEST_CA), pem, "duplicates collapse")
+        self.assertEqual(agent.validate_ca_pem(TEST_CA.replace(b"\n", b"\r\n")), pem, "CRLF PEM is accepted")
+        key = b"-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg\n-----END PRIVATE KEY-----\n"
+        junk_der = b"-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n"
+        for name, data in (
+            ("a non-CA (leaf) certificate", TEST_LEAF),
+            ("a private key", key),
+            ("a CA bundled with a key", TEST_CA + key),
+            ("text outside the PEM blocks", b"hello\n" + TEST_CA),
+            ("not PEM at all", b"<html>404</html>"),
+            ("empty", b""),
+            ("non-ASCII", "é".encode("utf-8")),
+            ("bad base64", b"-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n"),
+            ("base64 that is not X.509", junk_der),
+        ):
+            with self.assertRaises(ValueError, msg=name):
+                agent.validate_ca_pem(data)
+
+    def test_trust_store_detection(self):
+        def detect(tools, dirs):
+            return agent.trust_store(which=lambda t: "/usr/sbin/" + t if t in tools else None,
+                                     isdir=lambda d: d in dirs)
+
+        rhel = detect({"update-ca-trust"}, {"/etc/pki/ca-trust/source/anchors"})
+        self.assertEqual(rhel, ("rhel", "/etc/pki/ca-trust/source/anchors", ["/usr/sbin/update-ca-trust", "extract"]))
+        suse = detect({"update-ca-certificates"}, {"/etc/pki/trust/anchors"})
+        self.assertEqual(suse[:2], ("suse", "/etc/pki/trust/anchors"))
+        deb = detect({"update-ca-certificates"}, {"/usr/local/share/ca-certificates"})
+        self.assertEqual(deb, ("debian", "/usr/local/share/ca-certificates", ["/usr/sbin/update-ca-certificates"]))
+        self.assertIsNone(detect({"update-ca-certificates"}, set()), "the tool without its anchor directory is not a store")
+        self.assertIsNone(detect(set(), {"/usr/local/share/ca-certificates"}), "the directory without its tool is not a store")
+
+    def test_install_is_idempotent(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        store = ("debian", d, ["update-ca-certificates"])
+        pem = agent.validate_ca_pem(TEST_CA)
+        run = FakeRun()
+        self.assertEqual(agent.install_ca(pem, store, run_cmd=run), "installed")
+        path = os.path.join(d, agent.CA_FILE_NAME)
+        with open(path) as fh:
+            self.assertEqual(fh.read(), pem)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+        self.assertEqual(run.calls, [["update-ca-certificates"]])
+        self.assertEqual(agent.install_ca(pem, store, run_cmd=run), "unchanged")
+        self.assertEqual(len(run.calls), 1, "an unchanged CA is neither rewritten nor re-refreshed")
+        with open(path, "w") as fh:
+            fh.write("an older root\n")
+        self.assertEqual(agent.install_ca(pem, store, run_cmd=run), "installed", "a changed CA is replaced")
+        self.assertEqual(len(run.calls), 2)
+        os.remove(path)
+        with self.assertRaises(RuntimeError):
+            agent.install_ca(pem, store, run_cmd=FakeRun(rc=1))
+        self.assertFalse(os.path.exists(path), "a failed refresh removes the anchor so the next start retries")
+        self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_trust_platform_ca_outcomes(self):
+        store = ("debian", "/nonexistent", ["update-ca-certificates"])
+        installed = []
+
+        def install(pem, st):
+            installed.append(pem)
+            return "installed"
+
+        def fetching(*results):
+            seq = list(results)
+
+            def fetch(url):
+                r = seq.pop(0)
+                if isinstance(r, Exception):
+                    raise r
+                return r
+            return fetch
+
+        clock = FakeClock(0.0)
+
+        def sleep(s):
+            clock.t += s
+
+        run = lambda fetch, st=store: agent.trust_platform_ca("http://shim/v1/ca-bundle", budget=15, store=st, fetch=fetch,
+                                                              install=install, sleep=sleep, clock=clock)
+        self.assertEqual(run(fetching(TEST_CA)), "installed")
+        self.assertEqual(len(installed), 1)
+        self.assertEqual(run(fetching(None)), "absent", "a platform without a CA (404) installs nothing")
+        self.assertEqual(run(fetching(TEST_LEAF)), "invalid", "a non-CA certificate is never installed")
+        self.assertEqual(len(installed), 1)
+        # A briefly unreachable shim is retried within the budget...
+        down = agent.CAFetchError("connection refused")
+        self.assertEqual(run(fetching(down, down, TEST_CA)), "installed")
+        # ...but the boot never waits past it,
+        clock.t = 0.0
+        self.assertEqual(run(fetching(*([down] * 50))), "unavailable")
+        self.assertLessEqual(clock.t, 15)
+        # and a shim whose name does not resolve (the aws-shim component is not installed) gives up fast.
+        clock.t = 0.0
+        nx = agent.CAFetchError("name does not resolve", dns=True)
+        self.assertEqual(run(fetching(nx, nx, TEST_CA)), "unavailable")
+        self.assertLessEqual(clock.t, 2)
+        orig = agent.trust_store
+        agent.trust_store = lambda: None  # a guest with no supported trust-store tool
+        try:
+            self.assertEqual(agent.trust_platform_ca("u", fetch=fetching(TEST_CA), install=install), "unsupported")
+        finally:
+            agent.trust_store = orig
+
+        def broken(pem, st):
+            raise RuntimeError("update-ca-certificates failed")
+        self.assertEqual(agent.trust_platform_ca("u", store=store, fetch=fetching(TEST_CA), install=broken), "failed")
+
+    def test_fetch_ca_bundle(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                status = {"/ok": 200, "/absent": 404}.get(self.path, 503)
+                body = TEST_CA if status == 200 else b"nope"
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        base = "http://127.0.0.1:%d" % srv.server_address[1]
+        try:
+            self.assertEqual(agent.fetch_ca_bundle(base + "/ok"), TEST_CA)
+            self.assertIsNone(agent.fetch_ca_bundle(base + "/absent"))
+            with self.assertRaises(agent.CAFetchError) as ctx:
+                agent.fetch_ca_bundle(base + "/unavailable")
+            self.assertFalse(ctx.exception.dns)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+        with self.assertRaises(agent.CAFetchError) as ctx:
+            agent.fetch_ca_bundle("http://aws-shim.example.invalid:4566/v1/ca-bundle", timeout=3)
+        self.assertTrue(ctx.exception.dns, "an unresolvable shim name is reported as such")
+
+    def test_boot_only_mode_when_metadata_is_disabled(self):
+        calls = []
+        orig = agent.trust_platform_ca
+        agent.trust_platform_ca = lambda url, **kw: calls.append(url) or "installed"
+        try:
+            cfg = make_config(imds={"enabled": False}, relay={"enabled": False}, trustPlatformCA=True,
+                              caBundleUrl="http://shim/v1/ca-bundle")
+            a = agent.Agent(cfg, fetch=lambda: dict(CREDS), warm_timeout=0)
+            a.start()  # no listener wanted: must not raise
+            self.assertEqual(a.servers, [])
+            self.assertEqual(calls, ["http://shim/v1/ca-bundle"], "the platform CA is still trusted at boot")
+            a.shutdown()
+        finally:
+            agent.trust_platform_ca = orig
+        # The real process exits 0 after its boot-time step, so Restart=on-failure leaves it stopped.
+        p = os.path.join(TMP, "boot-only.json")
+        c = common.golden_config()
+        c["imds"]["enabled"], c["relay"]["enabled"], c["trustPlatformCA"] = False, False, False
+        with open(p, "w") as fh:
+            json.dump(c, fh)
+        rc = subprocess.call([sys.executable, os.path.join(TMP, "metadata-agent.py"), p],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(rc, 0)
 
 
 class NetnsPlanTest(unittest.TestCase):

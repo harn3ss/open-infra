@@ -674,7 +674,18 @@ func run(logger *slog.Logger) error {
 		}
 		logger.Info("VM workload credentials enabled: VMs with spec.instanceRole get rotating credentials (in-guest instance metadata)")
 	}
-	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH)
+	// The platform root CA certificate (public), for VM guests' trust stores: read from a Secret in the
+	// shim's OWN namespace that cert-manager fills with openinfra-ca's certificate (Certificate
+	// openinfra-ca-bundle, aws-shim.yaml) — never the root CA's own Secret, which holds its private key.
+	// CA_BUNDLE_SECRET="" turns the endpoint off.
+	var caBundleH *caBundleHandler
+	if caSecret := getenv("CA_BUNDLE_SECRET", "openinfra-ca-bundle"); caSecret != "" {
+		caNS := getenv("CA_BUNDLE_NAMESPACE", keysNS)
+		caBundleH = newCABundleHandler(cs, caNS, caSecret, getenv("CA_BUNDLE_KEY", "ca.crt"), logger)
+		logger.Info("platform CA bundle endpoint enabled", slog.String("path", caBundlePath),
+			slog.String("secret", caNS+"/"+caSecret))
+	}
+	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH, caBundleH)
 
 	addr := getenv("LISTEN_ADDR", ":4566")
 	srv := &http.Server{
@@ -845,7 +856,7 @@ func run(logger *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService, vmCreds *vmCredsHandler) http.Handler {
+func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService, vmCreds *vmCredsHandler, caBundle *caBundleHandler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -871,7 +882,7 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		names = append(names, n)
 	}
 	logger.Info("aws services registered", "services", names)
-	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, vmCreds: vmCreds, logger: logger})
+	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, vmCreds: vmCreds, caBundle: caBundle, logger: logger})
 	return r
 }
 

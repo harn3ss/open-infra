@@ -106,14 +106,16 @@ spec:
                    role AND httpTokens: optional it also serves the container-credentials endpoint on
                    loopback (AWS_CONTAINER_CREDENTIALS_FULL_URI; botocore/JS refuse a non-loopback host) —
                    a plain GET, i.e. IMDSv1-equivalent, so httpTokens: required turns it off too.
-                   httpEndpoint: disabled = no metadata agent at all. Windows guests run none of this. */}}
+                   httpEndpoint: disabled = no metadata service (nothing on 169.254.169.254, no credentials
+                   endpoint). Either way the agent adds the platform root CA (served by the aws-shim) to the
+                   guest's trust store at boot, before UserData runs. Windows guests run none of this. */}}
             {{- $mdo := $spec.metadataOptions | default dict }}
             {{- $imdsEnabled := ne ($mdo.httpEndpoint | default "enabled") "disabled" }}
             {{- $httpTokens := $mdo.httpTokens | default "optional" }}
             {{- $hopLimit := $mdo.httpPutResponseHopLimit | default 2 }}
-            {{- $metadataAgent := and (not $isWin) $imdsEnabled }}
+            {{- $metadataAgent := not $isWin }}
             {{- $credsRelay := false }}
-            {{- if and $metadataAgent $instanceRole (eq $httpTokens "optional") }}{{- $credsRelay = true }}{{- end }}
+            {{- if and $metadataAgent $imdsEnabled $instanceRole (eq $httpTokens "optional") }}{{- $credsRelay = true }}{{- end }}
             {{- $credsPort := "16349" }}
             {{- $credsURI := printf "http://127.0.0.1:%s/v1/vm-credentials" $credsPort }}
             {{- /* What the guest cannot observe, rendered into the agent's config. Region and account match
@@ -133,8 +135,10 @@ spec:
                   "tokenFile" "/run/openinfra-identity/token"
                   "userDataFile" $userDataFile
                   "securityGroups" ($spec.securityGroups | default list)
-                  "imds" (dict "enabled" true "address" "169.254.169.254" "port" 80 "netns" "openinfra-imds" "hostAddress" "169.254.169.1" "httpTokens" $httpTokens "hopLimit" $hopLimit)
-                  "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort)) }}
+                  "imds" (dict "enabled" $imdsEnabled "address" "169.254.169.254" "port" 80 "netns" "openinfra-imds" "hostAddress" "169.254.169.1" "httpTokens" $httpTokens "hopLimit" $hopLimit)
+                  "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort))
+                  "trustPlatformCA" true
+                  "caBundleUrl" (printf "http://%s/v1/ca-bundle" $shimHostPort) }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -607,8 +611,10 @@ spec:
                                metadataOptions), its systemd unit, and the agent itself (stdlib Python 3.6+;
                                every cloud image has python3 because cloud-init is Python; RHEL 8 family
                                ships /usr/libexec/platform-python). Type=notify: `systemctl start` returns
-                               once the listeners are up and the first credentials are cached. The agent
-                               body below contains NO template actions — test/vm-creds runs it verbatim. */}}
+                               once the listeners are up, the first credentials are cached and the platform
+                               root CA is in the trust store. With the metadata service disabled it exits
+                               after that boot-time step (Restart=on-failure leaves a clean exit alone). The
+                               agent body below contains NO template actions — test/vm-creds runs it verbatim. */}}
                         - path: /etc/openinfra/metadata-agent.json
                           permissions: '0644'
                           content: {{ $agentCfg | toJson | toJson }}
@@ -622,7 +628,7 @@ spec:
                             [Service]
                             Type=notify
                             ExecStart=/bin/sh -c 'for py in python3 /usr/libexec/platform-python; do command -v "$$py" >/dev/null 2>&1 && exec "$$py" /usr/local/lib/openinfra/metadata-agent.py /etc/openinfra/metadata-agent.json; done; echo "openinfra-metadata: no python3 interpreter (tried python3, /usr/libexec/platform-python)" >&2; exit 1'
-                            Restart=always
+                            Restart=on-failure
                             RestartSec=5
                             TimeoutStartSec=90
                             [Install]
@@ -642,6 +648,10 @@ spec:
                             #    as on EC2 - a container behind a bridge in the guest gets a token only when the limit is >= 2.
                             #  * The container-credentials endpoint on 127.0.0.1:16349 (AWS_CONTAINER_CREDENTIALS_FULL_URI).
                             #    The agent adds the Authorization header itself, so callers need only the URI.
+                            #
+                            # At start, before it reports ready (so before cloud-init runs the user's UserData), it also adds the
+                            # platform's root CA certificate (served by the aws-shim) to the guest's system trust store, so docker,
+                            # curl and the SDKs trust the platform's TLS endpoints, e.g. the container registry.
                             #
                             # Role credentials come from the aws-shim's /v1/vm-credentials endpoint, authenticated with the
                             # VM's own ServiceAccount token (the shim verifies it with a TokenReview; the source IP is never
@@ -697,6 +707,8 @@ spec:
                                     "hopLimit": 2,
                                 },
                                 "relay": {"enabled": False, "address": "127.0.0.1", "port": 16349},
+                                "trustPlatformCA": True,
+                                "caBundleUrl": "",
                             }
 
                             TOKEN_HEADER = "X-aws-ec2-metadata-token"
@@ -706,6 +718,13 @@ spec:
                             NETNS_HOST_IF = "oi-imds0"
                             NETNS_PEER_IF = "oi-imds1"
                             CLONE_NEWNET = 0x40000000
+                            CA_FILE_NAME = "openinfra-root-ca.crt"
+                            # (distro family, anchor directory, refresh command): the first whose directory and command exist wins.
+                            TRUST_STORES = (
+                                ("rhel", "/etc/pki/ca-trust/source/anchors", ("update-ca-trust", "extract")),
+                                ("suse", "/etc/pki/trust/anchors", ("update-ca-certificates",)),
+                                ("debian", "/usr/local/share/ca-certificates", ("update-ca-certificates",)),
+                            )
                             VERSIONS = [
                                 "1.0", "2007-01-19", "2007-03-01", "2007-08-29", "2007-10-10", "2007-12-15", "2008-02-01",
                                 "2008-09-01", "2009-04-04", "2011-01-01", "2011-05-01", "2012-01-12", "2014-02-25",
@@ -1322,6 +1341,142 @@ spec:
 
 
                             # ---------------------------------------------------------------------------------------------
+                            # The platform root CA: fetched from the aws-shim, validated, added to the system trust store.
+                            # ---------------------------------------------------------------------------------------------
+
+                            _PEM_BLOCK = re.compile(r"-----BEGIN ([A-Z0-9 ]+)-----[ \t]*\r?\n(.*?)\r?\n-----END \1-----", re.S)
+
+
+                            class CAFetchError(Exception):
+                                def __init__(self, message, dns=False):
+                                    Exception.__init__(self, message)
+                                    self.dns = dns  # the shim's name did not resolve (the aws-shim component is not installed)
+
+
+                            def fetch_ca_bundle(url, timeout=5.0):
+                                """The CA bundle bytes, or None when the platform publishes no CA (HTTP 404). CAFetchError otherwise."""
+                                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                                try:
+                                    resp = opener.open(urllib.request.Request(url), timeout=timeout)
+                                    try:
+                                        return resp.read(1 << 20)
+                                    finally:
+                                        resp.close()
+                                except urllib.error.HTTPError as e:
+                                    if e.code == 404:
+                                        return None
+                                    raise CAFetchError("%s answered HTTP %d" % (url, e.code))
+                                except (urllib.error.URLError, socket.timeout, OSError) as e:
+                                    reason = getattr(e, "reason", e)
+                                    raise CAFetchError("cannot reach %s: %s" % (url, reason), dns=isinstance(reason, socket.gaierror))
+
+
+                            def validate_ca_pem(data):
+                                """Bytes -> normalized PEM of the CA certificates in them. ValueError unless the bytes are PEM
+                                CERTIFICATE blocks only, each a parseable X.509 CA certificate: nothing else is ever installed."""
+                                import ssl
+                                try:
+                                    text = data.decode("ascii")
+                                except (UnicodeDecodeError, AttributeError):
+                                    raise ValueError("not ASCII PEM text")
+                                blocks = _PEM_BLOCK.findall(text)
+                                if not blocks:
+                                    raise ValueError("no PEM block")
+                                if _PEM_BLOCK.sub("", text).strip():
+                                    raise ValueError("content outside the PEM blocks")
+                                ders = []
+                                for kind, body in blocks:
+                                    if kind != "CERTIFICATE":
+                                        raise ValueError("refusing a %s block" % kind)
+                                    try:
+                                        der = base64.b64decode("".join(body.split()), validate=True)
+                                    except (ValueError, TypeError):
+                                        raise ValueError("a CERTIFICATE block is not valid base64")
+                                    if der not in ders:
+                                        ders.append(der)
+                                pem = "".join(ssl.DER_cert_to_PEM_cert(d) for d in ders)
+                                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                                try:
+                                    ctx.load_verify_locations(cadata=pem)
+                                except (ssl.SSLError, ValueError) as e:
+                                    raise ValueError("not a parseable X.509 certificate (%s)" % e)
+                                if ctx.cert_store_stats().get("x509_ca", 0) != len(ders):
+                                    raise ValueError("not a CA certificate (basicConstraints CA:TRUE is required)")
+                                return pem
+
+
+                            def trust_store(stores=TRUST_STORES, which=shutil.which, isdir=os.path.isdir):
+                                """(family, anchor directory, refresh argv) for this distro's system trust store, or None."""
+                                for family, directory, cmd in stores:
+                                    tool = which(cmd[0])
+                                    if tool and isdir(directory):
+                                        return family, directory, [tool] + list(cmd[1:])
+                                return None
+
+
+                            def install_ca(pem, store, run_cmd=None):
+                                """Install pem as the platform CA anchor and refresh the trust store. Idempotent: 'unchanged' (no
+                                rewrite, no refresh) when the same certificate is already installed, else 'installed'. Raises
+                                RuntimeError if the refresh command fails (the anchor is removed so the next start retries)."""
+                                family, directory, cmd = store
+                                path = os.path.join(directory, CA_FILE_NAME)
+                                try:
+                                    with open(path) as fh:
+                                        if fh.read() == pem:
+                                            return "unchanged"
+                                except (IOError, OSError):
+                                    pass
+                                tmp = path + ".tmp"
+                                with open(tmp, "w") as fh:
+                                    fh.write(pem)
+                                os.chmod(tmp, 0o644)
+                                os.rename(tmp, path)
+                                p = (run_cmd or run)(cmd, check=False)
+                                if p.returncode != 0:
+                                    os.remove(path)
+                                    raise RuntimeError("%s failed (exit %d): %s" % (" ".join(cmd), p.returncode, (p.stderr or "").strip()))
+                                return "installed"
+
+
+                            def trust_platform_ca(url, budget=15.0, store=None, fetch=fetch_ca_bundle, install=install_ca,
+                                                  sleep=time.sleep, clock=time.time):
+                                """Add the platform root CA to the system trust store. Never raises: an unreachable shim, a
+                                platform with no CA, or an unsupported distro is logged and the boot continues. Returns the outcome."""
+                                store = store or trust_store()
+                                if store is None:
+                                    LOG.warning("platform root CA not installed: no supported system trust store "
+                                                "(update-ca-trust or update-ca-certificates) on this guest")
+                                    return "unsupported"
+                                deadline, dns_failures = clock() + budget, 0
+                                while True:
+                                    try:
+                                        data = fetch(url)
+                                        break
+                                    except CAFetchError as e:
+                                        dns_failures += 1 if e.dns else 0
+                                        if dns_failures >= 2 or clock() + 2 > deadline:
+                                            LOG.warning("platform root CA not installed (continuing without it): %s", e)
+                                            return "unavailable"
+                                        sleep(2)
+                                if data is None:
+                                    LOG.info("the platform publishes no root CA (%s answered 404); nothing to trust", url)
+                                    return "absent"
+                                try:
+                                    pem = validate_ca_pem(data)
+                                except ValueError as e:
+                                    LOG.error("refusing the platform CA bundle from %s: %s", url, e)
+                                    return "invalid"
+                                try:
+                                    result = install(pem, store)
+                                except Exception as e:
+                                    LOG.error("installing the platform root CA into the %s trust store failed: %s", store[0], e)
+                                    return "failed"
+                                LOG.info("platform root CA %s: %s (%s trust store)", "already trusted" if result == "unchanged" else "installed",
+                                         os.path.join(store[1], CA_FILE_NAME), store[0])
+                                return result
+
+
+                            # ---------------------------------------------------------------------------------------------
                             # The agent.
                             # ---------------------------------------------------------------------------------------------
 
@@ -1395,21 +1550,25 @@ spec:
                                     return srv
 
                                 def start(self):
-                                    if self.cfg["imds"].get("enabled", True):
+                                    imds_on = bool(self.cfg["imds"].get("enabled", True))
+                                    relay_on = bool(self.cfg["relay"].get("enabled")) and self.creds is not None
+                                    if imds_on:
                                         try:
                                             self.start_imds()
                                         except Exception as e:  # keep the credentials relay up even if the IMDS listener can't start
                                             LOG.error("instance metadata service NOT started: %s", e)
-                                    if self.cfg["relay"].get("enabled") and self.creds is not None:
+                                    if relay_on:
                                         try:
                                             self.start_relay()
                                         except Exception as e:  # likewise keep IMDS up if the loopback port is taken
                                             LOG.error("container-credentials endpoint NOT started: %s", e)
-                                    if not self.servers:
+                                    if (imds_on or relay_on) and not self.servers:
                                         raise RuntimeError("no listener could be started")
                                     for srv in self.servers:
                                         threading.Thread(target=srv.serve_forever, daemon=True).start()
-                                    if self.creds is not None:
+                                    if not self.servers:
+                                        LOG.info("the instance metadata service is disabled (metadataOptions.httpEndpoint)")
+                                    elif self.creds is not None:
                                         LOG.info("instance role %s; credentials from %s", self.cfg["role"], self.cfg.get("credentialsUrl"))
                                         deadline = time.time() + self.warm_timeout  # warm the cache: the first SDK call is answered at once
                                         while True:
@@ -1424,6 +1583,8 @@ spec:
                                         threading.Thread(target=self.creds.run_refresher, args=(self.stop,), daemon=True).start()
                                     else:
                                         LOG.info("no instance role: iam/ metadata is not served")
+                                    if self.cfg.get("trustPlatformCA") and self.cfg.get("caBundleUrl"):
+                                        trust_platform_ca(self.cfg["caBundleUrl"])
 
                                 def shutdown(self):
                                     self.stop.set()
@@ -1458,6 +1619,8 @@ spec:
                                     LOG.error("metadata agent failed to start: %s", e)
                                     return 1
                                 sd_notify("READY=1")
+                                if not agent.servers:
+                                    return 0  # boot-time setup only (the metadata service is disabled): nothing to serve
                                 while not stopped.wait(1):
                                     pass
                                 sd_notify("STOPPING=1")
@@ -1504,8 +1667,9 @@ spec:
                       runcmd:
                         {{- if $metadataAgent }}
                         # Start the instance metadata agent (and pick up the credentials env drop-in) BEFORE
-                        # the boot script, so an `aws s3 cp` at first boot finds IMDS and the credentials
-                        # endpoint ready (Type=notify: this returns once the agent is listening).
+                        # the boot script, so an `aws s3 cp` or a `docker pull` from the platform registry at
+                        # first boot finds IMDS, the credentials endpoint and the platform root CA ready
+                        # (Type=notify: this returns once the agent is ready).
                         - [ systemctl, daemon-reload ]
                         - [ systemctl, enable, --now, openinfra-metadata.service ]
                         {{- end }}

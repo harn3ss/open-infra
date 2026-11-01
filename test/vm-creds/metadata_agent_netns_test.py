@@ -97,6 +97,7 @@ def start_agent(tmp, agent_path, shim_port, hop_limit):
     cfg["credentialsUrl"] = "http://127.0.0.1:%d/v1/vm-credentials" % shim_port
     cfg["tokenFile"] = os.path.join(tmp, "token")
     cfg["userDataFile"] = ""
+    cfg["trustPlatformCA"] = False  # a netns does not isolate the filesystem: never touch the host trust store
     path = os.path.join(tmp, "agent-%d.json" % hop_limit)
     with open(path, "w") as fh:
         json.dump(cfg, fh)

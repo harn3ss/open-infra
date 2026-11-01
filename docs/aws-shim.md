@@ -98,6 +98,31 @@ Least privilege by namespace split: the shim reads access-key Secrets only in it
 namespace, and reads `kind: User` (never Secrets) in the console namespace. Its only cluster-wide
 grant is `create subjectaccessreviews` — which asks the API server a question and grants nothing.
 
+### Platform endpoints for VM guests (no SigV4)
+
+Two paths serve the in-guest instance metadata agent of a `kind: VirtualMachine` (see
+[virtual-machines.md](virtual-machines.md)). Neither is an AWS API, and neither can shadow one: every
+AWS call is SigV4-signed, and these match only their exact paths.
+
+- **`GET /v1/vm-credentials`** — a VM's role credentials (container-credentials JSON). The caller
+  presents the VM's own ServiceAccount token as `Authorization`; the shim verifies it with a
+  TokenReview and mints credentials only for a `kind: Role` that trusts `vm`. A missing or invalid
+  token is `401`.
+- **`GET /v1/ca-bundle`** — the platform root CA certificate (PEM, `application/x-pem-file`), the
+  root of the `openinfra-ca` ClusterIssuer that signs the platform's TLS endpoints (the registry, S3).
+  It is a public certificate, so the endpoint is unauthenticated, and it matches only an **unsigned**
+  `GET`/`HEAD`. Only CA certificates are ever served (each is parsed and re-encoded; any other PEM
+  block is dropped). `404` when the platform publishes no root CA; `503` (with `Retry-After`) while it
+  cannot be read and no copy is cached. The shim reads the certificate from the Secret
+  `openinfra-ca-bundle` in its own namespace, which a cert-manager Certificate issued by `openinfra-ca`
+  fills with the root's certificate (`ca.crt`) — the shim never reads the root CA's own Secret, which
+  holds the root's private key. `CA_BUNDLE_SECRET` (default `openinfra-ca-bundle`; empty turns the
+  endpoint off), `CA_BUNDLE_NAMESPACE` and `CA_BUNDLE_KEY` override the source.
+
+```sh
+curl -fsS http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/ca-bundle -o openinfra-root-ca.crt
+```
+
 ## Services
 
 The shim dispatches by the AWS service the client signed for (read from the SigV4 credential

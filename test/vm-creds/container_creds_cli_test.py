@@ -85,6 +85,7 @@ class AgentProcess(object):
         cfg["userDataFile"] = os.path.join(tmp, "user-data")
         cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": self.imds_port, "httpTokens": http_tokens})
         cfg["relay"]["enabled"] = relay
+        cfg["trustPlatformCA"] = False  # never touch the runner's trust store (metadata_agent_test covers it)
         self.cfg_path = os.path.join(tmp, "agent-%s.json" % http_tokens)
         with open(self.cfg_path, "w") as fh:
             json.dump(cfg, fh)

@@ -271,6 +271,7 @@ func TestVM_MetadataAgent_Rendered(t *testing.T) {
 		"path: /etc/openinfra/metadata-agent.json",
 		"path: /etc/systemd/system/openinfra-metadata.service",
 		"Type=notify",
+		"Restart=on-failure",           // a clean exit (boot-only mode) is not restarted
 		"/usr/libexec/platform-python", // RHEL 8 family fallback interpreter
 		"[ systemctl, enable, --now, openinfra-metadata.service ]",
 	} {
@@ -326,11 +327,16 @@ func TestVM_MetadataAgent_Rendered(t *testing.T) {
 	if cfg["credentialsUrl"] != "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials" {
 		t.Errorf("agent must fetch credentials from the shim's /v1/vm-credentials, got %#v", cfg["credentialsUrl"])
 	}
+	// #347 item 15: the guest trusts the platform root CA, fetched from the shim at boot.
+	if cfg["trustPlatformCA"] != true || cfg["caBundleUrl"] != "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/ca-bundle" {
+		t.Errorf("agent must trust the platform CA from the shim's /v1/ca-bundle, got %#v %#v", cfg["trustPlatformCA"], cfg["caBundleUrl"])
+	}
 }
 
 // spec.metadataOptions maps onto the agent: httpTokens + the PUT response hop limit go into its config;
 // httpTokens: required also turns off the loopback credentials endpoint (a plain GET is IMDSv1-
-// equivalent); httpEndpoint: disabled renders no agent at all.
+// equivalent); httpEndpoint: disabled serves no metadata — the agent then only trusts the platform CA at
+// boot and exits.
 func TestVM_MetadataOptions(t *testing.T) {
 	tmpl := extractInlineTemplate(t, vmComposition)
 
@@ -356,10 +362,18 @@ func TestVM_MetadataOptions(t *testing.T) {
 		"instanceRole":    "app-role",
 		"metadataOptions": map[string]any{"httpEndpoint": "disabled"},
 	}))
-	for _, absent := range []string{"metadata-agent", "openinfra-metadata", "AWS_CONTAINER_CREDENTIALS_FULL_URI="} {
-		if strings.Contains(off, absent) {
-			t.Errorf("httpEndpoint: disabled must render no metadata agent (%q); got:\n%s", absent, grepCtx(off, absent))
-		}
+	if strings.Contains(off, "AWS_CONTAINER_CREDENTIALS_FULL_URI=") {
+		t.Errorf("httpEndpoint: disabled must not advertise the container-credentials endpoint; got:\n%s", grepCtx(off, "FULL_URI"))
+	}
+	offCfg := vmAgentConfig(t, off)
+	if imds, _ := offCfg["imds"].(map[string]any); imds["enabled"] != false {
+		t.Errorf("httpEndpoint: disabled must turn the IMDS listener off, got %#v", imds)
+	}
+	if relay, _ := offCfg["relay"].(map[string]any); relay["enabled"] != false {
+		t.Errorf("httpEndpoint: disabled must turn the credentials endpoint off, got %#v", relay)
+	}
+	if offCfg["trustPlatformCA"] != true || !strings.Contains(off, "openinfra-metadata.service ]") {
+		t.Errorf("httpEndpoint: disabled still runs the agent once at boot to trust the platform CA")
 	}
 	if !strings.Contains(off, "name: vm-myvm") {
 		t.Errorf("httpEndpoint: disabled leaves the VM's identity (ServiceAccount) in place")

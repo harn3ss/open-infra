@@ -50,6 +50,7 @@ type serviceRouter struct {
 	lambdaAuth *lambdaAuthorizer     // @aws_lambda authorizer Function for the appsync data plane; nil = off
 	services   map[string]awsService // keyed by AWS service name: "s3", "sts", "lambda", "appsync"
 	vmCreds    *vmCredsHandler       // VM workload credentials (container-credentials provider); nil = off
+	caBundle   *caBundleHandler      // the platform root CA certificate (public, unauthenticated); nil = off
 	logger     *slog.Logger
 }
 
@@ -81,6 +82,13 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// token (not the source IP) is the identity. A missing/invalid token fails closed.
 	if rt.vmCreds != nil && rt.vmCreds.isVMCredsPath(r) {
 		rt.vmCreds.serve(w, r, requestID)
+		return
+	}
+
+	// The platform root CA certificate: public, so unauthenticated — but matched only for an UNSIGNED
+	// GET/HEAD of its exact path, so it can never shadow a (always-signed) AWS call.
+	if rt.caBundle != nil && rt.caBundle.isCABundleRequest(r) {
+		rt.caBundle.serve(w, r, requestID)
 		return
 	}
 

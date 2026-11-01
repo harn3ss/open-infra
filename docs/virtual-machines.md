@@ -228,7 +228,8 @@ spec:
   needs one more. The default is `2`, so containers in the guest work out of the box; set `1` to keep
   them off the IMDSv2 path. IMDSv1 requests are not hop-limited.
 - **`httpEndpoint: disabled`** — no metadata service at all: nothing on `169.254.169.254` and no
-  container-credentials endpoint, so (as on EC2) the guest gets no `instanceRole` credentials.
+  container-credentials endpoint, so (as on EC2) the guest gets no `instanceRole` credentials. The
+  guest still trusts the platform root CA (below).
 
 `cfn` maps an `AWS::EC2::Instance`'s `MetadataOptions` onto this block one-to-one. Not served: the IPv6
 endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`),
@@ -239,6 +240,33 @@ The agent is a single Python 3 script (standard library only, Python 3.6+ — ev
 Python because cloud-init is Python; on the RHEL 8 family it uses `/usr/libexec/platform-python`) run by
 `openinfra-metadata.service`; check it with `systemctl status openinfra-metadata` and
 `journalctl -u openinfra-metadata`. Its settings are in `/etc/openinfra/metadata-agent.json`.
+
+## The platform root CA is trusted by every Linux guest
+
+The platform's TLS endpoints — the container registry's LAN address, S3's LAN host — present
+certificates issued by the cluster's root CA (the `openinfra-ca` ClusterIssuer). Every Linux VM trusts
+that root out of the box, the way an enterprise CA is baked into an AMI: an unmodified guest's
+`docker login` / `docker pull` against the registry, `curl`, and the AWS SDKs verify those certificates
+with no `--insecure`, no `--cacert`, and no per-registry `certs.d` file.
+
+At every boot, before cloud-init runs `userData`, the metadata agent fetches the root certificate from
+the aws-shim (`/v1/ca-bundle`, a public certificate), checks that it is a PEM CA certificate and
+nothing else, and adds it to the system trust store with the distribution's own tool:
+
+| Family | Anchor | Refreshed with |
+|---|---|---|
+| Debian, Ubuntu | `/usr/local/share/ca-certificates/openinfra-root-ca.crt` | `update-ca-certificates` |
+| RHEL, CentOS Stream, Fedora, Rocky | `/etc/pki/ca-trust/source/anchors/openinfra-root-ca.crt` | `update-ca-trust extract` |
+| SUSE | `/etc/pki/trust/anchors/openinfra-root-ca.crt` | `update-ca-certificates` |
+
+The anchor is rewritten (and the store refreshed) only when the certificate changes. If the aws-shim
+is briefly unreachable the agent retries for up to 15 seconds and then lets the boot continue
+without it (the next boot tries again); a platform without the aws-shim component publishes no CA
+and nothing is installed. Programs that load the trust store once at startup — `dockerd` among them —
+see the root when they start after the agent, which is the case for anything installed or started by
+`userData`. To keep a guest from installing it, set `"trustPlatformCA": false` in
+`/etc/openinfra/metadata-agent.json` (and remove the anchor file if it is already there). Linux guests
+only.
 
 ## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
 
