@@ -321,6 +321,12 @@ type DeployOptions struct {
 	// than guessing. The in-cluster aws-shim doorway sets them to drivers of its own apigateway store.
 	ProvisionRestAPI   ProvisionRestAPIFunc
 	DeprovisionRestAPI DeprovisionRestAPIFunc
+	// BucketData reports whether an S3 bucket exists and whether it is empty (no objects, prior versions
+	// or delete markers). RemoveBucket removes an empty bucket. With them, deleting a kind: Bucket is
+	// AWS's: a bucket that still holds data fails the delete (BucketNotEmpty), and an empty one is removed
+	// with its claim. Nil (the CLI): the claim is deleted and the bucket reaper removes an empty bucket.
+	BucketData   func(ctx context.Context, bucket string) (exists, empty bool, err error)
+	RemoveBucket func(ctx context.Context, bucket string) error
 	// prior is the existing stack's recorded resources (an update or change set): each keeps the name it
 	// was created with (naming.go). Nil for a create.
 	prior []StackResource

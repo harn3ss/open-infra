@@ -151,8 +151,11 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		if r := currentByID[c.LogicalID]; isRetain(r) || stillNamed[r.APIVersion+"/"+r.Kind+"/"+r.Name] {
 			continue
 		}
-		if err := ap.Delete(ctx, currentByID[c.LogicalID].APIVersion, c.Kind, c.Name); err != nil {
-			return rollback(fmt.Errorf("deleting %s/%s: %w", c.Kind, c.Name, err))
+		// A dropped S3 bucket that still holds data is kept, unmanaged, as AWS's cleanup leaves it.
+		noWait := opts
+		noWait.Wait = false // as before: an update does not wait for a removed object to go
+		if _, err := deleteStackObject(ctx, noWait, ap, currentByID[c.LogicalID], false); err != nil {
+			return rollback(err)
 		}
 	}
 

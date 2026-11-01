@@ -572,6 +572,7 @@ func run(logger *slog.Logger) error {
 			cfnH.cs, cfnH.authzNS = cs, authzNS              // a User's coarse RBAC gate, as every front door
 			cfnH.noecho = &noEchoSecrets{cs: cs, ns: keysNS} // NoEcho values: Secrets in the shim's namespace
 			cfnH.recNS = keysNS                              // stack/change-set/drift records: Secrets there too (cfn_records.go)
+			cfnH.buckets = mc                                // a stack delete refuses a non-empty bucket and removes an empty one
 			services["cloudformation"] = cfnH
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))

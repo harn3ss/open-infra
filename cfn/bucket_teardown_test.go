@@ -1,0 +1,140 @@
+package cfn
+
+import (
+	"context"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// fakeBuckets is the S3 side of a bucket teardown: which buckets exist and hold data, and which were
+// removed.
+type fakeBuckets struct {
+	data    map[string]bool // bucket -> holds data (absent = no such bucket)
+	removed []string
+}
+
+func (b *fakeBuckets) opts(o DeployOptions) DeployOptions {
+	o.BucketData = func(_ context.Context, name string) (bool, bool, error) {
+		full, ok := b.data[name]
+		return ok, !full, nil
+	}
+	o.RemoveBucket = func(_ context.Context, name string) error {
+		if b.data[name] {
+			return ErrBucketNotEmpty
+		}
+		delete(b.data, name)
+		b.removed = append(b.removed, name)
+		return nil
+	}
+	return o
+}
+
+const bucketStack = `
+Resources:
+  Data:
+    Type: AWS::S3::Bucket
+  Named:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: my-named-bucket }
+`
+
+func TestDestroy_EmptyBucketsAreRemoved(t *testing.T) {
+	f := deployTemplate(t, []byte(bucketStack))
+	b := &fakeBuckets{data: map[string]bool{"s-data": false, "my-named-bucket": false}}
+	rec, err := Destroy(context.Background(), b.opts(deployOpts()), f)
+	if err != nil || rec.Status != "DELETE_COMPLETE" {
+		t.Fatalf("destroy = %v, %v; want DELETE_COMPLETE", rec, err)
+	}
+	if !contains(f.deleted, "Bucket/s-data") || !contains(f.deleted, "Bucket/s-named") {
+		t.Errorf("bucket claims not deleted: %v", f.deleted)
+	}
+	sort.Strings(b.removed) // no dependency between them: either may go first
+	if strings.Join(b.removed, ",") != "my-named-bucket,s-data" {
+		t.Errorf("removed buckets = %v, want the explicit name and the generated one", b.removed)
+	}
+}
+
+// AWS: DeleteStack fails with BucketNotEmpty and keeps the bucket and its data.
+func TestDestroy_NonEmptyBucketFailsTheDelete(t *testing.T) {
+	f := deployTemplate(t, []byte(bucketStack))
+	b := &fakeBuckets{data: map[string]bool{"s-data": false, "my-named-bucket": true}}
+	rec, err := Destroy(context.Background(), b.opts(deployOpts()), f)
+	if err == nil || !IsBucketNotEmpty(err) {
+		t.Fatalf("destroy err = %v, want BucketNotEmpty", err)
+	}
+	if rec.Status != "DELETE_FAILED" || !strings.Contains(rec.Message, "BucketNotEmpty") || !strings.Contains(rec.Message, "my-named-bucket") {
+		t.Errorf("record = %s %q, want DELETE_FAILED naming the bucket", rec.Status, rec.Message)
+	}
+	if contains(f.deleted, "Bucket/s-named") {
+		t.Error("the non-empty bucket's claim was deleted")
+	}
+	if len(b.removed) != 0 && contains(b.removed, "my-named-bucket") {
+		t.Errorf("the non-empty bucket was removed: %v", b.removed)
+	}
+	found := false
+	for _, r := range rec.Resources {
+		found = found || r.LogicalID == "Named"
+	}
+	if !found {
+		t.Errorf("the kept bucket is not reported as remaining: %v", rec.Resources)
+	}
+}
+
+func TestDestroy_RetainedNonEmptyBucketIsKept(t *testing.T) {
+	f := deployTemplate(t, []byte(`
+Resources:
+  Data:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+`))
+	b := &fakeBuckets{data: map[string]bool{"s-data": true}}
+	rec, err := Destroy(context.Background(), b.opts(deployOpts()), f)
+	if err != nil || rec.Status != "DELETE_COMPLETE" {
+		t.Fatalf("destroy = %v, %v", rec, err)
+	}
+	if contains(f.deleted, "Bucket/s-data") || len(b.removed) != 0 {
+		t.Errorf("a retained bucket was deleted: claims %v, buckets %v", f.deleted, b.removed)
+	}
+}
+
+// Without the hooks (the CLI) the claim is deleted and the bucket reaper decides.
+func TestDestroy_BucketWithoutHooks(t *testing.T) {
+	f := deployTemplate(t, []byte(bucketStack))
+	rec, err := Destroy(context.Background(), deployOpts(), f)
+	if err != nil || rec.Status != "DELETE_COMPLETE" || !contains(f.deleted, "Bucket/s-data") {
+		t.Fatalf("destroy = %v, %v, deleted %v", rec, err, f.deleted)
+	}
+}
+
+func TestUpdate_DroppedBucket(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		f := &fakeApplier{}
+		if _, err := Deploy(context.Background(), []byte(bucketStack), deployOpts(), f); err != nil {
+			t.Fatal(err)
+		}
+		f.deleted = nil
+		b := &fakeBuckets{data: map[string]bool{"s-data": full, "my-named-bucket": false}}
+		rec, err := Update(context.Background(), []byte(`
+Resources:
+  Named:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: my-named-bucket }
+`), b.opts(deployOpts()), f)
+		if err != nil || rec.Status != "UPDATE_COMPLETE" {
+			t.Fatalf("full=%v: update = %v, %v", full, rec, err)
+		}
+		for _, r := range rec.Resources {
+			if r.LogicalID == "Data" {
+				t.Errorf("full=%v: the dropped bucket is still in the stack", full)
+			}
+		}
+		// AWS's cleanup deletes an empty dropped bucket, and leaves one that holds data.
+		if full == contains(f.deleted, "Bucket/s-data") {
+			t.Errorf("full=%v: claim deleted = %v", full, contains(f.deleted, "Bucket/s-data"))
+		}
+		if full == contains(b.removed, "s-data") {
+			t.Errorf("full=%v: bucket removed = %v", full, b.removed)
+		}
+	}
+}

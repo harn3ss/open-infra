@@ -213,13 +213,10 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 				continue
 			}
 		}
-		if err := ap.Delete(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
-			return remaining(), fmt.Errorf("deleting %s/%s: %w", r.Kind, r.Name, err)
-		}
-		if opts.Wait {
-			if err := ap.WaitGone(ctx, r.APIVersion, r.Kind, r.Name, opts.Timeout); err != nil {
-				return remaining(), err
-			}
+		// An S3 bucket is deleted as AWS deletes one: refused while it still holds data (BucketNotEmpty —
+		// the stack goes DELETE_FAILED and the bucket and its data stay), removed with its claim when empty.
+		if _, err := deleteStackObject(ctx, opts, ap, r, true); err != nil {
+			return remaining(), err
 		}
 		gone[i] = true
 	}

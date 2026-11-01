@@ -27,6 +27,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,7 @@ import (
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/minio/minio-go/v7"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -96,6 +98,9 @@ type cfnDoorway struct {
 	// recNS is the namespace whose Secrets hold this front door's stack, change-set and drift records —
 	// the shim's own (cfn_records.go). "" keeps them as ConfigMaps in ns (tests).
 	recNS string
+	// buckets is the S3 store a stack's kind: Bucket claims hold their buckets in: a stack delete refuses a
+	// bucket that still holds data and removes an empty one, as AWS does. nil = left to the bucket reaper.
+	buckets *minio.Client
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -441,6 +446,26 @@ func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptio
 			return h.restV1.provisionRestAPIPlan(ctx, plan)
 		}
 		o.DeprovisionRestAPI = h.restV1.deprovisionRestAPI
+	}
+	if h.buckets != nil {
+		mc := h.buckets
+		o.BucketData = func(ctx context.Context, bucket string) (bool, bool, error) {
+			exists, err := mc.BucketExists(ctx, bucket)
+			if err != nil || !exists {
+				return false, false, err
+			}
+			empty, err := bucketEmpty(ctx, mc, bucket)
+			return true, empty, err
+		}
+		o.RemoveBucket = func(ctx context.Context, bucket string) error {
+			if err := removeEmptyBucket(ctx, mc, bucket); err != nil {
+				if errors.Is(err, errBucketNotEmpty) {
+					return cfn.ErrBucketNotEmpty
+				}
+				return err
+			}
+			return nil
+		}
 	}
 	return o
 }
