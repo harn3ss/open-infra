@@ -2341,9 +2341,9 @@ func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest
 		if len(f) > 0 {
 			continue // keep collecting findings across policies, but emit no partial manifest
 		}
-		name := roleName + "-inline-" + strconv.Itoa(i)
+		name := companionPolicyName(roleName, "inline-"+strconv.Itoa(i))
 		if n, ok := concrete(pname); ok && n != "" {
-			name = roleName + "-" + k8sName(n)
+			name = companionPolicyName(roleName, k8sName(n))
 		}
 		out = append(out, &Manifest{
 			APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: name,

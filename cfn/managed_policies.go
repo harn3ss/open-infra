@@ -1,6 +1,8 @@
 package cfn
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -57,17 +59,36 @@ func managedPolicyCompanions(id, roleName string, v any) ([]*Manifest, []string,
 			f = append(f, Finding{"Resource " + id, fmt.Sprintf("managed policy %s did not import (%v %v) — this is an engine bug", name, err, unsupported)})
 			continue
 		}
+		pname := companionPolicyName(roleName, "managed-"+k8sName(name))
 		out = append(out, &Manifest{
-			APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: roleName + "-managed-" + k8sName(name),
+			APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: pname,
 			Spec: map[string]any{"dataPlane": map[string]any{
 				"appliesTo":  []any{"Role::" + roleName},
 				"statements": statementsToSpec(stmts),
 			}},
 		})
-		caveats = append(caveats, fmt.Sprintf("managed policy %s is attached as kind: Policy %s-managed-%s with the access open-infra serves; not attached: %s", name, roleName, k8sName(name), mp.missing))
+		caveats = append(caveats, fmt.Sprintf("managed policy %s is attached as kind: Policy %s with the access open-infra serves; not attached: %s", name, pname, mp.missing))
 	}
 	if len(unmapped) > 0 {
 		caveats = append(caveats, "ManagedPolicyArns "+strings.Join(unmapped, ", ")+" are NOT attached — open-infra attaches AmazonEC2ContainerRegistryReadOnly, AmazonS3ReadOnlyAccess, AmazonSSMManagedInstanceCore and CloudWatchAgentServerPolicy (the parts its services serve); express other access as inline Policies, or a kind: Policy in spec.policies")
 	}
 	return out, caveats, f
+}
+
+// maxCompanionNameLen is the longest name a role's companion kind: Policy gets: a Kubernetes label value
+// (the policy's name is carried in labels), which is also the RFC 1123 label limit.
+const maxCompanionNameLen = 63
+
+// companionPolicyName is <role>-<suffix>, the name of a companion kind: Policy of a role (an inline or a
+// managed policy). One that does not fit maxCompanionNameLen is shortened with a hash of the full name
+// appended, so it stays unique per (role, suffix): a long stack name or policy name never fails the
+// deploy on a too-long name.
+func companionPolicyName(roleName, suffix string) string {
+	n := roleName + "-" + suffix // unchanged for every name that fits, so no deployed policy is renamed
+	if len(n) <= maxCompanionNameLen {
+		return n
+	}
+	sum := sha256.Sum256([]byte(roleName + "\x00" + suffix))
+	head := strings.Trim(n[:maxCompanionNameLen-9], "-")
+	return head + "-" + hex.EncodeToString(sum[:])[:8]
 }
