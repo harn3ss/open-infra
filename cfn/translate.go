@@ -3224,6 +3224,11 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 	}
 	// DAEMON runs one task on every node; an Application runs a replica count. Refuse rather than run it
 	// on one node.
+	if v, set := props["SchedulingStrategy"]; set && v != nil {
+		if s, _ := concrete(v); s != "REPLICA" && s != "DAEMON" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("SchedulingStrategy must be REPLICA or DAEMON (got %v)", v)})
+		}
+	}
 	if s, _ := concrete(props["SchedulingStrategy"]); s == "DAEMON" {
 		f = append(f, Finding{"Resource " + id, "SchedulingStrategy DAEMON (one task per node) has no Application form — an Application runs a replica count; refusing rather than running it on one node"})
 	}
@@ -3300,6 +3305,11 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 	// to a pod emptyDir — the natural multi-container fit. A host-path bind mount, EFS, or Docker
 	// volume has no safe/faithful Application form and refuses (never a silent drop of a mount).
 	spec0 := map[string]any{}
+	if v, set := td["Volumes"]; set && v != nil {
+		if _, ok := v.([]any); !ok {
+			f = append(f, Finding{"Resource " + tdID, "Volumes must be a list of task volumes"})
+		}
+	}
 	if vols, ok := td["Volumes"].([]any); ok {
 		var appVols []any
 		for _, raw := range vols {
@@ -3420,6 +3430,18 @@ func ecsContainerSpec(tdID, where string, c map[string]any, f *[]Finding, cav *[
 	}
 	*f = append(*f, blockUnknownProps(where, c, cknown)...)
 	spec := map[string]any{}
+	// Essential: false — on ECS the task keeps running when such a container exits; in a pod the container
+	// is restarted instead (every container of an Application runs for the life of the pod).
+	if v, set := c["Essential"]; set && v != nil {
+		ess, ok := cfnBoolValue(v)
+		switch {
+		case !ok:
+			*f = append(*f, Finding{"Resource " + tdID, fmt.Sprintf("a container's Essential must be true or false (got %v)", v)})
+		case !ess:
+			name, _ := concrete(c["Name"])
+			*cav = append(*cav, "container "+name+" is Essential: false — when it exits it is restarted (as every container of the Application is), rather than left stopped while the task runs on")
+		}
+	}
 	if img, ok := concrete(c["Image"]); ok && img != "" {
 		spec["image"] = img
 	} else {
@@ -3467,6 +3489,11 @@ func ecsContainerSpec(tdID, where string, c map[string]any, f *[]Finding, cav *[
 	}
 	// MountPoints -> volumeMounts (#117 §1): the SourceVolume must be a task Volume mapped to an
 	// emptyDir (validated in ecsTaskToApp); ContainerPath -> mountPath.
+	if v, set := c["MountPoints"]; set && v != nil {
+		if _, ok := v.([]any); !ok {
+			*f = append(*f, Finding{"Resource " + tdID, "a container's MountPoints must be a list"})
+		}
+	}
 	if mps, ok := c["MountPoints"].([]any); ok && len(mps) > 0 {
 		var mounts []any
 		for _, raw := range mps {
@@ -3529,17 +3556,18 @@ func concreteOr(v any, def string) string {
 func ecsEnv(tdID string, c map[string]any, f *[]Finding) []any {
 	envs, ok := c["Environment"].([]any)
 	if !ok {
+		if v, set := c["Environment"]; set && v != nil {
+			*f = append(*f, Finding{"Resource " + tdID, "a container's Environment must be a list of { Name, Value }"})
+		}
 		return nil
 	}
 	var out []any
 	for _, e := range envs {
 		em, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
 		name, _ := concrete(em["Name"])
 		val, vok := concrete(em["Value"])
-		if name == "" {
+		if !ok || name == "" {
+			*f = append(*f, Finding{"Resource " + tdID, "each Environment entry needs a Name (and a Value)"})
 			continue
 		}
 		if !vok {
