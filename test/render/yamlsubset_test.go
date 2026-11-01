@@ -86,8 +86,13 @@ func (p *yamlParser) parseBlock(ind int) (any, error) {
 	if p.i >= len(p.lines) {
 		return nil, nil
 	}
-	if isSeqItem(strings.TrimSpace(p.lines[p.i])) {
+	t := strings.TrimSpace(p.lines[p.i])
+	if isSeqItem(t) {
 		return p.parseSeq(ind)
+	}
+	if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
+		// a flow collection on the line after its key (`pattern:` then `{}`), as toYaml writes one
+		return p.parseValue(ind-1, t)
 	}
 	return p.parseMap(ind)
 }

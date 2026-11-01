@@ -2023,6 +2023,9 @@ func sprigLite() template.FuncMap {
 		"regexReplaceAll": func(pattern, src, repl string) string {
 			return regexp.MustCompile(pattern).ReplaceAllString(src, repl)
 		},
+		// sprig: does s match the regex? (compositions refuse line breaks in values bound for a
+		// block scalar with it).
+		"regexMatch": func(pattern, s string) bool { return regexp.MustCompile(pattern).MatchString(s) },
 		// sprig: JSON-encode (dataflow passes $members/$dmembers as a JSON env var).
 		"toJson": func(v any) string {
 			b, err := json.Marshal(v)
@@ -2231,12 +2234,15 @@ func sprigLite() template.FuncMap {
 	}
 }
 
-// toYAMLish recursively renders a value so every scalar (incl. nested map values like
-// "open-infra-console") appears in the output. Not valid nested YAML — enough for the
-// substring-based render assertions, deterministic via sorted keys.
+// toYAMLish renders a value as block YAML, as the real toYaml (a YAML marshaller) does: nested maps
+// and lists are indented, keys are sorted (deterministic), and a string that would not survive as a
+// plain scalar is quoted, so a value can never add structure to the manifest it is written into.
 func toYAMLish(v any) string {
 	switch t := v.(type) {
 	case map[string]any:
+		if len(t) == 0 {
+			return "{}"
+		}
 		keys := make([]string, 0, len(t))
 		for k := range t {
 			keys = append(keys, k)
@@ -2244,20 +2250,53 @@ func toYAMLish(v any) string {
 		sort.Strings(keys)
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
-			parts = append(parts, k+": "+toYAMLish(t[k]))
+			parts = append(parts, yamlishScalar(k)+":"+yamlishNested(t[k], "  "))
 		}
 		return strings.Join(parts, "\n")
 	case []any:
+		if len(t) == 0 {
+			return "[]"
+		}
 		parts := make([]string, 0, len(t))
 		for _, item := range t {
-			parts = append(parts, "- "+toYAMLish(item))
+			s := toYAMLish(item)
+			parts = append(parts, "- "+strings.ReplaceAll(s, "\n", "\n  "))
 		}
 		return strings.Join(parts, "\n")
 	case string:
-		return t
+		return yamlishScalar(t)
+	case nil:
+		return "null"
 	default:
 		return fmt.Sprint(v)
 	}
+}
+
+// yamlishNested renders a map value after its "key:": a scalar or empty collection on the same line,
+// a non-empty map or list on the following lines, indented.
+func yamlishNested(v any, pad string) string {
+	switch t := v.(type) {
+	case map[string]any:
+		if len(t) > 0 {
+			return "\n" + pad + strings.ReplaceAll(toYAMLish(t), "\n", "\n"+pad)
+		}
+	case []any:
+		if len(t) > 0 {
+			return "\n" + pad + strings.ReplaceAll(toYAMLish(t), "\n", "\n"+pad)
+		}
+	}
+	return " " + toYAMLish(v)
+}
+
+var plainYAMLScalar = regexp.MustCompile(`^[A-Za-z0-9_./][A-Za-z0-9_./@=+-]*$`)
+
+// yamlishScalar writes s plain when that is safe, else double-quoted (JSON escaping is valid YAML).
+func yamlishScalar(s string) string {
+	if plainYAMLScalar.MatchString(s) {
+		return s
+	}
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func isEmpty(v any) bool {

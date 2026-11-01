@@ -58,6 +58,10 @@ spec:
                     Beanstalk create these). The composition already renders an empty-policy role safely.
                   items:
                     type: string
+                    # A Policy's name; it becomes the label key rbac.openinfra.dev/policy-<name>, whose
+                    # name part is at most 63 characters.
+                    pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    maxLength: 56
                 trust:
                   type: array
                   description: >-
