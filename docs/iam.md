@@ -215,6 +215,10 @@ The permission is the RBAC verb `passrole` on `roles.iam.openinfra.dev` (an assu
 `iam:PassRole` on `Role::<name>` in its policies instead):
 
 - **Admins** (`openinfra:admins`) hold it on every Role.
+- **provider-kubernetes** holds it, to write the per-VM ServiceAccount from a claim already checked. It
+  runs as the fixed ServiceAccount `crossplane-system/provider-kubernetes`, and its grants are bound to
+  that name only — no other identity in `crossplane-system` (reconcilers, Crossplane function pods)
+  holds `passrole` or the provider's role.
 - **Power users do not.** This matches AWS's PowerUserAccess, which excludes `iam:PassRole`. A power
   user can launch a VM or a state machine that names a Role only after an admin grants `passrole` on
   that Role:

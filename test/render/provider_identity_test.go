@@ -2,6 +2,7 @@ package render
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -58,4 +59,29 @@ func TestOpenAppsyncReconciler_WritesOnlyItsOwnObjects(t *testing.T) {
 		"s.kind == 'ServiceAccount' && s.name == 'open-appsync'")
 	mustContain(t, "reconciler scope binding", yamlDoc(t, f, "ValidatingAdmissionPolicyBinding", "open-appsync-authz-reconciler-scope"),
 		"policyName: open-appsync-authz-reconciler-scope")
+}
+
+// No grant in the platform is bound to the whole crossplane-system ServiceAccount group: it holds every
+// reconciler, every Crossplane function pod and `default`, so a grant there is a grant to all of them
+// (the provider's role alone is cluster-admin-equivalent). The OpenShift SCC overlay is the one
+// exception — an SCC grant lets those pods start, it authorizes no API call.
+func TestNoGrantToTheCrossplaneSystemGroup(t *testing.T) {
+	var files []string
+	for _, dir := range []string{"../../platform/abstraction", "../../platform/security", "../../platform/aws-shim",
+		"../../platform/open-appsync", "../../platform/arch", "../../platform/console/manifests"} {
+		m, _ := filepath.Glob(dir + "/*.yaml")
+		files = append(files, m...)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range strings.Split(string(b), "\n---") {
+			if (strings.Contains(d, "\nkind: ClusterRoleBinding\n") || strings.Contains(d, "\nkind: RoleBinding\n")) &&
+				strings.Contains(d, "name: system:serviceaccounts:crossplane-system") {
+				t.Errorf("%s binds a role to the crossplane-system ServiceAccount group:\n%s", f, d)
+			}
+		}
+	}
 }

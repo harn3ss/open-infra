@@ -2,8 +2,10 @@
 #   1. a ProviderConfig telling it to use its own in-cluster identity, and
 #   2. RBAC granting that identity permission to manage the composed resources.
 #
-# RBAC is bound to the crossplane-system service-account GROUP (not a specific SA
-# name) so it survives provider upgrades, whose SA name is revision-hashed.
+# RBAC is bound to the provider's fixed ServiceAccount name provider-kubernetes (set by the
+# DeploymentRuntimeConfig below, so it survives provider upgrades), never to the crossplane-system
+# ServiceAccount group: that group holds every reconciler, every function pod and `default`, and this
+# role (clusterrole bind/escalate, clusterrolebinding create) is cluster-admin-equivalent.
 # Applied after Crossplane + the provider install (sync-wave 2); SkipDryRun so it
 # applies even before the ProviderConfig CRD is registered.
 ---
@@ -234,15 +236,10 @@ roleRef:
   kind: ClusterRole
   name: openinfra-provider-kubernetes
 subjects:
-  # provider-kubernetes runs as this fixed ServiceAccount name (DeploymentRuntimeConfig below), so the
-  # grant is bound to it alone. TRANSITIONAL: the namespace group stays until the provider runs under
-  # the fixed name and the control-plane corpus is regenerated; then it is dropped.
+  # provider-kubernetes's fixed ServiceAccount name (DeploymentRuntimeConfig above) — it alone.
   - kind: ServiceAccount
     name: provider-kubernetes
     namespace: crossplane-system
-  - kind: Group
-    name: system:serviceaccounts:crossplane-system
-    apiGroup: rbac.authorization.k8s.io
 ---
 # provider-kubernetes's own system permissions (its CRDs, finalizers, events/leases/secrets), the rules
 # Crossplane's rbac-manager generates per package revision and binds to whatever ServiceAccount the

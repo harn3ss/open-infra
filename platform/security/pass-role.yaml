@@ -48,8 +48,8 @@ subjects:
 ---
 # provider-kubernetes creates the per-VM ServiceAccount (with its instance-role annotation) from a
 # VirtualMachine claim that already passed the check. It runs as the fixed ServiceAccount name
-# provider-kubernetes (provider-setup.yaml), so the verb is bound to it alone. TRANSITIONAL: the
-# namespace group stays until the provider runs under that name and the corpus is regenerated.
+# provider-kubernetes (provider-setup.yaml), so the verb is bound to it alone — not to the rest of
+# crossplane-system (the reconcilers, the function pods), none of which passes a Role.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -62,9 +62,6 @@ subjects:
   - kind: ServiceAccount
     name: provider-kubernetes
     namespace: crossplane-system
-  - kind: Group
-    name: system:serviceaccounts:crossplane-system
-    apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
