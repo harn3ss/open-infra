@@ -37,3 +37,25 @@ func TestProviderKubernetes_RunsAsAFixedServiceAccount(t *testing.T) {
 	mustContain(t, "provider binding", yamlDoc(t, providerSetupYAML, "ClusterRoleBinding", "openinfra-provider-kubernetes"),
 		"kind: ServiceAccount\n    name: provider-kubernetes\n    namespace: crossplane-system")
 }
+
+// The open-appsync authz reconciler writes ServiceAccounts and a ClusterRoleBinding cluster-wide; its
+// get/patch/update are pinned by name and an admission policy holds create to the same names.
+func TestOpenAppsyncReconciler_WritesOnlyItsOwnObjects(t *testing.T) {
+	const f = "../../platform/open-appsync/authz-rbac.yaml"
+	cr := yamlDoc(t, f, "ClusterRole", "open-appsync-authz-reconciler")
+	mustContain(t, "reconciler role", cr,
+		"resources: [serviceaccounts]\n    verbs: [get, patch]\n    resourceNames: [open-appsync]",
+		"resources: [clusterrolebindings]\n    verbs: [get, update, patch]\n    resourceNames: [open-appsync-authorizer]")
+	for _, unpinned := range []string{"verbs: [get, create, patch]\n", "verbs: [get, create, update, patch]\n"} {
+		if strings.Contains(cr, unpinned) {
+			t.Errorf("reconciler role still has an unpinned rule %q", unpinned)
+		}
+	}
+	p := yamlDoc(t, f, "ValidatingAdmissionPolicy", "open-appsync-authz-reconciler-scope")
+	mustContain(t, "reconciler scope policy", p,
+		"system:serviceaccount:crossplane-system:open-appsync-authz-reconciler",
+		"object.metadata.name == 'open-appsync'", "object.roleRef.name == 'open-appsync-authorizer'",
+		"s.kind == 'ServiceAccount' && s.name == 'open-appsync'")
+	mustContain(t, "reconciler scope binding", yamlDoc(t, f, "ValidatingAdmissionPolicyBinding", "open-appsync-authz-reconciler-scope"),
+		"policyName: open-appsync-authz-reconciler-scope")
+}

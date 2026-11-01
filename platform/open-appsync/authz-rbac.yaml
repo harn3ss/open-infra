@@ -14,7 +14,10 @@
 # self-heal — the grant-reconciler owns its bindings the same way, not from git). The escalation guard
 # bounds this: the reconciler possesses only { create subjectaccessreviews, create serviceaccounts,
 # manage this binding, read graphqlapis }, so even if its (short-lived, CronJob) token were stolen it
-# could bind only that low-risk set — never secrets, cluster-admin, or any higher role.
+# could bind only that low-risk set — never secrets, cluster-admin, or any higher role. Its ServiceAccount
+# and binding writes are further held by name (resourceNames, and an admission policy for create) to the
+# open-appsync ServiceAccounts and the open-appsync-authorizer binding. (That holds only while nothing
+# else grants crossplane-system ServiceAccounts more — provider-setup.yaml binds by name, never the group.)
 #
 # Part of the OPT-IN openAppsync component; applied by the root app. The reconciler lives in
 # crossplane-system (always present, alongside the other bespoke reconcilers).
@@ -44,12 +47,23 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [graphqlapis]
     verbs: [get, list]
+  # Only the engine ServiceAccount (open-appsync, in any namespace) and only the authorizer binding.
+  # RBAC cannot name an object at create time, so create stays unnamed here and the admission policy
+  # below holds it to the same names.
   - apiGroups: [""]
     resources: [serviceaccounts]
-    verbs: [get, create, patch]
+    verbs: [get, patch]
+    resourceNames: [open-appsync]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [create]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [clusterrolebindings]
-    verbs: [get, create, update, patch]
+    verbs: [get, update, patch]
+    resourceNames: [open-appsync-authorizer]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterrolebindings]
+    verbs: [create]
   # Possess the authorizer capability itself, so it may bind that ClusterRole without `escalate`.
   - apiGroups: [authorization.k8s.io]
     resources: [subjectaccessreviews]
@@ -67,6 +81,47 @@ subjects:
   - kind: ServiceAccount
     name: open-appsync-authz-reconciler
     namespace: crossplane-system
+---
+# The reconciler's writes, held to what it is for: ServiceAccounts named open-appsync (carrying no
+# instance-role annotation), and the one authorizer binding — roleRef open-appsync-authorizer, subjects
+# only open-appsync ServiceAccounts. RBAC's resourceNames cannot cover create; this does.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: open-appsync-authz-reconciler-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [serviceaccounts]
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [clusterrolebindings]
+  matchConditions:
+    - name: the-reconciler
+      expression: "request.userInfo.username == 'system:serviceaccount:crossplane-system:open-appsync-authz-reconciler'"
+  validations:
+    - expression: >-
+        request.resource.resource == 'serviceaccounts'
+        ? object.metadata.name == 'open-appsync' &&
+          !(has(object.metadata.annotations) && 'openinfra.dev/instance-role' in object.metadata.annotations)
+        : object.metadata.name == 'open-appsync-authorizer' &&
+          object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'open-appsync-authorizer' &&
+          (!has(object.subjects) || object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'open-appsync'))
+      reason: Forbidden
+      message: "open-appsync-authz-reconciler may write only open-appsync ServiceAccounts and the open-appsync-authorizer binding"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: open-appsync-authz-reconciler-scope
+spec:
+  policyName: open-appsync-authz-reconciler-scope
+  validationActions: [Warn, Audit]
 ---
 # (3) The reconciler: ensure the engine SA in each auth-using GraphQLApi namespace, then set the
 #     authorizer binding's subjects to exactly those SAs (apply = create-or-update, so the binding is
