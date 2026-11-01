@@ -5823,9 +5823,11 @@ components:
                 \ isn't useful."
             nodeIP:
               type: string
-              description: "Optional: also answer SMB 445 on this cluster node's LAN IP (Service externalIPs). Masquerade-networked\
-                \ VMs can't reach the MetalLB LAN IP, but they can reach a node IP \u2014 so this lets such a VM mount the\
-                \ share at \\\\<nodeIP>\\<name>. Use a stable, always-on node."
+              pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$
+              description: Deprecated and ignored. It used to add this address to the share's Service externalIPs so masquerade-networked
+                VMs could mount it on a node IP; VMs reach the share's ClusterIP directly now, and the platform refuses Service
+                externalIPs (a tenant-chosen external IP can capture traffic meant for any address, CVE-2020-8554). Mount
+                \\<Service address>\<name> from a VM in the share's namespace, or the LAN IP when exposed.
         status:
           type: object
           properties:

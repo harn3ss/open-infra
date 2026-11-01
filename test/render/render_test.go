@@ -262,16 +262,17 @@ func TestManagedDB_Replicas(t *testing.T) {
 	}
 }
 
-// TestFileShare_NodeIPExternalIPs guards the masquerade-VM escape hatch: when a
-// FileShare sets spec.nodeIP, the Service must also bind SMB 445 on that node IP
-// (externalIPs) so a NAT'd VM can mount it; without nodeIP it must not.
-func TestFileShare_NodeIPExternalIPs(t *testing.T) {
+// TestFileShare_NodeIPIsIgnored: spec.nodeIP used to add the address to the Service's externalIPs (so
+// a masquerade VM could mount the share on a node IP). VMs reach the share's ClusterIP now, and a
+// tenant-chosen external IP captures traffic meant for any address (CVE-2020-8554), so the field is
+// ignored and no FileShare renders externalIPs, set or not.
+func TestFileShare_NodeIPIsIgnored(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/fileshare-composition.yaml")
 
 	// 192.0.2.0/24 is the RFC 5737 documentation range — never a real site IP.
 	with := render(t, tmpl, fileshareCtx("192.0.2.50"))
-	if !strings.Contains(with, "externalIPs: [192.0.2.50]") {
-		t.Errorf("nodeIP set must render externalIPs; got:\n%s", grepCtx(with, "type:"))
+	if strings.Contains(with, "externalIPs") || strings.Contains(with, "192.0.2.50") {
+		t.Errorf("nodeIP must be ignored (no externalIPs, the address appears nowhere); got:\n%s", grepCtx(with, "type:"))
 	}
 	without := render(t, tmpl, fileshareCtx(""))
 	if strings.Contains(without, "externalIPs") {

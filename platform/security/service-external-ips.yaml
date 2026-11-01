@@ -1,0 +1,35 @@
+# Service externalIPs are refused (CVE-2020-8554). kube-proxy captures traffic to a Service's external
+# IP on every node, whoever it was meant for, so whoever can set one can take over any address on its
+# ports: another tenant's Service address, a LAN host, a domain controller. That is what the upstream
+# DenyServiceExternalIPs admission plugin guards; k3s does not enable it, so this policy does the same.
+#
+# Nothing the platform renders uses external IPs: LAN addresses come from MetalLB (LoadBalancer
+# status), and kind: FileShare's old spec.nodeIP, the one composition that set them, is ignored now.
+# An update that leaves an existing list untouched passes, so a Service created before this policy
+# can still be updated; to add or change an external IP, an operator removes the binding first.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-deny-service-external-ips
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["services"]
+  validations:
+    - expression: >-
+        !has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0 ||
+        (oldObject != null && has(oldObject.spec.externalIPs) && oldObject.spec.externalIPs == object.spec.externalIPs)
+      message: "Service externalIPs are not allowed (CVE-2020-8554): an external IP captures traffic meant for that address on every node. Use a LoadBalancer Service instead."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-deny-service-external-ips
+spec:
+  policyName: openinfra-deny-service-external-ips
+  validationActions: [Deny]

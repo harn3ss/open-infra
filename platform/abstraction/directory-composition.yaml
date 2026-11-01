@@ -47,6 +47,11 @@ spec:
             {{- $netbios := (splitList "." $domain) | first | upper }}
             {{- $size := $spec.size | default "5Gi" }}
             {{- $expose := true }}{{- if hasKey $spec "expose" }}{{- $expose = $spec.expose }}{{- end }}
+            {{- /* The AD ports, once: the Service publishes them and, when exposed, the isolation policy
+                   opens exactly these to LAN clients. [name, port, protocol]; the pinned dynamic RPC
+                   range (the machine-account RPC: 135 -> one of these) is appended below. */}}
+            {{- $dcPorts := list (list "dns-tcp" 53 "TCP") (list "dns-udp" 53 "UDP") (list "kerberos-tcp" 88 "TCP") (list "kerberos-udp" 88 "UDP") (list "ldap" 389 "TCP") (list "cldap" 389 "UDP") (list "smb" 445 "TCP") (list "epmapper" 135 "TCP") (list "kpasswd-tcp" 464 "TCP") (list "kpasswd-udp" 464 "UDP") (list "ldaps" 636 "TCP") (list "gc" 3268 "TCP") (list "gc-ssl" 3269 "TCP") }}
+            {{- range $i := until 13 }}{{- $dcPorts = append $dcPorts (list (printf "rpc-%d" (add 49152 $i)) (add 49152 $i) "TCP") }}{{- end }}
             {{- $admin := "Administrator" }}
             {{- /* AD password complexity needs upper+lower+digit+symbol; prefix a
                    fixed "Aa1!" onto a stable per-directory hash so provisioning
@@ -261,6 +266,9 @@ spec:
             # Service: the AD ports. LoadBalancer (LAN IP) when expose, else
             # ClusterIP. Either way it has a stable ClusterIP that in-cluster VMs
             # use as their DNS server to resolve the domain and join.
+            # Exposed, it keeps the client's address (externalTrafficPolicy: Local) and allocates no
+            # node ports: with Cluster, kube-proxy masquerades every caller into the kube-ovn join
+            # subnet, so a pod in any namespace dialing a node's port reached the DC as "host" traffic.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -277,24 +285,14 @@ spec:
                     labels: { openinfra.dev/directory: "true" }
                   spec:
                     type: {{ if $expose }}LoadBalancer{{ else }}ClusterIP{{ end }}
+                    {{- if $expose }}
+                    externalTrafficPolicy: Local
+                    allocateLoadBalancerNodePorts: false
+                    {{- end }}
                     selector: { app: {{ $name }}-dc }
                     ports:
-                      - { name: dns-tcp, port: 53, targetPort: 53, protocol: TCP }
-                      - { name: dns-udp, port: 53, targetPort: 53, protocol: UDP }
-                      - { name: kerberos-tcp, port: 88, targetPort: 88, protocol: TCP }
-                      - { name: kerberos-udp, port: 88, targetPort: 88, protocol: UDP }
-                      - { name: ldap, port: 389, targetPort: 389, protocol: TCP }
-                      - { name: cldap, port: 389, targetPort: 389, protocol: UDP }
-                      - { name: smb, port: 445, targetPort: 445, protocol: TCP }
-                      - { name: epmapper, port: 135, targetPort: 135, protocol: TCP }
-                      - { name: kpasswd-tcp, port: 464, targetPort: 464, protocol: TCP }
-                      - { name: kpasswd-udp, port: 464, targetPort: 464, protocol: UDP }
-                      - { name: ldaps, port: 636, targetPort: 636, protocol: TCP }
-                      - { name: gc, port: 3268, targetPort: 3268, protocol: TCP }
-                      - { name: gc-ssl, port: 3269, targetPort: 3269, protocol: TCP }
-                      {{- /* pinned dynamic RPC range for the machine-account RPC (135 -> one of these) */}}
-                      {{- range $i := until 13 }}
-                      - { name: rpc-{{ add 49152 $i }}, port: {{ add 49152 $i }}, targetPort: {{ add 49152 $i }}, protocol: TCP }
+                      {{- range $p := $dcPorts }}
+                      - { name: {{ index $p 0 }}, port: {{ index $p 1 }}, targetPort: {{ index $p 1 }}, protocol: {{ index $p 2 }} }
                       {{- end }}
             ---
             # Connection secret: the domain + admin credentials, for the console and
@@ -324,7 +322,10 @@ spec:
             ---
             # --- Tenant isolation (ingress) for the domain controller: this namespace and the platform callers
             #     named below only; every other namespace is refused. Pod->Service calls keep the caller's pod IP
-            #     (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            #     (kube-ovn enable-lb), so the namespace is what tells tenants apart. Exposed, LAN clients reach
+            #     the AD ports with their own address (the LoadBalancer keeps it): the last rule admits any
+            #     address outside the pod network and the join subnet, on those ports only, so a pod is still
+            #     judged by its namespace however it dials. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -346,8 +347,9 @@ spec:
                       - from:
                           # this namespace
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
-                          # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
-                          # through kube-proxy) arrives as a node's kube-ovn join IP
+                          # host-sourced traffic (a node's own processes, and the DC reaching itself through its
+                          # LAN address) arrives as a node's kube-ovn join IP; no Service here masquerades a
+                          # caller into it (Local, no node ports)
                           - ipBlock: { cidr: 100.64.0.0/16 }
                           # the console (database stats, Peek, directory users)
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
@@ -355,6 +357,16 @@ spec:
                           # Prometheus, scraping metrics
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                             podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+                      {{- if $expose }}
+                      # LAN clients on the published AD ports: anything outside the pod network (10.16.0.0/16)
+                      # and the join subnet (100.64.0.0/16)
+                      - from:
+                          - ipBlock: { cidr: 0.0.0.0/0, except: [10.16.0.0/16, 100.64.0.0/16] }
+                        ports:
+                          {{- range $p := $dcPorts }}
+                          - { protocol: {{ index $p 2 }}, port: {{ index $p 1 }} }
+                          {{- end }}
+                      {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

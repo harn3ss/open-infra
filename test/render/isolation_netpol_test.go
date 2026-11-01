@@ -35,6 +35,26 @@ var isoPlatformNamespaces = map[string]bool{
 
 const isoJoinCIDR = "100.64.0.0/16"
 
+// isoPodCIDR is the kube-ovn pod network (install.sh). A LAN-client rule admits everything outside it
+// and the join subnet, so a pod is still judged by its namespace however it dials.
+const isoPodCIDR = "10.16.0.0/16"
+
+// isoLANClients reports whether an ipBlock is the LAN-client block: 0.0.0.0/0 except the pod network
+// and the join subnet.
+func isoLANClients(ib any) bool {
+	if mstr(ib, "cidr") != "0.0.0.0/0" {
+		return false
+	}
+	ex, _ := mget(ib, "except").([]any)
+	has := map[string]bool{}
+	for _, x := range ex {
+		if s, ok := x.(string); ok {
+			has[s] = true
+		}
+	}
+	return has[isoPodCIDR] && has[isoJoinCIDR]
+}
+
 func isoCtx(spec map[string]any) map[string]any {
 	return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
 		"spec": spec,
@@ -69,9 +89,13 @@ func isoFixtures() []isoFixture {
 		{"application/sqlserver", "composition.yaml", app(map[string]any{"engine": "sqlserver", "acceptEula": true})},
 		{"databaseproxy", "databaseproxy-composition.yaml", map[string]any{"target": "db", "engine": "sqlserver"}},
 		{"directory", "directory-composition.yaml", map[string]any{"domain": "corp.example.test"}},
+		{"directory/private", "directory-composition.yaml", map[string]any{"domain": "corp.example.test", "expose": false}},
 		{"fileshare", "fileshare-composition.yaml", map[string]any{"size": "1Gi"}},
+		{"fileshare/nodeip", "fileshare-composition.yaml", map[string]any{"size": "1Gi", "nodeIP": "192.0.2.10"}},
+		{"fileshare/private", "fileshare-composition.yaml", map[string]any{"size": "1Gi", "expose": false}},
 		{"userpool", "userpool-composition.yaml", map[string]any{}},
 		{"model", "model-composition.yaml", map[string]any{"model": "tiny"}},
+		{"model/exposed", "model-composition.yaml", map[string]any{"model": "tiny", "expose": true}},
 		{"model/serve", "model-composition.yaml", map[string]any{"serve": map[string]any{"image": "ghcr.io/x/serve:1"}}},
 		{"featuregroup", "featuregroup-composition.yaml", map[string]any{"recordIdentifier": "id", "features": []any{map[string]any{"name": "id", "type": "String"}}}},
 		{"httpapi/validated", "httpapi-composition.yaml", map[string]any{"routes": []any{map[string]any{
@@ -184,9 +208,12 @@ func strMap(v any) map[string]string {
 
 // isoLB is a LoadBalancer Service a render publishes: the pods it selects and their target ports.
 type isoLB struct {
+	name     string
 	ns       string
 	selector map[string]string
 	ports    map[string]bool // "TCP/22"
+	local    bool            // externalTrafficPolicy: Local (keeps the client's address)
+	nodePort bool            // allocates node ports (allocateLoadBalancerNodePorts unset or true)
 }
 
 func isoLBs(t *testing.T, out string) []isoLB {
@@ -201,7 +228,8 @@ func isoLBs(t *testing.T, out string) []isoLB {
 		if mstr(m, "kind") != "Service" || mstr(m, "apiVersion") != "v1" || mstr(m, "spec", "type") != "LoadBalancer" {
 			continue
 		}
-		lb := isoLB{ns: mstr(m, "metadata", "namespace"), selector: strMap(mget(m, "spec", "selector")), ports: map[string]bool{}}
+		lb := isoLB{name: mstr(m, "metadata", "name"), ns: mstr(m, "metadata", "namespace"), selector: strMap(mget(m, "spec", "selector")), ports: map[string]bool{},
+			local: mstr(m, "spec", "externalTrafficPolicy") == "Local", nodePort: mstr(m, "spec", "allocateLoadBalancerNodePorts") != "false"}
 		ps, _ := mget(m, "spec", "ports").([]any)
 		for _, p := range ps {
 			proto := mstr(p, "protocol")
@@ -221,7 +249,10 @@ func isoLBs(t *testing.T, out string) []isoLB {
 
 // isoPublished reports whether every port of a from-less ingress rule is published to these pods by
 // a LoadBalancer in the same render: such a rule opens no more than the Service already does.
-func isoPublished(rule any, w isoWorkload, lbs []isoLB) bool {
+func isoPublished(rule any, w isoWorkload, lbs []isoLB) bool { return isoPublishedBy(rule, w, lbs, false) }
+
+// isoPublishedBy is isoPublished, optionally counting only LoadBalancers that keep the client's address.
+func isoPublishedBy(rule any, w isoWorkload, lbs []isoLB, localOnly bool) bool {
 	ports, _ := mget(rule, "ports").([]any)
 	if len(ports) == 0 {
 		return false
@@ -234,6 +265,9 @@ func isoPublished(rule any, w isoWorkload, lbs []isoLB) bool {
 		key := proto + "/" + mstr(p, "port")
 		ok := false
 		for _, lb := range lbs {
+			if localOnly && !lb.local {
+				continue
+			}
 			if lb.ns == w.ns && lb.ports[key] && len(lb.selector) > 0 && isoSelects(map[string]any{"matchLabels": toAnyMap(lb.selector)}, w.labels) {
 				ok = true
 			}
@@ -358,7 +392,9 @@ func isoSelects(sel map[string]any, labels map[string]string) bool {
 // isoPeersProblems lists every ingress peer that would admit more than the pod's namespace and the
 // named platform callers: an empty `from` (unless it only opens ports a LoadBalancer in the same
 // render already publishes to these pods), an all-namespaces selector, an unknown namespace, or an
-// address block other than the join subnet.
+// address block other than the join subnet — or, on ports a client-address-keeping (Local)
+// LoadBalancer publishes, the LAN-client block (everything outside the pod network and the join
+// subnet, so no pod is admitted by it).
 func isoPeersProblems(p isoPolicy, w isoWorkload, lbs []isoLB) []string {
 	var probs []string
 	if len(p.ingress) == 0 {
@@ -375,8 +411,13 @@ func isoPeersProblems(p isoPolicy, w isoWorkload, lbs []isoLB) []string {
 		for _, peer := range from {
 			pm, _ := peer.(map[string]any)
 			if ib, ok := pm["ipBlock"]; ok {
-				if mstr(ib, "cidr") != isoJoinCIDR || mget(ib, "except") != nil {
-					probs = append(probs, "ipBlock "+mstr(ib, "cidr")+" (only the join subnet "+isoJoinCIDR+" is expected)")
+				switch {
+				case mstr(ib, "cidr") == isoJoinCIDR && mget(ib, "except") == nil:
+				case isoLANClients(ib) && isoPublishedBy(r, w, lbs, true):
+				case isoLANClients(ib):
+					probs = append(probs, "the LAN-client ipBlock on ports no Local LoadBalancer publishes to these pods")
+				default:
+					probs = append(probs, "ipBlock "+mstr(ib, "cidr")+" (only the join subnet "+isoJoinCIDR+", or the LAN-client block on published ports, is expected)")
 				}
 				continue
 			}
@@ -610,5 +651,85 @@ func TestIsolation_IngressBackendsAreDialedByClusterIP(t *testing.T) {
 		if n := strings.Count(src, `traefik.ingress.kubernetes.io/service.nativelb: "true"`); n < ingresses {
 			t.Errorf("%s renders %d Ingress(es) but marks %d backend Service(s) nativelb", filepath.Base(f), ingresses, n)
 		}
+	}
+}
+
+// A LoadBalancer with externalTrafficPolicy: Cluster makes kube-proxy masquerade every caller into the
+// kube-ovn join subnet, which the policies admit as host traffic, so a pod in any namespace dialing a
+// node's port (or, from the same node, the LAN address) reached the pods behind it. Every LoadBalancer a
+// composition renders keeps the client's address instead: a LAN client then arrives as itself (the
+// LAN-client rule admits it on the published ports) and a pod arrives as itself (its namespace decides).
+func TestIsolation_LoadBalancersKeepClientAddress(t *testing.T) {
+	seen := 0
+	for _, f := range isoFixtures() {
+		tmpl := extractInlineTemplate(t, "../../platform/abstraction/"+f.file)
+		for _, lb := range isoLBs(t, render(t, tmpl, isoCtx(f.spec))) {
+			seen++
+			if !lb.local {
+				t.Errorf("%s: LoadBalancer %s/%s does not set externalTrafficPolicy: Local", f.name, lb.ns, lb.name)
+			}
+			// Node ports are harmless once the client keeps its address; the kinds whose policies
+			// admit LAN clients by address allocate none, so nothing dials them by node port at all.
+			if lb.nodePort && f.file != "vm-composition.yaml" {
+				t.Errorf("%s: LoadBalancer %s/%s allocates node ports (set allocateLoadBalancerNodePorts: false)", f.name, lb.ns, lb.name)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no fixture renders a LoadBalancer; the check means nothing")
+	}
+}
+
+// No composition renders Service externalIPs (CVE-2020-8554: an external IP captures traffic meant for
+// that address on every node); platform/security/service-external-ips.yaml refuses them at admission.
+func TestIsolation_NoServiceExternalIPs(t *testing.T) {
+	for _, f := range isoFixtures() {
+		tmpl := extractInlineTemplate(t, "../../platform/abstraction/"+f.file)
+		docs, err := parseYAMLDocs(render(t, tmpl, isoCtx(f.spec)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range docs {
+			m := mget(d, "spec", "forProvider", "manifest")
+			if mstr(m, "kind") == "Service" && mget(m, "spec", "externalIPs") != nil {
+				t.Errorf("%s: Service %s sets externalIPs", f.name, mstr(m, "metadata", "name"))
+			}
+		}
+	}
+}
+
+// An IngressRoute ignores the backend Service's nativelb annotation, so HttpApi sets nativeLB on every
+// service it routes to: Traefik (host network) then dials the ClusterIP and arrives from the join subnet.
+func TestIsolation_IngressRoutesDialByClusterIP(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/httpapi-composition.yaml")
+	out := render(t, tmpl, isoCtx(map[string]any{"routes": []any{
+		map[string]any{"path": "/a", "backend": map[string]any{"name": "svc", "port": int64(80)}},
+		map[string]any{"path": "/b", "backend": map[string]any{"url": "https://origin.example.test"}},
+		map[string]any{"path": "/c", "methods": []any{"POST"}, "backend": map[string]any{"name": "svc", "port": int64(80)},
+			"requestModel": map[string]any{"type": "object"}},
+	}}))
+	docs, err := parseYAMLDocs(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, d := range docs {
+		m := mget(d, "spec", "forProvider", "manifest")
+		if mstr(m, "kind") != "IngressRoute" {
+			continue
+		}
+		routes, _ := mget(m, "spec", "routes").([]any)
+		for _, r := range routes {
+			svcs, _ := mget(r, "services").([]any)
+			for _, s := range svcs {
+				n++
+				if mstr(s, "nativeLB") != "true" {
+					t.Errorf("IngressRoute service %s (route %s) is dialed by pod IP; set nativeLB: true", mstr(s, "name"), mstr(r, "match"))
+				}
+			}
+		}
+	}
+	if n != 3 {
+		t.Fatalf("want 3 routed services, got %d:\n%s", n, out)
 	}
 }

@@ -407,7 +407,10 @@ spec:
             {{- if $spec.expose }}
             ---
             # --- LAN LoadBalancer (MetalLB): the inference endpoint on a LAN IP,
-            #     so workstations hit the OpenAI API without DNS/Ingress. ---
+            #     so workstations hit the OpenAI API without DNS/Ingress. It keeps the client's
+            #     address (externalTrafficPolicy: Local) and allocates no node ports: with Cluster,
+            #     kube-proxy masquerades every caller into the kube-ovn join subnet, so a pod in any
+            #     namespace dialing a node's port reached the model as "host" traffic. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -424,6 +427,8 @@ spec:
                     labels: { openinfra.dev/model-lan: {{ $name }} }
                   spec:
                     type: LoadBalancer
+                    externalTrafficPolicy: Local
+                    allocateLoadBalancerNodePorts: false
                     selector: { app.kubernetes.io/name: {{ $name }} }
                     ports: [ { port: 80, targetPort: 8080 } ]
             {{- end }}
@@ -484,7 +489,9 @@ spec:
             ---
             # --- Tenant isolation (ingress) for the model server: this namespace and the platform callers named
             #     below only; every other namespace is refused. Pod->Service calls keep the caller's pod IP (kube-
-            #     ovn enable-lb), so the namespace is what tells tenants apart. ---
+            #     ovn enable-lb), so the namespace is what tells tenants apart. Exposed, LAN clients reach the
+            #     server with their own address (its LoadBalancer keeps it): the last rule admits any address
+            #     outside the pod network and the join subnet, on the served port only. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -506,8 +513,9 @@ spec:
                       - from:
                           # this namespace
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
-                          # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
-                          # through kube-proxy) arrives as a node's kube-ovn join IP
+                          # host-sourced traffic (hostNetwork Traefik dialing the Service's ClusterIP) arrives as a
+                          # node's kube-ovn join IP; no Service here masquerades a caller into it (the LAN
+                          # LoadBalancer is Local, with no node ports)
                           - ipBlock: { cidr: 100.64.0.0/16 }
                           # the ingress controller, should it run on the pod network (on the host network it is admitted
                           # through the join subnet: it dials the Service's ClusterIP, see the Service's nativelb annotation)
@@ -516,6 +524,14 @@ spec:
                           # Prometheus, scraping metrics
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                             podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+                      {{- if $spec.expose }}
+                      # LAN clients through the LAN LoadBalancer: anything outside the pod network (10.16.0.0/16)
+                      # and the join subnet (100.64.0.0/16), on the served port
+                      - from:
+                          - ipBlock: { cidr: 0.0.0.0/0, except: [10.16.0.0/16, 100.64.0.0/16] }
+                        ports:
+                          - { protocol: TCP, port: 8080 }
+                      {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
