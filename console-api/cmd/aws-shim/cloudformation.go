@@ -123,9 +123,15 @@ type cfnDoorway struct {
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
 // deploy all use the same value, so a PROVISIONABLE* plan still means deploy won't refuse.
 func (h *cfnDoorway) caps() cfn.Capabilities {
-	return cfn.Capabilities{ObjectEncryption: h.objectEncryption,
+	c := cfn.Capabilities{ObjectEncryption: h.objectEncryption,
 		SQSAPI: h.services.sqsOK(), SNSAPI: h.services.snsOK(), SSMAPI: h.services.ssmOK(), KMSAPI: h.services.kmsOK(),
-		SQSURLBase: h.sqsURLBase}
+		SQSURLBase:        h.sqsURLBase,
+		SecretsManagerAPI: h.services.doorOK("secretsmanager"), LogsAPI: h.services.doorOK("logs"),
+		EventsAPI: h.services.doorOK("events"), ECRAPI: h.services.doorOK("ecr"), CloudWatchAPI: h.services.doorOK("monitoring")}
+	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
+		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
+	}
+	return c
 }
 
 func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns, svcSuffix string, logger *slog.Logger) (*cfnDoorway, error) {

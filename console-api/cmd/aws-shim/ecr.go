@@ -261,6 +261,8 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeImages(ctx, w, requestID, body)
 	case "BatchDeleteImage":
 		h.batchDeleteImage(ctx, w, requestID, body)
+	case "PutImageTagMutability":
+		h.putImageTagMutability(ctx, w, requestID, body)
 	default:
 		// A recognized op (e.g. the layer-pull API or PutImageTagMutability) that the shim does not
 		// front yet — honest, never faked.
@@ -349,6 +351,31 @@ func (h *ecrHandler) createRepository(ctx context.Context, w http.ResponseWriter
 	}
 	h.audit(ctx, "CreateRepository", name, "allow", "")
 	writeECRJSON(w, requestID, map[string]any{"repository": h.repoObject(rec)})
+}
+
+func (h *ecrHandler) putImageTagMutability(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	name := firstString(body, "repositoryName")
+	mut := firstString(body, "imageTagMutability")
+	if mut != "MUTABLE" && mut != "IMMUTABLE" {
+		writeECRError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "imageTagMutability must be MUTABLE or IMMUTABLE.")
+		return
+	}
+	rec, found, err := h.getRepo(ctx, name)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !found {
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+		return
+	}
+	rec.ImageTagMutability = mut
+	if err := h.putRepo(ctx, rec); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	h.audit(ctx, "PutImageTagMutability", name, "allow", mut)
+	writeECRJSON(w, requestID, map[string]any{"registryId": h.account, "repositoryName": name, "imageTagMutability": mut})
 }
 
 func (h *ecrHandler) describeRepositories(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {

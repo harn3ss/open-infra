@@ -211,7 +211,7 @@ func (h *cfnDoorway) authorizeTeardown(ctx context.Context, ap *impersonatingApp
 			ok, reason = h.canInvokeFunction(ctx, ap, h.ns, fn)
 		case cfn.IsRestV1API(r):
 			ok, reason = h.canDeleteRestAPI(ctx, ap, r.ProvisionedID)
-		case cfn.IsServiceResource(r): // a stack queue/topic/parameter/key: the front door's delete checks
+		case cfn.IsServiceResource(r): // a stack's service resource: its front door's delete checks
 			ok = true
 			if ap.svc != nil && ap.door != nil {
 				if err := ap.svcAuthorize(ctx, r.Kind, "delete", r.Name, r.Spec); err != nil {

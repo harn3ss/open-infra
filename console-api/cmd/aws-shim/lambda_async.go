@@ -21,10 +21,13 @@ import (
 // Enabled only when the shim has NATS (NATS_URL). Without it, Event invocations are refused honestly
 // rather than silently dropped (there is no durable place to queue them).
 type asyncInvoker struct {
-	nc         *nats.Conn
-	js         nats.JetStreamContext
-	client     *http.Client
-	urlFor     func(name string) string // function URL builder (injectable for tests)
+	nc     *nats.Conn
+	js     nats.JetStreamContext
+	client *http.Client
+	urlFor func(name string) string // function URL builder (injectable for tests)
+	// urlIn builds the URL of a function in a given namespace: an invocation published with publishIn (an
+	// EventBridge target that is a stack's own Function, which runs in the stack's namespace).
+	urlIn      func(name, ns string) string
 	maxDeliver int
 	logger     *slog.Logger
 }
@@ -83,6 +86,7 @@ func newAsyncInvoker(url, fnNS, svcSuffix string, maxDeliver int, logger *slog.L
 	return &asyncInvoker{
 		nc: nc, js: js, client: &http.Client{Timeout: 60 * time.Second},
 		urlFor:     func(name string) string { return "http://" + name + "." + fnNS + "." + svcSuffix + "/" },
+		urlIn:      func(name, ns string) string { return "http://" + name + "." + ns + "." + svcSuffix + "/" },
 		maxDeliver: maxDeliver, logger: logger,
 	}, nil
 }
@@ -94,6 +98,22 @@ func (a *asyncInvoker) publish(name, contentType string, payload []byte, request
 	msg := nats.NewMsg(asyncSubjectPre + name)
 	msg.Data = payload
 	msg.Header.Set("X-Fn-Name", name)
+	if contentType != "" {
+		msg.Header.Set("Content-Type", contentType)
+	}
+	if requestID != "" {
+		msg.Header.Set("X-Amzn-Request-Id", requestID)
+	}
+	_, err := a.js.PublishMsg(msg)
+	return err
+}
+
+// publishIn is publish for a function in namespace ns rather than the Lambda front door's own.
+func (a *asyncInvoker) publishIn(ns, name, contentType string, payload []byte, requestID string) error {
+	msg := nats.NewMsg(asyncSubjectPre + name)
+	msg.Data = payload
+	msg.Header.Set("X-Fn-Name", name)
+	msg.Header.Set("X-Fn-Namespace", ns)
 	if contentType != "" {
 		msg.Header.Set("Content-Type", contentType)
 	}
@@ -148,7 +168,11 @@ func (a *asyncInvoker) deliver(m *nats.Msg) {
 	name := m.Header.Get("X-Fn-Name")
 	dctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(dctx, http.MethodPost, a.urlFor(name), bytes.NewReader(m.Data))
+	url := a.urlFor(name)
+	if ns := m.Header.Get("X-Fn-Namespace"); ns != "" && a.urlIn != nil {
+		url = a.urlIn(name, ns)
+	}
+	req, err := http.NewRequestWithContext(dctx, http.MethodPost, url, bytes.NewReader(m.Data))
 	if err != nil {
 		// A malformed name can never build a valid URL — retrying is pointless; dead-letter now rather
 		// than nak-loop forever (there is no consumer-level MaxDeliver backstop).

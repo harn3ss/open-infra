@@ -140,6 +140,11 @@ func (s *cwlStore) setRetention(ctx context.Context, name string, days int) (boo
 	return rowsAffected(res, err)
 }
 
+func (s *cwlStore) clearRetention(ctx context.Context, name string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE cwl_groups SET retention_days=NULL WHERE name=$1`, name)
+	return rowsAffected(res, err)
+}
+
 func (s *cwlStore) setTags(ctx context.Context, name string, tags map[string]string) error {
 	tj, _ := json.Marshal(tags)
 	_, err := s.db.ExecContext(ctx, `UPDATE cwl_groups SET tags=$2 WHERE name=$1`, name, tj)

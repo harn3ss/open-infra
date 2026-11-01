@@ -435,9 +435,15 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 				"unsupported target type for "+arn+"; the open-infra shim supports Lambda and SQS targets.")
 			return
 		}
+		// A stack's own Function runs in the stack's namespace: the CloudFormation front door names it for
+		// an in-stack target (never a client — the value rides only an in-process request's context).
+		fnNS := ""
+		if m, ok := ctx.Value(cfnTargetNamespaceKey{}).(map[string]string); ok && ttype == "lambda" {
+			fnNS = m[id]
+		}
 		// Escalation fence: the caller must be able to invoke/send to this target themselves. A rule is
 		// then not a way to reach something you could not reach directly.
-		if reason, authorized := h.authorizeTarget(ctx, r, claims, ttype, arn); !authorized {
+		if reason, authorized := h.authorizeTarget(ctx, r, claims, ttype, arn, fnNS); !authorized {
 			writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID,
 				"not authorized to invoke the target "+arn+" (a rule cannot target what its creator cannot invoke): "+reason)
 			return
@@ -446,7 +452,7 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 		if iv, ok := tm["Input"].(string); ok {
 			input = iv
 		}
-		if err := h.store.putTarget(ctx, bus, name, ebTarget{ID: id, Arn: arn, Type: ttype, Input: input}); err != nil {
+		if err := h.store.putTarget(ctx, bus, name, ebTarget{ID: id, Arn: arn, Type: ttype, Input: input, NS: fnNS}); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -588,6 +594,9 @@ func (h *ebHandler) deliver(ctx context.Context, t ebTarget, payload []byte) err
 		if h.async == nil {
 			return errNoAsync
 		}
+		if t.NS != "" {
+			return h.async.publishIn(t.NS, lambdaNameFromArn(t.Arn), "application/json", payload, "")
+		}
 		return h.async.publish(lambdaNameFromArn(t.Arn), "application/json", payload, "")
 	case "sqs":
 		if h.sqs == nil {
@@ -694,14 +703,17 @@ func (h *ebHandler) scheduledEnvelope(r ebRule) map[string]any {
 }
 
 // authorizeTarget verifies the caller may invoke/send to the target — the escalation fence.
-func (h *ebHandler) authorizeTarget(ctx context.Context, r *http.Request, claims iam.Claims, ttype, arn string) (string, bool) {
+func (h *ebHandler) authorizeTarget(ctx context.Context, r *http.Request, claims iam.Claims, ttype, arn, fnNS string) (string, bool) {
 	switch ttype {
 	case "lambda":
 		fn := lambdaNameFromArn(arn)
 		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
 			return reason, false
 		}
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, fn); !allowed {
+		if fnNS == "" {
+			fnNS = h.fnNS
+		}
+		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", fnNS, fn); !allowed {
 			return reason, false
 		}
 		return "", true

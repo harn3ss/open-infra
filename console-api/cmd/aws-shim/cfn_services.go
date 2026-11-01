@@ -35,7 +35,26 @@ type cfnServices struct {
 	sns    *snsHandler
 	ssm    *ssmHandler
 	kms    *kmsHandler
-	owners *cfnServiceOwners
+	owners serviceOwnerStore
+	// doors are the front doors the doorKinds are provisioned through, as the caller
+	// (cfn_services_doors.go): the shim's services map.
+	doors map[string]awsService
+}
+
+// door is the front door registered as service ("" when none).
+func (s *cfnServices) door(service string) awsService {
+	if s == nil || s.doors == nil {
+		return nil
+	}
+	return s.doors[service]
+}
+
+// serviceOwnerStore is where the stack that created each service resource is recorded, with its applied
+// spec (cfnServiceOwners: the cfn_service_resources table).
+type serviceOwnerStore interface {
+	get(ctx context.Context, kind, name string) (stack string, spec map[string]any, found bool, err error)
+	put(ctx context.Context, kind, name, stack, ns string, spec map[string]any) error
+	del(ctx context.Context, kind, name string) error
 }
 
 func (s *cfnServices) sqsOK() bool {
@@ -103,6 +122,9 @@ func (a *impersonatingApplier) svcFor(kind string) error {
 		return fmt.Errorf("%s resources are served by this shim's AWS API stores, which this deploy path cannot reach", kind)
 	}
 	ok := false
+	if dk, isDoor := doorKinds[kind]; isDoor {
+		ok = a.svc.doorOK(dk.service)
+	}
 	switch kind {
 	case cfn.KindSQSQueue:
 		ok = a.svc.sqsOK()
@@ -165,6 +187,14 @@ func svcSteps(kind, op, name string, spec map[string]any) []svcStep {
 
 // svcAuthorize checks that the caller may do every front-door call op on this resource amounts to.
 func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name string, spec map[string]any) error {
+	if dk, ok := doorKinds[kind]; ok {
+		// A create or update is the front door's own call, authorized by it as the caller; a delete is also
+		// checked up front, so a stack delete's pre-flight refuses a teardown the caller could not finish.
+		if op == "delete" {
+			return a.doorAuthorizeDelete(ctx, dk, kind, name, spec)
+		}
+		return nil
+	}
 	for _, s := range svcSteps(kind, op, name, spec) {
 		if s.verb == "" {
 			return cfn.Unauthorized(fmt.Sprintf("%s %s: no authorization mapping for %s", kind, name, s.action))
@@ -204,6 +234,14 @@ func (s *cfnServices) lambdaNamespace(spec map[string]any, stackNS string) strin
 
 // svcExists reports whether the service resource exists in its store (under any owner).
 func (a *impersonatingApplier) svcExists(ctx context.Context, kind, name string) (bool, error) {
+	return a.svcExistsAt(ctx, kind, name, nil)
+}
+
+// svcExistsAt is svcExists for a resource spec locates (a rule's bus; nil = as its stack recorded it).
+func (a *impersonatingApplier) svcExistsAt(ctx context.Context, kind, name string, spec map[string]any) (bool, error) {
+	if dk, ok := doorKinds[kind]; ok {
+		return a.doorExists(ctx, dk, kind, name, spec)
+	}
 	switch kind {
 	case cfn.KindSQSQueue:
 		_, ok, err := a.svc.sqs.store.queueURLByName(ctx, name)
@@ -248,7 +286,7 @@ func (a *impersonatingApplier) svcPut(ctx context.Context, obj *unstructured.Uns
 	if ns == "" {
 		ns = a.ns
 	}
-	exists, err := a.svcExists(ctx, kind, name)
+	exists, err := a.svcExistsAt(ctx, kind, name, spec)
 	if err != nil {
 		return false, err
 	}
@@ -287,6 +325,9 @@ func specStrings(v any) map[string]string {
 }
 
 func (a *impersonatingApplier) svcCreate(ctx context.Context, kind, name string, spec map[string]any, ns string) error {
+	if dk, ok := doorKinds[kind]; ok {
+		return dk.create(ctx, a.svcCtx(ns), name, spec)
+	}
 	str := func(k string) string { s, _ := spec[k].(string); return s }
 	switch kind {
 	case cfn.KindSQSQueue:
@@ -324,6 +365,13 @@ func (a *impersonatingApplier) svcCreate(ctx context.Context, kind, name string,
 }
 
 func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string, spec map[string]any, ns string) error {
+	if dk, ok := doorKinds[kind]; ok {
+		_, prev, _, err := a.svc.owners.get(ctx, kind, name) // the spec last applied: what changed
+		if err != nil {
+			return err
+		}
+		return dk.update(ctx, a.svcCtx(ns), name, spec, prev)
+	}
 	str := func(k string) string { s, _ := spec[k].(string); return s }
 	switch kind {
 	case cfn.KindSQSQueue:
@@ -552,6 +600,12 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 	if err := a.svcAuthorize(ctx, kind, "delete", name, ownSpec); err != nil {
 		return err
 	}
+	if dk, ok := doorKinds[kind]; ok {
+		if err := dk.remove(ctx, a.svcCtx(""), name, ownSpec); err != nil {
+			return err
+		}
+		return a.svc.owners.del(ctx, kind, name)
+	}
 	switch kind {
 	case cfn.KindSQSQueue:
 		url, _, err := a.svc.sqs.store.queueURLByName(ctx, name)
@@ -632,6 +686,10 @@ func (a *impersonatingApplier) svcSpec(ctx context.Context, kind, name string) (
 	}
 	if spec == nil {
 		spec = map[string]any{}
+	}
+	if dk, ok := doorKinds[kind]; ok { // as its front door reports it (a write-only value as recorded)
+		live, err := dk.live(ctx, a.svcCtx(""), name, spec)
+		return live, live != nil, err
 	}
 	switch kind {
 	case cfn.KindSQSQueue:

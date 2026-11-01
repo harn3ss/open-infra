@@ -30,6 +30,9 @@ type ebTarget struct {
 	Arn   string
 	Type  string // lambda | sqs
 	Input string // constant Input JSON ("" = pass the whole event)
+	// NS is the namespace a Lambda target's Function runs in, when it is not the front door's own (a
+	// stack's Function, put by the CloudFormation front door); "" = the Lambda front door's namespace.
+	NS string
 }
 
 var errBusNotEmpty = errors.New("event bus is not empty")
@@ -63,7 +66,8 @@ CREATE TABLE IF NOT EXISTS eb_targets (
     input     text NOT NULL DEFAULT '',
     PRIMARY KEY (bus, rule, target_id)
 );
-CREATE INDEX IF NOT EXISTS eb_rules_due ON eb_rules (state, next_fire_at);`); err != nil {
+CREATE INDEX IF NOT EXISTS eb_rules_due ON eb_rules (state, next_fire_at);
+ALTER TABLE eb_targets ADD COLUMN IF NOT EXISTS fn_ns text NOT NULL DEFAULT '';`); err != nil {
 		return err
 	}
 	// The default bus always exists.
@@ -244,9 +248,9 @@ func (s *ebStore) enabledPatternRules(ctx context.Context, bus string) ([]ebRule
 
 func (s *ebStore) putTarget(ctx context.Context, bus, rule string, t ebTarget) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO eb_targets (bus, rule, target_id, arn, ttype, input) VALUES ($1,$2,$3,$4,$5,$6)
-		 ON CONFLICT (bus, rule, target_id) DO UPDATE SET arn=EXCLUDED.arn, ttype=EXCLUDED.ttype, input=EXCLUDED.input`,
-		bus, rule, t.ID, t.Arn, t.Type, t.Input)
+		`INSERT INTO eb_targets (bus, rule, target_id, arn, ttype, input, fn_ns) VALUES ($1,$2,$3,$4,$5,$6,$7)
+		 ON CONFLICT (bus, rule, target_id) DO UPDATE SET arn=EXCLUDED.arn, ttype=EXCLUDED.ttype, input=EXCLUDED.input, fn_ns=EXCLUDED.fn_ns`,
+		bus, rule, t.ID, t.Arn, t.Type, t.Input, t.NS)
 	return err
 }
 
@@ -256,7 +260,7 @@ func (s *ebStore) removeTarget(ctx context.Context, bus, rule, id string) (bool,
 }
 
 func (s *ebStore) listTargets(ctx context.Context, bus, rule string) ([]ebTarget, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT target_id, arn, ttype, input FROM eb_targets WHERE bus=$1 AND rule=$2 ORDER BY target_id`, bus, rule)
+	rows, err := s.db.QueryContext(ctx, `SELECT target_id, arn, ttype, input, fn_ns FROM eb_targets WHERE bus=$1 AND rule=$2 ORDER BY target_id`, bus, rule)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +268,7 @@ func (s *ebStore) listTargets(ctx context.Context, bus, rule string) ([]ebTarget
 	var out []ebTarget
 	for rows.Next() {
 		var t ebTarget
-		if err := rows.Scan(&t.ID, &t.Arn, &t.Type, &t.Input); err != nil {
+		if err := rows.Scan(&t.ID, &t.Arn, &t.Type, &t.Input, &t.NS); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

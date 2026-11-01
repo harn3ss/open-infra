@@ -271,6 +271,11 @@ func (h *secretsHandler) createSecret(ctx context.Context, w http.ResponseWriter
 	}
 	versionID := clientTokenOrUUID(body)
 	arn := h.secretARN(name)
+	// A stack's secret keeps the ARN its template's Ref already is (the CloudFormation front door sets it on
+	// its in-process call; no client can).
+	if fixed, ok := ctx.Value(cfnSecretARNKey{}).(string); ok && strings.Contains(fixed, ":secret:"+name+"-") {
+		arn = fixed
+	}
 	m := secretMeta{Name: name, Arn: arn, Description: strFromBody(body, "Description"), Tags: tagsFromBody(body["Tags"])}
 	if err := h.store.createSecret(ctx, m, versionID, ct, isBinary); err == errSecretExists {
 		writeSMError(w, http.StatusBadRequest, "ResourceExistsException", requestID,

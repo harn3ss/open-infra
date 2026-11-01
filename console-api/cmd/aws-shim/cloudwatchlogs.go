@@ -78,7 +78,7 @@ func verbForCWLOp(op string) (string, bool) {
 	switch op {
 	case "DescribeLogGroups", "DescribeLogStreams", "GetLogEvents", "FilterLogEvents":
 		return "get", true
-	case "CreateLogGroup", "CreateLogStream", "PutLogEvents", "PutRetentionPolicy", "TagLogGroup":
+	case "CreateLogGroup", "CreateLogStream", "PutLogEvents", "PutRetentionPolicy", "TagLogGroup", "DeleteRetentionPolicy":
 		return "create", true
 	case "DeleteLogGroup", "DeleteLogStream":
 		return "delete", true
@@ -140,6 +140,8 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeLogStreams(ctx, w, requestID, body)
 	case "PutRetentionPolicy":
 		h.putRetentionPolicy(ctx, w, requestID, body)
+	case "DeleteRetentionPolicy":
+		h.deleteRetentionPolicy(ctx, w, requestID, body)
 	case "DeleteLogGroup":
 		h.deleteLogGroup(ctx, w, requestID, body)
 	case "DeleteLogStream":
@@ -342,6 +344,22 @@ func (h *cwlHandler) putRetentionPolicy(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	h.audit(ctx, "PutRetentionPolicy", group, "allow", strconv.Itoa(days)+"d")
+	writeCWLJSON(w, requestID, map[string]any{})
+}
+
+// deleteRetentionPolicy makes the group keep its events forever again (AWS's default).
+func (h *cwlHandler) deleteRetentionPolicy(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	group, _ := body["logGroupName"].(string)
+	ok, err := h.store.clearRetention(ctx, group)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !ok {
+		writeCWLError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "The specified log group does not exist.")
+		return
+	}
+	h.audit(ctx, "DeleteRetentionPolicy", group, "allow", "")
 	writeCWLJSON(w, requestID, map[string]any{})
 }
 
