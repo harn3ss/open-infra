@@ -1050,6 +1050,8 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		if !ok {
 			f = append(f, Finding{"Resource " + id, "NetworkInterfaces does not resolve to a list — refusing rather than launching the VM without the interface (and its security groups) it declares"})
 		}
+		nis, ff = nicEntries(id, nis, ctx)
+		f = append(f, ff...)
 		if len(nis) > 0 {
 			{
 				ni0 := primaryNIC(nis)
@@ -1069,8 +1071,22 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 					}
 					n, ff := resolveSGList(id, "NetworkInterfaces[0].GroupSet", ni0["GroupSet"], ctx)
 					sgNames, f = append(sgNames, n...), append(f, ff...)
-					if publicIPRequested(ni0["AssociatePublicIpAddress"]) {
-						spec["expose"] = true
+					if raw, has := ni0["AssociatePublicIpAddress"]; has {
+						pub, ok := cfnBoolValue(ctx.resolveVal(raw))
+						switch {
+						case !ok:
+							f = append(f, Finding{"Resource " + id, fmt.Sprintf("NetworkInterfaces[0].AssociatePublicIpAddress must be true or false (got %v)", ctx.resolveVal(raw))})
+						case pub:
+							spec["expose"] = true
+						}
+					}
+					for _, p := range []string{"PrivateIpAddress", "PrivateIpAddresses", "SecondaryPrivateIpAddressCount", "Ipv6AddressCount", "Ipv6Addresses"} {
+						if _, has := ni0[p]; has {
+							cav = append(cav, "NetworkInterfaces[0]."+p+" dropped — the VM's address comes from its subnet's IP pool (IPv6 is not provisioned)")
+						}
+					}
+					if dot, has := ni0["DeleteOnTermination"]; has && isExplicitFalse(ctx.resolveVal(dot)) {
+						cav = append(cav, "NetworkInterfaces[0].DeleteOnTermination=false does not map — the VM's interface is deleted with the VM")
 					}
 				}
 				if len(nis) > 1 {
@@ -1191,6 +1207,65 @@ func ec2MetadataOptions(id string, raw any) (map[string]any, []Finding, []string
 	return out, f, cav
 }
 
+// nicKnown are the NetworkInterface properties the instance translator reads (SubnetId, GroupSet,
+// AssociatePublicIpAddress, DeviceIndex) or reports as dropped. Anything else refuses.
+var nicKnown = map[string]bool{
+	"DeviceIndex": true, "SubnetId": true, "GroupSet": true, "AssociatePublicIpAddress": true,
+	"DeleteOnTermination": true, "Description": true, "PrivateIpAddress": true, "PrivateIpAddresses": true,
+	"SecondaryPrivateIpAddressCount": true, "Ipv6AddressCount": true, "Ipv6Addresses": true,
+	"NetworkInterfaceId": true,
+}
+
+// nicEntries resolves each NetworkInterfaces entry (raw, so a GroupSet !Ref is still visible) to an
+// interface object. An entry-level Fn::If takes the branch its condition picks; AWS::NoValue removes the
+// entry. An entry that is not an interface object, or that attaches an existing interface by
+// NetworkInterfaceId (whose security groups are not in the template), refuses: reading it as an
+// interface with no GroupSet would launch the VM with no firewall the template asked for.
+func nicEntries(id string, nis []any, ctx *stackCtx) ([]any, []Finding) {
+	var out []any
+	var f []Finding
+	for i, e := range nis {
+		for depth := 0; depth < 8; depth++ {
+			m, ok := e.(map[string]any)
+			if !ok || len(m) != 1 {
+				break
+			}
+			if args, isIf := m["Fn::If"].([]any); isIf && len(args) == 3 && ctx != nil && ctx.resolver != nil {
+				if ctx.resolver.conds[fmt.Sprint(args[0])] {
+					e = args[1]
+				} else {
+					e = args[2]
+				}
+				continue
+			}
+			if ref, isRef := m["Ref"].(string); isRef && ref == "AWS::NoValue" {
+				e = nil
+			}
+			break
+		}
+		if e == nil {
+			continue
+		}
+		ni, ok := e.(map[string]any)
+		if ok && len(ni) == 1 {
+			for k := range ni {
+				ok = k != "Ref" && !strings.HasPrefix(k, "Fn::")
+			}
+		}
+		if !ok {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("NetworkInterfaces[%d] does not resolve to an interface — refusing rather than launching the VM without the interface (and its security groups) it declares", i)})
+			continue
+		}
+		where := fmt.Sprintf("%s.NetworkInterfaces[%d]", id, i)
+		f = append(f, blockUnknownProps(where, ni, nicKnown)...)
+		if _, has := ni["NetworkInterfaceId"]; has {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("NetworkInterfaces[%d].NetworkInterfaceId attaches an existing network interface, whose subnet and security groups are not in the template — open-infra cannot attach it; declare the interface with SubnetId and GroupSet instead", i)})
+		}
+		out = append(out, ni)
+	}
+	return out, f
+}
+
 // primaryNIC returns the NetworkInterface with DeviceIndex 0 (the primary), or the first entry when
 // no DeviceIndex is set. DeviceIndex may be an int, a float (JSON), or a string.
 func primaryNIC(nis []any) map[string]any {
@@ -1219,18 +1294,6 @@ func primaryNIC(nis []any) map[string]any {
 		}
 	}
 	return first
-}
-
-// publicIPRequested reports whether an AssociatePublicIpAddress value is truthy (bool true or the
-// string "true", which CloudFormation often uses).
-func publicIPRequested(v any) bool {
-	if b, ok := v.(bool); ok {
-		return b
-	}
-	if s, ok := concrete(v); ok {
-		return strings.EqualFold(s, "true")
-	}
-	return false
 }
 
 // dedupStrings returns xs with duplicates removed, preserving first-seen order.

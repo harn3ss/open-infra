@@ -67,6 +67,40 @@ func cfnBool(v any) bool {
 	return false
 }
 
+// cfnBoolValue reads a CloudFormation boolean strictly: true or false, or the strings "true" / "false"
+// (any case) that a parameter Ref or a quoted YAML value produces. ok=false for anything else — an
+// intrinsic that did not resolve, a typo — which a translator must refuse rather than read as false:
+// a false read where the template meant true can widen access (ApiKeyRequired) or drop a guarantee
+// (Encrypted).
+func cfnBoolValue(v any) (val, ok bool) {
+	switch b := v.(type) {
+	case bool:
+		return b, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(b)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// boolProp reads boolean property key of a resource's resolved props: def when the property is absent
+// (or AWS::NoValue), its value when it is a CloudFormation boolean, and a blocking finding otherwise.
+func boolProp(id string, props map[string]any, key string, def bool) (bool, []Finding) {
+	v, present := props[key]
+	if !present || v == nil {
+		return def, nil
+	}
+	b, ok := cfnBoolValue(v)
+	if !ok {
+		return def, []Finding{{"Resource " + id, fmt.Sprintf("%s must be true or false (got %v) — a value that does not resolve to a boolean is refused rather than read as false", key, v)}}
+	}
+	return b, nil
+}
+
 // Parse reads a CloudFormation template from JSON or YAML bytes.
 func Parse(data []byte) (*Template, error) {
 	root, err := parseAny(data)
