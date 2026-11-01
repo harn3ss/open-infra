@@ -70,10 +70,10 @@ Resources:
 	}
 	var rp map[string]any
 	_ = json.Unmarshal([]byte(attrs["RedrivePolicy"].(string)), &rp)
-	if rp["deadLetterTargetArn"] != "arn:aws:sqs:openinfra:000000000000:st-dlq" || rp["maxReceiveCount"] != float64(3) {
+	if rp["deadLetterTargetArn"] != "arn:aws:sqs:us-east-1:000000000000:st-dlq" || rp["maxReceiveCount"] != float64(3) {
 		t.Errorf("RedrivePolicy = %v", rp)
 	}
-	if v := got["P"].res.Spec["value"]; v != "http://shim.test:4566/000000000000/st-q|arn:aws:sqs:openinfra:000000000000:st-q|st-q" {
+	if v := got["P"].res.Spec["value"]; v != "http://shim.test:4566/000000000000/st-q|arn:aws:sqs:us-east-1:000000000000:st-q|st-q" {
 		t.Errorf("Ref/GetAtt of the queue resolved to %v", v)
 	}
 }
@@ -124,7 +124,7 @@ Resources:
   S: { Type: AWS::SNS::Subscription, Properties: { TopicArn: !Ref T, Protocol: lambda, Endpoint: !GetAtt Fn.Arn, RawMessageDelivery: true } }
 `, svcCaps, nil)
 	topic := got["T"]
-	if topic.res.Kind != KindSNSTopic || topic.res.Name != "st-t" || topic.res.Spec["topicArn"] != "arn:aws:sns:openinfra:000000000000:st-t" {
+	if topic.res.Kind != KindSNSTopic || topic.res.Name != "st-t" || topic.res.Spec["topicArn"] != "arn:aws:sns:us-east-1:000000000000:st-t" {
 		t.Fatalf("topic = %s %s %v", topic.res.Kind, topic.res.Name, topic.res.Spec)
 	}
 	var inline *builtResource
@@ -135,7 +135,7 @@ Resources:
 		}
 	}
 	if inline == nil || inline.res.Kind != KindSNSSubscription || inline.res.Spec["protocol"] != "sqs" ||
-		inline.res.Spec["endpoint"] != "arn:aws:sqs:openinfra:000000000000:st-q" {
+		inline.res.Spec["endpoint"] != "arn:aws:sqs:us-east-1:000000000000:st-q" {
 		t.Fatalf("inline subscription = %+v", inline)
 	}
 	s := got["S"].res
@@ -145,7 +145,7 @@ Resources:
 	if fn, _ := s.Spec["function"].(string); fn == "" || !strings.HasSuffix(s.Spec["endpoint"].(string), ":function:"+fn) {
 		t.Errorf("lambda endpoint %v / function %v", s.Spec["endpoint"], s.Spec["function"])
 	}
-	if !strings.HasPrefix(s.Spec["subscriptionArn"].(string), "arn:aws:sns:openinfra:000000000000:st-t:") {
+	if !strings.HasPrefix(s.Spec["subscriptionArn"].(string), "arn:aws:sns:us-east-1:000000000000:st-t:") {
 		t.Errorf("subscriptionArn = %v", s.Spec["subscriptionArn"])
 	}
 	if qs, ok := got["Fn"].res.Spec["queues"]; ok {
@@ -216,7 +216,7 @@ Resources:
 	if a := got["A"].res; a.Kind != KindKMSAlias || a.Name != "alias/app" || a.Spec["targetKeyId"] != fixedKeyID {
 		t.Errorf("alias = %+v", a)
 	}
-	if v := got["P"].res.Spec["value"]; v != "arn:aws:kms:openinfra:000000000000:key/"+fixedKeyID {
+	if v := got["P"].res.Spec["value"]; v != "arn:aws:kms:us-east-1:000000000000:key/"+fixedKeyID {
 		t.Errorf("GetAtt K.Arn = %v", v)
 	}
 	// An update keeps the key the stack recorded (its companion), and the alias still targets it.
