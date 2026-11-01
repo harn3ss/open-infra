@@ -11,6 +11,13 @@
 # `curl --cacert`, `AWS_CA_BUNDLE`, `SSL_CERT_FILE`). Use the issuer with the annotation
 # `cert-manager.io/cluster-issuer: openinfra-ca` on an Ingress.
 #
+# Only platform namespaces may use it. cert-manager lets any namespace use a ClusterIssuer, and a
+# tenant who can create a Certificate (the stock edit/admin roles can) would otherwise get a cert for
+# any name, signed by a root that clients trust. The admission policy below refuses openinfra-ca
+# Certificates and CertificateRequests outside the namespaces it lists. That covers Ingress
+# annotations, DatabaseProxy spec.tls.issuerRef, and anything else that makes a cert-manager
+# Certificate. Tenants keep openinfra-issuer (self-signed) and their own namespaced Issuers.
+#
 # Applied after cert-manager installs (sync-wave 1); SkipDryRun so it applies before the CRDs register.
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -32,6 +39,16 @@ spec:
     algorithm: ECDSA
     size: 256
     rotationPolicy: Never   # rotating the key would invalidate every client that trusts the root
+  # The root can vouch only for in-cluster names, sslip.io LAN names and private addresses. A client
+  # that trusts it is not exposed for any other domain, even if the root's key leaked. A site whose LAN
+  # names use its own domain adds that domain here. Changing this re-signs the root with the same key,
+  # so issued certificates and clients that already trust the root keep working; re-import the root on
+  # clients to get the constraint.
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains: [cluster.local, svc, sslip.io]
+      ipRanges: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
   issuerRef:
     name: openinfra-issuer  # self-signed: the root signs itself
     kind: ClusterIssuer
@@ -47,3 +64,50 @@ metadata:
 spec:
   ca:
     secretName: openinfra-root-ca
+---
+# openinfra-ca issues only in platform namespaces (see the header). To let another platform namespace
+# use it, add the namespace to the list below. Kubernetes CSRs that name the issuer as signer are
+# refused too, in case cert-manager's CSR signing is ever turned on.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-ca-issuance
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: [open-infra-aws-shim, open-infra-ecr]
+    resourceRules:
+      - apiGroups: [cert-manager.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [certificates, certificaterequests]
+      - apiGroups: [certificates.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [certificatesigningrequests]
+  validations:
+    - expression: >-
+        request.resource.group != 'cert-manager.io'
+        || !has(object.spec.issuerRef)
+        || !(object.spec.issuerRef.name == 'openinfra-ca'
+             && has(object.spec.issuerRef.kind) && object.spec.issuerRef.kind == 'ClusterIssuer'
+             && (!has(object.spec.issuerRef.group) || object.spec.issuerRef.group in ['', 'cert-manager.io']))
+      reason: Forbidden
+      message: "the openinfra-ca ClusterIssuer signs only for platform namespaces; use openinfra-issuer or a namespaced Issuer of your own"
+    - expression: >-
+        request.resource.group != 'certificates.k8s.io'
+        || object.spec.signerName != 'clusterissuers.cert-manager.io/openinfra-ca'
+      reason: Forbidden
+      message: "the openinfra-ca ClusterIssuer does not sign Kubernetes CertificateSigningRequests"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-ca-issuance
+spec:
+  policyName: openinfra-ca-issuance
+  validationActions: [Deny]

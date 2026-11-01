@@ -105,7 +105,10 @@ spec:
                       description: Enable TLS termination. A cert is issued via issuerRef.
                     issuerRef:
                       type: object
-                      description: The cert-manager (Cluster)Issuer that signs the proxy's serving cert.
+                      description: >-
+                        The cert-manager (Cluster)Issuer that signs the proxy's serving cert. The platform
+                        root (ClusterIssuer openinfra-ca) is reserved for platform namespaces and is refused
+                        here; use your own namespaced Issuer, or openinfra-issuer (self-signed).
                       properties:
                         name:
                           type: string

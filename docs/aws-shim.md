@@ -209,7 +209,8 @@ both `<s3 host>` and `*.<s3 host>`. A pre-signed URL (`aws s3 presign`, or any S
 like any SigV4 request, so it opens in a browser for its lifetime and a tampered signature is refused.
 For browsers and LAN clients to trust the TLS certificate, issue it from the cluster CA
 (`cert-manager.io/cluster-issuer: openinfra-ca`, see `platform/networking/cluster-ca.yaml`) and trust its
-root once on the client.
+root once on the client. Only the platform namespaces listed in that file's admission policy may use
+`openinfra-ca`; a tenant's Certificate, CertificateRequest or Ingress annotation naming it is refused.
 
 ### STS (faithful)
 

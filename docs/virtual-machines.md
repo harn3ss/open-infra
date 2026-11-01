@@ -244,7 +244,8 @@ Python because cloud-init is Python; on the RHEL 8 family it uses `/usr/libexec/
 ## The platform root CA is trusted by every Linux guest
 
 The platform's TLS endpoints — the container registry's LAN address, S3's LAN host — present
-certificates issued by the cluster's root CA (the `openinfra-ca` ClusterIssuer). Every Linux VM trusts
+certificates issued by the cluster's root CA (the `openinfra-ca` ClusterIssuer, which only platform
+namespaces may use: tenants cannot get a certificate signed by it). Every Linux VM trusts
 that root out of the box, the way an enterprise CA is baked into an AMI: an unmodified guest's
 `docker login` / `docker pull` against the registry, `curl`, and the AWS SDKs verify those certificates
 with no `--insecure`, no `--cacert`, and no per-registry `certs.d` file.

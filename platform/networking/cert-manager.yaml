@@ -20,6 +20,9 @@ spec:
         global:
           leaderElection:
             namespace: cert-manager
+        # NameConstraints lets the platform root CA (cluster-ca.yaml) limit what names it can vouch
+        # for. It is alpha in v1.15, so both the controller and the webhook need the gate.
+        featureGates: NameConstraints=true
         # Production HA (#26): a leader-elected pair for each component — leaderElection is
         # already enabled, so the second controller/cainjector is a warm standby, and the
         # webhook (stateless) load-balances. A PodDisruptionBudget keeps ≥1 up through a
@@ -40,6 +43,7 @@ spec:
                       app.kubernetes.io/instance: cert-manager
                       app.kubernetes.io/component: controller
         webhook:
+          featureGates: NameConstraints=true
           replicaCount: 2
           podDisruptionBudget:
             enabled: true
