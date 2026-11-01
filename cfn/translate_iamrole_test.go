@@ -43,7 +43,7 @@ Resources:
 // An EC2 instance-trust role (Principal: ec2.amazonaws.com) translates to a kind: Role that trusts the
 // "vm" service principal, and its inline Policies become companion kind: Policy objects (data-plane)
 // that govern the role's assumed sessions — so a VM booted from it actually HAS s3/sqs permissions.
-// ManagedPolicyArns (AWS-service plumbing) stay a loud caveat.
+// ManagedPolicyArns (AWS-managed policies, not attached) stay a loud caveat.
 func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 	ctx := ecsCtx(t, iamRoleTmpl)
 	m, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx)
@@ -178,6 +178,301 @@ Resources:
 	}
 	if len(mOff.Extra) != 0 {
 		t.Fatalf("the OFF branch must yield no companion Policy, got %d", len(mOff.Extra))
+	}
+}
+
+// roleStatements translates AppRole and returns its single companion Policy's dataPlane statements.
+func roleStatements(t *testing.T, ctx *stackCtx) []map[string]any {
+	t.Helper()
+	m, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("the role must translate cleanly: %s", findingsText(fs))
+	}
+	if len(m.Extra) != 1 {
+		t.Fatalf("want 1 companion Policy, got %d", len(m.Extra))
+	}
+	dp, _ := m.Extra[0].Spec["dataPlane"].(map[string]any)
+	raw, _ := dp["statements"].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, s := range raw {
+		sm, _ := s.(map[string]any)
+		out = append(out, sm)
+	}
+	return out
+}
+
+// strs renders a statement's list field as []string.
+func strs(v any) []string {
+	l, _ := v.([]any)
+	out := make([]string, 0, len(l))
+	for _, e := range l {
+		s, _ := e.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+func sameStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// ECR statements in an instance role's inline policy translate to data-plane statements on
+// Repository::<name> — ecr:GetAuthorizationToken on "*" stays "*" (it has no resource on AWS either), a
+// repository ARN (literal, or built with ${AWS::Region}/${AWS::AccountId}/a parameter) maps to its
+// repository, and ecr:* on a repository prefix keeps both wildcards.
+func TestTranslate_IAMRole_ECRStatements(t *testing.T) {
+	tmpl := `
+Parameters:
+  AppRepositoryName: { Type: String, Default: team/app }
+Resources:
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: ecr-pull
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [ecr:GetAuthorizationToken], Resource: "*" }
+              - Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer]
+                Resource: !Sub "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppRepositoryName}"
+              - { Effect: Allow, Action: "ecr:*", Resource: "arn:aws:ecr:us-east-1:123456789012:repository/tools/*" }
+              - { Effect: Deny, Action: [ecr:PutImage], Resource: "arn:aws:ecr:us-east-1:123456789012:repository/team/app" }
+`
+	st := roleStatements(t, ecsCtx(t, tmpl))
+	want := []struct {
+		effect    string
+		actions   []string
+		resources []string
+	}{
+		{"Allow", []string{"ecr:GetAuthorizationToken"}, []string{"*"}},
+		{"Allow", []string{"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"}, []string{"Repository::team/app"}},
+		{"Allow", []string{"ecr:*"}, []string{"Repository::tools/*"}},
+		{"Deny", []string{"ecr:PutImage"}, []string{"Repository::team/app"}},
+	}
+	if len(st) != len(want) {
+		t.Fatalf("want %d statements, got %d: %#v", len(want), len(st), st)
+	}
+	for i, w := range want {
+		if st[i]["effect"] != w.effect || !sameStrs(strs(st[i]["actions"]), w.actions) || !sameStrs(strs(st[i]["resources"]), w.resources) {
+			t.Errorf("statement %d = %#v, want %s %v on %v", i, st[i], w.effect, w.actions, w.resources)
+		}
+	}
+}
+
+// `Resource: !Sub "${Bucket.Arn}/*"` — the most common object-ARN form — resolves to the in-stack bucket
+// exactly as `!GetAtt Bucket.Arn` does, and so do `!Sub "arn:aws:s3:::${Bucket}/*"` (the Ref form) and the
+// [string, vars] form. Escapes and Sub variables are left alone; the bare-attribute and Ref forms of other
+// fronted types resolve too.
+func TestTranslate_IAMRole_SubInStackArn(t *testing.T) {
+	tmpl := `
+Resources:
+  Assets: { Type: AWS::S3::Bucket }
+  Config:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: app-config }
+  Orders:
+    Type: AWS::DynamoDB::Table
+    Properties: { TableName: orders }
+  Alerts: { Type: AWS::SNS::Topic }
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: s3:GetObject, Resource: !Sub "${Assets.Arn}/*" }
+              - { Effect: Allow, Action: s3:PutObject, Resource: !Sub "arn:aws:s3:::${Config}/uploads/*" }
+              - Effect: Allow
+                Action: s3:DeleteObject
+                Resource: !Sub ["${B}/tmp/*", { B: !GetAtt Config.Arn }]
+              - { Effect: Allow, Action: dynamodb:GetItem, Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Orders}" }
+              - { Effect: Allow, Action: sns:Publish, Resource: !Sub "${Alerts}" }
+`
+	st := roleStatements(t, ecsCtx(t, tmpl))
+	want := [][]string{
+		{"Bucket::assets"},
+		{"Bucket::app-config"},
+		{"Bucket::app-config"},
+		{"Table::orders"},
+		{"Topic::alerts"},
+	}
+	if len(st) != len(want) {
+		t.Fatalf("want %d statements, got %d: %#v", len(want), len(st), st)
+	}
+	for i, w := range want {
+		if got := strs(st[i]["resources"]); !sameStrs(got, w) {
+			t.Errorf("statement %d resources = %v, want %v", i, got, w)
+		}
+	}
+}
+
+// The Sub rewrite only touches in-stack shim-fronted resources: a ${!Literal} escape, a Sub variable that
+// shadows a resource name, and parameters are left to the normal resolver.
+func TestSynthSubTemplate_LeavesOthersAlone(t *testing.T) {
+	ctx := ecsCtx(t, `
+Parameters:
+  Env: { Type: String, Default: prod }
+Resources:
+  Assets: { Type: AWS::S3::Bucket }
+  Jobs: { Type: AWS::SQS::Queue }
+`)
+	cases := []struct {
+		in   string
+		vars map[string]any
+		want string
+	}{
+		{"${Assets.Arn}/*", nil, "arn:aws:s3:::assets/*"},
+		{"arn:aws:s3:::${Assets}/${Env}/*", nil, "arn:aws:s3:::assets/${Env}/*"},
+		{"${!Assets.Arn}", nil, "${!Assets.Arn}"},
+		{"${Assets}", map[string]any{"Assets": "other"}, "${Assets}"},
+		{"${Assets.DomainName}", nil, "${Assets.DomainName}"},
+		{"${Jobs}", nil, "${Jobs}"}, // a queue's Ref is its URL — never part of an ARN
+		{"${Jobs.Arn}", nil, "arn:aws:sqs:openinfra:000000000000:jobs"},
+		{"${AWS::Region}:${Unknown.Arn}", nil, "${AWS::Region}:${Unknown.Arn}"},
+		{"unterminated ${Assets", nil, "unterminated ${Assets"},
+	}
+	for _, c := range cases {
+		if got := synthSubTemplate(c.in, c.vars, ctx); got != c.want {
+			t.Errorf("synthSubTemplate(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A placeholder that survives inside an otherwise-recognizable ARN (here a queue's Ref, a URL, spliced into
+// an S3 ARN) names no real resource — the role refuses rather than granting on it.
+func TestTranslate_IAMRole_UnresolvedResourceRefuses(t *testing.T) {
+	tmpl := `
+Resources:
+  Jobs: { Type: AWS::SQS::Queue }
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: s3:GetObject, Resource: !Sub "arn:aws:s3:::${Jobs}/*" }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx)
+	if m != nil || !strings.Contains(findingsText(fs), "does not resolve here") {
+		t.Fatalf("a placeholder resource must refuse the role, got m=%v findings=%s", m, findingsText(fs))
+	}
+}
+
+// An AWS::IAM::Policy (attached to a literal group) gets the same in-stack resolution as a Role's inline
+// policy: `!Sub "${Assets.Arn}/*"` names the in-stack bucket, and a spliced-in unresolvable Ref refuses.
+func TestTranslate_IAMPolicy_SubInStackArn(t *testing.T) {
+	tmpl := `
+Resources:
+  Assets: { Type: AWS::S3::Bucket }
+  Jobs: { Type: AWS::SQS::Queue }
+  ReadAssets:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: read-assets
+      Groups: [analysts]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Action: s3:GetObject, Resource: !Sub "${Assets.Arn}/*" }
+  Broken:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: broken
+      Groups: [analysts]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Action: s3:GetObject, Resource: !Sub "arn:aws:s3:::${Jobs}/*" }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateIAMPolicy("ReadAssets", resolvedProps(t, ctx, "ReadAssets"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("an in-stack ${X.Arn} must resolve: %s", findingsText(fs))
+	}
+	dp, _ := m.Spec["dataPlane"].(map[string]any)
+	if flat := strings.Join(deepStrings(dp["statements"]), " "); !strings.Contains(flat, "Bucket::assets") {
+		t.Fatalf("the policy must scope to the in-stack bucket, got %#v", dp["statements"])
+	}
+	if _, fs := translateIAMPolicy("Broken", resolvedProps(t, ctx, "Broken"), ctx); !strings.Contains(findingsText(fs), "does not resolve here") {
+		t.Fatalf("a placeholder resource must refuse, got %s", findingsText(fs))
+	}
+}
+
+// The #347 lift-and-shift instance role, end to end: an app bucket read through `!Sub "${AppBucket.Arn}/*"`
+// + ListBucket on the bucket, and an ECR pull of the app's own repository — plans PROVISIONABLE(_WITH_
+// CAVEATS) and deploys a companion Policy that grants exactly that.
+func TestPlan_InstanceRoleS3AndECRPull(t *testing.T) {
+	tmpl := []byte(`
+Parameters: { AppRepositoryName: { Type: String } }
+Resources:
+  AppBucket: { Type: AWS::S3::Bucket }
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [ { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole } ] }
+      Policies:
+        - PolicyName: app-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: [s3:GetObject], Resource: !Sub "${AppBucket.Arn}/*" }
+              - { Effect: Allow, Action: [s3:ListBucket], Resource: !GetAtt AppBucket.Arn }
+              - { Effect: Allow, Action: [ecr:GetAuthorizationToken], Resource: "*" }
+              - { Effect: Allow, Action: [ecr:DescribeRepositories, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability], Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppRepositoryName}" }
+`)
+	params := map[string]string{"AppRepositoryName": "app"}
+	p := mustPlan(t, tmpl, params, "s")
+	if p.Verdict != Provisionable && p.Verdict != ProvisionableWithCaveats {
+		t.Fatalf("verdict %s, blockers: %v", p.Verdict, p.Blockers)
+	}
+	built, err := buildManifests(tmpl, DeployOptions{StackName: "s", Namespace: "app", Params: params})
+	if err != nil {
+		t.Fatalf("buildManifests: %v", err)
+	}
+	var policy string
+	for _, b := range built {
+		if b.res.Kind == "Policy" {
+			policy = string(b.yml)
+		}
+	}
+	if policy == "" {
+		t.Fatalf("no companion Policy was built: %+v", built)
+	}
+	for _, want := range []string{"Role::instancerole", "Bucket::appbucket", "s3:GetObject", "s3:ListBucket",
+		"ecr:GetAuthorizationToken", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "Repository::app"} {
+		if !strings.Contains(policy, want) {
+			t.Errorf("companion Policy lacks %q:\n%s", want, policy)
+		}
+	}
+	if strings.Contains(policy, "<") {
+		t.Errorf("companion Policy carries an unresolved placeholder:\n%s", policy)
 	}
 }
 

@@ -1819,9 +1819,11 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 //
 // Permissions: the role's inline Policies ARE folded in, as companion kind: Policy objects (spec.dataPlane,
 // appliesTo Role::<name>) via Manifest.Extra — the data-plane subset the shim fronts, imported by the same
-// engine AWS::IAM::Policy uses. A policy Resource that references an in-stack bucket/queue/… by !GetAtt
-// <X>.Arn is resolved to that resource's ARN first, so the common template shape translates. ManagedPolicyArns
-// stay a caveat (AWS-service plumbing with no open-infra equivalent).
+// engine AWS::IAM::Policy uses — s3/sqs/…/ecr actions (ecr: Repository::<name> from a repository ARN, "*" for
+// ecr:GetAuthorizationToken). A policy Resource that references an in-stack bucket/queue/… by !GetAtt <X>.Arn,
+// or by ${X.Arn}/${X} inside an Fn::Sub (`!Sub "${Bucket.Arn}/*"`), is resolved to that resource's ARN first,
+// so the common template shapes translate. ManagedPolicyArns stay a caveat (AWS-managed policies are not
+// attached).
 func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"AssumeRolePolicyDocument": true, "RoleName": true, "Description": true,
@@ -1855,7 +1857,7 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 		m.Caveats = append(m.Caveats, fmt.Sprintf("inline Policies translated to %d companion kind: Policy object(s) (spec.dataPlane, appliesTo Role::%s) that govern this role's assumed sessions — enforced where the aws-shim data-plane front doors are enabled (opt-in, off by default)", len(extras), k8sName(id)))
 	}
 	if _, ok := props["ManagedPolicyArns"]; ok {
-		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore, AmazonEC2ContainerRegistryPullOnly) grant AWS-service plumbing (the SSM agent, ECR pull) that the shim does not front and has no open-infra equivalent. App-level data-plane access comes from the inline Policies above or a kind: Policy in spec.policies")
+		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore, AmazonEC2ContainerRegistryReadOnly) have no open-infra counterpart to attach. App-level data-plane access comes from the inline Policies above or a kind: Policy in spec.policies — e.g. an ECR image pull is ecr:GetAuthorizationToken on \"*\" plus ecr:BatchGetImage and ecr:GetDownloadUrlForLayer on the repository's ARN")
 	}
 	if _, ok := props["PermissionsBoundary"]; ok {
 		m.Caveats = append(m.Caveats, "PermissionsBoundary not mapped — set spec.permissionBoundary to a kind: Policy natively if a boundary is required")
@@ -1922,6 +1924,9 @@ func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest
 		for _, u := range unsupported {
 			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d]: cannot faithfully translate this policy: %s — narrow the inline policy to s3/sqs/dynamodb/... actions on recognizable in-stack ARNs with no conditions, or author a kind: Policy spec.dataPlane natively", i, u)})
 		}
+		for _, u := range unresolvedPolicyResources(stmts) {
+			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d]: resource %s names a value that does not resolve here — a grant on it would name no real resource; reference an in-stack bucket/queue/table/function/topic (!GetAtt X.Arn, ${X.Arn}, ${X}) or a literal ARN", i, u)})
+		}
 		if len(stmts) == 0 && len(unsupported) == 0 {
 			f = append(f, Finding{"Resource " + roleID, fmt.Sprintf("Policies[%d] has no statements the data plane can honor", i)})
 		}
@@ -1946,8 +1951,11 @@ func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest
 // synthInStackARNs walks a raw policy document and replaces every {Fn::GetAtt: [X, Arn]} (or "X.Arn")
 // that targets an in-stack resource of a shim-fronted type with that resource's synthetic ARN, so the
 // policy importer resolves it to the right Bucket::/Queue::/… principal instead of refusing an
-// unresolvable <X.Arn>. Every other node is left for the normal resolver. This is the in-stack
-// bucket/queue ARN case the inline-policy ask (B2) called for.
+// unresolvable <X.Arn>. Inside an Fn::Sub string (both the string and the [string, vars] form) it does the
+// same for ${X.Arn}, and for ${X} where X's Ref is a name or ARN (a bucket/table/function name, a topic
+// ARN) — the `!Sub "${Bucket.Arn}/*"` / `!Sub "arn:aws:s3:::${Bucket}/*"` object-ARN forms. Every other
+// node, and every other ${} (parameters, pseudo-parameters, Sub variables), is left for the normal
+// resolver. This is the in-stack bucket/queue ARN case the inline-policy ask (B2) called for.
 func synthInStackARNs(v any, ctx *stackCtx) any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -1958,6 +1966,9 @@ func synthInStackARNs(v any, ctx *stackCtx) any {
 						return arn
 					}
 				}
+			}
+			if sub, ok := t["Fn::Sub"]; ok {
+				return map[string]any{"Fn::Sub": synthSubArg(sub, ctx)}
 			}
 		}
 		out := make(map[string]any, len(t))
@@ -1975,6 +1986,123 @@ func synthInStackARNs(v any, ctx *stackCtx) any {
 	return v
 }
 
+// synthSubArg rewrites an Fn::Sub argument for synthInStackARNs: in the template string, ${X.Arn} and ${X}
+// naming an in-stack shim-fronted resource become that resource's ARN / Ref value; a [string, vars] form
+// keeps its variables (walked for in-stack !GetAtt <X>.Arn themselves), and a name a variable defines is
+// the variable's, never rewritten. Anything else is returned unchanged for the normal resolver.
+func synthSubArg(arg any, ctx *stackCtx) any {
+	switch a := arg.(type) {
+	case string:
+		return synthSubTemplate(a, nil, ctx)
+	case []any:
+		if len(a) == 0 {
+			return arg
+		}
+		tmpl, ok := a[0].(string)
+		if !ok {
+			return arg
+		}
+		var varMap map[string]any
+		if len(a) >= 2 {
+			varMap, _ = a[1].(map[string]any)
+		}
+		out := make([]any, len(a))
+		out[0] = synthSubTemplate(tmpl, varMap, ctx)
+		for i := 1; i < len(a); i++ {
+			out[i] = synthInStackARNs(a[i], ctx)
+		}
+		return out
+	}
+	return arg
+}
+
+// synthSubTemplate substitutes ${X.Arn} / ${X} for in-stack shim-fronted resources in an Fn::Sub template
+// string, leaving every other ${} — a ${!Literal} escape, a Sub variable, a parameter, a pseudo-parameter,
+// an attribute other than Arn, an out-of-stack or unfronted resource — exactly as written.
+func synthSubTemplate(tmpl string, vars map[string]any, ctx *stackCtx) string {
+	var b strings.Builder
+	for i := 0; i < len(tmpl); i++ {
+		if tmpl[i] == '$' && i+1 < len(tmpl) && tmpl[i+1] == '{' {
+			end := strings.IndexByte(tmpl[i:], '}')
+			if end < 0 {
+				b.WriteString(tmpl[i:])
+				break
+			}
+			name := tmpl[i+2 : i+end]
+			whole := tmpl[i : i+end+1]
+			i += end
+			if v, ok := synthSubName(name, vars, ctx); ok {
+				b.WriteString(v)
+			} else {
+				b.WriteString(whole)
+			}
+			continue
+		}
+		b.WriteByte(tmpl[i])
+	}
+	return b.String()
+}
+
+// synthSubName resolves one ${name} for synthSubTemplate: "X.Arn" → the in-stack ARN, "X" → the in-stack
+// Ref value. ok=false leaves it to the normal resolver.
+func synthSubName(name string, vars map[string]any, ctx *stackCtx) (string, bool) {
+	if name == "" || strings.HasPrefix(name, "!") || strings.HasPrefix(name, "AWS::") {
+		return "", false
+	}
+	if _, isVar := vars[name]; isVar {
+		return "", false
+	}
+	var v string
+	var ok bool
+	if id, attr, dot := strings.Cut(name, "."); dot {
+		if attr != "Arn" {
+			return "", false
+		}
+		v, ok = inStackARN(id, ctx)
+	} else {
+		v, ok = inStackRef(name, ctx)
+	}
+	// A value that itself carries ${…} would be re-read as a substitution — never splice one in.
+	if !ok || strings.Contains(v, "${") {
+		return "", false
+	}
+	return v, true
+}
+
+// inStackRef is the Ref value of an in-stack resource of a shim-fronted type where that value is usable
+// inside a policy ARN: a bucket's, table's, or function's name, or a topic's ARN (what Ref returns for each
+// on AWS). ok=false otherwise — a queue's Ref is its URL, never part of an ARN.
+func inStackRef(id string, ctx *stackCtx) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	res, in := ctx.template.Resources[id]
+	if !in {
+		return "", false
+	}
+	switch res.Type {
+	case "AWS::S3::Bucket":
+		return inStackName(id, "BucketName", ctx), true
+	case "AWS::DynamoDB::Table":
+		return inStackName(id, "TableName", ctx), true
+	case "AWS::Lambda::Function":
+		return inStackName(id, "FunctionName", ctx), true
+	case "AWS::SNS::Topic":
+		return inStackARN(id, ctx)
+	}
+	return "", false
+}
+
+// inStackName is an in-stack resource's AWS name: its name property (QueueName/BucketName/…) when set to a
+// concrete value, else the k8s-safe logical id — the same name the open-infra kind gets.
+func inStackName(id, prop string, ctx *stackCtx) string {
+	p, _ := ctx.resolveProps(id)
+	if n, ok := concrete(p[prop]); ok && n != "" {
+		return n
+	}
+	return k8sName(id)
+}
+
 // inStackARN synthesizes the ARN of an in-stack resource of a shim-fronted type, using its AWS name
 // (QueueName/BucketName/… when set, else the k8s-safe logical id — the same name the open-infra kind
 // gets) so the imported data-plane policy scopes to the resource the app actually addresses. Region and
@@ -1988,13 +2116,7 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 	if !in {
 		return "", false
 	}
-	name := func(prop string) string {
-		p, _ := ctx.resolveProps(id)
-		if n, ok := concrete(p[prop]); ok && n != "" {
-			return n
-		}
-		return k8sName(id)
-	}
+	name := func(prop string) string { return inStackName(id, prop, ctx) }
 	const region, acct = "openinfra", "000000000000"
 	switch res.Type {
 	case "AWS::S3::Bucket":
@@ -2135,8 +2257,8 @@ func resolveInstanceRole(id string, ctx *stackCtx) (string, bool) {
 // Condition (not importable yet) — the whole resource BLOCKS with a precise list, pointing the author
 // at kind: Policy spec.dataPlane to express it natively. Only a policy that is PURELY actions on the
 // fronted services (policyengine.SupportedServices) on recognizable ARNs with no conditions translates.
-func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
-	return importAWSPolicyResource(id, props, "AWS::IAM::Policy", map[string]bool{
+func translateIAMPolicy(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	return importAWSPolicyResource(id, props, ctx, "AWS::IAM::Policy", map[string]bool{
 		"PolicyName": true, "PolicyDocument": true,
 		"Groups": true, "Users": true, "Roles": true,
 	})
@@ -2150,8 +2272,8 @@ func translateIAMPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest
 // ManagedPolicy (the usual shape — attached elsewhere via ManagedPolicyArns) names no principal here,
 // so it still blocks loudly. ManagedPolicyName/Description/Path are metadata with no open-infra
 // equivalent (declared caveats).
-func translateManagedPolicy(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
-	return importAWSPolicyResource(id, props, "AWS::IAM::ManagedPolicy", map[string]bool{
+func translateManagedPolicy(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	return importAWSPolicyResource(id, props, ctx, "AWS::IAM::ManagedPolicy", map[string]bool{
 		"ManagedPolicyName": true, "PolicyDocument": true, "Description": true, "Path": true,
 		"Groups": true, "Users": true, "Roles": true,
 	})
@@ -2160,8 +2282,10 @@ func translateManagedPolicy(id string, props map[string]any, _ *stackCtx) (*Mani
 // importAWSPolicyResource is the shared core behind the IAM::Policy and IAM::ManagedPolicy
 // translators: import the document's data-plane part into a kind: Policy spec.dataPlane bound to the
 // resource's Users/Groups, fail-closed on anything unmappable. `known` is the per-type property
-// allowlist; `cfnType` names the type in findings.
-func importAWSPolicyResource(id string, props map[string]any, cfnType string, known map[string]bool) (*Manifest, []Finding) {
+// allowlist; `cfnType` names the type in findings. With a stack context the document is re-resolved from
+// its raw form through synthInStackARNs, so an in-stack resource referenced by !GetAtt X.Arn or ${X.Arn}/${X}
+// inside an Fn::Sub resolves to its ARN exactly as in a Role's inline policy.
+func importAWSPolicyResource(id string, props map[string]any, ctx *stackCtx, cfnType string, known map[string]bool) (*Manifest, []Finding) {
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 
@@ -2169,6 +2293,13 @@ func importAWSPolicyResource(id string, props map[string]any, cfnType string, kn
 	if !ok {
 		f = append(f, Finding{"Resource " + id, cfnType + " requires a PolicyDocument"})
 		return nil, f
+	}
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if rawDoc, ok := raw["PolicyDocument"]; ok {
+				doc = ctx.resolver.resolve(synthInStackARNs(rawDoc, ctx))
+			}
+		}
 	}
 	docJSON, err := json.Marshal(doc)
 	if err != nil {
@@ -2183,6 +2314,9 @@ func importAWSPolicyResource(id string, props map[string]any, cfnType string, kn
 	for _, u := range unsupported {
 		f = append(f, Finding{"Resource " + id, "cannot faithfully translate this policy: " + u +
 			" — express the whole policy natively on kind: Policy spec.dataPlane, or narrow the CFN policy to s3/dynamodb/lambda actions on recognizable ARNs with no conditions"})
+	}
+	for _, u := range unresolvedPolicyResources(stmts) {
+		f = append(f, Finding{"Resource " + id, "resource " + u + " names a value that does not resolve here — a grant on it would name no real resource; use a literal ARN"})
 	}
 	if len(stmts) == 0 && len(unsupported) == 0 {
 		f = append(f, Finding{"Resource " + id, "PolicyDocument has no statements the data plane can honor"})
@@ -2243,6 +2377,22 @@ func iamPolicyPrincipals(id string, props map[string]any, f *[]Finding) []any {
 	add("Users", "User")
 	add("Groups", "Group")
 	add("Roles", "Role")
+	return out
+}
+
+// unresolvedPolicyResources lists the imported resources (and NotResource exclusions) that still carry an
+// unresolved placeholder — e.g. `arn:aws:s3:::${Queue}/*` resolves to Bucket::<ref:Queue>, a recognizable
+// ARN shape naming nothing real. Emitting it would silently grant on (or exclude) a non-resource, so the
+// caller refuses instead.
+func unresolvedPolicyResources(stmts []policyengine.Statement) []string {
+	var out []string
+	for _, s := range stmts {
+		for _, r := range append(append([]string{}, s.Resources...), s.NotResources...) {
+			if placeholderRe.MatchString(r) {
+				out = append(out, r)
+			}
+		}
+	}
 	return out
 }
 
