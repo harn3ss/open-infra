@@ -93,10 +93,10 @@ func TestTranslate_EC2Route_UnknownPropRefuses(t *testing.T) {
 }
 
 // Plan-level parity: an InstanceProfile is create-deployable (an implicit no-op — the role binding
-// lives on the VM), so it is NOT a blocker. The EIP + EIPAssociation pair MAPS (Kind set) but has no
-// create translator — deploy refuses it — so the stack is REJECTED with a "no create translator" reason
-// (NOT a "no backing kind" reason), and InstanceProfile is never named as the problem.
-func TestPlan_InstanceProfileDeployable_EipPairGatesVerdict(t *testing.T) {
+// lives on the VM), so it is NOT a blocker. The EIP + EIPAssociation pair on an in-stack instance is
+// create-deployable too (#347 1.6: folded onto the VM's LAN IP), so the stack is no longer gated —
+// it plans PROVISIONABLE_WITH_CAVEATS with every resource Deployable and no blocker.
+func TestPlan_InstanceProfileDeployable_EipPairDeployable(t *testing.T) {
 	tmpl := `
 Resources:
   Role:
@@ -120,28 +120,12 @@ Resources:
     Properties: { AllocationId: { Fn::GetAtt: [ Eip, AllocationId ] }, InstanceId: { Ref: App } }
 `
 	p := mustPlan(t, []byte(tmpl), nil, "s")
-	// The EIP pair maps-but-undeployable → REJECTED (plan agrees with deploy).
-	if p.Verdict != Rejected {
-		t.Fatalf("stack must be REJECTED (EIP/EIPAssociation map but have no create translator); blockers:\n%s", blockersJoined(p))
-	}
-	b := blockersJoined(p)
-	// The EIP pair is a "no create translator" refusal (they MAP), not a "no backing kind" one.
-	if strings.Contains(b, "no backing kind") {
-		t.Fatalf("EIP/EIPAssociation MAP (Kind set) — the reason must be 'no create translator', not 'no backing kind':\n%s", b)
-	}
-	if !strings.Contains(b, "no create translator") {
-		t.Fatalf("expected a 'no create translator' blocker for the EIP pair, got:\n%s", b)
-	}
-	// InstanceProfile must never be named as a blocker (it is deployable, an implicit no-op).
-	if strings.Contains(b, "InstanceProfile") {
-		t.Fatalf("InstanceProfile is deployable and must not be a blocker, got:\n%s", b)
+	if p.Verdict != ProvisionableWithCaveats || len(p.Blockers) != 0 {
+		t.Fatalf("an EIP pair on an in-stack instance must plan PROVISIONABLE_WITH_CAVEATS with no blocker, got %s; blockers:\n%s", p.Verdict, blockersJoined(p))
 	}
 	for _, r := range p.Resources {
-		if r.CFNType == "AWS::IAM::InstanceProfile" && (r.Kind == "" || !r.Deployable) {
-			t.Fatalf("InstanceProfile should map and be create-deployable (implicit): kind=%q deployable=%v", r.Kind, r.Deployable)
-		}
-		if r.CFNType == "AWS::EC2::EIPAssociation" && (r.Kind == "" || r.Deployable) {
-			t.Fatalf("EIPAssociation should map (Kind set) and be gated (not Deployable): kind=%q deployable=%v", r.Kind, r.Deployable)
+		if r.Kind == "" || !r.Deployable || len(r.TranslateRefusals) != 0 {
+			t.Fatalf("%s (%s) should map and be create-deployable with no refusal: kind=%q deployable=%v refusals=%v", r.LogicalID, r.CFNType, r.Kind, r.Deployable, r.TranslateRefusals)
 		}
 	}
 }

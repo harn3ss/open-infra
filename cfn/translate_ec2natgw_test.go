@@ -2,30 +2,29 @@ package cfn
 
 import "testing"
 
-// #120: the EIP + NAT/Internet-Gateway family. The backing kinds (ElasticIp, NatGateway) are
-// dataplane-verified, but AWS's property sets don't carry the gateway binding / lanIp / association
-// our model needs — so EIP and NatGateway are plan-recognized, NOT create-deployable (author
-// natively), and the structural IGW / VPCGatewayAttachment are no-ops. This locks that contract.
+// #120: the EIP + NAT/Internet-Gateway family. The NatGateway backing kind is dataplane-verified, but
+// AWS's property set doesn't carry the gateway binding / lanIp our model needs — so NatGateway is
+// plan-recognized, NOT create-deployable (author natively), and the structural IGW /
+// VPCGatewayAttachment are no-ops. An EIP / EIPAssociation on an in-stack INSTANCE is create-deployable
+// (#347 1.6: folded onto the VM's LAN IP — see translate_ec2eip_test.go); an EIP used as a NatGateway's
+// address still refuses there. This locks that contract.
 func TestMapping_EIPNatGatewayFamily(t *testing.T) {
-	// EIP + NatGateway: recognized (Partial, mappable) but plan-only — no create translator.
-	for _, tc := range []struct {
-		cfnType, kind string
-	}{
-		{"AWS::EC2::EIP", "ElasticIp"},
-		{"AWS::EC2::NatGateway", "NatGateway"},
-	} {
-		e := Lookup(tc.cfnType)
-		if e.Status != Partial {
-			t.Errorf("%s: status = %q, want partial", tc.cfnType, e.Status)
+	// NatGateway: recognized (Partial, mappable) but plan-only — no create translator.
+	e := Lookup("AWS::EC2::NatGateway")
+	if e.Status != Partial || e.Kind != "NatGateway" || !e.mappable() {
+		t.Errorf("AWS::EC2::NatGateway: got {%q,%q}, want {partial,NatGateway} and mappable", e.Status, e.Kind)
+	}
+	if hasTranslator("AWS::EC2::NatGateway") {
+		t.Errorf("AWS::EC2::NatGateway: must be plan-only (no create translator) — AWS props don't carry the gateway binding/lanIp")
+	}
+	// EIP + EIPAssociation: Partial, folded onto the VM (spec.expose), and create-deployable.
+	for _, cfnType := range []string{"AWS::EC2::EIP", "AWS::EC2::EIPAssociation"} {
+		e := Lookup(cfnType)
+		if e.Status != Partial || e.Kind != "VirtualMachine(spec.expose)" {
+			t.Errorf("%s: got {%q,%q}, want {partial,VirtualMachine(spec.expose)}", cfnType, e.Status, e.Kind)
 		}
-		if e.Kind != tc.kind {
-			t.Errorf("%s: kind = %q, want %q", tc.cfnType, e.Kind, tc.kind)
-		}
-		if !e.mappable() {
-			t.Errorf("%s: should map at plan", tc.cfnType)
-		}
-		if hasTranslator(tc.cfnType) {
-			t.Errorf("%s: must be plan-only (no create translator) — AWS props don't carry the gateway binding/lanIp", tc.cfnType)
+		if !hasTranslator(cfnType) {
+			t.Errorf("%s: must have a create translator (folds onto the associated VM's LAN IP)", cfnType)
 		}
 	}
 
@@ -45,7 +44,7 @@ func TestMapping_EIPNatGatewayFamily(t *testing.T) {
 }
 
 // The rest of the networking surface — NetworkAcl, VPCPeeringConnection, TransitGateway, FlowLog — is
-// recognized at plan but NOT create-deployable, for the same reason as EIP/NatGateway: the kube-ovn
+// recognized at plan but NOT create-deployable, for the same reason as NatGateway: the kube-ovn
 // model needs IPs / links / rule collation AWS auto-assigns or splits across resources, so a faithful
 // create translator can't be derived and the honest move is author-natively. (RouteTable and the
 // default Route graduated to create-deployable as implicit no-ops — see the Route translator tests.)

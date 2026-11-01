@@ -132,6 +132,8 @@ var translators = map[string]translator{
 	"AWS::EC2::SecurityGroup":               translateEC2SecurityGroup,
 	"AWS::EC2::SecurityGroupIngress":        translateEC2SecurityGroupRule,
 	"AWS::EC2::SecurityGroupEgress":         translateEC2SecurityGroupRule,
+	"AWS::EC2::EIP":                         translateEC2EIP,
+	"AWS::EC2::EIPAssociation":              translateEC2EIPAssociation,
 	"AWS::EC2::InternetGateway":             translateEC2ImplicitGateway,
 	"AWS::EC2::VPCGatewayAttachment":        translateEC2ImplicitGateway,
 	"AWS::EC2::SubnetNetworkAclAssociation": translateEC2ImplicitGateway,
@@ -927,6 +929,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	if len(sgNames) > 0 {
 		spec["securityGroups"] = dedupStrings(sgNames)
 	}
+	// #347 1.6: an in-stack AWS::EC2::EIP associated with this instance folds onto the VM's LAN IP
+	// (spec.expose + spec.ports derived from its SecurityGroups) — translate_ec2eip.go.
+	cav = append(cav, eipExposeVM(id, spec, ctx)...)
 
 	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
 	// bind the VM to that kind: Role (the instance assumes it via the container-credentials path, no static

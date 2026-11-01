@@ -229,8 +229,13 @@ func (r *resolver) getAtt(arg any) any {
 		}
 		return "<" + id + "." + attr + ">" // invoked, but the handler returned no such Data key
 	}
-	if _, ok := r.t.Resources[id]; ok {
+	if res, ok := r.t.Resources[id]; ok {
 		r.refs[id] = true
+		// An Elastic IP's AllocationId names the allocation — a stable synthetic eipalloc- id per stack +
+		// logical id (#347 1.6). Its address (Ref / PublicIp) is a LAN IP assigned at apply: unresolved.
+		if res.Type == "AWS::EC2::EIP" && attr == "AllocationId" {
+			return eipAllocationID(fmt.Sprint(r.pseudo["AWS::StackName"]), id)
+		}
 	} else if id != "" {
 		r.find("Fn::GetAtt on undefined resource " + id)
 	}
