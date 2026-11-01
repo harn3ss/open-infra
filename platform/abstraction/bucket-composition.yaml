@@ -5,7 +5,15 @@
 # `minio` Secret via env (never from this Composition), on the pre-defined openinfra-bucket-setup SA.
 #
 # The Job name carries a hash of the mutable spec (versioning + lifecycle) and of the owner, so changing
-# either re-runs the setup (a fresh Job) rather than being a no-op on an immutable Job.
+# either re-runs the setup (a fresh Job) rather than being a no-op on an immutable Job. The hash also
+# carries the composite's uid, so a re-created claim (same name, same spec) never meets the Job of the
+# one before it; and the Job is composed under a hash-qualified resource name, so a spec change makes
+# Crossplane delete the superseded Job instead of leaving it behind.
+#
+# Default encryption (components.objectEncryption, storage/minio-kms.yaml): when the platform switch
+# (configmap/openinfra-object-encryption in ns minio) is on, a bucket this Job creates — or one that is
+# still empty and has none — gets default encryption (AES256 under MinIO's key). Buckets already holding
+# objects are left as they are.
 #
 # Bucket names are global, as on S3: the bucket belongs to the namespace whose claim created it
 # (bucket-ownership.sh, provider-setup.yaml). A claim in another namespace that names it is refused,
@@ -68,7 +76,9 @@ spec:
                    (the #347 injection fix). The Job's pod template is immutable, so the version bump mints a
                    fresh Job name on rollout — the old finished Job can't be patched in place — and the new
                    Job re-runs idempotently (own bucket, mb --ignore-existing, the existing key is reused). */}}
-            {{- $hashIn := printf "%v|%s|%s|%s|own-v3" ($spec.versioning | default false) $lifecycle $lockJson $owner }}
+            {{- /* own-v4: the composite's uid is in the hash (a re-created claim gets a fresh Job), the Job is
+                   composed per hash (a superseded one is deleted), and the setup sets default encryption. */}}
+            {{- $hashIn := printf "%v|%s|%s|%s|%s|own-v4" ($spec.versioning | default false) $lifecycle $lockJson $owner .observed.composite.resource.metadata.uid }}
             {{- if $policy }}{{- $hashIn = printf "%s|%s" $hashIn $policy }}{{- end }}
             {{- /* Bucket tags (S3 bucket tagging), as a TagSet document in key order. A claim with none renders
                    exactly as before (no env, no step), so adding the field re-runs no existing Job. */}}
@@ -82,7 +92,7 @@ spec:
             kind: Object
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup
+                gotemplating.fn.crossplane.io/composition-resource-name: bucket-setup-{{ $hash }}
             spec:
               forProvider:
                 manifest:
@@ -132,6 +142,9 @@ spec:
                               {{- if $tagging }}
                               - { name: BUCKET_TAGGING, value: {{ $tagging | toJson }} }
                               {{- end }}
+                              # The platform's default encryption, once it is on (storage/minio-kms.yaml).
+                              - name: OBJECT_ENCRYPTION_DEFAULT
+                                valueFrom: { configMapKeyRef: { name: openinfra-object-encryption, key: default, optional: true } }
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
@@ -146,7 +159,9 @@ spec:
                                 # that only surfaces later as NoSuchBucket in the app's own logs (#151).
                                 {{- if $lockJson }}
                                 # Object Lock must be enabled AT creation (it auto-enables versioning); can't be added later.
+                                created=0
                                 if out=$(aws --endpoint-url $E s3api create-bucket --bucket {{ $bucket }} --object-lock-enabled-for-bucket 2>&1); then
+                                  created=1
                                   echo "created bucket {{ $bucket }}"
                                 else
                                   case "$out" in
@@ -156,7 +171,9 @@ spec:
                                 fi
                                 aws --endpoint-url $E s3api put-object-lock-configuration --bucket {{ $bucket }} --object-lock-configuration "$LOCK_JSON"
                                 {{- else }}
+                                created=0
                                 if out=$(aws --endpoint-url $E s3 mb "s3://{{ $bucket }}" 2>&1); then
+                                  created=1
                                   echo "created bucket {{ $bucket }}"
                                 else
                                   case "$out" in
@@ -165,6 +182,21 @@ spec:
                                   esac
                                 fi
                                 {{- end }}
+                                # Default encryption, once the platform has it on: a bucket created here, or one
+                                # still empty with none (a retried setup). One that holds objects is left as is.
+                                if [ -n "${OBJECT_ENCRYPTION_DEFAULT:-}" ]; then
+                                  [ "$OBJECT_ENCRYPTION_DEFAULT" = AES256 ] || { echo "unsupported default encryption: $OBJECT_ENCRYPTION_DEFAULT" >&2; exit 1; }
+                                  if [ "$created" = 0 ] && ! aws --endpoint-url $E s3api get-bucket-encryption --bucket {{ $bucket }} >/dev/null 2>&1; then
+                                    lv=$(aws --endpoint-url $E s3api list-object-versions --bucket {{ $bucket }} --max-items 1 --output json 2>&1) \
+                                      || { echo "list-object-versions failed for {{ $bucket }}: $lv" >&2; exit 1; }
+                                    [ "$(printf '%s' "$lv" | jq -s '(.[0] // {}) | ((.Versions // []) + (.DeleteMarkers // [])) | length')" = 0 ] && created=1
+                                  fi
+                                  if [ "$created" = 1 ]; then
+                                    aws --endpoint-url $E s3api put-bucket-encryption --bucket {{ $bucket }} \
+                                      --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+                                    echo "default encryption (AES256) set on bucket {{ $bucket }}"
+                                  fi
+                                fi
                                 {{- if $spec.versioning }}
                                 aws --endpoint-url $E s3api put-bucket-versioning --bucket {{ $bucket }} --versioning-configuration Status=Enabled
                                 {{- end }}
