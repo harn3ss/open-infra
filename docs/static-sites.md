@@ -9,6 +9,11 @@ S3-static-website-plus-CDN-origin-shaped primitive. One claim provisions:
   (unknown paths serve `index.html` so client-side routing works);
 - a **Traefik Ingress** with cert-manager TLS on your domain.
 
+Deleting the claim deletes its connection secret and its TLS secret with it. The bucket reaper then
+removes the site's MinIO user and, once it is empty, its bucket; a bucket that still holds assets is
+kept, because no sweep deletes data. To remove everything, empty the bucket first
+(`aws s3 rm s3://<bucket>/ --recursive`) and then delete the StaticSite.
+
 ```yaml
 apiVersion: openinfra.dev/v1
 kind: StaticSite
@@ -134,9 +139,11 @@ jobs:
       - if: github.event.action != 'closed'
         run: aws --endpoint-url "$MINIO_ENDPOINT" s3 sync ./dist/ "s3://pr-${{ github.event.number }}-site/" --delete
 
-      # On close: delete the StaticSite (and its bucket assets) for that PR.
+      # On close: empty the site's bucket, then delete the StaticSite for that PR (its bucket goes with it).
       - if: github.event.action == 'closed'
-        run: kubectl delete staticsite pr-${{ github.event.number }} -n previews --ignore-not-found
+        run: |
+          aws --endpoint-url "$MINIO_ENDPOINT" s3 rm "s3://pr-${{ github.event.number }}-site/" --recursive
+          kubectl delete staticsite pr-${{ github.event.number }} -n previews --ignore-not-found
 ```
 
 A platform-native preview controller (auto-provisioning environments from Git state) is a separate,

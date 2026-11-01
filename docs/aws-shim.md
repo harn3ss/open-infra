@@ -229,6 +229,23 @@ sends a trailing checksum (the AWS CLI v2 default in many paths) — so the obje
 with the framing bytes. Guarded by a decoder unit test and a probe step that forces a chunked
 upload (`--checksum-algorithm CRC32`) and asserts byte-identity.
 
+**Bucket configuration and versions.** `GetBucketVersioning` / `PutBucketVersioning`, `ListObjectVersions`,
+`GetObject`/`HeadObject`/`DeleteObject` with `versionId`, and `PutObject`'s `x-amz-version-id` behave as
+on S3, so a bucket created with versioning (`kind: Bucket` `versioning: true`, or CloudFormation
+`VersioningConfiguration: Enabled`) shows it through the API. `GetBucketTagging` / `PutBucketTagging` /
+`DeleteBucketTagging` (a bucket with no tags is `NoSuchTagSet`) and `GetBucketLocation` (empty, i.e.
+us-east-1) are served too. Each is authorized as its AWS action (`s3:GetBucketVersioning`,
+`s3:ListBucketVersions`, `s3:GetObjectVersion`, `s3:PutBucketTagging` …). Any other sub-resource
+(`?acl`, `?policy`, `?lifecycle`, multipart uploads, object tagging …) is `NotImplemented` rather than
+being answered as a listing or an object read.
+
+**`DeleteBucket`.** A bucket here is the bucket of a `kind: Bucket` claim, so deleting the bucket deletes
+that claim, with the caller's own authority (their RBAC decides), and then the bucket. A bucket that
+still holds objects, prior versions or delete markers is `BucketNotEmpty` (409) and nothing is deleted.
+A platform bucket, or a bucket that belongs to another kind (a StaticSite's own bucket, an
+Application's storage) or to nothing the platform manages, is refused with `AccessDenied`: delete the
+resource that owns it. The claim's MinIO user and credentials are removed by the bucket reaper.
+
 **Path-style and virtual-hosted-style requests, and pre-signed URLs.** Requests address a bucket either
 in the path (`https://<s3 host>/<bucket>/<key>`) or in the hostname (`https://<bucket>.<s3 host>/<key>`,
 the SDK default for many clients). Virtual-hosted style is accepted for the hosts listed in

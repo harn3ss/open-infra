@@ -47,11 +47,16 @@ or dangerous capabilities are opt-in:
   it. A claim in another namespace that names that bucket is refused: it gets no policy and no
   credentials. Platform buckets (backups, DB snapshots, the lakehouse, query results, audit, the
   registry) are never handed to a claim. Each claim's MinIO user is its own, named from its kind,
-  namespace and name. The owner is recorded as a Secret `bucket-owner-<bucket>` in the `minio`
-  namespace, which tenants cannot write. A bucket that existed before owners were recorded is adopted
+  namespace and name. The owner is recorded as a Secret `bucket-owner-<bucket>` in the
+  `openinfra-bucket-creds` namespace, which tenants cannot write; it also names the claim instance
+  (its composite's creation time), so a claim deleted and created again under the same name never
+  inherits the earlier one's data. A bucket that existed before owners were recorded is adopted
   only by the claim that created it (the bucket is newer than the claim). Otherwise the claim's setup
-  Job fails and prints the `kubectl` command an admin runs to record the rightful owner. Deleting a
-  claim keeps its bucket and the record; an admin deletes both to free the name.
+  Job fails and prints the `kubectl` command an admin runs to record the rightful owner. When a claim
+  is deleted, the bucket reaper (`platform/abstraction/bucket-reaper.yaml`) removes its MinIO user and
+  credentials, so a deleted claim's key stops working, and its bucket with the record when the bucket
+  is empty. A bucket that still holds data is kept and its record labelled `openinfra.dev/orphaned`;
+  no sweep deletes data, and an admin decides.
 
 The **hardened deployment profile** (opt-in `components.hardened`, shipped) extends this: no Chaos Mesh
 install, RBAC that withholds `FaultInjection`, no `AUTH_MODE=none`, restricted Pod Security enforced on
