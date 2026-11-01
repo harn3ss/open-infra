@@ -444,7 +444,10 @@ translated type's `Ref` and documented `Fn::GetAtt` attributes resolve too (`cfn
   `Ref` is its name, a bucket's `DomainName` / `RegionalDomainName` / `WebsiteURL` are AWS's shapes for
   its name. A queue, topic, subscription, parameter, key or alias in the SQS/SNS/SSM/KMS store (see
   *Queues, topics, parameters and keys*) resolves to exactly what that store holds — a stack key's `Ref`
-  is the key id the KMS API lists.
+  is the key id the KMS API lists. A secret, log group, EventBridge rule or bus, ECR repository or alarm
+  (created through its own front door) resolves to the name and ARN it was created under: a secret's
+  `Ref` / `Id` is its ARN (the one `GetSecretValue` takes), a repository's `RepositoryUri` is the
+  in-cluster registry host and its name.
 - **Ids another stack passes back in** — a VPC's, a subnet's, a security group's — are the resource's
   open-infra name. That is what the translators accept from a parameter or `Fn::ImportValue` (a raw
   `vpc-`/`subnet-`/`sg-` id is opaque to them), so a network stack's exports are usable by the stacks that

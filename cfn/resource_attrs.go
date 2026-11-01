@@ -191,6 +191,18 @@ func attrFunctionName(e *attrEnv) string {
 	return e.awsName("FunctionName")
 }
 
+// svcStaticAttr is a front-door-served resource's Ref (attr "") or attribute: the name or ARN the stack
+// created it under (serviceStatic, translate_service.go) — a secret's ARN, a log group's, rule's, bus's,
+// repository's or alarm's name and ARN, a repository's URI.
+func svcStaticAttr(attr string) attrFunc {
+	return func(e *attrEnv) (string, bool) {
+		if e.sctx == nil {
+			return "", false
+		}
+		return serviceStatic(e.id, attr, e.sctx)
+	}
+}
+
 // bucketName is an S3 bucket's name.
 func s3BucketName(e *attrEnv) string { return e.awsName("BucketName") }
 
@@ -287,6 +299,18 @@ var resourceAttrs = map[string]typeAttrs{
 	"AWS::SNS::Subscription": {ref: static(func(e *attrEnv) string {
 		return e.arn("sns", e.name()+":"+e.synthID("", 32))
 	})},
+
+	// --- served through their own front doors (translate_service.go): what the stack created them under ---
+	"AWS::SecretsManager::Secret": {ref: svcStaticAttr(""), attrs: map[string]attrFunc{"Id": svcStaticAttr("Id")}},
+	"AWS::Logs::LogGroup":         {ref: svcStaticAttr(""), attrs: map[string]attrFunc{"Arn": svcStaticAttr("Arn")}},
+	"AWS::Events::Rule":           {ref: svcStaticAttr(""), attrs: map[string]attrFunc{"Arn": svcStaticAttr("Arn")}},
+	"AWS::Events::EventBus": {ref: svcStaticAttr(""), attrs: map[string]attrFunc{
+		"Arn": svcStaticAttr("Arn"), "Name": svcStaticAttr("Name"),
+	}},
+	"AWS::ECR::Repository": {ref: svcStaticAttr(""), attrs: map[string]attrFunc{
+		"Arn": svcStaticAttr("Arn"), "RepositoryUri": svcStaticAttr("RepositoryUri"),
+	}},
+	"AWS::CloudWatch::Alarm": {ref: svcStaticAttr(""), attrs: map[string]attrFunc{"Arn": svcStaticAttr("Arn")}},
 
 	// --- config and keys ---
 	"AWS::SSM::Parameter": {ref: static(ssmParameterName), attrs: map[string]attrFunc{

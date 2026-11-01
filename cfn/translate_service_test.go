@@ -1,6 +1,7 @@
 package cfn
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -41,6 +42,73 @@ func buildService(t *testing.T, tmpl string, caps Capabilities) (map[string]Stac
 		out[b.res.LogicalID] = b.res
 	}
 	return out, nil
+}
+
+// A stack's Outputs name its secret, log group, rule, bus, repository and alarm by the values they were
+// created under (resource_attrs.go): the same strings Ref and Fn::GetAtt gave the template, accepted at plan.
+func TestOutputs_FrontDoorResources(t *testing.T) {
+	tmpl := `
+Resources:
+  Db:    { Type: AWS::SecretsManager::Secret, Properties: { Name: app/db, SecretString: x } }
+  Logs:  { Type: AWS::Logs::LogGroup, Properties: { LogGroupName: /app/web } }
+  Bus:   { Type: AWS::Events::EventBus, Properties: { Name: orders } }
+  Fn:    { Type: AWS::Lambda::Function, Properties: { PackageType: Image, Code: { ImageUri: "r/f:1" } } }
+  Tick:  { Type: AWS::Events::Rule, Properties: { EventBusName: !Ref Bus, EventPattern: { source: [ app ] }, Targets: [ { Id: f, Arn: !GetAtt Fn.Arn } ] } }
+  Repo:  { Type: AWS::ECR::Repository, Properties: { RepositoryName: web } }
+  Hot:   { Type: AWS::CloudWatch::Alarm, Properties: { Namespace: N, MetricName: M, Statistic: Sum, ComparisonOperator: GreaterThanThreshold, EvaluationPeriods: 1, Threshold: 1 } }
+Outputs:
+  SecretArn: { Value: !Ref Db }
+  SecretId:  { Value: !GetAtt Db.Id }
+  Group:     { Value: !Ref Logs }
+  GroupArn:  { Value: !GetAtt Logs.Arn }
+  Rule:      { Value: !Ref Tick }
+  RuleArn:   { Value: !GetAtt Tick.Arn }
+  BusName:   { Value: !GetAtt Bus.Name }
+  BusArn:    { Value: !GetAtt Bus.Arn }
+  Repo:      { Value: !Ref Repo }
+  RepoArn:   { Value: !GetAtt Repo.Arn }
+  RepoUri:   { Value: !GetAtt Repo.RepositoryUri }
+  Alarm:     { Value: !Ref Hot }
+  AlarmArn:  { Value: !GetAtt Hot.Arn }
+`
+	if p, err := BuildPlanWithCaps([]byte(tmpl), nil, nil, "app", serviceCaps); err != nil || p.hasUndeployable() {
+		t.Fatalf("plan: %v %+v", err, p)
+	}
+	rec, err := Deploy(context.Background(), []byte(tmpl), DeployOptions{StackName: "app", Namespace: "open-infra-cfn", Caps: serviceCaps}, &fakeApplier{})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	byID := map[string]StackResource{}
+	for _, r := range rec.Resources {
+		byID[r.LogicalID] = r
+	}
+	pseudo := pseudoParams("app")
+	ra := pseudo["AWS::Region"].(string) + ":" + pseudo["AWS::AccountId"].(string)
+	secret, _ := byID["Db"].Spec["arn"].(string)
+	rule := byID["Tick"].Name
+	got := outputMap(rec)
+	want := map[string]string{
+		"SecretArn": secret, "SecretId": secret,
+		"Group": "/app/web", "GroupArn": "arn:aws:logs:" + ra + ":log-group:/app/web:*",
+		"Rule": "orders|" + rule, "RuleArn": "arn:aws:events:" + ra + ":rule/orders/" + rule,
+		"BusName": "orders", "BusArn": "arn:aws:events:" + ra + ":event-bus/orders",
+		"Repo": "web", "RepoArn": "arn:aws:ecr:" + ra + ":repository/web", "RepoUri": "registry.site/web",
+		"Alarm": byID["Hot"].Name, "AlarmArn": "arn:aws:cloudwatch:" + ra + ":alarm:" + byID["Hot"].Name,
+	}
+	for k, w := range want {
+		if got[k].OutputValue != w {
+			t.Errorf("Output %s = %q, want %q", k, got[k].OutputValue, w)
+		}
+	}
+	if !strings.Contains(secret, ":secret:app/db-") {
+		t.Errorf("secret ARN %q", secret)
+	}
+	// Each resource's physical id is its Ref, as AWS reports it.
+	for id, w := range map[string]string{"Db": secret, "Logs": "/app/web", "Bus": "orders", "Repo": "web", "Hot": byID["Hot"].Name} {
+		if byID[id].PhysicalID != w {
+			t.Errorf("%s physical id = %q, want %q", id, byID[id].PhysicalID, w)
+		}
+	}
 }
 
 // The cfn CLI has no service stores: each service type refuses there, naming the front door.
