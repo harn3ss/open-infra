@@ -468,10 +468,22 @@ Outputs:
   Alias:     { Value: !Ref A }
 `
 	opts := DeployOptions{StackName: "st", Namespace: "open-infra-cfn", Caps: svcCaps}
-	rec, err := Deploy(context.Background(), []byte(tmpl), opts, &fakeApplier{})
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), []byte(tmpl), opts, f)
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
+	defer func() {
+		// An update reports the key the stack recorded, never a newly minted id.
+		newKeyID = func() string { return "99999999-9999-4999-8999-999999999999" }
+		upd, err := Update(context.Background(), []byte(tmpl+"  Extra: { Value: !GetAtt K.Arn }\n"), opts, f)
+		if err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if got := outputMap(upd); got["KeyId"].OutputValue != fixedKeyID || !strings.HasSuffix(got["Extra"].OutputValue, "key/"+fixedKeyID) {
+			t.Errorf("after an update KeyId = %q, Extra = %q; want the recorded key %s", got["KeyId"].OutputValue, got["Extra"].OutputValue, fixedKeyID)
+		}
+	}()
 	byKind := map[string]StackResource{}
 	byID := map[string]StackResource{}
 	for _, r := range rec.Resources {

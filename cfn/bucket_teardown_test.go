@@ -136,5 +136,37 @@ Resources:
 		if full == contains(b.removed, "s-data") {
 			t.Errorf("full=%v: bucket removed = %v", full, b.removed)
 		}
+		// The dropped bucket's cleanup event: DELETE_COMPLETE, or (kept with its data) DELETE_FAILED
+		// with BucketNotEmpty — the update itself still completes, as on AWS.
+		want := "DELETE_COMPLETE"
+		if full {
+			want = "DELETE_FAILED"
+		}
+		last := ""
+		for _, e := range rec.Events {
+			if e.LogicalID == "Data" {
+				last = e.Status
+				if full && e.Status == "DELETE_FAILED" && !strings.Contains(e.Reason, "BucketNotEmpty") {
+					t.Errorf("full=%v: DELETE_FAILED reason %q does not name BucketNotEmpty", full, e.Reason)
+				}
+			}
+		}
+		if last != want {
+			t.Errorf("full=%v: the dropped bucket's last event is %q, want %q", full, last, want)
+		}
+		if n := len(rec.Events); n == 0 || rec.Events[n-1].Status != "UPDATE_COMPLETE" {
+			t.Errorf("full=%v: the stack's last event is not UPDATE_COMPLETE: %+v", full, rec.Events)
+		}
+	}
+}
+
+// A stack delete a non-empty bucket refuses ends with the stack's DELETE_FAILED event naming it.
+func TestDestroy_NonEmptyBucketEvent(t *testing.T) {
+	f := deployTemplate(t, []byte(bucketStack))
+	b := &fakeBuckets{data: map[string]bool{"s-data": false, "my-named-bucket": true}}
+	rec, _ := Destroy(context.Background(), b.opts(deployOpts()), f)
+	n := len(rec.Events)
+	if n == 0 || rec.Events[n-1].Status != "DELETE_FAILED" || !strings.Contains(rec.Events[n-1].Reason, "BucketNotEmpty") {
+		t.Errorf("last event = %+v, want the stack's DELETE_FAILED naming BucketNotEmpty", rec.Events)
 	}
 }
