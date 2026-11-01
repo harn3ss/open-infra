@@ -109,7 +109,7 @@ class Running(object):
 class ConfigTest(unittest.TestCase):
     def test_golden_config_loads_with_composition_defaults(self):
         cfg = make_config()
-        self.assertEqual(cfg["imds"]["hopLimit"], 2)
+        self.assertEqual(cfg["imds"]["hopLimit"], 1)
         self.assertEqual(cfg["imds"]["httpTokens"], "optional")
         self.assertEqual(cfg["region"], "us-east-1")
         self.assertEqual(cfg["availabilityZone"], "us-east-1a")
@@ -117,7 +117,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_bad_values_fall_back_safely(self):
         cfg = make_config(imds={"hopLimit": 99, "httpTokens": "sometimes"})
-        self.assertEqual(cfg["imds"]["hopLimit"], 2)
+        self.assertEqual(cfg["imds"]["hopLimit"], 1)
         self.assertEqual(cfg["imds"]["httpTokens"], "required")  # unknown -> fail closed
 
     def test_defaults_are_not_mutated(self):
@@ -125,7 +125,7 @@ class ConfigTest(unittest.TestCase):
         with open(p, "w") as fh:
             json.dump({"imds": {"hopLimit": 7}}, fh)
         agent.load_config(p)
-        self.assertEqual(agent.DEFAULTS["imds"]["hopLimit"], 2)
+        self.assertEqual(agent.DEFAULTS["imds"]["hopLimit"], 1)
 
 
 class TimestampTest(unittest.TestCase):
@@ -717,67 +717,131 @@ class NetnsPlanTest(unittest.TestCase):
         self.assertFalse(any(" lo" in c and "addr" in c for c in flat),
                          "169.254.169.254 must NOT go on the guest's lo (that would take port 80 from the workload)")
 
-    def test_vm_nics_are_the_device_backed_interfaces(self):
-        sysfs = tempfile.mkdtemp(dir=TMP)
-        for name, device in (("eth0", True), ("eth1", True), ("docker0", False), ("veth12ab", False),
-                             ("cni0", False), ("wg0", False), ("lo", False), (agent.NETNS_HOST_IF, True)):
-            os.makedirs(os.path.join(sysfs, name))
-            if device:
-                os.makedirs(os.path.join(sysfs, name, "device"))
-        self.assertEqual(agent.vm_nics(sysfs), ["eth0", "eth1"],
-                         "only the guest's own NICs: never bridges, veths, tunnels, lo, or the metadata veth")
-        self.assertEqual(agent.vm_nics(os.path.join(sysfs, "missing")), [])
+    # The guest's interfaces as `ip -d -j link` reports them: (name, kind, master).
+    LINKS = [
+        ("lo", "", ""), ("eth0", "", ""), ("eth0.7", "vlan", ""), ("bond0", "bond", ""),
+        ("wg0", "wireguard", ""), ("tun0", "tun", ""), ("vxlan.calico", "vxlan", ""),
+        ("docker0", "bridge", ""), ("veth1a2b", "veth", "docker0"),            # containers on docker's bridge
+        ("br-lan", "bridge", ""), ("eth1", "", "br-lan"), ("veth9", "veth", "br-lan"),  # a bridge with a NIC
+        ("br-tap", "bridge", ""), ("tap0", "tun", "br-tap"),                    # OpenVPN bridged clients
+        ("cali123", "veth", ""), ("nk0", "netkit", ""), ("virbr-empty", "bridge", ""),
+        (agent.NETNS_HOST_IF, "veth", ""), ('bad"name', "veth", ""),
+    ]
 
-    def guard_with(self, tools, rc=0):
+    def test_container_interfaces_are_veth_netkit_and_all_container_bridges(self):
+        self.assertEqual(agent.container_interfaces(self.LINKS),
+                         ["cali123", "docker0", "nk0", "veth1a2b", "veth9", "virbr-empty"],
+                         "containers only: never a NIC, VLAN, bond, tunnel, a bridge holding a NIC or tap, the "
+                         "metadata veth, or a name that cannot be quoted into a rule")
+        self.assertNotIn("cali123", agent.container_interfaces(self.LINKS, extra=["cali123"]),
+                         "an always-refused interface is never admitted")
+
+    def test_guest_links_parses_ip_json(self):
+        out = json.dumps([{"ifname": "eth0"}, {"ifname": "docker0", "linkinfo": {"info_kind": "bridge"}},
+                          {"ifname": "veth1", "master": "docker0", "linkinfo": {"info_kind": "veth", "info_slave_kind": "bridge"}}])
+
+        def run_cmd(cmd, check=True):
+            class P(object):
+                returncode, stdout, stderr = 0, out, ""
+            return P()
+
+        orig = agent.ip_binary
+        agent.ip_binary = lambda: "ip"
+        try:
+            self.assertEqual(agent.guest_links(run_cmd), [("eth0", "", ""), ("docker0", "bridge", ""), ("veth1", "veth", "docker0")])
+
+            def failing(cmd, check=True):
+                class P(object):
+                    returncode, stdout, stderr = 255, "", "Option \"-j\" is unknown"
+                return P()
+            self.assertIsNone(agent.guest_links(failing), "an ip without JSON: unknown, not an empty list")
+        finally:
+            agent.ip_binary = orig
+
+    def guard_with(self, tools, refuse=(), extra=(), links=None):
+        """Run guard_forwarded_imds with fake tools. refuse: substrings of a command or of the nft ruleset
+        it loads that make that command fail."""
         ran = []
+        ruleset = os.path.join(tempfile.mkdtemp(dir=TMP), "guard.nft")
 
         def run_cmd(cmd, check=True):
             ran.append(list(cmd))
+            text = " ".join(cmd)
+            if cmd[-2:] == ["-f", ruleset] and os.path.exists(ruleset):
+                with open(ruleset) as fh:
+                    text += "\n" + fh.read()
+            failed = any(r in text for r in refuse) or "-C" in cmd  # -C (check) answers "absent"
 
             class P(object):
-                # -C (check) answers "absent" so the jump is inserted; everything else answers rc
-                returncode = 1 if "-C" in cmd else rc
-                stdout, stderr = "", "" if rc == 0 else "refused"
+                returncode = 1 if failed else 0
+                stdout, stderr = "", "refused" if failed else ""
             return P()
 
-        ruleset = os.path.join(tempfile.mkdtemp(dir=TMP), "guard.nft")
         orig_ip = agent.ip_binary
         agent.ip_binary = lambda: "ip"
         try:
-            outcome = agent.guard_forwarded_imds("openinfra-imds", "169.254.169.254", ["eth0", "eth1"],
-                                                 which=lambda t: "/usr/sbin/" + t if t in tools else None,
-                                                 run_cmd=run_cmd, ruleset_path=ruleset)
+            mode, allowed = agent.guard_forwarded_imds("openinfra-imds", "169.254.169.254", list(extra),
+                                                       which=lambda t: "/usr/sbin/" + t if t in tools else None,
+                                                       run_cmd=run_cmd, ruleset_path=ruleset,
+                                                       links=self.LINKS if links is None else links)
         finally:
             agent.ip_binary = orig_ip
         script = ""
         if os.path.exists(ruleset):
             with open(ruleset) as fh:
                 script = fh.read()
-        return outcome, [" ".join(c) for c in ran], script
+        return mode, allowed, [" ".join(c) for c in ran], script
 
-    def test_forwarded_imds_guard_prefers_nft(self):
-        outcome, ran, script = self.guard_with({"nft", "iptables"})
-        self.assertEqual(outcome, "nft")
+    def test_guard_prefers_nft_by_interface_kind(self):
+        mode, allowed, ran, script = self.guard_with({"nft", "iptables"}, extra=["cali123"])
+        self.assertEqual((mode, allowed), ("nft-kind", None))
         self.assertIn("/usr/sbin/nft -f ", "\n".join(ran))
-        self.assertIn('iifname { "eth0", "eth1" } ip daddr 169.254.169.254 drop', script)
-        self.assertIn("type filter hook prerouting priority -300; policy accept;", script, "raw priority, before conntrack/DNAT")
-        self.assertTrue(script.startswith("table ip openinfra_imds {}\ndelete table ip openinfra_imds\n"),
+        ip_table, bridge_table = script.split("table bridge openinfra_imds {}\n")
+        self.assertTrue(ip_table.startswith("table ip openinfra_imds {}\ndelete table ip openinfra_imds\n"),
                         "the ruleset replaces itself atomically (idempotent restarts)")
+        for want in ('iifname { "cali123" } ip daddr 169.254.169.254 drop',
+                     'ip daddr 169.254.169.254 meta iifkind { "veth", "netkit", "bridge" } accept',
+                     "ip daddr 169.254.169.254 drop"):
+            self.assertIn(want, ip_table)
+        self.assertIn("type filter hook prerouting priority -300; policy accept;", ip_table, "raw priority, before conntrack/DNAT")
+        self.assertLess(ip_table.index("iifname"), ip_table.index("} accept"), "an always-refused interface is dropped first")
+        self.assertLess(ip_table.index("} accept"), ip_table.rindex("ip daddr 169.254.169.254 drop"), "everything else is dropped")
+        self.assertIn('ip daddr 169.254.169.254 meta iifkind { "veth", "netkit" } accept', bridge_table,
+                      "a bridged frame is admitted only from a container's port")
+        self.assertTrue(bridge_table.rstrip().endswith("ip daddr 169.254.169.254 drop\n  }\n}"), bridge_table)
         self.assertFalse(any("route del default" in c for c in ran), "with a firewall tool the namespace keeps its routes")
 
-    def test_forwarded_imds_guard_iptables_and_route_fallback(self):
-        outcome, ran, _ = self.guard_with({"iptables"})
-        self.assertEqual(outcome, "iptables")
+    def test_guard_names_the_containers_when_nft_cannot_match_kinds(self):
+        mode, allowed, ran, script = self.guard_with({"nft", "iptables"}, refuse=("iifkind",))
+        self.assertEqual(mode, "nft-names")
+        self.assertEqual(allowed, agent.container_interfaces(self.LINKS))
+        self.assertIn('ip daddr 169.254.169.254 iifname { "cali123", "docker0", "nk0", "veth1a2b", "veth9", "virbr-empty" } accept',
+                      script)
+        self.assertNotIn("table bridge", script)
+        self.assertTrue(script.rstrip().endswith("ip daddr 169.254.169.254 drop\n  }\n}"))
+        mode, allowed, _, script = self.guard_with({"nft"}, refuse=("iifkind",), links=[("eth0", "", "")])
+        self.assertEqual((mode, allowed), ("nft-names", []))
+        self.assertNotIn("} accept", script, "no container interface: everything for IMDS is dropped")
+
+    def test_guard_iptables_and_route_fallback(self):
+        mode, allowed, ran, _ = self.guard_with({"iptables"}, extra=["wg9"])
+        self.assertEqual(mode, "iptables")
         for want in ("/usr/sbin/iptables -w -t raw -N OPENINFRA-IMDS",
-                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i eth0 -d 169.254.169.254/32 -j DROP",
-                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i eth1 -d 169.254.169.254/32 -j DROP",
-                     "/usr/sbin/iptables -w -t raw -I PREROUTING 1 -j OPENINFRA-IMDS"):
+                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i wg9 -j DROP",
+                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i docker0 -j RETURN",
+                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i cali123 -j RETURN",
+                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -j DROP",
+                     "/usr/sbin/iptables -w -t raw -I PREROUTING 1 -d 169.254.169.254/32 -j OPENINFRA-IMDS"):
             self.assertIn(want, ran)
-        outcome, ran, _ = self.guard_with(set())
-        self.assertEqual(outcome, "routes", "no nft/iptables: the namespace answers only the guest itself")
+        self.assertLess(ran.index("/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i docker0 -j RETURN"),
+                        ran.index("/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -j DROP"))
+        self.assertFalse(any("-i eth0" in c or "-i wg0 -j RETURN" in c or "-i br-lan" in c for c in ran),
+                         "NICs, tunnels and a bridge with a NIC are never admitted")
+        mode, _, ran, _ = self.guard_with(set())
+        self.assertEqual(mode, "routes", "no nft/iptables: the namespace answers only the guest itself")
         self.assertIn("ip -n openinfra-imds route del default", ran)
-        outcome, ran, _ = self.guard_with({"nft", "iptables"}, rc=1)
-        self.assertEqual(outcome, "failed", "every mechanism refused: reported, never raised")
+        mode, _, _, _ = self.guard_with({"nft", "iptables"}, refuse=("-f ", "iptables", "route del", "route show"))
+        self.assertEqual(mode, "failed", "every mechanism refused: reported, never raised")
 
     def test_remove_guard(self):
         ran = []
@@ -790,8 +854,101 @@ class NetnsPlanTest(unittest.TestCase):
             return P()
 
         agent.remove_imds_guard(which=lambda t: "/usr/sbin/" + t, run_cmd=run_cmd)
-        self.assertIn("/usr/sbin/nft delete table ip openinfra_imds", ran)
-        self.assertIn("/usr/sbin/iptables -w -t raw -X OPENINFRA-IMDS", ran)
+        for want in ("/usr/sbin/nft delete table ip openinfra_imds", "/usr/sbin/nft delete table bridge openinfra_imds",
+                     "/usr/sbin/iptables -w -t raw -D PREROUTING -d 169.254.169.254/32 -j OPENINFRA-IMDS",
+                     "/usr/sbin/iptables -w -t raw -D PREROUTING -j OPENINFRA-IMDS",  # an older agent's jump
+                     "/usr/sbin/iptables -w -t raw -X OPENINFRA-IMDS"):
+            self.assertIn(want, ran)
+
+    def test_guard_in_place(self):
+        def fake(answers):
+            def run_cmd(cmd, check=True):
+                text = " ".join(cmd)
+                rc, out = 1, ""
+                for key, (r, o) in answers.items():
+                    if key in text:
+                        rc, out = r, o
+
+                class P(object):
+                    returncode, stdout, stderr = rc, out, ""
+                return P()
+            return run_cmd
+
+        which = lambda t: "/usr/sbin/" + t
+        rule = "ip daddr 169.254.169.254 drop"
+        both = fake({"list table ip": (0, rule), "list table bridge": (0, rule)})
+        self.assertTrue(agent.guard_in_place("nft-kind", "169.254.169.254", "ns", which, both))
+        self.assertFalse(agent.guard_in_place("nft-kind", "169.254.169.254", "ns", which, fake({"list table ip": (0, rule)})),
+                         "kind mode needs its bridge table too")
+        self.assertTrue(agent.guard_in_place("nft-names", "169.254.169.254", "ns", which, fake({"list table ip": (0, rule)})))
+        self.assertFalse(agent.guard_in_place("nft-names", "169.254.169.254", "ns", which, fake({})), "flushed ruleset")
+        self.assertFalse(agent.guard_in_place("nft-names", "169.254.169.254", "ns", which, fake({"list table ip": (0, "table ip openinfra_imds {}")})),
+                         "an emptied table is not a guard")
+        self.assertTrue(agent.guard_in_place("iptables", "169.254.169.254", "ns", which, fake({"-C": (0, "")})))
+        self.assertFalse(agent.guard_in_place("iptables", "169.254.169.254", "ns", which, fake({})))
+        self.assertFalse(agent.guard_in_place("failed", "169.254.169.254", "ns", which, both))
+        orig = agent.ip_binary
+        agent.ip_binary = lambda: "ip"
+        try:
+            self.assertTrue(agent.guard_in_place("routes", "169.254.169.254", "ns", which, fake({"route show default": (0, "")})))
+            self.assertFalse(agent.guard_in_place("routes", "169.254.169.254", "ns", which,
+                                                  fake({"route show default": (0, "default via 169.254.169.1")})))
+        finally:
+            agent.ip_binary = orig
+
+
+class GuardFailClosedTest(unittest.TestCase):
+    """Without a forwarded-traffic guard the metadata service serves nothing; the watchdog re-applies a
+    removed guard and lifts the 503 once one is back."""
+
+    def test_no_guard_no_metadata(self):
+        with Running(make_config()) as r:
+            self.assertEqual(r.get("/latest/meta-data/instance-id")[0], 200)
+            r.agent.guard_ok = False
+            self.assertEqual(r.get("/latest/meta-data/instance-id")[0], 503)
+            self.assertEqual(r.put_token()[0], 503, "no IMDSv2 token either")
+            self.assertEqual(r.get("/latest/meta-data/iam/security-credentials/app-role")[0], 503)
+            r.agent.guard_ok = True
+            self.assertEqual(r.get("/latest/meta-data/instance-id")[0], 200)
+
+    def test_watchdog_reapplies_a_removed_guard_and_fails_closed_meanwhile(self):
+        a = agent.Agent(make_config(imds={"netns": "openinfra-imds"}), fetch=lambda: dict(CREDS), warm_timeout=0)
+        state = {"in_place": True, "modes": ["failed", "nft-kind"], "links": [("docker0", "bridge", "")]}
+        calls = []
+        orig = (agent.guard_in_place, agent.guard_forwarded_imds, agent.guest_links)
+
+        def fake_apply(netns, addr, extra=()):
+            calls.append(("apply", list(extra)))
+            mode = state["modes"].pop(0) if state["modes"] else "nft-kind"
+            state["in_place"] = mode != "failed"
+            return mode, (["docker0"] if mode == "iptables" else None)
+
+        agent.guard_in_place = lambda mode, addr, netns, *a_: state["in_place"]
+        agent.guard_forwarded_imds = fake_apply
+        agent.guest_links = lambda *a_: state["links"]
+        try:
+            a.guard_mode, a.guard_ok = "nft-kind", True
+            a.check_guard()
+            self.assertEqual(calls, [], "a guard in place is left alone")
+            state["in_place"] = False  # nft flush ruleset
+            a.check_guard()
+            self.assertEqual((a.guard_mode, a.guard_ok), ("failed", False), "re-applying failed: fail closed")
+            a.check_guard()
+            self.assertEqual((a.guard_mode, a.guard_ok), ("nft-kind", True), "the next check restores it")
+            # Name-based: a new container interface re-applies the guard so the container is admitted.
+            state["modes"] = ["iptables"]
+            state["in_place"] = False
+            a.check_guard()
+            self.assertEqual((a.guard_mode, a.guard_allowed), ("iptables", ["docker0"]))
+            n = len(calls)
+            a.check_guard()
+            self.assertEqual(len(calls), n, "unchanged interfaces: nothing re-applied")
+            state["links"] = [("docker0", "bridge", ""), ("cali9", "veth", "")]
+            state["modes"] = ["iptables"]
+            a.check_guard()
+            self.assertEqual(len(calls), n + 1, "a new container interface re-applies the name-based guard")
+        finally:
+            agent.guard_in_place, agent.guard_forwarded_imds, agent.guest_links = orig
 
 
 if __name__ == "__main__":

@@ -147,7 +147,7 @@ spec:
                       minimum: 1
                       maximum: 64
                       default: 1
-                      description: "IP hop limit (TTL) of the IMDSv2 session-token response, as on EC2. Default 1 when metadataOptions is given (EC2's default); a VM with no metadataOptions at all gets 2. With 1, only processes in the guest itself (and host-network containers) get a session token; a container behind a bridge in the guest (docker's default network, a pod network) is one routing hop further and needs 2; each further hop needs one more. IMDSv1 requests are not hop-limited."
+                      description: "IP hop limit (TTL) of the IMDSv2 session-token response, as on EC2. Default 1, EC2's default, with or without a metadataOptions block. With 1, only processes in the guest itself (and host-network containers) get a session token; a container behind a bridge in the guest (docker's default network, a pod network) is one routing hop further and needs 2; each further hop needs one more. IMDSv1 requests are not hop-limited."
                 securityGroups:
                   type: array
                   items: { type: string }

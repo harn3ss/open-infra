@@ -217,7 +217,7 @@ exactly as on EC2.
 spec:
   metadataOptions:            # the AWS::EC2::Instance MetadataOptions equivalent
     httpTokens: required      # optional (default) | required
-    httpPutResponseHopLimit: 2  # 1..64; default 1 (2 when metadataOptions is omitted)
+    httpPutResponseHopLimit: 2  # 1..64; default 1
     httpEndpoint: enabled     # enabled (default) | disabled
 ```
 
@@ -230,18 +230,26 @@ spec:
 - **`httpPutResponseHopLimit`** — the IP TTL of the token response. With `1`, processes in the guest
   (and host-network containers) get a session token; a container behind a bridge in the guest
   (docker's default network, a pod network) is one routing hop further and needs `2`; each further hop
-  needs one more. A `metadataOptions` block that leaves it out gets `1`, EC2's default; a VM with no
-  `metadataOptions` at all gets `2`, so containers in the guest work out of the box. IMDSv1 requests are
-  not hop-limited.
+  needs one more. The default is `1`, EC2's default, whether or not the VM has a `metadataOptions`
+  block, so a containerized workload that uses IMDSv2 sets `2`, as on EC2. IMDSv1 requests are not
+  hop-limited.
 - **`httpEndpoint: disabled`** — no metadata service at all: nothing on `169.254.169.254`, no
   container-credentials endpoint and no identity token in the guest, so (as on EC2) the guest gets no
   `instanceRole` credentials. The guest still trusts the platform root CA (below).
 
-Only the guest and its containers reach `169.254.169.254`. Packets for it that arrive on the guest's own
-NICs (traffic a guest acting as a router, VPN or NAT instance would forward) are dropped, with nftables or,
-failing that, iptables. On a guest with neither, the metadata namespace answers only the guest's own
-address: processes in the guest and containers it NATs still reach it, a routed (non-NAT) container does
-not.
+Only the guest and its own containers reach `169.254.169.254`. A packet for it that the guest would
+forward for another host is dropped, whatever it arrived on: a NIC, a VLAN, a bond, a tunnel (WireGuard,
+OpenVPN tun or tap, GRE, VXLAN), or a bridge port that is not a container's. Containers are recognized by
+the interface kind they come in on: a `veth` (or `netkit`) end, or a bridge such as `docker0` whose ports
+are all container ends. With nftables the kernel matches the kind itself, so an interface created later
+is covered at once. On a kernel whose nftables cannot match by kind, and with iptables, the agent names
+the container interfaces instead, and a container on a bridge that also holds a NIC or a tap is refused
+too. On a guest with neither tool, the metadata namespace answers only the guest's own address: processes
+in the guest and containers it NATs still reach it, a routed (non-NAT) container does not.
+
+The agent checks the guard every 5 seconds and puts it back if something removed it (`nft flush
+ruleset`, a firewall reload, `iptables -F`). While no guard is in place the metadata service answers
+`503` to every request and serves nothing; it never serves unguarded.
 
 `cfn` maps an `AWS::EC2::Instance`'s `MetadataOptions` onto this block one-to-one. Not served: the IPv6
 endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`),

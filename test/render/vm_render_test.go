@@ -349,7 +349,7 @@ func TestVM_MetadataAgent_Rendered(t *testing.T) {
 	relay, _ := cfg["relay"].(map[string]any)
 	for k, want := range map[string]any{
 		"imds.address": "169.254.169.254", "imds.port": float64(80), "imds.netns": "openinfra-imds",
-		"imds.httpTokens": "optional", "imds.hopLimit": float64(2), "imds.enabled": true,
+		"imds.httpTokens": "optional", "imds.hopLimit": float64(1), "imds.enabled": true,
 		"relay.address": "127.0.0.1", "relay.port": float64(16349), "relay.enabled": true,
 	} {
 		m, key := imds, strings.TrimPrefix(k, "imds.")
@@ -427,9 +427,11 @@ func TestVM_PlatformCA_FromEnvironment(t *testing.T) {
 			t.Errorf("vm-composition.yaml must read openinfra-platform-ca via an Optional environment step (missing %q)", want)
 		}
 	}
-	// The agent drops 169.254.169.254-bound packets arriving on the guest's own NICs (item 5).
+	// The agent drops 169.254.169.254-bound packets that do not come from the guest or its own containers
+	// (item 5), re-applies the guard when it is removed, and serves nothing while there is none.
 	src := vmWriteFileBlock(string(raw), "/usr/local/lib/openinfra/metadata-agent.py")
-	for _, want := range []string{"def guard_forwarded_imds(", "self.guard = guard_forwarded_imds(", "def vm_nics(", "priority -300"} {
+	for _, want := range []string{"def guard_forwarded_imds(", "self.apply_guard()", "meta iifkind", "def run_guard_watchdog(",
+		"def unguarded(", "priority -300"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the agent must guard IMDS against forwarded traffic (missing %q)", want)
 		}
@@ -467,8 +469,8 @@ func TestVM_MetadataOptions_IdentityAndHopDefaults(t *testing.T) {
 	if got := hop(vmCtxFW("ubuntu-24.04", map[string]any{"metadataOptions": map[string]any{"httpTokens": "required"}})); got != float64(1) {
 		t.Errorf("metadataOptions without a hop limit → 1 (EC2's default), got %#v", got)
 	}
-	if got := hop(vmCtx("ubuntu-24.04", "")); got != float64(2) {
-		t.Errorf("no metadataOptions → hop limit 2, got %#v", got)
+	if got := hop(vmCtx("ubuntu-24.04", "")); got != float64(1) {
+		t.Errorf("no metadataOptions → hop limit 1 (EC2's default), got %#v", got)
 	}
 }
 
@@ -518,10 +520,10 @@ func TestVM_MetadataOptions(t *testing.T) {
 		t.Errorf("httpEndpoint: disabled leaves the VM's identity (ServiceAccount) in place")
 	}
 
-	// Omitted metadataOptions = the defaults: optional tokens, hop limit 2, agent on.
+	// Omitted metadataOptions = EC2's defaults: optional tokens, hop limit 1, agent on.
 	def := vmAgentConfig(t, render(t, tmpl, vmCtx("debian-12", "")))
-	if imds, _ := def["imds"].(map[string]any); imds["httpTokens"] != "optional" || imds["hopLimit"] != float64(2) {
-		t.Errorf("default metadataOptions must be httpTokens optional + hop limit 2, got %#v", imds)
+	if imds, _ := def["imds"].(map[string]any); imds["httpTokens"] != "optional" || imds["hopLimit"] != float64(1) {
+		t.Errorf("default metadataOptions must be httpTokens optional + hop limit 1, got %#v", imds)
 	}
 }
 

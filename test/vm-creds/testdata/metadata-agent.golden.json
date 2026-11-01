@@ -8,7 +8,7 @@
   "imds": {
     "address": "169.254.169.254",
     "enabled": true,
-    "hopLimit": 2,
+    "hopLimit": 1,
     "hostAddress": "169.254.169.1",
     "httpTokens": "optional",
     "netns": "openinfra-imds",

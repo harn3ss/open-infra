@@ -130,14 +130,12 @@ spec:
                    endpoint, and no identity token in the guest). Either way the agent adds the platform root
                    CA (from this VM's spec) to the guest's trust store at boot, before UserData runs. Windows
                    guests run none of this.
-                   Hop limit: 1 when metadataOptions is given without one (EC2's default; the XRD defaults the
-                   field to 1), 2 when the VM has no metadataOptions at all, so containers in the guest keep
-                   IMDSv2 by default. */}}
+                   Hop limit: 1 unless metadataOptions sets another, with or without a metadataOptions block
+                   (EC2's default): a container behind a bridge in the guest needs 2 for an IMDSv2 token. */}}
             {{- $mdo := $spec.metadataOptions | default dict }}
             {{- $imdsEnabled := ne ($mdo.httpEndpoint | default "enabled") "disabled" }}
             {{- $httpTokens := $mdo.httpTokens | default "optional" }}
-            {{- $hopLimit := 2 }}
-            {{- if $spec.metadataOptions }}{{- $hopLimit = $mdo.httpPutResponseHopLimit | default 1 }}{{- end }}
+            {{- $hopLimit := $mdo.httpPutResponseHopLimit | default 1 }}
             {{- $metadataAgent := not $isWin }}
             {{- /* The identity token reaches the guest only when the metadata service can use it. */}}
             {{- $guestIdentity := and $instanceRole $metadataAgent $imdsEnabled }}
@@ -745,8 +743,10 @@ spec:
                             # TokenReview; the source IP is never the credential). The token is sent only after the shim's
                             # certificate verifies. Credentials are cached and refreshed well before they expire.
                             #
-                            # Packets for 169.254.169.254 that arrive on the guest's own NICs (traffic the guest would forward,
-                            # e.g. as a router, VPN or NAT instance) are dropped, so only the guest and its containers reach it.
+                            # Packets for 169.254.169.254 that the guest would forward for other hosts (as a router, VPN, NAT or bridge,
+                            # on any NIC, VLAN, bond, tunnel or tap) are dropped, so only the guest and its own containers reach it.
+                            # The guard is re-checked every few seconds and re-applied if something removed it; while there is none,
+                            # the metadata service answers 503 and serves nothing.
                             #
                             # Usage: metadata-agent.py <config.json>   (keys: see DEFAULTS)
 
@@ -796,8 +796,9 @@ spec:
                                     "netns": "",
                                     "hostAddress": "169.254.169.1",
                                     "httpTokens": "optional",
-                                    "hopLimit": 2,
-                                    "guardInterfaces": [],  # interfaces whose inbound traffic may not reach IMDS; [] = the guest's NICs
+                                    "hopLimit": 1,
+                                    "guardInterfaces": [],  # interfaces always refused IMDS, even one that looks like a container's
+                                    "guardCheckSeconds": 5,  # how often the forwarded-metadata guard is checked (and re-applied)
                                 },
                                 "relay": {"enabled": False, "address": "127.0.0.1", "port": 16349},
                                 "trustPlatformCA": True,
@@ -811,9 +812,15 @@ spec:
                             CREDS_PATH = "/v1/vm-credentials"
                             NETNS_HOST_IF = "oi-imds0"
                             NETNS_PEER_IF = "oi-imds1"
-                            GUARD_TABLE = "openinfra_imds"  # nftables table (family ip) holding the forwarded-metadata drop rule
+                            GUARD_TABLE = "openinfra_imds"  # nftables tables (families ip + bridge) holding the forwarded-metadata guard
                             GUARD_CHAIN = "OPENINFRA-IMDS"  # the same rule as an iptables chain in the raw table
                             GUARD_RULESET = "/run/openinfra-imds-guard.nft"
+                            # Interface kinds that are the guest's own containers: a container's veth (or netkit) end, and a bridge
+                            # whose every port is one. Packets for the metadata address that arrive on anything else - the guest's
+                            # NICs, VLANs, bonds, tunnels (WireGuard, OpenVPN tun/tap, GRE, VXLAN), a bridge with a NIC or tap in it -
+                            # come from other hosts the guest forwards for, and are dropped.
+                            CONTAINER_KINDS = ("veth", "netkit")
+                            SAFE_IFNAME = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")  # names that can be quoted into a rule as they are
                             CLONE_NEWNET = 0x40000000
                             CA_FILE_NAME = "openinfra-root-ca.crt"
                             # (distro family, anchor directory, refresh command): the first whose directory and command exist wins.
@@ -865,9 +872,13 @@ spec:
                                 except (TypeError, ValueError):
                                     hop = 0
                                 if not 1 <= hop <= 64:
-                                    LOG.warning("imds.hopLimit %r is outside 1..64; using 2", imds.get("hopLimit"))
-                                    hop = 2
+                                    LOG.warning("imds.hopLimit %r is outside 1..64; using 1", imds.get("hopLimit"))
+                                    hop = 1
                                 imds["hopLimit"] = hop
+                                try:
+                                    imds["guardCheckSeconds"] = max(1, int(imds.get("guardCheckSeconds")))
+                                except (TypeError, ValueError):
+                                    imds["guardCheckSeconds"] = 5
                                 if imds.get("httpTokens") not in ("optional", "required"):
                                     LOG.warning("imds.httpTokens %r is not optional|required; using required", imds.get("httpTokens"))
                                     imds["httpTokens"] = "required"
@@ -1355,9 +1366,18 @@ spec:
 
 
                             class IMDSHandler(BaseHandler):
+                                def unguarded(self):
+                                    """Fail closed: with no forwarded-traffic guard in place, nothing is served."""
+                                    if self.server.agent.guard_ok:
+                                        return False
+                                    self.reply(503, "Service Unavailable\n")
+                                    return True
+                            
                                 def do_PUT(self):
                                     agent = self.server.agent
                                     self.discard_body()
+                                    if self.unguarded():
+                                        return
                                     if urllib.parse.urlsplit(self.path).path != "/latest/api/token":
                                         return self.method_not_allowed()
                                     if self.headers.get("X-Forwarded-For") is not None:
@@ -1371,6 +1391,8 @@ spec:
 
                                 def do_GET(self):
                                     agent = self.server.agent
+                                    if self.unguarded():
+                                        return
                                     token = self.headers.get(TOKEN_HEADER)
                                     if token is not None:
                                         if not agent.tokens.valid(token):
@@ -1447,92 +1469,188 @@ spec:
                                     run(cmd)
 
 
-                            def vm_nics(sysfs="/sys/class/net"):
-                                """The guest's own NICs: interfaces backed by a device (virtio-net), never bridges, veths or tunnels."""
+                            def guest_links(run_cmd=None):
+                                """[(name, kind, master)] for the guest's interfaces, from `ip -d -j link`: kind "" is a NIC, else the
+                                link kind (veth, bridge, vlan, bond, wireguard, tun, ...). None when they cannot be listed."""
+                                run_cmd = run_cmd or run
                                 try:
-                                    names = sorted(os.listdir(sysfs))
-                                except OSError:
-                                    return []
-                                return [n for n in names if n != NETNS_HOST_IF and os.path.exists(os.path.join(sysfs, n, "device"))]
+                                    p = run_cmd([ip_binary(), "-d", "-j", "link", "show"], check=False)
+                                    links = json.loads(p.stdout) if p.returncode == 0 else None
+                                except (RuntimeError, ValueError, OSError):
+                                    links = None
+                                if not isinstance(links, list):
+                                    return None
+                                out = []
+                                for link in links:
+                                    if not isinstance(link, dict):
+                                        continue
+                                    info = link.get("linkinfo") or {}
+                                    out.append((link.get("ifname") or "", info.get("info_kind") or "", link.get("master") or ""))
+                                return out
 
 
-                            def nft_guard_ruleset(imds_addr, nics):
-                                """An idempotent nft script: (re)create table ip openinfra_imds with one raw-priority rule that drops
-                                packets for the metadata address arriving on the guest's NICs."""
-                                names = ", ".join('"%s"' % n for n in nics)
-                                return ("table ip %s {}\n"
-                                        "delete table ip %s\n"
-                                        "table ip %s {\n"
-                                        "  chain prerouting {\n"
-                                        "    type filter hook prerouting priority -300; policy accept;\n"
-                                        "    iifname { %s } ip daddr %s drop\n"
-                                        "  }\n"
-                                        "}\n") % (GUARD_TABLE, GUARD_TABLE, GUARD_TABLE, names, imds_addr)
+                            def container_interfaces(links, extra=()):
+                                """The interfaces through which the guest's own containers reach IMDS: CONTAINER_KINDS, and bridges whose
+                                ports are all of those kinds. Never the metadata veth itself, never an `extra` (always-refused) one."""
+                                kinds = dict((n, k) for n, k, _ in links)
+                                ports = {}
+                                for n, _, master in links:
+                                    if master:
+                                        ports.setdefault(master, []).append(n)
+                                ok = []
+                                for n, k, _ in links:
+                                    if not n or n == NETNS_HOST_IF or n in extra or not SAFE_IFNAME.match(n):
+                                        continue
+                                    if k in CONTAINER_KINDS or (k == "bridge" and all(kinds.get(p) in CONTAINER_KINDS for p in ports.get(n, []))):
+                                        ok.append(n)
+                                return sorted(ok)
 
 
-                            def remove_imds_guard(which=shutil.which, run_cmd=None):
+                            def _nft_set(items):
+                                return "{ %s }" % ", ".join('"%s"' % i for i in items)
+
+
+                            def nft_guard_ruleset(imds_addr, extra=(), allowed=None):
+                                """An idempotent nft script that drops packets for the metadata address unless they come from the guest's
+                                own containers (raw priority, before conntrack and DNAT; local processes never pass PREROUTING).
+                                allowed=None matches the containers by interface KIND in the kernel (meta iifkind) - in table ip by the
+                                interface a packet arrived on, in table bridge by the bridge port a bridged frame arrived on - so an
+                                interface created later is covered the moment it exists. A list (for a kernel without iifkind) names
+                                the container interfaces instead; the watchdog keeps it current."""
+                                lines = []
+
+                                def table(family, accept):
+                                    lines.extend(["table %s %s {}" % (family, GUARD_TABLE), "delete table %s %s" % (family, GUARD_TABLE),
+                                                  "table %s %s {" % (family, GUARD_TABLE), "  chain prerouting {",
+                                                  "    type filter hook prerouting priority -300; policy accept;"])
+                                    if extra:
+                                        lines.append("    iifname %s ip daddr %s drop" % (_nft_set(extra), imds_addr))
+                                    if accept:
+                                        lines.append("    ip daddr %s %s accept" % (imds_addr, accept))
+                                    lines.extend(["    ip daddr %s drop" % imds_addr, "  }", "}"])
+
+                                if allowed is None:
+                                    table("ip", "meta iifkind %s" % _nft_set(CONTAINER_KINDS + ("bridge",)))
+                                    table("bridge", "meta iifkind %s" % _nft_set(CONTAINER_KINDS))
+                                else:
+                                    table("ip", ("iifname %s" % _nft_set(allowed)) if allowed else "")
+                                return "\n".join(lines) + "\n"
+
+
+                            def remove_imds_guard(which=shutil.which, run_cmd=None, imds_addr="169.254.169.254"):
                                 run_cmd = run_cmd or run
                                 nft = which("nft")
                                 if nft:
-                                    run_cmd([nft, "delete", "table", "ip", GUARD_TABLE], check=False)
+                                    for family in ("ip", "bridge"):
+                                        run_cmd([nft, "delete", "table", family, GUARD_TABLE], check=False)
                                 ipt = which("iptables")
                                 if ipt:
                                     base = [ipt, "-w", "-t", "raw"]
-                                    for _ in range(8):  # every jump to the chain, in case one was added twice
-                                        if run_cmd(base + ["-D", "PREROUTING", "-j", GUARD_CHAIN], check=False).returncode != 0:
-                                            break
+                                    for jump in (["-d", imds_addr + "/32", "-j", GUARD_CHAIN], ["-j", GUARD_CHAIN]):  # the latter: older agents
+                                        for _ in range(8):  # every jump to the chain, in case one was added twice
+                                            if run_cmd(base + ["-D", "PREROUTING"] + jump, check=False).returncode != 0:
+                                                break
                                     run_cmd(base + ["-F", GUARD_CHAIN], check=False)
                                     run_cmd(base + ["-X", GUARD_CHAIN], check=False)
 
 
-                            def guard_forwarded_imds(netns, imds_addr, nics, which=shutil.which, run_cmd=None, ruleset_path=GUARD_RULESET):
-                                """Drop packets for the metadata address that arrive on the guest's own NICs: traffic the guest would
-                                forward (a router, VPN or NAT instance) must not reach its metadata service. Local processes never
-                                pass PREROUTING, and in-guest containers arrive on their bridge or veth, so both still reach it.
-                                nft first, then iptables; with neither, the metadata namespace loses its default route, so it
-                                answers only the guest's own address (local processes and containers the guest NATs). Never raises;
-                                returns 'nft', 'iptables', 'routes' or 'failed'."""
+                            def _nft_apply(nft, script, run_cmd, ruleset_path):
+                                try:
+                                    with open(ruleset_path, "w") as fh:
+                                        fh.write(script)
+                                except (IOError, OSError) as e:
+                                    LOG.warning("cannot write the nft metadata guard %s: %s", ruleset_path, e)
+                                    return False
+                                p = run_cmd([nft, "-f", ruleset_path], check=False)
+                                if p.returncode != 0:
+                                    LOG.info("nft refused the metadata guard: %s", (p.stderr or "").strip())
+                                return p.returncode == 0
+
+
+                            def _iptables_apply(ipt, imds_addr, extra, allowed, run_cmd):
+                                base = [ipt, "-w", "-t", "raw"]
+                                run_cmd(base + ["-N", GUARD_CHAIN], check=False)
+                                ok = run_cmd(base + ["-F", GUARD_CHAIN], check=False).returncode == 0
+                                for n, verdict in [(n, "DROP") for n in extra] + [(n, "RETURN") for n in allowed]:
+                                    ok = ok and run_cmd(base + ["-A", GUARD_CHAIN, "-i", n, "-j", verdict], check=False).returncode == 0
+                                ok = ok and run_cmd(base + ["-A", GUARD_CHAIN, "-j", "DROP"], check=False).returncode == 0
+                                jump = ["-d", imds_addr + "/32", "-j", GUARD_CHAIN]
+                                if ok and run_cmd(base + ["-C", "PREROUTING"] + jump, check=False).returncode != 0:
+                                    ok = run_cmd(base + ["-I", "PREROUTING", "1"] + jump, check=False).returncode == 0
+                                return ok
+
+
+                            def guard_forwarded_imds(netns, imds_addr, extra=(), which=shutil.which, run_cmd=None, ruleset_path=GUARD_RULESET,
+                                                     links=None):
+                                """Drop every packet for the metadata address that is not from the guest itself or its own containers:
+                                nothing the guest forwards for other hosts - as a router, VPN, NAT or bridge, over a NIC, VLAN, bond,
+                                tunnel or tap - reaches its metadata service. `extra` names interfaces refused even if they look like a
+                                container's. In order: nft by interface kind; nft, then iptables, by the containers' interface names
+                                (the watchdog re-reads them); with neither tool the metadata namespace loses its default route, so it
+                                answers only the guest's own address (local processes and the containers it NATs). Never raises.
+                                Returns (mode, allowed): mode 'nft-kind', 'nft-names', 'iptables', 'routes' or 'failed', and the
+                                container interfaces a name-based guard admits (None otherwise)."""
                                 run_cmd = run_cmd or run
-                                remove_imds_guard(which, run_cmd)
-                                if nics:
-                                    nft = which("nft")
-                                    if nft:
-                                        try:
-                                            with open(ruleset_path, "w") as fh:
-                                                fh.write(nft_guard_ruleset(imds_addr, nics))
-                                            p = run_cmd([nft, "-f", ruleset_path], check=False)
-                                            if p.returncode == 0:
-                                                LOG.info("forwarded traffic to %s is dropped on %s (nft)", imds_addr, ", ".join(nics))
-                                                return "nft"
-                                            LOG.warning("nft refused the metadata guard: %s", (p.stderr or "").strip())
-                                        except (IOError, OSError) as e:
-                                            LOG.warning("cannot write the nft metadata guard %s: %s", ruleset_path, e)
-                                    ipt = which("iptables")
-                                    if ipt:
-                                        base = [ipt, "-w", "-t", "raw"]
-                                        run_cmd(base + ["-N", GUARD_CHAIN], check=False)
-                                        ok = run_cmd(base + ["-F", GUARD_CHAIN], check=False).returncode == 0
-                                        for n in nics:
-                                            ok = ok and run_cmd(base + ["-A", GUARD_CHAIN, "-i", n, "-d", imds_addr + "/32", "-j", "DROP"],
-                                                                check=False).returncode == 0
-                                        if ok and run_cmd(base + ["-C", "PREROUTING", "-j", GUARD_CHAIN], check=False).returncode != 0:
-                                            ok = run_cmd(base + ["-I", "PREROUTING", "1", "-j", GUARD_CHAIN], check=False).returncode == 0
-                                        if ok:
-                                            LOG.info("forwarded traffic to %s is dropped on %s (iptables)", imds_addr, ", ".join(nics))
-                                            return "iptables"
-                                        LOG.warning("iptables could not install the metadata guard")
-                                else:
-                                    LOG.warning("no guest NIC found to guard (none under /sys/class/net has a device)")
+                                extra = [n for n in extra if SAFE_IFNAME.match(n)]
+                                remove_imds_guard(which, run_cmd, imds_addr)
+                                nft = which("nft")
+                                if nft and _nft_apply(nft, nft_guard_ruleset(imds_addr, extra), run_cmd, ruleset_path):
+                                    LOG.info("instance metadata answers only this guest and its containers (nft, by interface kind)")
+                                    return "nft-kind", None
+                                if links is None:
+                                    links = guest_links(run_cmd)
+                                if links is None:
+                                    LOG.warning("cannot list the guest's interfaces (ip -d -j link): no container is admitted to instance metadata")
+                                allowed = container_interfaces(links or [], extra)
+                                if nft and _nft_apply(nft, nft_guard_ruleset(imds_addr, extra, allowed), run_cmd, ruleset_path):
+                                    LOG.info("instance metadata answers only this guest and the containers on %s (nft)", ", ".join(allowed) or "no interface")
+                                    return "nft-names", allowed
+                                ipt = which("iptables")
+                                if ipt:
+                                    if _iptables_apply(ipt, imds_addr, extra, allowed, run_cmd):
+                                        LOG.info("instance metadata answers only this guest and the containers on %s (iptables)", ", ".join(allowed) or "no interface")
+                                        return "iptables", allowed
+                                    LOG.warning("iptables could not install the metadata guard")
                                 try:
                                     p = run_cmd([ip_binary(), "-n", netns, "route", "del", "default"], check=False)
-                                    if p.returncode == 0:
+                                    if p.returncode == 0 or guard_in_place("routes", imds_addr, netns, which, run_cmd):
                                         LOG.warning("no nft or iptables: instance metadata now answers only this guest and the containers "
                                                     "it NATs; a routed (non-NAT) container cannot reach it")
-                                        return "routes"
+                                        return "routes", None
                                 except RuntimeError as e:
                                     LOG.error("cannot restrict the metadata namespace's routes: %s", e)
-                                LOG.error("forwarded traffic to %s is NOT blocked: no nft, no iptables, and the route fallback failed", imds_addr)
-                                return "failed"
+                                LOG.error("no guard keeps forwarded traffic from %s: no nft, no iptables, and the route fallback failed", imds_addr)
+                                return "failed", None
+
+
+                            def guard_in_place(mode, imds_addr, netns, which=shutil.which, run_cmd=None):
+                                """Whether the guard installed as `mode` is still there (a `nft flush ruleset`, a firewall reload or an
+                                `iptables -F` removes it)."""
+                                run_cmd = run_cmd or run
+                                try:
+                                    if mode in ("nft-kind", "nft-names"):
+                                        nft = which("nft")
+                                        if not nft:
+                                            return False
+                                        p = run_cmd([nft, "list", "table", "ip", GUARD_TABLE], check=False)
+                                        if p.returncode != 0 or ("ip daddr %s drop" % imds_addr) not in (p.stdout or ""):
+                                            return False
+                                        if mode == "nft-kind":
+                                            p = run_cmd([nft, "list", "table", "bridge", GUARD_TABLE], check=False)
+                                            return p.returncode == 0 and ("ip daddr %s drop" % imds_addr) in (p.stdout or "")
+                                        return True
+                                    if mode == "iptables":
+                                        ipt = which("iptables")
+                                        base = [ipt, "-w", "-t", "raw"]
+                                        return bool(ipt) and run_cmd(base + ["-C", "PREROUTING", "-d", imds_addr + "/32", "-j", GUARD_CHAIN],
+                                                                     check=False).returncode == 0 \
+                                            and run_cmd(base + ["-C", GUARD_CHAIN, "-j", "DROP"], check=False).returncode == 0
+                                    if mode == "routes":
+                                        p = run_cmd([ip_binary(), "-n", netns, "route", "show", "default"], check=False)
+                                        return p.returncode == 0 and not (p.stdout or "").strip()
+                                except (RuntimeError, OSError):
+                                    return False
+                                return False
 
 
                             def _setns(fd):
@@ -1764,7 +1882,9 @@ spec:
                                     self.servers = []
                                     self.stop = threading.Event()
                                     self.netns = ""
-                                    self.guard = ""
+                                    self.guard_mode = ""
+                                    self.guard_allowed = None
+                                    self.guard_ok = True  # False only while a metadata namespace is up without its guard
 
                                 def start_imds(self):
                                     imds = self.cfg["imds"]
@@ -1773,13 +1893,18 @@ spec:
                                     if imds.get("netns"):
                                         try:
                                             setup_netns(imds["netns"], imds["address"], imds["hostAddress"])
+                                            self.netns = imds["netns"]
+                                            # The guard goes in BEFORE the listener exists: a connection from a host the
+                                            # guest forwards for is never accepted, not even into the listen backlog.
+                                            self.guard_ok = False
+                                            self.apply_guard()
                                             srv = bind_with_retry(lambda: in_netns(imds["netns"], make), "%s:%d" % addr)
                                         except Exception:
+                                            if self.guard_mode in ("nft-kind", "nft-names", "iptables"):
+                                                remove_imds_guard(imds_addr=imds["address"])
                                             teardown_netns(imds["netns"])
+                                            self.netns = ""
                                             raise
-                                        self.netns = imds["netns"]
-                                        self.guard = guard_forwarded_imds(imds["netns"], imds["address"],
-                                                                          list(imds.get("guardInterfaces") or []) or vm_nics())
                                     else:
                                         srv = bind_with_retry(make, "%s:%d" % addr)
                                     self.servers.append(srv)
@@ -1788,6 +1913,40 @@ spec:
                                              imds["httpTokens"], imds["hopLimit"])
                                     return srv
 
+                                def set_guard_ok(self, ok):
+                                    if ok and not self.guard_ok:
+                                        LOG.info("instance metadata is served (forwarded-traffic guard: %s)", self.guard_mode)
+                                    elif not ok and self.guard_ok:
+                                        LOG.error("instance metadata answers 503: no guard keeps forwarded traffic from it")
+                                    self.guard_ok = ok
+                            
+                                def apply_guard(self):
+                                    imds = self.cfg["imds"]
+                                    self.guard_mode, self.guard_allowed = guard_forwarded_imds(
+                                        imds["netns"], imds["address"], list(imds.get("guardInterfaces") or []))
+                                    self.set_guard_ok(self.guard_mode != "failed")
+                            
+                                def check_guard(self):
+                                    """Re-apply the guard if it is gone (or, name-based, if the container interfaces changed)."""
+                                    imds = self.cfg["imds"]
+                                    if not guard_in_place(self.guard_mode, imds["address"], imds["netns"]):
+                                        if self.guard_mode != "failed":
+                                            LOG.warning("the forwarded-metadata guard (%s) is gone; re-applying it", self.guard_mode)
+                                        self.set_guard_ok(False)
+                                        self.apply_guard()
+                                    elif self.guard_allowed is not None:
+                                        extra = list(imds.get("guardInterfaces") or [])
+                                        if container_interfaces(guest_links() or [], extra) != self.guard_allowed:
+                                            self.apply_guard()
+                            
+                                def run_guard_watchdog(self, stop):
+                                    while not stop.wait(self.cfg["imds"]["guardCheckSeconds"]):
+                                        try:
+                                            self.check_guard()
+                                        except Exception as e:  # never let the watchdog die: fail closed and retry
+                                            LOG.error("checking the forwarded-metadata guard failed: %s", e)
+                                            self.set_guard_ok(False)
+                            
                                 def start_relay(self):
                                     relay = self.cfg["relay"]
                                     addr = (relay["address"], int(relay["port"]))
@@ -1813,6 +1972,8 @@ spec:
                                         raise RuntimeError("no listener could be started")
                                     for srv in self.servers:
                                         threading.Thread(target=srv.serve_forever, daemon=True).start()
+                                    if self.netns:
+                                        threading.Thread(target=self.run_guard_watchdog, args=(self.stop,), daemon=True).start()
                                     if not self.servers:
                                         LOG.info("the instance metadata service is disabled (metadataOptions.httpEndpoint)")
                                     elif self.creds is not None:
@@ -1846,8 +2007,8 @@ spec:
                                         srv.shutdown()
                                         srv.server_close()
                                     if self.netns:
-                                        if self.guard in ("nft", "iptables"):
-                                            remove_imds_guard()
+                                        if self.guard_mode in ("nft-kind", "nft-names", "iptables"):
+                                            remove_imds_guard(imds_addr=self.cfg["imds"]["address"])
                                         teardown_netns(self.netns)
 
 
