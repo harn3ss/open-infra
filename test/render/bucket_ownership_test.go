@@ -260,6 +260,18 @@ func TestBucketOwnership_Claim(t *testing.T) {
 			records: map[string]string{"bucket-owner-data": "team-a|Bucket/team-a/other"},
 			buckets: map[string]string{"data": "2026-10-24T00:00:00+00:00"}, wantRecord: "team-a",
 			wantOutSubstr: "BucketAlreadyExists: bucket data belongs to another claim (Bucket/team-a/other)"},
+		// A claim that uses a bucket rather than being one — a StaticSite (a CloudFront origin) serving a
+		// bucket its stack's kind: Bucket created — may use it within the owning namespace, and only there.
+		{name: "a StaticSite serves a bucket another claim in its namespace owns", bucket: "data",
+			records: map[string]string{"bucket-owner-data": "team-a|Bucket/team-a/data"},
+			buckets: map[string]string{"data": "2026-10-24T00:00:00+00:00"}, wantOK: true, wantRecord: "team-a",
+			env:           []string{"OWNER_NS=team-a", "OWNER_REF=StaticSite/team-a/site", "XR_CREATED=" + xrCreated},
+			wantOutSubstr: "StaticSite/team-a/site uses it from the same namespace"},
+		{name: "a StaticSite cannot serve another namespace's bucket", bucket: "data",
+			records: map[string]string{"bucket-owner-data": "team-b|Bucket/team-b/data"},
+			buckets: map[string]string{"data": "2026-10-24T00:00:00+00:00"}, wantRecord: "team-b",
+			env:           []string{"OWNER_NS=team-a", "OWNER_REF=StaticSite/team-a/site", "XR_CREATED=" + xrCreated},
+			wantOutSubstr: "belongs to another claim (Bucket/team-b/data)"},
 		{name: "unrecorded bucket made by this claim is adopted", bucket: "data",
 			buckets: map[string]string{"data": "2026-10-23T02:56:10.123000+00:00"}, wantOK: true, wantRecord: "team-a"},
 		{name: "unrecorded bucket made in the same second is adopted", bucket: "data",

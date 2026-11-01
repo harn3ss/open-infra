@@ -377,6 +377,18 @@ data:
             echo "bucket $b belongs to $OWNER_REF"
             return 0
           fi
+          # A kind: Bucket claim is the bucket itself (AWS::S3::Bucket), so it may only be its own. A
+          # claim that USES a bucket (a StaticSite serving it — a CloudFront origin —, an Application's
+          # storage, an ML job's output) may use one another claim in the same namespace owns, as anything
+          # in one AWS account may; the record stays the owner's.
+          case "$OWNER_REF" in
+            Bucket/*) ;;
+            *)
+              if [ -n "$rawns" ] && [ "$(printf '%s' "$rawns" | base64 -d)" = "$OWNER_NS" ]; then
+                echo "bucket $b belongs to $owner; $OWNER_REF uses it from the same namespace"
+                return 0
+              fi ;;
+          esac
           oi_refuse "bucket $b belongs to another claim ($owner); $OWNER_REF cannot use it"
         elif [ -n "$rawns" ]; then
           owner=$(printf '%s' "$rawns" | base64 -d)
