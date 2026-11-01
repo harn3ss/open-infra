@@ -352,7 +352,9 @@ resolve from the deployed resources' status:
 | `Ref <AWS::S3::Bucket>` | the bucket name (`kind: Bucket` `status.bucket`) |
 
 A LAN IP is assigned shortly after the VM is created, so a completing stack waits for it
-(up to ten minutes, within `-timeout`) before recording its Outputs. Any other resource
+(up to ten minutes, within `-timeout`) before recording its Outputs. It stops waiting a minute
+before the operation as a whole would run out of time, so the stack is still recorded
+complete rather than being rolled back. Any other resource
 `Ref` or `Fn::GetAtt` — an instance's `PrivateIp`, a security group's id, an ARN — has no
 deployed value here, and an Output that still doesn't resolve is **left out**, with the
 reason printed and kept on the stack record (`outputsOmitted`). An Output is never filled
