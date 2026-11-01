@@ -65,10 +65,6 @@ func init() {
 		"AWS::S3::Bucket.ObjectLockConfiguration", "AWS::S3::Bucket.LifecycleConfiguration.Rules[0].Filter",
 		"AWS::S3::Bucket.LifecycleConfiguration.Rules[0].NoncurrentVersionExpiration",
 		"AWS::SNS::Topic.Subscription", "AWS::SSM::Parameter.Policies",
-		"AWS::CloudFront::Distribution.DistributionConfig.Restrictions", "AWS::CloudFront::Distribution.DistributionConfig.Staging",
-		"AWS::CloudFront::Distribution.DistributionConfig.DefaultCacheBehavior.GrpcConfig",
-		"AWS::CloudFront::Distribution.DistributionConfig.DefaultCacheBehavior.SmoothStreaming",
-		"AWS::CloudFront::Distribution.DistributionConfig.Origins[0].OriginPath",
 	} {
 		guardDeferred[k] = lenient
 	}

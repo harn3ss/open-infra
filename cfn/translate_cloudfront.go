@@ -163,12 +163,26 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 	if cfNonEmpty(dc["WebACLId"]) {
 		refuse("DistributionConfig.WebACLId (an AWS WAF web ACL) is not translatable — kind: StaticSite has no WAF attachment; refusing rather than serving the site unprotected")
 	}
+	cfStrictBool(refuse, "DistributionConfig.Staging", dc, "Staging")
 	if cfNonEmpty(dc["ContinuousDeploymentPolicyId"]) || cfTrue(dc["Staging"]) {
 		refuse("CloudFront continuous deployment (ContinuousDeploymentPolicyId / Staging) is not translatable — there is no staging distribution or traffic split for a kind: StaticSite")
 	}
-	if r, ok := dc["Restrictions"].(map[string]any); ok {
-		geo, _ := r["GeoRestriction"].(map[string]any)
-		if rt, _ := concrete(geo["RestrictionType"]); rt != "" && rt != "none" {
+	if rv, set := dc["Restrictions"]; set && rv != nil {
+		r, ok := rv.(map[string]any)
+		geo, gok := r["GeoRestriction"].(map[string]any)
+		rt, rok := concrete(geo["RestrictionType"])
+		switch {
+		case !ok || len(r) != 1 || !gok:
+			refuse("DistributionConfig.Restrictions must be { GeoRestriction: { RestrictionType, Locations } }")
+		case !rok:
+			refuse("DistributionConfig.Restrictions.GeoRestriction.RestrictionType must be none, whitelist or blacklist")
+		}
+		for k := range geo {
+			if k != "RestrictionType" && k != "Locations" {
+				refuse("DistributionConfig.Restrictions.GeoRestriction.%s is not translatable", k)
+			}
+		}
+		if rt != "" && rt != "none" {
 			refuse("DistributionConfig.Restrictions.GeoRestriction %s is not translatable — kind: StaticSite has no viewer-geolocation filter; refusing rather than serving the site to every country", rt)
 		}
 	}
@@ -350,6 +364,11 @@ func cfOrigin(o map[string]any, ctx *stackCtx, refuse func(string, ...any), cav 
 			refuse("S3OriginConfig.%s is not translatable — refusing rather than silently dropping it", k)
 		}
 	}
+	if v, set := o["OriginPath"]; set && v != nil {
+		if _, ok := concrete(v); !ok {
+			refuse("origin %s OriginPath must be a string", originID)
+		}
+	}
 	if p, _ := concrete(o["OriginPath"]); p != "" && p != "/" {
 		refuse("origin %s OriginPath %q (serving a key prefix of the bucket) is not translatable — kind: StaticSite serves the bucket root; publish the site at the bucket root", originID, p)
 	}
@@ -463,6 +482,13 @@ func cfDefaultBehavior(b map[string]any, originID string, ctx *stackCtx, refuse 
 	}
 	if cfNonEmpty(b["RealtimeLogConfigArn"]) {
 		refuse("DefaultCacheBehavior.RealtimeLogConfigArn (real-time logs to Kinesis) is not translatable — kind: StaticSite has no real-time log stream")
+	}
+	cfStrictBool(refuse, "DefaultCacheBehavior.SmoothStreaming", b, "SmoothStreaming")
+	if gv, set := b["GrpcConfig"]; set && gv != nil {
+		g, ok := gv.(map[string]any)
+		if _, isBool := cfBool(g["Enabled"]); !ok || len(g) != 1 || !isBool {
+			refuse("DefaultCacheBehavior.GrpcConfig must be { Enabled: true|false }")
+		}
 	}
 	if cfTrue(b["SmoothStreaming"]) {
 		refuse("DefaultCacheBehavior.SmoothStreaming (Microsoft Smooth Streaming) is not translatable")
@@ -1364,6 +1390,16 @@ func cfBool(v any) (b, ok bool) {
 }
 
 func cfTrue(v any) bool { b, _ := cfBool(v); return b }
+
+// cfStrictBool refuses property k of m when it is set to something that is not a boolean, rather than
+// reading it as false.
+func cfStrictBool(refuse func(string, ...any), path string, m map[string]any, k string) {
+	if v, set := m[k]; set && v != nil {
+		if _, ok := cfBool(v); !ok {
+			refuse("%s must be true or false (got %v)", path, v)
+		}
+	}
+}
 
 // cfInt reads a resolved integer — a JSON number (float64), a Go int, or a numeric string from a
 // templated value. ok=false for anything else (a placeholder, a fraction, an empty value).
