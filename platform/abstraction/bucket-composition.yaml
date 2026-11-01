@@ -64,7 +64,11 @@ spec:
             {{- /* The policy must be a JSON object. It reaches the setup script only as an env value. */}}
             {{- if $policy }}{{- if not (and (hasPrefix "{" (trim $policy)) (kindIs "map" (fromYaml $policy))) }}{{- fail (printf "kind: Bucket %s/%s: spec.policy must be a JSON policy document (an object)" $ns $name) }}{{- end }}{{- end }}
             {{- /* The owner is in the Job name too: same-named claims in two namespaces get two Jobs. */}}
-            {{- $hashIn := printf "%v|%s|%s|%s|own-v1" ($spec.versioning | default false) $lifecycle $lockJson $owner }}
+            {{- /* own-v2: the setup now passes the policy/lifecycle/lock as env values rather than inline
+                   (the #347 injection fix). The Job's pod template is immutable, so the version bump mints a
+                   fresh Job name on rollout — the old finished Job can't be patched in place — and the new
+                   Job re-runs idempotently (own bucket, mb --ignore-existing, the existing key is reused). */}}
+            {{- $hashIn := printf "%v|%s|%s|%s|own-v2" ($spec.versioning | default false) $lifecycle $lockJson $owner }}
             {{- if $policy }}{{- $hashIn = printf "%s|%s" $hashIn $policy }}{{- end }}
             {{- $hash := $hashIn | sha256sum | trunc 10 }}
             ---
