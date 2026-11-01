@@ -26,8 +26,14 @@ composition adopts the claim Secret with the same key.
 | **legacy, pre-migration** | absent | exists (old key) | sees user exists + platform absent → **leaves password unchanged** | not rendered (platform not observed) → claim keeps its existing Secret, stays Ready via its gate | seeds platform Secret from claim Secret |
 | **legacy, migrated** | seeded (= old key) | exists (old key) | `user add` with the same key (idempotent, no rotation) | renders → **adopts** the claim Secret (same key → no change), now GC'd with the claim | idempotent no-op; safe to retire |
 
-The copy Object renders **only once the platform Secret is observed**, so there is no ordering
-requirement between applying this migration and the composition sync, and no claim ever flips NotReady.
+The copy Object renders **only once the platform Secret is observed**, and the Object that observes the
+platform Secret is marked ready, so a legacy claim stays Ready before it is migrated.
+
+**Owner records move too.** The ownership check now reads `bucket-owner-<bucket>` from
+`openinfra-bucket-creds`; records written earlier are in `minio`. Until they are copied, a claim whose
+bucket predates the claim fails its setup Job with "has no owner record and predates …" (the Job
+retries; the claim's app keeps its existing Secret and keeps working). The generator emits a copy for
+each record, so run this migration right after the composition sync.
 
 ## Run it
 
@@ -39,9 +45,10 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 #    and the platform Secret does not. Skips are printed to stderr.
 ./gen-seed-objects.sh > seed-objects.yaml
 
-# 2. Review seed-objects.yaml. Each Object copies data.MINIO_SECRET_KEY (or data.sk for a db-backup
-#    Secret) from the named claim Secret into openinfra-bucket-creds/<user>. It has NO Delete management
-#    policy, so retiring it later never deletes the seeded Secret.
+# 2. Review seed-objects.yaml. Each seed-creds-* Object copies data.MINIO_SECRET_KEY (or data.sk for a
+#    db-backup Secret) from the named claim Secret into openinfra-bucket-creds/<user>; each seed-owner-*
+#    Object copies an owner record from minio. None has a Delete management policy, so retiring them
+#    later never deletes what they seeded.
 
 # 3. Apply.
 kubectl apply -f seed-objects.yaml

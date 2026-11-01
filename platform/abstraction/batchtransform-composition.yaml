@@ -142,6 +142,9 @@ spec:
             metadata:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: bt-pcreds
+                # Observing the platform-side creds must not hold the claim NotReady: a claim from before the
+                # scoped-creds model has none until its migration seeds one (its old Secret keeps it working).
+                gotemplating.fn.crossplane.io/ready: "True"
             spec:
               managementPolicies: ["Observe"]
               forProvider:

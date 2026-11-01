@@ -60,6 +60,38 @@ spec:
 YAML
 }
 
+# Bucket owner records: the ownership check now reads bucket-owner-<bucket> from the creds namespace.
+# Records written before the move are still in minio; without a copy, a claim whose bucket predates it
+# is refused as unowned. Copy each one (same namespace and owner fields), unless the creds namespace
+# already has it.
+kubectl -n minio get secrets -l openinfra.dev/bucket-owner=true -o name 2>/dev/null | sed 's#^secret/##' \
+  | while read -r rec; do
+      if kubectl -n "$CREDS_NS" get secret "$rec" >/dev/null 2>&1; then
+        echo "# skip $rec: already in $CREDS_NS" >&2; continue
+      fi
+      cat <<YAML
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: seed-owner-${rec#bucket-owner-}
+  labels: { openinfra.dev/one-time-migration: bucket-creds-scoped }
+spec:
+  managementPolicies: ["Observe", "Create", "Update"]
+  providerConfigRef: { name: default }
+  references:
+    - patchesFrom: { apiVersion: v1, kind: Secret, namespace: minio, name: ${rec}, fieldPath: data.namespace }
+      toFieldPath: data.namespace
+    - patchesFrom: { apiVersion: v1, kind: Secret, namespace: minio, name: ${rec}, fieldPath: data.owner }
+      toFieldPath: data.owner
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata: { name: ${rec}, namespace: ${CREDS_NS}, labels: { openinfra.dev/bucket-owner: "true" } }
+YAML
+    done
 # kind: Bucket / StaticSite / Model / TrainingJob / ProcessingJob / BatchTransform / ModelMonitor —
 # one scoped user per claim, key in <claim>-minio under MINIO_SECRET_KEY.
 for kv in XBucket:Bucket XStaticSite:StaticSite XModel:Model XTrainingJob:TrainingJob \
