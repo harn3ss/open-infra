@@ -44,8 +44,15 @@ CREATED_REPO=""
 USERS_NS="${USERS_NS:-open-infra-console}"
 CREATED_USERS=(); CREATED_KEYS=()
 cleanup() {
-  AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}" \
-    aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1 || true
+  # The stack goes first, and is waited for: its delete runs as this run's deployer, which is removed below.
+  if aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1; then
+    for _ in $(seq 1 60); do
+      aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager cloudformation describe-stacks --stack-name "$STACK" >/dev/null 2>&1 || break
+      sleep 3
+    done
+    aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager cloudformation describe-stacks --stack-name "$STACK" >/dev/null 2>&1 \
+      && printf '  (cleanup) WARNING: stack %s is still present\n' "$STACK" >&2
+  fi
   if [ -n "$CREATED_REPO" ]; then # the handler image's repository, created by this run
     AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}" \
       aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager ecr delete-repository --repository-name "$CREATED_REPO" --force >/dev/null 2>&1 || true
