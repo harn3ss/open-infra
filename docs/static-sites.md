@@ -32,6 +32,36 @@ The server re-syncs every `spec.syncIntervalSeconds` (default 30s), so a new upl
 without redeploying. For a plain multi-file site (no client-side router), set `spec.spa: false` and
 optionally `spec.errorDocument: 404.html`.
 
+## More hostnames and response headers
+
+`spec.domains` serves the site on additional hostnames alongside `spec.domain` — each gets an Ingress
+rule and joins the TLS certificate. `spec.responseHeaders` adds HTTP headers to every response, error
+responses included — the place for security headers:
+
+```yaml
+spec:
+  domain: app.example.com
+  domains: [www.example.com]
+  responseHeaders:
+    - { name: Strict-Transport-Security, value: "max-age=31536000; includeSubDomains" }
+    - { name: Content-Security-Policy,   value: "default-src 'self'" }
+    - { name: X-Frame-Options,           value: DENY }
+```
+
+Header names are letters, digits and hyphens; values are printable ASCII without double quotes,
+backslashes or dollar signs. Headers the server sets itself (`Content-Type`, `Content-Length`,
+`Server`, `Date`, `Last-Modified`, `ETag`, …) can't be replaced this way. Changing the headers rolls the
+server pod so the new set takes effect.
+
+## From a CloudFormation template (CloudFront)
+
+A CloudFormation **`AWS::CloudFront::Distribution`** in front of a private S3 bucket — the standard
+SPA-hosting template — deploys as a `kind: StaticSite` through the [CloudFormation engine](cloudformation.md#cloudfront-a-static-site-subset):
+the bucket stays a `kind: Bucket`, the distribution's `Aliases` become `domain`/`domains`, the SPA
+`CustomErrorResponses` (403/404 → `/index.html`, 200) become `spa: true`, a response headers policy
+becomes `responseHeaders`, and the ACM certificate is replaced by cert-manager TLS. There is no edge
+cache: the CloudFront features beyond a single-origin static site refuse at plan with their reason.
+
 > **Where to run the upload.** `MINIO_ENDPOINT` in the `<name>-minio` secret is the **cluster-internal**
 > MinIO address (`minio.minio.svc.cluster.local:9000`), so the `s3 sync` above works from **inside the
 > cluster** — a CI runner that deploys in-cluster (see the per-PR recipe below), or a one-shot Job/pod.

@@ -67,8 +67,9 @@ their own walls. open-infra gives them an AWS-shaped platform on hardware they a
 **Scope.** Enough parity with AWS to build and run real, simple-to-moderate solutions — the services in
 the table above and the probe-proven wire surface below — **not all of AWS**.
 
-**Non-goals, on purpose.** The long tail of AWS is out of scope: CloudFront, Route 53 as a hosted zone,
-and the hundreds of services beyond the mapped set. Asked for a service it has not made faithful, the
+**Non-goals, on purpose.** The long tail of AWS is out of scope: CloudFront as an edge CDN (a
+CloudFormation distribution's static-site subset translates to `kind: StaticSite`), Route 53 as a hosted
+zone, and the hundreds of services beyond the mapped set. Asked for a service it has not made faithful, the
 shim returns an **honest `501`** rather than a silent fake — *narrow and proven beats broad and
 hand-wavy*. Some mapped capabilities are **experimental** (marked as such, with the caveats in
 [Maturity & guarantees](#maturity--guarantees)); treat those accordingly.

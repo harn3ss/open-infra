@@ -113,6 +113,7 @@ part of another kind rather than on its own. The caveat is always printed.
 | `AWS::DynamoDB::Table` | `kind: Table` | registers name + key schema (+ TTL) on the aws-shim's FerretDB data layer; functions only where the aws-shim DynamoDB front door is enabled (opt-in). No capacity/throughput, secondary indexes, streams, or per-table SSE — those **block** |
 | `AWS::Cognito::UserPool` / `UserPoolClient` | `kind: UserPool` | a hosted OIDC pool (Keycloak realm); MFA, Lambda triggers, and schema do not transfer |
 | `AWS::ECS::Service` (+ its `TaskDefinition`) | `kind: Application` | a Service and its referenced TaskDefinition collate into one Application (Deployment+Service+Ingress+HPA); LB/subnet/multi-container config does not transfer |
+| `AWS::CloudFront::Distribution` (+ `OriginAccessControl` / `CloudFrontOriginAccessIdentity` / `ResponseHeadersPolicy` / `CachePolicy` / `OriginRequestPolicy`, and its `AWS::CertificateManager::Certificate`) | `kind: StaticSite` | a **narrow static-site subset** — one private S3 origin, SPA fallback, response headers, TLS on the Aliases; **no edge cache**. Everything else refuses. See [CloudFront](#cloudfront-a-static-site-subset) below |
 | `AWS::ApiGateway::RestApi` (+ `Resource` / `Method` / `Deployment` / `Stage` / `Model` / `RequestValidator` / `Authorizer` / `ApiKey` / `UsagePlan` / `UsagePlanKey`) | the aws-shim `apigateway` REST v1 surface | **create-deployable via the in-cluster doorway.** The whole API collates into one provisioning plan on its `RestApi` and is materialized by driving the `apigateway` REST v1 API in order (resource tree → methods + integrations → deployment → stages, plus models/validators/authorizers and in-stack keys/usage plans); every other `AWS::ApiGateway::*` type composes into it. A **CLI** deploy (no in-cluster doorway) refuses rather than guessing — the custom-resource stance. Faithful-subset caveats: `COGNITO_USER_POOLS` authorizers only (`TOKEN`/`REQUEST`/`AWS_IAM` refuse), usage-plan throttle/quota accepted-not-enforced, custom domains / WAF / gateway responses / `apiKeySource: AUTHORIZER` not modeled; stack **update** of a REST-v1 stack is refused (destroy + recreate). For a declarative v2 API use `kind: HttpApi`. |
 
 ### Custom resources (`AWS::CloudFormation::CustomResource` / `Custom::*`)
@@ -148,6 +149,60 @@ child `Parameter`.
 **Not via the aws-shim** (its CloudFormation doorway takes templates inline and does not fetch child
 `TemplateURL`s — SSRF-safe), so a nested-stack parent sent to the shim is refused; deploy it with the
 `cfn` CLI. A shim-side child fetch (from MinIO) would be a deliberate follow-on.
+
+### CloudFront: a static-site subset
+
+A CloudFront distribution in front of a private S3 bucket — the standard single-page-app hosting
+template — translates to a [`kind: StaticSite`](static-sites.md): an nginx server that syncs the bucket
+from MinIO and serves it behind a Traefik Ingress with cert-manager TLS. open-infra has **no edge tier**
+(no points of presence, no cache), so only the static-site shape translates, and every distribution
+feature outside it refuses at plan with its reason.
+
+The template's bucket stays a `kind: Bucket` (its versioning, lifecycle and policy translate as usual)
+and the StaticSite's `spec.bucket` names that same MinIO bucket. The StaticSite mints its own scoped
+MinIO reader — that is the OAC/OAI analog — so the bucket stays private, and the `BucketPolicy`
+statements that grant CloudFront read are realized by the site instead of being stored as a MinIO
+bucket policy (MinIO can't resolve a CloudFront principal). The OAC/OAI, the response-headers, cache
+and origin-request policies, and the ACM certificate provision nothing on their own: each validates its
+own properties and is read by the distribution that references it.
+
+| Template | StaticSite |
+|---|---|
+| one `Origins` entry: an S3 REST origin (`S3OriginConfig`) whose `DomainName` is an in-stack bucket (`!GetAtt Bucket.RegionalDomainName` / `DomainName`, or `${Bucket}.s3[.<region>].amazonaws.com`) | `spec.bucket` (the bucket's `BucketName`, else its logical id) |
+| `OriginAccessControlId` (an in-stack `AWS::CloudFront::OriginAccessControl`, type `s3`) or `S3OriginConfig.OriginAccessIdentity` (an in-stack `CloudFrontOriginAccessIdentity`), and the bucket-policy grant to `cloudfront.amazonaws.com` (with `aws:SourceArn` naming the distribution) or to the identity's `CanonicalUser` / IAM ARN | the site's own scoped MinIO credentials; the grant is not stored |
+| `Aliases` | `spec.domain` (first) + `spec.domains` (the rest), each with an Ingress rule and a SAN on the certificate |
+| `ViewerCertificate.AcmCertificateArn` (typically an in-stack `AWS::CertificateManager::Certificate`, which must cover the Aliases) | `spec.tls: true` — cert-manager issues the certificate from the `openinfra-issuer` ClusterIssuer |
+| `CustomErrorResponses` 403 and/or 404 → `/index.html` with `ResponseCode: 200` | `spec.spa: true` (history fallback) |
+| `CustomErrorResponses` 403/404 → one error page with a 404 response | `spec.spa: false` + `spec.errorDocument` |
+| `DefaultRootObject` | `spec.indexDocument` |
+| `DefaultCacheBehavior.ResponseHeadersPolicyId` — an in-stack `AWS::CloudFront::ResponseHeadersPolicy` (`SecurityHeadersConfig`, `CustomHeadersConfig`) or the AWS managed `SecurityHeadersPolicy` id | `spec.responseHeaders` (added by nginx to every response, errors included) |
+| `Fn::GetAtt <Distribution>.DomainName` | the first Alias — the hostname the site is served on |
+
+**Accepted, not emulated — printed as caveats:** caching (`CachePolicyId` / `OriginRequestPolicyId`,
+`CachedMethods`, TTLs, `ForwardedValues`, `Compress`, `ErrorCachingMinTTL`) — every request is served
+from the synced copy of the bucket, which re-syncs every 30 seconds (an upload goes live within about
+30s; there is no `CreateInvalidation`); `ViewerProtocolPolicy` `redirect-to-https` / `allow-all` (the
+site answers on HTTPS only — a plain-HTTP request is neither served nor redirected); `PriceClass`,
+`HttpVersion`, `IPV6Enabled`, `Comment`, `Tags`; `Logging` (nginx logs to the pod's stdout); origin
+timeouts, `OriginShield`, `OriginCustomHeaders`; `MinimumProtocolVersion` (Traefik's TLS defaults
+apply); ACM validation (no validation records are needed); OAC request signing. Two behaviours differ
+from an S3 origin by nature: object metadata set at upload (`Content-Type`, `Cache-Control`,
+`Content-Encoding`) is not served — nginx infers `Content-Type` from the file extension — and a missing
+object is a 404 at the origin (an S3 origin without `s3:ListBucket` says 403), so 403 and 404 mappings
+collapse into one missing-object behaviour. `Ref <Distribution>` (the distribution id) has no value.
+
+**Refused:** a distribution without `Aliases` (open-infra has no `*.cloudfront.net` hostname to serve
+on), a second origin or `OriginGroups`, a custom origin (`CustomOriginConfig` — an S3 website endpoint,
+a load balancer, an API), an out-of-stack bucket, `OriginPath`, path-pattern `CacheBehaviors`, Lambda@Edge
+(`LambdaFunctionAssociations`) and CloudFront Functions (`FunctionAssociations`), signed URLs / cookies
+(`TrustedKeyGroups` / `TrustedSigners`), `FieldLevelEncryptionId`, `RealtimeLogConfigArn`, a geo
+restriction, `WebACLId`, continuous deployment (`ContinuousDeploymentPolicyId` / `Staging`), write
+methods in `AllowedMethods`, `Enabled: false`, a wildcard Alias, a dedicated-IP certificate
+(`SslSupportMethod: vip`), a response-headers `CorsConfig` or `RemoveHeadersConfig` (and the managed CORS
+policies), a header the server sets itself (`Content-Type`, `Server`, …), error responses for codes
+other than 403/404, an origin bucket with Object Lock, and a bucket-policy CloudFront grant that no
+in-stack distribution holds (or that names a distribution or identity outside the stack). An ACM
+certificate no included distribution uses refuses too — it has no open-infra consumer.
 
 > `AWS::DynamoDB::Table` graduated from gated to **partial** once the aws-shim's DynamoDB
 > data layer gained atomic transactions + TTL and a declarative `kind: Table`. `kind: Table`

@@ -130,7 +130,7 @@ Resources:
 	}
 }
 
-// The common lift-and-shift refusals (ELB/ASG/LaunchTemplate/CloudFront) are unsupported, but each
+// The common lift-and-shift refusals (ELB/ASG/LaunchTemplate) are unsupported, but each
 // refuses with a pointer to the open-infra path rather than the bare "no backing kind" default — so
 // an assessment reads as guidance. None maps (Kind stays empty) and none is a silent approximation.
 func TestMapping_LiftAndShiftRefusalsGuide(t *testing.T) {
@@ -141,7 +141,6 @@ func TestMapping_LiftAndShiftRefusalsGuide(t *testing.T) {
 		{"AWS::ElasticLoadBalancing::LoadBalancer", "ingress"},
 		{"AWS::AutoScaling::AutoScalingGroup", "autoscaling"},
 		{"AWS::EC2::LaunchTemplate", "VirtualMachine"},
-		{"AWS::CloudFront::Distribution", "CDN"},
 	} {
 		e := Lookup(tc.cfnType)
 		if e.Status != Unsupported || e.Kind != "" {

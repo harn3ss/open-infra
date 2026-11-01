@@ -37,6 +37,8 @@ type resolver struct {
 	// interleaved deploy AFTER the resource's Function is invoked, so a dependent's Fn::GetAtt resolves
 	// to the real value instead of a placeholder (#269). Empty at plan time (values resolve at deploy).
 	customData map[string]map[string]any
+	// cfResolving guards cloudFrontGetAtt against a distribution whose Aliases reference its own DomainName.
+	cfResolving map[string]bool
 }
 
 func newResolver(t *Template, params, exports, pseudo map[string]any) *resolver {
@@ -228,6 +230,11 @@ func (r *resolver) getAtt(arg any) any {
 			return v
 		}
 		return "<" + id + "." + attr + ">" // invoked, but the handler returned no such Data key
+	}
+	// A CloudFront distribution's DomainName is the hostname its kind: StaticSite serves (translate_cloudfront.go).
+	if v, ok := r.cloudFrontGetAtt(id, attr); ok {
+		r.refs[id] = true
+		return v
 	}
 	if res, ok := r.t.Resources[id]; ok {
 		r.refs[id] = true

@@ -176,6 +176,15 @@ var translators = map[string]translator{
 	"AWS::ApiGateway::ApiKey":           translateAPIGatewayChild,
 	"AWS::ApiGateway::UsagePlan":        translateAPIGatewayChild,
 	"AWS::ApiGateway::UsagePlanKey":     translateAPIGatewayChild,
+	// CloudFront (narrow static-site subset, translate_cloudfront.go): the Distribution becomes a kind:
+	// StaticSite; its access identities / policies / certificate compose into it.
+	"AWS::CloudFront::Distribution":                   translateCloudFrontDistribution,
+	"AWS::CloudFront::OriginAccessControl":            translateCloudFrontChild,
+	"AWS::CloudFront::CloudFrontOriginAccessIdentity": translateCloudFrontChild,
+	"AWS::CloudFront::ResponseHeadersPolicy":          translateCloudFrontChild,
+	"AWS::CloudFront::CachePolicy":                    translateCloudFrontChild,
+	"AWS::CloudFront::OriginRequestPolicy":            translateCloudFrontChild,
+	"AWS::CertificateManager::Certificate":            translateACMCertificate,
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).
@@ -3195,9 +3204,16 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		if pid, ok := ctx.s3BucketPolicyFor(id); ok {
 			sp, _ := ctx.resolveProps(pid)
 			doc, hasDoc := sp["PolicyDocument"]
+			// CloudFront read grants (OAC/OAI) are realized by the kind: StaticSite serving this bucket, not
+			// stored as a MinIO policy (translate_cloudfront.go); doc is nil when nothing else remains.
+			doc, cfNotes, cfFindings := ctx.cloudFrontBucketGrants(id, pid, doc)
+			noopNotes = append(noopNotes, cfNotes...)
+			f = append(f, cfFindings...)
 			switch {
 			case !hasDoc:
 				f = append(f, Finding{"Resource " + pid, "AWS::S3::BucketPolicy requires a PolicyDocument"})
+			case doc == nil:
+				// every Statement was a CloudFront read grant the serving StaticSite holds — nothing to store
 			case !s3PolicyPrincipalsPublic(doc):
 				f = append(f, Finding{"Resource " + pid, "the BucketPolicy has a Statement whose Principal is not \"*\" (public) — AWS IAM ARN principals do not resolve to MinIO principals, so the policy would be stored but not enforce as intended; refusing rather than applying a policy that silently won't restrict as written. Use Principal \"*\" for a public policy, or govern identity-scoped access via open-infra IAM (kind: Policy spec.dataPlane at the aws-shim)."})
 			case hasUnresolvedPlaceholder(doc):
