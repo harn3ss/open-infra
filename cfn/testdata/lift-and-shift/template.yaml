@@ -14,10 +14,6 @@ Parameters:
   InstanceType:
     Type: String
     Default: t3.small
-  AwsEndpointUrl:
-    Type: String
-    Default: ""
-    Description: Empty on AWS. Elsewhere, the endpoint the instance's AWS CLI calls (e.g. open-infra's aws-shim).
   SiteDomain:
     Type: String
     Description: The static site's hostname (a CloudFront alias).
@@ -118,10 +114,7 @@ Resources:
           set -u
           mkdir -p /var/www && cd /var/www
           nohup python3 -m http.server 80 >/dev/null 2>&1 &
-          EP="${AwsEndpointUrl}"
           REGION="${AWS::Region}"
-          EPA=""
-          if [ -n "$EP" ]; then EPA="--endpoint-url $EP"; fi
           check() { if eval "$2"; then r=ok; else r=fail; fi; echo "  \"$1\": \"$r\"," >> /var/www/r.part; echo "$1: $r"; }
           # retry <tries> <command>: the app's inputs (its config object, its image) arrive after boot.
           retry() { n=$1; shift; for i in $(seq 1 $n); do eval "$*" && return 0; sleep 10; done; return 1; }
@@ -145,27 +138,26 @@ Resources:
           apt-get install -y -q awscli || echo "no distro awscli package in this image"
 
           # 4. aws s3 cp with the instance role: the distro CLI and aws-cli v2.
-          check s3_cp_distro_cli "retry 90 aws $EPA --region $REGION s3 cp s3://${AppBucket}/hello.txt /tmp/hello-distro.txt && grep -q hello /tmp/hello-distro.txt"
+          check s3_cp_distro_cli "retry 90 aws --region $REGION s3 cp s3://${AppBucket}/hello.txt /tmp/hello-distro.txt && grep -q hello /tmp/hello-distro.txt"
           curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -i /opt/aws-cli -b /usr/local/bin --update
-          check s3_cp_aws_cli_v2 "retry 30 /usr/local/bin/aws $EPA --region $REGION s3 cp s3://${AppBucket}/hello.txt /tmp/hello-v2.txt && grep -q hello /tmp/hello-v2.txt"
+          check s3_cp_aws_cli_v2 "retry 30 /usr/local/bin/aws --region $REGION s3 cp s3://${AppBucket}/hello.txt /tmp/hello-v2.txt && grep -q hello /tmp/hello-v2.txt"
 
-          # 5. A call outside the role's policy is denied (the role cannot read the site bucket).
-          check denied_outside_policy "/usr/local/bin/aws $EPA --region $REGION s3 ls s3://${SiteBucket} 2>&1 | grep -q -E 'AccessDenied|Forbidden'"
+          # 5. A call outside the role's policy is denied (the role cannot list the site bucket): S3's own
+          #    AccessDenied for that operation, not just any error (an unreachable or foreign endpoint fails too).
+          check denied_outside_policy "/usr/local/bin/aws --region $REGION s3 ls s3://${SiteBucket} 2>&1 | grep -q 'An error occurred (AccessDenied) when calling the ListObjectsV2 operation'"
           publish no
 
           # 6. An image pulls from the registry (pushed after the stack creates the repository).
-          URI=$(/usr/local/bin/aws $EPA --region $REGION ecr describe-repositories --repository-names ${AppRepositoryName} --query 'repositories[0].repositoryUri' --output text)
+          URI=$(/usr/local/bin/aws --region $REGION ecr describe-repositories --repository-names ${AppRepositoryName} --query 'repositories[0].repositoryUri' --output text)
           REG=$(echo "$URI" | cut -d/ -f1)
           for i in $(seq 1 90); do
-            /usr/local/bin/aws $EPA --region $REGION ecr get-login-password | docker login --username AWS --password-stdin "$REG" && docker pull "$URI:${AppImageTag}" && break
+            /usr/local/bin/aws --region $REGION ecr get-login-password | docker login --username AWS --password-stdin "$REG" && docker pull "$URI:${AppImageTag}" && break
             sleep 10
           done
           check ecr_pull "docker image inspect '$URI:${AppImageTag}' >/dev/null"
 
           # 7. A container in the guest gets the role's credentials through the default chain (IMDS, hop limit 2).
-          ENVEP=""
-          if [ -n "$EP" ]; then ENVEP="-e AWS_ENDPOINT_URL=$EP"; fi
-          check container_default_chain "docker run --rm -e AWS_REGION=$REGION $ENVEP '$URI:${AppImageTag}' s3 cp s3://${AppBucket}/hello.txt - | grep -q hello"
+          check container_default_chain "docker run --rm -e AWS_REGION=$REGION '$URI:${AppImageTag}' s3 cp s3://${AppBucket}/hello.txt - | grep -q hello"
           publish yes
 
   AppAddress:

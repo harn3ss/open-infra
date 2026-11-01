@@ -3,7 +3,9 @@
 # open-infra through the aws-shim CloudFormation front door, from a LAN workstation, and behaves.
 #
 # It deploys cfn/testdata/lift-and-shift/template.yaml with `aws cloudformation deploy` (only an
-# open-infra parameter file differs from AWS) and asserts, from this LAN host:
+# open-infra parameter file differs from AWS; the template carries no endpoint of any kind: the instance's
+# aws CLIs and its container reach open-infra through the guest's own environment) and asserts, from this
+# LAN host:
 #   1. the stack reaches CREATE_COMPLETE and returns its Outputs (the instance's address, the site URL);
 #   2. the EC2 instance boots unmodified and its own checks pass (served by the instance at
 #      http://<Elastic IP>/results.json): #!/bin/bash UserData runs, the encrypted data disk mounts by its
@@ -18,11 +20,11 @@
 # property the template relies on that open-infra accepts without emulating.
 #
 # Env (no site addresses are built in):
-#   SHIM_ENDPOINT   (required) the aws-shim's LAN URL, e.g. https://s3.<your domain>
+#   SHIM_ENDPOINT   (required) the aws-shim's LAN URL, e.g. https://s3.<your domain>. Exported as
+#                   AWS_ENDPOINT_URL, so EVERY call this host makes (CloudFormation, S3, ECR) goes to the shim:
+#                   --endpoint-url would redirect only the one service a command names, and e.g.
+#                   `cloudformation deploy --s3-bucket` would then upload the template to AWS's own S3.
 #   SITE_DOMAIN     (required) the static site's hostname (a CloudFront alias; must resolve to the ingress)
-#   INSTANCE_ENDPOINT (optional) the endpoint the INSTANCE's AWS CLI uses (the template's AwsEndpointUrl):
-#                   default the in-cluster aws-shim (plain HTTP, like a VPC endpoint); SHIM_ENDPOINT is
-#                   this LAN host's
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  a deployer identity (admin), or MINT=1 with KUBECONFIG
 #   AWS_CA_BUNDLE   (optional) the cluster root CA, so TLS is verified
 #   APP_IMAGE       (optional) the image the instance pulls (default: the aws-cli image, copied into ECR)
@@ -90,9 +92,8 @@ if [ "${MINT:-0}" = 1 ]; then
   sleep 3
 fi
 [ -n "${AWS_ACCESS_KEY_ID:-}" ] || inconclusive "set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or MINT=1)"
-export AWS_REGION="$REGION"
-A=(aws --endpoint-url "$SHIM_ENDPOINT" --region "$REGION" --no-cli-pager)
-INSTANCE_ENDPOINT="${INSTANCE_ENDPOINT:-http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566}"
+export AWS_REGION="$REGION" AWS_ENDPOINT_URL="$SHIM_ENDPOINT"
+A=(aws --region "$REGION" --no-cli-pager)
 
 cleanup() {
   local appb="" siteb=""
@@ -132,7 +133,7 @@ trap cleanup EXIT
 # --- 0. the fidelity summary (what a pass here does NOT prove) ---------------------------------------
 if [ -n "${CFN_BIN:-}" ] && [ -x "$CFN_BIN" ]; then
   log "cfn plan: verdict + fidelity summary"
-  "$CFN_BIN" plan -stack-name "$STACK" -param SiteDomain="$SITE_DOMAIN" -param AwsEndpointUrl="$INSTANCE_ENDPOINT" \
+  "$CFN_BIN" plan -stack-name "$STACK" -param SiteDomain="$SITE_DOMAIN" \
     -param AppRepositoryName="$REPO" "$TEMPLATE" > "$TMP/plan.txt" 2>&1
   grep -E "^Verdict" "$TMP/plan.txt"
   sed -n '/^Fidelity summary/,/^$/p' "$TMP/plan.txt" | cut -c1-200
@@ -162,7 +163,7 @@ log "  ✓ $URI:app"
 log "aws cloudformation deploy --stack-name $STACK (parameter overrides only)"
 STATE=deploying
 "${A[@]}" cloudformation deploy --template-file "$TEMPLATE" --stack-name "$STACK" --capabilities CAPABILITY_IAM \
-  --parameter-overrides "AwsEndpointUrl=$INSTANCE_ENDPOINT" "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" \
+  --parameter-overrides "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" \
   > "$TMP/deploy.txt" 2>&1 || fail "aws cloudformation deploy failed: $(tail -3 "$TMP/deploy.txt" | tr '\n' ' ')"
 ST="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text)"
 [ "$ST" = CREATE_COMPLETE ] || fail "stack status $ST, want CREATE_COMPLETE"
@@ -190,6 +191,12 @@ done
 printf '%s' "$R" | grep -q '"done": "yes"' || fail "the instance did not finish its checks over the Elastic IP $ADDR (last: $(printf '%s' "$R" | tr '\n' ' ' | head -c 400))"
 printf '%s\n' "$R" | sed 's/^/    /'
 FAILED="$(printf '%s' "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(k for k,v in d.items() if v=="fail"))')"
+if [ "$FAILED" = s3_cp_distro_cli ]; then
+  # The distro aws CLI (v1, botocore older than AWS_ENDPOINT_URL) calls AWS's own endpoint names. Only the
+  # guest AWS endpoints (guestAwsEndpoints: AWS's names resolve to the shim inside guests) let an unmodified
+  # call from it reach open-infra. Not a pass.
+  fail "8 of 9 instance checks passed; s3_cp_distro_cli did not: the distro aws CLI ignores AWS_ENDPOINT_URL and calls *.amazonaws.com, which reaches open-infra only with guestAwsEndpoints enabled (docs/virtual-machines.md)"
+fi
 [ -z "$FAILED" ] || fail "instance checks failed: $FAILED"
 log "  ✓ every instance check passed (served over the Elastic IP $ADDR)"
 

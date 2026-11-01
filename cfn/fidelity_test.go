@@ -15,7 +15,6 @@ func TestPlan_LiftAndShiftFixture_FidelitySummary(t *testing.T) {
 	}
 	p, err := BuildPlan(data, map[string]string{
 		"SiteDomain":        "site.example.test",
-		"AwsEndpointUrl":    "https://shim.example.test",
 		"AppRepositoryName": "fixture-app",
 	}, "fixture")
 	if err != nil {
