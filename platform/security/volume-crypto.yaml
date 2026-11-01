@@ -202,6 +202,39 @@ spec:
                       fi
                       P=""; C=""
                     done < "$W/pending.tsv"
+
+                    # CDI fills a DataVolume (e.g. a VM's encrypted data disk) through a temporary
+                    # "prime" PVC that it owns from the target PVC, then rebinds the volume to the
+                    # target. Longhorn provisions the prime PVC with ITS name's crypto Secret, so the
+                    # prime gets a copy of the target's passphrase (the same volume, so the same key),
+                    # owned by the prime PVC so it is collected when CDI deletes the prime.
+                    printf '%s' "$pvcs" | jq -r '.items[]
+                        | select(.spec.storageClassName=="longhorn-encrypted")
+                        | select(.metadata.annotations["openinfra.dev/encryption-key"] == null)
+                        | select(.metadata.annotations["cdi.kubevirt.io/storage.populator.kind"] != null)
+                        | select(.metadata.deletionTimestamp == null)
+                        | (.metadata.ownerReferences // [] | map(select(.kind == "PersistentVolumeClaim")) | .[0].name) as $target
+                        | select($target != null)
+                        | [.metadata.namespace, .metadata.name, .metadata.uid, $target] | @tsv' \
+                      > "$W/primes.tsv"
+                    while IFS="$TAB" read -r ns name uid target; do
+                      [ -n "$name" ] || continue
+                      kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1 && continue
+                      src="$(kubectl get secret "${target}-crypto" -n "$ns" -o json 2>/dev/null)" || {
+                        echo "waiting on ${ns}/${name}: its target ${target} has no crypto Secret yet" >&2; continue; }
+                      if printf '%s' "$src" | jq --arg pvc "$name" --arg uid "$uid" --arg ns "$ns" '
+                            {apiVersion: "v1", kind: "Secret", type: "Opaque", data: .data,
+                             metadata: {name: ($pvc + "-crypto"), namespace: $ns,
+                               labels: {"openinfra.dev/volume-crypto": (if ($pvc | length) <= 63 then $pvc else "true" end)},
+                               ownerReferences: [{apiVersion: "v1", kind: "PersistentVolumeClaim", name: $pvc, uid: $uid}]}}' \
+                          | kubectl create -f - >/dev/null; then
+                        echo "materialized ${name}-crypto in ${ns} (CDI prime of ${target}, same passphrase)"
+                      elif ! kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
+                        echo "failed to create ${ns}/${name}-crypto" >&2
+                        failed=1
+                      fi
+                    done < "$W/primes.tsv"
+                    src=""
                   }
 
                   # Remove ownerless crypto Secrets whose volume is gone. Only unmistakably ours: the

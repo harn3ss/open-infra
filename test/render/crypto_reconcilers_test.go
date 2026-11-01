@@ -123,6 +123,8 @@ case "$*" in
   "get pv -o json") cat "$STUB/pvs.json" ;;
   "get pvc "*" -n "*" --ignore-not-found -o name")
     jq -r --arg n "$3" --arg ns "$5" '.items[] | select(.metadata.name==$n and .metadata.namespace==$ns) | "persistentvolumeclaim/" + .metadata.name' "$STUB/pvcs.json" ;;
+  "get secret "*" -n "*" -o json")
+    jq -e --arg n "$3" --arg ns "$5" '.items[] | select(.metadata.name==$n and .metadata.namespace==$ns)' "$STUB/secrets.json" ;;
   "get secret "*" -n "*)
     jq -e --arg n "$3" --arg ns "$5" 'any(.items[]; .metadata.name==$n and .metadata.namespace==$ns)' "$STUB/secrets.json" >/dev/null ;;
   "create secret generic "*)
@@ -277,6 +279,58 @@ func items(objs ...map[string]any) map[string]any {
 }
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// CDI fills an encrypted DataVolume (a VM data disk) through a "prime" PVC it owns from the target PVC.
+// Longhorn provisions the prime with the prime's crypto Secret, so the prime gets a copy of the
+// target's passphrase (the same volume, so the same key), owned by the prime so GC removes it with it.
+func TestVolumeCrypto_CDIPrimeGetsTargetsPassphrase(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, volumeCryptoPath)
+	prime := map[string]any{
+		"metadata": map[string]any{"namespace": "team", "name": "prime-abc", "uid": "uid-prime",
+			"annotations":     map[string]any{"cdi.kubevirt.io/storage.populator.kind": "VolumeImportSource"},
+			"ownerReferences": []any{map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "name": "disk", "uid": "uid-disk"}}},
+		"spec": map[string]any{"storageClassName": "longhorn-encrypted"}, "status": map[string]any{"phase": "Pending"},
+	}
+	stray := map[string]any{ // an encrypted-class PVC owned by a PVC but NOT a CDI prime: left alone
+		"metadata": map[string]any{"namespace": "team", "name": "other", "uid": "uid-other",
+			"ownerReferences": []any{map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "name": "disk", "uid": "uid-disk"}}},
+		"spec": map[string]any{"storageClassName": "longhorn-encrypted"},
+	}
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := newStubEnv(t, map[string]any{
+				"pvcs.json":    items(pvc("team", "disk", "uid-disk", "longhorn-encrypted", "k1", false), prime, stray),
+				"secrets.json": items(),
+				"pvs.json":     items(),
+			}, "k1")
+			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+			if err != nil {
+				t.Fatalf("reconcile run failed: %v\n%s", err, out)
+			}
+			byName := map[string]map[string]any{}
+			for _, c := range e.created(t) {
+				byName[c["metadata"].(map[string]any)["name"].(string)] = c
+			}
+			if len(byName) != 2 || byName["disk-crypto"] == nil || byName["prime-abc-crypto"] == nil {
+				t.Fatalf("want disk-crypto and prime-abc-crypto, got %v\nlog:\n%s", e.read("created.jsonl"), out)
+			}
+			td, _ := byName["disk-crypto"]["data"].(map[string]any)
+			pd, _ := byName["prime-abc-crypto"]["data"].(map[string]any)
+			if td["CRYPTO_KEY_VALUE"] == nil || td["CRYPTO_KEY_VALUE"] != pd["CRYPTO_KEY_VALUE"] || td["WRAPPED_KEY"] != pd["WRAPPED_KEY"] {
+				t.Errorf("the prime must carry the target's exact passphrase: target=%v prime=%v", td, pd)
+			}
+			md := byName["prime-abc-crypto"]["metadata"].(map[string]any)
+			refs, _ := md["ownerReferences"].([]any)
+			if len(refs) != 1 || refs[0].(map[string]any)["uid"] != "uid-prime" {
+				t.Errorf("the prime's copy must be owned by the prime PVC (uid-prime): %v", md["ownerReferences"])
+			}
+			if l, _ := md["labels"].(map[string]any); l["openinfra.dev/volume-crypto"] != "prime-abc" {
+				t.Errorf("label must name the prime: %v", md["labels"])
+			}
+		})
+	}
+}
 
 // One reconcile pass: keys exactly the encrypted PVC that needs it — owned by that PVC, by UID —
 // skips a claim being deleted, a non-encrypted claim, an already-keyed one (labeled or not) and one
