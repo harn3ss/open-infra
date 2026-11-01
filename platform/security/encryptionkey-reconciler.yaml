@@ -90,7 +90,7 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 295 # > WATCH_SECONDS + a last pass, < the 5-minute period
+      activeDeadlineSeconds: 295 # > start-up + WATCH_SECONDS + a last sleep and pass, < the 5-minute period
       ttlSecondsAfterFinished: 300 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 1
       template:
@@ -123,7 +123,7 @@ spec:
                 - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
                 - { name: CONSOLE_NS, value: "open-infra-console" }
                 # After the full pass, keep polling for new EncryptionKeys this long (0 = one pass).
-                - { name: WATCH_SECONDS, value: "280" }
+                - { name: WATCH_SECONDS, value: "240" }  # the deadline (295s) also counts scheduling + the init container
                 - { name: POLL_SECONDS, value: "5" }
               args:
                 - |
