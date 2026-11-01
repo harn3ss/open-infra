@@ -167,15 +167,19 @@ spec:
                    whole AWS surface, verified against the platform root through AWS_CA_BUNDLE). On EC2 an
                    unmodified template's `aws s3 cp` reaches AWS by its default endpoints; here
                    AWS_ENDPOINT_URL (honored by aws-cli v2 >= 2.13 and the current SDKs) sends the same call
-                   to the shim, with no --endpoint-url in the template. Older SDKs and the distro aws CLI v1
-                   ignore it, an open gap (docs/virtual-machines.md#aws-endpoints-inside-the-guest). */}}
+                   to the shim, with no --endpoint-url in the template. The distro aws CLI v1 (Ubuntu 22.04's
+                   awscli 1.22) predates AWS_ENDPOINT_URL, so a one-line CLI plugin reads it for v1 too (the
+                   awscliV1Plugin agent config + the [plugins] config at $awsConfigFile below). Raw botocore/
+                   boto3 of that era are not covered — an open gap (docs/virtual-machines.md#aws-endpoints-inside-the-guest). */}}
             {{- $guestEndpoint := "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567" }}
+            {{- $awsConfigFile := "/etc/openinfra/aws-config" }}
             {{- $awsEnv := list }}
             {{- if $credsRelay }}{{- $awsEnv = append $awsEnv (printf "AWS_CONTAINER_CREDENTIALS_FULL_URI=%s" $credsURI) }}{{- end }}
             {{- if and $metadataAgent $trustPlatformCA }}
             {{-   $awsEnv = append $awsEnv (printf "AWS_CA_BUNDLE=%s" $caBundle) }}
             {{-   $awsEnv = append $awsEnv (printf "NODE_EXTRA_CA_CERTS=%s" $caBundle) }}
             {{-   $awsEnv = append $awsEnv (printf "AWS_ENDPOINT_URL=%s" $guestEndpoint) }}
+            {{-   $awsEnv = append $awsEnv (printf "AWS_CONFIG_FILE=%s" $awsConfigFile) }}
             {{- end }}
             {{- /* The same endpoint and CA for the guest's containers: a container does not inherit the
                    guest's environment, so the agent makes Docker (an OCI runtime wrapper set as its default
@@ -209,7 +213,8 @@ spec:
                   "trustPlatformCA" $trustPlatformCA
                   "caFile" $caFile
                   "caBundleLink" $caBundle
-                  "containers" (dict "env" $containerEnv "caBundle" $caBundle) }}
+                  "containers" (dict "env" $containerEnv "caBundle" $caBundle)
+                  "awscliV1Plugin" (dict "enabled" (and $metadataAgent $trustPlatformCA) "module" "/usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py" "name" "openinfra_endpoint" "configFile" $awsConfigFile "endpointEnv" "AWS_ENDPOINT_URL") }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -1955,6 +1960,92 @@ spec:
 
 
                             # ---------------------------------------------------------------------------------------------
+                            # The distro aws CLI v1 (Ubuntu 22.04's awscli 1.22): it predates AWS_ENDPOINT_URL, so a one-line
+                            # CLI plugin reads it. The plugin module is shipped by cloud-init; here the agent makes it importable
+                            # by the system python the distro CLI runs on (a .pth in a site directory), and writes a [plugins]
+                            # section into the CLI config the environment names (AWS_CONFIG_FILE). aws-cli v2 reads the same
+                            # config but ignores [plugins] without cli_legacy_plugin_path, which is deliberately absent, so v2
+                            # keeps its own native AWS_ENDPOINT_URL support and the plugin never loads there.
+                            # ---------------------------------------------------------------------------------------------
+
+                            def register_plugin_path(plugin_module, getsitepackages=None, isdir=os.path.isdir):
+                                """Make the directory holding the plugin module importable by this interpreter's future runs, with a
+                                .pth in a site directory (processed at startup, so it needs no PYTHONPATH). Returns the .pth path or
+                                None. The distro aws CLI v1 runs on this same system python, so its site dirs are the ones to use."""
+                                plugin_dir = os.path.dirname(plugin_module)
+                                try:
+                                    import site
+                                    sites = list(getsitepackages() if getsitepackages else site.getsitepackages())
+                                except Exception:
+                                    sites = []
+                                for d in sites:
+                                    if not isdir(d):
+                                        continue
+                                    pth = os.path.join(d, "openinfra-awscli-plugin.pth")
+                                    try:
+                                        current = None
+                                        if os.path.isfile(pth):
+                                            with open(pth) as fh:
+                                                current = fh.read().strip()
+                                        if current != plugin_dir:
+                                            _write_atomic(pth, plugin_dir + "\n")
+                                        return pth
+                                    except (IOError, OSError):
+                                        continue
+                                LOG.warning("no writable site directory for the aws-cli v1 plugin path; the distro CLI v1 will not "
+                                            "load the endpoint plugin (aws-cli v2 is unaffected)")
+                                return None
+
+                            def merge_plugins_config(config_file, name, module):
+                                """Add `name = module` to the [plugins] section of the CLI config the environment names, keeping every
+                                other section and value (it never touches ~/.aws/config). cli_legacy_plugin_path is deliberately NOT
+                                written: aws-cli v1 would try to import it as a plugin, and aws-cli v2 ignores [plugins] without it."""
+                                import configparser
+                                cp = configparser.RawConfigParser()
+                                try:
+                                    if os.path.isfile(config_file):
+                                        cp.read(config_file)
+                                except configparser.Error as e:
+                                    LOG.warning("%s is not a valid CLI config (%s): leaving it alone, the distro CLI v1 keeps the gap",
+                                                config_file, e)
+                                    return False
+                                if not cp.has_section("plugins"):
+                                    cp.add_section("plugins")
+                                if cp.has_option("plugins", "cli_legacy_plugin_path"):
+                                    cp.remove_option("plugins", "cli_legacy_plugin_path")  # would crash v1; v2 does not need it here
+                                if cp.get("plugins", name, fallback=None) == module:
+                                    return True
+                                cp.set("plugins", name, module)
+                                import io
+                                buf = io.StringIO()
+                                cp.write(buf)
+                                try:
+                                    d = os.path.dirname(config_file)
+                                    if d and not os.path.isdir(d):
+                                        os.makedirs(d, 0o755)
+                                    _write_atomic(config_file, buf.getvalue())
+                                except (IOError, OSError) as e:
+                                    LOG.warning("cannot write %s: %s", config_file, e)
+                                    return False
+                                return True
+
+                            def configure_awscli_v1_plugin(cfg):
+                                """Wire the endpoint plugin for the distro aws CLI v1 (the module itself is shipped by cloud-init).
+                                Never raises; returns a short status dict."""
+                                p = cfg.get("awscliV1Plugin") or {}
+                                if not p.get("enabled") or not p.get("module") or not p.get("configFile"):
+                                    return {}
+                                if not os.path.isfile(p["module"]):
+                                    LOG.warning("aws-cli v1 endpoint plugin module %s is missing; the distro CLI v1 keeps the gap", p["module"])
+                                    return {"module": "missing"}
+                                return {"path": "registered" if register_plugin_path(p["module"]) else "unregistered",
+                                        "config": "written" if merge_plugins_config(p["configFile"], p["name"], _module_import_name(p["module"])) else "error"}
+
+                            def _module_import_name(path):
+                                return os.path.splitext(os.path.basename(path))[0]
+
+
+                            # ---------------------------------------------------------------------------------------------
                             # The agent.
                             # ---------------------------------------------------------------------------------------------
 
@@ -2115,6 +2206,7 @@ spec:
                                         publish_ca_bundle(self.cfg["caBundleLink"], store[0] if store else None,
                                                           platform_ca=ca in ("installed", "unchanged"))
                                     configure_containers(self.cfg)  # before ready: UserData may install Docker and start containers
+                                    configure_awscli_v1_plugin(self.cfg)  # the distro aws CLI v1 reads AWS_ENDPOINT_URL through it
 
                                 def shutdown(self):
                                     self.stop.set()
@@ -2281,6 +2373,38 @@ spec:
 
                             if __name__ == "__main__":
                                 sys.exit(main(sys.argv))
+                        {{- /* The endpoint plugin for the distro aws CLI v1 (awscli 1.22, Ubuntu 22.04): v1 predates
+                               AWS_ENDPOINT_URL, so on `top-level-args-parsed` this sets the endpoint from the environment
+                               when the command gave no --endpoint-url. The agent makes it importable (a .pth) and lists it
+                               in the CLI config's [plugins]. aws-cli v2 reads that config but ignores [plugins] without
+                               cli_legacy_plugin_path (kept out), so the plugin loads only under v1. NO template actions. */}}
+                        - path: /usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py
+                          permissions: '0644'
+                          content: |
+                            # open-infra aws-cli v1 plugin: use AWS_ENDPOINT_URL when no --endpoint-url is given.
+                            #
+                            # aws-cli v1 (botocore before ~1.27) does not read AWS_ENDPOINT_URL, so an unmodified call like
+                            # `aws s3 cp s3://b/k .` in a guest goes to AWS's own endpoint. This plugin, listed in the CLI
+                            # config's [plugins] section, registers on the global-args event and, when the command set no
+                            # --endpoint-url, fills in the endpoint from AWS_ENDPOINT_URL (the full system endpoint the guest's
+                            # environment already names). An explicit --endpoint-url always wins. aws-cli v2 reads AWS_ENDPOINT_URL
+                            # itself and never loads this (its [plugins] needs cli_legacy_plugin_path, which the agent keeps unset).
+                            import os
+
+
+                            def _set_endpoint_from_env(parsed_args, **kwargs):
+                                if getattr(parsed_args, "endpoint_url", None):
+                                    return  # an explicit --endpoint-url wins
+                                endpoint = os.environ.get("AWS_ENDPOINT_URL")
+                                if endpoint:
+                                    # A raw string; aws-cli's own resolve_types validates the scheme right after this runs.
+                                    parsed_args.endpoint_url = endpoint
+
+
+                            def awscli_initialize(event_hooks):
+                                event_hooks.register(
+                                    "top-level-args-parsed", _set_endpoint_from_env,
+                                    unique_id="openinfra-endpoint-from-env")
                         {{- end }}
                         {{- end }}
                         {{- if $spec.userData }}
@@ -2338,7 +2462,8 @@ spec:
                             MANAGED = ("/usr/local/lib/openinfra/metadata-agent.py", "/etc/openinfra/metadata-agent.json",
                                        "/etc/openinfra/platform-root-ca.pem", "/etc/systemd/system/openinfra-metadata.service",
                                        "/etc/openinfra-aws.env", "/etc/systemd/system.conf.d/10-openinfra-aws.conf",
-                                       "/usr/local/lib/openinfra/oci-aws-env")
+                                       "/usr/local/lib/openinfra/oci-aws-env",
+                                       "/usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py")
                             UNITS = ("/etc/systemd/system/openinfra-metadata.service", "/etc/systemd/system.conf.d/10-openinfra-aws.conf")
 
 

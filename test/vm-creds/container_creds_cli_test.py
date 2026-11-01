@@ -14,6 +14,12 @@
 #      composition also renders AWS_CA_BUNDLE naming the path the agent keeps pointing at the FULL system
 #      bundle. Against a TLS stub whose certificate a throwaway test root signs, the CLI succeeds with
 #      AWS_CA_BUNDLE -> (system bundle + that root, linked by the agent's own code) and fails without it.
+#   4. The AWS endpoint with no --endpoint-url (#347 item A): the composition renders AWS_ENDPOINT_URL to
+#      the shim. aws-cli v2 reads it natively. aws-cli v1 (1.22) predates it, so the composition ships a
+#      [plugins] module that sets the endpoint from the environment; this runs the real v1 1.22 with that
+#      plugin and NO --endpoint-url and proves it reaches the stub. Set OPENINFRA_AWS_V1 to a v1 binary to
+#      exercise it (the CI job installs awscli 1.22). Raw botocore/boto3 of that era (no plugin hook) are
+#      NOT covered — an open gap, stated in docs/virtual-machines.md.
 #
 # The agent is the exact text extracted from platform/abstraction/vm-composition.yaml, run as a real
 # process with the golden config (pinned to the composition's render by test/render) re-pointed at a stub
@@ -131,7 +137,9 @@ def find_clis():
     """Installed aws CLIs as [(path, "v1"|"v2")]: PATH order can let an apt v1 shadow a v2, so probe the
     usual locations explicitly. Dedup by resolved path."""
     out, seen = [], set()
-    for p in filter(None, [shutil.which("aws"), "/usr/local/bin/aws", "/usr/bin/aws"]):
+    # OPENINFRA_AWS_V1 lets a caller point at a distro aws-cli v1 (1.22) the host does not have on PATH, so
+    # the v1 endpoint-plugin path is exercised (the CI job installs it; see the test's module docstring).
+    for p in filter(None, [os.environ.get("OPENINFRA_AWS_V1"), shutil.which("aws"), "/usr/local/bin/aws", "/usr/bin/aws"]):
         rp = os.path.realpath(p)
         if not os.path.exists(p) or rp in seen:
             continue
@@ -320,9 +328,31 @@ def main():
             env = dict(base, AWS_EC2_METADATA_DISABLED="true", AWS_CA_BUNDLE=link, AWS_ENDPOINT_URL=https, **env_rendered)
             ok, detail, _ = run_cli(aws_bin, env, stub_port, endpoint=https, flag=False)
             say("[%s %s] no --endpoint-url, AWS_ENDPOINT_URL from the environment: %s" % (ver, aws_bin, detail))
+            if not ok and tag == "v2":
+                failures.append("v2: does not honor AWS_ENDPOINT_URL with no --endpoint-url")
+            elif not ok:
+                notes.append("%s: no native AWS_ENDPOINT_URL (the endpoint plugin below covers it)" % ver)
+
+        # --- the aws-cli v1 endpoint plugin (#347 item A) ---
+        # The distro CLI v1 (1.22) predates AWS_ENDPOINT_URL. The composition ships a plugin and the agent
+        # lists it in the CLI config's [plugins] and makes it importable. Here: the shipped module on the
+        # import path, a config with that [plugins] entry (and NO cli_legacy_plugin_path), AWS_CONFIG_FILE at
+        # it, AWS_ENDPOINT_URL at the stub, and NO --endpoint-url. v1 must now reach the stub; v2 reads the
+        # same config, ignores [plugins] (no legacy path), and reaches the stub through its own support.
+        plugin_dir = os.path.join(tmp, "awscli-plugins")
+        os.makedirs(plugin_dir, exist_ok=True)
+        _, plugin_name = common.write_awscli_plugin(plugin_dir)
+        cfg_file = os.path.join(tmp, "aws-config")
+        with open(cfg_file, "w") as fh:
+            fh.write("[plugins]\n%s = %s\n" % ("openinfra_endpoint", plugin_name))
+        https = "https://127.0.0.1:%d" % tls.port
+        for aws_bin, tag, ver in clis:
+            env = dict(base, AWS_EC2_METADATA_DISABLED="true", AWS_CA_BUNDLE=link, AWS_ENDPOINT_URL=https,
+                       AWS_CONFIG_FILE=cfg_file, PYTHONPATH=plugin_dir, **env_rendered)  # PYTHONPATH simulates the .pth
+            ok, detail, _ = run_cli(aws_bin, env, stub_port, endpoint=https, flag=False)
+            say("[%s %s] endpoint plugin + [plugins] config, no --endpoint-url: %s" % (ver, aws_bin, detail))
             if not ok:
-                (failures if tag == "v2" else notes).append(
-                    "%s: does not honor AWS_ENDPOINT_URL (an unmodified call from it is not covered; #347 item A)" % ver)
+                failures.append("%s: endpoint plugin did not apply AWS_ENDPOINT_URL" % ver)
     finally:
         agent.stop()
     if failures:
@@ -360,7 +390,7 @@ def main():
         sys.exit("FAIL:\n  " + "\n  ".join(failures))
     say("PASS: aws CLIs resolve VM role credentials from the composition's metadata agent "
         "(FULL_URI alone, and IMDSv2), trust the platform CA through AWS_CA_BUNDLE, and reach the endpoint "
-        "AWS_ENDPOINT_URL names with no --endpoint-url")
+        "AWS_ENDPOINT_URL names with no --endpoint-url (v2 natively; v1 through the shipped [plugins] module)")
     shutil.rmtree(tmp, ignore_errors=True)
 
 

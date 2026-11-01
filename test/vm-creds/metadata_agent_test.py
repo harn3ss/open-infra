@@ -1024,6 +1024,75 @@ class ContainerConfigTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.json + ".2"), "no container env (no platform CA): Docker untouched")
 
 
+class AwscliV1PluginConfigTest(unittest.TestCase):
+    """The agent wiring for the distro aws CLI v1 endpoint plugin (#347 item A): a .pth on a site dir and a
+    [plugins] entry in the CLI config, never cli_legacy_plugin_path (it crashes v1) and never ~/.aws."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(dir=TMP)
+        self.module = os.path.join(self.d, "awscli-plugins", "openinfra_endpoint_plugin.py")
+        os.makedirs(os.path.dirname(self.module))
+        with open(self.module, "w") as fh:
+            fh.write("def awscli_initialize(e): pass\n")
+
+    def test_register_plugin_path_writes_a_pth_with_the_plugin_dir(self):
+        site_dir = os.path.join(self.d, "site-packages")
+        os.makedirs(site_dir)
+        pth = agent.register_plugin_path(self.module, getsitepackages=lambda: [site_dir])
+        self.assertEqual(pth, os.path.join(site_dir, "openinfra-awscli-plugin.pth"))
+        with open(pth) as fh:
+            self.assertEqual(fh.read().strip(), os.path.dirname(self.module))
+        self.assertEqual(agent.register_plugin_path(self.module, getsitepackages=lambda: [site_dir]), pth, "idempotent")
+
+    def test_register_plugin_path_skips_missing_site_dirs(self):
+        self.assertIsNone(agent.register_plugin_path(self.module, getsitepackages=lambda: [os.path.join(self.d, "nope")]))
+
+    def test_merge_writes_plugins_and_keeps_other_sections(self):
+        cfgf = os.path.join(self.d, "aws-config")
+        with open(cfgf, "w") as fh:
+            fh.write("[default]\nregion = us-west-2\n")
+        self.assertTrue(agent.merge_plugins_config(cfgf, "openinfra_endpoint", "openinfra_endpoint_plugin"))
+        import configparser
+        cp = configparser.RawConfigParser()
+        cp.read(cfgf)
+        self.assertEqual(cp.get("default", "region"), "us-west-2", "the user's other settings are kept")
+        self.assertEqual(cp.get("plugins", "openinfra_endpoint"), "openinfra_endpoint_plugin")
+
+    def test_merge_strips_cli_legacy_plugin_path(self):
+        cfgf = os.path.join(self.d, "aws-config")
+        with open(cfgf, "w") as fh:
+            fh.write("[plugins]\ncli_legacy_plugin_path = /somewhere\n")
+        self.assertTrue(agent.merge_plugins_config(cfgf, "openinfra_endpoint", "openinfra_endpoint_plugin"))
+        with open(cfgf) as fh:
+            body = fh.read()
+        self.assertNotIn("cli_legacy_plugin_path", body, "it would crash aws-cli v1")
+        self.assertIn("openinfra_endpoint = openinfra_endpoint_plugin", body)
+
+    def test_configure_uses_the_module_basename_as_the_import_name(self):
+        cfgf = os.path.join(self.d, "aws-config")
+        site_dir = os.path.join(self.d, "site-packages")
+        os.makedirs(site_dir)
+        cfg = {"awscliV1Plugin": {"enabled": True, "module": self.module, "name": "openinfra_endpoint",
+                                  "configFile": cfgf, "endpointEnv": "AWS_ENDPOINT_URL"}}
+        orig = agent.register_plugin_path
+        try:
+            agent.register_plugin_path = lambda m: os.path.join(site_dir, "x.pth")
+            out = agent.configure_awscli_v1_plugin(cfg)
+        finally:
+            agent.register_plugin_path = orig
+        self.assertEqual(out, {"path": "registered", "config": "written"})
+        import configparser
+        cp = configparser.RawConfigParser()
+        cp.read(cfgf)
+        self.assertEqual(cp.get("plugins", "openinfra_endpoint"), "openinfra_endpoint_plugin")
+
+    def test_configure_noop_when_disabled_or_module_missing(self):
+        self.assertEqual(agent.configure_awscli_v1_plugin({"awscliV1Plugin": {"enabled": False}}), {})
+        cfg = {"awscliV1Plugin": {"enabled": True, "module": self.module + ".gone", "name": "x",
+                                  "configFile": os.path.join(self.d, "c")}}
+        self.assertEqual(agent.configure_awscli_v1_plugin(cfg), {"module": "missing"})
+
+
 class OCIWrapperTest(unittest.TestCase):
     """The OCI runtime wrapper Docker runs every container through: env + CA mount, then the real runc."""
 

@@ -254,10 +254,22 @@ jobs:
       # "container" one forwarding hop behind the guest, and a "LAN host" routing through the guest dropped.
       - name: metadata agent network namespace + hop limit (isolated netns, root)
         run: sudo unshare --net --mount --fork python3 test/vm-creds/metadata_agent_netns_test.py
-      # #347 items 13 + 14: real aws CLIs get VM role credentials from the agent via the env the
-      # composition renders (FULL_URI alone, no token variable) and via IMDSv2 with no container env.
-      # ubuntu-latest ships aws-cli v2 (the hard gate); the distro CLI is checked too.
-      - name: install distro awscli for the older-SDK check
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq awscli || true
-      - name: VM credentials CLI test (container credentials + IMDSv2)
-        run: python3 test/vm-creds/container_creds_cli_test.py
+      # #347 items 13 + 14 + A: real aws CLIs get VM role credentials from the agent via the env the
+      # composition renders (FULL_URI alone, no token variable) and via IMDSv2 with no container env, trust
+      # the platform CA through AWS_CA_BUNDLE, and reach AWS_ENDPOINT_URL with no --endpoint-url. ubuntu-latest
+      # ships aws-cli v2 (the hard gate, native AWS_ENDPOINT_URL). A real aws-cli v1 1.22 (Ubuntu 22.04's
+      # version, which predates AWS_ENDPOINT_URL) proves the shipped [plugins] endpoint plugin: it builds only
+      # on an older Python (PyYAML 5.4.1 has no 3.12 wheel), so it is installed on a 3.10 and passed in by path.
+      - name: python 3.10 for the aws-cli v1 build
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: install aws-cli v1 1.22 (the distro v1 the endpoint plugin targets)
+        run: |
+          python3.10 -m venv "$RUNNER_TEMP/awsv1"
+          "$RUNNER_TEMP/awsv1/bin/pip" install -q "Cython<3.0" "setuptools<60" wheel
+          "$RUNNER_TEMP/awsv1/bin/pip" install -q --no-build-isolation "PyYAML==5.4.1"
+          "$RUNNER_TEMP/awsv1/bin/pip" install -q "awscli==1.22.34"
+          "$RUNNER_TEMP/awsv1/bin/aws" --version
+      - name: VM credentials CLI test (container credentials + IMDSv2 + the v1 endpoint plugin)
+        run: OPENINFRA_AWS_V1="$RUNNER_TEMP/awsv1/bin/aws" python3 test/vm-creds/container_creds_cli_test.py

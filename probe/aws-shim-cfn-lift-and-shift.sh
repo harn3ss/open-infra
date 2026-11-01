@@ -191,11 +191,8 @@ done
 printf '%s' "$R" | grep -q '"done": "yes"' || fail "the instance did not finish its checks over the Elastic IP $ADDR (last: $(printf '%s' "$R" | tr '\n' ' ' | head -c 400))"
 printf '%s\n' "$R" | sed 's/^/    /'
 FAILED="$(printf '%s' "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(k for k,v in d.items() if v=="fail"))')"
-if [ "$FAILED" = s3_cp_distro_cli ]; then
-  # The distro aws CLI (v1, botocore older than AWS_ENDPOINT_URL) calls AWS's own endpoint names, so an
-  # unmodified call from it does not reach open-infra. A known, open gap (#347 item A) - not a pass.
-  fail "8 of 9 instance checks passed; s3_cp_distro_cli did not: the distro aws CLI ignores AWS_ENDPOINT_URL and calls AWS's own endpoints (an open gap, docs/virtual-machines.md#aws-endpoints-inside-the-guest)"
-fi
+# All 9 pass, s3_cp_distro_cli (the distro aws CLI v1) included: v1 predates AWS_ENDPOINT_URL, so the
+# guest's endpoint plugin applies it (docs/virtual-machines.md#aws-endpoints-inside-the-guest).
 [ -z "$FAILED" ] || fail "instance checks failed: $FAILED"
 log "  ✓ every instance check passed (served over the Elastic IP $ADDR)"
 

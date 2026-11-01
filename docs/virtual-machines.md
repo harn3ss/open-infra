@@ -340,6 +340,23 @@ through `AWS_CA_BUNDLE`. aws-cli v2 2.13 and later, and current releases of the 
 every service (no per-service `AWS_ENDPOINT_URL_<SERVICE>` is needed: one shim serves them all), and use
 path-style S3 addressing against it.
 
+**The distro aws CLI v1.** Ubuntu 22.04's `awscli` 1.22 (botocore 1.23) predates `AWS_ENDPOINT_URL` and
+would call AWS's own endpoints. So the guest also carries a one-line aws-cli *plugin*: the agent ships
+`/usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py`, makes it importable by the system
+Python the distro CLI runs on (a `.pth` in a site directory), and lists it in a CLI config at
+`/etc/openinfra/aws-config` that the environment names through `AWS_CONFIG_FILE`:
+
+```ini
+[plugins]
+openinfra_endpoint = openinfra_endpoint_plugin
+```
+
+On `top-level-args-parsed` the plugin sets the endpoint from `AWS_ENDPOINT_URL` when the command gave no
+`--endpoint-url` (an explicit flag always wins). aws-cli **v2** reads the same config, but ignores
+`[plugins]` unless `cli_legacy_plugin_path` is set — which is deliberately left out (v1 would try to
+import it as a plugin and crash) — so under v2 the plugin never loads and its own native support stays in
+charge. The agent merges only the `[plugins]` section and never touches `~/.aws/config`.
+
 **Containers.** A container does not inherit the guest's environment, so the metadata agent configures
 the container engines before `userData` runs, and every container gets the same three variables and a
 read-only mount of `/etc/openinfra/ca-bundle.pem` unless it sets them itself:
@@ -356,10 +373,11 @@ or CRI-O used directly, a Kubernetes inside the guest) are not configured. The c
 role credentials from the instance metadata service through the default chain, which needs
 `metadataOptions.httpPutResponseHopLimit: 2` as on EC2.
 
-**What does not read `AWS_ENDPOINT_URL`.** Older SDKs and CLIs, among them the distro `awscli` v1 that
-Ubuntu 22.04 ships, call AWS's own endpoint names (`s3.amazonaws.com`, `sts.us-east-1.amazonaws.com`, …).
-An unmodified call from one of those does not reach open-infra today; it is an open gap. Use aws-cli
-v2 (or a current SDK) in the guest.
+**What is still not covered.** The plugin hooks the aws CLI only. A program that uses **raw botocore or
+boto3** of the same era (botocore before ~1.27) does not read `AWS_ENDPOINT_URL` and has no plugin hook,
+so an unmodified call from it calls AWS's own endpoints — an open gap. Closing it for arbitrary old SDKs
+would need the guest to resolve and trust AWS's own hostnames, a deliberate design decision that is not
+taken here. Use a current SDK, or aws-cli (v1 or v2), in the guest.
 
 ## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
 

@@ -1,6 +1,13 @@
 {
   "accountId": "000000000000",
   "availabilityZone": "us-east-1a",
+  "awscliV1Plugin": {
+    "configFile": "/etc/openinfra/aws-config",
+    "enabled": true,
+    "endpointEnv": "AWS_ENDPOINT_URL",
+    "module": "/usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py",
+    "name": "openinfra_endpoint"
+  },
   "caBundleLink": "/etc/openinfra/ca-bundle.pem",
   "caFile": "/etc/openinfra/platform-root-ca.pem",
   "containers": {

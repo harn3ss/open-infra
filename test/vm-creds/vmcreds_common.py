@@ -51,6 +51,26 @@ def agent_source():
     return src
 
 
+AWSCLI_PLUGIN_GUEST_PATH = "/usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py"
+
+
+def awscli_plugin_source():
+    src = write_file_block(open(COMPOSITION).read(), AWSCLI_PLUGIN_GUEST_PATH)
+    if "{{" in src:
+        raise SystemExit("FAIL: the aws-cli v1 plugin body in vm-composition.yaml contains a template action; "
+                         "it must render verbatim")
+    return src
+
+
+def write_awscli_plugin(directory):
+    """Write the shipped plugin module into `directory` as the import name the composition uses
+    (openinfra_endpoint_plugin.py), and return (dir, import_name)."""
+    name = os.path.splitext(os.path.basename(AWSCLI_PLUGIN_GUEST_PATH))[0]
+    with open(os.path.join(directory, name + ".py"), "w") as fh:
+        fh.write(awscli_plugin_source())
+    return directory, name
+
+
 OCI_WRAPPER_GUEST_PATH = "/usr/local/lib/openinfra/oci-aws-env"
 
 
