@@ -10,6 +10,10 @@
 #      service at 169.254.169.254, so the agent listens on loopback here and the CLI is pointed at it
 #      with AWS_EC2_METADATA_SERVICE_ENDPOINT. A second run with httpTokens=required proves the CLI
 #      completed the IMDSv2 handshake (token-less IMDSv1 GETs are refused).
+#   3. The platform CA (#347 item 15): aws-cli v2 ships its OWN CA store and ignores the system's, so the
+#      composition also renders AWS_CA_BUNDLE naming the path the agent keeps pointing at the FULL system
+#      bundle. Against a TLS stub whose certificate a throwaway test root signs, the CLI succeeds with
+#      AWS_CA_BUNDLE -> (system bundle + that root, linked by the agent's own code) and fails without it.
 #
 # The agent is the exact text extracted from platform/abstraction/vm-composition.yaml, run as a real
 # process with the golden config (pinned to the composition's render by test/render) re-pointed at a stub
@@ -25,6 +29,7 @@ import http.server
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -86,6 +91,7 @@ class AgentProcess(object):
         cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": self.imds_port, "httpTokens": http_tokens})
         cfg["relay"]["enabled"] = relay
         cfg["trustPlatformCA"] = False  # never touch the runner's trust store (metadata_agent_test covers it)
+        cfg["caBundleLink"] = ""        # nor /etc/openinfra (the TLS check links a temp path itself)
         self.cfg_path = os.path.join(tmp, "agent-%s.json" % http_tokens)
         with open(self.cfg_path, "w") as fh:
             json.dump(cfg, fh)
@@ -133,27 +139,81 @@ def find_clis():
     return out
 
 
-def run_cli(aws_bin, env, stub_port):
-    """`aws sts get-caller-identity` -> (ok, detail). ok = exit 0 AND signed with the role credentials."""
+def run_cli(aws_bin, env, stub_port, endpoint=None):
+    """`aws sts get-caller-identity` -> (ok, detail, stderr). ok = exit 0 AND signed with the role creds."""
     del Stub.sts_calls[:]
-    p = subprocess.run([aws_bin, "sts", "get-caller-identity", "--endpoint-url", "http://127.0.0.1:%d" % stub_port],
+    endpoint = endpoint or "http://127.0.0.1:%d" % stub_port
+    p = subprocess.run([aws_bin, "sts", "get-caller-identity", "--endpoint-url", endpoint],
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=90)
     signed = any(("Credential=%s/" % CREDS["AccessKeyId"]) in a and t == CREDS["Token"] for a, t in Stub.sts_calls)
     ok = p.returncode == 0 and signed
     detail = "exit=%d signed-with-role-creds=%s" % (p.returncode, signed)
     if not ok:
         detail += "\n    stderr: " + p.stderr.strip()[-600:]
-    return ok, detail
+    return ok, detail, p.stderr
+
+
+def openssl(*args):
+    subprocess.run(["openssl"] + list(args), check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class TLSStub(object):
+    """The same stub over HTTPS, with a server certificate for 127.0.0.1 signed by a throwaway test root."""
+
+    def __init__(self, tmp):
+        d = os.path.join(tmp, "tls")
+        os.makedirs(d)
+        self.ca = os.path.join(d, "test-root.crt")
+        key, csr, crt, ext = (os.path.join(d, n) for n in ("server.key", "server.csr", "server.crt", "server.ext"))
+        openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                "-keyout", os.path.join(d, "test-root.key"), "-out", self.ca, "-days", "2",
+                "-subj", "/CN=vm-creds test root CA", "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+        openssl("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", key,
+                "-out", csr, "-subj", "/CN=127.0.0.1")
+        with open(ext, "w") as fh:
+            fh.write("subjectAltName=IP:127.0.0.1,DNS:localhost\nextendedKeyUsage=serverAuth\n"
+                     "basicConstraints=critical,CA:FALSE\n")
+        openssl("x509", "-req", "-in", csr, "-CA", self.ca, "-CAkey", os.path.join(d, "test-root.key"),
+                "-CAcreateserial", "-out", crt, "-days", "2", "-extfile", ext)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(crt, key)
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), Stub)
+        self.srv.socket = ctx.wrap_socket(self.srv.socket, server_side=True)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def publish_bundle(self, agent_mod, tmp):
+        """What the guest ends up with: the distro's full system bundle once the trust-store tool has added
+        the platform root (simulated: this host's system bundle + the test root), and the agent's own
+        publish_ca_bundle() pointing the AWS_CA_BUNDLE path at it. Returns (link, public roots kept)."""
+        store = agent_mod.trust_store()
+        system = agent_mod.system_bundle(store[0] if store else None)
+        public = open(system).read() if system else ""
+        full = os.path.join(tmp, "tls", "system-bundle.pem")
+        with open(full, "w") as fh:
+            fh.write(public.rstrip("\n") + "\n" + open(self.ca).read() if public else open(self.ca).read())
+        link = os.path.join(tmp, "openinfra", "ca-bundle.pem")
+        if agent_mod.publish_ca_bundle(link, bundle=lambda family: full) not in ("linked", "unchanged"):
+            raise SystemExit("FAIL: the agent could not link %s" % link)
+        return link, public.count("BEGIN CERTIFICATE")
+
+    def stop(self):
+        self.srv.shutdown()
+        self.srv.server_close()
 
 
 def main():
-    env_rendered = common.composition_env()
-    full_uri = env_rendered["AWS_CONTAINER_CREDENTIALS_FULL_URI"]
+    env_all = common.composition_env()
+    full_uri = env_all["AWS_CONTAINER_CREDENTIALS_FULL_URI"]
+    env_rendered = {"AWS_CONTAINER_CREDENTIALS_FULL_URI": full_uri}
     golden = common.golden_config()
     relay_uri = "http://%s:%d/v1/vm-credentials" % (golden["relay"]["address"], golden["relay"]["port"])
-    say("composition renders AWS_CONTAINER_CREDENTIALS_FULL_URI=%s (and no token variable)" % full_uri)
+    say("composition renders %s (and no token variable)" % ", ".join("%s=%s" % kv for kv in sorted(env_all.items())))
     if full_uri != relay_uri:
         sys.exit("FAIL: FULL_URI %s is not the agent's credentials endpoint %s" % (full_uri, relay_uri))
+    if env_all["AWS_CA_BUNDLE"] != golden["caBundleLink"]:
+        sys.exit("FAIL: AWS_CA_BUNDLE %s is not the path the agent maintains (%s)" % (env_all["AWS_CA_BUNDLE"], golden["caBundleLink"]))
 
     clis = find_clis()
     for path, tag, ver in clis:
@@ -208,17 +268,43 @@ def main():
             env = dict(base)
             env.update(env_rendered)                 # FULL_URI only — exactly what the guest gets
             env["AWS_EC2_METADATA_DISABLED"] = "true"  # so only the container provider can answer
-            ok, detail = run_cli(aws_bin, env, stub_port)
+            ok, detail, _ = run_cli(aws_bin, env, stub_port)
             say("[%s %s] container credentials via FULL_URI alone: %s" % (ver, aws_bin, detail))
             if not ok:
                 failures.append("%s: container credentials via FULL_URI alone" % ver)
 
             env = dict(base)
             env["AWS_EC2_METADATA_SERVICE_ENDPOINT"] = "http://127.0.0.1:%d/" % agent.imds_port
-            ok, detail = run_cli(aws_bin, env, stub_port)
+            ok, detail, _ = run_cli(aws_bin, env, stub_port)
             say("[%s %s] instance metadata (IMDS), no container env: %s" % (ver, aws_bin, detail))
             if not ok:
                 (failures if tag == "v2" else notes).append("%s: IMDS credentials" % ver)
+
+        # --- the platform CA: AWS_CA_BUNDLE -> the full system bundle (#347 item 15) ---
+        if not shutil.which("openssl"):
+            failures.append("openssl is needed to mint the TLS stub's test certificates")
+        else:
+            tls = TLSStub(tmp)
+            try:
+                link, public = tls.publish_bundle(common.load_agent_module(tmp), tmp)
+                say("[tls] AWS_CA_BUNDLE path %s -> system bundle (%d public roots) + the test root" % (link, public))
+                if public == 0:
+                    notes.append("no system CA bundle on this host: public roots not exercised")
+                for aws_bin, tag, ver in clis:
+                    env = dict(base, AWS_EC2_METADATA_DISABLED="true", **env_rendered)
+                    https = "https://127.0.0.1:%d" % tls.port
+                    ok, detail, _ = run_cli(aws_bin, dict(env, AWS_CA_BUNDLE=link), stub_port, endpoint=https)
+                    say("[%s %s] TLS to a platform-CA endpoint with AWS_CA_BUNDLE: %s" % (ver, aws_bin, detail))
+                    if not ok:
+                        failures.append("%s: TLS with AWS_CA_BUNDLE" % ver)
+                    bad, detail, err = run_cli(aws_bin, env, stub_port, endpoint=https)
+                    refused = not bad and ("CERTIFICATE_VERIFY_FAILED" in err or "SSL" in err)
+                    say("[%s %s] ... and without it the CLI's own CA store refuses it: %s"
+                        % (ver, aws_bin, "yes" if refused else "NO (" + detail + ")"))
+                    if not refused:
+                        (failures if tag == "v2" else notes).append("%s: TLS without AWS_CA_BUNDLE was not refused" % ver)
+            finally:
+                tls.stop()
     finally:
         agent.stop()
     if failures:
@@ -234,7 +320,7 @@ def main():
         for aws_bin, tag, ver in clis:
             env = dict(base)
             env["AWS_EC2_METADATA_SERVICE_ENDPOINT"] = "http://127.0.0.1:%d/" % agent.imds_port
-            ok, detail = run_cli(aws_bin, env, stub_port)
+            ok, detail, _ = run_cli(aws_bin, env, stub_port)
             say("[%s %s] IMDS with httpTokens=required (IMDSv2 handshake): %s" % (ver, aws_bin, detail))
             if not ok:
                 (failures if tag == "v2" else notes).append("%s: IMDSv2 with httpTokens=required" % ver)
@@ -254,7 +340,7 @@ def main():
         agent.dump()
         sys.exit("FAIL:\n  " + "\n  ".join(failures))
     say("PASS: aws CLIs resolve VM role credentials from the composition's metadata agent "
-        "(FULL_URI alone, and IMDSv2)")
+        "(FULL_URI alone, and IMDSv2) and trust the platform CA through AWS_CA_BUNDLE")
     shutil.rmtree(tmp, ignore_errors=True)
 
 

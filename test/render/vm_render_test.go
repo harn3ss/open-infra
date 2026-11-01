@@ -3,6 +3,8 @@ package render
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -420,6 +422,116 @@ func TestVM_MetadataOptions(t *testing.T) {
 	def := vmAgentConfig(t, render(t, tmpl, vmCtx("debian-12", "")))
 	if imds, _ := def["imds"].(map[string]any); imds["httpTokens"] != "optional" || imds["hopLimit"] != float64(2) {
 		t.Errorf("default metadataOptions must be httpTokens optional + hop limit 2, got %#v", imds)
+	}
+}
+
+// vmWriteFileScalar returns the decoded `content: "<json-quoted>"` of the write_files entry for path, or
+// "" when the entry is absent.
+func vmWriteFileScalar(t *testing.T, out, path string) string {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "- path: "+path {
+			continue
+		}
+		for j := i + 1; j < len(lines) && j < i+4; j++ {
+			c := strings.TrimSpace(lines[j])
+			if !strings.HasPrefix(c, "content: ") {
+				continue
+			}
+			var s string
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(c, "content: ")), &s); err != nil {
+				t.Fatalf("%s content is not a JSON-quoted scalar: %v\n%s", path, err, c)
+			}
+			return s
+		}
+	}
+	return ""
+}
+
+// #347 item 15: SDKs that ship their own CA store (aws-cli v2, boto3 with certifi, Node) ignore the
+// system trust store, so every Linux guest gets AWS_CA_BUNDLE (and NODE_EXTRA_CA_CERTS) naming the path
+// the agent keeps pointing at the FULL system bundle — in the same three places as the credentials env.
+func TestVM_AWSCABundleEnv(t *testing.T) {
+	tmpl := extractInlineTemplate(t, vmComposition)
+	const link = "/etc/openinfra/ca-bundle.pem"
+	check := func(name string, out string, wantURI bool) {
+		t.Helper()
+		if got := vmAgentConfig(t, out)["caBundleLink"]; got != link {
+			t.Errorf("%s: the agent must maintain %s (the path AWS_CA_BUNDLE names), got %#v", name, link, got)
+		}
+		dropIn := grepCtx(out, "DefaultEnvironment=")
+		for _, f := range []string{"/etc/environment", "/etc/openinfra-aws.env"} {
+			env := vmWriteFileScalar(t, out, f)
+			for _, want := range []string{"AWS_CA_BUNDLE=" + link + "\n", "NODE_EXTRA_CA_CERTS=" + link + "\n"} {
+				if !strings.Contains(env, want) {
+					t.Errorf("%s: %s must carry %q; got %q", name, f, want, env)
+				}
+			}
+			if has := strings.Contains(env, "AWS_CONTAINER_CREDENTIALS_FULL_URI="); has != wantURI {
+				t.Errorf("%s: %s FULL_URI present=%v, want %v; got %q", name, f, has, wantURI, env)
+			}
+		}
+		if !strings.Contains(dropIn, "AWS_CA_BUNDLE="+link) || !strings.Contains(dropIn, "NODE_EXTRA_CA_CERTS="+link) {
+			t.Errorf("%s: the systemd DefaultEnvironment drop-in must carry the CA bundle env; got:\n%s", name, dropIn)
+		}
+		if has := strings.Contains(dropIn, "AWS_CONTAINER_CREDENTIALS_FULL_URI="); has != wantURI {
+			t.Errorf("%s: drop-in FULL_URI present=%v, want %v", name, has, wantURI)
+		}
+	}
+	check("no role", render(t, tmpl, vmCtx("ubuntu-24.04", "")), false)
+	check("role", render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"})), true)
+	check("metadata disabled", render(t, tmpl, vmCtxFW("centos-stream-9", map[string]any{
+		"instanceRole": "app-role", "metadataOptions": map[string]any{"httpEndpoint": "disabled"},
+	})), false)
+	if win := render(t, tmpl, vmCtxFW("windows-server-2022", map[string]any{"instanceRole": "app-role"})); strings.Contains(win, "AWS_CA_BUNDLE") {
+		t.Errorf("a Windows VM must not render the CA bundle env")
+	}
+}
+
+// The env reaches a `#!/bin/bash` UserData process: run the EXACT wrapper command the composition renders
+// (only its two file paths re-pointed at temp files) on the EXACT env file and script it renders.
+func TestVM_UserDataGetsAWSEnv(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	tmpl := extractInlineTemplate(t, vmComposition)
+	script := "#!/bin/bash\nset -euo pipefail\nprintf '%s\\n' \"$AWS_CA_BUNDLE\" \"$NODE_EXTRA_CA_CERTS\" \"$AWS_CONTAINER_CREDENTIALS_FULL_URI\" > \"$OUT\"\n"
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role", "userData": script}))
+
+	var wrapper string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "exec /opt/openinfra-userdata") {
+			if i, j := strings.Index(ln, `"`), strings.LastIndex(ln, `"`); i >= 0 && j > i {
+				wrapper = ln[i+1 : j]
+			}
+		}
+	}
+	if wrapper == "" {
+		t.Fatalf("no UserData wrapper in runcmd:\n%s", grepCtx(out, "openinfra-userdata"))
+	}
+	dir := t.TempDir()
+	envFile, udFile, outFile := filepath.Join(dir, "openinfra-aws.env"), filepath.Join(dir, "userdata"), filepath.Join(dir, "out")
+	if err := os.WriteFile(envFile, []byte(vmWriteFileScalar(t, out, "/etc/openinfra-aws.env")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(udFile, []byte(vmWriteFileScalar(t, out, "/opt/openinfra-userdata")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := strings.NewReplacer("/etc/openinfra-aws.env", envFile, "/opt/openinfra-userdata", udFile).Replace(wrapper)
+	run := exec.Command(bash, "-c", cmd)
+	run.Env = []string{"PATH=" + os.Getenv("PATH"), "OUT=" + outFile} // nothing AWS-related inherited
+	if b, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("UserData wrapper failed: %v\n%s", err, b)
+	}
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/etc/openinfra/ca-bundle.pem\n/etc/openinfra/ca-bundle.pem\nhttp://127.0.0.1:16349/v1/vm-credentials\n"
+	if string(got) != want {
+		t.Errorf("the #!/bin/bash UserData script must see the AWS SDK env; got %q, want %q", got, want)
 	}
 }
 

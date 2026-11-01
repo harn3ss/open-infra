@@ -72,16 +72,26 @@ def golden_config():
 
 
 def composition_env():
-    """The container-credentials env the composition renders: {var: value}. Fails on a token env var."""
+    """The AWS SDK env the composition renders into every guest ($awsEnv): {var: value}. Fails on a token
+    env var, or if the credentials endpoint or the CA bundle variable is missing."""
     text = open(COMPOSITION).read()
     if re.search(r"AWS_CONTAINER_\w*TOKEN", text):
         raise SystemExit("FAIL: vm-composition.yaml renders an AWS_CONTAINER_*TOKEN* env var; the agent "
                          "authenticates to the shim itself and the token is root-only (#347 item 13)")
-    m_port = re.search(r'\$credsPort\s*:=\s*"(\d+)"', text)
-    m_uri = re.search(r'\$credsURI\s*:=\s*printf\s+"(http://127\.0\.0\.1:%s/\S+?)"', text)
-    if not (m_port and m_uri) or "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}" not in text:
-        raise SystemExit("FAIL: could not extract AWS_CONTAINER_CREDENTIALS_FULL_URI from vm-composition.yaml")
-    return {"AWS_CONTAINER_CREDENTIALS_FULL_URI": m_uri.group(1) % m_port.group(1)}
+    values = dict(re.findall(r'\{\{-\s*\$(\w+)\s*:=\s*"([^"{}]*)"\s*\}\}', text))  # $name := "literal"
+    m_uri = re.search(r'\$credsURI\s*:=\s*printf\s+"(http://127\.0\.0\.1:%s/\S+?)"\s+\$credsPort', text)
+    if not (m_uri and "credsPort" in values):
+        raise SystemExit("FAIL: could not extract $credsURI from vm-composition.yaml")
+    values["credsURI"] = m_uri.group(1) % values["credsPort"]
+    env = {}
+    for name, var in re.findall(r'append \$awsEnv \(printf "([A-Z_]+)=%s" \$(\w+)\)', text):
+        if var not in values:
+            raise SystemExit("FAIL: $awsEnv entry %s uses an unresolvable $%s" % (name, var))
+        env[name] = values[var]
+    for need in ("AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CA_BUNDLE"):
+        if need not in env:
+            raise SystemExit("FAIL: vm-composition.yaml's $awsEnv does not render %s" % need)
+    return env
 
 
 def free_port():

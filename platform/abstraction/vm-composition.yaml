@@ -118,6 +118,21 @@ spec:
             {{- if and $metadataAgent $imdsEnabled $instanceRole (eq $httpTokens "optional") }}{{- $credsRelay = true }}{{- end }}
             {{- $credsPort := "16349" }}
             {{- $credsURI := printf "http://127.0.0.1:%s/v1/vm-credentials" $credsPort }}
+            {{- /* The platform root CA (#347 item 15). The agent adds it to the system trust store and keeps
+                   $caBundle -> the distro's FULL system bundle (public roots + the platform root). SDKs that
+                   ship their own CA store and ignore the system's (aws-cli v2, boto3 with certifi, Node)
+                   are pointed at it: AWS_CA_BUNDLE REPLACES the SDK's roots — hence the full bundle, never
+                   the platform root alone — and NODE_EXTRA_CA_CERTS adds to Node's. */}}
+            {{- $trustPlatformCA := true }}
+            {{- $caBundle := "/etc/openinfra/ca-bundle.pem" }}
+            {{- /* The AWS SDK environment every guest process gets (rendered below into /etc/environment,
+                   /etc/openinfra-aws.env and the systemd DefaultEnvironment drop-in). */}}
+            {{- $awsEnv := list }}
+            {{- if $credsRelay }}{{- $awsEnv = append $awsEnv (printf "AWS_CONTAINER_CREDENTIALS_FULL_URI=%s" $credsURI) }}{{- end }}
+            {{- if and $metadataAgent $trustPlatformCA }}
+            {{-   $awsEnv = append $awsEnv (printf "AWS_CA_BUNDLE=%s" $caBundle) }}
+            {{-   $awsEnv = append $awsEnv (printf "NODE_EXTRA_CA_CERTS=%s" $caBundle) }}
+            {{- end }}
             {{- /* What the guest cannot observe, rendered into the agent's config. Region and account match
                    the aws-shim's AWS_REGION / ACCOUNT_ID defaults; the instance id is stable for the life of
                    this VM (derived from its UID) and the image id from its catalog OS. */}}
@@ -137,8 +152,9 @@ spec:
                   "securityGroups" ($spec.securityGroups | default list)
                   "imds" (dict "enabled" $imdsEnabled "address" "169.254.169.254" "port" 80 "netns" "openinfra-imds" "hostAddress" "169.254.169.1" "httpTokens" $httpTokens "hopLimit" $hopLimit)
                   "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort))
-                  "trustPlatformCA" true
-                  "caBundleUrl" (printf "http://%s/v1/ca-bundle" $shimHostPort) }}
+                  "trustPlatformCA" $trustPlatformCA
+                  "caBundleUrl" (printf "http://%s/v1/ca-bundle" $shimHostPort)
+                  "caBundleLink" $caBundle }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -618,23 +634,23 @@ spec:
                         - qemu-guest-agent
                       {{- if or $spec.userData $instanceRole $dataDisks $metadataAgent }}
                       write_files:
-                        {{- if $credsRelay }}
-                        {{- /* The container-credentials env, written to THREE places so every consumer
-                               sees it: /etc/environment (login shells), a systemd Manager drop-in (every
-                               systemd service — the Docker daemon, the app's units), and a standalone file
-                               the boot-script wrapper sources (cloud-final.service is already running when
+                        {{- if $awsEnv }}
+                        {{- /* The AWS SDK env ($awsEnv), written to THREE places so every consumer sees it:
+                               /etc/environment (login shells), a systemd Manager drop-in (every systemd
+                               service — the Docker daemon, the app's units), and a standalone file the
+                               boot-script wrapper sources (cloud-final.service is already running when
                                runcmd fires, so it predates the drop-in). FULL_URI is the agent's loopback
                                endpoint, which authenticates to the shim itself: no token env, so any SDK
                                that knows FULL_URI works and the token stays root-only. */}}
                         - path: /etc/environment
                           append: true
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\n"
+                          content: {{ printf "%s\n" (join "\n" $awsEnv) | toJson }}
                         - path: /etc/openinfra-aws.env
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\n"
+                          content: {{ printf "%s\n" (join "\n" $awsEnv) | toJson }}
                         - path: /etc/systemd/system.conf.d/10-openinfra-aws.conf
                           content: |
                             [Manager]
-                            DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}
+                            DefaultEnvironment={{ join " " $awsEnv }}
                         {{- end }}
                         {{- if $metadataAgent }}
                         {{- /* The instance metadata agent: its config (what the guest can't observe +
@@ -681,7 +697,9 @@ spec:
                             #
                             # At start, before it reports ready (so before cloud-init runs the user's UserData), it also adds the
                             # platform's root CA certificate (served by the aws-shim) to the guest's system trust store, so docker,
-                            # curl and the SDKs trust the platform's TLS endpoints, e.g. the container registry.
+                            # curl and the SDKs trust the platform's TLS endpoints, e.g. the container registry, and keeps
+                            # /etc/openinfra/ca-bundle.pem -> the distro's full system bundle (public roots + the platform root):
+                            # the path AWS_CA_BUNDLE names for the SDKs that ship their own CA store (aws-cli v2, boto3).
                             #
                             # Role credentials come from the aws-shim's /v1/vm-credentials endpoint, authenticated with the
                             # VM's own ServiceAccount token (the shim verifies it with a TokenReview; the source IP is never
@@ -739,6 +757,7 @@ spec:
                                 "relay": {"enabled": False, "address": "127.0.0.1", "port": 16349},
                                 "trustPlatformCA": True,
                                 "caBundleUrl": "",
+                                "caBundleLink": "",
                             }
 
                             TOKEN_HEADER = "X-aws-ec2-metadata-token"
@@ -754,6 +773,17 @@ spec:
                                 ("rhel", "/etc/pki/ca-trust/source/anchors", ("update-ca-trust", "extract")),
                                 ("suse", "/etc/pki/trust/anchors", ("update-ca-certificates",)),
                                 ("debian", "/usr/local/share/ca-certificates", ("update-ca-certificates",)),
+                            )
+                            # The FULL system bundle each family's tool regenerates (public roots + every anchor), then the other
+                            # well-known locations, for a guest whose family was not detected.
+                            FAMILY_BUNDLES = {
+                                "rhel": "/etc/pki/tls/certs/ca-bundle.crt",
+                                "suse": "/etc/ssl/ca-bundle.pem",
+                                "debian": "/etc/ssl/certs/ca-certificates.crt",
+                            }
+                            SYSTEM_BUNDLES = (
+                                "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/ca-bundle.pem",
+                                "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", "/etc/ssl/cert.pem",
                             )
                             VERSIONS = [
                                 "1.0", "2007-01-19", "2007-03-01", "2007-08-29", "2007-10-10", "2007-12-15", "2008-02-01",
@@ -1506,6 +1536,50 @@ spec:
                                 return result
 
 
+                            def system_bundle(family=None, isfile=os.path.isfile):
+                                """The distro's full system CA bundle (public roots + installed anchors), or None."""
+                                candidates = ([FAMILY_BUNDLES[family]] if family in FAMILY_BUNDLES else []) + list(SYSTEM_BUNDLES)
+                                for path in candidates:
+                                    if isfile(path):
+                                        return path
+                                return None
+
+
+                            def link_ca_bundle(target, link):
+                                """Atomically point the symlink `link` at `target`: 'unchanged' if it already does, else 'linked'."""
+                                if os.path.islink(link) and os.readlink(link) == target:
+                                    return "unchanged"
+                                directory = os.path.dirname(link)
+                                if not os.path.isdir(directory):
+                                    os.makedirs(directory, 0o755)
+                                tmp = link + ".tmp"
+                                if os.path.lexists(tmp):
+                                    os.remove(tmp)
+                                os.symlink(target, tmp)
+                                os.rename(tmp, link)
+                                return "linked"
+
+
+                            def publish_ca_bundle(link, family=None, platform_ca=True, bundle=system_bundle):
+                                """Keep `link` (the path AWS_CA_BUNDLE names) -> the full system bundle. Called after the platform-CA
+                                step, so on success the bundle already carries the platform root. It is kept even when that step did
+                                not install the root: AWS_CA_BUNDLE REPLACES an SDK's own roots, so a path that does not resolve
+                                would fail every TLS call, public endpoints included. Never raises; returns the outcome."""
+                                target = bundle(family)
+                                if target is None:
+                                    LOG.error("no system CA bundle found (looked for %s): %s cannot be created, and SDKs that read "
+                                              "AWS_CA_BUNDLE will fail TLS", ", ".join(SYSTEM_BUNDLES), link)
+                                    return "missing"
+                                try:
+                                    result = link_ca_bundle(target, link)
+                                except OSError as e:
+                                    LOG.error("cannot create %s -> %s: %s", link, target, e)
+                                    return "failed"
+                                LOG.info("%s -> %s (AWS_CA_BUNDLE)%s", link, target,
+                                         "" if platform_ca else " - public roots only: the platform root CA is not installed")
+                                return result
+
+
                             # ---------------------------------------------------------------------------------------------
                             # The agent.
                             # ---------------------------------------------------------------------------------------------
@@ -1613,8 +1687,13 @@ spec:
                                         threading.Thread(target=self.creds.run_refresher, args=(self.stop,), daemon=True).start()
                                     else:
                                         LOG.info("no instance role: iam/ metadata is not served")
+                                    ca = None
                                     if self.cfg.get("trustPlatformCA") and self.cfg.get("caBundleUrl"):
-                                        trust_platform_ca(self.cfg["caBundleUrl"])
+                                        ca = trust_platform_ca(self.cfg["caBundleUrl"])
+                                    if self.cfg.get("caBundleLink"):  # after the CA step, so the bundle it names carries the root
+                                        store = trust_store()
+                                        publish_ca_bundle(self.cfg["caBundleLink"], store[0] if store else None,
+                                                          platform_ca=ca in ("installed", "unchanged"))
 
                                 def shutdown(self):
                                     self.stop.set()
@@ -1714,8 +1793,9 @@ spec:
                         {{- if $spec.userData }}
                         # EXEC the script so its shebang is honored (AWS runs UserData this way; passing it
                         # to `sh` would ignore `#!/bin/bash` and run it under dash, where `set -o pipefail`
-                        # aborts on line 1). Source the creds env first — cloud-final.service is already
-                        # running, so it predates the systemd DefaultEnvironment drop-in. The file is 0755
+                        # aborts on line 1). Source the AWS SDK env first (credentials endpoint, CA bundle) —
+                        # cloud-final.service is already running, so it predates the systemd
+                        # DefaultEnvironment drop-in; `set -a` exports it to the script. The file is 0755
                         # and always carries a shebang (cfn prepends `#!/bin/sh` when none is given).
                         - [ bash, -c, "set -a; [ -f /etc/openinfra-aws.env ] && . /etc/openinfra-aws.env; set +a; exec /opt/openinfra-userdata" ]
                         {{- end }}

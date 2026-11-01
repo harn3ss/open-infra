@@ -46,6 +46,7 @@ def make_config(**over):
     cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": 0})
     cfg["relay"].update({"port": 0})
     cfg["trustPlatformCA"] = False  # never touch this host's trust store (PlatformCATest covers it)
+    cfg["caBundleLink"] = ""        # nor /etc/openinfra (CABundleLinkTest covers it)
     ud = os.path.join(TMP, "user-data")
     with open(ud, "w") as fh:
         fh.write("#!/bin/bash\necho hi\n")
@@ -622,6 +623,80 @@ class PlatformCATest(unittest.TestCase):
         rc = subprocess.call([sys.executable, os.path.join(TMP, "metadata-agent.py"), p],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
         self.assertEqual(rc, 0)
+
+
+class CABundleLinkTest(unittest.TestCase):
+    """#347 item 15: /etc/openinfra/ca-bundle.pem (AWS_CA_BUNDLE) -> the distro's FULL system bundle."""
+
+    def test_system_bundle_per_distro(self):
+        every = set(agent.FAMILY_BUNDLES.values()) | set(agent.SYSTEM_BUNDLES)
+        for family, bundle in (("debian", "/etc/ssl/certs/ca-certificates.crt"),
+                               ("rhel", "/etc/pki/tls/certs/ca-bundle.crt"),
+                               ("suse", "/etc/ssl/ca-bundle.pem")):
+            self.assertEqual(agent.system_bundle(family, isfile=lambda p: p in every), bundle,
+                             "%s links its own full bundle even when others exist" % family)
+        self.assertEqual(agent.system_bundle(None, isfile=lambda p: p == "/etc/ssl/cert.pem"), "/etc/ssl/cert.pem",
+                         "an undetected family falls back to the well-known locations")
+        self.assertIsNone(agent.system_bundle("debian", isfile=lambda p: False))
+
+    def test_link_is_atomic_and_idempotent(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        a, b = os.path.join(d, "a.crt"), os.path.join(d, "b.crt")
+        for p in (a, b):
+            with open(p, "w") as fh:
+                fh.write("bundle\n")
+        link = os.path.join(d, "openinfra", "ca-bundle.pem")  # the parent is created
+        self.assertEqual(agent.link_ca_bundle(a, link), "linked")
+        self.assertEqual(os.readlink(link), a)
+        self.assertEqual(agent.link_ca_bundle(a, link), "unchanged")
+        self.assertEqual(agent.link_ca_bundle(b, link), "linked", "a different target is re-pointed")
+        self.assertEqual(os.readlink(link), b)
+        os.remove(link)
+        with open(link, "w") as fh:
+            fh.write("a stale regular file\n")
+        self.assertEqual(agent.link_ca_bundle(a, link), "linked", "a regular file at the path is replaced")
+        self.assertTrue(os.path.islink(link))
+        self.assertFalse(os.path.lexists(link + ".tmp"))
+
+    def test_publish_never_raises(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        target = os.path.join(d, "ca-certificates.crt")
+        with open(target, "w") as fh:
+            fh.write("bundle\n")
+        link = os.path.join(d, "ca-bundle.pem")
+        self.assertEqual(agent.publish_ca_bundle(link, "debian", bundle=lambda f: target), "linked")
+        self.assertEqual(agent.publish_ca_bundle(link, "debian", bundle=lambda f: None), "missing")
+        blocker = os.path.join(d, "a-file")
+        with open(blocker, "w") as fh:
+            fh.write("x")
+        self.assertEqual(agent.publish_ca_bundle(os.path.join(blocker, "ca-bundle.pem"), "debian",
+                                                 bundle=lambda f: target), "failed")
+
+    def test_agent_links_after_the_ca_step_and_always(self):
+        """The link is published AFTER the platform-CA step (so the bundle already carries the root), and
+        also when that step did not install it: AWS_CA_BUNDLE replaces an SDK's roots, so a path that does
+        not resolve would fail every TLS call, public endpoints included."""
+        order = []
+        orig = (agent.trust_platform_ca, agent.publish_ca_bundle, agent.trust_store)
+        agent.trust_store = lambda: ("debian", "/x", ["update-ca-certificates"])
+        agent.publish_ca_bundle = lambda link, family=None, platform_ca=True, **kw: order.append(("link", link, family, platform_ca))
+        try:
+            for outcome, trusted in (("installed", True), ("unchanged", True), ("unavailable", False), ("failed", False)):
+                del order[:]
+                agent.trust_platform_ca = lambda url, outcome=outcome, **kw: order.append(("ca", url)) or outcome
+                cfg = make_config(imds={"enabled": False}, relay={"enabled": False}, trustPlatformCA=True,
+                                  caBundleUrl="http://shim/v1/ca-bundle", caBundleLink="/etc/openinfra/ca-bundle.pem")
+                agent.Agent(cfg, warm_timeout=0).start()
+                self.assertEqual(order, [("ca", "http://shim/v1/ca-bundle"),
+                                         ("link", "/etc/openinfra/ca-bundle.pem", "debian", trusted)], outcome)
+            del order[:]
+            cfg = make_config(imds={"enabled": False}, relay={"enabled": False}, trustPlatformCA=False,
+                              caBundleLink="/etc/openinfra/ca-bundle.pem")
+            agent.Agent(cfg, warm_timeout=0).start()
+            self.assertEqual(order, [("link", "/etc/openinfra/ca-bundle.pem", "debian", False)],
+                             "with trust opted out the path still resolves (to the public roots)")
+        finally:
+            agent.trust_platform_ca, agent.publish_ca_bundle, agent.trust_store = orig
 
 
 class NetnsPlanTest(unittest.TestCase):

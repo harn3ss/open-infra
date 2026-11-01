@@ -253,11 +253,32 @@ At every boot, before cloud-init runs `userData`, the metadata agent fetches the
 the aws-shim (`/v1/ca-bundle`, a public certificate), checks that it is a PEM CA certificate and
 nothing else, and adds it to the system trust store with the distribution's own tool:
 
-| Family | Anchor | Refreshed with |
-|---|---|---|
-| Debian, Ubuntu | `/usr/local/share/ca-certificates/openinfra-root-ca.crt` | `update-ca-certificates` |
-| RHEL, CentOS Stream, Fedora, Rocky | `/etc/pki/ca-trust/source/anchors/openinfra-root-ca.crt` | `update-ca-trust extract` |
-| SUSE | `/etc/pki/trust/anchors/openinfra-root-ca.crt` | `update-ca-certificates` |
+| Family | Anchor | Refreshed with | Full system bundle |
+|---|---|---|---|
+| Debian, Ubuntu | `/usr/local/share/ca-certificates/openinfra-root-ca.crt` | `update-ca-certificates` | `/etc/ssl/certs/ca-certificates.crt` |
+| RHEL, CentOS Stream, Fedora, Rocky | `/etc/pki/ca-trust/source/anchors/openinfra-root-ca.crt` | `update-ca-trust extract` | `/etc/pki/tls/certs/ca-bundle.crt` |
+| SUSE | `/etc/pki/trust/anchors/openinfra-root-ca.crt` | `update-ca-certificates` | `/etc/ssl/ca-bundle.pem` |
+
+**SDKs with their own CA store.** Some clients never read the system trust store: aws-cli v2 and boto3
+(which ship their own CA bundle), and Node.js (compiled-in roots), so the AWS SDK for JavaScript. For
+them every Linux guest's environment carries
+
+```sh
+AWS_CA_BUNDLE=/etc/openinfra/ca-bundle.pem
+NODE_EXTRA_CA_CERTS=/etc/openinfra/ca-bundle.pem
+```
+
+in `/etc/environment` (login shells), systemd's default environment (every service), and the
+environment `userData` runs with. `/etc/openinfra/ca-bundle.pem` is a link the agent keeps pointing at
+the distribution's **full** system bundle — every public root plus the platform root (last column
+above) — refreshed after the platform root is installed. `AWS_CA_BUNDLE` *replaces* an SDK's own
+roots, so it names the full bundle, never the platform root alone: public AWS endpoints and any other
+public TLS host keep verifying. `NODE_EXTRA_CA_CERTS` adds to Node's roots. The link always resolves to
+the system bundle, including on a boot where the platform root could not be fetched (it then holds the
+public roots only), so these variables never point at a missing file. The AWS SDKs for Go and Ruby
+honor `AWS_CA_BUNDLE` too; Java reads the system store (`update-ca-certificates` /
+`update-ca-trust` regenerate the JDK's `cacerts` when the distribution's Java CA package is installed).
+A process started before the agent, or a container in the guest, has its own environment and store.
 
 The anchor is rewritten (and the store refreshed) only when the certificate changes. If the aws-shim
 is briefly unreachable the agent retries for up to 15 seconds and then lets the boot continue
