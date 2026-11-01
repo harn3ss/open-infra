@@ -49,10 +49,12 @@ type StatusReader interface {
 }
 
 // outputPollInterval / outputWaitCap bound how long a completing stack waits for a post-deploy attribute
-// (a LAN IP being assigned) before recording its Output as omitted.
+// (a LAN IP being assigned) before recording its Output as omitted. On AWS an Elastic IP has its address
+// by CREATE_COMPLETE, so waiting is the faithful choice; the address reaches a VM's status only when
+// Crossplane next reconciles it, which can take minutes while many composites re-render.
 var outputPollInterval = 3 * time.Second
 
-const outputWaitCap = 3 * time.Minute
+const outputWaitCap = 10 * time.Minute
 
 // setOutputs evaluates the template's Outputs against the deployed record and stores them (plus the
 // omissions and the exports this stack imports) on rec. customData is a custom resource's returned Data
