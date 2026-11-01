@@ -685,12 +685,15 @@ spec:
                           # kube-ovn enforces the policy)
                           - namespaceSelector:
                               matchLabels: { kubernetes.io/metadata.name: {{ $ns }} }
-                          # the ingress controller (Traefik) so external traffic works
+                          # the ingress controller, should it run on the pod network (Traefik only,
+                          # not all of kube-system: nothing else there calls an app)
                           - namespaceSelector:
                               matchLabels: { kubernetes.io/metadata.name: kube-system }
-                          # the kube-ovn join subnet: host-sourced traffic (hostNetwork
-                          # Traefik, NodePort/LoadBalancer ingress) arrives as a node join
-                          # IP (100.64.0.x). Without it LAN and ingress traffic is blocked.
+                            podSelector:
+                              matchLabels: { app.kubernetes.io/name: traefik }
+                          # the kube-ovn join subnet: host-sourced traffic (hostNetwork Traefik
+                          # dialing the Service's ClusterIP, see its nativelb annotation) arrives
+                          # as a node join IP (100.64.0.x). Without it ingress traffic is blocked.
                           - ipBlock: { cidr: 100.64.0.0/16 }
             {{- if $spec.database }}
             ---
