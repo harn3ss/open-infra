@@ -1,0 +1,323 @@
+#!/usr/bin/env bash
+# Compatibility probe for the cfn engine's CloudFront subset, end to end through the aws-shim
+# CloudFormation front door.
+#
+# It deploys an UNMODIFIED CloudFront-over-private-S3 template — a bucket, an OAC, the bucket policy
+# granting CloudFront read, an in-stack ACM certificate, a response headers policy, and a distribution
+# with SPA 403/404 fallback on an Alias — with the real AWS CLI, then asserts over real round-trips:
+#   - NEGATIVE: the same template with a Lambda@Edge association is REFUSED WHOLE at validation (a
+#     synchronous ValidationError naming Lambda@Edge), with no stack record and nothing created;
+#   - create-stack reaches CREATE_COMPLETE, and the distribution became a kind: StaticSite over the
+#     template's bucket (spa: true, the Alias, the response headers) while the bucket stayed a kind: Bucket
+#     whose CloudFront-only policy was realized by the site rather than stored;
+#   - content uploaded to the bucket through the shim's S3 front door (what a CI `aws s3` step does) is
+#     served through Traefik over HTTPS on the Alias: / and a deep SPA route → index.html (200), a real
+#     asset as itself, and every response carries the policy's headers (X-Probe-Header, X-Frame-Options,
+#     X-Content-Type-Options);
+#   - delete-stack removes the StaticSite and the Bucket.
+#
+# Everything it creates is removed on exit (EXIT trap): both stacks + their records, any claims left by
+# label, the site/bucket secrets and TLS secret, the minio-namespace setup Jobs, the client namespace,
+# the minted caller + access key, and — through a short-lived pod in the minio namespace that uses the
+# platform's MinIO root secret — the bucket and the scoped MinIO users/policies the setups minted.
+#
+# On-demand (needs a deployed shim with the CloudFormation front door + impersonation RBAC, the cfn engine,
+# Crossplane + the Bucket/StaticSite compositions, MinIO, cert-manager's openinfra-issuer, k3s Traefik, and
+# an openinfra:admins caller). Exit 0 = pass, 1 = a real failure, 42 = inconclusive.
+#
+#   SHIM_ENDPOINT=http://localhost:4566 ./probe/aws-shim-cfn-cloudfront.sh
+set -euo pipefail
+
+EXIT_INCONCLUSIVE=42
+SHIM_NS="${SHIM_NS:-open-infra-aws-shim}"
+USERS_NS="${USERS_NS:-open-infra-console}"
+CFN_NS="${CFN_NS:-open-infra-cfn}"
+MINIO_NS="${MINIO_NS:-minio}"
+TRAEFIK_NS="${TRAEFIK_NS:-kube-system}"
+TRAEFIK_SVC="${TRAEFIK_SVC:-traefik}"
+ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
+REGION="${AWS_REGION:-us-east-1}"
+CURL_IMAGE="${CURL_IMAGE:-curlimages/curl:8.10.1}"
+# The same pinned mc image the StaticSite/Bucket compositions use.
+MC_IMAGE="${MC_IMAGE:-ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744}"
+
+SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+TMP="$(mktemp -d)"
+STACK="cfprobe-cdn-$SFX"
+BAD_STACK="cfprobe-cdn-bad-$SFX"
+BUCKET="cfprobe-$SFX"
+HOST="cfprobe-$SFX.probe.invalid" # .invalid: reserved, never a real site name
+MARKER="CF_PROBE_OK_$SFX"
+# Logical ids carry the suffix so the claims (k8sName(logical id)) are unique in the shared CFN namespace.
+L_BUCKET="Site$SFX"; L_OAC="Oac$SFX"; L_POLICY="Pol$SFX"; L_CERT="Cert$SFX"; L_HDR="Hdr$SFX"; L_CDN="Cdn$SFX"
+SITE="cdn$SFX"     # the StaticSite claim (k8sName of L_CDN)
+BCLAIM="site$SFX"  # the Bucket claim (k8sName of L_BUCKET)
+CLIENT_NS="cfprobe-client-$SFX"
+CLIENT="client-$SFX"
+CREATED_USERS=(); CREATED_KEYS=()
+AAK=""; ASK=""
+
+log()  { printf '▸ %s\n' "$*"; }
+fail() { printf '✗ FAIL: %s\n' "$*" >&2; exit 1; }
+inconclusive() { printf '⚠ INCONCLUSIVE: %s\n' "$*" >&2; exit "$EXIT_INCONCLUSIVE"; }
+snip() { printf '%s' "$1" | head -c 600 | tr '\n' ' '; }
+
+command -v aws     >/dev/null || inconclusive "the aws CLI is required"
+command -v kubectl >/dev/null || inconclusive "kubectl is required"
+curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
+kubectl get ns "$CFN_NS" >/dev/null 2>&1 || inconclusive "CFN namespace ${CFN_NS} missing (apply the aws-shim overlay)"
+kubectl get crd staticsites.openinfra.dev >/dev/null 2>&1 || inconclusive "the StaticSite CRD is not installed"
+kubectl -n "$MINIO_NS" get secret minio >/dev/null 2>&1 || inconclusive "secret/minio in ns $MINIO_NS not readable (needed to clean up the probe's bucket + MinIO users)"
+
+cfn() { AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation "$@"; }
+s3api() { AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager s3api "$@"; }
+
+# wait_pod <ns> <pod> <seconds>: 0 when the pod Succeeded, 1 when it Failed or timed out.
+wait_pod() {
+  local i=0 phase=""
+  while [ "$i" -lt "$3" ]; do
+    phase="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    case "$phase" in Succeeded) return 0;; Failed) return 1;; esac
+    sleep 3; i=$((i+3))
+  done
+  return 1
+}
+
+# minio_cleanup removes the bucket and the scoped MinIO users/policies the Bucket/StaticSite setups mint, via a
+# one-shot pod in the minio namespace (root creds come from secret/minio and never leave that namespace).
+minio_cleanup() { # <bucket> <minio-user>...
+  local bucket="$1"; shift
+  local pod="cfprobe-clean-$SFX"
+  cat <<YAML | kubectl apply -f - >/dev/null 2>&1 || { printf '  (cleanup) could not start the MinIO cleanup pod\n' >&2; return 0; }
+apiVersion: v1
+kind: Pod
+metadata: { name: "$pod", namespace: "$MINIO_NS", labels: { app.kubernetes.io/managed-by: cfn-cloudfront-probe } }
+spec:
+  restartPolicy: Never
+  enableServiceLinks: false
+  containers:
+    - name: mc
+      image: "$MC_IMAGE"
+      env:
+        - { name: RU, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+        - { name: RP, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+      command: [sh, -c]
+      args:
+        - |
+          mc alias set m http://minio.$MINIO_NS.svc.cluster.local:9000 "\$RU" "\$RP" >/dev/null || exit 1
+          mc rb --force "m/$bucket" >/dev/null 2>&1 && echo "removed bucket $bucket" || echo "bucket $bucket already gone"
+          for u in $*; do
+            mc admin user rm m "\$u" >/dev/null 2>&1 && echo "removed MinIO user \$u" || echo "MinIO user \$u already gone"
+            mc admin policy rm m "\$u" >/dev/null 2>&1 || true
+          done
+YAML
+  wait_pod "$MINIO_NS" "$pod" 120 || printf '  (cleanup) the MinIO cleanup pod did not succeed — remove bucket %s / users %s by hand\n' "$bucket" "$*" >&2
+  kubectl -n "$MINIO_NS" logs "$pod" 2>/dev/null | sed 's/^/  (cleanup) /' || true
+  kubectl -n "$MINIO_NS" delete pod "$pod" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  set +e
+  log "cleanup: stacks, claims, secrets, setup Jobs, MinIO bucket + users, client ns, minted caller"
+  if [ -n "$AAK" ]; then
+    cfn delete-stack --stack-name "$STACK" >/dev/null 2>&1
+    cfn delete-stack --stack-name "$BAD_STACK" >/dev/null 2>&1
+    sleep 3
+  fi
+  for k in staticsites.openinfra.dev buckets.openinfra.dev; do
+    kubectl -n "$CFN_NS" delete "$k" -l "cfn.openinfra.dev/stack=$STACK" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
+    kubectl -n "$CFN_NS" delete "$k" -l "cfn.openinfra.dev/stack=$BAD_STACK" --ignore-not-found --wait=false >/dev/null 2>&1
+  done
+  kubectl -n "$CFN_NS" delete secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" --ignore-not-found >/dev/null 2>&1
+  kubectl -n "$CFN_NS" delete configmap "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1
+  kubectl -n "$MINIO_NS" delete job "$SITE-site-setup" --ignore-not-found >/dev/null 2>&1
+  for j in $(kubectl -n "$MINIO_NS" get jobs -o name 2>/dev/null | grep "/$BCLAIM-bucket-"); do
+    kubectl -n "$MINIO_NS" delete "$j" --ignore-not-found >/dev/null 2>&1
+  done
+  minio_cleanup "$BUCKET" "app-$SITE" "app-$BCLAIM"
+  kubectl delete ns "$CLIENT_NS" --ignore-not-found --wait=false >/dev/null 2>&1
+  for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1; done
+  for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1; done
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
+
+secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)"; }
+mint_key() { # <owner> <group> -> sets MK_AK / MK_SK
+  local owner="$1" group="$2"
+  local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
+  local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
+  cat <<YAML | kubectl apply -f - >/dev/null
+apiVersion: iam.openinfra.dev/v1
+kind: User
+metadata: { name: "${owner}", namespace: "${USERS_NS}" }
+spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+YAML
+  CREATED_USERS+=("$owner")
+  local name; name="$(secret_name "$ak")"
+  kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
+  CREATED_KEYS+=("$name")
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
+}
+
+poll_stack() { # <stack> <want> <timeout> -> prints last status; 0 if reached
+  local stack="$1" want="$2" t="${3:-300}" i=0 st=""
+  while [ "$i" -lt "$t" ]; do
+    st="$(cfn describe-stacks --stack-name "$stack" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+    if [ "$st" = "$want" ]; then printf '%s' "$st"; return 0; fi
+    case "$st" in *_COMPLETE|*_FAILED) printf '%s' "$st"; return 1;; esac
+    sleep 5; i=$((i+5))
+  done
+  printf '%s' "$st"; return 1
+}
+
+# template <extra DefaultCacheBehavior JSON members> — the CloudFront static-site template, unmodified
+# AWS shape. The negative case adds a Lambda@Edge association.
+template() {
+  local extra="${1:-}"
+  cat <<JSON
+{"AWSTemplateFormatVersion":"2010-09-09","Resources":{
+  "$L_BUCKET":{"Type":"AWS::S3::Bucket","Properties":{"BucketName":"$BUCKET",
+    "PublicAccessBlockConfiguration":{"BlockPublicAcls":true,"BlockPublicPolicy":true,"IgnorePublicAcls":true,"RestrictPublicBuckets":true}}},
+  "$L_OAC":{"Type":"AWS::CloudFront::OriginAccessControl","Properties":{"OriginAccessControlConfig":{
+    "Name":"cfprobe-$SFX","OriginAccessControlOriginType":"s3","SigningBehavior":"always","SigningProtocol":"sigv4"}}},
+  "$L_POLICY":{"Type":"AWS::S3::BucketPolicy","Properties":{"Bucket":{"Ref":"$L_BUCKET"},"PolicyDocument":{
+    "Version":"2012-10-17","Statement":[{"Sid":"AllowCloudFrontRead","Effect":"Allow",
+      "Principal":{"Service":"cloudfront.amazonaws.com"},"Action":"s3:GetObject","Resource":"arn:aws:s3:::$BUCKET/*",
+      "Condition":{"StringEquals":{"AWS:SourceArn":{"Fn::Sub":"arn:aws:cloudfront::\${AWS::AccountId}:distribution/\${$L_CDN}"}}}}]}}},
+  "$L_CERT":{"Type":"AWS::CertificateManager::Certificate","Properties":{"DomainName":"$HOST","ValidationMethod":"DNS"}},
+  "$L_HDR":{"Type":"AWS::CloudFront::ResponseHeadersPolicy","Properties":{"ResponseHeadersPolicyConfig":{
+    "Name":"cfprobe-$SFX",
+    "SecurityHeadersConfig":{"FrameOptions":{"FrameOption":"DENY","Override":true},"ContentTypeOptions":{"Override":true}},
+    "CustomHeadersConfig":{"Items":[{"Header":"X-Probe-Header","Value":"$MARKER","Override":true}]}}}},
+  "$L_CDN":{"Type":"AWS::CloudFront::Distribution","Properties":{"DistributionConfig":{
+    "Enabled":true,"Aliases":["$HOST"],"DefaultRootObject":"index.html","PriceClass":"PriceClass_100",
+    "Origins":[{"Id":"s3-site","DomainName":{"Fn::GetAtt":["$L_BUCKET","RegionalDomainName"]},
+      "S3OriginConfig":{"OriginAccessIdentity":""},"OriginAccessControlId":{"Fn::GetAtt":["$L_OAC","Id"]}}],
+    "DefaultCacheBehavior":{"TargetOriginId":"s3-site","ViewerProtocolPolicy":"redirect-to-https",
+      "CachePolicyId":"658327ea-f89d-4fab-a63d-7e88639e58f6","ResponseHeadersPolicyId":{"Ref":"$L_HDR"}$extra},
+    "CustomErrorResponses":[{"ErrorCode":403,"ResponseCode":200,"ResponsePagePath":"/index.html"},
+                            {"ErrorCode":404,"ResponseCode":200,"ResponsePagePath":"/index.html"}],
+    "ViewerCertificate":{"AcmCertificateArn":{"Ref":"$L_CERT"},"SslSupportMethod":"sni-only","MinimumProtocolVersion":"TLSv1.2_2021"}}}}
+}}
+JSON
+}
+
+# --- seed the caller ----------------------------------------------------------------------------------
+log "seeding an openinfra:admins caller"
+mint_key "cfprobe-cdn-admin-$SFX" "admins"; AAK="$MK_AK"; ASK="$MK_SK"
+[ -n "$AAK" ] || inconclusive "failed to mint the caller key"
+sleep 2
+
+# --- 1. NEGATIVE: an out-of-subset feature refuses the whole stack at validation -----------------------
+log "negative: the same template with a Lambda@Edge association is refused at validation, nothing created"
+template ',"LambdaFunctionAssociations":[{"EventType":"origin-request","LambdaFunctionARN":"arn:aws:lambda:us-east-1:111122223333:function:rewrite:1"}]' > "$TMP/bad.json"
+if cfn create-stack --stack-name "$BAD_STACK" --template-body "file://$TMP/bad.json" >/dev/null 2>"$TMP/bad.err"; then
+  fail "create-stack with Lambda@Edge was ACCEPTED (the CloudFront subset must refuse it at validation)"
+fi
+grep -q 'Lambda@Edge' "$TMP/bad.err" || fail "the refusal does not name Lambda@Edge: $(cat "$TMP/bad.err")"
+cfn describe-stacks --stack-name "$BAD_STACK" >/dev/null 2>&1 && fail "a stack record was created for a refused template"
+kubectl -n "$CFN_NS" get staticsites.openinfra.dev "$SITE" >/dev/null 2>&1 && fail "a StaticSite was created despite the whole-stack refusal"
+log "    ✓ refused whole at validation (names Lambda@Edge), nothing created"
+
+# --- 2. create-stack → CREATE_COMPLETE, the distribution became a StaticSite ----------------------------
+log "create-stack $STACK: bucket + OAC + policy + ACM cert + headers policy + distribution"
+template > "$TMP/site.json"
+cfn create-stack --stack-name "$STACK" --template-body "file://$TMP/site.json" >/dev/null 2>"$TMP/cs.err" \
+  || fail "create-stack refused the CloudFront subset template: $(cat "$TMP/cs.err")"
+ST="$(poll_stack "$STACK" CREATE_COMPLETE 600)" || {
+  REASON="$(cfn describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatusReason' --output text 2>/dev/null || true)"
+  fail "stack did not reach CREATE_COMPLETE (status=$ST): $REASON"
+}
+log "    ✓ CREATE_COMPLETE"
+
+sget() { kubectl -n "$CFN_NS" get staticsites.openinfra.dev "$SITE" -o jsonpath="$1" 2>/dev/null || true; }
+[ "$(sget '{.metadata.labels.cfn\.openinfra\.dev/stack}')" = "$STACK" ] || fail "StaticSite $SITE (from $L_CDN) not found with the stack label in $CFN_NS"
+[ "$(sget '{.spec.spa}')" = "true" ]            || fail "StaticSite spec.spa = '$(sget '{.spec.spa}')', want true (the 403/404 -> /index.html mapping)"
+[ "$(sget '{.spec.bucket}')" = "$BUCKET" ]      || fail "StaticSite spec.bucket = '$(sget '{.spec.bucket}')', want $BUCKET"
+[ "$(sget '{.spec.domain}')" = "$HOST" ]        || fail "StaticSite spec.domain = '$(sget '{.spec.domain}')', want $HOST"
+[ "$(sget '{.spec.tls}')" = "true" ]            || fail "StaticSite spec.tls is not true"
+HDRS="$(sget '{range .spec.responseHeaders[*]}{.name}={.value};{end}')"
+for want in "X-Probe-Header=$MARKER;" "X-Frame-Options=DENY;" "X-Content-Type-Options=nosniff;"; do
+  printf '%s' "$HDRS" | grep -qF "$want" || fail "StaticSite responseHeaders missing $want (got $HDRS)"
+done
+BPOL="$(kubectl -n "$CFN_NS" get buckets.openinfra.dev "$BCLAIM" -o jsonpath='{.spec.policy}' 2>/dev/null || echo "<missing>")"
+[ "$BPOL" = "<missing>" ] && fail "the template's bucket did not become kind: Bucket $BCLAIM"
+[ -z "$BPOL" ] || fail "the CloudFront-only bucket policy was stored as a MinIO policy (should be realized by the site): $BPOL"
+log "    ✓ StaticSite $SITE (spa, $HOST, headers) over kind: Bucket $BCLAIM (no stored CloudFront policy)"
+
+# --- 3. upload through the shim's S3 front door ---------------------------------------------------------
+log "uploading index.html + assets/app.js to s3://$BUCKET through the shim (as a CI aws-s3 step would)"
+printf '<!doctype html><title>cf probe</title><div id="app">%s</div>\n' "$MARKER" > "$TMP/index.html"
+printf 'console.log("asset-%s");\n' "$SFX" > "$TMP/app.js"
+s3api put-object --bucket "$BUCKET" --key index.html --body "$TMP/index.html" --content-type text/html >/dev/null 2>"$TMP/up.err" \
+  || inconclusive "uploading through the shim's S3 front door failed (S3 front door / authz, not the CloudFront path): $(cat "$TMP/up.err")"
+s3api put-object --bucket "$BUCKET" --key assets/app.js --body "$TMP/app.js" --content-type application/javascript >/dev/null 2>"$TMP/up.err" \
+  || inconclusive "uploading assets/app.js through the shim failed: $(cat "$TMP/up.err")"
+log "    ✓ uploaded"
+
+# --- 4. served through Traefik over HTTPS on the Alias -------------------------------------------------
+TRAEFIK_IP="$(kubectl -n "$TRAEFIK_NS" get svc "$TRAEFIK_SVC" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+[ -n "$TRAEFIK_IP" ] || inconclusive "svc/$TRAEFIK_SVC in ns $TRAEFIK_NS not found (set TRAEFIK_NS/TRAEFIK_SVC)"
+CERT_READY=""
+for i in $(seq 1 24); do
+  CERT_READY="$(kubectl -n "$CFN_NS" get certificate "staticsite-$SITE-tls" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  [ "$CERT_READY" = "True" ] && break
+  sleep 5
+done
+[ "$CERT_READY" = "True" ] || inconclusive "Certificate staticsite-$SITE-tls not Ready (an ACME openinfra-issuer can't issue for .invalid names)"
+
+kubectl create ns "$CLIENT_NS" >/dev/null 2>&1 || inconclusive "could not create the client ns $CLIENT_NS"
+kubectl -n "$CLIENT_NS" run "$CLIENT" --restart=Never --image="$CURL_IMAGE" --command -- sleep 900 >/dev/null 2>&1 \
+  || inconclusive "could not start the curl client pod"
+kubectl -n "$CLIENT_NS" wait --for=condition=Ready "pod/$CLIENT" --timeout=120s >/dev/null 2>&1 || inconclusive "curl client pod not Ready"
+# fetch <path>: headers, a blank line, then the body — over HTTPS to the Alias through Traefik.
+fetch() { kubectl -n "$CLIENT_NS" exec "$CLIENT" -- curl -sS -m 10 -k -D - --resolve "$HOST:443:$TRAEFIK_IP" "https://$HOST$1" 2>/dev/null | tr -d '\r' || true; }
+status_of() { printf '%s' "$1" | awk 'NR==1{print $2}'; }
+header_of() {
+  printf '%s' "$1" | awk -v h="$(printf '%s' "$2" | tr 'A-Z' 'a-z')" \
+    'NR>1 && /^$/ {exit} { i = index($0, ": "); if (i > 0 && tolower(substr($0, 1, i-1)) == h) { print substr($0, i+2); exit } }'
+}
+
+log "waiting for the site to sync the upload (every 30s) and serve it on https://$HOST/"
+ROOT=""
+for i in $(seq 1 24); do
+  ROOT="$(fetch /)"
+  printf '%s' "$ROOT" | grep -q "$MARKER" && break
+  sleep 5
+done
+printf '%s' "$ROOT" | grep -q "$MARKER" || fail "https://$HOST/ never served the uploaded index.html; last response: $(snip "$ROOT")"
+[ "$(status_of "$ROOT")" = "200" ] || fail "https://$HOST/ returned $(status_of "$ROOT"), want 200"
+DEEP="$(fetch /deep/client/route)"
+[ "$(status_of "$DEEP")" = "200" ] && printf '%s' "$DEEP" | grep -q "$MARKER" \
+  || fail "a deep SPA route did not fall back to index.html with 200 (the 403/404 -> /index.html mapping); got: $(snip "$DEEP")"
+ASSET="$(fetch /assets/app.js)"
+printf '%s' "$ASSET" | grep -q "asset-$SFX" || fail "a real asset was not served as itself: $(snip "$ASSET")"
+for r in "$ROOT" "$DEEP" "$ASSET"; do
+  [ "$(header_of "$r" X-Probe-Header)" = "$MARKER" ]        || fail "response missing the policy's X-Probe-Header: $(snip "$(printf '%s' "$r" | sed '/^$/q')")"
+  [ "$(header_of "$r" X-Frame-Options)" = "DENY" ]          || fail "response missing the policy's X-Frame-Options: DENY"
+  [ "$(header_of "$r" X-Content-Type-Options)" = "nosniff" ] || fail "response missing the policy's X-Content-Type-Options: nosniff"
+done
+log "    ✓ https://$HOST/ and a deep route → index.html (200), the asset as itself, policy headers on every response"
+
+# --- 5. delete-stack removes the StaticSite and the Bucket ---------------------------------------------
+log "delete-stack $STACK → the StaticSite and the Bucket are removed"
+cfn delete-stack --stack-name "$STACK" >/dev/null 2>&1 || fail "delete-stack failed"
+i=0; while [ $i -lt 240 ]; do
+  st="$(cfn describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo GONE)"
+  case "$st" in GONE|DELETE_COMPLETE) break;; DELETE_FAILED) fail "delete-stack ended DELETE_FAILED";; esac
+  sleep 5; i=$((i+5))
+done
+for i in $(seq 1 24); do
+  kubectl -n "$CFN_NS" get staticsites.openinfra.dev "$SITE" >/dev/null 2>&1 || kubectl -n "$CFN_NS" get buckets.openinfra.dev "$BCLAIM" >/dev/null 2>&1 || break
+  sleep 5
+done
+kubectl -n "$CFN_NS" get staticsites.openinfra.dev "$SITE" >/dev/null 2>&1 && fail "StaticSite $SITE still present after delete-stack"
+kubectl -n "$CFN_NS" get buckets.openinfra.dev "$BCLAIM" >/dev/null 2>&1 && fail "Bucket $BCLAIM still present after delete-stack"
+log "    ✓ stack destroyed (StaticSite + Bucket gone)"
+
+printf '\n✓ PASS — the cfn engine'"'"'s CloudFront subset is faithful through the aws-shim CloudFormation front door: an\n'
+printf '  unmodified CloudFront-over-private-S3 template deploys as a kind: StaticSite over its kind: Bucket, content\n'
+printf '  uploaded through the S3 front door is served on the Alias over HTTPS with SPA fallback and the response\n'
+printf '  headers policy, an out-of-subset feature (Lambda@Edge) refuses the whole stack with nothing created, and\n'
+printf '  delete-stack removes what was created.\n'
