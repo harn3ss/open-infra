@@ -233,3 +233,107 @@ func keys(m map[string]Grant) []string {
 	}
 	return k
 }
+
+// resourceNames narrow a grant to those names, as RBAC does. Before this, a resourceNames rule compiled to
+// the whole resource type: a ServiceAccount allowed to impersonate four named groups could impersonate
+// system:masters.
+func TestGenerate_ResourceNamesAreScoped(t *testing.T) {
+	in := Inputs{
+		ClusterRoles: map[string]rbacv1.ClusterRole{
+			"impersonator": {
+				ObjectMeta: metav1.ObjectMeta{Name: "impersonator"},
+				Rules: []rbacv1.PolicyRule{{Verbs: []string{"impersonate"}, APIGroups: []string{""}, Resources: []string{"groups"},
+					ResourceNames: []string{"openinfra:admins", "openinfra:readers"}}},
+			},
+			"cm-reader": {
+				ObjectMeta: metav1.ObjectMeta{Name: "cm-reader"},
+				Rules: []rbacv1.PolicyRule{{Verbs: []string{"get"}, APIGroups: []string{""}, Resources: []string{"configmaps"},
+					ResourceNames: []string{"shared-config"}}},
+			},
+			"weird": {
+				ObjectMeta: metav1.ObjectMeta{Name: "weird"},
+				Rules: []rbacv1.PolicyRule{{Verbs: []string{"get"}, APIGroups: []string{""}, Resources: []string{"configmaps"},
+					ResourceNames: []string{"a*"}}},
+			},
+		},
+		Roles: map[string]rbacv1.Role{
+			"team-a/one-secret": {
+				ObjectMeta: metav1.ObjectMeta{Name: "one-secret", Namespace: "team-a"},
+				Rules: []rbacv1.PolicyRule{{Verbs: []string{"get", "update", "create", "list"}, APIGroups: []string{""}, Resources: []string{"secrets"},
+					ResourceNames: []string{"app-creds"}}},
+			},
+		},
+		ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+			{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "impersonator"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "shim", Name: "front"}}},
+			{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "cm-reader"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "shim", Name: "front"}}},
+			{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "weird"}, Subjects: []rbacv1.Subject{{Kind: "User", Name: "odd"}}},
+		},
+		RoleBindings: []rbacv1.RoleBinding{
+			{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, RoleRef: rbacv1.RoleRef{Kind: "Role", Name: "one-secret"},
+				Subjects: []rbacv1.Subject{{Kind: "User", Name: "bob"}}},
+		},
+	}
+	byP := map[string]Grant{}
+	for _, g := range Generate(in) {
+		byP[g.Principal] = g
+	}
+	engine := func(p string) *policyengine.Engine {
+		t.Helper()
+		g, ok := byP[p]
+		if !ok {
+			t.Fatalf("missing %s grant; got %v", p, keys(byP))
+		}
+		e, err := policyengine.NewEngine(g.Statements)
+		if err != nil {
+			t.Fatalf("%s compile: %v", p, err)
+		}
+		return e
+	}
+	sa := "system:serviceaccount:shim:front"
+	front := engine("ServiceAccount::shim/front")
+	for _, c := range []struct {
+		verb, rtype, id string
+		want            bool
+	}{
+		{"impersonate", "groups", "openinfra:admins", true},
+		{"impersonate", "groups", "openinfra:readers", true},
+		{"impersonate", "groups", "system:masters", false},
+		{"impersonate", "groups", "", false},
+		{"get", "configmaps", "kube-system/shared-config", true},
+		{"get", "configmaps", "other-ns/shared-config", true}, // cluster-wide binding: the name in any namespace
+		{"get", "configmaps", "kube-system/other", false},
+	} {
+		if d := front.Authorize(req("User", sa, c.verb, c.rtype, c.id)); d.Allowed != c.want {
+			t.Errorf("front %s %s %q: allowed=%v, want %v (%s)", c.verb, c.rtype, c.id, d.Allowed, c.want, d.Reason)
+		}
+	}
+
+	bob := engine("User::bob")
+	for _, c := range []struct {
+		verb, id string
+		want     bool
+	}{
+		{"get", "team-a/app-creds", true},
+		{"update", "team-a/app-creds", true},
+		{"get", "team-a/other", false},
+		{"get", "team-b/app-creds", false}, // a RoleBinding grant stays in its namespace
+		{"create", "team-a/", false},       // no name at create time: RBAC does not grant it either
+		{"list", "team-a/", false},
+	} {
+		if d := bob.Authorize(req("User", "bob", c.verb, "secrets", c.id)); d.Allowed != c.want {
+			t.Errorf("bob %s secrets %q: allowed=%v, want %v (%s)", c.verb, c.id, d.Allowed, c.want, d.Reason)
+		}
+	}
+
+	// A name that can't be written exactly is not granted at all (never widened to a wildcard).
+	if g, ok := byP["User::odd"]; ok {
+		if e, err := policyengine.NewEngine(g.Statements); err == nil {
+			if d := e.Authorize(req("User", "odd", "get", "configmaps", "ns/abc")); d.Allowed {
+				t.Errorf("a resourceName with * must not become a wildcard")
+			}
+		}
+		if !strings.Contains(strings.Join(g.Caveats, " "), "cannot be expressed exactly") {
+			t.Errorf("expected a caveat for the unexpressible name; got %v", g.Caveats)
+		}
+	}
+}

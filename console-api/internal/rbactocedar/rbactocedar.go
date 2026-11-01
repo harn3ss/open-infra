@@ -133,7 +133,9 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 			}
 		}
 		if len(r.ResourceNames) > 0 {
-			caveats = append(caveats, fmt.Sprintf("resourceNames %v are not scoped — this grants the whole resource type (broader than the RBAC rule); tighten before enforce", r.ResourceNames))
+			var cav []string
+			res, cav = scopeToNames(res, r.ResourceNames)
+			caveats = append(caveats, cav...)
 		}
 		// Privilege-escalation prevention: a principal that can CREATE (cluster)rolebindings can bind a
 		// role it has no explicit `bind`/`escalate` grant on, as long as it already holds that role's
@@ -143,9 +145,44 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 		if hasAny(r.Verbs, "create", "*") && hasAny(r.Resources, "rolebindings", "clusterrolebindings", "*") {
 			caveats = append(caveats, "grants create on (cluster)rolebindings — under RBAC this principal can bind a role it lacks an explicit bind/escalate grant on (via privilege-escalation prevention, since it holds the role's permissions); that implicit bind is not translated and disappears once RBAC leaves the chain. Add an explicit bind/escalate grant on the roles it binds before enforce.")
 		}
-		stmts = append(stmts, policyengine.Statement{Effect: policyengine.Allow, Actions: r.Verbs, Resources: res})
+		// An empty set would mean "any resource" to the engine: grant nothing instead.
+		if len(res) > 0 {
+			stmts = append(stmts, policyengine.Statement{Effect: policyengine.Allow, Actions: r.Verbs, Resources: res})
+		}
 	}
 	return stmts, caveats
+}
+
+// scopeToNames narrows "<type>::<scope>" patterns to the rule's resourceNames, as RBAC does. The webhook
+// keys a request's id as "<namespace>/<name>", or "<name>" for a cluster-scoped object, so a cluster-wide
+// pattern becomes "<type>::<name>" plus "<type>::*/<name>" (that name in any namespace), and a namespaced
+// one "<type>::<ns>/<name>". A request with no name (create, an unfiltered list) then matches nothing,
+// which is what RBAC does with a resourceNames rule. A name containing "*" cannot be written exactly in a
+// pattern (it would be a wildcard), so it is dropped: narrower than RBAC, never broader.
+func scopeToNames(patterns, names []string) ([]string, []string) {
+	var out, caveats []string
+	for _, p := range patterns {
+		typ, scope := "*", "*"
+		if p != "*" {
+			var ok bool
+			if typ, scope, ok = strings.Cut(p, "::"); !ok {
+				continue
+			}
+		}
+		for _, n := range names {
+			if n == "" || strings.Contains(n, "*") {
+				caveats = append(caveats, fmt.Sprintf("resourceName %q cannot be expressed exactly and is not granted (narrower than the RBAC rule)", n))
+				continue
+			}
+			switch {
+			case scope == "*":
+				out = append(out, typ+"::"+n, typ+"::*/"+n)
+			case strings.HasSuffix(scope, "/*"):
+				out = append(out, typ+"::"+strings.TrimSuffix(scope, "*")+n)
+			}
+		}
+	}
+	return dedupeStrings(out), dedupeStrings(caveats)
 }
 
 // resourceString maps (apiGroup, resource) + scope to Cedar resource strings "<resource>.<group>::<scope>".
