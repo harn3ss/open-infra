@@ -97,6 +97,7 @@ func isoFixtures() []isoFixture {
 			"ports": []any{map[string]any{"port": int64(443)}, map[string]any{"port": int64(53), "protocol": "UDP"}}}},
 		{"autoscalinggroup", "autoscalinggroup-composition.yaml", map[string]any{"minSize": int64(1), "maxSize": int64(2),
 			"launchTemplate": map[string]any{"os": "ubuntu-22.04", "size": "small"}}},
+		{"function", "function-composition.yaml", map[string]any{"image": "ghcr.io/x/fn:1"}},
 		{"graphqlapi", "graphqlapi-composition.yaml", map[string]any{"schema": "type Query { a: String }"}},
 		// DataFlow: replication, migration and pipe edges plus a function node, so every pod shape
 		// renders (capture, multi-master prep, reconciler, drift, pump, sinks, loads, sync jobs).
@@ -130,11 +131,10 @@ func isoDBNode(name string) map[string]any {
 
 // isoExempt lists compositions that render pods but need no tenant isolation of their own, and why.
 var isoExempt = map[string]string{
-	"bucket-composition.yaml":   "its only pod is the setup Job in the minio namespace",
-	"query-composition.yaml":    "its Job runs in the minio namespace; queries run in query-runtime, which has its own policy",
-	"queue-composition.yaml":    "its only pod is the setup Job in the nats namespace",
-	"vmimage-composition.yaml":  "image builds run in the openinfra-images platform namespace",
-	"function-composition.yaml": "Functions get their ingress isolation in a follow-up change (one shared policy per namespace)",
+	"bucket-composition.yaml":  "its only pod is the setup Job in the minio namespace",
+	"query-composition.yaml":   "its Job runs in the minio namespace; queries run in query-runtime, which has its own policy",
+	"queue-composition.yaml":   "its only pod is the setup Job in the nats namespace",
+	"vmimage-composition.yaml": "image builds run in the openinfra-images platform namespace",
 }
 
 // isoExemptWorkload is a workload that needs no policy: it opens no port to anyone.
@@ -528,6 +528,34 @@ func TestIsolation_ExposedVMKeepsPublishedPorts(t *testing.T) {
 		return
 	}
 	t.Fatal("no iso-vm-isolation policy rendered")
+}
+
+// Functions share one policy per namespace, which no Function deletes: removing one Function must
+// not drop isolation for the others.
+func TestIsolation_FunctionPolicyIsSharedAndNeverDeleted(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	out := render(t, tmpl, isoCtx(map[string]any{"image": "ghcr.io/x/fn:1"}))
+	docs, err := parseYAMLDocs(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		if mstr(d, "spec", "forProvider", "manifest", "kind") != "NetworkPolicy" ||
+			mstr(d, "spec", "forProvider", "manifest", "metadata", "name") != "openinfra-function-isolation" {
+			continue
+		}
+		mp, _ := mget(d, "spec", "managementPolicies").([]any)
+		if len(mp) == 0 {
+			t.Fatal("the shared Function policy needs managementPolicies without Delete")
+		}
+		for _, x := range mp {
+			if x == "Delete" || x == "*" {
+				t.Fatalf("the shared Function policy must never be deleted by one Function; managementPolicies=%v", mp)
+			}
+		}
+		return
+	}
+	t.Fatalf("no openinfra-function-isolation policy rendered:\n%s", out)
 }
 
 var isoWorkloadRe = regexp.MustCompile(`(?m)^\s+kind: (Deployment|StatefulSet|DaemonSet|Job|CronJob|VirtualMachine|VirtualMachinePool|MariaDB)\s*$|apiVersion: postgresql\.cnpg\.io/v1\s*\n\s+kind: Cluster|apiVersion: serving\.knative\.dev/v1\s*\n\s+kind: Service`)

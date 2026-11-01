@@ -373,6 +373,42 @@ spec:
                           - name: cfg
                             configMap: { name: {{ $name }}-pump-cfg }
             {{- end }}
+            ---
+            # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+            #     Knative's data path only (every call comes through the gateway or the activator, so
+            #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+            #     refused, so a Function can no longer be called by pod IP or its private Service from
+            #     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+            #     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+            #     Each Function renders the same object and none deletes it (no Delete in
+            #     managementPolicies), so removing one Function leaves the others covered. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: openinfra-function-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
