@@ -131,8 +131,10 @@ SigV4-signed, and these match only their exact paths.
 - **`GET /v1/vm-credentials`** — a VM's role credentials (container-credentials JSON), for the
   in-guest instance metadata agent of a `kind: VirtualMachine` (see
   [virtual-machines.md](virtual-machines.md)). The caller presents the VM's own ServiceAccount token as
-  `Authorization`; the shim verifies it with a TokenReview and mints credentials only for a `kind: Role`
-  that trusts `vm`. A missing or invalid token is `401`. It is served **over TLS only**, on the
+  `Authorization`; the shim verifies it with a TokenReview, requires it to be bound to the VM's own
+  virt-launcher pod (the VirtualMachineInstance lists that pod as active and mounts the ServiceAccount),
+  and mints credentials only for a `kind: Role` that trusts `vm`. A missing or invalid token, or one of
+  the same ServiceAccount from any other pod or unbound, is `401`. It is served **over TLS only**, on the
   in-cluster port `4567` (`https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567`), whose
   certificate `openinfra-ca` issues (Certificate `aws-shim-internal-tls`, re-read on renewal); the
   agent verifies it against the platform root from the VM's spec before it sends the token. On the
