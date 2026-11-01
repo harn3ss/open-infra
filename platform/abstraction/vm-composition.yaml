@@ -158,11 +158,27 @@ spec:
             {{- $caBundle := "/etc/openinfra/ca-bundle.pem" }}
             {{- /* The AWS SDK environment every guest process gets (rendered below into /etc/environment,
                    /etc/openinfra-aws.env and the systemd DefaultEnvironment drop-in). */}}
+            {{- /* The AWS endpoint the guest's SDKs and CLIs call: the aws-shim's in-cluster TLS port (the
+                   whole AWS surface, verified against the platform root through AWS_CA_BUNDLE). On EC2 an
+                   unmodified template's `aws s3 cp` reaches AWS by its default endpoints; here
+                   AWS_ENDPOINT_URL (honored by aws-cli v2 >= 2.13 and the current SDKs) sends the same call
+                   to the shim, with no --endpoint-url in the template. Older SDKs and the distro aws CLI v1
+                   ignore it; for those see guestAwsEndpoints (docs/virtual-machines.md). */}}
+            {{- $guestEndpoint := "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567" }}
             {{- $awsEnv := list }}
             {{- if $credsRelay }}{{- $awsEnv = append $awsEnv (printf "AWS_CONTAINER_CREDENTIALS_FULL_URI=%s" $credsURI) }}{{- end }}
             {{- if and $metadataAgent $trustPlatformCA }}
             {{-   $awsEnv = append $awsEnv (printf "AWS_CA_BUNDLE=%s" $caBundle) }}
             {{-   $awsEnv = append $awsEnv (printf "NODE_EXTRA_CA_CERTS=%s" $caBundle) }}
+            {{-   $awsEnv = append $awsEnv (printf "AWS_ENDPOINT_URL=%s" $guestEndpoint) }}
+            {{- end }}
+            {{- /* The same endpoint and CA for the guest's containers: a container does not inherit the
+                   guest's environment, so the agent makes Docker (an OCI runtime wrapper set as its default
+                   runtime) and Podman (a containers.conf drop-in) add these to every container that does not
+                   set them itself, and mount the CA bundle at the same path. */}}
+            {{- $containerEnv := list }}
+            {{- if and $metadataAgent $trustPlatformCA }}
+            {{-   $containerEnv = list (printf "AWS_ENDPOINT_URL=%s" $guestEndpoint) (printf "AWS_CA_BUNDLE=%s" $caBundle) (printf "NODE_EXTRA_CA_CERTS=%s" $caBundle) }}
             {{- end }}
             {{- /* What the guest cannot observe, rendered into the agent's config. Region and account match
                    the aws-shim's AWS_REGION / ACCOUNT_ID defaults; the instance id is stable for the life of
@@ -185,7 +201,8 @@ spec:
                   "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort))
                   "trustPlatformCA" $trustPlatformCA
                   "caFile" $caFile
-                  "caBundleLink" $caBundle }}
+                  "caBundleLink" $caBundle
+                  "containers" (dict "env" $containerEnv "caBundle" $caBundle) }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -804,6 +821,7 @@ spec:
                                 "trustPlatformCA": True,
                                 "caFile": "",
                                 "caBundleLink": "",
+                                "containers": {"env": [], "caBundle": ""},  # added to every Docker/Podman container (see configure_containers)
                             }
 
                             TOKEN_HEADER = "X-aws-ec2-metadata-token"
@@ -823,6 +841,10 @@ spec:
                             SAFE_IFNAME = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")  # names that can be quoted into a rule as they are
                             CLONE_NEWNET = 0x40000000
                             CA_FILE_NAME = "openinfra-root-ca.crt"
+                            OCI_WRAPPER = "/usr/local/lib/openinfra/oci-aws-env"  # the OCI runtime wrapper Docker runs containers through
+                            DOCKER_RUNTIME = "openinfra-aws"
+                            DOCKER_DAEMON_JSON = "/etc/docker/daemon.json"
+                            PODMAN_DROPIN = "/etc/containers/containers.conf.d/50-openinfra-aws.conf"
                             # (distro family, anchor directory, refresh command): the first whose directory and command exist wins.
                             TRUST_STORES = (
                                 ("rhel", "/etc/pki/ca-trust/source/anchors", ("update-ca-trust", "extract")),
@@ -1839,6 +1861,93 @@ spec:
 
 
                             # ---------------------------------------------------------------------------------------------
+                            # The guest's containers: the same AWS endpoint and CA as the guest itself.
+                            # ---------------------------------------------------------------------------------------------
+
+                            def _write_atomic(path, text, mode=0o644):
+                                d = os.path.dirname(path)
+                                if d and not os.path.isdir(d):
+                                    os.makedirs(d, 0o755)
+                                tmp = path + ".openinfra-tmp"
+                                with open(tmp, "w") as fh:
+                                    fh.write(text)
+                                os.chmod(tmp, mode)
+                                os.replace(tmp, path)
+
+
+                            def configure_docker(wrapper, path=DOCKER_DAEMON_JSON, run_cmd=None):
+                                """Make Docker run every container through the open-infra OCI runtime wrapper (default-runtime), keeping
+                                whatever else the guest's daemon.json says. A default runtime the guest chose itself is left alone.
+                                Reloads a running daemon (runtimes and default-runtime are live-reloadable). Never raises; returns
+                                "configured", "unchanged", "kept" or "error"."""
+                                run_cmd = run_cmd or run
+                                try:
+                                    with open(path) as fh:
+                                        cfg = json.load(fh)
+                                    if not isinstance(cfg, dict):
+                                        raise ValueError("not a JSON object")
+                                except FileNotFoundError:
+                                    cfg = {}
+                                except (IOError, OSError, ValueError) as e:
+                                    LOG.warning("%s is unreadable (%s): Docker containers do not get the AWS endpoint", path, e)
+                                    return "error"
+                                changed, result = False, "configured"
+                                runtimes = cfg.get("runtimes") if isinstance(cfg.get("runtimes"), dict) else {}
+                                if runtimes.get(DOCKER_RUNTIME) != {"path": wrapper}:
+                                    runtimes[DOCKER_RUNTIME] = {"path": wrapper}
+                                    cfg["runtimes"] = runtimes
+                                    changed = True
+                                current = cfg.get("default-runtime")
+                                if current in (None, "", "runc"):  # runc is Docker's own default
+                                    cfg["default-runtime"] = DOCKER_RUNTIME
+                                    changed = True
+                                elif current != DOCKER_RUNTIME:
+                                    LOG.warning("Docker's default runtime is %s (set by the guest): its containers do not get the AWS "
+                                                "endpoint unless run with --runtime %s", current, DOCKER_RUNTIME)
+                                    result = "kept"
+                                if not changed:
+                                    return "unchanged" if result == "configured" else result
+                                try:
+                                    _write_atomic(path, json.dumps(cfg, indent=2, sort_keys=True) + "\n")
+                                except (IOError, OSError) as e:
+                                    LOG.warning("cannot write %s: %s", path, e)
+                                    return "error"
+                                try:
+                                    if run_cmd(["systemctl", "is-active", "--quiet", "docker"], check=False).returncode == 0:
+                                        run_cmd(["systemctl", "reload", "docker"], check=False)
+                                except OSError:
+                                    pass
+                                LOG.info("Docker runs containers through %s (default runtime %s)", wrapper, DOCKER_RUNTIME)
+                                return result
+
+
+                            def podman_dropin(env, ca_bundle):
+                                """containers.conf drop-in text: the env (a container's own -e/--env wins) and the CA bundle mount."""
+                                lines = ["# Written by the open-infra metadata agent: the AWS endpoint and CA the guest uses, for every container.",
+                                         "[containers]", "env = [%s]" % ", ".join(json.dumps(e) for e in env)]
+                                if ca_bundle:
+                                    lines.append("volumes = [%s]" % json.dumps("%s:%s:ro" % (ca_bundle, ca_bundle)))
+                                return "\n".join(lines) + "\n"
+
+
+                            def configure_containers(cfg, docker_json=DOCKER_DAEMON_JSON, podman_path=PODMAN_DROPIN, run_cmd=None):
+                                """Containers do not inherit the guest's environment, so Docker and Podman are configured to add the
+                                guest's AWS endpoint and CA to every container that does not set them itself. Never raises."""
+                                c = cfg.get("containers") or {}
+                                env = [e for e in (c.get("env") or []) if isinstance(e, str) and "=" in e]
+                                if not env:
+                                    return {}
+                                out = {"docker": configure_docker(OCI_WRAPPER, path=docker_json, run_cmd=run_cmd)}
+                                try:
+                                    _write_atomic(podman_path, podman_dropin(env, c.get("caBundle") or ""))
+                                    out["podman"] = "configured"
+                                except (IOError, OSError) as e:
+                                    LOG.warning("cannot write %s: %s", podman_path, e)
+                                    out["podman"] = "error"
+                                return out
+
+
+                            # ---------------------------------------------------------------------------------------------
                             # The agent.
                             # ---------------------------------------------------------------------------------------------
 
@@ -1998,6 +2107,7 @@ spec:
                                         store = trust_store()
                                         publish_ca_bundle(self.cfg["caBundleLink"], store[0] if store else None,
                                                           platform_ca=ca in ("installed", "unchanged"))
+                                    configure_containers(self.cfg)  # before ready: UserData may install Docker and start containers
 
                                 def shutdown(self):
                                     self.stop.set()
@@ -2045,6 +2155,126 @@ spec:
 
                             if __name__ == "__main__":
                                 sys.exit(main(sys.argv))
+                        {{- if $containerEnv }}
+                        {{- /* The OCI runtime wrapper Docker runs every container through (the agent sets it as Docker's
+                               default runtime): it adds the guest's AWS endpoint and CA to the container's spec, then
+                               runs the real runc. No template actions — test/vm-creds runs it verbatim. */}}
+                        - path: /usr/local/lib/openinfra/oci-aws-env
+                          permissions: '0755'
+                          content: |
+                            #!/usr/bin/env python3
+                            # open-infra OCI runtime wrapper (Docker's default runtime in a kind: VirtualMachine guest). A container
+                            # does not inherit the guest's environment, so a container's AWS SDK would call AWS's own endpoints. For
+                            # `create` and `run` this adds the guest's AWS endpoint and CA (the metadata agent's config, key
+                            # "containers") to the bundle's config.json: each variable only when the container does not set it
+                            # itself, and the CA bundle as a read-only mount at the same path. A container with
+                            # OPENINFRA_AWS_ENV=off in its environment is left as it is. Then it runs the real runc with the same
+                            # arguments. Anything unexpected leaves the container unchanged rather than failing it.
+
+                            import json
+                            import os
+                            import sys
+
+                            CONFIG = os.environ.get("OPENINFRA_METADATA_CONFIG", "/etc/openinfra/metadata-agent.json")
+                            RUNCS = ("/usr/bin/runc", "/usr/sbin/runc", "/usr/local/bin/runc", "/usr/local/sbin/runc")
+                            VALUE_FLAGS = ("--root", "--log", "--log-format", "--criu", "--rootless")  # runc global flags that take a value
+                            OPT_OUT = "OPENINFRA_AWS_ENV=off"
+
+
+                            def real_runc():
+                                pinned = os.environ.get("OPENINFRA_RUNC")
+                                if pinned:
+                                    return pinned
+                                me = os.path.realpath(os.path.abspath(sys.argv[0]))
+                                for p in RUNCS:
+                                    if os.path.isfile(p) and os.access(p, os.X_OK) and os.path.realpath(p) != me:
+                                        return p
+                                return None
+
+
+                            def bundle_of(args):
+                                """(subcommand, bundle dir or None): the bundle only for create/run (default: the working directory)."""
+                                i, sub = 0, None
+                                while i < len(args):
+                                    a = args[i]
+                                    if a in VALUE_FLAGS:
+                                        i += 2
+                                        continue
+                                    if a.startswith("-"):
+                                        i += 1
+                                        continue
+                                    sub = a
+                                    break
+                                if sub not in ("create", "run"):
+                                    return sub, None
+                                rest, bundle = args[i + 1:], None
+                                for j, a in enumerate(rest):
+                                    if a in ("--bundle", "-b") and j + 1 < len(rest):
+                                        bundle = rest[j + 1]
+                                    elif a.startswith("--bundle="):
+                                        bundle = a.split("=", 1)[1]
+                                return sub, bundle or os.getcwd()
+
+
+                            def inject(spec, env, ca_bundle, exists=os.path.exists, realpath=os.path.realpath):
+                                """Add env + the CA mount to an OCI spec in place; True if it changed. Without the CA bundle on the
+                                guest nothing is added: the endpoint verifies only against it."""
+                                if not env or not ca_bundle or not exists(ca_bundle):
+                                    return False
+                                proc = spec.get("process")
+                                if not isinstance(proc, dict):
+                                    return False
+                                cur = list(proc.get("env") or [])
+                                if OPT_OUT in cur:
+                                    return False
+                                names = set(e.split("=", 1)[0] for e in cur)
+                                added = [e for e in env if e.split("=", 1)[0] not in names]
+                                mounts = spec.get("mounts")
+                                if not isinstance(mounts, list):
+                                    mounts = []
+                                mount = not any(isinstance(m, dict) and m.get("destination") == ca_bundle for m in mounts)
+                                if not added and not mount:
+                                    return False
+                                proc["env"] = cur + added
+                                if mount:
+                                    mounts.append({"destination": ca_bundle, "type": "bind", "source": realpath(ca_bundle),
+                                                   "options": ["rbind", "ro", "nosuid", "nodev"]})
+                                    spec["mounts"] = mounts
+                                return True
+
+
+                            def containers_cfg(path=CONFIG):
+                                with open(path) as fh:
+                                    c = json.load(fh).get("containers") or {}
+                                return [e for e in (c.get("env") or []) if isinstance(e, str) and "=" in e], c.get("caBundle") or ""
+
+
+                            def main(argv):
+                                args = argv[1:]
+                                runc = real_runc()
+                                if not runc:
+                                    sys.stderr.write("openinfra-oci: no runc binary found (%s)\n" % ", ".join(RUNCS))
+                                    return 127
+                                try:
+                                    sub, bundle = bundle_of(args)
+                                    if bundle:
+                                        path = os.path.join(bundle, "config.json")
+                                        with open(path) as fh:
+                                            spec = json.load(fh)
+                                        env, ca = containers_cfg()
+                                        if inject(spec, env, ca):
+                                            tmp = path + ".openinfra-tmp"
+                                            with open(tmp, "w") as fh:
+                                                json.dump(spec, fh)
+                                            os.replace(tmp, path)
+                                except Exception as e:  # never fail a container over this
+                                    sys.stderr.write("openinfra-oci: container left unchanged: %s\n" % e)
+                                os.execv(runc, [runc] + args)
+
+
+                            if __name__ == "__main__":
+                                sys.exit(main(sys.argv))
+                        {{- end }}
                         {{- end }}
                         {{- if $spec.userData }}
                         - path: /opt/openinfra-userdata
@@ -2100,7 +2330,8 @@ spec:
                             import os, subprocess, sys, tempfile
                             MANAGED = ("/usr/local/lib/openinfra/metadata-agent.py", "/etc/openinfra/metadata-agent.json",
                                        "/etc/openinfra/platform-root-ca.pem", "/etc/systemd/system/openinfra-metadata.service",
-                                       "/etc/openinfra-aws.env", "/etc/systemd/system.conf.d/10-openinfra-aws.conf")
+                                       "/etc/openinfra-aws.env", "/etc/systemd/system.conf.d/10-openinfra-aws.conf",
+                                       "/usr/local/lib/openinfra/oci-aws-env")
                             UNITS = ("/etc/systemd/system/openinfra-metadata.service", "/etc/systemd/system.conf.d/10-openinfra-aws.conf")
 
 

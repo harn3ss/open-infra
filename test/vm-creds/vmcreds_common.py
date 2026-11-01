@@ -51,6 +51,35 @@ def agent_source():
     return src
 
 
+OCI_WRAPPER_GUEST_PATH = "/usr/local/lib/openinfra/oci-aws-env"
+
+
+def oci_wrapper_source():
+    src = write_file_block(open(COMPOSITION).read(), OCI_WRAPPER_GUEST_PATH)
+    if "{{" in src:
+        raise SystemExit("FAIL: the OCI wrapper body in vm-composition.yaml contains a template action; "
+                         "it must render verbatim")
+    return src
+
+
+def write_oci_wrapper(directory):
+    path = os.path.join(directory, "oci-aws-env")
+    with open(path, "w") as fh:
+        fh.write(oci_wrapper_source())
+    os.chmod(path, 0o755)
+    return path
+
+
+def load_oci_wrapper_module(directory):
+    path = os.path.join(directory, "oci_aws_env.py")  # importable copy (the guest's file has no .py suffix)
+    with open(path, "w") as fh:
+        fh.write(oci_wrapper_source())
+    spec = importlib.util.spec_from_file_location("openinfra_oci_aws_env", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def write_agent(directory):
     path = os.path.join(directory, "metadata-agent.py")
     with open(path, "w") as fh:

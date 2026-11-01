@@ -3,6 +3,14 @@
   "availabilityZone": "us-east-1a",
   "caBundleLink": "/etc/openinfra/ca-bundle.pem",
   "caFile": "/etc/openinfra/platform-root-ca.pem",
+  "containers": {
+    "caBundle": "/etc/openinfra/ca-bundle.pem",
+    "env": [
+      "AWS_ENDPOINT_URL=https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567",
+      "AWS_CA_BUNDLE=/etc/openinfra/ca-bundle.pem",
+      "NODE_EXTRA_CA_CERTS=/etc/openinfra/ca-bundle.pem"
+    ]
+  },
   "credentialsUrl": "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/v1/vm-credentials",
   "imageId": "ami-5d0b10da7e52989c4",
   "imds": {

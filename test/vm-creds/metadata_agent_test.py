@@ -951,6 +951,155 @@ class GuardFailClosedTest(unittest.TestCase):
             agent.guard_in_place, agent.guard_forwarded_imds, agent.guest_links = orig
 
 
+class ContainerConfigTest(unittest.TestCase):
+    """Containers do not inherit the guest's environment: the agent makes Docker and Podman add the guest's AWS
+    endpoint and CA to every container (#347 item A)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(dir=TMP)
+        self.json = os.path.join(self.d, "docker", "daemon.json")
+        self.calls = []
+
+    def run_cmd(self, active):
+        def f(cmd, check=True):
+            self.calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0 if (cmd[1] != "is-active" or active) else 3, "", "")
+        return f
+
+    def read(self):
+        with open(self.json) as fh:
+            return json.load(fh)
+
+    def test_fresh_guest_gets_the_wrapper_as_default_runtime(self):
+        self.assertEqual(agent.configure_docker("/w", path=self.json, run_cmd=self.run_cmd(False)), "configured")
+        self.assertEqual(self.read(), {"default-runtime": "openinfra-aws", "runtimes": {"openinfra-aws": {"path": "/w"}}})
+        self.assertNotIn(["systemctl", "reload", "docker"], self.calls, "Docker not running: nothing to reload")
+
+    def test_a_running_daemon_is_reloaded_and_other_keys_are_kept(self):
+        os.makedirs(os.path.dirname(self.json))
+        with open(self.json, "w") as fh:
+            json.dump({"log-driver": "json-file", "runtimes": {"nvidia": {"path": "/usr/bin/nvidia-container-runtime"}}}, fh)
+        self.assertEqual(agent.configure_docker("/w", path=self.json, run_cmd=self.run_cmd(True)), "configured")
+        d = self.read()
+        self.assertEqual(d["log-driver"], "json-file")
+        self.assertEqual(sorted(d["runtimes"]), ["nvidia", "openinfra-aws"])
+        self.assertEqual(d["default-runtime"], "openinfra-aws")
+        self.assertIn(["systemctl", "reload", "docker"], self.calls)
+        self.assertEqual(agent.configure_docker("/w", path=self.json, run_cmd=self.run_cmd(True)), "unchanged")
+
+    def test_a_default_runtime_the_guest_chose_is_kept(self):
+        os.makedirs(os.path.dirname(self.json))
+        with open(self.json, "w") as fh:
+            json.dump({"default-runtime": "nvidia"}, fh)
+        self.assertEqual(agent.configure_docker("/w", path=self.json, run_cmd=self.run_cmd(False)), "kept")
+        d = self.read()
+        self.assertEqual(d["default-runtime"], "nvidia")
+        self.assertEqual(d["runtimes"]["openinfra-aws"], {"path": "/w"}, "still offered as --runtime openinfra-aws")
+
+    def test_an_unreadable_daemon_json_is_left_alone(self):
+        os.makedirs(os.path.dirname(self.json))
+        with open(self.json, "w") as fh:
+            fh.write("{not json")
+        self.assertEqual(agent.configure_docker("/w", path=self.json, run_cmd=self.run_cmd(False)), "error")
+        with open(self.json) as fh:
+            self.assertEqual(fh.read(), "{not json")
+
+    def test_podman_dropin(self):
+        env = ["AWS_ENDPOINT_URL=https://shim:4567", "AWS_CA_BUNDLE=/etc/openinfra/ca-bundle.pem"]
+        text = agent.podman_dropin(env, "/etc/openinfra/ca-bundle.pem")
+        self.assertIn("[containers]\n", text)
+        self.assertIn('env = ["AWS_ENDPOINT_URL=https://shim:4567", "AWS_CA_BUNDLE=/etc/openinfra/ca-bundle.pem"]', text)
+        self.assertIn('volumes = ["/etc/openinfra/ca-bundle.pem:/etc/openinfra/ca-bundle.pem:ro"]', text)
+
+    def test_configure_containers_follows_the_golden_config(self):
+        cfg = agent.load_config(common.GOLDEN_CONFIG)
+        podman = os.path.join(self.d, "containers.conf.d", "50-openinfra-aws.conf")
+        out = agent.configure_containers(cfg, docker_json=self.json, podman_path=podman, run_cmd=self.run_cmd(False))
+        self.assertEqual(out, {"docker": "configured", "podman": "configured"})
+        self.assertEqual(self.read()["runtimes"]["openinfra-aws"]["path"], agent.OCI_WRAPPER)
+        with open(podman) as fh:
+            self.assertIn("AWS_ENDPOINT_URL=", fh.read())
+        cfg["containers"] = {"env": [], "caBundle": ""}
+        self.assertEqual(agent.configure_containers(cfg, docker_json=self.json + ".2", podman_path=podman + ".2"), {})
+        self.assertFalse(os.path.exists(self.json + ".2"), "no container env (no platform CA): Docker untouched")
+
+
+class OCIWrapperTest(unittest.TestCase):
+    """The OCI runtime wrapper Docker runs every container through: env + CA mount, then the real runc."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = tempfile.mkdtemp(dir=TMP)
+        cls.wrapper_path = common.write_oci_wrapper(cls.d)
+        cls.w = common.load_oci_wrapper_module(tempfile.mkdtemp(dir=TMP))
+        cls.ca = os.path.join(cls.d, "ca-bundle.pem")
+        with open(cls.ca, "w") as fh:
+            fh.write("-----BEGIN CERTIFICATE-----\n")
+        cls.cfg = os.path.join(cls.d, "agent.json")
+        with open(cls.cfg, "w") as fh:
+            json.dump({"containers": {"env": ["AWS_ENDPOINT_URL=https://shim:4567", "AWS_CA_BUNDLE=%s" % cls.ca],
+                                      "caBundle": cls.ca}}, fh)
+        # A fake runc: records its arguments and the config.json it was handed.
+        cls.fake = os.path.join(cls.d, "fake-runc")
+        with open(cls.fake, "w") as fh:
+            fh.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_OUT.args\"\n"
+                     "for a; do [ \"$prev\" = --bundle ] && cp \"$a/config.json\" \"$FAKE_OUT.json\"; prev=$a; done\nexit 0\n")
+        os.chmod(cls.fake, 0o755)
+
+    def test_bundle_parsing_matches_what_containerd_passes(self):
+        args = ["--root", "/var/run/docker/runtime-runc/moby", "--log", "/run/x/log.json", "--log-format", "json",
+                "--systemd-cgroup", "create", "--bundle", "/run/b", "--pid-file", "/run/p", "cid"]
+        self.assertEqual(self.w.bundle_of(args), ("create", "/run/b"))
+        self.assertEqual(self.w.bundle_of(["run", "--bundle=/run/c", "cid"]), ("run", "/run/c"))
+        self.assertEqual(self.w.bundle_of(["--root", "/r", "start", "cid"]), ("start", None))
+        self.assertEqual(self.w.bundle_of(["state", "cid"]), ("state", None))
+
+    def test_inject_adds_only_what_the_container_does_not_set(self):
+        spec = {"process": {"env": ["PATH=/bin", "AWS_ENDPOINT_URL=http://mine"]}, "mounts": []}
+        self.assertTrue(self.w.inject(spec, ["AWS_ENDPOINT_URL=https://shim", "AWS_CA_BUNDLE=" + self.ca], self.ca))
+        self.assertEqual(spec["process"]["env"], ["PATH=/bin", "AWS_ENDPOINT_URL=http://mine", "AWS_CA_BUNDLE=" + self.ca])
+        self.assertEqual([m["destination"] for m in spec["mounts"]], [self.ca])
+        self.assertIn("ro", spec["mounts"][0]["options"])
+        self.assertFalse(self.w.inject(spec, ["AWS_ENDPOINT_URL=https://shim"], self.ca), "already done: unchanged")
+
+    def test_opt_out_and_no_ca_leave_the_container_alone(self):
+        spec = {"process": {"env": ["OPENINFRA_AWS_ENV=off"]}}
+        self.assertFalse(self.w.inject(spec, ["AWS_ENDPOINT_URL=https://shim"], self.ca))
+        spec = {"process": {"env": []}}
+        self.assertFalse(self.w.inject(spec, ["AWS_ENDPOINT_URL=https://shim"], self.ca + ".missing"))
+        self.assertEqual(spec, {"process": {"env": []}})
+
+    def run_wrapper(self, config_json, tag):
+        bundle = tempfile.mkdtemp(dir=self.d)
+        with open(os.path.join(bundle, "config.json"), "w") as fh:
+            fh.write(config_json)
+        out = os.path.join(self.d, tag)
+        env = dict(os.environ, OPENINFRA_RUNC=self.fake, OPENINFRA_METADATA_CONFIG=self.cfg, FAKE_OUT=out)
+        p = subprocess.run([sys.executable, self.wrapper_path, "--root", "/r", "--log", "/l", "create", "--bundle", bundle, "cid"],
+                           env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
+        with open(out + ".args") as fh:
+            args = fh.read().split()
+        handed = None
+        if os.path.exists(out + ".json"):
+            with open(out + ".json") as fh:
+                handed = fh.read()
+        return p, args, handed
+
+    def test_end_to_end_the_real_runc_gets_the_same_args_and_the_injected_spec(self):
+        p, args, handed = self.run_wrapper(json.dumps({"process": {"env": ["PATH=/bin"]}, "mounts": []}), "e2e")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(args[:5], ["--root", "/r", "--log", "/l", "create"])
+        spec = json.loads(handed)
+        self.assertIn("AWS_ENDPOINT_URL=https://shim:4567", spec["process"]["env"])
+        self.assertEqual(spec["mounts"][-1]["destination"], self.ca)
+
+    def test_a_broken_spec_still_runs_the_container_unchanged(self):
+        p, args, handed = self.run_wrapper("{not json", "broken")
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("container left unchanged", p.stderr)
+        self.assertEqual(handed, "{not json")
+
+
 if __name__ == "__main__":
     try:
         unittest.main(verbosity=2)

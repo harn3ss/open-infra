@@ -142,12 +142,13 @@ def find_clis():
     return out
 
 
-def run_cli(aws_bin, env, stub_port, endpoint=None):
-    """`aws sts get-caller-identity` -> (ok, detail, stderr). ok = exit 0 AND signed with the role creds."""
+def run_cli(aws_bin, env, stub_port, endpoint=None, flag=True):
+    """`aws sts get-caller-identity` -> (ok, detail, stderr). ok = exit 0 AND signed with the role creds.
+    flag=False passes no --endpoint-url: the CLI must find the endpoint in its environment (AWS_ENDPOINT_URL)."""
     del Stub.sts_calls[:]
     endpoint = endpoint or "http://127.0.0.1:%d" % stub_port
-    p = subprocess.run([aws_bin, "sts", "get-caller-identity", "--endpoint-url", endpoint],
-                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=90)
+    cmd = [aws_bin, "sts", "get-caller-identity"] + (["--endpoint-url", endpoint] if flag else [])
+    p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=90)
     signed = any(("Credential=%s/" % CREDS["AccessKeyId"]) in a and t == CREDS["Token"] for a, t in Stub.sts_calls)
     ok = p.returncode == 0 and signed
     detail = "exit=%d signed-with-role-creds=%s" % (p.returncode, signed)
@@ -304,6 +305,24 @@ def main():
                 % (ver, aws_bin, "yes" if refused else "NO (" + detail + ")"))
             if not refused:
                 (failures if tag == "v2" else notes).append("%s: TLS without AWS_CA_BUNDLE was not refused" % ver)
+
+        # --- the endpoint from the environment, no --endpoint-url (#347 item A) ---
+        # The composition renders AWS_ENDPOINT_URL = the shim's in-cluster TLS port; here it is re-pointed at
+        # the TLS stub (the shim's name does not resolve on a CI runner). aws-cli v2 must reach it with no
+        # --endpoint-url, verified through AWS_CA_BUNDLE; an older CLI that predates AWS_ENDPOINT_URL is reported.
+        rendered = env_all.get("AWS_ENDPOINT_URL", "")
+        ok = rendered.startswith("https://") and rendered.endswith(":4567")
+        say("[env] composition renders AWS_ENDPOINT_URL=%s (the shim's TLS port): %s" % (rendered, "ok" if ok else "FAILED"))
+        if not ok:
+            failures.append("AWS_ENDPOINT_URL is not the shim's TLS port")
+        for aws_bin, tag, ver in clis:
+            https = "https://127.0.0.1:%d" % tls.port
+            env = dict(base, AWS_EC2_METADATA_DISABLED="true", AWS_CA_BUNDLE=link, AWS_ENDPOINT_URL=https, **env_rendered)
+            ok, detail, _ = run_cli(aws_bin, env, stub_port, endpoint=https, flag=False)
+            say("[%s %s] no --endpoint-url, AWS_ENDPOINT_URL from the environment: %s" % (ver, aws_bin, detail))
+            if not ok:
+                (failures if tag == "v2" else notes).append(
+                    "%s: does not honor AWS_ENDPOINT_URL (an unmodified call from it needs guestAwsEndpoints)" % ver)
     finally:
         agent.stop()
     if failures:
@@ -340,7 +359,8 @@ def main():
         agent.dump()
         sys.exit("FAIL:\n  " + "\n  ".join(failures))
     say("PASS: aws CLIs resolve VM role credentials from the composition's metadata agent "
-        "(FULL_URI alone, and IMDSv2) and trust the platform CA through AWS_CA_BUNDLE")
+        "(FULL_URI alone, and IMDSv2), trust the platform CA through AWS_CA_BUNDLE, and reach the endpoint "
+        "AWS_ENDPOINT_URL names with no --endpoint-url")
     shutil.rmtree(tmp, ignore_errors=True)
 
 
