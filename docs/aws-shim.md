@@ -175,6 +175,17 @@ sends a trailing checksum (the AWS CLI v2 default in many paths) — so the obje
 with the framing bytes. Guarded by a decoder unit test and a probe step that forces a chunked
 upload (`--checksum-algorithm CRC32`) and asserts byte-identity.
 
+**Path-style and virtual-hosted-style requests, and pre-signed URLs.** Requests address a bucket either
+in the path (`https://<s3 host>/<bucket>/<key>`) or in the hostname (`https://<bucket>.<s3 host>/<key>`,
+the SDK default for many clients). Virtual-hosted style is accepted for the hosts listed in
+`S3_VHOST_SUFFIXES`; set it, with this installation's LAN addresses, in the optional `aws-shim-site`
+ConfigMap in the shim's namespace (e.g. `S3_VHOST_SUFFIXES: s3.<your domain>`), and give the S3 Ingress
+both `<s3 host>` and `*.<s3 host>`. A pre-signed URL (`aws s3 presign`, or any SDK presigner) is verified
+like any SigV4 request, so it opens in a browser for its lifetime and a tampered signature is refused.
+For browsers and LAN clients to trust the TLS certificate, issue it from the cluster CA
+(`cert-manager.io/cluster-issuer: openinfra-ca`, see `platform/networking/cluster-ca.yaml`) and trust its
+root once on the client.
+
 ### STS (faithful)
 
 `aws sts get-caller-identity` — the first call most SDKs and tools make to confirm "who am I / does
