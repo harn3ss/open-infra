@@ -1201,8 +1201,9 @@ login`/`push`/`pull` — is the **standard OCI Distribution protocol spoken dire
 `proxyEndpoint`; the shim never proxies image bytes. The backend (`platform/aws-shim/ecr-registry.yaml`) is
 CNCF **distribution** (digest-pinned, non-root, read-only-rootfs) with its S3 storage driver pointed at the
 in-cluster MinIO under a **bucket-scoped, non-root identity** — image blobs live in MinIO, nothing else is
-reachable. `GetAuthorizationToken` hands back the registry's htpasswd credential (base64 `AWS:<pw>`), so
-`aws ecr get-login-password | docker login` and then `docker push` work against the `proxyEndpoint`.
+reachable. `GetAuthorizationToken` hands back a 12-hour, shim-signed credential that identifies the caller
+(base64 `AWS:<credential>`), so `aws ecr get-login-password | docker login --username AWS --password-stdin
+<proxyEndpoint>` and then `docker push`/`docker pull` work against the `proxyEndpoint`.
 
 Implemented: `GetAuthorizationToken`; `CreateRepository`/`DescribeRepositories`/`DeleteRepository`;
 `ListImages`/`DescribeImages`/`BatchDeleteImage`. A repository is a declaration + metadata record (a
@@ -1213,7 +1214,8 @@ deletes each distinct manifest before the record.
 
 **Authorization is the one policy world** every front door uses: the coarse impersonated `SubjectAccessReview`
 on **`openinfra.dev/repositories`** (repository create/config → `create`, reads/token → `get`, deletions →
-`delete`) plus the additive fine-grained Cedar `ecr:<Op>` at repository granularity. The registry has its **own
+`delete`) plus the additive fine-grained Cedar `ecr:<Op>` at repository granularity, checked for every
+repository an operation names. The registry has its **own
 coarse resource type** (`repositories`) — distinct from Secrets Manager's (`secrets`) — so a grant that lets a
 principal log in and push images does **not** also let it read every Secrets Manager secret, and vice versa;
 least privilege for one front door never leaks into the other. The managed `PowerUserAccess`/`ReadOnlyAccess`
@@ -1227,19 +1229,65 @@ policies** (authorization is the shim's one RBAC + Cedar world, not a second ECR
 **pull-through cache**, the **ECR internal layer-upload API** (`PutImage`/`InitiateLayerUpload`/… — the data
 plane is standard OCI at the `proxyEndpoint`, not this), and **resource tags**.
 
-**Honest v1 limitations (the flagged graduation steps).** The data plane is **coarse**: `GetAuthorizationToken`
-is gated at read level, so any principal who can obtain a token can `push`/`pull` **any** repository —
-per-repo, per-caller push scoping (the Docker registry **bearer-token protocol** with the shim as the token
-server) is the graduation step. And the `proxyEndpoint` is the **in-cluster** Service in v1 (reachable by
-in-cluster workloads and by `docker` behind a port-forward); **LAN/TLS exposure** for external clients is the
-other graduation step. Both are stated plainly rather than papered over.
+**The data plane is authorized per repository, per caller** — the Docker registry **bearer-token protocol**,
+with the shim as the token server, so all callers share one backing registry yet each reaches only its own
+repositories. The registry answers an unauthenticated `docker` request with `401 Bearer realm=<shim>/ecr/token`;
+`docker` presents the `GetAuthorizationToken` credential there with the scopes it needs
+(`repository:<name>:pull,push`); the shim authorizes **each** repository + action against the caller and mints
+a five-minute registry token whose `access` claim lists only what was granted; the registry verifies that token
+against the shim's signing certificate (published as the `ecr-token-cert` ConfigMap — the private key never
+leaves the shim's namespace) and enforces the scopes on every manifest and layer operation. A scope the caller
+may not have is simply absent from the token, so the registry refuses that operation. "The caller" is whoever
+called `GetAuthorizationToken`:
+
+- **A User** — the same impersonated `SubjectAccessReview` the control plane runs: `pull` → `get`, `push` →
+  `create`, `delete` → `delete` on `openinfra.dev/repositories`. (A User's fine-grained `ecr:` data-plane
+  statements govern the `ecr.*` API above, not these registry scopes.)
+- **An assumed role** (`sts:AssumeRole`, web identity, or a VM's `instanceRole`) — the role's data-plane
+  policy, **default-deny**, in AWS action names, exactly as an IAM role is evaluated against ECR:
+  `GetAuthorizationToken` needs `ecr:GetAuthorizationToken` on `Resource: "*"` (a grant on one repository's
+  ARN does not confer it — the action has no resource on AWS either); a **pull** needs **both**
+  `ecr:BatchGetImage` and `ecr:GetDownloadUrlForLayer` on the repository; a **push** needs
+  `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`,
+  `ecr:CompleteLayerUpload` and `ecr:PutImage` on it (`docker push` also checks existing layers through the
+  pull scope, so a pushing role normally holds the pull pair too); deleting an image needs
+  `ecr:BatchDeleteImage`. An explicit `Deny` wins, wildcards (`ecr:*`, `repository/team/*`) work, and a
+  role's control-plane calls are default-deny too (`DescribeRepositories` with no `repositoryNames` is checked
+  against `*`, as on AWS). The role's policy is re-evaluated on every token request, so a policy change
+  applies to the next `docker pull` once the policy engine refreshes (30 s), and the role's **Revoke
+  sessions** cutoff refuses its ECR credentials issued before it. A role is refused a credential when
+  per-repository token auth is not enabled, and refused everything when the data-plane policy engine is not
+  configured.
+
+**Instance-role pulls.** An EC2 workload pulls its image the AWS way, unmodified: the VM's `instanceRole`
+(from an `AWS::IAM::Role` with an inline policy granting `ecr:GetAuthorizationToken` on `*` plus the pull pair
+on `arn:aws:ecr:<region>:<account>:repository/<name>` — see
+[CloudFormation](cloudformation.md)) gives the guest rotating credentials from instance metadata
+([virtual machines](virtual-machines.md)), and with the AWS CLI pointed at the aws-shim,
+`aws ecr get-login-password | docker login …` then `docker pull <repositoryUri>:<tag>` work inside the guest
+for that repository and fail for every other.
+
+**Endpoints.** The internal registry (`ecr-registry`) serves node runtimes and in-cluster clients. For LAN
+workstations and VM guests, the same registry has a **LAN-facing front**, `ecr-registry-public` — same
+storage, same upload secret, same token trust anchor; it differs only in its token realm. Publish it through
+a TLS Ingress (a certificate from the cluster CA issuer `openinfra-ca` is trusted wherever the
+`openinfra-root-ca` root is installed — the guest's OS trust store, or `/etc/docker/certs.d/<host>/ca.crt`
+for docker), set its
+`REGISTRY_AUTH_TOKEN_REALM` (optional ConfigMap `ecr-registry-public-site`) to the shim's `/ecr/token` at its
+LAN URL, and set `ECR_PUBLIC_ENDPOINT` in the shim's optional `aws-shim-site` ConfigMap to the registry's LAN
+URL: it becomes the `proxyEndpoint` and the `repositoryUri` base (unset, both are the in-cluster Service).
+Setting `ECR_PUBLIC_HOST` in the optional `ecr-node-pull-site` ConfigMap lets cluster nodes pull images named
+with that LAN host through the internal registry. An image pushed through either front is pullable through
+both.
 
 `probe/aws-shim-ecr.sh` proves it against the deployed shim + registry: `GetAuthorizationToken` yields a
-credential that decodes to `AWS:<pw>` + a `proxyEndpoint`; `CreateRepository` returns a faithful
+credential that decodes to `AWS:<credential>` + a `proxyEndpoint`; `CreateRepository` returns a faithful
 `repositoryUri`; an image **pushed** with that credential appears in `ListImages` (tag + digest) and
 `DescribeImages` (a real, non-zero size); `DeleteRepository` refuses the non-empty repo without `force` and
 succeeds with it; a **reader's** `CreateRepository` is refused with **no record created**; `PutLifecyclePolicy`
-is refused honestly; and a wrong secret is rejected on signature.
+is refused honestly; and a wrong secret is rejected on signature. `probe/aws-shim-ecr-perrepo.sh` proves the
+per-repository decisions against the live registry: it challenges with `Bearer`, a power user's token can
+start a blob upload, and a reader's token can pull but not push.
 
 ### Glue Data Catalog (over the existing Iceberg REST catalog; JSON protocol; probe-proven)
 

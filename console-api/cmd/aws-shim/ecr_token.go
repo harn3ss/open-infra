@@ -16,6 +16,11 @@
 //
 // So a token issued to principal A can push/pull only A's repos, even though all callers share one
 // backing registry — the coarse single-htpasswd authority (any token → any repo) is gone.
+//
+// "The caller's ECR permissions" are those of the principal that called GetAuthorizationToken: for a User,
+// the impersonated SubjectAccessReview on openinfra.dev/repositories; for an sts:AssumeRole session (a VM
+// instance role, a web-identity role), the role's data-plane policy, default-deny, in AWS action names —
+// pull needs ecr:BatchGetImage + ecr:GetDownloadUrlForLayer, push the layer-upload set + ecr:PutImage.
 package main
 
 import (
@@ -127,23 +132,31 @@ func newECRTokenSigner() (*ecrTokenSigner, map[string][]byte, error) {
 }
 
 // ecrCaller is the identity carried in a caller credential — exactly the fields the token endpoint
-// needs to re-run the caller's authorization (the same SubjectAccessReview the control plane does).
+// needs to re-run the caller's authorization: the SubjectAccessReview the control plane does for a User,
+// or the assumed role's data-plane policy for an sts:AssumeRole session.
 type ecrCaller struct {
 	Sub    string   `json:"sub"`
 	Groups []string `json:"groups,omitempty"`
 	Role   string   `json:"role,omitempty"`
+	// AssumedRole is the kind: Role an sts:AssumeRole session (e.g. a VM instance role) acts as; empty for a
+	// User. A credential minted before this claim existed has none and is authorized as a User, as before.
+	AssumedRole string `json:"assumedRole,omitempty"`
+	// IssuedAt is when the credential was minted (the JWT iat) — compared against the role's session-revoke
+	// cutoff. Set by verifyCaller; ignored by mintCaller.
+	IssuedAt time.Time `json:"-"`
 }
 
 // mintCaller issues the GetAuthorizationToken credential: a short-lived shim-signed JWT identifying
-// the caller (sub + groups/role for authz). It is NOT a registry token — it only proves "I am this
-// principal, with this authority" to /ecr/token.
+// the caller (sub + groups/role for authz, plus the assumed role for a role session). It is NOT a
+// registry token — it only proves "I am this principal, with this authority" to /ecr/token.
 func (s *ecrTokenSigner) mintCaller(c ecrCaller, ttl time.Duration) (string, error) {
 	now := time.Now()
-	return s.signJWT(
-		map[string]any{"alg": "RS256", "typ": "JWT", "kid": "ecr-cred-1"},
-		map[string]any{"sub": c.Sub, "groups": c.Groups, "role": c.Role,
-			"purpose": "ecr-authz", "iat": now.Unix(), "exp": now.Add(ttl).Unix()},
-	)
+	claims := map[string]any{"sub": c.Sub, "groups": c.Groups, "role": c.Role,
+		"purpose": "ecr-authz", "iat": now.Unix(), "exp": now.Add(ttl).Unix()}
+	if c.AssumedRole != "" {
+		claims["assumedRole"] = c.AssumedRole
+	}
+	return s.signJWT(map[string]any{"alg": "RS256", "typ": "JWT", "kid": "ecr-cred-1"}, claims)
 }
 
 // verifyCaller validates a caller credential and returns its identity. Rejects a bad signature, the
@@ -152,6 +165,7 @@ func (s *ecrTokenSigner) verifyCaller(token string) (ecrCaller, error) {
 	var claims struct {
 		ecrCaller
 		Purpose string `json:"purpose"`
+		Iat     int64  `json:"iat"`
 		Exp     int64  `json:"exp"`
 	}
 	if err := s.verifyJWT(token, &claims); err != nil {
@@ -166,7 +180,9 @@ func (s *ecrTokenSigner) verifyCaller(token string) (ecrCaller, error) {
 	if claims.Sub == "" {
 		return ecrCaller{}, fmt.Errorf("credential has no subject")
 	}
-	return claims.ecrCaller, nil
+	c := claims.ecrCaller
+	c.IssuedAt = time.Unix(claims.Iat, 0)
+	return c, nil
 }
 
 // ecrAccess is one entry of a registry token's `access` claim — a repository and the granted actions.
@@ -256,6 +272,48 @@ func parseScope(s string) (ecrAccess, bool) {
 	return ecrAccess{Type: "repository", Name: name, Actions: strings.Split(actions, ",")}, true
 }
 
+// ecrRoleActions maps a Docker registry action to the ECR IAM actions an assumed role's policy must allow —
+// ALL of them — on the repository: the permissions AWS documents for the same docker operation. A pull
+// needs both image-read actions (a manifest without its layers, or the reverse, is no pull); a push needs
+// the full layer-upload + manifest-put set.
+func ecrRoleActions(action string) []string {
+	switch action {
+	case "pull":
+		return []string{"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"}
+	case "push":
+		return []string{"ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart",
+			"ecr:CompleteLayerUpload", "ecr:PutImage"}
+	case "delete":
+		return []string{"ecr:BatchDeleteImage"}
+	}
+	return nil
+}
+
+// authorizeScope decides one requested repo+action for the caller. A User keeps the impersonated
+// SubjectAccessReview the control plane runs (verb on openinfra.dev/repositories). An assumed role is
+// authorized by its data-plane policy alone, default-deny: every ECR action the docker action needs must
+// be allowed on Repository::<repo>; with no data-plane engine configured, nothing is granted.
+func (h *ecrHandler) authorizeScope(ctx context.Context, r *http.Request, claims iam.Claims, repo, action string) bool {
+	if claims.AssumedRole != "" {
+		need := ecrRoleActions(action)
+		if len(need) == 0 {
+			return false
+		}
+		for _, a := range need {
+			if ok, _ := allowedForAssumedRole(ctx, h.authz, claims, a, "Repository", repo, r); !ok {
+				return false
+			}
+		}
+		return true
+	}
+	verb := ecrActionVerb(action)
+	if verb == "" {
+		return false
+	}
+	ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo)
+	return ok
+}
+
 // ecrActionVerb maps a Docker registry action to the RBAC verb the caller must hold on the repo.
 func ecrActionVerb(action string) string {
 	switch action {
@@ -297,8 +355,9 @@ func (h *ecrHandler) servePostToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // issueRegistryToken is the shared core of both token flows: authenticate the caller credential, authorize
-// each requested repo+action with the SAME impersonated SubjectAccessReview the control plane runs, and
-// mint a registry token whose access claim is only what was granted.
+// each requested repo+action (a User: the SAME impersonated SubjectAccessReview the control plane runs; an
+// assumed role: its data-plane policy, default-deny), and mint a registry token whose access claim is only
+// what was granted.
 func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, pass string, haveCred bool, service string, rawScopes []string) {
 	if h.signer == nil {
 		writeDockerTokenError(w, http.StatusNotImplemented, "UNSUPPORTED", "token auth is not configured on this shim")
@@ -314,8 +373,18 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 		writeDockerTokenError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid ECR credential: "+err.Error())
 		return
 	}
-	claims := iam.Claims{Sub: caller.Sub, Groups: caller.Groups, Role: caller.Role}
-	ctx := r.Context()
+	claims := iam.Claims{Sub: caller.Sub, Groups: caller.Groups, Role: caller.Role, AssumedRole: caller.AssumedRole}
+	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+
+	// "Revoke sessions" on the role bites its ECR credentials too: one minted before the cutoff came from a
+	// session issued before it (the SigV4 path refuses such a session), so it is refused here as well.
+	if caller.AssumedRole != "" && h.revoke != nil {
+		if cutoff, on := h.revoke.RevokedBefore(ctx, caller.AssumedRole); on && caller.IssuedAt.Before(cutoff) {
+			h.audit(ctx, "TokenGrant", "", "deny", "credential issued before the role's session-revoke cutoff")
+			writeDockerTokenError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid ECR credential: revoked")
+			return
+		}
+	}
 
 	// Authorize each requested repo+action against this caller; grant only what passes.
 	var granted []ecrAccess
@@ -327,11 +396,7 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 			}
 			var allowed []string
 			for _, action := range acc.Actions {
-				verb := ecrActionVerb(action)
-				if verb == "" {
-					continue
-				}
-				if ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, acc.Name); ok {
+				if h.authorizeScope(ctx, r, claims, acc.Name, action) {
 					allowed = append(allowed, action)
 				}
 			}

@@ -586,6 +586,8 @@ func run(logger *slog.Logger) error {
 		ecrH := newECRHandler(cs, authzNS, account, region, ecrNS, ecrURL,
 			proxyEndpoint, getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
 		ecrH.authz = authzChecker
+		// The per-role session-revoke cutoff also bites an assumed role's ECR credential at /ecr/token.
+		ecrH.revoke = auth.revoke
 		// Per-repo data-plane auth (the Docker bearer-token protocol). The PRIVATE signing key lives in
 		// the shim's own namespace (keysNS — where it may create Secrets); the PUBLIC cert is published
 		// as a ConfigMap in the registry's namespace for the registry to mount as the token

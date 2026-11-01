@@ -27,6 +27,24 @@ func deniedByDataPlane(ctx context.Context, authz *dataplaneauthz.Checker, claim
 	return false, ""
 }
 
+// allowedForAssumedRole is the CLOSED (default-deny) data-plane check for an sts:AssumeRole session. An
+// assumed kind: Role's complete authority is its data-plane policies (iam.CanDo deliberately passes a role,
+// because k8s RBAC is not its authority), so the action is permitted only when the engine governs the role
+// AND allows the action on the resource. A nil checker (data-plane engine not configured) reports
+// "ungoverned", which DENIES here — fail closed, exactly as the S3 assumed-role path.
+func allowedForAssumedRole(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
+	action, resType, resID string, r *http.Request) (bool, string) {
+	allowed, governed, reason := authz.Authorize(ctx, "Role", claims.PrincipalID(), claims.Groups,
+		action, resType, resID, requestContext(claims, r))
+	if governed && allowed {
+		return true, ""
+	}
+	if !governed || reason == "" {
+		reason = "assumed role has no data-plane policy allowing " + action + " (default deny)"
+	}
+	return false, reason
+}
+
 // s3Action maps a decoded S3 op to its AWS action name (the 1:1 the mapping relies on).
 func s3Action(kind string) string {
 	switch kind {

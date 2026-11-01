@@ -66,7 +66,10 @@ type ecrHandler struct {
 	tokenAuth bool
 	issuer    string // the registry token issuer (must match the registry config's ISSUER)
 	service   string // the registry token service/audience (must match the registry config's SERVICE)
-	logger    *slog.Logger
+	// revoke is the per-role "revoke sessions" cutoff (the same one the SigV4 path applies): an assumed-role
+	// ECR credential minted before its role's cutoff is refused at /ecr/token. nil disables the check.
+	revoke sessionRevoker
+	logger *slog.Logger
 }
 
 func newECRHandler(cs kubernetes.Interface, authzNS, account, region, ns, registryURL, proxyEndpoint, authSecret string, logger *slog.Logger) *ecrHandler {
@@ -138,6 +141,25 @@ func ecrResource(op string, body map[string]any) string {
 	return ""
 }
 
+// ecrAnyRepository is the resource id the data-plane check uses for an op that names no single repository
+// (GetAuthorizationToken, an unfiltered DescribeRepositories) — AWS's Resource "*". Policy resources "*"
+// and Repository::* match it; a grant scoped to one repository's ARN (Repository::<name>) does not, so a
+// role needs `ecr:GetAuthorizationToken` on "*" exactly as on AWS.
+const ecrAnyRepository = "*"
+
+// ecrAuthzRepos lists every repository an op names, for the fine-grained data-plane check: all of
+// DescribeRepositories' repositoryNames (each one is checked, not just the first), else the op's single
+// repository. Empty for an op that names none.
+func ecrAuthzRepos(op string, body map[string]any) []string {
+	if op == "DescribeRepositories" {
+		return stringSlice(body["repositoryNames"])
+	}
+	if n := ecrResource(op, body); n != "" {
+		return []string{n}
+	}
+	return nil
+}
+
 // ecrRefusal returns the honest reason an op is deliberately NOT implemented (and true), or "" and false.
 // Each message names the op and WHY — a refusal is never a faked success.
 func ecrRefusal(op string) (string, bool) {
@@ -197,12 +219,30 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the repository when we have one.
-	if repoName != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "ecr:"+op, "Repository", repoName, r); denied {
-			h.audit(ctx, op, repoName, "deny", reason)
-			writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-			return
+	// Fine-grained Cedar dataPlane (`ecr:<Op>` on Repository::<name>), checked for EVERY repository the op names.
+	//   - A User: additive over the coarse grant above — it can only tighten, where an op names a repository.
+	//   - An assumed Role: its COMPLETE authority (CanDo passes a role) — default-deny on every op, including the
+	//     repository-less ones (GetAuthorizationToken, an unfiltered DescribeRepositories), which are checked
+	//     against Repository::* (AWS's Resource "*"). No data-plane engine → a role is denied (fail closed).
+	repos := ecrAuthzRepos(op, body)
+	if claims.AssumedRole != "" {
+		if len(repos) == 0 {
+			repos = []string{ecrAnyRepository}
+		}
+		for _, res := range repos {
+			if ok, reason := allowedForAssumedRole(ctx, h.authz, claims, "ecr:"+op, "Repository", res, r); !ok {
+				h.audit(ctx, op, res, "deny", reason)
+				writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+				return
+			}
+		}
+	} else {
+		for _, res := range repos {
+			if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "ecr:"+op, "Repository", res, r); denied {
+				h.audit(ctx, op, res, "deny", reason)
+				writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+				return
+			}
 		}
 	}
 
@@ -233,11 +273,22 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseWriter, requestID string, claims iam.Claims) {
 	var user, pass string
-	if h.tokenAuth && h.signer != nil {
-		// Per-repo mode: the credential is a shim-signed caller token carrying the caller's identity.
+	perRepo := h.tokenAuth && h.signer != nil
+	if claims.AssumedRole != "" && !perRepo {
+		// The shared htpasswd credential reaches every repository, so it cannot be held to a role's policy
+		// (whose authority may be one repository). Without per-repository token auth a role gets none.
+		reason := "an assumed role's registry access is scoped per repository, which needs per-repository token auth; it is not enabled on this shim"
+		h.audit(ctx, "GetAuthorizationToken", "", "deny", reason)
+		writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+		return
+	}
+	if perRepo {
+		// Per-repo mode: the credential is a shim-signed caller token carrying the caller's identity — for an
+		// assumed-role session, the role too, so /ecr/token authorizes it under the role's data-plane policy.
 		// docker login -u AWS -p <token>; docker then presents it to /ecr/token, which authorizes the
 		// requested repos against THIS caller and mints a registry token scoped to only what's granted.
-		caller, err := h.signer.mintCaller(ecrCaller{Sub: claims.Sub, Groups: claims.Groups, Role: claims.Role}, 12*time.Hour)
+		caller, err := h.signer.mintCaller(ecrCaller{Sub: claims.Sub, Groups: claims.Groups, Role: claims.Role,
+			AssumedRole: claims.AssumedRole}, 12*time.Hour)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return

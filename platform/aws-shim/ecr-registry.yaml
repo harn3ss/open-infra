@@ -6,11 +6,10 @@
 #
 # Backend: CNCF distribution (registry:3) with its S3 storage driver pointed at the in-cluster MinIO, so
 # image blobs live in MinIO (stateless registry pods, no PVC) under a NON-root, bucket-scoped identity —
-# the registry can touch only the `ecr-registry` bucket, nothing else in MinIO. Auth is htpasswd (user
-# `AWS`, the password GetAuthorizationToken hands back); the control plane (who may obtain that token,
-# create/delete repos) is Cedar/RBAC-gated at the shim. v1 data-plane authority is therefore coarse: any
-# principal the shim issues a token to can push/pull any repo — per-repo push scoping (the Docker registry
-# bearer-token protocol with the shim as token server) is the flagged graduation step. See docs/aws-shim.md.
+# the registry can touch only the `ecr-registry` bucket, nothing else in MinIO. Auth is per-repository
+# bearer tokens (the Docker registry token protocol, the shim as token server): docker presents the
+# GetAuthorizationToken credential at the shim's /ecr/token realm, which grants only the repos + actions
+# the caller may use (a User via RBAC, an assumed role via its data-plane policy). See docs/aws-shim.md.
 ---
 apiVersion: v1
 kind: Namespace
