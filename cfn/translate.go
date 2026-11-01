@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/policyengine"
 )
 
@@ -2441,18 +2442,19 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 		return "", false
 	}
 	name := func(prop string) string { return inStackName(id, prop, ctx) }
-	const region, acct = "openinfra", "000000000000"
+	// The install's identity, so a synthesized ARN is the one the aws-shim reports for the resource.
+	ident := awsidentity.Current()
 	switch res.Type {
 	case "AWS::S3::Bucket":
-		return "arn:aws:s3:::" + name("BucketName"), true
+		return awsidentity.S3BucketARN(name("BucketName")), true
 	case "AWS::SQS::Queue":
-		return fmt.Sprintf("arn:aws:sqs:%s:%s:%s", region, acct, name("QueueName")), true
+		return ident.RegionalARN("sqs", name("QueueName")), true
 	case "AWS::SNS::Topic":
-		return fmt.Sprintf("arn:aws:sns:%s:%s:%s", region, acct, name("TopicName")), true
+		return ident.RegionalARN("sns", name("TopicName")), true
 	case "AWS::DynamoDB::Table":
-		return fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s", region, acct, name("TableName")), true
+		return ident.RegionalARN("dynamodb", "table/"+name("TableName")), true
 	case "AWS::Lambda::Function":
-		return fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", region, acct, ctx.functionName(id)), true
+		return ident.RegionalARN("lambda", "function:"+ctx.functionName(id)), true
 	}
 	return "", false
 }

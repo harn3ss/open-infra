@@ -31,7 +31,7 @@ func TestResolve_SupportedIntrinsics(t *testing.T) {
 		want string
 	}{
 		{"Join", map[string]any{"Fn::Join": []any{"-", []any{"a", "b", "c"}}}, "a-b-c"},
-		{"Sub", map[string]any{"Fn::Sub": "env-${Env}-${AWS::Region}"}, "env-prod-openinfra"},
+		{"Sub", map[string]any{"Fn::Sub": "env-${Env}-${AWS::Region}"}, "env-prod-us-east-1"},
 		{"SubEscape", map[string]any{"Fn::Sub": "${!Literal}-${Env}"}, "${Literal}-prod"},
 		{"FindInMap", map[string]any{"Fn::FindInMap": []any{"Sizes", map[string]any{"Ref": "Env"}, "cpu"}}, "4"},
 		{"Select", map[string]any{"Fn::Select": []any{1, []any{"x", "y", "z"}}}, "y"},

@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // localTemplateResolver resolves a nested stack's TemplateURL (#268) to a LOCAL child template, relative
@@ -56,6 +58,13 @@ func readTemplate(file string) ([]byte, error) {
 // Main is the cfn CLI entrypoint, invoked by cfn/cmd/cfn. Split out so the engine is an
 // importable library (the aws-shim CloudFormation doorway imports this package) while the CLI stays.
 func Main() {
+	// The pseudo-parameters resolve to the install's identity: set ACCOUNT_ID / AWS_REGION as the
+	// aws-shim has them, so AWS::AccountId and AWS::Region match the ARNs the shim reports.
+	id, warns := awsidentity.FromEnv(os.Getenv)
+	for _, w := range warns {
+		fmt.Fprintln(os.Stderr, "cfn: warning:", w)
+	}
+	awsidentity.Set(id)
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)

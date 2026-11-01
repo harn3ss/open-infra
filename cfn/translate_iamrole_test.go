@@ -376,7 +376,7 @@ Resources:
 		{"${Assets}", map[string]any{"Assets": "other"}, "${Assets}"},
 		{"${Assets.DomainName}", nil, "${Assets.DomainName}"},
 		{"${Jobs}", nil, "${Jobs}"}, // a queue's Ref is its URL — never part of an ARN
-		{"${Jobs.Arn}", nil, "arn:aws:sqs:openinfra:000000000000:jobs"},
+		{"${Jobs.Arn}", nil, "arn:aws:sqs:us-east-1:000000000000:jobs"},
 		{"${AWS::Region}:${Unknown.Arn}", nil, "${AWS::Region}:${Unknown.Arn}"},
 		{"unterminated ${Assets", nil, "unterminated ${Assets"},
 	}

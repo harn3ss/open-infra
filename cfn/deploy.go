@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -726,7 +727,7 @@ func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, 
 	event, _ := json.Marshal(map[string]any{
 		"RequestType":        "Create",
 		"ResponseURL":        "", // open-infra: the handler returns the response synchronously (no S3 callback)
-		"StackId":            opts.StackName,
+		"StackId":            awsidentity.Current().StackID(opts.StackName),
 		"RequestId":          opts.StackName + "/" + id,
 		"ResourceType":       resType,
 		"LogicalResourceId":  id,

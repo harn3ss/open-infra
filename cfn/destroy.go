@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // Destroy tears down a stack. It returns the resulting record (DELETE_COMPLETE — with any
@@ -177,7 +179,7 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 				resType, _ := r.Spec["resourceType"].(string)
 				props, _ := r.Spec["properties"].(map[string]any)
 				event, _ := json.Marshal(map[string]any{
-					"RequestType": "Delete", "ResponseURL": "", "StackId": opts.StackName,
+					"RequestType": "Delete", "ResponseURL": "", "StackId": awsidentity.Current().StackID(opts.StackName),
 					"RequestId": opts.StackName + "/" + r.LogicalID, "ResourceType": resType,
 					"LogicalResourceId": r.LogicalID, "ResourceProperties": props,
 				})

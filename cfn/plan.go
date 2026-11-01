@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 type Verdict string
@@ -335,20 +337,22 @@ func (p *Plan) hasUndeployable() bool {
 	return false
 }
 
-// pseudoParams returns the AWS pseudo-parameter values used for resolution. They are
-// placeholders — Phase 1 does not provision, so exact values do not matter, only that the
-// references resolve rather than becoming findings.
+// pseudoParams returns the AWS pseudo-parameter values used for resolution: the install's identity
+// (awsidentity.Current — the account, region and partition the aws-shim reports), and the stack's own
+// StackId, the same ARN the CloudFormation front door returns for it. An ARN a template builds from
+// them therefore matches the ARN the shim reports, as on AWS.
 func pseudoParams(stackName string) map[string]any {
 	if stackName == "" {
 		stackName = "openinfra-stack"
 	}
+	id := awsidentity.Current()
 	return map[string]any{
-		"AWS::Region":           "openinfra",
-		"AWS::AccountId":        "000000000000",
-		"AWS::Partition":        "aws",
-		"AWS::URLSuffix":        "amazonaws.com",
+		"AWS::Region":           id.Region,
+		"AWS::AccountId":        id.AccountID,
+		"AWS::Partition":        awsidentity.Partition,
+		"AWS::URLSuffix":        awsidentity.URLSuffix,
 		"AWS::StackName":        stackName,
-		"AWS::StackId":          "openinfra/" + stackName,
+		"AWS::StackId":          id.StackID(stackName),
 		"AWS::NoValue":          nil,
 		"AWS::NotificationARNs": []any{},
 	}
