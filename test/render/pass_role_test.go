@@ -68,7 +68,7 @@ func TestPassRole_AdminsYesPowerUsersNo(t *testing.T) {
 	mustContain(t, "admins binding", yamlDoc(t, passRoleYAML, "ClusterRoleBinding", "openinfra-pass-role-admins"),
 		"name: openinfra-pass-role\n", "name: openinfra:admins")
 	mustContain(t, "provider binding", yamlDoc(t, passRoleYAML, "ClusterRoleBinding", "openinfra-pass-role-provider"),
-		"name: openinfra-pass-role\n", "name: system:serviceaccounts:crossplane-system")
+		"name: openinfra-pass-role\n", "kind: ServiceAccount\n    name: provider-kubernetes\n    namespace: crossplane-system")
 
 	b, err := os.ReadFile(passRoleYAML)
 	if err != nil {

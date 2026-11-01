@@ -47,10 +47,9 @@ subjects:
     apiGroup: rbac.authorization.k8s.io
 ---
 # provider-kubernetes creates the per-VM ServiceAccount (with its instance-role annotation) from a
-# VirtualMachine claim that already passed the check. Its ServiceAccount name changes with the package
-# revision, so it is bound through its namespace's group, as openinfra-provider-kubernetes is
-# (provider-setup.yaml). No other identity in crossplane-system can create VirtualMachines or
-# ServiceAccounts, so the verb unlocks nothing else there.
+# VirtualMachine claim that already passed the check. It runs as the fixed ServiceAccount name
+# provider-kubernetes (provider-setup.yaml), so the verb is bound to it alone. TRANSITIONAL: the
+# namespace group stays until the provider runs under that name and the corpus is regenerated.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -60,6 +59,9 @@ roleRef:
   kind: ClusterRole
   name: openinfra-pass-role
 subjects:
+  - kind: ServiceAccount
+    name: provider-kubernetes
+    namespace: crossplane-system
   - kind: Group
     name: system:serviceaccounts:crossplane-system
     apiGroup: rbac.authorization.k8s.io
