@@ -1828,6 +1828,20 @@ func translateEC2SecurityGroupRule(id string, props map[string]any, ctx *stackCt
 		"SourceSecurityGroupId": true, "DestinationSecurityGroupId": true,
 	}
 	f := blockUnknownProps(id, props, known)
+	// A rule has one source (ingress) or destination (egress); a second one beside it is refused, never
+	// ignored. GroupName names a default-VPC group by name, which has no open-infra form (use GroupId).
+	var sources []string
+	for _, k := range []string{"CidrIp", "CidrIpv6", "SourceSecurityGroupId", "DestinationSecurityGroupId"} {
+		if v, ok := props[k]; ok && v != nil {
+			sources = append(sources, k)
+		}
+	}
+	if len(sources) > 1 {
+		f = append(f, Finding{"Resource " + id, "a security group rule has one source or destination, but this one sets " + strings.Join(sources, " and ") + " — split it into one rule each"})
+	}
+	if _, ok := props["GroupName"]; ok {
+		f = append(f, Finding{"Resource " + id, "GroupName (a default-VPC group by name) is not translatable — name the group with GroupId: !Ref an in-stack AWS::EC2::SecurityGroup"})
+	}
 	inStack := false
 	if ctx != nil {
 		if raw, ok := ctx.rawProps(id); ok {
@@ -1916,6 +1930,20 @@ func translateEC2Route(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	}
 	if f := blockUnknownProps(id, props, known); len(f) > 0 {
 		return nil, f
+	}
+	// AWS gives a route one target; a second one set beside it is refused, never ignored.
+	var targets []string
+	for _, k := range []string{"GatewayId", "NatGatewayId", "VpcPeeringConnectionId", "InstanceId", "NetworkInterfaceId",
+		"TransitGatewayId", "CarrierGatewayId", "EgressOnlyInternetGatewayId", "LocalGatewayId", "VpcEndpointId", "CoreNetworkArn"} {
+		if v, ok := props[k]; ok && v != nil {
+			targets = append(targets, k)
+		}
+	}
+	if len(targets) > 1 {
+		return nil, []Finding{{"Resource " + id, "a route has one target, but this one sets " + strings.Join(targets, " and ") + " — CloudFormation refuses it too"}}
+	}
+	if _, ok := props["DestinationIpv6CidrBlock"]; ok && props["DestinationCidrBlock"] != nil {
+		return nil, []Finding{{"Resource " + id, "a route has one destination, but this one sets DestinationCidrBlock and DestinationIpv6CidrBlock"}}
 	}
 	cidr, _ := concrete(props["DestinationCidrBlock"])
 	if cidr == "" {

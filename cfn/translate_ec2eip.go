@@ -232,6 +232,9 @@ func translateEC2EIPAssociation(id string, props map[string]any, ctx *stackCtx) 
 	if ctx == nil {
 		return refuse("an EIPAssociation needs stack context to resolve its instance and address")
 	}
+	if _, eip := props["EIP"]; eip && props["AllocationId"] != nil {
+		return refuse("an EIPAssociation names its address once — AllocationId or EIP (the legacy public-address form), not both")
+	}
 	if _, ok := props["NetworkInterfaceId"]; ok {
 		return refuse("association by NetworkInterfaceId does not map — this engine models no standalone ENI (AWS::EC2::NetworkInterface has no backing kind; only an instance's primary NetworkInterfaces[0] folds into its VM). Associate the EIP by InstanceId with an in-stack AWS::EC2::Instance instead")
 	}

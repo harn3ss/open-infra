@@ -84,15 +84,6 @@ func init() {
 	for _, p := range []string{"Code", "CodeS3Location", "MaxBatchSize", "RequestMappingTemplateS3Location", "ResponseMappingTemplateS3Location", "Runtime", "SyncConfig"} {
 		guardDeferred["AWS::AppSync::FunctionConfiguration."+p] = lenient
 	}
-	guardDeferred["AWS::EC2::EIPAssociation.EIP"] = "the legacy EIP (public address) form is ignored when AllocationId is set, rather than refused"
-	for _, p := range []string{"CarrierGatewayId", "CoreNetworkArn", "DestinationIpv6CidrBlock", "EgressOnlyInternetGatewayId", "InstanceId", "LocalGatewayId", "NatGatewayId", "NetworkInterfaceId", "TransitGatewayId", "VpcEndpointId", "VpcPeeringConnectionId"} {
-		guardDeferred["AWS::EC2::Route."+p] = "a second route target beside an InternetGateway is ignored rather than refused (AWS allows one target)"
-	}
-	for _, typ := range []string{"AWS::EC2::SecurityGroupIngress", "AWS::EC2::SecurityGroupEgress"} {
-		for _, p := range []string{"CidrIpv6", "DestinationSecurityGroupId", "GroupName", "SourceSecurityGroupId"} {
-			guardDeferred[typ+"."+p] = "a second rule source beside CidrIp is ignored rather than refused"
-		}
-	}
 }
 
 // guardUnreported are collated types whose properties another translator reads without reporting the
