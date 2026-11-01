@@ -88,6 +88,7 @@ spec:
       command: [sh, -c]
       args:
         - |
+          export MC_CONFIG_DIR=/tmp/.mc   # the image runs as non-root with no writable HOME
           mc alias set m http://minio.$MINIO_NS.svc.cluster.local:9000 "\$RU" "\$RP" >/dev/null || exit 1
           mc rb --force "m/$bucket" >/dev/null 2>&1 && echo "removed bucket $bucket" || echo "bucket $bucket already gone"
           for u in $*; do
@@ -200,7 +201,8 @@ log "  ✓ GET /deep/client/route → 200 index.html (SPA fallback)"
 
 ASSET="$(fetch "http://$SITE-site/assets/app.js")"
 printf '%s' "$ASSET" | grep -q "asset-$SFX" || fail "a real asset was not served as itself (got the fallback?): $(snip "$ASSET")"
-printf '%s' "$ASSET" | grep -q "$MARKER" && fail "/assets/app.js served index.html instead of the asset"
+# The marker is also the X-Probe-Header value, so look for index.html's marker in the BODY only.
+printf '%s' "$ASSET" | sed '1,/^$/d' | grep -q "$MARKER" && fail "/assets/app.js served index.html instead of the asset"
 log "  ✓ GET /assets/app.js → the asset itself"
 
 for r in "$OUT" "$DEEP" "$ASSET"; do

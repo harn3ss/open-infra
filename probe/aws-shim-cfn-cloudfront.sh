@@ -104,6 +104,7 @@ spec:
       command: [sh, -c]
       args:
         - |
+          export MC_CONFIG_DIR=/tmp/.mc   # the image runs as non-root with no writable HOME
           mc alias set m http://minio.$MINIO_NS.svc.cluster.local:9000 "\$RU" "\$RP" >/dev/null || exit 1
           mc rb --force "m/$bucket" >/dev/null 2>&1 && echo "removed bucket $bucket" || echo "bucket $bucket already gone"
           for u in $*; do
