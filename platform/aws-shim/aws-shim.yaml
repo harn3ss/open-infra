@@ -492,7 +492,8 @@ metadata:
   name: openinfra-execution-credentials
 spec:
   policyName: openinfra-execution-credentials
-  validationActions: [Warn, Audit]
+  # Deny, with an audit annotation (after a Warn + Audit canary: only the shim names these fields).
+  validationActions: [Deny, Audit]
 ---
 # Owner resolution: read kind: User (NEVER Secrets) in the console namespace, to map an access
 # key's owner to its current groups. get+list only; nothing mutating.
