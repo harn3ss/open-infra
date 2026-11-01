@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -278,14 +279,41 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 		byID[id] = built
 	}
 	findings = append(findings, r.findings...)
-	if len(findings) > 0 {
-		return nil, fmt.Errorf("translate gate REJECTED — refusing (nothing applied):\n  - %s", joinFindings(findings))
-	}
 	var order []builtResource
 	for _, id := range plan.Order {
 		order = append(order, byID[id]...)
 	}
+	seen := objectSet{}
+	for _, b := range order {
+		findings = append(findings, seen.add(b)...)
+	}
+	if len(findings) > 0 {
+		return nil, fmt.Errorf("translate gate REJECTED — refusing (nothing applied):\n  - %s", joinFindings(findings))
+	}
 	return order, nil
+}
+
+// objectSet tracks the objects one stack operation applies, by apiVersion, kind and name. Two resources of
+// a stack that resolve to one object (an explicit FunctionName equal to another Function's generated name)
+// would overwrite each other under one stack label, which no ownership check can see; add refuses the
+// second. The one exception is a companion several resources emit identically (the stack's default
+// EncryptionKey that each encrypted disk carries) — that is one object applied more than once on purpose.
+type objectSet map[string]builtResource
+
+func (s objectSet) add(b builtResource) []Finding {
+	key := b.res.APIVersion + "/" + b.res.Kind + "/" + b.res.Name
+	prev, dup := s[key]
+	if !dup {
+		s[key] = b
+		return nil
+	}
+	if prev.res.LogicalID == b.res.LogicalID {
+		return nil
+	}
+	if (b.shared && prev.shared) || (strings.Contains(b.res.LogicalID, "/") && strings.Contains(prev.res.LogicalID, "/") && specEqual(b.res.Spec, prev.res.Spec)) {
+		return nil
+	}
+	return []Finding{{"Resource " + b.res.LogicalID, fmt.Sprintf("%s %q is also %s's name — two resources of one stack cannot be one object (rename one, or drop its explicit name)", b.res.Kind, b.res.Name, prev.res.LogicalID)}}
 }
 
 // Deploy runs the full fail-closed create. It returns the final stack record (whose Status is
@@ -452,6 +480,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		return nil
 	}
 
+	seen := objectSet{}
 	for _, id := range plan.Order {
 		res := t.Resources[id]
 		tr := translatorFor(res.Type)
@@ -502,6 +531,9 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		}
 		pending := make([]StackResource, 0, len(built))
 		for _, b := range built {
+			if fs := seen.add(b); len(fs) > 0 {
+				return rollback(fmt.Errorf("translate gate REJECTED:\n  - %s", joinFindings(fs)))
+			}
 			pending = append(pending, b.res)
 		}
 		if werr := intend(pending...); werr != nil {

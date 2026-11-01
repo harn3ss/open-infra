@@ -27,6 +27,11 @@ const maxPhysNameLen = 40
 type physNamer struct {
 	stack string
 	prior map[string]string // logical id -> the name the existing stack recorded for it
+	// folded is, for the template being named, each Kubernetes-form logical id (lowercased) that more
+	// than one logical id reduces to. CloudFormation logical ids are case-sensitive, so MyDB and Mydb are
+	// two resources; lowercased they would share one object. Computed once per template.
+	folded     map[string]bool
+	foldedFrom *Template
 }
 
 // newPhysNamer builds the namer for a stack. prior is the stack's recorded resources (nil for a new
@@ -42,8 +47,30 @@ func newPhysNamer(stack string, prior []StackResource) *physNamer {
 }
 
 func (n *physNamer) name(id string) string {
+	return n.nameIn(id, nil)
+}
+
+// nameIn is name for a resource of template t. Logical ids that differ only in case (or in characters a
+// Kubernetes name cannot hold) would reduce to one name; each of them then gets a name that ends in a
+// hash of its exact logical id, so they stay two objects. A name the stack already recorded is kept.
+func (n *physNamer) nameIn(id string, t *Template) string {
 	if v, ok := n.prior[id]; ok {
 		return v
+	}
+	if t != nil && n.foldedFrom != t {
+		n.folded, n.foldedFrom = map[string]bool{}, t
+		seen := map[string]int{}
+		for other := range t.Resources {
+			seen[k8sName(other)]++
+		}
+		for k, c := range seen {
+			if c > 1 {
+				n.folded[k] = true
+			}
+		}
+	}
+	if n.folded[k8sName(id)] {
+		return hashedName(n.stack, id, stackQualifiedName(n.stack, id))
 	}
 	return stackQualifiedName(n.stack, id)
 }
@@ -60,7 +87,7 @@ func (c *stackCtx) name(id string) string {
 	if c == nil || c.namer == nil {
 		return k8sName(id)
 	}
-	return c.namer.name(id)
+	return c.namer.nameIn(id, c.template)
 }
 
 // stackQualifiedName is <stack>-<logical id> in RFC 1123 form, shortened with a hash past
@@ -82,6 +109,12 @@ func stackQualifiedName(stack, id string) string {
 	if len(n) <= maxPhysNameLen && n != "" && !strings.HasPrefix(n, "xn--") {
 		return n
 	}
+	return hashedName(stack, id, n)
+}
+
+// hashedName is n shortened to fit maxPhysNameLen with a hash of the stack and exact logical id appended,
+// so it is unique per (stack, logical id) even where n is not.
+func hashedName(stack, id, n string) string {
 	sum := sha256.Sum256([]byte(stack + "\x00" + id))
 	h := hex.EncodeToString(sum[:])[:8]
 	head := n

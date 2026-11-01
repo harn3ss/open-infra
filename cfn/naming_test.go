@@ -232,3 +232,61 @@ Resources:
 		t.Errorf("stack two's volume missing: %v", keysOf(f.liveSpecs))
 	}
 }
+
+// Logical ids are case-sensitive on AWS: MyDB and Mydb are two resources. Lowercased they would be one
+// object, so each gets a name ending in a hash of its exact id — two objects, both stable.
+func TestNaming_CaseCollidingLogicalIDsStayTwoObjects(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  MyDB: { Type: AWS::KMS::Key }
+  Mydb: { Type: AWS::KMS::Key }
+  Other: { Type: AWS::KMS::Key }
+`)
+	names := map[string]string{}
+	for run := 0; run < 2; run++ {
+		f := &fakeApplier{}
+		rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+		if err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		for _, r := range rec.Resources {
+			if run == 1 && names[r.LogicalID] != r.Name {
+				t.Errorf("%s renamed between runs: %q then %q", r.LogicalID, names[r.LogicalID], r.Name)
+			}
+			names[r.LogicalID] = r.Name
+		}
+	}
+	if names["MyDB"] == names["Mydb"] {
+		t.Fatalf("MyDB and Mydb share the object %q", names["MyDB"])
+	}
+	for _, id := range []string{"MyDB", "Mydb"} {
+		if !strings.HasPrefix(names[id], "s-mydb-") || len(names[id]) > maxPhysNameLen {
+			t.Errorf("%s is named %q, want s-mydb-<hash>", id, names[id])
+		}
+	}
+	if names["Other"] != "s-other" {
+		t.Errorf("a resource with no case collision keeps its plain name, got %q", names["Other"])
+	}
+}
+
+// Two resources that name one object outright (an explicit FunctionName equal to another Function's
+// generated name) are refused at the gate: applied in turn, the second would silently replace the first.
+func TestNaming_TwoResourcesOneObjectRefused(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties: { PackageType: Image, Code: { ImageUri: "registry.example/fn:1" } }
+  Other:
+    Type: AWS::Lambda::Function
+    Properties: { FunctionName: s-fn, PackageType: Image, Code: { ImageUri: "registry.example/fn:2" } }
+`)
+	f := &fakeApplier{}
+	_, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+	if err == nil || !strings.Contains(err.Error(), "two resources of one stack cannot be one object") {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+	if len(f.applied) != 0 {
+		t.Fatalf("nothing may be applied, got %v", f.applied)
+	}
+}
