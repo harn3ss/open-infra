@@ -1437,15 +1437,15 @@ func TestQuery_SecurityHardening(t *testing.T) {
 // copied the MinIO ROOT key (rootUser/rootPassword) straight into every app's <name>-minio
 // secret, so any app that declared a bucket could read or delete EVERY tenant's data. The
 // bucket-setup Job must now use root ONLY to provision (create buckets + mint a user) and hand
-// the app a per-app, NON-root user (app-<name>) scoped to exactly its declared buckets. A
-// refactor that pipes the root key back into the app secret must turn this red.
+// the app a per-app, NON-root user (app-<namespace>-<name>-<hash>) scoped to exactly its declared
+// buckets. A refactor that pipes the root key back into the app secret must turn this red.
 func TestApplicationBuckets_ScopedIdentityNotRoot(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 	out := render(t, tmpl, appBucketsCtx())
 
 	// Positive: the app is minted its own scoped identity and handed THAT, not root.
 	for _, want := range []string{
-		`APPUSER="app-myapp"`,                        // the per-app, non-root identity (name from the claim)
+		`APPUSER="app-default-myapp-`,                // the per-app, non-root identity (namespace + claim + hash)
 		"admin user add",                             // it is minted...
 		"admin policy create",                        // ...with a policy...
 		`"Action":["s3:*"]`,                          // ...that grants object ops...
@@ -1570,6 +1570,10 @@ func TestNoComposition_ExportsMinioRoot(t *testing.T) {
 				"job, not report a false-green (#151 fault 1).", e.Name(), loc)
 		}
 		if strings.Contains(s, `APPUSER="app-{{ $name }}"`) {
+			t.Errorf("%s names its MinIO user app-<name>, which every same-named claim in another "+
+				"namespace shares; name it from the claim's kind, namespace and name.", e.Name())
+		}
+		if strings.Contains(s, `APPUSER="{{ $appUser }}"`) || strings.Contains(s, `APPUSER="{{ $bktUser }}"`) {
 			minting++
 		}
 	}
@@ -1580,7 +1584,7 @@ func TestNoComposition_ExportsMinioRoot(t *testing.T) {
 	// compositions, so the two assertions above can't silently pass because the whole mechanism
 	// was renamed away. bucket + application + the six ML/site paths = 8.
 	if minting < 8 {
-		t.Errorf("expected >=8 compositions to mint a scoped app-<name> user; found %d "+
+		t.Errorf("expected >=8 compositions to mint a scoped per-claim user; found %d "+
 			"(did a bucket-provisioning path lose its scoped identity?)", minting)
 	}
 }

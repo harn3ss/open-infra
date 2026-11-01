@@ -62,7 +62,7 @@ spec:
                     required: [name, bucket]
                     properties:
                       name:   { type: string, description: "Channel name (used in the env var; upper-cased)." }
-                      bucket: { type: string }
+                      bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                       prefix: { type: string, description: "Optional key prefix." }
                 outputs:
                   type: array
@@ -72,7 +72,7 @@ spec:
                     required: [name, bucket]
                     properties:
                       name:   { type: string }
-                      bucket: { type: string }
+                      bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                       prefix: { type: string }
                 gpu:
                   type: integer

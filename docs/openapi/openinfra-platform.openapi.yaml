@@ -4423,7 +4423,9 @@ components:
                   type: array
                   items:
                     type: string
-                  description: S3-compatible bucket names to create and grant the app access to (MinIO).
+                    pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
+                  description: 'S3-compatible bucket names to create and grant the app access to (MinIO). Bucket names are
+                    global: a bucket that belongs to another namespace is refused.'
             queues:
               type: array
               items:
@@ -4824,6 +4826,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                 key:
                   type: string
                   description: Object key of the model artifact.
@@ -4835,6 +4838,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                 prefix:
                   type: string
                   description: Key prefix of the input records.
@@ -4847,6 +4851,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                 prefix:
                   type: string
                   description: Key prefix for the predictions.
@@ -4918,8 +4923,9 @@ components:
           properties:
             bucketName:
               type: string
-              description: The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens),
-                3-63 chars. Immutable.
+              description: 'The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens),
+                3-63 chars. Immutable. Bucket names are global, as on S3: the bucket belongs to the namespace whose claim
+                created it, and a claim in another namespace that names it is refused.'
               pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
             versioning:
               type: boolean
@@ -6941,6 +6947,7 @@ components:
                   properties:
                     bucket:
                       type: string
+                      pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                     key:
                       type: string
                       description: Object key (or prefix) of the artifact.
@@ -7037,6 +7044,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                 key:
                   type: string
                   description: Object key of the baseline JSONL.
@@ -7048,6 +7056,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                 prefix:
                   type: string
             output:
@@ -7058,6 +7067,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                 prefix:
                   type: string
             features:
@@ -7514,6 +7524,7 @@ components:
                     description: Channel name (used in the env var; upper-cased).
                   bucket:
                     type: string
+                    pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                   prefix:
                     type: string
                     description: Optional key prefix.
@@ -7530,6 +7541,7 @@ components:
                     type: string
                   bucket:
                     type: string
+                    pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                   prefix:
                     type: string
             gpu:
@@ -8241,7 +8253,7 @@ components:
             bucket:
               type: string
               description: MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio
-                connection secret (endpoint + credentials) for uploads.
+                connection secret (endpoint + credentials) for uploads. A bucket that belongs to another namespace is refused.
               pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
             tls:
               type: boolean
@@ -8673,7 +8685,8 @@ components:
               properties:
                 bucket:
                   type: string
-                  description: Existing bucket holding the training data.
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
+                  description: Existing bucket holding the training data. It must belong to this namespace (or not exist yet).
                 prefix:
                   type: string
                   description: Optional key prefix within the bucket.
@@ -8684,6 +8697,7 @@ components:
               properties:
                 bucket:
                   type: string
+                  pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
                   description: Artifact bucket (created on demand).
                 prefix:
                   type: string

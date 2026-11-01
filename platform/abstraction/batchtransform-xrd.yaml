@@ -54,21 +54,21 @@ spec:
                   type: object
                   description: "The model artifact to score with (injected as ARTIFACT_BUCKET/ARTIFACT_KEY). Optional if the model is baked into the image."
                   properties:
-                    bucket: { type: string }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                     key:    { type: string, description: "Object key of the model artifact." }
                 input:
                   type: object
                   required: [bucket]
                   description: "The dataset to score (injected as INPUT_BUCKET/INPUT_PREFIX)."
                   properties:
-                    bucket: { type: string }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                     prefix: { type: string, description: "Key prefix of the input records." }
                 output:
                   type: object
                   required: [bucket]
                   description: "Where predictions are written (injected as OUTPUT_BUCKET/OUTPUT_PREFIX). The bucket is created on demand."
                   properties:
-                    bucket: { type: string }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                     prefix: { type: string, description: "Key prefix for the predictions." }
                 modelPackage:
                   type: string

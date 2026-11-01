@@ -73,7 +73,7 @@ spec:
                       type: object
                       description: "The trained model artifact in the object store."
                       properties:
-                        bucket: { type: string }
+                        bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                         key:    { type: string, description: "Object key (or prefix) of the artifact." }
                     gpu:     { type: integer, default: 0, description: "GPUs for serving (0 = CPU-only)." }
                     gpuTier: { type: string, enum: [smallgpu, largegpu], default: smallgpu, description: "GPU class when gpu>0." }

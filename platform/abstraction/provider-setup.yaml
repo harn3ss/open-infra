@@ -220,6 +220,93 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 ---
+# Bucket ownership, shared by every bucket-setup Job (Bucket, StaticSite, Application storage.buckets
+# and the ML kinds). Each Job mounts this script and calls `claim_bucket <bucket>` for every bucket
+# before it creates, configures or grants anything.
+#
+# Bucket names are global, so a bucket belongs to the namespace whose claim created it. The record is
+# a Secret bucket-owner-<bucket> here in the minio namespace, which tenants cannot write. It is created
+# atomically before the bucket, so two claims racing for one name cannot both win. A claim from another
+# namespace that names the bucket fails its Job: no policy, no credentials. Platform buckets are never
+# handed to a claim.
+#
+# A bucket that exists with no record predates these records. It is adopted only if it was created
+# after this claim's composite, i.e. by this claim's own earlier setup. An older one is refused until
+# an admin records its owner; the refusal prints the command.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-bucket-ownership
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+data:
+  bucket-ownership.sh: |
+    # Sourced by POSIX sh. Needs E (the MinIO endpoint), MinIO root in AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY or ROOT_USER / ROOT_PASS, and OWNER_NS, OWNER_REF and XR_CREATED (the
+    # claim's namespace, <Kind>/<namespace>/<name>, and its composite's creationTimestamp).
+    PLATFORM_BUCKETS="velero lakehouse db-snapshots query-results openinfra-audit ecr-registry"
+
+    oi_refuse() { echo "BucketAlreadyExists: $*" >&2; exit 1; }
+
+    oi_epoch() { date -u -d "$(printf '%.19s' "$1" | tr T ' ')" +%s 2>/dev/null; }
+
+    # The bucket's creation time, or "None" if it does not exist.
+    oi_bucket_created() {
+      AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-$ROOT_USER}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-$ROOT_PASS}" \
+        AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+        aws --endpoint-url "$E" s3api list-buckets --query "Buckets[?Name=='$1'].CreationDate | [0]" --output text
+    }
+
+    # Returns only when bucket $1 is (now) this namespace's; otherwise exits the Job.
+    claim_bucket() {
+      b="$1"
+      case "$b" in '' | *[!a-z0-9.-]*) oi_refuse "invalid bucket name '$b'" ;; esac
+      for p in $PLATFORM_BUCKETS; do
+        [ "$b" != "$p" ] || oi_refuse "bucket $b is a platform bucket; $OWNER_REF cannot use it"
+      done
+      [ -n "$OWNER_NS" ] && [ -n "$OWNER_REF" ] || { echo "claim_bucket: OWNER_NS and OWNER_REF must be set" >&2; exit 1; }
+      rec="bucket-owner-$b"
+      for _ in 1 2 3; do
+        if ! owner=$(kubectl get secret "$rec" -n minio --ignore-not-found -o jsonpath='{.data.namespace}'); then
+          echo "cannot read the owner record of bucket $b" >&2; exit 1
+        fi
+        if [ -n "$owner" ]; then
+          owner=$(printf '%s' "$owner" | base64 -d)
+          if [ "$owner" = "$OWNER_NS" ]; then
+            echo "bucket $b belongs to namespace $OWNER_NS"
+            return 0
+          fi
+          oi_refuse "bucket $b belongs to another namespace ($owner); $OWNER_REF cannot use it"
+        fi
+        if ! made=$(oi_bucket_created "$b"); then
+          echo "cannot list buckets to check $b" >&2; exit 1
+        fi
+        if [ -n "$made" ] && [ "$made" != "None" ]; then
+          m=$(oi_epoch "$made") || m=""
+          x=$(oi_epoch "$XR_CREATED") || x=""
+          if [ -z "$m" ] || [ -z "$x" ] || [ "$m" -lt "$x" ]; then
+            oi_refuse "bucket $b exists, has no owner record and predates $OWNER_REF." \
+              "If it belongs to namespace $OWNER_NS, an admin records that with:" \
+              "kubectl -n minio create secret generic $rec --from-literal=namespace=$OWNER_NS --from-literal=owner=$OWNER_REF" \
+              "&& kubectl -n minio label secret $rec openinfra.dev/bucket-owner=true"
+          fi
+        fi
+        if out=$(kubectl create secret generic "$rec" -n minio --from-literal=namespace="$OWNER_NS" --from-literal=owner="$OWNER_REF" --dry-run=client -o yaml \
+            | kubectl label --local -f - openinfra.dev/bucket-owner=true -o yaml | kubectl create -f - 2>&1); then
+          echo "bucket $b recorded as owned by namespace $OWNER_NS"
+          return 0
+        fi
+        case "$out" in
+          *AlreadyExists*) ;; # another claim recorded it first: read the record again
+          *) echo "cannot record the owner of bucket $b: $out" >&2; exit 1 ;;
+        esac
+      done
+      echo "the owner of bucket $b did not settle" >&2
+      exit 1
+    }
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

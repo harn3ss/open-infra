@@ -65,7 +65,7 @@ spec:
                         description: "Header value: printable ASCII, without double quotes, backslashes or dollar signs."
                 bucket:
                   type: string
-                  description: "MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio connection secret (endpoint + credentials) for uploads."
+                  description: "MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio connection secret (endpoint + credentials) for uploads. A bucket that belongs to another namespace is refused."
                   pattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
                 tls:
                   type: boolean

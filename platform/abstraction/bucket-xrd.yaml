@@ -43,7 +43,7 @@ spec:
               properties:
                 bucketName:
                   type: string
-                  description: "The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens), 3-63 chars. Immutable."
+                  description: "The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens), 3-63 chars. Immutable. Bucket names are global, as on S3: the bucket belongs to the namespace whose claim created it, and a claim in another namespace that names it is refused."
                   pattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
                 versioning:
                   type: boolean

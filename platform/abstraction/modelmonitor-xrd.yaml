@@ -48,21 +48,21 @@ spec:
                   required: [bucket, key]
                   description: "The reference dataset (JSONL of feature records) drift is measured against."
                   properties:
-                    bucket: { type: string }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                     key:    { type: string, description: "Object key of the baseline JSONL." }
                 current:
                   type: object
                   required: [bucket]
                   description: "Where recent data/predictions to check live (JSONL under this prefix)."
                   properties:
-                    bucket: { type: string }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                     prefix: { type: string }
                 output:
                   type: object
                   required: [bucket]
                   description: "Where drift reports are written (report-<timestamp>.json + latest.json). Bucket created on demand."
                   properties:
-                    bucket: { type: string }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
                     prefix: { type: string }
                 features:
                   type: array

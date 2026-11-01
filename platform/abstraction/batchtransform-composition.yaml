@@ -58,7 +58,16 @@ spec:
                 manifest:
                   apiVersion: batch/v1
                   kind: Job
-                  metadata: { name: {{ $name }}-bt-bucket-setup, namespace: minio }
+                  {{- range $b := $buckets }}
+                  {{-   if ne (regexReplaceAll "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" (printf "%v" $b) "") "" }}{{- fail (printf "kind: BatchTransform %s/%s: bucket %q is not a valid S3 bucket name (3-63 lowercase letters, digits, dots, hyphens)" $ns $name (printf "%v" $b)) }}{{- end }}
+                  {{- end }}
+                  {{- /* Tenant isolation: each bucket belongs to this namespace (bucket-ownership.sh in
+                         provider-setup.yaml); the MinIO user and this Job are named from the claim's kind,
+                         namespace and name. */}}
+                  {{- $bktOwner := printf "BatchTransform/%s/%s" $ns $name }}
+                  {{- $bktUser := printf "app-%s-%s" (printf "%s-%s" $ns $name | replace "." "-" | trunc 40 | trimSuffix "-") ($bktOwner | sha256sum | trunc 10) }}
+                  {{- $bktHash := printf "%s|own-v1" $bktOwner | sha256sum | trunc 5 }}
+                  metadata: { name: {{ $name }}-bt-bucket-{{ $bktHash }}, namespace: minio }
                   spec:
                     backoffLimit: 20
                     # No ttlSecondsAfterFinished: provider-kubernetes recreates a TTL-GC'd managed Job
@@ -71,6 +80,7 @@ spec:
                         restartPolicy: OnFailure
                         volumes:
                           - { name: mc, emptyDir: {} }
+                          - { name: ownership, configMap: { name: openinfra-bucket-ownership } }
                         initContainers:
                           # Bring `mc` in OFFLINE (copied from its image) — for bucket creation
                           # AND minting the scoped per-app user/policy (#151 faults 1+3).
@@ -81,7 +91,7 @@ spec:
                         containers:
                           - name: setup
                             image: alpine/k8s:1.30.0
-                            volumeMounts: [{ name: mc, mountPath: /mc }]
+                            volumeMounts: [{ name: mc, mountPath: /mc }, { name: ownership, mountPath: /opt/openinfra, readOnly: true }]
                             env:
                               # Root provisions ONLY (create buckets + mint the scoped user);
                               # it is never written into the app secret (#151 fault 3).
@@ -89,6 +99,9 @@ spec:
                                 valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
                               - name: ROOT_PASS
                                 valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - { name: OWNER_NS, value: {{ $ns | quote }} }
+                              - { name: OWNER_REF, value: {{ $bktOwner | quote }} }
+                              - { name: XR_CREATED, value: {{ $.observed.composite.resource.metadata.creationTimestamp | default "" | quote }} }
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
@@ -98,6 +111,11 @@ spec:
                                 # alias set validates root up front — a rotated/wrong root key fails
                                 # HERE, loud, instead of a false-green (#151 faults 1+2).
                                 "$MC" alias set m "$E" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+                                # 0. Every bucket must be this namespace's (or new) before anything is created or granted.
+                                . /opt/openinfra/bucket-ownership.sh
+                                for b in {{ range $buckets }}{{ . }} {{ end }}; do
+                                  claim_bucket "$b"
+                                done
                                 # 1. Create each bucket idempotently but FAIL LOUD (#151 fault 1).
                                 for b in {{ range $buckets }}{{ . }} {{ end }}; do
                                   "$MC" mb --ignore-existing "m/$b"
@@ -105,7 +123,7 @@ spec:
                                 done
                                 # 2. Mint a PER-APP, NON-root user scoped to ONLY these buckets (#151 fault 3);
                                 #    reuse the existing key across re-syncs so app creds stay stable.
-                                APPUSER="app-{{ $name }}"
+                                APPUSER="{{ $bktUser }}"
                                 SK=$(kubectl get secret {{ $name }}-minio -n {{ $ns }} -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
                                 [ -n "$SK" ] || SK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
                                 "$MC" admin user add m "$APPUSER" "$SK" >/dev/null

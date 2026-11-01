@@ -263,8 +263,8 @@ spec:
                   properties:
                     buckets:
                       type: array
-                      items: { type: string }
-                      description: "S3-compatible bucket names to create and grant the app access to (MinIO)."
+                      items: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" }
+                      description: "S3-compatible bucket names to create and grant the app access to (MinIO). Bucket names are global: a bucket that belongs to another namespace is refused."
                 queues:
                   type: array
                   items: { type: string }

@@ -1828,6 +1828,15 @@ spec:
                     {{- end }}
             {{- end }}
             {{- if and $spec.storage $spec.storage.buckets }}
+            {{- range $b := $spec.storage.buckets }}
+            {{-   if ne (regexReplaceAll "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" (printf "%v" $b) "") "" }}{{- fail (printf "kind: Application %s/%s: storage.buckets %q is not a valid S3 bucket name (3-63 lowercase letters, digits, dots, hyphens)" $ns $name (printf "%v" $b)) }}{{- end }}
+            {{- end }}
+            {{- /* Tenant isolation: each bucket belongs to this namespace (bucket-ownership.sh in
+                   provider-setup.yaml); the MinIO user and the setup Job are named from the claim's
+                   kind, namespace and name, so a same-named app elsewhere shares neither. */}}
+            {{- $bktOwner := printf "Application/%s/%s" $ns $name }}
+            {{- $bktUser := printf "app-%s-%s" (printf "%s-%s" $ns $name | replace "." "-" | trunc 40 | trimSuffix "-") ($bktOwner | sha256sum | trunc 10) }}
+            {{- $bktHash := printf "%s|own-v1" $bktOwner | sha256sum | trunc 5 }}
             ---
             # --- Object storage ("S3"): one Job (mc + kubectl in alpine/k8s) creates the
             #     bucket(s), mints a PER-APP, NON-ROOT MinIO user scoped to ONLY those
@@ -1846,7 +1855,7 @@ spec:
                 manifest:
                   apiVersion: batch/v1
                   kind: Job
-                  metadata: { name: {{ $name }}-bucket-setup, namespace: minio }
+                  metadata: { name: {{ $name }}-bucket-{{ $bktHash }}, namespace: minio }
                   spec:
                     backoffLimit: 20
                     # No ttlSecondsAfterFinished: provider-kubernetes recreates a TTL-GC'd managed Job
@@ -1857,6 +1866,7 @@ spec:
                         restartPolicy: OnFailure
                         volumes:
                           - { name: mc, emptyDir: {} }
+                          - { name: ownership, configMap: { name: openinfra-bucket-ownership } }
                         initContainers:
                           # Bring `mc` in OFFLINE (copied from its image) — used for bucket creation
                           # AND minting the scoped per-app user/policy.
@@ -1867,7 +1877,7 @@ spec:
                         containers:
                           - name: setup
                             image: alpine/k8s:1.30.0
-                            volumeMounts: [{ name: mc, mountPath: /mc }]
+                            volumeMounts: [{ name: mc, mountPath: /mc }, { name: ownership, mountPath: /opt/openinfra, readOnly: true }]
                             env:
                               # Root is used ONLY to provision (create buckets + mint the scoped user);
                               # it is never written into the app's secret (#151 fault 3).
@@ -1875,6 +1885,9 @@ spec:
                                 valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
                               - name: ROOT_PASS
                                 valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+                              - { name: OWNER_NS, value: {{ $ns | quote }} }
+                              - { name: OWNER_REF, value: {{ $bktOwner | quote }} }
+                              - { name: XR_CREATED, value: {{ $.observed.composite.resource.metadata.creationTimestamp | default "" | quote }} }
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
@@ -1884,6 +1897,11 @@ spec:
                                 # alias set validates the root creds — a rotated/wrong root key fails HERE,
                                 # loud, instead of handing out a credential that won't work (#151 faults 1+2).
                                 "$MC" alias set m "$E" "$ROOT_USER" "$ROOT_PASS" >/dev/null
+                                # 0. Every bucket must be this namespace's (or new) before anything is created or granted.
+                                . /opt/openinfra/bucket-ownership.sh
+                                for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do
+                                  claim_bucket "$b"
+                                done
                                 # 1. Create each declared bucket idempotently but FAIL LOUD (#151 fault 1):
                                 #    --ignore-existing is fine; any other error (server down, quota) exits.
                                 for b in {{ range $spec.storage.buckets }}{{ . }} {{ end }}; do
@@ -1892,7 +1910,7 @@ spec:
                                 done
                                 # 2. Mint a PER-APP, NON-ROOT user scoped to ONLY these buckets (#151 fault 3).
                                 #    Reuse the existing secret key across re-syncs so the app's creds are stable.
-                                APPUSER="app-{{ $name }}"
+                                APPUSER="{{ $bktUser }}"
                                 SK=$(kubectl get secret {{ $name }}-minio -n {{ $ns }} -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
                                 [ -n "$SK" ] || SK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
                                 "$MC" admin user add m "$APPUSER" "$SK" >/dev/null

@@ -78,13 +78,13 @@ spec:
                   type: object
                   description: "Input data location in the object store (MinIO). Injected as DATASET_BUCKET/DATASET_PREFIX plus S3-compatible credentials."
                   properties:
-                    bucket: { type: string, description: "Existing bucket holding the training data." }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", description: "Existing bucket holding the training data. It must belong to this namespace (or not exist yet)." }
                     prefix: { type: string, description: "Optional key prefix within the bucket." }
                 output:
                   type: object
                   description: "Where the job writes model artifacts (MinIO). The bucket is created if absent; injected as OUTPUT_BUCKET/OUTPUT_PREFIX plus S3-compatible credentials."
                   properties:
-                    bucket: { type: string, description: "Artifact bucket (created on demand)." }
+                    bucket: { type: string, pattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", description: "Artifact bucket (created on demand)." }
                     prefix: { type: string, description: "Optional key prefix for artifacts." }
                 secrets:
                   type: array
