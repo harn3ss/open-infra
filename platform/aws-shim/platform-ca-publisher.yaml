@@ -45,7 +45,7 @@ rules:
     verbs: [list]
   - apiGroups: [cert-manager.io]
     resources: [certificates/status]
-    verbs: [patch]
+    verbs: [get, patch]   # kubectl patch --subresource=status reads the subresource first
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -69,7 +69,7 @@ rules:
     verbs: [list]
   - apiGroups: [cert-manager.io]
     resources: [certificates/status]
-    verbs: [patch]
+    verbs: [get, patch]   # kubectl patch --subresource=status reads the subresource first
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
