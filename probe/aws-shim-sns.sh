@@ -7,8 +7,10 @@
 #   - a topic with TWO sqs subscriptions delivers to BOTH (fan-out actually fans out)
 #   - the default WRAPPED envelope parses (its .Message is the published body) and RawMessageDelivery=true
 #     changes the delivered body to the bare payload
-#   - a subscription carrying a FilterPolicy is REFUSED (not accepted-and-ignored, which would deliver
-#     filtered-out messages), and an http/https subscription is REFUSED (not accepted-and-never-delivered)
+#   - a subscription's FilterPolicy decides what it receives: a message whose attributes match reaches it,
+#     one whose attributes do not is not delivered to it (and still reaches the unfiltered subscription);
+#     a policy with an operator the shim does not apply is REFUSED; an http/https subscription is REFUSED
+#     (not accepted-and-never-delivered)
 # and the two NEGATIVES:
 #   - a valid key ID with a WRONG secret is rejected (SignatureDoesNotMatch)
 #   - a PUBLISH-ONLY principal (granted sns:Publish via Cedar) is DENIED sns:Subscribe while still able
@@ -105,13 +107,31 @@ INNER="$(printf '%s' "$BODYA" | python3 -c 'import json,sys; print(json.load(sys
 [ "$BODYB" = "$MSG" ] || fail "raw delivery body wrong (got '$BODYB', want '$MSG')"
 log "  ✓ fan-out to both; A wrapped (.Message correct), B raw (bare payload)"
 
+# --- FilterPolicy: a filtered subscription receives only what matches ---------------------------
+log "subscribe queue C with FilterPolicy {\"color\":[\"red\"]}; publish red then blue"
+QC="$(aws_ "$WAK" "$WSK" sqs create-queue --queue-name "sns-filter-c-$SFX" --query QueueUrl 2>/dev/null)" || fail "sqs create-queue C failed"
+CREATED_QUEUES+=("$QC")
+ARNC="$(aws_ "$WAK" "$WSK" sqs get-queue-attributes --queue-url "$QC" --attribute-names QueueArn --query 'Attributes.QueueArn' 2>/dev/null)"
+aws_ "$WAK" "$WSK" sns subscribe --topic-arn "$TOPIC" --protocol sqs --notification-endpoint "$ARNC" \
+  --attributes '{"FilterPolicy":"{\"color\":[\"red\"]}","RawMessageDelivery":"true"}' >/dev/null 2>&1 || fail "a FilterPolicy subscription was refused"
+aws_ "$WAK" "$WSK" sns publish --topic-arn "$TOPIC" --message "red-$SFX" \
+  --message-attributes '{"color":{"DataType":"String","StringValue":"red"}}' >/dev/null 2>&1 || fail "publish with attributes failed"
+aws_ "$WAK" "$WSK" sns publish --topic-arn "$TOPIC" --message "blue-$SFX" \
+  --message-attributes '{"color":{"DataType":"String","StringValue":"blue"}}' >/dev/null 2>&1 || fail "publish with attributes failed"
+sleep 1
+GOTC="$(aws_ "$WAK" "$WSK" sqs receive-message --queue-url "$QC" --max-number-of-messages 10 --wait-time-seconds 3 --query 'Messages[].Body' 2>/dev/null)"
+[ "$GOTC" = "red-$SFX" ] || fail "the filtered queue received '$GOTC', want only red-$SFX"
+GOTB="$(aws_ "$WAK" "$WSK" sqs receive-message --queue-url "$QB" --max-number-of-messages 10 --wait-time-seconds 3 --query 'Messages[].Body' 2>/dev/null | tr '\t' '\n' | grep -c -- "-$SFX$" || true)"
+[ "$GOTB" -ge 2 ] || fail "the unfiltered queue did not receive both messages (got $GOTB)"
+log "  ✓ the filtered subscription received only the matching message; the unfiltered one received both"
+
 # --- refusals (honest, not silent) -------------------------------------------------------------
-log "a FilterPolicy subscription must be REFUSED (not accepted-and-ignored)"
-if aws_ "$WAK" "$WSK" sns subscribe --topic-arn "$TOPIC" --protocol sqs --notification-endpoint "$ARNA" --attributes 'FilterPolicy={"k":["v"]}' >/dev/null 2>"$PWD/.sns_fp"; then
-  fail "a FilterPolicy subscription was accepted (it would be silently ignored)"
+log "a FilterPolicy with an operator the shim does not apply must be REFUSED (not accepted-and-ignored)"
+if aws_ "$WAK" "$WSK" sns subscribe --topic-arn "$TOPIC" --protocol sqs --notification-endpoint "$ARNA" --attributes '{"FilterPolicy":"{\"k\":[{\"wildcard\":\"v*\"}]}"}' >/dev/null 2>"$PWD/.sns_fp"; then
+  fail "a FilterPolicy the shim cannot apply was accepted"
 fi
 grep -qiE 'FilterPolicy|InvalidParameter' "$PWD/.sns_fp" || fail "FilterPolicy refusal had the wrong error: $(cat "$PWD/.sns_fp")"; rm -f "$PWD/.sns_fp"
-log "  ✓ FilterPolicy refused"
+log "  ✓ an unappliable FilterPolicy refused"
 log "an https subscription must be REFUSED (egress surface; not accepted-and-never-delivered)"
 if aws_ "$WAK" "$WSK" sns subscribe --topic-arn "$TOPIC" --protocol https --notification-endpoint "https://example.com/hook" >/dev/null 2>"$PWD/.sns_http"; then
   fail "an https subscription was accepted (it would never deliver)"
@@ -155,4 +175,4 @@ fi
 grep -qiE 'AuthorizationError|AccessDenied|denied' "$PWD/.sns_sub" || fail "Subscribe denial had the wrong error: $(cat "$PWD/.sns_sub")"; rm -f "$PWD/.sns_sub"
 log "  ✓ publish-only principal DENIED Subscribe"
 
-printf '\n✓ PASS — aws-shim SNS fans out durably to SQS (wrapped + raw), refuses FilterPolicy/https honestly, and authorizes Subscribe independently of Publish.\n'
+printf '\n✓ PASS — aws-shim SNS fans out durably to SQS (wrapped + raw), applies FilterPolicy, refuses https honestly, and authorizes Subscribe independently of Publish.\n'

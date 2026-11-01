@@ -49,6 +49,8 @@ type snsSubscription struct {
 	// FnNamespace is the namespace of a lambda subscription's kind: Function (the Lambda API's, or a
 	// stack's); "" for sqs. Kept in the subscription's attributes under snsFnNamespaceAttr.
 	FnNamespace string
+	// FilterPolicy / FilterPolicyScope decide which messages it receives (sns_filter.go); "" = all.
+	FilterPolicy, FilterPolicyScope string
 }
 
 // snsFnNamespaceAttr is the internal subscription attribute holding a lambda endpoint's namespace.
@@ -190,19 +192,32 @@ func (s *snsStore) unsubscribe(ctx context.Context, arn string) (bool, error) {
 }
 
 func (s *snsStore) subscriptionsForTopic(ctx context.Context, topicArn string) ([]snsSubscription, error) {
-	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', '') FROM sns_subscriptions WHERE topic_arn = $1 AND confirmed ORDER BY created_at`, topicArn)
+	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', ''), COALESCE(attributes->>'FilterPolicy', ''), COALESCE(attributes->>'FilterPolicyScope', '') FROM sns_subscriptions WHERE topic_arn = $1 AND confirmed ORDER BY created_at`, topicArn)
 }
 
 func (s *snsStore) listSubscriptions(ctx context.Context) ([]snsSubscription, error) {
-	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', '') FROM sns_subscriptions ORDER BY created_at`)
+	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', ''), COALESCE(attributes->>'FilterPolicy', ''), COALESCE(attributes->>'FilterPolicyScope', '') FROM sns_subscriptions ORDER BY created_at`)
 }
 
 func (s *snsStore) subByArn(ctx context.Context, arn string) (snsSubscription, bool, error) {
-	subs, err := s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', '') FROM sns_subscriptions WHERE arn = $1`, arn)
+	subs, err := s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', ''), COALESCE(attributes->>'FilterPolicy', ''), COALESCE(attributes->>'FilterPolicyScope', '') FROM sns_subscriptions WHERE arn = $1`, arn)
 	if err != nil || len(subs) == 0 {
 		return snsSubscription{}, false, err
 	}
 	return subs[0], true, nil
+}
+
+// setSubAttr sets a subscription attribute ("" removes it).
+func (s *snsStore) setSubAttr(ctx context.Context, arn, key, val string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sns_subscriptions
+		SET attributes = CASE WHEN $3 = '' THEN attributes - $2 ELSE attributes || jsonb_build_object($2::text, $3::text) END
+		WHERE arn = $1`, arn, key, val)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 func (s *snsStore) setSubRaw(ctx context.Context, arn string, raw bool) (bool, error) {
@@ -223,7 +238,7 @@ func (s *snsStore) querySubs(ctx context.Context, q string, args ...any) ([]snsS
 	var out []snsSubscription
 	for rows.Next() {
 		var sub snsSubscription
-		if err := rows.Scan(&sub.Arn, &sub.TopicArn, &sub.Protocol, &sub.Endpoint, &sub.Raw, &sub.FnNamespace); err != nil {
+		if err := rows.Scan(&sub.Arn, &sub.TopicArn, &sub.Protocol, &sub.Endpoint, &sub.Raw, &sub.FnNamespace, &sub.FilterPolicy, &sub.FilterPolicyScope); err != nil {
 			return nil, err
 		}
 		out = append(out, sub)

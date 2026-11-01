@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/cfn/snsfilter"
 )
 
 // ServiceAPIVersion is the apiVersion of every stack resource the shim's own AWS APIs serve.
@@ -533,7 +534,8 @@ func translateSNSTopicAPI(id string, props map[string]any, ctx *stackCtx) (*Mani
 // translateSNSSubscriptionAPI maps an AWS::SNS::Subscription to a subscription in the SNS front
 // door's store, on an in-stack topic.
 func translateSNSSubscriptionAPI(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
-	known := map[string]bool{"TopicArn": true, "Protocol": true, "Endpoint": true, "Region": true, "RawMessageDelivery": true}
+	known := map[string]bool{"TopicArn": true, "Protocol": true, "Endpoint": true, "Region": true, "RawMessageDelivery": true,
+		"FilterPolicy": true, "FilterPolicyScope": true}
 	if f := blockUnknownProps(id, props, known); len(f) > 0 {
 		for i := range f {
 			f[i].Reason += " (a filter or delivery setting this front door does not apply would change which messages are delivered)"
@@ -559,6 +561,27 @@ func translateSNSSubscriptionAPI(id string, props map[string]any, ctx *stackCtx)
 		return nil, ff
 	}
 	spec["raw"] = rawDel
+	// A FilterPolicy decides which messages the subscription receives, as the SNS front door applies it.
+	scope, _ := concrete(props["FilterPolicyScope"])
+	if fp, present := props["FilterPolicy"]; present && fp != nil {
+		doc, df := policyDocJSON(id, fp)
+		if len(df) > 0 {
+			for i := range df {
+				df[i].Reason = strings.Replace(df[i].Reason, "PolicyDocument", "FilterPolicy", 1)
+			}
+			return nil, df
+		}
+		if _, err := snsfilter.Parse(doc, scope); err != nil {
+			return nil, []Finding{{"Resource " + id, "FilterPolicy: " + err.Error()}}
+		}
+		spec["filterPolicy"] = doc
+	}
+	if scope != "" {
+		if scope != snsfilter.ScopeAttributes && scope != snsfilter.ScopeBody {
+			return nil, []Finding{{"Resource " + id, "FilterPolicyScope must be MessageAttributes or MessageBody"}}
+		}
+		spec["filterPolicyScope"] = scope
+	}
 	topicARN := svcTopicARN(svcTopicName(tid, ctx), ctx)
 	sid := svcSubscriptionID(ctx.stackName(), id)
 	spec["topicArn"] = topicARN

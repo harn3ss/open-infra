@@ -195,7 +195,7 @@ the sections below; the one-line summary:
 | **[AppSync](#appsync-graphql-over-open-appsync--slice-1-runs-live-experimental)** | open-appsync engine | GraphQL | **experimental**; needs `components.openAppsync` |
 | **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
 | **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | standard and FIFO queues; `ReceiveRequestAttemptId` refused |
-| **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` protocol only; FilterPolicy/`.fifo`/http refused |
+| **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` and `lambda` protocols, filter policies; `.fifo`/http refused |
 | **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; per-key access via the Cedar data-plane (`kms:* on Key::<id>`); key-policy JSON import (CreateKey Policy/PutKeyPolicy→kind: Policy, GetKeyPolicy round-trip); CreateGrant refused |
 | **[Secrets Manager](#secrets-manager-vaultkms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted values | JSON 1.1 | auto-rotation + custom `KmsKeyId` refused |
 | **[EventBridge](#eventbridge-kubernetesjetstream-backed-json-protocol-probe-proven)** | in-proc scheduler + JetStream/SQS delivery | JSON 1.1 | Lambda+SQS targets only; `RoleArn` refused |
@@ -578,13 +578,25 @@ restarts is lost (it is not on a durable queue, unlike the `sqs` fan-out).
 A topic is addressed by its name: a `TopicArn` naming another account or region (for example the ARN a
 CloudFormation stack reports) means the topic of that name here.
 
+**Filter policies.** A subscription's `FilterPolicy` (a `Subscribe` attribute, `SetSubscriptionAttributes`,
+or a stack's `AWS::SNS::Subscription`) decides which messages it receives, as SNS decides: by the message
+attributes (`FilterPolicyScope` `MessageAttributes`, the default) or by the JSON message body
+(`MessageBody`, with nested keys). Every key must match and any of a key's conditions may; `$or` lists
+alternatives. Conditions are exact strings and numbers (a number matches a `Number` attribute), `prefix`,
+`suffix`, `equals-ignore-case`, `anything-but` (values, or a prefix/suffix), `numeric` (a comparison or a
+range), `exists`, and `cidr`; in the body also `true`/`false`/`null`. A `String.Array` attribute or a body
+array matches when any element does; a `Binary` attribute matches no value. SNS's limits apply (five
+attribute keys, 150 combinations). A policy with anything else (another operator such as `wildcard`, a
+nested key in the attributes scope) is refused where it is set. An empty or `{}` policy removes it.
+`Publish` takes `MessageAttributes` (`String`, `String.Array`, `Number`, `Binary`, up to ten); they are in the
+delivered envelope's `MessageAttributes`, become the SQS message's attributes for a raw delivery, and are in
+a Lambda event's `Sns.MessageAttributes`.
+
 **Deliberate divergences, refused honestly (never accepted-and-dropped):**
 - The **`sqs`** and **`lambda`** subscription protocols are delivered. `http`/`https` (an egress surface
   that needs a confirmation handshake + destination allowlist), `email`, `sms`, `application`,
   `firehose` are refused at `Subscribe` — a subscription that exists but never delivers is worse than a
   rejected one.
-- **Message `FilterPolicy`** is refused (accepting-and-ignoring would deliver messages a subscriber
-  explicitly filtered out — a correctness + privacy defect).
 - **`.fifo` topics** are refused.
 - A **topic `Policy`** (`SetTopicAttributes`, or a stack's `AWS::SNS::TopicPolicy`) decides the publishes
   the shim itself makes to the topic: a CloudWatch alarm action publishes only when the policy lets
@@ -599,7 +611,9 @@ CloudFormation stack reports) means the topic of that name here.
 
 `probe/aws-shim-sns.sh` proves it: one topic with **two** SQS subscriptions delivers to **both**; the
 default wrapped envelope's `.Message` is the published body while `RawMessageDelivery=true` yields the
-bare payload; a `FilterPolicy` and an `https` subscription are both **refused**; and the negatives —
+bare payload; a filtered subscription receives only the message whose attributes match while an unfiltered
+one receives both, a filter policy with an operator the shim does not apply and an `https` subscription are
+both **refused**; and the negatives —
 wrong secret → `SignatureDoesNotMatch`, and a **publish-only principal (granted `sns:Publish` via Cedar)
 is denied `sns:Subscribe`** while still able to publish.
 

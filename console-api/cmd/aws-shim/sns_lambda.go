@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/snsfilter"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
@@ -48,9 +49,9 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	attrs := parseQueryMap(r, "Attributes")
-	if _, ok := attrs["FilterPolicy"]; ok {
-		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
-			"message FilterPolicy is not yet implemented by this shim; it is refused rather than accepted and ignored (which would deliver filtered-out messages).", snsXMLNamespace)
+	filter, err := subscriptionFilter(attrs)
+	if err != nil {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID, "Invalid parameter: FilterPolicy: "+err.Error(), snsXMLNamespace)
 		return
 	}
 	fn := lambdaNameFromArn(endpoint)
@@ -67,7 +68,8 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 	}
 	raw := strings.EqualFold(attrs["RawMessageDelivery"], "true")
 	subArn := topicArn + ":" + randHex(8)
-	if err := h.store.subscribeWith(ctx, subArn, topicArn, "lambda", endpoint, raw, map[string]string{snsFnNamespaceAttr: ns}); err != nil {
+	filter[snsFnNamespaceAttr] = ns
+	if err := h.store.subscribeWith(ctx, subArn, topicArn, "lambda", endpoint, raw, filter); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -75,7 +77,7 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 }
 
 // snsLambdaEvent is the event SNS invokes a Lambda with.
-func snsLambdaEvent(subArn, msgID, topicArn, subject, message string, now time.Time) []byte {
+func snsLambdaEvent(subArn, msgID, topicArn, subject, message string, attrs map[string]snsfilter.Attr, now time.Time) []byte {
 	sns := map[string]any{
 		"Type":              "Notification",
 		"MessageId":         msgID,
@@ -87,7 +89,7 @@ func snsLambdaEvent(subArn, msgID, topicArn, subject, message string, now time.T
 		"Signature":         "", // not signed: subscribers cannot verify, and we say so (see the file header of sns.go)
 		"SigningCertUrl":    "",
 		"UnsubscribeUrl":    "",
-		"MessageAttributes": map[string]any{},
+		"MessageAttributes": envelopeAttributes(attrs),
 	}
 	if subject != "" {
 		sns["Subject"] = subject
@@ -109,7 +111,7 @@ var (
 
 // deliverLambda invokes a lambda subscription's Function with the SNS event, asynchronously, retrying a
 // failed invoke (a transport error, a 5xx, or a handler error) a few times. The outcome is logged.
-func (h *snsHandler) deliverLambda(sub snsSubscription, msgID, topicArn, subject, message string) {
+func (h *snsHandler) deliverLambda(sub snsSubscription, msgID, topicArn, subject, message string, attrs map[string]snsfilter.Attr) {
 	if h.invoker == nil {
 		h.logger.Warn("sns: lambda delivery not configured, skipping", "subscription", sub.Arn)
 		return
@@ -119,7 +121,7 @@ func (h *snsHandler) deliverLambda(sub snsSubscription, msgID, topicArn, subject
 		ns = h.lambdaNS
 	}
 	fn := lambdaNameFromArn(sub.Endpoint)
-	event := snsLambdaEvent(sub.Arn, msgID, topicArn, subject, message, time.Now())
+	event := snsLambdaEvent(sub.Arn, msgID, topicArn, subject, message, attrs, time.Now())
 	target := "http://" + fn + "." + ns + "." + h.svcSuffix + "/"
 	go func() {
 		backoff := snsLambdaBackoff

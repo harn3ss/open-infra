@@ -165,8 +165,36 @@ Resources:
 	refuses(t, `
 Resources:
   T: { Type: AWS::SNS::Topic }
-  S: { Type: AWS::SNS::Subscription, Properties: { TopicArn: !Ref T, Protocol: sqs, Endpoint: !Ref T, FilterPolicy: { a: [ b ] } } }
+  Q: { Type: AWS::SQS::Queue }
+  S: { Type: AWS::SNS::Subscription, Properties: { TopicArn: !Ref T, Protocol: sqs, Endpoint: !GetAtt Q.Arn, FilterPolicy: { a: [ { wildcard: "x*" } ] } } }
 `, svcCaps, "FilterPolicy")
+}
+
+// A subscription's FilterPolicy (and scope) is kept for the SNS front door to apply.
+func TestService_SNSSubscriptionFilterPolicy(t *testing.T) {
+	got := buildWith(t, `
+Resources:
+  T: { Type: AWS::SNS::Topic }
+  Q: { Type: AWS::SQS::Queue }
+  S:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref T
+      Protocol: sqs
+      Endpoint: !GetAtt Q.Arn
+      FilterPolicyScope: MessageBody
+      FilterPolicy: { order: { status: [ paid ] } }
+`, svcCaps, nil)
+	s := got["S"].res.Spec
+	if s["filterPolicy"] != `{"order":{"status":["paid"]}}` || s["filterPolicyScope"] != "MessageBody" {
+		t.Errorf("subscription spec = %v", s)
+	}
+	refuses(t, `
+Resources:
+  T: { Type: AWS::SNS::Topic }
+  Q: { Type: AWS::SQS::Queue }
+  S: { Type: AWS::SNS::Subscription, Properties: { TopicArn: !Ref T, Protocol: sqs, Endpoint: !GetAtt Q.Arn, FilterPolicy: { order: { status: [ paid ] } } } }
+`, svcCaps, "nested key is for FilterPolicyScope MessageBody")
 }
 
 // AWS::SSM::Parameter's Name is optional, as on AWS: the stack generates one, stable for the stack and

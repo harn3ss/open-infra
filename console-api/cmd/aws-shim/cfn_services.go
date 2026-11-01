@@ -615,6 +615,13 @@ func (a *impersonatingApplier) svcSubscribe(ctx context.Context, spec map[string
 		return fmt.Errorf("SNS protocol %q is not delivered by this shim", proto)
 	}
 	raw, _ := spec["raw"].(bool)
+	filter, err := subscriptionFilter(map[string]string{"FilterPolicy": str("filterPolicy"), "FilterPolicyScope": str("filterPolicyScope")})
+	if err != nil {
+		return fmt.Errorf("the subscription's FilterPolicy: %w", err)
+	}
+	for k, v := range filter {
+		attrs[k] = v
+	}
 	return a.svc.sns.store.subscribeWith(ctx, str("subscriptionArn"), topicArn, proto, endpoint, raw, attrs)
 }
 

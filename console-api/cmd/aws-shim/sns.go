@@ -8,7 +8,7 @@
 //
 // The `sqs` and `lambda` subscription protocols are delivered (lambda: sns_lambda.go). Everything the
 // shim does not genuinely implement is REFUSED honestly, never accepted-and-silently-dropped:
-// http/https/email/sms/application/firehose protocols, message FilterPolicy, `.fifo` topics, and a topic
+// http/https/email/sms/application/firehose protocols, `.fifo` topics, and a topic
 // Policy beyond grants to services (callers are authorized by IAM, one policy world; a topic's or a
 // queue's Policy decides only the deliveries the shim itself makes — resource_policy.go). The
 // delivered envelope omits the AWS message Signature/SigningCertURL rather than emitting a meaningless
@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
+	"github.com/harn3ss/open-infra/cfn/snsfilter"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -285,11 +286,9 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		return
 	}
 	attrs := parseQueryMap(r, "Attributes")
-	// FilterPolicy: implement faithfully or refuse — accepting and ignoring would deliver messages a
-	// subscriber explicitly filtered out (a correctness+privacy defect). v1 refuses it.
-	if _, ok := attrs["FilterPolicy"]; ok {
-		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
-			"message FilterPolicy is not yet implemented by this shim; it is refused rather than accepted and ignored (which would deliver filtered-out messages).", snsXMLNamespace)
+	filter, err := subscriptionFilter(attrs)
+	if err != nil {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID, "Invalid parameter: FilterPolicy: "+err.Error(), snsXMLNamespace)
 		return
 	}
 	// The endpoint must be a queue we know (an SQS queue ARN); reject a dangling subscription early.
@@ -311,7 +310,7 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 	raw := strings.EqualFold(attrs["RawMessageDelivery"], "true")
 	subArn := topicArn + ":" + randHex(8)
-	if err := h.store.subscribe(ctx, subArn, topicArn, "sqs", endpoint, raw, true); err != nil {
+	if err := h.store.subscribeWith(ctx, subArn, topicArn, "sqs", endpoint, raw, filter); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -363,6 +362,10 @@ func (h *snsHandler) getSubscriptionAttributes(ctx context.Context, w http.Respo
 		"RawMessageDelivery": boolStr(sub.Raw),
 		"Owner":              h.account,
 	}
+	if sub.FilterPolicy != "" {
+		out["FilterPolicy"] = sub.FilterPolicy
+		out["FilterPolicyScope"] = filterScope(sub.FilterPolicyScope)
+	}
 	h.writeAttributes(w, requestID, "GetSubscriptionAttributes", out)
 }
 
@@ -370,9 +373,8 @@ func (h *snsHandler) setSubscriptionAttributes(ctx context.Context, w http.Respo
 	arn := r.PostFormValue("SubscriptionArn")
 	name := r.PostFormValue("AttributeName")
 	val := r.PostFormValue("AttributeValue")
-	if name == "FilterPolicy" {
-		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
-			"message FilterPolicy is not yet implemented by this shim; refused rather than accepted and ignored.", snsXMLNamespace)
+	if name == "FilterPolicy" || name == "FilterPolicyScope" {
+		h.setSubscriptionFilter(ctx, w, requestID, arn, name, val)
 		return
 	}
 	if name != "RawMessageDelivery" {
@@ -416,7 +418,12 @@ func (h *snsHandler) publish(ctx context.Context, w http.ResponseWriter, r *http
 		writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "Topic does not exist.", snsXMLNamespace)
 		return
 	}
-	msgID, err := h.publishMessage(ctx, topicArn, subject, message)
+	attrs, err := publishAttributes(r)
+	if err != nil {
+		writeQueryError(w, http.StatusBadRequest, "ParameterValueInvalid", requestID, err.Error(), snsXMLNamespace)
+		return
+	}
+	msgID, err := h.publishMessageAttrs(ctx, topicArn, subject, message, attrs)
 	if err != nil {
 		h.internal(w, requestID, err) // durable delivery failed -> not a success
 		return
@@ -430,14 +437,23 @@ func (h *snsHandler) publish(ctx context.Context, w http.ResponseWriter, r *http
 // The caller must have already confirmed the topic exists. An error means at least one durable delivery
 // failed, so the caller must not treat the publish as succeeded.
 func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, message string) (string, error) {
+	return h.publishMessageAttrs(ctx, topicArn, subject, message, nil)
+}
+
+// publishMessageAttrs is publishMessage for a message with attributes: each subscription's filter policy
+// decides whether it receives the message (sns_filter.go), and the attributes travel with it.
+func (h *snsHandler) publishMessageAttrs(ctx context.Context, topicArn, subject, message string, attrs map[string]snsfilter.Attr) (string, error) {
 	subs, err := h.store.subscriptionsForTopic(ctx, topicArn)
 	if err != nil {
 		return "", err
 	}
 	msgID := uuidLike()
 	for _, sub := range subs {
+		if !h.passesFilter(sub, message, attrs) {
+			continue
+		}
 		if sub.Protocol == "lambda" {
-			h.deliverLambda(sub, msgID, topicArn, subject, message)
+			h.deliverLambda(sub, msgID, topicArn, subject, message, attrs)
 			continue
 		}
 		if sub.Protocol != "sqs" {
@@ -480,10 +496,20 @@ func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, mess
 			if subject != "" {
 				env["Subject"] = subject
 			}
+			if len(attrs) > 0 {
+				env["MessageAttributes"] = envelopeAttributes(attrs)
+			}
 			b, _ := json.Marshal(env)
 			body = string(b)
 		}
-		if _, err := h.sqs.sendMessage(ctx, url, body, md5Hex(body), "", nil, 0); err != nil {
+		var qattrs map[string]any
+		md5Attrs := ""
+		if sub.Raw && len(attrs) > 0 {
+			// Raw delivery hands the message attributes to SQS as the message's own, as SNS does.
+			qattrs = sqsAttributes(attrs)
+			md5Attrs = md5OfMessageAttributes(qattrs)
+		}
+		if _, err := h.sqs.sendMessage(ctx, url, body, md5Hex(body), md5Attrs, qattrs, 0); err != nil {
 			return "", err
 		}
 	}
