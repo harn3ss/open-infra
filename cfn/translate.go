@@ -593,6 +593,25 @@ func defaultEBSEncryptionKey() *Manifest {
 	}
 }
 
+// defaultSecurityGroup is the stack's default kind: SecurityGroup — the open-infra analog of a VPC's default
+// group, which an instance that names no group gets: inbound (TCP and UDP, every port) only from the group's
+// own members, and all outbound (no egress rules). Every such instance of the stack shares it.
+func (c *stackCtx) defaultSecurityGroup() *Manifest {
+	name := "vpc-default"
+	if c != nil && c.namer != nil {
+		name = stackQualifiedName(c.namer.stack, name)
+	}
+	self := []any{map[string]any{"securityGroup": name}}
+	return &Manifest{
+		APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: name,
+		Spec: map[string]any{"ingress": []any{
+			map[string]any{"protocol": "TCP", "from": self, "description": "the default group: its own members"},
+			map[string]any{"protocol": "UDP", "from": self, "description": "the default group: its own members"},
+		}},
+		Shared: true,
+	}
+}
+
 // defaultEBSKey is the default kind: EncryptionKey an Encrypted-without-KmsKeyId disk of this stack is
 // keyed by: the stack's own key, or the shared one for a stack that already uses it. The stack's own key
 // is deleted with the stack unless a disk resource of the stack is retained (it keys that disk).
@@ -1190,10 +1209,14 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// #347 1.6: an in-stack AWS::EC2::EIP associated with this instance folds onto the VM's LAN IP
 	// (spec.expose + spec.ports derived from its SecurityGroups) — translate_ec2eip.go.
 	cav = append(cav, eipExposeVM(id, spec, ctx)...)
+	// On AWS an instance with no security group gets the VPC default group, which admits inbound only from
+	// its own members and all outbound. A VM with none here has no firewall, so a published one gets the
+	// stack's default group (defaultSecurityGroup) instead — never every port open to the LAN.
+	var defaultSG *Manifest
 	if exp, _ := spec["expose"].(bool); exp && len(sgNames) == 0 {
-		// On AWS an instance with no security group gets the VPC default group, which admits no inbound
-		// from outside it. A VM with none here has no firewall, so publishing it would open it to the LAN.
-		f = append(f, Finding{"Resource " + id, "the instance is published on the LAN (an Elastic IP or a public IP) but attaches no SecurityGroup — on AWS it would get the VPC default group, which admits no inbound from outside it, while here every port would be open to the LAN; attach a SecurityGroup that admits what it should accept"})
+		defaultSG = ctx.defaultSecurityGroup()
+		spec["securityGroups"] = []string{defaultSG.Name}
+		cav = append(cav, "the instance attaches no SecurityGroup, so it gets the stack's default kind: SecurityGroup \""+defaultSG.Name+"\" — as a VPC's default group, it admits inbound only from its own members (so nothing on the LAN reaches the instance's published address) and all outbound")
 	}
 
 	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
@@ -1220,6 +1243,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: ctx.name(id), Spec: spec, Requires: requires}
+	if defaultSG != nil {
+		m.Extra = append(m.Extra, defaultSG)
+	}
 	if vmNeedDefaultKey {
 		k := ctx.defaultEBSKey()
 		m.Extra = append(m.Extra, k)

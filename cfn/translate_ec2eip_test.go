@@ -242,9 +242,10 @@ Resources:
 	}
 }
 
-// An instance with no SecurityGroup is refused when an Elastic IP would publish it: on AWS it gets the
-// VPC default group (no inbound from outside it); here it would have no firewall at all.
-func TestTranslate_EIP_NoSecurityGroupRefused(t *testing.T) {
+// An instance with no SecurityGroup that an Elastic IP publishes gets the stack's default group, as on AWS
+// it gets the VPC default group: inbound only from the group's own members, all outbound — never no
+// firewall at all.
+func TestTranslate_EIP_NoSecurityGroupGetsTheDefaultGroup(t *testing.T) {
 	tmpl := `
 Resources:
   Bare:
@@ -254,8 +255,23 @@ Resources:
     Type: AWS::EC2::EIP
     Properties: { InstanceId: !Ref Bare }
 `
-	if _, fs := translateIn(t, tmpl, "Bare", nil); !strings.Contains(findingsText(fs), "attaches no SecurityGroup") {
-		t.Fatalf("want a refusal for an exposed instance with no SecurityGroup, got: %s", findingsText(fs))
+	m, fs := translateIn(t, tmpl, "Bare", nil)
+	if len(fs) > 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	sgs, _ := m.Spec["securityGroups"].([]string)
+	if len(sgs) != 1 || len(m.Extra) == 0 || m.Extra[0].Kind != "SecurityGroup" || m.Extra[0].Name != sgs[0] {
+		t.Fatalf("want the default group attached and emitted, got groups %v, extra %v", m.Spec["securityGroups"], m.Extra)
+	}
+	ing, _ := m.Extra[0].Spec["ingress"].([]any)
+	for _, r := range ing {
+		from := r.(map[string]any)["from"].([]any)
+		if len(from) != 1 || from[0].(map[string]any)["securityGroup"] != sgs[0] {
+			t.Fatalf("the default group admits only its own members, got %v", ing)
+		}
+	}
+	if m.Extra[0].Spec["egress"] != nil {
+		t.Fatalf("the default group restricts no egress, got %v", m.Extra[0].Spec["egress"])
 	}
 }
 
