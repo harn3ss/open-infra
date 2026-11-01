@@ -76,8 +76,9 @@ type translator func(logicalID string, props map[string]any, ctx *stackCtx) (*Ma
 type stackCtx struct {
 	template *Template
 	resolver *resolver
-	caps     Capabilities // deploy-environment facts (zero = fail-closed); same value at plan and deploy
-	namer    *physNamer   // each in-stack resource's Kubernetes name (naming.go); nil = bare logical ids
+	caps     Capabilities      // deploy-environment facts (zero = fail-closed); same value at plan and deploy
+	namer    *physNamer        // each in-stack resource's Kubernetes name (naming.go); nil = bare logical ids
+	svcIDs   map[string]string // ids this operation chose for service-backed resources (service.go)
 }
 
 // refTarget returns the logical id a raw property references, if it is a bare `{Ref: X}`.
@@ -139,6 +140,7 @@ func (c *stackCtx) resolveVal(v any) any {
 // appears here AND its translator accepts every property. Grow it the gated way.
 var translators = map[string]translator{
 	"AWS::KMS::Key":                         translateKMSKey,
+	"AWS::KMS::Alias":                       translateKMSAlias,
 	"AWS::Lambda::Function":                 translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine":      translateStateMachine,
 	"AWS::EC2::Volume":                      translateVolume,
@@ -280,6 +282,10 @@ func translateCustomResource(logicalID string, props map[string]any, ctx *stackC
 // per-key policy). Anything else blocks.
 func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{"Description": true, "EnableKeyRotation": true, "KeySpec": true, "KeyPolicy": true, "Enabled": true, "Tags": true}
+	served := ctx.servedBy(id) // the key is also a key in the KMS API's store (service.go)
+	if served {
+		known["KeyUsage"], known["PendingWindowInDays"], known["MultiRegion"] = true, true, true
+	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 	f = append(f, shapeFindings(id, props, nil, nil, []string{"KeySpec"})...)
@@ -311,6 +317,17 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 		}
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: ctx.name(id), Spec: spec}
+	if served {
+		comp, cf := kmsKeyCompanion(id, props, ctx)
+		f = append(f, cf...)
+		if comp != nil {
+			m.Extra = append(m.Extra, comp)
+		}
+		if _, ok := props["KeyPolicy"]; ok {
+			m.Caveats = append(m.Caveats, "KMS KeyPolicy governs the key in the KMS API (as that front door enforces key policies); the volume-encryption key under it is governed by open-infra IAM")
+		}
+		return m, f
+	}
 	if _, ok := props["KeyPolicy"]; ok {
 		m.Caveats = append(m.Caveats, "KMS KeyPolicy dropped — the key is Vault-managed; access is governed by open-infra IAM, not a per-key policy")
 	}
@@ -2405,6 +2422,9 @@ func inStackRef(id string, ctx *stackCtx) (string, bool) {
 	if !in {
 		return "", false
 	}
+	if v, ok := serviceRef(id, ctx); ok { // a stack queue/topic/parameter/key in the shim's own API store
+		return v, true
+	}
 	switch res.Type {
 	case "AWS::S3::Bucket":
 		return inStackName(id, "BucketName", ctx), true
@@ -2823,6 +2843,9 @@ func toAnySlice(ss []string) []any {
 // does not auto-expire, so silently dropping one would keep a value that should have expired: they
 // BLOCK.
 func translateSSMParameter(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	if ctx.servedBy(id) {
+		return translateSSMParameterAPI(id, props, ctx)
+	}
 	known := map[string]bool{
 		"Name": true, "Value": true, "Type": true, "Tier": true,
 		"Description": true, "AllowedPattern": true, "DataType": true, "Tags": true, "Policies": true,
@@ -4059,6 +4082,9 @@ func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
 // per-queue KMS). Visibility/delay/DLQ-redrive are consumer-side on the app's JetStream consumer,
 // so they are declared caveats.
 func translateSQSQueue(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	if ctx.servedBy(id) {
+		return translateSQSQueueAPI(id, props, ctx)
+	}
 	known := map[string]bool{
 		"QueueName": true, "MessageRetentionPeriod": true, "Tags": true, "FifoQueue": true,
 		"VisibilityTimeout": true, "DelaySeconds": true, "RedrivePolicy": true, "KmsMasterKeyId": true,
@@ -4134,6 +4160,9 @@ func translateSQSQueue(id string, props map[string]any, ctx *stackCtx) (*Manifes
 // so no Finding here); every other protocol — sqs/http/email/sms/etc — refuses honestly, since
 // open-infra has no push-delivery surface for it (consumers read the stream themselves).
 func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	if ctx.servedBy(id) {
+		return translateSNSTopicAPI(id, props, ctx)
+	}
 	known := map[string]bool{
 		"TopicName": true, "DisplayName": true, "Tags": true, "FifoTopic": true,
 		"KmsMasterKeyId": true, "ContentBasedDeduplication": true, "Subscription": true,
@@ -4194,6 +4223,9 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 func translateSNSSubscription(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	if ctx == nil {
 		return nil, []Finding{{"Resource " + id, "an AWS::SNS::Subscription must reference an in-stack AWS::SNS::Topic"}}
+	}
+	if ctx.servedBy(id) {
+		return translateSNSSubscriptionAPI(id, props, ctx)
 	}
 	// A subscription collates into the subscribing Function and has no manifest of its own to carry a
 	// caveat, so every delivery setting beyond the topic, protocol and endpoint refuses: FilterPolicy in
@@ -4261,6 +4293,9 @@ func snsTopicQueueName(topicID string, topicProps map[string]any, ctx *stackCtx)
 // AWS::SNS::Subscription or an inline Subscription on the topic. Folding these into the Function's
 // spec.queues is how an SNS→Lambda subscription is honored: the Function consumes the topic's stream.
 func (c *stackCtx) snsQueuesForFunction(fnID string) []string {
+	if c != nil && c.caps.SNSAPI {
+		return nil // the SNS front door delivers to the Function itself (service.go); no stream to read
+	}
 	seen := map[string]bool{}
 	var names []string
 	add := func(topicID string) {

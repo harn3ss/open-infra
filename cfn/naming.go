@@ -27,6 +27,9 @@ const maxPhysNameLen = 40
 type physNamer struct {
 	stack string
 	prior map[string]string // logical id -> the name the existing stack recorded for it
+	// priorRes is every resource the existing stack recorded, companions included (a stack KMS key's
+	// id lives on a companion, service.go).
+	priorRes []StackResource
 	// folded is, for the template being named, each Kubernetes-form logical id (lowercased) that more
 	// than one logical id reduces to. CloudFormation logical ids are case-sensitive, so MyDB and Mydb are
 	// two resources; lowercased they would share one object. Computed once per template.
@@ -40,7 +43,7 @@ type physNamer struct {
 // newPhysNamer builds the namer for a stack. prior is the stack's recorded resources (nil for a new
 // stack); a companion's record (logical id "<id>/<name>") is not a template resource and is skipped.
 func newPhysNamer(stack string, prior []StackResource) *physNamer {
-	n := &physNamer{stack: stack, prior: map[string]string{}}
+	n := &physNamer{stack: stack, prior: map[string]string{}, priorRes: prior}
 	for _, r := range prior {
 		if r.Name != "" && !strings.Contains(r.LogicalID, "/") {
 			n.prior[r.LogicalID] = r.Name

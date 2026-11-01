@@ -312,8 +312,9 @@ func TestFidelityGuard_CoversEveryTranslator(t *testing.T) {
 	}
 	// The child types a distribution reads by id only (no properties of their own to translate), and a
 	// type every instance of which refuses (so no property of it is ever accepted).
+	// A KMS alias refuses without the KMS API; with it, TestFidelityGuard_ServiceBackedTypes guards it.
 	for _, typ := range []string{"AWS::CloudFront::CloudFrontOriginAccessIdentity", "AWS::CloudFront::CachePolicy", "AWS::CloudFront::OriginRequestPolicy",
-		"AWS::EC2::SubnetNetworkAclAssociation"} {
+		"AWS::EC2::SubnetNetworkAclAssociation", "AWS::KMS::Alias"} {
 		have[typ] = true
 	}
 	var missing []string
@@ -343,7 +344,16 @@ Resources:
 }
 
 func TestFidelityGuard_EveryAcceptedPropertyIsUsedOrReported(t *testing.T) {
-	for _, b := range append(append([]guardBaseline{}, guardBaselines...), cloudFrontBaselines(t)...) {
+	guardCheck(t, append(append([]guardBaseline{}, guardBaselines...), cloudFrontBaselines(t)...))
+}
+
+// guardCaps are the Capabilities the guard translates with (zero = the CLI's; a test may set them).
+var guardCaps Capabilities
+
+// guardCheck proves, for each baseline, that every property its translator accepts is used or reported.
+func guardCheck(t *testing.T, baselines []guardBaseline) {
+	t.Helper()
+	for _, b := range baselines {
 		tm := mustParse(t, []byte(b.tmpl))
 		if tm.Resources[b.target].Type != b.typ {
 			t.Errorf("%s: baseline target %s is a %s", b.typ, b.target, tm.Resources[b.target].Type)
@@ -452,8 +462,9 @@ func guardRunAll(tm *Template) (res guardResult) {
 	}()
 	r := newResolver(tm, resolveParams(tm, nil), nil, pseudoParams("s"))
 	r.evalConditions()
-	ctx := &stackCtx{template: tm, resolver: r}
+	ctx := &stackCtx{template: tm, resolver: r, caps: guardCaps}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
+	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
 	view := map[string]any{}
 	for _, id := range sortedResourceIDs(tm) {
 		rs := tm.Resources[id]

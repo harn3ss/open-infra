@@ -401,6 +401,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	r.evalConditions()
 	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, opts.prior)}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
+	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
 
 	byID := map[string][]builtResource{}
 	var findings []Finding
@@ -591,6 +592,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r.customData = map[string]map[string]any{}
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, nil)}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
+	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,

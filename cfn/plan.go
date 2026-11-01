@@ -107,6 +107,13 @@ type Capabilities struct {
 	// bucket encryption). When true, an S3 BucketEncryption maps with a caveat; when false it REFUSES,
 	// rather than deploying an unencrypted bucket the template asked to encrypt (#347 Phase 1.8).
 	ObjectEncryption bool
+	// SQSAPI, SNSAPI, SSMAPI and KMSAPI: this environment serves that AWS API from its own store, so a
+	// stack's queue, topic (and subscriptions), parameter, or key (and aliases) is created IN that store —
+	// usable through the API by the name or ARN the stack reports (service.go). Off (the CLI, or a shim
+	// without that data layer), the translators keep their kind mappings, which the APIs cannot see.
+	SQSAPI, SNSAPI, SSMAPI, KMSAPI bool
+	// SQSURLBase is the endpoint a stack's queue URLs name (scheme://host[:port]); "" names AWS's.
+	SQSURLBase string
 }
 
 // BuildPlanWithCaps is BuildPlanWithExports with explicit deploy-environment Capabilities.
@@ -215,6 +222,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		tr.evalConditions()
 		tctx := &stackCtx{template: t, resolver: tr, caps: caps, namer: newPhysNamer(stackName, nil)}
 		tr.staticRef = func(id string) (string, bool) { return inStackRef(id, tctx) }
+		tr.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, tctx) }
 		for _, id := range t.rawOrder {
 			res := t.Resources[id]
 			if res.Condition != "" && !tr.conds[res.Condition] {

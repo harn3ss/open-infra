@@ -49,6 +49,9 @@ type resolver struct {
 	// context; nil leaves every resource Ref unresolved until deploy.
 	staticRef     func(id string) (string, bool)
 	staticRefBusy map[string]bool // re-entrancy guard (a name that refers to another resource)
+	// staticAtt returns a resource's Fn::GetAtt value when it is fixed before deploy — a stack queue's
+	// Arn or QueueUrl, a topic's TopicArn, a key's Arn (service.go). Nil leaves it to deploy.
+	staticAtt func(id, attr string) (string, bool)
 	// imported, when non-nil, collects every export name Fn::ImportValue asks for (outputs.go records it
 	// on the stack, so a stack whose exports are in use is not deleted from under its importers).
 	imported map[string]bool
@@ -264,6 +267,18 @@ func (r *resolver) getAtt(arg any) any {
 	if v, ok := r.cloudFrontGetAtt(id, attr); ok {
 		r.refs[id] = true
 		return v
+	}
+	if _, ok := r.t.Resources[id]; ok && r.staticAtt != nil && !r.staticRefBusy[id+"."+attr] {
+		if r.staticRefBusy == nil {
+			r.staticRefBusy = map[string]bool{}
+		}
+		r.staticRefBusy[id+"."+attr] = true
+		v, ok := r.staticAtt(id, attr)
+		delete(r.staticRefBusy, id+"."+attr)
+		if ok && v != "" && !strings.Contains(v, "<") {
+			r.refs[id] = true
+			return v
+		}
 	}
 	if res, ok := r.t.Resources[id]; ok {
 		r.refs[id] = true
