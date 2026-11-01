@@ -496,7 +496,10 @@ func (a *apigwCollation) method(methodID, apiID string) RestMethodPlan {
 	}
 	// An authorizer or validator outside the stack (or a literal id) has no plan to provision: the method
 	// would be served without it, so it refuses.
-	for _, ref := range []struct{ prop, typ string; dst *string }{
+	for _, ref := range []struct {
+		prop, typ string
+		dst       *string
+	}{
 		{"AuthorizerId", "AWS::ApiGateway::Authorizer", &m.Authorizer},
 		{"RequestValidatorId", "AWS::ApiGateway::RequestValidator", &m.RequestValidator},
 	} {

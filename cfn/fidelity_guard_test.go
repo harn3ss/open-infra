@@ -33,14 +33,14 @@ var reportedElsewhere = map[string]string{
 	"AWS::EC2::EIP.Domain":             "every address is a VPC (LAN) address; standard (EC2-Classic) addresses no longer exist on AWS either",
 	// Structural no-ops provision nothing; their properties name the resources they join, which are
 	// translated in their own right.
-	"AWS::EC2::VPCGatewayAttachment.VpcId":               "the attachment is structural — the VPC is translated on its own",
-	"AWS::EC2::VPCGatewayAttachment.InternetGatewayId":   "the attachment is structural — the border device is a kind: NatGateway",
-	"AWS::EC2::SubnetRouteTableAssociation.SubnetId":     "routes are VPC-scoped on kind: Vpc; the association joins nothing",
-	"AWS::EC2::SubnetRouteTableAssociation.RouteTableId": "routes are VPC-scoped on kind: Vpc; the association joins nothing",
-	"AWS::EC2::RouteTable.VpcId":                         "a route table is a pure container; its routes are translated on their own",
-	"AWS::ECS::Cluster.ClusterName":                      "an ECS cluster is structural: every service runs on the one Kubernetes cluster",
-	"AWS::IAM::InstanceProfile.InstanceProfileName":      "the profile is followed to its role (the VM binds the kind: Role); the profile's own name names nothing",
-	"AWS::IAM::InstanceProfile.Path":                     "IAM paths name nothing on open-infra",
+	"AWS::EC2::VPCGatewayAttachment.VpcId":                                                         "the attachment is structural — the VPC is translated on its own",
+	"AWS::EC2::VPCGatewayAttachment.InternetGatewayId":                                             "the attachment is structural — the border device is a kind: NatGateway",
+	"AWS::EC2::SubnetRouteTableAssociation.SubnetId":                                               "routes are VPC-scoped on kind: Vpc; the association joins nothing",
+	"AWS::EC2::SubnetRouteTableAssociation.RouteTableId":                                           "routes are VPC-scoped on kind: Vpc; the association joins nothing",
+	"AWS::EC2::RouteTable.VpcId":                                                                   "a route table is a pure container; its routes are translated on their own",
+	"AWS::ECS::Cluster.ClusterName":                                                                "an ECS cluster is structural: every service runs on the one Kubernetes cluster",
+	"AWS::IAM::InstanceProfile.InstanceProfileName":                                                "the profile is followed to its role (the VM binds the kind: Role); the profile's own name names nothing",
+	"AWS::IAM::InstanceProfile.Path":                                                               "IAM paths name nothing on open-infra",
 	"AWS::CloudFront::CloudFrontOriginAccessIdentity.CloudFrontOriginAccessIdentityConfig.Comment": "free text for people",
 }
 
