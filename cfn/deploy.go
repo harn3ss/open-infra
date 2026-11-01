@@ -67,6 +67,19 @@ type StackResource struct {
 	Spec           map[string]any `json:"spec,omitempty"`           // the applied spec — enables diff (update) and faithful rollback
 	ProvisionedID  string         `json:"provisionedId,omitempty"`  // out-of-band id of a non-k8s resource (e.g. a REST v1 API id), for teardown
 	Protected      bool           `json:"protected,omitempty"`      // deletion protection: a delete/removal of the stack's resource is refused
+	// Type is the resource's CloudFormation type (AWS::S3::Bucket); "" on a record from before it was kept.
+	// A companion object a resource emits (an inline policy) carries its parent's type.
+	Type string `json:"type,omitempty"`
+	// PhysicalID is the resource's physical id — its Ref value (resource_attrs.go), set when the stack
+	// completes; "" until then, or when the Ref does not resolve.
+	PhysicalID string `json:"physicalId,omitempty"`
+	// Status, StatusReason and Timestamp are the resource's own last status (CREATE_COMPLETE, …), what
+	// DescribeStackResources reports.
+	Status       string `json:"status,omitempty"`
+	StatusReason string `json:"statusReason,omitempty"`
+	Timestamp    string `json:"timestamp,omitempty"`
+	// SignalData is a wait condition's received signals' data (its Fn::GetAtt Data), set when it completes.
+	SignalData string `json:"signalData,omitempty"`
 }
 
 // builtResource is one translated, ready-to-apply resource plus its identity/spec record.
@@ -76,6 +89,7 @@ type builtResource struct {
 	cav      []string
 	shared   bool          // applied by several stacks on purpose (Manifest.Shared): no ownership check
 	requires []Requirement // objects outside the stack that must exist first (Manifest.Requires)
+	signals  *signalSpec   // signals the resource waits for once Ready (signals.go); nil = none
 }
 
 // Creator is an optional Applier capability: create an object only if none of that kind and name exists
@@ -298,6 +312,13 @@ type StackRecord struct {
 	// front door had to settle *_FAILED without the operation's authority keeps it, so a later Destroy
 	// removes those too (only where the object carries this stack's label — it may never have been applied).
 	Pending []StackResource `json:"pending,omitempty"`
+	// Events are the stack's status history, oldest first (events.go) — DescribeStackEvents.
+	Events []StackEvent `json:"events,omitempty"`
+	// Description is the template's Description (DescribeStacks returns it).
+	Description string `json:"description,omitempty"`
+	// Fidelity is the deploy's one-line fidelity summary — what open-infra accepted but does not emulate —
+	// shown by DescribeStacks and the stack's first event of the operation.
+	Fidelity string `json:"fidelity,omitempty"`
 }
 
 type DeployOptions struct {
@@ -334,6 +355,14 @@ type DeployOptions struct {
 	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
 	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
 	Caps Capabilities
+	// Signals reads the resource signals a CreationPolicy or WaitCondition waits for (signals.go). Nil =
+	// signals cannot arrive on this path, so a stack that waits for them refuses rather than hangs.
+	Signals SignalSource
+	// SignalURL returns the URL a WaitConditionHandle's Ref is: where a guest PUTs its signal (nil = no
+	// such URL on this path).
+	SignalURL func(stackName, handleID string) string
+	// Fidelity is the operation's one-line fidelity summary, recorded on the stack (DescribeStacks).
+	Fidelity string
 }
 
 // ProvisionRestAPIFunc provisions a collated REST v1 plan (the sentinel's Spec) and returns the created
@@ -374,7 +403,7 @@ func expandManifest(id string, res Resource, m *Manifest, opts DeployOptions) ([
 		}
 		out = append(out, builtResource{
 			res: StackResource{LogicalID: lid, APIVersion: mm.APIVersion, Kind: mm.Kind, Name: mm.Name,
-				DeletionPolicy: dp, Spec: mm.Spec, Protected: mm.Protected},
+				DeletionPolicy: dp, Spec: mm.Spec, Protected: mm.Protected, Type: res.Type},
 			yml: yml, cav: mm.Caveats, shared: mm.Shared, requires: mm.Requires,
 		})
 	}
@@ -399,9 +428,12 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
-	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, opts.prior)}
+	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, opts.prior), signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
+	if needsSignals(t) && opts.Signals == nil {
+		return nil, fmt.Errorf("the stack waits for resource signals (a CreationPolicy ResourceSignal or a WaitCondition), and this deploy path cannot receive them — deploy it through the aws-shim CloudFormation front door")
+	}
 
 	byID := map[string][]builtResource{}
 	var findings []Finding
@@ -430,6 +462,12 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 		if err != nil {
 			return nil, err
 		}
+		spec, serr := signalSpecOf(res, m, id)
+		if serr != nil {
+			findings = append(findings, Finding{"Resource " + id, serr.Error()})
+			continue
+		}
+		built[0].signals = spec
 		byID[id] = built
 	}
 	findings = append(findings, r.findings...)
@@ -499,55 +537,135 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	rec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS",
 		CreatedAt: now, UpdatedAt: now, Template: string(data), Owner: opts.Owner,
+		Description: templateDescription(data), Fidelity: opts.Fidelity,
 	}
 	rec.setParams(data, opts.Params)
 	for _, b := range order {
 		rec.Resources = append(rec.Resources, b.res)
 	}
+	rec.stackEvent("CREATE_IN_PROGRESS", startReason(opts))
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
 
 	var applied []StackResource
+	failed := ""       // the logical id that failed, for its CREATE_FAILED event
+	failedRes := order // looked up by logical id below
 	rollback := func(cause error) (*StackRecord, error) {
+		for _, b := range failedRes {
+			if b.res.LogicalID == failed {
+				rec.resourceEvent(b.res, "CREATE_FAILED", cause.Error())
+				break
+			}
+		}
+		rec.stackEvent("ROLLBACK_IN_PROGRESS", rollbackReason(failed))
 		// Reverse order, honoring Retain: a Retain resource (e.g. the shared default EncryptionKey, which
 		// may pre-date this stack and key a sibling's disks) survives a failed create — AWS retains it on
 		// rollback too.
 		for i := len(applied) - 1; i >= 0; i-- {
 			a := applied[i]
 			if keptOnRollback(a) {
+				rec.resourceEvent(a, "DELETE_SKIPPED", "")
 				continue
 			}
-			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
+			rec.resourceEvent(a, "DELETE_IN_PROGRESS", "")
+			if err := ap.Delete(ctx, a.APIVersion, a.Kind, a.Name); err != nil {
+				rec.resourceEvent(a, "DELETE_FAILED", err.Error())
+				continue
+			}
+			rec.resourceEvent(a, "DELETE_COMPLETE", "")
 		}
 		rec.Status = "CREATE_FAILED"
 		rec.Message = cause.Error()
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		rec.stackEvent("CREATE_FAILED", cause.Error())
 		_ = writeStackRecord(ctx, ap, rec, opts)
 		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
 	}
+	progress := func() { flushEvents(ctx, ap, rec) } // so DescribeStackEvents shows the create as it goes
 
 	owned := ownedObjects{} // a new stack owns only what it creates
 	for _, b := range order {
+		failed = b.res.LogicalID
+		rec.resourceEvent(b.res, "CREATE_IN_PROGRESS", "")
+		if IsSignalWait(b.res) { // a WaitCondition: nothing to apply, only signals to wait for
+			sigs, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
+			if err != nil {
+				return rollback(err)
+			}
+			setSignalData(rec, b.res.LogicalID, sigs)
+			rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
+			progress()
+			continue
+		}
 		if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
 			return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
 		}
 		applied = append(applied, b.res)
+		progress()
 		if opts.Wait {
 			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
 				return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))
 			}
 		}
+		if b.signals != nil {
+			if _, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID); err != nil {
+				return rollback(err)
+			}
+		}
+		rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
+		progress()
 	}
 
-	// 4. Complete — with the template's Outputs evaluated against the deployed stack.
+	// 4. Complete — with the template's Outputs evaluated against the deployed stack. An Output that
+	// does not resolve fails the create, as on AWS (no stack completes with an Output missing).
+	failed = ""
 	setOutputs(ctx, data, opts, rec, ap, nil)
+	if err := outputFailure(rec); err != nil {
+		return rollback(err)
+	}
 	rec.Status = "CREATE_COMPLETE"
 	rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	rec.stackEvent("CREATE_COMPLETE", "")
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
 		return rec, fmt.Errorf("stack created but recording COMPLETE failed: %w", err)
 	}
 	return rec, nil
+}
+
+// startReason is the reason on an operation's first stack event: AWS's "User Initiated", with the
+// operation's fidelity summary when it has one.
+func startReason(opts DeployOptions) string {
+	if opts.Fidelity == "" {
+		return "User Initiated"
+	}
+	return "User Initiated — open-infra fidelity: " + opts.Fidelity
+}
+
+// templateDescription is a template's top-level Description ("" when none).
+func templateDescription(data []byte) string {
+	t, err := Parse(data)
+	if err != nil {
+		return ""
+	}
+	return t.Description
+}
+
+// setSignalData stores a wait condition's signals' data on its record entry (its Fn::GetAtt Data).
+func setSignalData(rec *StackRecord, id string, sigs []Signal) {
+	for i := range rec.Resources {
+		if rec.Resources[i].LogicalID == id {
+			rec.Resources[i].SignalData = signalData(sigs)
+		}
+	}
+}
+
+// rollbackReason is a rolled-back create's ROLLBACK_IN_PROGRESS reason.
+func rollbackReason(failed string) string {
+	if failed == "" {
+		return "The stack's Outputs did not resolve. Rollback requested by user."
+	}
+	return "The following resource(s) failed to create: [" + failed + "]. Rollback requested by user."
 }
 
 // hasCustomResources reports whether a parsed template contains any Lambda-backed custom resource (#269).
@@ -590,27 +708,38 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	r.customData = map[string]map[string]any{}
-	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, nil)}
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, nil), signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
+	if needsSignals(t) && opts.Signals == nil {
+		return nil, fmt.Errorf("the stack waits for resource signals (a CreationPolicy ResourceSignal or a WaitCondition), and this deploy path cannot receive them — deploy it through the aws-shim CloudFormation front door")
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
-		Template: string(data), Owner: opts.Owner}
+		Template: string(data), Owner: opts.Owner, Description: t.Description, Fidelity: opts.Fidelity}
 	rec.setParams(data, opts.Params)
+	rec.stackEvent("CREATE_IN_PROGRESS", startReason(opts))
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
 
 	var applied []StackResource
 	var provisionedAPIs []string // REST v1 API ids to tear down on rollback
+	failedID, failedType := "", ""
 	rollback := func(cause error) (*StackRecord, error) {
+		if failedID != "" {
+			rec.addEvent(failedID, "", failedType, "CREATE_FAILED", cause.Error())
+		}
+		rec.stackEvent("ROLLBACK_IN_PROGRESS", rollbackReason(failedID))
 		for i := len(applied) - 1; i >= 0; i-- { // reverse order, honoring Retain (as Deploy does)
 			a := applied[i]
 			if keptOnRollback(a) {
+				rec.resourceEvent(a, "DELETE_SKIPPED", "")
 				continue
 			}
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
+			rec.resourceEvent(a, "DELETE_COMPLETE", "")
 		}
 		for i := len(provisionedAPIs) - 1; i >= 0; i-- { // tear down provisioned REST v1 APIs too
 			if opts.DeprovisionRestAPI != nil {
@@ -621,6 +750,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		rec.Message = cause.Error()
 		rec.Pending = nil
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		rec.stackEvent("CREATE_FAILED", cause.Error())
 		_ = writeStackRecord(ctx, ap, rec, opts)
 		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
 	}
@@ -645,6 +775,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			return rollback(fmt.Errorf("%s (%s) has no create translator", id, res.Type))
 		}
 		r.where = "Resource " + id
+		failedID, failedType = id, res.Type
 		resolved, _ := r.resolve(res.Properties).(map[string]any)
 		m, fs := tr(id, resolved, sctx)
 		if len(fs) > 0 {
@@ -653,9 +784,10 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		if m == nil {
 			continue // a no-op resource (composes into another kind)
 		}
+		rec.addEvent(id, "", res.Type, "CREATE_IN_PROGRESS", "")
 		// A custom resource is invoked (not applied); its Data feeds later dependents' Fn::GetAtt.
 		if m.APIVersion == customResourceAPIVersion && m.Kind == customResourceKind {
-			if werr := intend(StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec}); werr != nil {
+			if werr := intend(StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec, Type: res.Type}); werr != nil {
 				return rollback(werr)
 			}
 			sr, cerr := invokeCustomResource(ctx, opts, r, id, m)
@@ -664,6 +796,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			}
 			rec.Resources = append(rec.Resources, sr)
 			rec.Pending = nil
+			rec.resourceEvent(sr, "CREATE_COMPLETE", "")
 			continue
 		}
 		// A REST v1 API sentinel is provisioned via the apigateway hook (not applied); its created id is
@@ -677,6 +810,26 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 				provisionedAPIs = append(provisionedAPIs, apiID)
 			}
 			rec.Resources = append(rec.Resources, sr)
+			rec.resourceEvent(sr, "CREATE_COMPLETE", "")
+			if werr := intend(); werr != nil {
+				return rollback(werr)
+			}
+			continue
+		}
+		spec, serr := signalSpecOf(res, m, id)
+		if serr != nil {
+			return rollback(serr)
+		}
+		// A wait condition is waited for, not applied.
+		if m.APIVersion == waitAPIVersion && m.Kind == waitKind {
+			sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec, Type: res.Type}
+			sigs, werr := waitForSignals(ctx, opts, *spec, id)
+			if werr != nil {
+				return rollback(werr)
+			}
+			sr.SignalData = signalData(sigs)
+			rec.Resources = append(rec.Resources, sr)
+			rec.resourceEvent(sr, "CREATE_COMPLETE", "")
 			if werr := intend(); werr != nil {
 				return rollback(werr)
 			}
@@ -708,13 +861,27 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 				}
 			}
 		}
+		if spec != nil {
+			if _, werr := waitForSignals(ctx, opts, *spec, id); werr != nil {
+				return rollback(werr)
+			}
+		}
+		for _, b := range built {
+			rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
+		}
 		rec.Pending = nil // now in Resources (written with the next write-ahead, or at COMPLETE)
 	}
-	// Outputs may read a custom resource's returned Data (Fn::GetAtt), so evaluate them with it.
+	// Outputs may read a custom resource's returned Data (Fn::GetAtt), so evaluate them with it. An Output
+	// that does not resolve fails the create.
+	failedID, failedType = "", ""
 	setOutputs(ctx, data, opts, rec, ap, r.customData)
+	if err := outputFailure(rec); err != nil {
+		return rollback(err)
+	}
 	rec.Pending = nil
 	rec.Status = "CREATE_COMPLETE"
 	rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	rec.stackEvent("CREATE_COMPLETE", "")
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
 		return rec, fmt.Errorf("stack created but recording COMPLETE failed: %w", err)
 	}
@@ -753,6 +920,14 @@ func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, 
 	} else {
 		r.customData[id] = map[string]any{}
 	}
+	sr.Type = resType
+	// The resource's Ref is the PhysicalResourceId its handler returned (AWS's contract); a handler that
+	// returns none gets the request's id, as the cfn-response helpers do.
+	if pid, ok := resp["PhysicalResourceId"].(string); ok && pid != "" {
+		sr.PhysicalID = pid
+	} else {
+		sr.PhysicalID = opts.StackName + "/" + id
+	}
 	return sr, nil
 }
 
@@ -768,7 +943,7 @@ func provisionRestAPI(ctx context.Context, opts DeployOptions, id string, m *Man
 	if err != nil {
 		return sr, "", fmt.Errorf("provisioning REST API %s: %w", id, err)
 	}
-	sr.ProvisionedID = apiID
+	sr.ProvisionedID, sr.PhysicalID, sr.Type = apiID, apiID, "AWS::ApiGateway::RestApi"
 	return sr, apiID, nil
 }
 

@@ -56,6 +56,8 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 	prog := *rec
 	prog.Status = "DELETE_IN_PROGRESS"
 	prog.UpdatedAt = now()
+	prog.Events = append([]StackEvent(nil), rec.Events...)
+	prog.stackEvent("DELETE_IN_PROGRESS", "User Initiated")
 	if err := writeStackRecord(ctx, ap, &prog, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
@@ -66,6 +68,8 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 		out.Message = cause.Error()
 		out.Resources, out.Pending = resources, pending
 		out.UpdatedAt = now()
+		out.Events = prog.Events
+		out.stackEvent("DELETE_FAILED", cause.Error())
 		_ = writeStackRecord(ctx, ap, &out, opts)
 		return &out, fmt.Errorf("destroy failed (deletes are not reversible; %d resource(s) remain): %w", len(resources)+len(pending), cause)
 	}
@@ -141,7 +145,7 @@ func IsRestV1API(r StackResource) bool {
 // invoked) or a provisioned REST v1 API (#295). Neither is applied or deleted as an object.
 func isOutOfBand(r StackResource) bool {
 	return (r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind) ||
-		(r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind)
+		(r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind) || IsSignalWait(r)
 }
 
 // teardown deletes resources newest-first (the record is in create order), honoring DeletionPolicy:
@@ -168,6 +172,10 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 		r := resources[i]
 		if (rollback && keptOnRollback(r)) || (!rollback && isRetain(r)) {
 			continue // left in place, intentionally unmanaged
+		}
+		if IsSignalWait(r) { // a wait condition: there is nothing to delete
+			gone[i] = true
+			continue
 		}
 		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
 		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown

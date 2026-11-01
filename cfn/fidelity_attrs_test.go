@@ -30,14 +30,17 @@ Resources:
       team: payments
 `), nil, "s")
 	got := fidelityText(p)
-	for _, want := range []string{"CreationPolicy ResourceSignal is not waited for", "UpdatePolicy is not honored",
-		"UpdateReplacePolicy Retain has no effect", "AWS::CloudFormation::Init is not run", "Metadata (team) is not kept"} {
+	for _, want := range []string{"UpdatePolicy is not honored", "UpdateReplacePolicy Retain has no effect"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fidelity summary is missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "Interface") {
-		t.Errorf("authoring-only metadata must not be listed:\n%s", got)
+	// A ResourceSignal is waited for, and Metadata (AWS::CloudFormation::Init included) is returned by
+	// DescribeStackResource, which cfn-init reads: neither is a loss any more.
+	for _, not := range []string{"ResourceSignal", "AWS::CloudFormation::Init", "team", "Interface"} {
+		if strings.Contains(got, not) {
+			t.Errorf("%s must not be listed as a loss:\n%s", not, got)
+		}
 	}
 	if p.Verdict != ProvisionableWithCaveats {
 		t.Errorf("a stack with fidelity lines is never cleanly PROVISIONABLE, got %s", p.Verdict)

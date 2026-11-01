@@ -27,6 +27,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // ServiceAPIVersion is the apiVersion of every stack resource the shim's own AWS APIs serve.
@@ -62,14 +64,14 @@ func serviceManifest(kind, name string, spec map[string]any) *Manifest {
 }
 
 // region / account are the pseudo-parameters the stack sees, so names built here agree with
-// ${AWS::Region} / ${AWS::AccountId} in the same template.
+// ${AWS::Region} / ${AWS::AccountId} in the same template; both come from the install's identity.
 func (c *stackCtx) region() string {
 	if c != nil && c.resolver != nil {
 		if v, ok := c.resolver.pseudo["AWS::Region"].(string); ok && v != "" {
 			return v
 		}
 	}
-	return "us-east-1"
+	return awsidentity.Current().Region
 }
 
 func (c *stackCtx) account() string {
@@ -78,7 +80,12 @@ func (c *stackCtx) account() string {
 			return v
 		}
 	}
-	return "000000000000"
+	return awsidentity.Current().AccountID
+}
+
+// ident is the identity the stack's ARNs carry: its AWS::AccountId and AWS::Region.
+func (c *stackCtx) ident() awsidentity.Identity {
+	return awsidentity.Identity{AccountID: c.account(), Region: c.region()}
 }
 
 func (c *stackCtx) stackName() string {
@@ -137,13 +144,9 @@ func svcQueueURL(name string, ctx *stackCtx) string {
 	return base + "/" + ctx.account() + "/" + name
 }
 
-func svcQueueARN(name string, ctx *stackCtx) string {
-	return fmt.Sprintf("arn:aws:sqs:%s:%s:%s", ctx.region(), ctx.account(), name)
-}
+func svcQueueARN(name string, ctx *stackCtx) string { return ctx.ident().RegionalARN("sqs", name) }
 
-func svcTopicARN(name string, ctx *stackCtx) string {
-	return fmt.Sprintf("arn:aws:sns:%s:%s:%s", ctx.region(), ctx.account(), name)
-}
+func svcTopicARN(name string, ctx *stackCtx) string { return ctx.ident().RegionalARN("sns", name) }
 
 // svcParamName is a parameter's name: its Name when given, else what CloudFormation generates for an
 // unnamed one — <stack>-<logical id>-<suffix> — with a suffix fixed by the stack and logical id, so a
@@ -210,7 +213,7 @@ func randomKeyID() string {
 }
 
 func svcKeyARN(keyID string, ctx *stackCtx) string {
-	return fmt.Sprintf("arn:aws:kms:%s:%s:key/%s", ctx.region(), ctx.account(), keyID)
+	return ctx.ident().RegionalARN("kms", "key/"+keyID)
 }
 
 // svcSubscriptionID names a subscription the stack creates: fixed by the stack and logical id (and the
@@ -518,7 +521,7 @@ func snsSubscriptionSpec(proto, endpoint string, epOK bool, rawEP any, ctx *stac
 		spec := map[string]any{"protocol": "lambda"}
 		if eid, ok := getAttTarget(rawEP); ok && ctx.isType(eid, "AWS::Lambda::Function") {
 			// The stack's own Function: delivered to its kind: Function in the stack's namespace.
-			spec["endpoint"] = fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", ctx.region(), ctx.account(), ctx.functionName(eid))
+			spec["endpoint"] = ctx.ident().RegionalARN("lambda", "function:"+ctx.functionName(eid))
 			spec["function"] = ctx.functionName(eid)
 			spec["inStack"] = true
 			return spec, ""

@@ -79,6 +79,8 @@ type stackCtx struct {
 	caps     Capabilities      // deploy-environment facts (zero = fail-closed); same value at plan and deploy
 	namer    *physNamer        // each in-stack resource's Kubernetes name (naming.go); nil = bare logical ids
 	svcIDs   map[string]string // ids this operation chose for service-backed resources (service.go)
+	// signalURL builds a WaitConditionHandle's Ref (signals.go); nil = a placeholder URL (plan, the CLI).
+	signalURL func(stackName, handleID string) string
 }
 
 // refTarget returns the logical id a raw property references, if it is a bare `{Ref: X}`.
@@ -2434,6 +2436,12 @@ func inStackRef(id string, ctx *stackCtx) (string, bool) {
 		return ctx.functionName(id), true
 	case "AWS::SNS::Topic":
 		return inStackARN(id, ctx)
+	case waitConditionHandleType:
+		stack := ""
+		if ctx.resolver != nil {
+			stack, _ = ctx.resolver.pseudo["AWS::StackName"].(string)
+		}
+		return handleURL(ctx.signalURL, stack, id), true
 	}
 	return "", false
 }

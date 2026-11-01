@@ -69,6 +69,7 @@ func cfnTestDoorway(t *testing.T, lanIP string) (*cfnDoorway, *impersonatingAppl
 			}
 			u := o.(*unstructured.Unstructured).DeepCopy()
 			_ = unstructured.SetNestedField(u.Object, lanIP, "status", "lanIp")
+			_ = unstructured.SetNestedField(u.Object, "198.51.100.9", "status", "ip")
 			return true, u, nil
 		})
 	}
@@ -134,8 +135,8 @@ Outputs:
 `
 
 // End to end through the doorway's own applier: the engine deploys, resolves the Elastic IP Outputs from
-// the VM's status.lanIp (read as the caller), persists them on the stack record, and DescribeStacks
-// returns them in the AWS shape. An unresolvable Output is omitted (recorded, never faked).
+// the VM's status.lanIp and its PrivateIp from status.ip (read as the caller), persists them on the stack
+// record, and DescribeStacks returns them in the AWS shape.
 func TestCFNDoorway_DescribeStacksReturnsOutputs(t *testing.T) {
 	h, ap := cfnTestDoorway(t, "192.0.2.40")
 	opts := h.optsFor("web", nil, stackExports{})
@@ -144,8 +145,8 @@ func TestCFNDoorway_DescribeStacksReturnsOutputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if len(rec.OutputsOmitted) != 1 || rec.OutputsOmitted[0].OutputKey != "WebPrivateIp" {
-		t.Fatalf("only the unresolvable PrivateIp Output is omitted, got %+v", rec.OutputsOmitted)
+	if len(rec.OutputsOmitted) != 0 {
+		t.Fatalf("every Output resolves, got omissions %+v", rec.OutputsOmitted)
 	}
 
 	rr := cfnPost(t, h, ap, url.Values{"StackName": {"web"}}, func(w http.ResponseWriter, r *http.Request) { h.describeStacks(w, r, ap, "req-1") })
@@ -160,8 +161,8 @@ func TestCFNDoorway_DescribeStacksReturnsOutputs(t *testing.T) {
 		t.Fatalf("want one CREATE_COMPLETE stack: %+v", got)
 	}
 	outs := got.Stacks[0].Outputs
-	if len(outs) != 2 {
-		t.Fatalf("want the 2 resolvable Outputs (PrivateIp omitted), got %+v", outs)
+	if len(outs) != 3 {
+		t.Fatalf("want all 3 Outputs, got %+v", outs)
 	}
 	byKey := map[string]int{}
 	for i, o := range outs {
@@ -174,8 +175,8 @@ func TestCFNDoorway_DescribeStacksReturnsOutputs(t *testing.T) {
 	if u := outs[byKey["WebUrl"]]; u.OutputValue != "http://192.0.2.40/" || u.ExportName != "" {
 		t.Errorf("WebUrl Output wrong: %+v", u)
 	}
-	if strings.Contains(rr.Body.String(), "WebPrivateIp") {
-		t.Errorf("an omitted Output must not appear in DescribeStacks:\n%s", rr.Body.String())
+	if p := outs[byKey["WebPrivateIp"]]; p.OutputValue != "198.51.100.9" {
+		t.Errorf("WebPrivateIp Output wrong: %+v", p)
 	}
 }
 

@@ -76,8 +76,9 @@ func (c ctxApplier) Apply(ctx context.Context, y []byte) error {
 }
 
 // A completing stack waits for a post-deploy attribute only until shortly before the operation's
-// deadline, so the CREATE_COMPLETE record is still written in time; waiting to the deadline itself would
-// leave the stack in progress for the next front door to roll back.
+// deadline, so the stack's final record is still written in time — here, the create fails because the
+// Output never resolved, and that failure (rolled back) is recorded; waiting to the deadline itself
+// would leave the stack in progress for the next front door to roll back.
 func TestOutputs_WaitLeavesTimeForTheRecord(t *testing.T) {
 	fastOutputs(t)
 	prev := outputRecordReserve
@@ -104,14 +105,11 @@ Outputs:
 	defer cancel()
 	start := time.Now()
 	rec, err := Deploy(ctx, []byte(tmpl), opts, ctxApplier{f})
-	if err != nil {
-		t.Fatalf("the stack must complete with its record written: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "LAN IP was not assigned") {
+		t.Fatalf("the create fails, saying the address was never assigned: %v", err)
 	}
-	if rec.Status != "CREATE_COMPLETE" || f.stored == nil || f.stored.Status != "CREATE_COMPLETE" {
-		t.Fatalf("want a stored CREATE_COMPLETE record: %+v / %+v", rec, f.stored)
-	}
-	if !strings.Contains(omissionMap(f.stored)["Address"], "LAN IP was not assigned") {
-		t.Fatalf("the unassigned address is omitted saying so: %v", f.stored.OutputsOmitted)
+	if rec.Status != "CREATE_FAILED" || f.stored == nil || f.stored.Status != "CREATE_FAILED" {
+		t.Fatalf("want a stored CREATE_FAILED record (written before the deadline): %+v / %+v", rec, f.stored)
 	}
 	if el := time.Since(start); el > 500*time.Millisecond {
 		t.Fatalf("the wait ran into the record's reserve (%s)", el)

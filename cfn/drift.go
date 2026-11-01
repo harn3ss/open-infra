@@ -63,6 +63,9 @@ func DetectDrift(ctx context.Context, opts DeployOptions, ap Applier) (*DriftRep
 		if r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind {
 			continue
 		}
+		if IsSignalWait(r) { // a wait condition provisions nothing that could drift
+			continue
+		}
 		live, exists, err := ap.GetSpec(ctx, r.APIVersion, r.Kind, r.Name)
 		if err != nil {
 			return nil, err

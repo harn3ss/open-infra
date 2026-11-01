@@ -200,7 +200,7 @@ func (h *cfnDoorway) asCaller(o cfn.DeployOptions, ap *impersonatingApplier) cfn
 // (its Delete event), each REST v1 API. Retained resources are left alone, so they need nothing.
 func (h *cfnDoorway) authorizeTeardown(ctx context.Context, ap *impersonatingApplier, rec *cfn.StackRecord) (bool, string) {
 	for _, r := range append(append([]cfn.StackResource{}, rec.Resources...), rec.Pending...) {
-		if cfn.IsRetained(r) {
+		if cfn.IsRetained(r) || cfn.IsSignalWait(r) { // a wait condition deletes nothing
 			continue
 		}
 		var ok bool

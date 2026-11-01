@@ -53,13 +53,20 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		// No resource changes — but the template's Outputs (or their live values) may have changed; an
 		// Outputs-only change is still an update. Otherwise a true no-op: nothing is written.
 		next := *current
+		next.Resources = append([]StackResource(nil), current.Resources...)
 		setOutputs(ctx, data, opts, &next, ap, nil)
+		if err := outputFailure(&next); err != nil {
+			return current, fmt.Errorf("update refused (nothing changed): %w", err)
+		}
 		if outputsEqual(&next, current) {
 			return current, nil
 		}
 		next.Status = "UPDATE_COMPLETE"
 		next.Message = ""
 		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		next.Events = append([]StackEvent(nil), current.Events...)
+		next.stackEvent("UPDATE_IN_PROGRESS", startReason(opts))
+		next.stackEvent("UPDATE_COMPLETE", "")
 		if err := writeStackRecord(ctx, ap, &next, opts); err != nil {
 			return &next, fmt.Errorf("stack outputs updated but recording COMPLETE failed: %w", err)
 		}
@@ -94,17 +101,21 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	inProg.Status = "UPDATE_IN_PROGRESS"
 	inProg.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	inProg.Pending = nil
+	inProg.Resources = append([]StackResource(nil), current.Resources...)
+	inProg.Events = append([]StackEvent(nil), current.Events...)
 	for _, b := range desired {
 		if action[b.res.LogicalID] == Add {
 			inProg.Pending = append(inProg.Pending, b.res)
 		}
 	}
+	inProg.stackEvent("UPDATE_IN_PROGRESS", startReason(opts))
 	if err := writeStackRecord(ctx, ap, &inProg, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
 
 	var added []StackResource // to delete on rollback
 	rollback := func(cause error) (*StackRecord, error) {
+		inProg.stackEvent("UPDATE_ROLLBACK_IN_PROGRESS", cause.Error())
 		// Delete everything this update added (honoring Retain), then re-apply the entire prior stack.
 		_ = restorePrior(ctx, opts, ap, current.Resources, added, false)
 		rec := *current
@@ -112,28 +123,62 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		rec.Status = "UPDATE_ROLLBACK_COMPLETE"
 		rec.Message = cause.Error()
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		rec.Events = inProg.Events
+		rec.stackEvent("UPDATE_ROLLBACK_COMPLETE", "")
 		_ = writeStackRecord(ctx, ap, &rec, opts)
 		return &rec, fmt.Errorf("update failed and was rolled back to the prior stack (no orphans): %w", cause)
+	}
+	event := func(r StackResource, status, reason string) {
+		inProg.addEvent(r.LogicalID, r.Name, typeOr(r), status, reason)
+		flushEvents(ctx, ap, &inProg)
 	}
 
 	// Apply Adds and Modifies in dependency order. The stack owns what its record names (and what this
 	// update creates); another object carrying its label was left by an earlier stack of the same name.
 	owned := ownedFrom(current.Resources)
 	for _, b := range desired {
-		switch action[b.res.LogicalID] {
-		case Add, Modify:
-			if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
-				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
-			}
-			if action[b.res.LogicalID] == Add {
-				added = append(added, b.res)
-			}
-			if opts.Wait {
-				if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
-					return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))
+		act := action[b.res.LogicalID]
+		if act != Add && act != Modify {
+			continue
+		}
+		verb := "UPDATE"
+		if act == Add {
+			verb = "CREATE"
+		}
+		event(b.res, verb+"_IN_PROGRESS", "")
+		if IsSignalWait(b.res) {
+			if act == Add { // a wait condition waits when it is created, never on an update
+				sigs, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
+				if err != nil {
+					event(b.res, verb+"_FAILED", err.Error())
+					return rollback(err)
 				}
+				b.res.SignalData = signalData(sigs)
+				desiredByID[b.res.LogicalID] = b
+			}
+			event(b.res, verb+"_COMPLETE", "")
+			continue
+		}
+		if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
+			event(b.res, verb+"_FAILED", err.Error())
+			return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
+		}
+		if act == Add {
+			added = append(added, b.res)
+		}
+		if opts.Wait {
+			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
+				event(b.res, verb+"_FAILED", err.Error())
+				return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))
 			}
 		}
+		if act == Add && b.signals != nil { // a CreationPolicy applies when the resource is created
+			if _, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID); err != nil {
+				event(b.res, verb+"_FAILED", err.Error())
+				return rollback(err)
+			}
+		}
+		event(b.res, verb+"_COMPLETE", "")
 	}
 	// Delete Removes in reverse dependency order (cs lists them reversed already). Honor Retain: a
 	// Retain resource is left in place (now unmanaged), matching destroy's behavior — e.g. removing
@@ -144,36 +189,80 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	for _, b := range desired {
 		stillNamed[b.res.APIVersion+"/"+b.res.Kind+"/"+b.res.Name] = true
 	}
+	// The stack's Outputs must resolve against what it is about to become (an Output that does not resolve
+	// fails the update, which rolls back) — checked before anything is removed.
+	newRec := &StackRecord{
+		Name: opts.StackName, Namespace: opts.Namespace, Status: "UPDATE_COMPLETE",
+		CreatedAt: current.CreatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Template: string(data), Owner: current.Owner, Description: templateDescription(data), Fidelity: opts.Fidelity,
+	}
+	newRec.setParams(data, opts.Params)
+	for _, b := range desired {
+		r := desiredByID[b.res.LogicalID].res
+		switch action[r.LogicalID] {
+		case Add:
+			r.Status = "CREATE_COMPLETE"
+		case Modify:
+			r.Status = "UPDATE_COMPLETE"
+		default: // unchanged: keeps its status, and a wait condition its data
+			if cur, ok := currentByID[r.LogicalID]; ok {
+				r.Status, r.StatusReason, r.Timestamp, r.SignalData = cur.Status, cur.StatusReason, cur.Timestamp, cur.SignalData
+			}
+		}
+		if r.Timestamp == "" || action[r.LogicalID] == Add || action[r.LogicalID] == Modify {
+			r.Timestamp = eventTime(time.Now())
+		}
+		newRec.Resources = append(newRec.Resources, r)
+	}
+	setOutputs(ctx, data, opts, newRec, ap, nil)
+	if err := outputFailure(newRec); err != nil {
+		return rollback(err)
+	}
+
+	inProg.stackEvent("UPDATE_COMPLETE_CLEANUP_IN_PROGRESS", "")
 	for _, c := range cs.Changes {
 		if c.Action != Remove {
 			continue
 		}
-		if r := currentByID[c.LogicalID]; isRetain(r) || stillNamed[r.APIVersion+"/"+r.Kind+"/"+r.Name] {
+		r := currentByID[c.LogicalID]
+		if isRetain(r) || stillNamed[r.APIVersion+"/"+r.Kind+"/"+r.Name] || isOutOfBand(r) {
+			if isRetain(r) {
+				inProg.addEvent(r.LogicalID, r.Name, typeOr(r), "DELETE_SKIPPED", "")
+			}
 			continue
 		}
-		// A dropped S3 bucket that still holds data is kept, unmanaged, as AWS's cleanup leaves it.
+		// A dropped S3 bucket that still holds data is kept, unmanaged, as AWS's cleanup leaves it (the
+		// resource's DELETE_FAILED event says so; the update still completes).
 		noWait := opts
 		noWait.Wait = false // as before: an update does not wait for a removed object to go
-		if _, err := deleteStackObject(ctx, noWait, ap, currentByID[c.LogicalID], false); err != nil {
+		event(r, "DELETE_IN_PROGRESS", "")
+		kept, err := deleteStackObject(ctx, noWait, ap, r, false)
+		if err != nil {
+			event(r, "DELETE_FAILED", err.Error())
 			return rollback(err)
 		}
+		if kept {
+			event(r, "DELETE_FAILED", (&BucketNotEmptyError{LogicalID: r.LogicalID, Bucket: bucketNameOf(r)}).Error())
+			continue
+		}
+		event(r, "DELETE_COMPLETE", "")
 	}
 
 	// Success — the new resource set is exactly the desired one.
-	newRec := &StackRecord{
-		Name: opts.StackName, Namespace: opts.Namespace, Status: "UPDATE_COMPLETE",
-		CreatedAt: current.CreatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Template: string(data), Owner: current.Owner,
-	}
-	newRec.setParams(data, opts.Params)
-	for _, b := range desired {
-		newRec.Resources = append(newRec.Resources, b.res)
-	}
-	setOutputs(ctx, data, opts, newRec, ap, nil)
+	newRec.Events = inProg.Events
+	newRec.stackEvent("UPDATE_COMPLETE", "")
 	if err := writeStackRecord(ctx, ap, newRec, opts); err != nil {
 		return newRec, fmt.Errorf("stack updated but recording COMPLETE failed: %w", err)
 	}
 	return newRec, nil
+}
+
+// typeOr is a recorded resource's CloudFormation type, or its kind on a record from before types were kept.
+func typeOr(r StackResource) string {
+	if r.Type != "" {
+		return r.Type
+	}
+	return r.Kind
 }
 
 // restorePrior rolls an update back to the prior stack. It deletes what the update added, newest first —

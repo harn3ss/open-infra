@@ -16,13 +16,14 @@ import (
 
 // Template is a parsed CloudFormation template (the sections Phase 1 reads).
 type Template struct {
-	Transform  any                  // presence => a macro/SAM template (unsupported v1)
-	Parameters map[string]Parameter // name -> {Type, Default, ...}
-	Mappings   map[string]any       // name -> { topKey -> { secondKey -> value } }
-	Conditions map[string]any       // name -> a condition intrinsic
-	Resources  map[string]Resource  // logical id -> resource
-	Outputs    map[string]any       // name -> { Value, ... }
-	rawOrder   []string             // resource logical ids in template order (stable output)
+	Transform   any                  // presence => a macro/SAM template (unsupported v1)
+	Description string               // the template's Description (DescribeStacks, ValidateTemplate)
+	Parameters  map[string]Parameter // name -> {Type, Default, ...}
+	Mappings    map[string]any       // name -> { topKey -> { secondKey -> value } }
+	Conditions  map[string]any       // name -> a condition intrinsic
+	Resources   map[string]Resource  // logical id -> resource
+	Outputs     map[string]any       // name -> { Value, ... }
+	rawOrder    []string             // resource logical ids in template order (stable output)
 }
 
 type Parameter struct {
@@ -119,6 +120,7 @@ func Parse(data []byte) (*Template, error) {
 		Outputs:    map[string]any{},
 	}
 	t.Transform = m["Transform"]
+	t.Description, _ = m["Description"].(string)
 	if mp, ok := m["Mappings"].(map[string]any); ok {
 		t.Mappings = mp
 	}

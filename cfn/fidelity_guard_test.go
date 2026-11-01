@@ -254,6 +254,10 @@ var guardBaselines = []guardBaseline{
 	yamlBaseline("AWS::SQS::Queue", `{}`, ""),
 	yamlBaseline("AWS::SNS::Topic", `{}`, ""),
 	yamlBaseline("AWS::SSM::Parameter", `{ Name: /app/x, Type: String, Value: v }`, ""),
+	yamlBaseline("AWS::CloudFormation::WaitCondition", `{ Handle: !Ref H, Count: 1, Timeout: "300" }`, `
+  H: { Type: AWS::CloudFormation::WaitConditionHandle }`),
+	yamlBaseline("AWS::CloudFormation::WaitConditionHandle", `{}`, `
+  W: { Type: AWS::CloudFormation::WaitCondition, Properties: { Handle: !Ref R, Timeout: "300" } }`),
 	yamlBaseline("AWS::StepFunctions::StateMachine", `{ DefinitionString: "{\"StartAt\":\"A\",\"States\":{\"A\":{\"Type\":\"Pass\",\"End\":true}}}" }`, ""),
 	yamlBaseline("AWS::RDS::DBInstance", `{ Engine: postgres, DBInstanceClass: db.t3.micro, AllocatedStorage: 20 }`, ""),
 	yamlBaseline("AWS::IAM::User", `{}`, ""),

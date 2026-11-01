@@ -292,6 +292,11 @@ func (r *resolver) getAtt(arg any) any {
 		if res.Type == "AWS::EC2::EIP" && attr == "AllocationId" {
 			return eipAllocationID(fmt.Sprint(r.pseudo["AWS::StackName"]), id)
 		}
+		// A WaitCondition's Data exists once its signals arrive, after every resource is translated: an
+		// Output can read it, another resource's properties cannot (no value to translate yet).
+		if res.Type == waitConditionType && attr == "Data" && r.deployed == nil {
+			r.find("Fn::GetAtt " + id + ".Data resolves only once the wait condition completes — on open-infra an Output can read it, another resource's properties cannot")
+		}
 	} else if id != "" {
 		r.find("Fn::GetAtt on undefined resource " + id)
 	}

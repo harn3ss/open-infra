@@ -2,8 +2,6 @@ package cfn
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 )
 
 // Resource attributes (DeletionPolicy, UpdateReplacePolicy, CreationPolicy, UpdatePolicy, Metadata).
@@ -45,9 +43,7 @@ func attributeCaveats(r Resource) []string {
 	}
 	if r.CreationPolicy != nil {
 		cp, _ := r.CreationPolicy.(map[string]any)
-		if _, ok := cp["ResourceSignal"]; ok {
-			out = append(out, "CreationPolicy ResourceSignal is not waited for — the resource is complete when it is Ready, not when its instances signal success (cfn-signal)")
-		}
+		// A ResourceSignal is waited for (signals.go): no caveat.
 		if _, ok := cp["AutoScalingCreationPolicy"]; ok {
 			out = append(out, "CreationPolicy AutoScalingCreationPolicy is not honored")
 		}
@@ -61,18 +57,10 @@ func attributeCaveats(r Resource) []string {
 	if r.UpdateReplacePolicy != "" {
 		out = append(out, "UpdateReplacePolicy "+r.UpdateReplacePolicy+" has no effect — open-infra updates a resource in place and never replaces it on update")
 	}
-	var kept []string
-	for _, k := range sortedKeys(r.Metadata) {
-		switch {
-		case k == "AWS::CloudFormation::Init" || k == "AWS::CloudFormation::Authentication":
-			out = append(out, "Metadata "+k+" is not run — open-infra guests have no cfn-init; configure the instance from UserData")
-		case !authoringMetadata[k]:
-			kept = append(kept, k)
-		}
-	}
-	if len(kept) > 0 {
-		sort.Strings(kept)
-		out = append(out, "Metadata ("+strings.Join(kept, ", ")+") is not kept — DescribeStackResource does not return it")
+	// Metadata is kept with the template and returned by DescribeStackResource, which is what cfn-init
+	// reads: AWS::CloudFormation::Init runs when the guest runs cfn-init against this front door, as on AWS.
+	if _, ok := r.Metadata["AWS::CloudFormation::Authentication"]; ok {
+		out = append(out, "Metadata AWS::CloudFormation::Authentication is returned to cfn-init but open-infra does not act on it — cfn-init fetches sources with the instance role's credentials only")
 	}
 	return out
 }

@@ -71,11 +71,12 @@ func setOutputs(ctx context.Context, data []byte, opts DeployOptions, rec *Stack
 		return
 	}
 	rec.Imports = templateImports(t, opts)
+	sr, _ := ap.(StatusReader)
+	defer setPhysicalIDs(ctx, t, opts, rec, sr)
 	if len(t.Outputs) == 0 {
 		rec.Outputs, rec.OutputsOmitted = nil, nil
 		return
 	}
-	sr, _ := ap.(StatusReader)
 	var deadline time.Time
 	if opts.Wait {
 		wait := opts.Timeout
@@ -112,10 +113,11 @@ func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	r.customData = customData
-	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, rec.Resources)}
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, rec.Resources), signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
-	d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, byID: map[string]StackResource{}, status: map[string]map[string]any{}}
+	d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, namespace: opts.Namespace,
+		byID: map[string]StackResource{}, status: map[string]map[string]any{}}
 	for _, res := range rec.Resources {
 		d.byID[res.LogicalID] = res
 	}
@@ -248,14 +250,16 @@ func describePlaceholder(body string, t *Template) string {
 
 // deployedAttrs resolves the documented post-deploy attributes from the deployed claims' status.
 type deployedAttrs struct {
-	ctx     context.Context
-	sr      StatusReader
-	sctx    *stackCtx
-	byID    map[string]StackResource  // the deployed record, by logical id
-	status  map[string]map[string]any // live .status cache, "Kind/name" -> status
-	notes   []string                  // why an attribute definitively does not resolve
-	waiting []string                  // a supported attribute not populated yet (poll again)
-	missed  map[string]bool           // "id|attr" of each supported attribute that missed (explained above)
+	ctx       context.Context
+	sr        StatusReader
+	sctx      *stackCtx
+	namespace string                    // the stack's namespace (in-cluster DNS names)
+	byID      map[string]StackResource  // the deployed record, by logical id
+	props     map[string]map[string]any // each resource's resolved properties (cache)
+	status    map[string]map[string]any // live .status cache, "Kind/name" -> status
+	notes     []string                  // why an attribute definitively does not resolve
+	waiting   []string                  // a supported attribute not populated yet (poll again)
+	missed    map[string]bool           // "id|attr" of each supported attribute that missed (explained above)
 }
 
 // lookup resolves one reference (attr "" = Ref); a supported attribute that misses records why.
@@ -273,34 +277,60 @@ func (d *deployedAttrs) resolveAttr(id, attr string) (any, bool) {
 	if !ok || !d.sctx.included(res) {
 		return nil, false
 	}
-	switch res.Type {
-	case "AWS::EC2::EIP":
-		if attr != "" && attr != "PublicIp" {
-			return nil, false
+	if isCustomResourceType(res.Type) {
+		// A custom resource's Ref is the PhysicalResourceId its handler returned; its attributes are the
+		// Data it returned, which the resolver reads itself.
+		if sr, ok := d.byID[id]; ok && attr == "" && sr.PhysicalID != "" {
+			return sr.PhysicalID, true
 		}
-		inst := ""
-		all := d.sctx.eipBindings()
-		for _, b := range all {
-			if b.eip == id && eipConflict(b, all) == "" {
-				inst = b.instance
-				break
-			}
-		}
-		if inst == "" {
-			d.notes = append(d.notes, "Elastic IP "+id+" is not associated with an in-stack instance, so it has no address")
-			return nil, false
-		}
-		return d.vmLanIP(inst)
-	case "AWS::EC2::Instance":
-		if attr == "PublicIp" {
-			return d.vmLanIP(id)
-		}
-	case "AWS::S3::Bucket":
-		if attr == "" {
-			return d.statusString(id, "bucket", "bucket "+id+"'s name")
+		return nil, false
+	}
+	v, ok := resolveResourceAttr(d.env(id, res), attr)
+	if !ok {
+		return nil, false
+	}
+	return v, true
+}
+
+// env builds the attribute environment of in-stack resource id: its deployed entry and its properties,
+// resolved without letting a property's own findings count against the Output being evaluated.
+func (d *deployedAttrs) env(id string, res Resource) *attrEnv {
+	e := &attrEnv{id: id, typ: res.Type, sctx: d.sctx, d: d}
+	if sr, ok := d.byID[id]; ok {
+		e.res = &sr
+	}
+	if d.props == nil {
+		d.props = map[string]map[string]any{}
+	}
+	if p, ok := d.props[id]; ok {
+		e.props = p
+		return e
+	}
+	r := d.sctx.resolver
+	where, nf := r.where, len(r.findings)
+	d.props[id] = map[string]any{} // re-entrancy guard: a property that refers back to this resource
+	p, _ := r.resolve(res.Properties).(map[string]any)
+	r.where, r.findings = where, r.findings[:nf]
+	d.props[id] = p
+	e.props = p
+	return e
+}
+
+// eipAddress is Elastic IP id's address: the LAN IP of the in-stack instance it is associated with.
+func (d *deployedAttrs) eipAddress(id string) (any, bool) {
+	inst := ""
+	all := d.sctx.eipBindings()
+	for _, b := range all {
+		if b.eip == id && eipConflict(b, all) == "" {
+			inst = b.instance
+			break
 		}
 	}
-	return nil, false
+	if inst == "" {
+		d.notes = append(d.notes, "Elastic IP "+id+" is not associated with an in-stack instance, so it has no address")
+		return nil, false
+	}
+	return d.vmLanIP(inst)
 }
 
 // vmLanIP returns instance instID's VM LAN IP (status.lanIp) — only for an exposed VM.
@@ -407,6 +437,191 @@ func TemplateExportNames(data []byte, params, exports map[string]string, stackNa
 		}
 	}
 	return out, nil
+}
+
+// subTokenRe finds the ${…} references in an Fn::Sub string (${!Literal} is an escaped literal).
+var subTokenRe = regexp.MustCompile(`\$\{([^!}][^}]*)\}`)
+
+// outputReferenceBlockers refuses, at plan time, an Output whose Ref or Fn::GetAtt names an in-stack
+// resource attribute that does not resolve on open-infra (resource_attrs.go) — so the stack is refused
+// before anything is created, as AWS refuses a template naming an attribute a type does not have, rather
+// than completing without the Output.
+func outputReferenceBlockers(t *Template, conds map[string]bool) []string {
+	var out []string
+	for _, k := range sortedKeys(t.Outputs) {
+		o, _ := t.Outputs[k].(map[string]any)
+		if o == nil {
+			continue
+		}
+		if cond, _ := o["Condition"].(string); cond != "" && !conds[cond] {
+			continue
+		}
+		seen := map[string]bool{}
+		walkOutputRefs(o["Value"], t, conds, nil, func(id, attr string) {
+			res, ok := t.Resources[id]
+			if !ok || attrKnown(res.Type, attr) || seen[id+"."+attr] {
+				return
+			}
+			seen[id+"."+attr] = true
+			what := "Ref " + id
+			if attr != "" {
+				what = "Fn::GetAtt " + id + "." + attr
+			}
+			hint := ""
+			if names := AttrNames(res.Type); len(names) > 0 {
+				hint = " (on open-infra " + res.Type + " has: " + strings.Join(names, ", ") + ")"
+			} else if _, known := resourceAttrs[res.Type]; !known {
+				hint = " (" + res.Type + " has no attributes that resolve on open-infra)"
+			}
+			out = append(out, fmt.Sprintf("Output %s: %s (%s) does not resolve on open-infra%s", k, what, res.Type, hint))
+		})
+	}
+	return out
+}
+
+// walkOutputRefs calls f for every in-stack resource reference in v: Ref X (attr ""), Fn::GetAtt X.A, and
+// ${X} / ${X.A} in Fn::Sub — following only the branch an Fn::If's condition picks. subVars are names an
+// enclosing Fn::Sub defines (not references).
+func walkOutputRefs(v any, t *Template, conds map[string]bool, subVars map[string]bool, f func(id, attr string)) {
+	switch x := v.(type) {
+	case []any:
+		for _, e := range x {
+			walkOutputRefs(e, t, conds, subVars, f)
+		}
+	case map[string]any:
+		if len(x) == 1 {
+			for key, arg := range x {
+				switch key {
+				case "Ref":
+					if s, ok := arg.(string); ok {
+						if _, isRes := t.Resources[s]; isRes {
+							f(s, "")
+						}
+					}
+					return
+				case "Fn::GetAtt":
+					id, attr := "", ""
+					switch a := arg.(type) {
+					case []any:
+						if len(a) >= 2 {
+							id, _ = a[0].(string)
+							s, ok := a[1].(string)
+							if !ok {
+								return // a computed attribute name: nothing static to check
+							}
+							attr = s
+						}
+					case string:
+						id, attr, _ = strings.Cut(a, ".")
+					}
+					if id != "" {
+						f(id, attr)
+					}
+					return
+				case "Fn::If":
+					if a, ok := arg.([]any); ok && len(a) == 3 {
+						name, _ := a[0].(string)
+						if conds[name] {
+							walkOutputRefs(a[1], t, conds, subVars, f)
+						} else {
+							walkOutputRefs(a[2], t, conds, subVars, f)
+						}
+					}
+					return
+				case "Fn::Sub":
+					str := ""
+					vars := map[string]bool{}
+					switch a := arg.(type) {
+					case string:
+						str = a
+					case []any:
+						if len(a) > 0 {
+							str, _ = a[0].(string)
+						}
+						if len(a) > 1 {
+							if m, ok := a[1].(map[string]any); ok {
+								for name, val := range m {
+									vars[name] = true
+									walkOutputRefs(val, t, conds, subVars, f)
+								}
+							}
+						}
+					}
+					for _, m := range subTokenRe.FindAllStringSubmatch(str, -1) {
+						tok := strings.TrimSpace(m[1])
+						if vars[tok] || strings.HasPrefix(tok, "AWS::") {
+							continue
+						}
+						id, attr, _ := strings.Cut(tok, ".")
+						if vars[id] {
+							continue
+						}
+						if _, isRes := t.Resources[id]; isRes {
+							f(id, attr)
+						}
+					}
+					return
+				}
+			}
+		}
+		for _, e := range x {
+			walkOutputRefs(e, t, conds, subVars, f)
+		}
+	}
+}
+
+// setPhysicalIDs records each deployed resource's physical id — its Ref value — on the record, the
+// PhysicalResourceId DescribeStackResources reports. A companion object (an inline policy) is its own
+// name. A Ref that does not resolve leaves the resource's name.
+func setPhysicalIDs(ctx context.Context, t *Template, opts DeployOptions, rec *StackRecord, sr StatusReader) {
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r.evalConditions()
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, rec.Resources), signalURL: opts.SignalURL}
+	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
+	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
+	d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, namespace: opts.Namespace,
+		byID: map[string]StackResource{}, status: map[string]map[string]any{}, missed: map[string]bool{}}
+	for _, res := range rec.Resources {
+		d.byID[res.LogicalID] = res
+	}
+	r.deployed = d.lookup
+	for i := range rec.Resources {
+		res := &rec.Resources[i]
+		if res.PhysicalID != "" {
+			continue // out of band (a custom resource's PhysicalResourceId, a REST API's id)
+		}
+		if strings.Contains(res.LogicalID, "/") {
+			res.PhysicalID = res.Name
+			continue
+		}
+		tr, ok := t.Resources[res.LogicalID]
+		if !ok {
+			res.PhysicalID = res.Name
+			continue
+		}
+		if v, ok := resolveResourceAttr(d.env(res.LogicalID, tr), ""); ok && v != "" {
+			res.PhysicalID = v
+		} else {
+			res.PhysicalID = res.Name
+		}
+	}
+}
+
+// outputFailure is the error a stack whose Outputs did not all resolve fails with: AWS never completes a
+// stack with an Output missing, so neither does open-infra.
+func outputFailure(rec *StackRecord) error {
+	if len(rec.OutputsOmitted) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(rec.OutputsOmitted))
+	for _, o := range rec.OutputsOmitted {
+		if o.OutputKey == "" {
+			parts = append(parts, o.Reason)
+			continue
+		}
+		parts = append(parts, "Output "+o.OutputKey+": "+o.Reason)
+	}
+	return fmt.Errorf("the stack's Outputs did not all resolve:\n  - %s", strings.Join(parts, "\n  - "))
 }
 
 // outputsEqual reports whether two Output sets (and their omissions/imports) are identical.

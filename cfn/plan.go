@@ -196,6 +196,9 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 	for _, f := range r.findings {
 		plan.Blockers = append(plan.Blockers, f.Where+": "+f.Reason)
 	}
+	// An Output must resolve once the stack is deployed: one naming an attribute open-infra does not
+	// provide is refused now, before anything is created (outputs.go).
+	plan.Blockers = append(plan.Blockers, outputReferenceBlockers(t, r.conds)...)
 
 	// Translate gate: run the create translators now so a property-level refusal — which otherwise
 	// surfaces only at deploy (buildManifests) — is reported HERE, making a PROVISIONABLE* verdict mean
