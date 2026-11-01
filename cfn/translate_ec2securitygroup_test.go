@@ -80,6 +80,35 @@ Resources:
 	}
 }
 
+// A small port range (<= maxExpandedPortRange ports) expands to its EXACT port list — the same set of
+// ports, so not a looser rule. The boundary is inclusive (16 ports expand; 17 refuse, see FailClosed).
+func TestTranslate_EC2SecurityGroup_SmallRangeExpands(t *testing.T) {
+	tmpl := `
+Resources:
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: range
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 8000, ToPort: 8003, CidrIp: 198.51.100.0/24 }
+        - { IpProtocol: udp, FromPort: 60000, ToPort: 60015, CidrIp: 0.0.0.0/0 }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("SG", ecsResolvedService(t, ctx, "SG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("a range of <= %d ports must expand, not refuse: %s", maxExpandedPortRange, findingsText(fs))
+	}
+	ing := m.Spec["ingress"].([]any)
+	p0, _ := ing[0].(map[string]any)["ports"].([]any)
+	if len(p0) != 4 || p0[0] != 8000 || p0[3] != 8003 {
+		t.Fatalf("8000-8003 should expand to [8000 8001 8002 8003], got %#v", p0)
+	}
+	p1, _ := ing[1].(map[string]any)["ports"].([]any)
+	if len(p1) != 16 || p1[0] != 60000 || p1[15] != 60015 {
+		t.Fatalf("a 16-port range (the inclusive limit) should expand to 16 ports, got %d: %#v", len(p1), p1)
+	}
+}
+
 // FAIL-CLOSED: every rule kind: SecurityGroup cannot express EXACTLY must produce a Finding (which blocks
 // the resource), never a looser emitted rule.
 func TestTranslate_EC2SecurityGroup_FailClosed(t *testing.T) {
@@ -89,7 +118,9 @@ func TestTranslate_EC2SecurityGroup_FailClosed(t *testing.T) {
 	}{
 		"protocol -1 (all)":      {`{ IpProtocol: "-1", CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
 		"icmp":                   {`{ IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
-		"true port range":        {`{ IpProtocol: tcp, FromPort: 8000, ToPort: 8100, CidrIp: 0.0.0.0/0 }`, "port range"},
+		"wide port range":        {`{ IpProtocol: tcp, FromPort: 8000, ToPort: 8100, CidrIp: 0.0.0.0/0 }`, "port range"},
+		"17-port range":          {`{ IpProtocol: tcp, FromPort: 9000, ToPort: 9016, CidrIp: 0.0.0.0/0 }`, "port range"},
+		"inverted range":         {`{ IpProtocol: tcp, FromPort: 9010, ToPort: 9000, CidrIp: 0.0.0.0/0 }`, "malformed"},
 		"ipv6 source":            {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0" }`, "CidrIpv6"},
 		"no source":              {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443 }`, "needs a CidrIp"},
 		"out-of-stack SG ref":    {`{ IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: sg-0abc123 }`, "in-stack AWS::EC2::SecurityGroup"},

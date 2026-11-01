@@ -1141,10 +1141,11 @@ func serviceFromServiceName(sn string) string {
 //
 // A default-deny allow-rule set (platform/abstraction/securitygroup-xrd.yaml). CFN inline
 // SecurityGroupIngress/SecurityGroupEgress rules map to spec.ingress/egress, with FAIL-CLOSED fidelity:
-// anything kind: SecurityGroup cannot express EXACTLY (a protocol other than TCP/UDP, a true port range,
-// an out-of-stack SG reference, an IPv6 CIDR) REFUSES the whole resource rather than emit a looser rule —
-// an over-permissive security group is precisely the silent defect this must never produce. Only TCP/UDP
-// on a single port (or all-ports), a CidrIp source, or a SourceSecurityGroupId that !Refs an in-stack
+// anything kind: SecurityGroup cannot express EXACTLY (a protocol other than TCP/UDP, a port range wider
+// than maxExpandedPortRange, an out-of-stack SG reference, an IPv6 CIDR) REFUSES the whole resource rather
+// than emit a looser rule — an over-permissive security group is precisely the silent defect this must
+// never produce. Only TCP/UDP on a single port, a small range (expanded to its exact port list), or
+// all-ports, with a CidrIp source or a SourceSecurityGroupId that !Refs an in-stack
 // AWS::EC2::SecurityGroup translate. Standalone AWS::EC2::SecurityGroupIngress/Egress resources are NOT
 // handled here (author the rules inline on the group or natively).
 func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
@@ -1240,7 +1241,8 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 			continue
 		}
 
-		// Ports — single port, or all-ports; a true range cannot be expressed as a ports LIST faithfully.
+		// Ports — single port, a small range (expanded to its exact list), or all-ports; a wider range
+		// cannot be expressed as a ports LIST faithfully.
 		ports, perr := sgPorts(ctx.resolveVal(r["FromPort"]), ctx.resolveVal(r["ToPort"]))
 		if perr != "" {
 			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s", dir, i, perr)})
@@ -1287,9 +1289,16 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 	return out, f
 }
 
-// sgPorts maps a CFN FromPort/ToPort to a kind: SecurityGroup ports list. A single port -> [port]; the
-// full range (0-65535, or FromPort -1) or both absent -> empty (all ports); any other range -> an error
-// (kind: SecurityGroup takes a list of ports, not a range — refuse rather than expand or approximate).
+// maxExpandedPortRange is the widest FromPort–ToPort range expanded into an explicit port list (a
+// kind: SecurityGroup ports list, or the ports an Elastic IP publishes on a VM's LAN IP). A list of N
+// ports is EXACTLY the range, so expanding a small one is faithful; a wider range stays a refusal (SG)
+// or an unpublished caveat (EIP) rather than a list of hundreds of entries.
+const maxExpandedPortRange = 16
+
+// sgPorts maps a CFN FromPort/ToPort to a kind: SecurityGroup ports list. A single port -> [port]; a
+// small range (<= maxExpandedPortRange ports) -> its explicit port list (exact, not an approximation);
+// the full range (0-65535, or FromPort -1) or both absent -> empty (all ports); any wider range -> an
+// error (kind: SecurityGroup takes a list of ports, not a range — refuse rather than approximate).
 func sgPorts(fromRaw, toRaw any) ([]any, string) {
 	from, okF := cfnPort(fromRaw)
 	to, okT := cfnPort(toRaw)
@@ -1305,7 +1314,17 @@ func sgPorts(fromRaw, toRaw any) ([]any, string) {
 	if from == to {
 		return []any{from}, ""
 	}
-	return nil, fmt.Sprintf("port range %d-%d does not map — kind: SecurityGroup takes a list of ports, not a range (use single-port rules)", from, to)
+	if to < from || from < 1 || to > 65535 {
+		return nil, fmt.Sprintf("port range %d-%d is malformed", from, to)
+	}
+	if n := to - from + 1; n <= maxExpandedPortRange {
+		ports := make([]any, 0, n)
+		for p := from; p <= to; p++ {
+			ports = append(ports, p)
+		}
+		return ports, ""
+	}
+	return nil, fmt.Sprintf("port range %d-%d (%d ports) does not map — kind: SecurityGroup takes a list of ports, not a range; ranges of up to %d ports expand, wider ones refuse (split into single-port rules or author natively)", from, to, to-from+1, maxExpandedPortRange)
 }
 
 // cfnPort reads a CFN port value (a JSON number, int, or numeric string).
