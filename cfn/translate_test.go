@@ -1267,7 +1267,9 @@ Resources:
 	if m != nil {
 		t.Fatalf("an out-of-stack BucketPolicy should provision nothing, got %#v", m)
 	}
-	if !strings.Contains(findingsText(fs), "in-stack AWS::S3::Bucket") {
+	// A public grant on a bucket this stack does not own would change that bucket's own policy (another
+	// stack's): refused. (Only a CloudFront read grant for this stack's distribution is realized.)
+	if !strings.Contains(findingsText(fs), "is not in this stack") {
 		t.Fatalf("an out-of-stack BucketPolicy must refuse, findings: %s", findingsText(fs))
 	}
 }

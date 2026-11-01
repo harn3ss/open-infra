@@ -3947,13 +3947,49 @@ func isExplicitFalse(v any) bool {
 // read by translateS3Bucket. So when its Bucket resolves to an in-stack AWS::S3::Bucket it is a no-op
 // here (the bucket anchor reads it). A BucketPolicy whose Bucket is NOT in this stack refuses rather
 // than silently dropping — we can't apply a policy to a bucket we don't manage.
-func translateS3BucketPolicy(id string, _ map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+func translateS3BucketPolicy(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	if ctx != nil {
 		if _, ok := ctx.s3BucketPolicyTarget(id); ok {
 			return nil, nil // collated into its in-stack AWS::S3::Bucket (spec.policy)
 		}
+		if name, ok := concrete(props["Bucket"]); ok && name != "" {
+			return nil, ctx.externalBucketPolicy(id, name, props["PolicyDocument"])
+		}
 	}
 	return nil, []Finding{{"Resource " + id, "an AWS::S3::BucketPolicy must reference an in-stack AWS::S3::Bucket — its Bucket names/Refs a bucket not in this stack, and a policy over an unmanaged bucket is not translatable (it is collated into the referenced kind: Bucket as spec.policy)"}}
+}
+
+// externalBucketPolicy checks a policy over a bucket outside the stack (another stack's, by Fn::ImportValue
+// or a parameter). It holds only for statements that grant CloudFront read to a distribution of this stack
+// serving that bucket: those are realized by the distribution's kind: StaticSite (its scoped reader) and
+// stored nowhere. Any other statement would change a policy that belongs to the bucket's own stack — that
+// stack's kind: Bucket carries it — so it refuses.
+func (c *stackCtx) externalBucketPolicy(id, bucket string, doc any) []Finding {
+	m, _ := doc.(map[string]any)
+	var stmts []any
+	switch s := m["Statement"].(type) {
+	case []any:
+		stmts = s
+	case map[string]any:
+		stmts = []any{s}
+	}
+	if len(stmts) == 0 {
+		return []Finding{{"Resource " + id, "the PolicyDocument has no Statement"}}
+	}
+	serving := c.cloudFrontDistributionsServingExternal(bucket)
+	var f []Finding
+	for i, s := range stmts {
+		sm, _ := s.(map[string]any)
+		kind := c.cloudFrontPrincipal(sm["Principal"])
+		if kind == "" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("BucketPolicy Statement %d changes the policy of bucket %s, which is not in this stack — its policy belongs to the stack that created it (its kind: Bucket's spec.policy); only a CloudFront read grant for this stack's distribution is realized here (by its StaticSite)", i, bucket)})
+			continue
+		}
+		if why := c.cloudFrontGrantProblem(sm, kind, serving); why != "" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("BucketPolicy Statement %d %s", i, why)})
+		}
+	}
+	return f
 }
 
 // s3BucketPolicyTarget returns the logical id of the in-stack AWS::S3::Bucket that BucketPolicy

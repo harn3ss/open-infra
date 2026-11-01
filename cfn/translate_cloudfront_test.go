@@ -356,9 +356,11 @@ func TestCloudFront_OutOfSubsetRefusals(t *testing.T) {
 		{"S3 website endpoint", func(m map[string]any) {
 			cfOrigin0(m)["DomainName"] = "example-site-assets.s3-website-us-east-1.amazonaws.com"
 		}, "is not an S3 REST endpoint"},
+		// An out-of-stack origin bucket is served (TestCloudFront_BucketFromAnotherStack); the stack's own
+		// bucket's CloudFront grant then has no distribution serving it, which refuses.
 		{"out-of-stack bucket", func(m map[string]any) {
 			cfOrigin0(m)["DomainName"] = "someone-elses-bucket.s3.amazonaws.com"
-		}, "which is not an in-stack AWS::S3::Bucket"},
+		}, "no included in-stack AWS::CloudFront::Distribution serves this bucket"},
 		{"origin path", func(m map[string]any) { cfOrigin0(m)["OriginPath"] = "/build" }, "OriginPath \"/build\""},
 		{"origin groups", func(m map[string]any) {
 			cfDC(m)["OriginGroups"] = map[string]any{"Quantity": 1, "Items": []any{map[string]any{"Id": "g"}}}

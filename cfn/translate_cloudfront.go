@@ -354,9 +354,16 @@ func cfOrigin(o map[string]any, ctx *stackCtx, refuse func(string, ...any), cav 
 		refuse("origin %s OriginPath %q (serving a key prefix of the bucket) is not translatable — kind: StaticSite serves the bucket root; publish the site at the bucket root", originID, p)
 	}
 
-	// The bucket.
+	// The bucket: an in-stack one, or one by name from outside the stack (another stack's export, a
+	// parameter) — served the same way, by the site's own scoped credentials.
 	bucketID, why := ctx.cloudFrontOriginBucket(o["DomainName"])
-	if bucketID == "" {
+	if ext, isExt := ctx.cloudFrontExternalBucket(o["DomainName"]); bucketID == "" && isExt {
+		bucket = ext
+		if !staticSiteBucketRe.MatchString(bucket) {
+			refuse("origin bucket name %q is not a valid kind: StaticSite bucket (3-63 lowercase letters, digits, dots, hyphens)", bucket)
+		}
+		cav = append(cav, fmt.Sprintf("origin bucket %s is not in this stack (another stack's, by Fn::ImportValue or a parameter): the site reads it with its own scoped MinIO credentials, granted only for a bucket this namespace owns — one another namespace owns is refused when the site is set up; the bucket and its policy stay with the stack that created it", ext))
+	} else if bucketID == "" {
 		refuse("origin %s: %s", originID, why)
 	} else {
 		bp, _ := ctx.resolveProps(bucketID)
@@ -1122,6 +1129,45 @@ func (c *stackCtx) cloudFrontOriginBucket(domain any) (string, string) {
 		return "", fmt.Sprintf("the origin bucket %s is excluded by its Condition", id)
 	}
 	return id, ""
+}
+
+// cloudFrontExternalBucket is the bucket an origin DomainName names when it is an S3 REST endpoint of a
+// bucket outside the stack (a literal name — from Fn::ImportValue, a parameter or the template — that no
+// in-stack bucket has).
+func (c *stackCtx) cloudFrontExternalBucket(domain any) (string, bool) {
+	s, _ := domain.(string)
+	m := cfOriginDomainRe.FindStringSubmatch(s)
+	if m == nil || m[3] == "" || m[4] == "" || c == nil || c.template == nil {
+		return "", false
+	}
+	for _, bid := range c.template.rawOrder {
+		if c.isType(bid, "AWS::S3::Bucket") && s3BucketMinIOName(bid, c) == m[3] {
+			return "", false
+		}
+	}
+	return m[3], true
+}
+
+// cloudFrontDistributionsServingExternal returns the included distributions whose origin is the bucket named
+// name from outside the stack.
+func (c *stackCtx) cloudFrontDistributionsServingExternal(name string) []string {
+	var out []string
+	for _, did := range c.template.rawOrder {
+		if !c.isType(did, cfDistributionType) || !c.includedID(did) {
+			continue
+		}
+		p, _ := c.resolveProps(did)
+		dc, _ := p["DistributionConfig"].(map[string]any)
+		for _, o := range cfAnyList(dc["Origins"]) {
+			om, _ := o.(map[string]any)
+			if b, ok := c.cloudFrontExternalBucket(om["DomainName"]); ok && b == name {
+				out = append(out, did)
+				break
+			}
+		}
+	}
+	sortStrs(out)
+	return out
 }
 
 // cloudFrontDistributionsServing returns the INCLUDED in-stack distributions whose (single) origin is
