@@ -2368,6 +2368,7 @@ spec:
                                             os.replace(tmp, path)
                                 except Exception as e:  # never fail a container over this
                                     sys.stderr.write("openinfra-oci: container left unchanged: %s\n" % e)
+                                sys.stderr.flush()  # before Python 3.9 a piped stderr is block-buffered, and execv drops the buffer
                                 os.execv(runc, [runc] + args)
 
 
