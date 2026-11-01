@@ -53,7 +53,7 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 # caller_cred <AK> <SK> -> the "AWS:<jwt>" credential GetAuthorizationToken hands back (decoded).
@@ -80,8 +80,8 @@ log "  ✓ token auth live, realm points at the shim"
 
 # --- 2. an authorized (powerusers) caller gets a push-capable token + the registry accepts a push ---
 log "seeding a powerusers (writer) + a readers (read-only) principal"
-read -r PAK PSK <<<"$(mint_key "probe-ecr-writer" "powerusers")"
-read -r RAK RSK <<<"$(mint_key "probe-ecr-reader" "readers")"
+mint_key "probe-ecr-writer" "powerusers"; PAK="$MK_AK"; PSK="$MK_SK"
+mint_key "probe-ecr-reader" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$PAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint keys"
 sleep 2
 PCRED="$(caller_cred "$PAK" "$PSK")"; RCRED="$(caller_cred "$RAK" "$RSK")"

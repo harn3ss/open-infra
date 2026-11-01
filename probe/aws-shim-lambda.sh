@@ -51,7 +51,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 awsq() { local ak="$1" sk="$2"; shift 2
   AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
@@ -81,7 +81,7 @@ kubectl -n "$FN_NS" wait --for=condition=Ready ksvc/"$FN_NAME" --timeout=180s >/
   || inconclusive "Function ${FN_NAME} did not become Ready (Knative)"
 
 log "seeding a principal + access key"
-read -r AK SK <<<"$(mint_key "lambda-probe" "powerusers")"
+mint_key "lambda-probe" "powerusers"; AK="$MK_AK"; SK="$MK_SK"
 [ -n "$AK" ] && [ -n "$SK" ] || inconclusive "failed to mint a key"
 sleep 2
 

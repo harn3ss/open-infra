@@ -64,13 +64,13 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 awsk() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text kms "$@"; }
 
 # --- 1. Admin principal (creates the two keys) ------------------------------------------------
 log "seeding an admin principal (openinfra:powerusers) + key"
-read -r AAK ASK <<<"$(mint_key "kms-kp-admin-$SFX" "powerusers")"
+mint_key "kms-kp-admin-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$ASK" ] || inconclusive "failed to mint an admin key"
 sleep 2
 
@@ -86,7 +86,7 @@ log "  ✓ key A=$KA  key B=$KB"
 
 # --- 2. A per-key grant: the user may use key A ONLY (the key-policy equivalent) ---------------
 USER="kms-kp-user-$SFX"
-read -r UAK USK <<<"$(mint_key "$USER" "powerusers")"   # powerusers = coarse kms allow; the dataPlane tightens to key A
+mint_key "$USER" "powerusers"; UAK="$MK_AK"; USK="$MK_SK"   # powerusers = coarse kms allow; the dataPlane tightens to key A
 POLICY="kms-kp-$SFX"
 log "grant User::$USER kms:Encrypt/Decrypt on Key::$KA ONLY (open-infra's per-key policy)"
 cat <<YAML | kubectl apply -f - >/dev/null
@@ -129,7 +129,7 @@ log "  ✓ key B: Encrypt DENIED (the per-key grant does not leak across keys)"
 # --- 5. PutKeyPolicy IMPORT: a SUPPLIED AWS key-policy JSON is translated to the --------
 #        equivalent kind: Policy grant + enforced + round-trips. This is the import convenience #267 lacked.
 USER2="kms-kp2-user-$SFX"
-read -r U2AK U2SK <<<"$(mint_key "$USER2" "powerusers")"   # powerusers = coarse kms allow; the key policy tightens
+mint_key "$USER2" "powerusers"; U2AK="$MK_AK"; U2SK="$MK_SK"   # powerusers = coarse kms allow; the key policy tightens
 sleep 2
 log "PutKeyPolicy on key A: a REAL AWS key-policy JSON granting User::$USER2 kms:Encrypt/Decrypt (+ the root default)"
 KP_DOC="$(cat <<JSON

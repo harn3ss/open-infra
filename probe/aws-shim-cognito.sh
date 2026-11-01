@@ -69,12 +69,12 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 # --- 1. Admin caller (control-plane) ------------------------------------------------------------
 log "seeding an admin caller (openinfra:powerusers) + key"
-read -r AAK ASK <<<"$(mint_key "cog-probe-admin-$SFX" "powerusers")"
+mint_key "cog-probe-admin-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$ASK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -190,7 +190,7 @@ log "  ✓ rejected on signature mismatch"
 
 # --- 8b. Negative: a non-admin principal denied AdminCreateUser -------------------------------
 log "negative: a non-admin principal must be DENIED AdminCreateUser"
-read -r NAK NSK <<<"$(mint_key "cog-probe-nonadmin-$SFX" "readonly")"
+mint_key "cog-probe-nonadmin-$SFX" "readonly"; NAK="$MK_AK"; NSK="$MK_SK"
 if AWS_ACCESS_KEY_ID="$NAK" AWS_SECRET_ACCESS_KEY="$NSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cognito-idp admin-create-user --user-pool-id "$POOL" --username "sneaky-$SFX" >/dev/null 2>"$PWD/.cog_na"; then
   fail "a non-admin principal performed AdminCreateUser"
 fi

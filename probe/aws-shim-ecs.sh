@@ -104,13 +104,13 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 # --- seed callers -----------------------------------------------------------------------------------
 log "seeding an openinfra:admins caller and an openinfra:readers caller"
-read -r AAK ASK <<<"$(mint_key "ecsprobe-admin-$SFX"  "admins")"
-read -r RAK RSK <<<"$(mint_key "ecsprobe-reader-$SFX" "readers")"
+mint_key "ecsprobe-admin-$SFX"  "admins"; AAK="$MK_AK"; ASK="$MK_SK"
+mint_key "ecsprobe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint caller keys"
 sleep 2
 

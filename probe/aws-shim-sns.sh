@@ -64,13 +64,13 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 aws_() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text "$@"; }
 
 # --- seed a writer + two queues + a topic ------------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "sns-probe-writer-$SFX" "powerusers")"
+mint_key "sns-probe-writer-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a writer key"
 sleep 2
 
@@ -129,7 +129,7 @@ log "  ✓ rejected as SignatureDoesNotMatch"
 
 # --- negative: publish-only principal denied Subscribe (fine-grained Cedar) --------------------
 log "publish-only principal: granted sns:Publish via Cedar, must be DENIED sns:Subscribe"
-read -r PAK PSK <<<"$(mint_key "sns-probe-pubonly-$SFX" "powerusers")"
+mint_key "sns-probe-pubonly-$SFX" "powerusers"; PAK="$MK_AK"; PSK="$MK_SK"
 POLICY="sns-pubonly-$SFX"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1

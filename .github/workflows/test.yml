@@ -208,6 +208,16 @@ jobs:
       - name: chaos shell scripts parse (bash -n)
         run: for f in chaos/*.sh; do bash -n "$f"; done
 
+      # A probe's mint_key records the Users + access keys it creates so the EXIT trap can delete
+      # them. Called inside $(...), it runs in a subshell, the record is lost, and every run leaves
+      # working access keys behind. mint_key returns MK_AK/MK_SK instead; call it directly.
+      - name: aws-shim probes clean up the credentials they mint
+        run: |
+          if grep -n -F '$(mint_key' probe/*.sh; then
+            echo "::error::call mint_key directly (it sets MK_AK/MK_SK), never inside \$(...)"; exit 1
+          fi
+          for f in probe/*.sh; do bash -n "$f"; done
+
   vm-creds-cli:
     name: vm-creds-cli
     runs-on: ubuntu-latest

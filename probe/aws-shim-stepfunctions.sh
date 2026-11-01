@@ -97,13 +97,13 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 # --- 1. admin caller -------------------------------------------------------------------------------
 log "seeding an openinfra:admins caller + key"
 ADMIN="sfn-admin-$SFX"
-read -r AAK ASK <<<"$(mint_key "$ADMIN" "admins")"
+mint_key "$ADMIN" "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$ASK" ] || inconclusive "failed to mint an admin key"
 sleep 2
 

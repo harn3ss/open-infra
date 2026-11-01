@@ -64,7 +64,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 awsq() { # AK SK -- <sqs args...>
@@ -77,7 +77,7 @@ md5() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
 
 # --- 1. Seed a writer principal + key ---------------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "sqs-probe-writer-$SFX" "powerusers")"
+mint_key "sqs-probe-writer-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a writer key"
 sleep 2
 
@@ -176,7 +176,7 @@ log "  ✓ rejected as SignatureDoesNotMatch"
 
 # --- 9b. Negative: a receive-only principal is denied DeleteMessage ----------------------------
 log "seeding a READER principal (openinfra:readers) + key"
-read -r RAK RSK <<<"$(mint_key "sqs-probe-reader-$SFX" "readers")"
+mint_key "sqs-probe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 sleep 2
 awsq "$WAK" "$WSK" send-message --queue-url "$QURL" --message-body "for-reader-$SFX" >/dev/null 2>&1 || fail "seed message for the reader failed"
 log "reader CAN receive (the consume read)"

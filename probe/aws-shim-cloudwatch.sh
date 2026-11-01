@@ -68,14 +68,14 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 awsc() { local ak="$1" sk="$2" svc="$3"; shift 3; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text "$svc" "$@"; }
 cw()  { local ak="$1" sk="$2"; shift 2; awsc "$ak" "$sk" cloudwatch "$@"; }
 
 # --- 1. Seed a writer principal + key ---------------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "cw-probe-$SFX" "powerusers")"
+mint_key "cw-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -188,7 +188,7 @@ log "  ✓ rejected on signature mismatch"
 log "negative: a principal scoped to namespace A must be DENIED reading namespace B"
 NS_B="openinfra/probe-b-$SFX"
 cw "$WAK" "$WSK" put-metric-data --namespace "$NS_B" --metric-data "MetricName=Secret,Value=7,Unit=Count" >/dev/null 2>&1 || true
-read -r AAK ASK <<<"$(mint_key "cw-probe-ascoped-$SFX" "powerusers")"
+mint_key "cw-probe-ascoped-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

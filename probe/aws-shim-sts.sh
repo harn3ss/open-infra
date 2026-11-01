@@ -49,14 +49,14 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 awsq() { local ak="$1" sk="$2"; shift 2
   AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
     aws --endpoint-url "$ENDPOINT" --no-cli-pager "$@"; }
 
 log "seeding a principal + access key"
-read -r AK SK <<<"$(mint_key "sts-probe" "readers")"
+mint_key "sts-probe" "readers"; AK="$MK_AK"; SK="$MK_SK"
 [ -n "$AK" ] && [ -n "$SK" ] || inconclusive "failed to mint a key"
 sleep 2
 

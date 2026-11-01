@@ -53,7 +53,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 # A stdlib SigV4 signer for a GraphQL POST (service appsync). Prints "STATUS <code>\n<body>".
@@ -82,7 +82,7 @@ except urllib.error.HTTPError as e:
 PY
 
 log "seeding a principal + access key"
-read -r AK SK <<<"$(mint_key "appsync-probe" "powerusers")"
+mint_key "appsync-probe" "powerusers"; AK="$MK_AK"; SK="$MK_SK"
 [ -n "$AK" ] && [ -n "$SK" ] || inconclusive "failed to mint a key"
 sleep 2
 

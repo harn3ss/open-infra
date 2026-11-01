@@ -74,7 +74,7 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 ev() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text events "$@"; }
 sqs() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text sqs "$@"; }
@@ -94,7 +94,7 @@ drain() {
 
 # --- seed principal + observable SQS sinks ---
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "eb-probe-$SFX" "powerusers")"
+mint_key "eb-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -216,7 +216,7 @@ log "escalation fence: targeting a Lambda the caller cannot invoke must be REFUS
 FRULE="eb-fence-$SFX"
 ev "$WAK" "$WSK" put-rule --name "$FRULE" --schedule-expression "rate(1 hour)" --state DISABLED >/dev/null 2>&1 || fail "put-rule (fence) failed"
 CREATED_RULES+=("$FRULE")
-read -r RAK RSK <<<"$(mint_key "eb-probe-reader-$SFX" "readers")"  # readers cannot invoke functions
+mint_key "eb-probe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"  # readers cannot invoke functions
 sleep 2
 # The reader can't even create a rule (create verb), so give them a rule to target via the writer's rule,
 # but attempt PutTargets AS the reader — denied by the coarse events:PutTargets (create) gate OR the fence.
@@ -229,7 +229,7 @@ log "  ✓ unauthorized PutTargets refused (no escalation)"
 
 # --- 5c. DescribeRule-but-not-PutTargets (fine-grained Cedar) ---
 log "a principal with events:DescribeRule but not events:PutTargets is denied PutTargets"
-read -r DAK DSK <<<"$(mint_key "eb-probe-desc-$SFX" "powerusers")"
+mint_key "eb-probe-desc-$SFX" "powerusers"; DAK="$MK_AK"; DSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

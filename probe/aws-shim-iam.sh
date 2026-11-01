@@ -73,14 +73,14 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 s3op() { local ak="$1" sk="$2" tok="${3:-}"; shift 3; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$tok" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager s3api "$@"; }
 
 # --- 1. Seed an IAM-admin caller (openinfra:admins) -------------------------------------------
 log "seeding an IAM-admin caller (openinfra:admins) + key"
 ADMIN="iam-probe-admin-$SFX"
-read -r AAK ASK <<<"$(mint_key "$ADMIN" "admins")"
+mint_key "$ADMIN" "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$ASK" ] || inconclusive "failed to mint an admin key"
 sleep 2
 

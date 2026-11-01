@@ -73,7 +73,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 awsk() { # AK SK -- <kms args...>
@@ -84,7 +84,7 @@ awsk() { # AK SK -- <kms args...>
 
 # --- 1. Seed a principal + key ----------------------------------------------------------------
 log "seeding a principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "kms-probe-$SFX" "powerusers")"
+mint_key "kms-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -269,7 +269,7 @@ log "  ✓ rejected on signature mismatch"
 
 # --- 11b. Negative: encrypt-only principal denied Decrypt (fine-grained Cedar) -----------------
 log "encrypt-only principal: granted only kms:Encrypt via Cedar, must be DENIED kms:Decrypt"
-read -r EAK ESK <<<"$(mint_key "kms-probe-enconly-$SFX" "powerusers")"
+mint_key "kms-probe-enconly-$SFX" "powerusers"; EAK="$MK_AK"; ESK="$MK_SK"
 POLICY="kms-enconly-$SFX"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1

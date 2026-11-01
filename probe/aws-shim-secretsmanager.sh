@@ -70,7 +70,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 awssm() { # AK SK -- <secretsmanager args...>
@@ -81,7 +81,7 @@ awssm() { # AK SK -- <secretsmanager args...>
 
 # --- 1. Seed a writer principal + key ---------------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "sm-probe-$SFX" "powerusers")"
+mint_key "sm-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -186,8 +186,8 @@ log "seeding fine-grained principals + policies (describe-only, and scoped-to-A)
 BN2="sm-probe-other-${SFX}"
 awssm "$WAK" "$WSK" create-secret --name "$BN2" --secret-string "secret-B-$SFX" >/dev/null 2>&1 || fail "create secret B failed"
 CREATED_SECRETS+=("$BN2")
-read -r DAK DSK <<<"$(mint_key "sm-probe-desconly-$SFX" "powerusers")"
-read -r AAK ASK <<<"$(mint_key "sm-probe-ascoped-$SFX" "powerusers")"
+mint_key "sm-probe-desconly-$SFX" "powerusers"; DAK="$MK_AK"; DSK="$MK_SK"
+mint_key "sm-probe-ascoped-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

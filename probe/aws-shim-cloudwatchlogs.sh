@@ -65,13 +65,13 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 logs() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text logs "$@"; }
 
 # --- 1. seed writer + create group/stream ---
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "cwl-probe-$SFX" "powerusers")"
+mint_key "cwl-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 log "create-log-group $GA + create-log-stream $STREAM"
@@ -166,8 +166,8 @@ log "create a second group $GB (for cross-group isolation) + seed fine-grained p
 logs "$WAK" "$WSK" create-log-group --log-group-name "$GB" >/dev/null 2>&1 || fail "create second group failed"
 logs "$WAK" "$WSK" create-log-stream --log-group-name "$GB" --log-stream-name "$STREAM" >/dev/null 2>&1 || fail "create second stream failed"
 logs "$WAK" "$WSK" put-log-events --log-group-name "$GB" --log-stream-name "$STREAM" --log-events "timestamp=$NOW,message=secret-b-$SFX" >/dev/null 2>&1 || fail "seed B failed"
-read -r OAK OSK <<<"$(mint_key "cwl-probe-writeonly-$SFX" "powerusers")"
-read -r AAK ASK <<<"$(mint_key "cwl-probe-ascoped-$SFX" "powerusers")"
+mint_key "cwl-probe-writeonly-$SFX" "powerusers"; OAK="$MK_AK"; OSK="$MK_SK"
+mint_key "cwl-probe-ascoped-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

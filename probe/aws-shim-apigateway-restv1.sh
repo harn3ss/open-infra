@@ -77,13 +77,13 @@ YAML
   local name; name="$(secret_name "$ak")"
   kubectl -n "$SHIM_NS" create secret generic "$name" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 agw() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text apigateway "$@"; }
 
 # --- 1. writer principal + a spec.code Lambda that returns a STRUCTURED 1.0 proxy response ---
 log "seeding a writer principal + a spec.code echo Lambda (structured 1.0 response)"
-read -r WAK WSK <<<"$(mint_key "agwv1-probe-$SFX" "powerusers")"
+mint_key "agwv1-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 
 MADE_CM="agwv1-handler-$SFX"
@@ -315,7 +315,7 @@ log "  ✓ signature mismatch rejected"
 
 # --- 5b. negative: the #185 wiring fence at PutIntegration ---
 log "negative (#185): a principal that cannot invoke the Lambda must be refused when wiring it"
-read -r NAK NSK <<<"$(mint_key "agwv1-probe-nolambda-$SFX" "powerusers")"
+mint_key "agwv1-probe-nolambda-$SFX" "powerusers"; NAK="$MK_AK"; NSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

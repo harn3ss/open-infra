@@ -66,7 +66,7 @@ spec: { displayName: "${owner}", groups: ["${group}"], source: local }
 YAML
   kubectl -n "$SHIM_NS" create secret generic "$(secret_name "$ak")" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 cleanup() {
@@ -82,8 +82,8 @@ trap cleanup EXIT
 
 # --- seed callers -----------------------------------------------------------------------------------
 log "seeding an openinfra:admins caller and an openinfra:readers caller"
-read -r AAK ASK <<<"$(mint_key "$ADMIN_USER"  "admins")"
-read -r RAK RSK <<<"$(mint_key "$READER_USER" "readers")"
+mint_key "$ADMIN_USER"  "admins"; AAK="$MK_AK"; ASK="$MK_SK"
+mint_key "$READER_USER" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint caller keys"
 sleep 2
 

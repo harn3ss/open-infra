@@ -64,7 +64,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 # raw-in-base64-out so --data takes raw text and Data comes back base64 (the v1-compatible blob mode).
 k() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
@@ -72,7 +72,7 @@ k() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_
 
 # --- 1. Seed a writer principal + key -----------------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "kin-probe-$SFX" "powerusers")"
+mint_key "kin-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -167,7 +167,7 @@ log "  ✓ rejected on signature mismatch"
 
 # --- 7. Negative: cross-tenant read + read-only can't write -----------------------------------
 log "seeding a read-only, A-scoped principal (GetRecords on this stream only)"
-read -r RAK RSK <<<"$(mint_key "kin-probe-ro-$SFX" "powerusers")"
+mint_key "kin-probe-ro-$SFX" "powerusers"; RAK="$MK_AK"; RSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

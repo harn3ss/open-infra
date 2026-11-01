@@ -87,7 +87,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 agw() { # AK SK -- <apigatewayv2 args...>
@@ -98,7 +98,7 @@ agw() { # AK SK -- <apigatewayv2 args...>
 
 # --- 1. Seed a writer principal + key + the echo Lambda -----------------------------------------
 log "seeding a writer principal + access key + the echo Lambda (kind: Function)"
-read -r WAK WSK <<<"$(mint_key "agw-probe-$SFX" "powerusers")"
+mint_key "agw-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 
 FN="agw-echo-$SFX"
@@ -251,7 +251,7 @@ log "  ✓ HTTP_PROXY refused"
 
 # --- 7c. Negative: a principal DENIED apigateway:CreateApi ------------------------------------
 log "negative: a principal DENIED apigateway:CreateApi must be refused"
-read -r DAK DSK <<<"$(mint_key "agw-probe-denied-$SFX" "powerusers")"
+mint_key "agw-probe-denied-$SFX" "powerusers"; DAK="$MK_AK"; DSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy
@@ -277,7 +277,7 @@ log "  ✓ denied principal refused"
 #         Without the fence, an apigateway-only principal could expose ANY function via a NONE-auth route and
 #         bypass the Lambda doorway's lambda:InvokeFunction gate.
 log "negative (#185): a principal that cannot invoke a Lambda must be refused when WIRING it (integration + quick-create)"
-read -r NAK NSK <<<"$(mint_key "agw-probe-nolambda-$SFX" "powerusers")"
+mint_key "agw-probe-nolambda-$SFX" "powerusers"; NAK="$MK_AK"; NSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

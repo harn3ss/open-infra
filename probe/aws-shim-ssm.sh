@@ -72,7 +72,7 @@ YAML
   kubectl -n "$SHIM_NS" create secret generic "$name" \
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 ssm() { # AK SK -- <ssm args...>
@@ -83,7 +83,7 @@ ssm() { # AK SK -- <ssm args...>
 
 # --- 1. Seed a writer principal + key ---------------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "ssm-probe-$SFX" "powerusers")"
+mint_key "ssm-probe-$SFX" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a key"
 sleep 2
 
@@ -202,7 +202,7 @@ PA="${BASE}/a/token"; PB="${BASE}/b/token"
 ssm "$WAK" "$WSK" put-parameter --name "$PA" --value "in-A-$SFX" --type String >/dev/null 2>&1 || fail "put A failed"
 ssm "$WAK" "$WSK" put-parameter --name "$PB" --value "in-B-$SFX" --type String >/dev/null 2>&1 || fail "put B failed"
 CREATED_PARAMS+=("$PA" "$PB")
-read -r AAK ASK <<<"$(mint_key "ssm-probe-ascoped-$SFX" "powerusers")"
+mint_key "ssm-probe-ascoped-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy
@@ -220,7 +220,7 @@ log "seeding a decrypt-denied principal (ssm:* on the secure path, but Deny kms:
 PSEC="${BASE}/sec/api-key"
 ssm "$WAK" "$WSK" put-parameter --name "$PSEC" --value "sec-$SFX" --type SecureString >/dev/null 2>&1 || fail "put secure param failed"
 CREATED_PARAMS+=("$PSEC")
-read -r NAK NSK <<<"$(mint_key "ssm-probe-nodecrypt-$SFX" "powerusers")"
+mint_key "ssm-probe-nodecrypt-$SFX" "powerusers"; NAK="$MK_AK"; NSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

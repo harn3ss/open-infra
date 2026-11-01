@@ -73,7 +73,7 @@ YAML
     --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" --from-literal=owner="$owner" \
     >/dev/null
   CREATED_KEYS+=("$name")
-  printf '%s %s' "$ak" "$sk"
+  MK_AK="$ak"; MK_SK="$sk"  # returned via globals: mint_key must run in THIS shell so CREATED_* reach cleanup
 }
 
 # awsq runs the aws CLI against the shim with path-style addressing and given creds.
@@ -85,7 +85,7 @@ awsq() { # AK SK -- <aws args...>
 
 # --- 1. Seed a WRITER principal + its key -----------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-read -r WAK WSK <<<"$(mint_key "probe-writer" "powerusers")"
+mint_key "probe-writer" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a writer key"
 sleep 2 # let the key Secret + User settle
 
@@ -140,7 +140,7 @@ log "  ✓ rejected as SignatureDoesNotMatch"
 
 # --- 6. NEGATIVE: a reader (no write permission) → AccessDenied on put ------------------------
 log "seeding a READER principal (openinfra:readers) + key"
-read -r RAK RSK <<<"$(mint_key "probe-reader" "readers")"
+mint_key "probe-reader" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$RAK" ] && [ -n "$RSK" ] || inconclusive "failed to mint a reader key"
 sleep 2
 log "negative: a reader attempting put-object must be denied by the boundary"
