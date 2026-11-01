@@ -18,6 +18,37 @@ spec:
   credentials:
     source: InjectedIdentity
 ---
+# provider-kubernetes runs as the fixed ServiceAccount name provider-kubernetes rather than the
+# revision-hashed one, so its grants below are bound to that one identity (not to every ServiceAccount
+# in crossplane-system) and survive provider upgrades. The Provider itself is installed by the
+# Crossplane chart (crossplane.yaml, provider.packages: its init creates it only when absent); declaring
+# it here adds the runtime config. Keep the package in step with crossplane.yaml.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: openinfra-provider-kubernetes
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  serviceAccountTemplate:
+    metadata:
+      name: provider-kubernetes
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-kubernetes
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.14.1
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: openinfra-provider-kubernetes
+---
 # Least-privilege-ish: only the resource kinds the Application Composition emits.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

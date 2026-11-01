@@ -36,6 +36,33 @@ spec:
                 seccompProfile:
                   type: RuntimeDefault
 ---
+# provider-kubernetes also keeps its fixed ServiceAccount name (its grants are bound to that name,
+# provider-setup.yaml), so it gets its own runtime config with both.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: restricted-runtime-provider-kubernetes
+spec:
+  serviceAccountTemplate:
+    metadata:
+      name: provider-kubernetes
+  deploymentTemplate:
+    spec:
+      template:
+        spec:
+          securityContext:
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: package-runtime
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: [ALL]
+                seccompProfile:
+                  type: RuntimeDefault
+---
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
 metadata:
@@ -43,7 +70,7 @@ metadata:
 spec:
   package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.14.1
   runtimeConfigRef:
-    name: restricted-runtime
+    name: restricted-runtime-provider-kubernetes
 ---
 apiVersion: pkg.crossplane.io/v1
 kind: Function
