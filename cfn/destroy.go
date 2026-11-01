@@ -169,7 +169,8 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 		}
 		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
 		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown
-		// (it would otherwise leave the whole stack undeletable), so it is not fatal.
+		// (it would otherwise leave the whole stack undeletable), so it is not fatal. A refusal because the
+		// caller may not invoke the Function is: the resource stays and the teardown fails.
 		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
 			if opts.Invoke != nil {
 				fnName, _ := r.Spec["function"].(string)
@@ -180,7 +181,9 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 					"RequestId": opts.StackName + "/" + r.LogicalID, "ResourceType": resType,
 					"LogicalResourceId": r.LogicalID, "ResourceProperties": props,
 				})
-				_, _ = opts.Invoke(ctx, opts.Namespace, fnName, event)
+				if _, err := opts.Invoke(ctx, opts.Namespace, fnName, event); IsUnauthorized(err) {
+					return remaining(), fmt.Errorf("custom resource %s: %w", r.LogicalID, err)
+				}
 			}
 			gone[i] = true
 			continue
@@ -188,9 +191,12 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 		// A REST v1 API (#295) has no k8s object — tear it down via the apigateway hook, by the id
 		// recorded at provision time. Best-effort like a custom-resource Delete: a failed/absent
 		// deprovision (or a CLI destroy with no hook) must not wedge teardown of the rest of the stack.
+		// A refusal because the caller may not delete the API is fatal, as for a custom resource.
 		if r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind {
 			if opts.DeprovisionRestAPI != nil && r.ProvisionedID != "" {
-				_ = opts.DeprovisionRestAPI(ctx, r.ProvisionedID)
+				if err := opts.DeprovisionRestAPI(ctx, r.ProvisionedID); IsUnauthorized(err) {
+					return remaining(), fmt.Errorf("REST API %s: %w", r.LogicalID, err)
+				}
 			}
 			gone[i] = true
 			continue
