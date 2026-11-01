@@ -75,10 +75,14 @@ the boundary of what a test on open-infra proves: anything listed behaves differ
 not exercised, so a pass here never claims more than it tested. `-json` returns the same list as
 `Fidelity` (and each resource's `Caveats`).
 
-The summary also lists the resource attributes open-infra does not act on: `CreationPolicy` (a
-`ResourceSignal` is not waited for), `UpdatePolicy`, `UpdateReplacePolicy` (resources are updated in
-place, never replaced) and `Metadata` (`AWS::CloudFormation::Init` is not run, since guests have no
-`cfn-init`). Any line in the summary makes the verdict `PROVISIONABLE_WITH_CAVEATS`.
+The summary also lists the resource attributes open-infra does not act on: `UpdatePolicy`,
+`UpdateReplacePolicy` (resources are updated in place, never replaced), `CreationPolicy`
+`AutoScalingCreationPolicy`, and `Metadata` `AWS::CloudFormation::Authentication`. A `CreationPolicy`
+`ResourceSignal` **is** waited for, and `Metadata` (with `AWS::CloudFormation::Init`) is returned by
+`DescribeStackResource` for `cfn-init` to read — see [Resource signals](#resource-signals-and-wait-conditions).
+Any line in the summary makes the verdict `PROVISIONABLE_WITH_CAVEATS`. Through the aws-shim front door,
+the summary is also the stack's `StackStatusReason` in `DescribeStacks` and the reason on the stack's
+first event of each create or update.
 
 Plan runs every resource's translator, so the summary covers each property. It cannot when a
 required parameter has no value, when the template uses a `Transform`, or when the stack has a
@@ -222,21 +226,31 @@ the invoke needs the **in-cluster** deploy path (the aws-shim CloudFormation doo
 
 ### Nested stacks (`AWS::CloudFormation::Stack`)
 
-Nested stacks are **flattened** (#268): the `cfn` CLI inlines each child template into the parent as
-one combined template (`FlattenNested`), which then deploys as a single open-infra stack. The child's
-resources are prefixed with the stack's logical id, the parent-supplied `Parameters` are substituted,
-and the parent's `Fn::GetAtt <Stack>.Outputs.<Key>` resolves to the child's Output expression. The
-child template is resolved as a **local file** (relative to the parent) — so author/export the child
-templates alongside the parent.
+Nested stacks are **flattened** (#268): each child template is inlined into the parent as one combined
+template (`FlattenNested`), which then deploys as a single open-infra stack. The child's resources are
+prefixed with the stack's logical id, the parent-supplied `Parameters` are substituted, and the parent's
+`Fn::GetAtt <Stack>.Outputs.<Key>` resolves to the child's Output expression. The `cfn` CLI resolves a
+child `TemplateURL` as a **local file** (relative to the parent); the aws-shim front door reads it from
+**its own S3** (see [Templates in S3](#templates-in-s3-templateurl)).
 
 **Fail-closed** (a flattened template is never a mis-wired one): the flattener refuses what it can't
 rewrite correctly — `Fn::Sub` in a child, child `Conditions`/`Mappings`, a nested-nested stack, an
 intrinsic (non-literal) `TemplateURL`, an unmappable `Ref`/`GetAtt`, an id collision, or an unbound
 child `Parameter`.
 
-**Not via the aws-shim** (its CloudFormation doorway takes templates inline and does not fetch child
-`TemplateURL`s — SSRF-safe), so a nested-stack parent sent to the shim is refused; deploy it with the
-`cfn` CLI. A shim-side child fetch (from MinIO) would be a deliberate follow-on.
+### Templates in S3 (`TemplateURL`)
+
+AWS takes a template inline (`TemplateBody`, up to 51,200 bytes) or as an S3 object (`TemplateURL`, up
+to 1 MB) — `aws cloudformation deploy --s3-bucket` uploads anything larger, and a nested stack names its
+child template that way. The aws-shim front door accepts a `TemplateURL` that names an object in **its
+own S3**: virtual-hosted (`https://<bucket>.<s3 host>/<key>`) or path-style
+(`https://<s3 host>/<bucket>/<key>`), on the front door's own endpoint, an S3 hostname it serves, or an
+AWS S3 hostname (`*.s3.amazonaws.com`, for which it stands in); a pre-signed URL's query string is
+ignored. The URL is only parsed into a bucket and key — **never fetched over the network**, so it cannot
+be used to reach anything else — and the object is read with the **caller's** permissions, exactly as
+the S3 front door would authorize a `GetObject`. Any other URL is refused. Set `AWS_ENDPOINT_URL` (not
+just `--endpoint-url`) when using `aws cloudformation deploy --s3-bucket`, so the upload goes to the same
+S3 the front door reads.
 
 ### CloudFront: a static-site subset
 
@@ -416,25 +430,41 @@ CloudFormation front door returns them from `DescribeStacks` (`OutputKey` / `Out
 `Description` / `ExportName`). A conditioned-off Output is not an Output of the stack.
 
 Everything the template itself determines resolves: literals, parameters, pseudo-parameters,
-mappings, conditions, `Fn::Sub` / `Fn::Join` / `Fn::Select` / …, `Fn::ImportValue`, a custom
-resource's returned `Data`, a CloudFront distribution's `DomainName`, and an Elastic IP's
-`AllocationId`. On top of that, these attributes exist only once the stack is running and
-resolve from the deployed resources' status:
+mappings, conditions, `Fn::Sub` / `Fn::Join` / `Fn::Select` / …, `Fn::ImportValue`, and a custom
+resource's returned `Data` (and its `Ref`, the `PhysicalResourceId` its handler returned). Every
+translated type's `Ref` and documented `Fn::GetAtt` attributes resolve too (`cfn/resource_attrs.go`):
 
-| Output reference | Resolves to |
-|---|---|
-| `Ref <AWS::EC2::EIP>`, `Fn::GetAtt <EIP>.PublicIp` | the associated VM's LAN IP (`kind: VirtualMachine` `status.lanIp`) |
-| `Fn::GetAtt <AWS::EC2::Instance>.PublicIp` | the VM's LAN IP, when the instance is exposed (`AssociatePublicIpAddress` or an Elastic IP) |
-| `Ref <AWS::S3::Bucket>` | the bucket name (`kind: Bucket` `status.bucket`) |
+- **ARNs** are built from the stack's `AWS::Partition`, `AWS::Region` and `AWS::AccountId` — the
+  install's account and region, the ones the aws-shim reports — so an ARN a template builds with `!Sub` is
+  the same string an Output reports (a bucket's `Arn`, a queue's `Arn`, a topic's `TopicArn`, a table's
+  `Arn`, a function's `Arn`, a role's `Arn`, a managed policy's `Ref`, a key's `Arn`, a state machine's
+  `Ref`, an ECS service's `Ref`, a certificate's `Ref`).
+- **Names and URLs** are the ones the service uses: a queue's `Ref` / `QueueUrl` is
+  `<SQS_QUEUE_URL_BASE>/<account>/<name>` (the same URL the SQS front door reports for it), a parameter's
+  `Ref` is its name, a bucket's `DomainName` / `RegionalDomainName` / `WebsiteURL` are AWS's shapes for
+  its name. A queue, topic, subscription, parameter, key or alias in the SQS/SNS/SSM/KMS store (see
+  *Queues, topics, parameters and keys*) resolves to exactly what that store holds — a stack key's `Ref`
+  is the key id the KMS API lists.
+- **Ids another stack passes back in** — a VPC's, a subnet's, a security group's — are the resource's
+  open-infra name. That is what the translators accept from a parameter or `Fn::ImportValue` (a raw
+  `vpc-`/`subnet-`/`sg-` id is opaque to them), so a network stack's exports are usable by the stacks that
+  import them. A resource that provisions nothing of its own (an internet gateway, a route table, a
+  CloudFront policy) gets a stable synthetic id in AWS's shape (`igw-…`, `rtb-…`).
+- **Live values** come from the deployed resources' status: an Elastic IP's `Ref` / `PublicIp` and an
+  exposed instance's `PublicIp` are the VM's LAN IP (`status.lanIp`); an instance's `PrivateIp` is the
+  VM's pod IP (`status.ip`); an RDS instance's `Endpoint.Address` / `Endpoint.Port` are its in-cluster
+  database Service; a user pool's `ProviderURL` is its issuer; a WaitCondition's `Data` is its signals'.
 
 A LAN IP is assigned shortly after the VM is created, so a completing stack waits for it
 (up to ten minutes, within `-timeout`) before recording its Outputs. It stops waiting a minute
-before the operation as a whole would run out of time, so the stack is still recorded
-complete rather than being rolled back. Any other resource
-`Ref` or `Fn::GetAtt` — an instance's `PrivateIp`, a security group's id, an ARN — has no
-deployed value here, and an Output that still doesn't resolve is **left out**, with the
-reason printed and kept on the stack record (`outputsOmitted`). An Output is never filled
-with a placeholder or an invented value.
+before the operation as a whole would run out of time, so the stack's final record is still written.
+
+An Output that names an attribute open-infra does not provide is **refused at plan time** — the stack is
+refused before anything is created, naming the attributes the type does have — as AWS refuses a template
+whose `Fn::GetAtt` names an attribute the type lacks. An Output that is supported but still does not
+resolve after deploy (a LAN IP never assigned, an instance that is not exposed) **fails the create or
+update**, which rolls back, with the reason as the stack's status reason: no stack completes with an
+Output missing, and an Output is never filled with a placeholder or an invented value.
 
 An Output with an `Export.Name` is a cross-stack export. Through the aws-shim front door,
 exports are registered per namespace: `ListExports` lists them, `Fn::ImportValue` in any
@@ -442,6 +472,40 @@ template the front door evaluates resolves against them, a stack that would expo
 another stack already exports is refused, and a stack — or an update — that would remove an
 export another stack imports is refused. The `cfn` CLI has no export registry; pass upstream
 exports with `-import NAME=VALUE`.
+
+### Resource signals and wait conditions
+
+A resource with a `CreationPolicy` `ResourceSignal` is not complete when it exists but when its
+instances say so, as on AWS: after it is applied and Ready, the stack waits for `Count` (default 1)
+`SUCCESS` signals with distinct `UniqueId`s within `Timeout` (an ISO 8601 duration, default `PT5M`, at
+most 12 hours). A `FAILURE` signal, or the timeout, fails the resource and rolls the stack back.
+`AWS::CloudFormation::WaitCondition` waits the same way — for its `Handle`'s signals (`Count`, `Timeout`
+in seconds) or for its own `CreationPolicy` — and its `Fn::GetAtt Data` (usable in Outputs) is the
+signals' data as a JSON object keyed by `UniqueId`. A `WaitConditionHandle`'s `Ref` is a URL on the
+aws-shim (signed for that stack and handle) that a guest `PUT`s AWS's signal JSON to
+(`{"Status":"SUCCESS","UniqueId":"…","Data":"…","Reason":"…"}`); its base is `CFN_SIGNAL_BASE_URL`, by
+default the shim's in-cluster TLS address that guests already use for their credentials.
+
+Signals arrive two ways: the handle URL, and `SignalResource` (what `cfn-signal --stack --resource`
+calls). An instance of the stack may signal it with nothing more than its instance role — on AWS
+`cfn-signal` needs no extra permission, so a template written for AWS grants none. Anyone else needs
+update rights on the stack (a User) or a policy allowing `cloudformation:SignalResource` on it (a role).
+`DescribeStackResource` returns a resource's `Metadata`, which is what `cfn-init` reads for
+`AWS::CloudFormation::Init`; the guest runs `cfn-init` itself against the shim's endpoint, as it would
+against AWS's. Only the aws-shim front door receives signals: a `cfn deploy` of a stack that waits for
+them is refused rather than waiting for something that cannot arrive.
+
+### Stack events and the rest of the API
+
+Through the aws-shim front door, every transition is recorded as AWS records it — the stack's
+`CREATE_IN_PROGRESS` ("User Initiated"), each resource's `CREATE_IN_PROGRESS` / `CREATE_COMPLETE`, a failed
+resource's `CREATE_FAILED` with its reason, the rollback, the stack's final status; updates and deletes
+likewise — and `DescribeStackEvents` returns them newest first, as the create progresses. Also served:
+`ListStackResources` and `DescribeStackResources` (each resource's CloudFormation type, physical id —
+its `Ref` — and own status), `DescribeStackResource`, `ListChangeSets`, `ListImports` and
+`SignalResource`. `DescribeStacks` lists every template parameter (a default as such; `NoEcho` as
+`****`) and the template's `Description`. `ValidateTemplate` checks a template without parameter values,
+as AWS does: a parameter with no default is not an error there.
 
 ### Create fidelity is narrower than the plan mapping
 
